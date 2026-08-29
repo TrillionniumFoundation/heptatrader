@@ -25,28 +25,6 @@ jobs:
         with:
           persist-credentials: false
 
-      # Temporary developer aid for the active gap-closure branch. It gives the
-      # reviewing agent an exact local copy without granting CI repository write
-      # permission. This step is removed before the PR becomes ready.
-      - name: Pack exact source snapshot
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.head_ref == 'codex/heptatrader-gap-closure-v2'
-        run: |
-          tar --exclude=.git --exclude=build \
-            -czf "$RUNNER_TEMP/heptatrader-source.tgz" .
-
-      - name: Upload exact source snapshot
-        if: >-
-          github.event_name == 'pull_request' &&
-          github.head_ref == 'codex/heptatrader-gap-closure-v2'
-        uses: actions/upload-artifact@v4
-        with:
-          name: heptatrader-source-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/heptatrader-source.tgz
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -86,6 +64,10 @@ jobs:
           test -f "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           test -f "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
           test -f "$stage/usr/local/share/heptatrader/research/manifest-v1.json"
+          test -f "$stage/usr/local/share/heptatrader/examples/HeptaTraderConfig.xml.example"
+          test ! -e "$stage/usr/local/share/heptatrader/examples/.env.hepta.example"
+          ! grep -R -E 'HEPTA_(MD|TD)_FRONT|D:\\quant|AllowLiveTrading' \
+            "$stage/usr/local/share/heptatrader/examples"
           grep -F '/usr/local/libexec/heptatrader/hepta-tool-gatewayd' \
             "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \

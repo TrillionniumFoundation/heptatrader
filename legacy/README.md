@@ -1,5 +1,9 @@
 # Legacy source surface
 
+Status: deprecated source index
+Applies to: `legacy/`
+Verification: same-revision CI
+
 This directory preserves the pre-Agent-runtime monolith, historical strategy framework, simulator, vendor-facing interface tree, old Visual Studio projects/configuration and retired direct-order strategy helpers.
 
 It is intentionally outside the active build, runtime install and documentation capability graph. New execution, risk, Agent, strategy-intent or venue work must not add a dependency from active code into this directory.

@@ -78,7 +78,7 @@ install(FILES
         "${CMAKE_SOURCE_DIR}/systemd/hepta-tool-gateway.env.example"
         "${CMAKE_SOURCE_DIR}/systemd/hepta-execution-simulator.env.example"
         "${CMAKE_SOURCE_DIR}/systemd/hepta-agent-trust-domain.json.example"
-        "${CMAKE_SOURCE_DIR}/.env.hepta.example"
+        "${CMAKE_SOURCE_DIR}/HeptaTrade/HeptaTraderConfig.xml.example"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/examples"
     COMPONENT runtime)
 
@@ -98,12 +98,14 @@ install(FILES
 
 install(FILES
         "${CMAKE_SOURCE_DIR}/docs/README.md"
+        "${CMAKE_SOURCE_DIR}/docs/PRODUCT-SCOPE.md"
         "${CMAKE_SOURCE_DIR}/docs/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md"
         "${CMAKE_SOURCE_DIR}/docs/CAPABILITY-MATRIX.md"
         "${CMAKE_SOURCE_DIR}/docs/CONFIGURATION.md"
         "${CMAKE_SOURCE_DIR}/docs/DEPLOYMENT.md"
         "${CMAKE_SOURCE_DIR}/docs/ITERATION.md"
         "${CMAKE_SOURCE_DIR}/docs/RISK-MODEL.md"
+        "${CMAKE_SOURCE_DIR}/docs/STATE-AND-SNAPSHOT.md"
         "${CMAKE_SOURCE_DIR}/docs/SECURITY.md"
         "${CMAKE_SOURCE_DIR}/docs/OBSERVABILITY.md"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"

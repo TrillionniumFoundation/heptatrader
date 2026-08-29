@@ -1,7 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 project(HeptaTrader LANGUAGES CXX)
 
-option(BUILD_IB_PROBE "Build the IB/TWS connectivity probe" OFF)
 option(HEPTA_INSTALL_RUNTIME
        "Define the minimal runtime install component" ON)
 
@@ -10,9 +9,6 @@ include(GNUInstallDirs)
 
 add_subdirectory(HeptaTrade)
 
-if(BUILD_IB_PROBE)
-    add_subdirectory(docs/ib_probe)
-endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
