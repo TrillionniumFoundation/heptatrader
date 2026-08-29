@@ -1,10 +1,4 @@
 cmake_minimum_required(VERSION 3.16)
-
-# Source-tree builds are for iteration and runtime verification only.
-# Distribution/install certification belongs outside this repository.
-set(CMAKE_SKIP_INSTALL_RULES ON CACHE BOOL
-    "Do not generate legacy packaging/install rules" FORCE)
-
 project(HeptaTrader LANGUAGES CXX)
 
 option(BUILD_IB_PROBE "Build the IB/TWS connectivity probe" OFF)
