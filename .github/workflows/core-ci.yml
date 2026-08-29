@@ -34,11 +34,33 @@ jobs:
       - name: Validate entry points
         run: |
           bash -n scripts/dev_core.sh
-          python3 -m py_compile scripts/resolve_hepta_config.py
+          python3 -m py_compile \
+            scripts/resolve_hepta_config.py \
+            scripts/hepta_agent_mcp_launcher.py
           python3 -m json.tool CMakePresets.json >/dev/null
+          python3 -m json.tool \
+            plugins/heptatrader-agent-os/.mcp.json >/dev/null
 
       - name: Build and test the deterministic core
         env:
           HEPTA_CMAKE_GENERATOR: Ninja
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
+
+      - name: Verify minimal runtime install tree
+        run: |
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release \
+            --component runtime
+          test -x "$stage/usr/local/bin/heptactl"
+          test -x "$stage/usr/local/bin/hepta-sessionctl"
+          test -x "$stage/usr/local/bin/hepta-agent-mcp-launcher"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
+          test -f "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
+          test -f "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
+          grep -F '/usr/local/libexec/heptatrader/hepta-tool-gatewayd' \
+            "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
+          grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \
+            "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"

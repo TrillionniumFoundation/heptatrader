@@ -1,6 +1,6 @@
 [Unit]
-Description=HeptaTrader Simulator-only execution authority
-Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Description=HeptaTrader deterministic Simulator execution authority
+Documentation=file:@HEPTA_RUNTIME_DOC_DIR@/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
 Requires=hepta-execution-simulator.socket hepta-execution-events-simulator.socket
 After=hepta-execution-simulator.socket hepta-execution-events-simulator.socket
 Conflicts=hepta-execution-ib-paper.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
@@ -11,7 +11,7 @@ Sockets=hepta-execution-simulator.socket hepta-execution-events-simulator.socket
 User=hepta-exec
 Group=hepta-exec
 WorkingDirectory=/
-ExecStart=/usr/libexec/hepta-executiond
+ExecStart=@HEPTA_RUNTIME_EXECUTABLE_DIR@/hepta-executiond
 Environment=HEPTA_EXECUTION_SERVICE_MODE=SIMULATOR
 EnvironmentFile=/etc/heptatrader/hepta-execution-simulator.env
 LoadCredential=hepta-execution-fence:/etc/heptatrader/credentials/hepta-execution-simulator-fence
@@ -22,7 +22,6 @@ Restart=on-failure
 RestartSec=2s
 TimeoutStopSec=10s
 KillMode=control-group
-
 NoNewPrivileges=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -54,5 +53,5 @@ ReadWritePaths=/var/lib/hepta-execution
 StandardOutput=journal
 StandardError=journal
 
-# Deliberately no [Install] section. This unit contains no IB/CTP/XT adapter,
-# broker credential, PAPER mode, or LIVE mode and must remain Simulator-only.
+[Install]
+WantedBy=multi-user.target

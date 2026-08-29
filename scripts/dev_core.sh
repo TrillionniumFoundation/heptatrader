@@ -26,15 +26,13 @@ configure_args=(
   -B "${BUILD_DIR}"
   -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
   -DBUILD_TESTING=ON
+  -DHEPTA_INSTALL_RUNTIME=ON
   -DHEPTA_ENABLE_IBAPI=OFF
   -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF
   -DHEPTA_BUILD_LEGACY_MONOLITH=OFF
   -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
 )
 
-# Select a generator only for a fresh build directory. Reusing an existing
-# cache with a different generator is a CMake error and should not surprise a
-# developer.
 if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   if [[ -z "${GENERATOR}" ]] && command -v ninja >/dev/null 2>&1; then
     GENERATOR=Ninja
@@ -46,7 +44,7 @@ fi
 
 cmake "${configure_args[@]}"
 cmake --build "${BUILD_DIR}" \
-  --target hepta_core_test_binaries \
+  --target hepta_core_test_binaries hepta_runtime_binaries \
   --parallel "${JOBS}"
 ctest --test-dir "${BUILD_DIR}" \
   --output-on-failure \

@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-
 """Non-setuid identity and environment gate for the installed MCP bridge."""
 
 from __future__ import annotations
@@ -10,14 +9,24 @@ import stat
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from hepta_agent_trust_domain import (
-    TrustDomainRuntimeError, load_runtime_config,
+from hepta_agent_trust_domain import (  # noqa: E402
+    TrustDomainRuntimeError,
+    load_runtime_config,
 )
+
 
 AGENT_UID = 2004
 AGENT_GID = 2004
-MCP_SERVER = "/usr/libexec/hepta-mcp-server"
 DOMAIN_CONFIG_ROOT = Path("/etc/heptatrader/trust-domains")
+
+
+def installed_mcp_server() -> Path:
+    # The launcher is installed into <prefix>/bin and the bridge into
+    # <prefix>/libexec/heptatrader.  Resolving from the installed file keeps
+    # /usr and /usr/local deployments consistent without an environment-
+    # controlled executable path.
+    prefix = Path(__file__).resolve().parent.parent
+    return prefix / "libexec" / "heptatrader" / "hepta-mcp-server"
 
 
 def default_domain_config_path(uid: int) -> Path:
@@ -32,6 +41,7 @@ def fail(reason: str) -> int:
 def main() -> int:
     if sys.argv != [sys.argv[0]]:
         return fail("argv configuration is forbidden")
+
     process_identity = (
         os.getuid(), os.geteuid(), os.getgid(), os.getegid())
     if (
@@ -40,19 +50,21 @@ def main() -> int:
         return fail("real/effective Agent identity mismatch")
     if sorted(set(os.getgroups())) not in ([], [process_identity[2]]):
         return fail("supplementary groups are forbidden")
+
     domain_config = os.environ.get("HEPTA_AGENT_DOMAIN_CONFIG", "")
-    compatibility = os.environ.get(
-        "HEPTA_AGENT_SINGLE_DOMAIN_COMPAT", "")
+    compatibility = os.environ.get("HEPTA_AGENT_SINGLE_DOMAIN_COMPAT", "")
     if domain_config and compatibility:
         return fail("trust-domain modes are mutually exclusive")
     if not domain_config and compatibility != "1":
         domain_config = str(default_domain_config_path(os.getuid()))
+
     if domain_config:
         try:
             domain = load_runtime_config(
                 Path(domain_config),
                 expected_agent_identity=(
-                    process_identity[0], process_identity[2]))
+                    process_identity[0], process_identity[2]),
+            )
         except (OSError, TrustDomainRuntimeError):
             return fail("trust-domain configuration is unsafe")
         agent_uid = domain["agent_uid"]
@@ -66,20 +78,25 @@ def main() -> int:
         token_file = "/run/hepta-agent/session.token"
     else:
         return fail("explicit compatibility mode is invalid")
-    if process_identity != (
-            agent_uid, agent_uid, agent_gid, agent_gid):
+
+    if process_identity != (agent_uid, agent_uid, agent_gid, agent_gid):
         return fail("configured Agent UID/GID required")
+
+    mcp_server = installed_mcp_server()
     try:
-        metadata = os.lstat(MCP_SERVER)
+        metadata = os.lstat(mcp_server)
     except OSError:
         return fail("MCP bridge is missing")
-    if (not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode) or
+    if (
+            not stat.S_ISREG(metadata.st_mode) or
+            stat.S_ISLNK(metadata.st_mode) or
             metadata.st_uid != 0 or metadata.st_gid != 0 or
-            metadata.st_nlink != 1 or stat.S_IMODE(metadata.st_mode) != 0o755):
+            metadata.st_nlink != 1 or
+            stat.S_IMODE(metadata.st_mode) != 0o755):
         return fail("MCP bridge metadata is unsafe")
 
     environment = {
-        "PATH": "/usr/sbin:/usr/bin:/sbin:/bin",
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "HEPTA_TOOL_SOCKET": socket_path,
@@ -94,8 +111,10 @@ def main() -> int:
         if seconds < 1 or seconds > 120:
             return fail("MCP timeout is invalid")
         environment["HEPTA_MCP_TIMEOUT_SEC"] = str(seconds)
+
+    executable = str(mcp_server)
     try:
-        os.execve(MCP_SERVER, [MCP_SERVER], environment)
+        os.execve(executable, [executable], environment)
     except OSError:
         return fail("MCP bridge exec failed")
     return fail("MCP bridge exec returned")

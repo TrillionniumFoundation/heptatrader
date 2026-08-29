@@ -1,6 +1,5 @@
 [Unit]
-Description=HeptaTrader Simulator-only execution event feed socket
-Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Description=HeptaTrader Simulator execution event feed socket
 Conflicts=hepta-execution-ib-paper.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
 
 [Socket]
@@ -15,5 +14,5 @@ FileDescriptorName=events
 Service=hepta-execution-simulator.service
 RemoveOnStop=yes
 
-# Deliberately no [Install] section. This read-only feed is activated only with
-# the reviewed Simulator execution service and never authorizes PAPER or LIVE.
+[Install]
+WantedBy=sockets.target

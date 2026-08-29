@@ -1,17 +1,37 @@
 # HeptaTrader Agent OS plugin
 
-该插件把本地 HeptaTrader Tool Gateway 暴露为 MCP 工具。插件不包含 broker credential、账户密钥、PAPER/LIVE 授权或本地执行权。
+Status: current
 
-仓库不再携带 OS runtime 的发布安装/认证流水线。开发时先从源码构建 `hepta-tool-gatewayd`、`hepta-sessionctl` 和相关运行时，再由运维环境把固定 launcher 路径写入 MCP 配置。仓库内 `.mcp.json` 的 `/usr/libexec/hepta-agent-mcp-launcher` 只是部署约定，不代表源码构建会安装该文件。
+This plugin exposes the local HeptaTrader Tool Gateway as MCP tools. It contains no broker credential, account secret, PAPER/LIVE grant or local execution authority.
 
-每个互不信任的 Agent 必须使用独立 OS 身份、socket、session token 和 trust-domain 配置。Agent 只可调用当前会话暴露的工具；不得推断 PAPER 或 LIVE 权限。最终订单授权、风控、幂等、对账和 kill switch 始终由 Gateway/Execution Service 的确定性代码执行。
+## Installed use
 
-源码开发入口：
+The runtime component installs `hepta-agent-mcp-launcher` into the configured bindir and the MCP bridge into the matching libexec tree. `.mcp.json` invokes the launcher by command name so `/usr` and `/usr/local` installations use the same plugin metadata.
 
 ```bash
-cmake -S . -B build -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF
-cmake --build build --target hepta_tool_gatewayd hepta_sessionctl --parallel 2
+cmake --preset core-release -DCMAKE_INSTALL_PREFIX=/usr
+cmake --build --preset core-release --target hepta_runtime_binaries
+sudo cmake --install build/core-release --component runtime
+```
+
+The launcher:
+
+- requires a fixed Agent UID/GID and no supplementary groups;
+- reads one root-reviewed trust-domain configuration;
+- supplies only the session socket, token path and expected UID;
+- verifies the installed MCP server is a root-owned, single-link `0755` file;
+- never receives broker credentials.
+
+Each mutually untrusted Agent must use an independent OS identity, socket, session token and capability set. The Agent may call only tools visible to its current session and must never infer PAPER or LIVE authority.
+
+## Source development
+
+For local protocol development without installing the plugin:
+
+```bash
+cmake --preset core-release
+cmake --build --preset core-release --target hepta_tool_gatewayd hepta_sessionctl
 python3 adapters/mcp/hepta_mcp_server.py
 ```
 
-生产部署应从固定 commit 在外部发布流程中完成；插件目录本身不是授权或发布证明。
+Source execution requires the reviewed `HEPTA_TOOL_SOCKET` and `HEPTA_TOOL_SESSION_TOKEN_FILE` environment. Final order authorization, risk, idempotency, reconciliation and kill switch remain deterministic Gateway/Execution responsibilities.

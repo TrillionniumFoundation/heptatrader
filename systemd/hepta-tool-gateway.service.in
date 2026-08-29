@@ -1,6 +1,6 @@
 [Unit]
-Description=HeptaTrader Agent OS remote Tool Gateway
-Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Description=HeptaTrader Agent Tool Gateway
+Documentation=file:@HEPTA_RUNTIME_DOC_DIR@/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
 Requires=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
 After=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
 
@@ -8,7 +8,7 @@ After=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
 Type=simple
 User=hepta-gateway
 Group=hepta-gateway
-ExecStart=/usr/libexec/hepta-tool-gatewayd
+ExecStart=@HEPTA_RUNTIME_EXECUTABLE_DIR@/hepta-tool-gatewayd
 EnvironmentFile=/etc/heptatrader/hepta-tool-gateway.env
 Environment=HEPTA_TOOL_SOCKET=/run/hepta-agent/tools.sock
 Sockets=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
