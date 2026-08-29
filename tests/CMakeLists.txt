@@ -159,6 +159,13 @@ add_executable(hepta_target_position_intent_tests
 target_link_libraries(hepta_target_position_intent_tests OpenSSL::Crypto)
 hepta_register_core_test(hepta_target_position_intent_tests)
 
+add_executable(hepta_authoritative_decision_snapshot_tests
+    authoritative_decision_snapshot_tests.cpp
+    ../HeptaTrade/intent/authoritative_decision_snapshot.cpp
+    ../HeptaTrade/intent/target_position_intent.cpp)
+target_link_libraries(hepta_authoritative_decision_snapshot_tests OpenSSL::Crypto)
+hepta_register_core_test(hepta_authoritative_decision_snapshot_tests)
+
 add_executable(hepta_unsupported_venue_adapter_tests
     unsupported_venue_adapter_tests.cpp
     ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
