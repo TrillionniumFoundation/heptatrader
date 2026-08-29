@@ -153,6 +153,12 @@ target_link_libraries(hepta_deterministic_risk_policy_tests
     hepta_risk_core)
 hepta_register_core_test(hepta_deterministic_risk_policy_tests)
 
+add_executable(hepta_target_position_intent_tests
+    target_position_intent_tests.cpp
+    ../HeptaTrade/intent/target_position_intent.cpp)
+target_link_libraries(hepta_target_position_intent_tests OpenSSL::Crypto)
+hepta_register_core_test(hepta_target_position_intent_tests)
+
 add_executable(hepta_unsupported_venue_adapter_tests
     unsupported_venue_adapter_tests.cpp
     ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
