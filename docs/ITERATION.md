@@ -1,8 +1,8 @@
 # Iteration contract
 
-Status: current  
-Applies to: `scripts/dev_core.sh`, `tests/`, `.github/workflows/core-ci.yml`  
-Last verified commit: moving `main`
+Status: current
+Applies to: `scripts/dev_core.sh`, `tests/`, `.github/workflows/core-ci.yml`
+Verification: same-revision CI
 
 HeptaTrader 的普通开发循环只保护会造成交易错误、权限越界或配置漂移的核心 invariant；它不是发布认证流水线。
 

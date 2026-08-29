@@ -2,53 +2,56 @@
 
 Status: current
 Applies to: repository documentation
-Last verified commit: moving-main
+Verification: same-revision CI
 
-Documentation is an executable engineering contract. “Current” means the described path, command and capability exist in the same revision. Historical process narratives are preserved by Git history rather than kept as misleading active files.
+“Current” means the described path, command and capability exist or is explicitly labelled as a target contract whose implementation state is tracked in the canonical plan. Historical process narratives are preserved under `docs/legacy/` or Git history, not presented as active operations.
 
-## Canonical current contracts
+## Product and architecture
 
 | Document | Authority |
 |---|---|
-| [`development/PLAN.md`](development/PLAN.md) | single gap registry, priorities, acceptance evidence and definition of done |
-| [`AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md) | runtime components, dependency direction and authority boundary |
-| [`CAPABILITY-MATRIX.md`](CAPABILITY-MATRIX.md) | implemented/experimental/unsupported capability truth |
-| [`development/AGENT-INTENT-CONTRACT.md`](development/AGENT-INTENT-CONTRACT.md) | ordinary Agent snapshot and target-position interface |
-| [`RISK-MODEL.md`](RISK-MODEL.md) | venue-neutral deterministic risk semantics |
-| [`OMS-EVENT-SCHEMA.md`](OMS-EVENT-SCHEMA.md) | durable command/event semantics |
-| [`RECONCILE-RULES.md`](RECONCILE-RULES.md) | authoritative recovery and uncertain-command handling |
-| [`CONFIGURATION.md`](CONFIGURATION.md) | config source precedence, profile lock and secret handling |
-| [`DEPLOYMENT.md`](DEPLOYMENT.md) | minimal runtime installation and fixed service assembly |
-| [`SECURITY.md`](SECURITY.md) | threat model, identities, credentials and failure policy |
-| [`OBSERVABILITY.md`](OBSERVABILITY.md) | runtime metrics, SLOs and operational alerts |
-| [`ITERATION.md`](ITERATION.md) | bounded local/PR development loop |
-| [`development/TEST-STRATEGY.md`](development/TEST-STRATEGY.md) | test layers, fault cases and exact-head evidence |
-| [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md) | incident classification and safe response |
-| [`RUNBOOK-KILLSWITCH.md`](RUNBOOK-KILLSWITCH.md) | kill switch, flatten and terminal control |
-| [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md) | broker network egress boundary |
+| [`PRODUCT-SCOPE.md`](PRODUCT-SCOPE.md) | product definition, maturity and naming rules |
+| [`CAPABILITY-MATRIX.md`](CAPABILITY-MATRIX.md) | implemented/experimental/planned/unsupported truth |
+| [`AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md) | components, dependencies and trust boundaries |
+| [`development/PLAN.md`](development/PLAN.md) | single gap registry, sequence and definition of done |
 
-## Research
+## Runtime contracts
 
-| Document | State |
+| Document | Authority |
 |---|---|
-| [`../research/README.md`](../research/README.md) | current research/replay contract |
-| [`STRATEGY-VALIDATION-PLAN.md`](STRATEGY-VALIDATION-PLAN.md) | current validation gates for any strategy candidate |
-| [`EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md`](EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md) | experimental EURUSD strategy contract; SHADOW only |
+| [`development/AGENT-INTENT-CONTRACT.md`](development/AGENT-INTENT-CONTRACT.md) | ordinary Agent target-position path and operator separation |
+| [`STATE-AND-SNAPSHOT.md`](STATE-AND-SNAPSHOT.md) | authoritative state, generation and atomic snapshot semantics |
+| [`PORTFOLIO-AND-CAPITAL.md`](PORTFOLIO-AND-CAPITAL.md) | portfolio compiler, netting and budget target contract |
+| [`RISK-MODEL.md`](RISK-MODEL.md) | deterministic risk rules and source requirements |
+| [`OMS-EVENT-SCHEMA.md`](OMS-EVENT-SCHEMA.md) | durable command/event model |
+| [`RECONCILE-RULES.md`](RECONCILE-RULES.md) | uncertain outcomes and authoritative reconciliation |
+| [`CONFIGURATION.md`](CONFIGURATION.md) | supported profiles and configuration authority |
+| [`SECURITY.md`](SECURITY.md) | threat model, identities and credentials |
+| [`OBSERVABILITY.md`](OBSERVABILITY.md) | metrics, SLOs and alerts |
 
-## Proposals
+## Research and validation
 
-QMT/XT and other unimplemented venue plans belong under `docs/proposals/`. A proposal may describe an intended API, but must not appear in runtime capability lists until transport, lifecycle, reconciliation and negative-path tests exist.
+| Document | Authority |
+|---|---|
+| [`RESEARCH-PROTOCOL.md`](RESEARCH-PROTOCOL.md) | RunManifest, EventLog and RunSummary contracts |
+| [`../research/README.md`](../research/README.md) | current research entry points and boundary |
+| [`STRATEGY-VALIDATION-PLAN.md`](STRATEGY-VALIDATION-PLAN.md) | executable leakage/cost/capacity/promotion gates |
+| [`EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md`](EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md) | experimental SHADOW strategy |
 
-## Required document header
+## Development and operations
 
-Every current, experimental or proposal document starts with:
+| Document | Authority |
+|---|---|
+| [`development/TEST-STRATEGY.md`](development/TEST-STRATEGY.md) | test layers and exact-head evidence |
+| [`ITERATION.md`](ITERATION.md) | bounded local/PR loop |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | minimal install and service assembly |
+| [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md) | incident response |
+| [`RUNBOOK-KILLSWITCH.md`](RUNBOOK-KILLSWITCH.md) | kill switch and safe exit |
+| [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md) | broker egress boundary |
 
-```text
-Status: current | experimental | proposal | deprecated
-Applies to: <paths/components>
-Last verified commit: <sha or moving-main>
-```
+## Non-current material
 
-## Prohibited current-document content
+- [`proposals/`](proposals/) describes unimplemented future work and makes no capability claim.
+- [`legacy/`](legacy/) contains deprecated documentation and is not an active dependency.
 
-Current documents must not refer to deleted PowerShell gates, round/P1 campaigns, evidence closure, renew/repair/finalizer orchestration, attestation bundles, self-merging workflows, hard-coded personal workspaces or nonexistent runbooks.
+Every current or target-contract document must start with `Status`, `Applies to` and `Verification`. `Verification: same-revision CI` means repository checks and tests execute against the exact commit under review; mutable labels such as `moving-main` are forbidden.

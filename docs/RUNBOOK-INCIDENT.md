@@ -1,46 +1,48 @@
-# RUNBOOK - INCIDENT
+# Incident response runbook
 
-适用范围：连接失败、下单异常、门禁失败等生产前/准生产事件。
+Status: current
+Applies to: Simulator and IB PAPER runtime incidents
+Verification: same-revision CI
 
-## 1. 事故分级
+## Severity
 
-- **SEV-1 / P1**：无法连接、下单连续拒绝、状态不一致。
-- **SEV-2 / P2**：行情缺失、错误数异常上升。
-- **SEV-3 / P3**：偶发错误且可自愈。
+- **P1** — possible unintended exposure, journal/fencing failure, authoritative state break, kill-switch uncertainty or unresolved mutation.
+- **P2** — degraded broker/data/reconciliation capability with no known unintended exposure.
+- **P3** — bounded development or observability issue with no runtime mutation impact.
 
-## 2. 通用处置顺序
+## First actions
 
-1. **先止损**：暂停策略下单/切换只读。
-2. **再取证**：固定证据目录（`runtime-logs/*`）。
-3. **后恢复**：按分类修复并验证。
+1. Engage the deployment-owned kill switch or disable new-risk capability.
+2. Preserve cancel/authoritative flatten capability when its proof remains safe.
+3. Do not restart repeatedly or submit replacement command IDs for uncertain mutations.
+4. Capture service epoch/fencing generation, command IDs, journal path/health, broker connection epoch, active orders and positions.
+5. Query health and exact command status; reconcile before reopening risk.
 
-## 3. 场景化步骤
+## P1 examples
 
-### A) 无法建立 IB 会话（NO_NEXT_VALID_ID）
+- durable journal write failure or send without durable command evidence;
+- broker/OMS order or position disagreement while risk remains open;
+- stale/incomplete quote or state accepted for new exposure;
+- execution epoch/fence mismatch;
+- kill-switch state cannot be read/enforced;
+- uncertain command exceeds reconciliation deadline.
 
-1. 检查 TWS/Gateway 是否在线与端口配置。
-2. 运行：
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\test-ib-ports.ps1
-   ```
-3. 重新执行回归轮次并汇总日志。
-4. 若仍失败，升级 SEV-1 并禁止进入 go-live。
+## Commands
 
-### B) 下单拒绝（error code 201/相关）
+```bash
+systemctl status hepta-tool-gateway.service hepta-execution-simulator.service
+journalctl -u hepta-tool-gateway.service -u hepta-execution-simulator.service --since -30min
+heptactl system.get_health
+heptactl orders.list
+heptactl portfolio.list_positions
+```
 
-1. 检查账户权限、合约参数、风控阈值。
-2. 复核 `check_ib_order_whitelist.py` 输出。
-3. 在 paper 账户复现并确认问题闭环后再恢复。
+For IB PAPER use the matching service/socket units and operator-controlled broker console. Never expose broker credentials or kill-switch mutation to an Agent session.
 
-### C) CI Gate 失败
+## Recovery authorization
 
-1. 查看 `runtime-logs/ci-gate-*/ci_gate_summary.txt`。
-2. 按失败项修复（Whitelist / Regression / Release Check）。
-3. 必须重跑至 `EXIT_CODE=0`。
+Reopen risk only after the current execution authority reports complete authoritative state, no unresolved exposure-bearing command, reconciled owner/order/position projections, valid config/credential/kill state and stable epoch/fencing/generation.
 
-## 4. 复盘输出（必填）
+## Post-incident record
 
-- 事件编号、时间线、影响范围
-- 根因（直接/系统性）
-- 修复动作与回归证据
-- 预防措施（脚本/文档/流程）
+Record timeline, owner, environment/venue, affected command/order IDs, exposure impact, root cause, safety mechanism behavior, code/config fix, regression test and whether any runbook or metric failed to make the state obvious. This is an ordinary incident record, not a release/campaign finalization artifact.

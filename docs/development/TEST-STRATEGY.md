@@ -2,90 +2,81 @@
 
 Status: current
 Applies to: `tests/`, `tests/python/`, `.github/workflows/core-ci.yml`
-Last verified commit: moving-main
+Verification: same-revision CI
 
-## 1. Principle
+## Principle
 
-Tests protect trading invariants and fast iteration. They do not create certification theater. The exact commit under review must build and pass its own checks; a narrative or earlier green commit is not evidence for a changed head.
+Tests protect trading invariants and fast iteration. A narrative, receipt or earlier green commit is not evidence for a changed head. The exact commit under review must pass its own checks.
 
-## 2. Required PR layers
+## Fast PR lane
 
-### L0 — static integrity
+### L0 — repository and configuration truth
 
-- shell/Python/JSON syntax;
-- `git diff --check`;
-- current-document path/reference validation;
-- active source cannot include/link `legacy/`;
-- ordinary Agent env examples cannot expose raw place capability;
-- unsupported venue adapters cannot report connected/accepted success.
+- shell/Python/JSON syntax and `git diff --check`;
+- all current-document metadata and local links;
+- no current `moving-main`, deleted command or legacy dependency;
+- only supported profiles accepted;
+- ordinary Agent examples cannot expose raw place authority;
+- unsupported adapters cannot report connected/accepted success;
+- install tree contains no stale/unsupported example.
 
-### L1 — deterministic unit tests
+### L1 — deterministic unit contracts
 
-- risk rule matrix and finite-number rejection;
-- strict reduce-only/no-cross-zero;
+- risk matrix, finite values and strict reduction;
+- snapshot generation/epoch/fence/watermark consistency;
+- target normalization and permit digest/lifecycle;
 - command fingerprint and idempotency;
-- protocol framing, schema and result bounds;
-- session capability/environment rules;
-- quote/snapshot freshness and generation consistency.
+- protocol framing/schema/result bounds;
+- portfolio netting and budget rules;
+- research manifest/data-quality/cost calculations.
 
-### L2 — component tests
+### L2 — components
 
 - OMS journal durability and replay;
 - execution coordinator accepted/duplicate/uncertain paths;
-- tool registry and Gateway dispatch;
-- snapshot store and refresh;
-- decision lease and execution fencing;
+- permit authority atomic consume/replay;
+- Tool Registry/Gateway dispatch and capability visibility;
+- state store and snapshot capture;
+- decision lease/fencing/reconciliation;
 - broker lifecycle projector and kill switch.
 
-### L3 — end-to-end deterministic tests
-
-Agent/MCP-equivalent request -> Gateway -> Execution -> simulator -> event/OMS projection. Cover place/intent, cancel, flatten, retry, process restart and reconciliation.
-
-### L4 — optional/nightly reliability
-
-- ASAN/UBSAN;
-- protocol and journal fuzzing;
-- crash points around journal-before-send;
-- long deterministic replay;
-- broker disconnect/correction/duplicate-event fault injection;
-- latency baseline and p99 regression.
-
-## 3. Risk test matrix
-
-Every rule has allow, exact-boundary, over-boundary, NaN/Inf and stale/unknown cases. Important cross-products include:
-
-- above-limit account + proven reduction;
-- reduction that would cross zero;
-- active-order/rate cap during cancel or flatten;
-- stale quote with new exposure versus safe exit;
-- position generation change between preview and apply;
-- same command ID/same payload versus same ID/changed payload.
-
-## 4. Research tests
-
-- no-lookahead fixture;
-- timezone/session/calendar boundaries;
-- missing/duplicate/out-of-order data;
-- deterministic feature/decision golden files;
-- commission/spread/slippage/latency costs;
-- purged walk-forward and embargo;
-- regime/time-of-day stability;
-- replay parity across unchanged code and manifest.
-
-## 5. CI contract
-
-The PR workflow is read-only and bounded. It runs:
+### L3 — deterministic end to end
 
 ```text
-entry-point and repository-integrity checks
-Release core configure/build (IB disabled)
-core CTest
-Python contract tests
-minimal runtime install smoke
+Agent-equivalent call -> Gateway -> Execution -> Simulator
+-> journal -> venue event -> OMS/state -> read/snapshot
 ```
 
-It has no `contents: write`, no `pull-requests: write`, no finalizer and no self-merge step.
+Cover target preview/apply/no-op, raw-place denial for ordinary Agent, cancel, flatten, duplicate retry, process restart, stale generation and reconciliation.
 
-## 6. Failure handling
+## Optional/nightly reliability lane
 
-A failed check reports the concrete command and reason. Do not add a second workflow that checks whether “all gaps are closed.” Fix the implementation or the smallest relevant test. Temporary diagnostics are removed in the same branch before review readiness.
+- ASAN/UBSAN;
+- protocol, schema and journal fuzzing;
+- crash points before/after journal and before/after send;
+- long replay and deterministic parity;
+- disconnect, callback correction, duplicate/out-of-order event injection;
+- same-fixture latency baseline and p99 regression.
+
+These are optional or scheduled and never disguised as ordinary source-development prerequisites.
+
+## Research validation tests
+
+- no-lookahead and point-in-time fixture;
+- timezone/session/calendar boundaries;
+- missing/duplicate/out-of-order/changed-same-timestamp input;
+- deterministic features/decisions and output digest;
+- commission/spread/slippage/delay/impact sensitivity;
+- purged walk-forward and embargo boundaries;
+- regime/time-of-day/worst-slice stability;
+- replay parity after refactor.
+
+## Required commands
+
+```bash
+python3 scripts/check_repository_integrity.py
+./scripts/dev_core.sh
+cmake --install build/core-release --component runtime
+```
+
+CI has read-only repository permission. It contains no finalizer, self-approval, self-merge or temporary source-export step at review readiness.

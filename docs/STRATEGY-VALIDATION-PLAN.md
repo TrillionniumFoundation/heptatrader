@@ -2,104 +2,69 @@
 
 Status: current
 Applies to: all research strategies and replay outputs
-Last verified commit: moving-main
+Verification: same-revision CI
 
-## 1. Objective
+## Objective
 
-Establish whether a strategy signal is reproducible, leakage-free, economically meaningful after costs, stable outside its tuning sample and operationally compatible with the deterministic runtime. The process never grants runtime capability by itself.
+Determine whether a strategy signal is reproducible, point-in-time correct, economically meaningful after costs, stable outside its tuning sample and compatible with deterministic runtime semantics. Validation never grants runtime capability by itself.
 
-## 2. Data contract
+## Executable data contract
 
-Every run records dataset identity and SHA-256 digests, UTC/session calendar, symbol/contract mapping, missing/duplicate/out-of-order policy and any adjustment/roll rule. Inputs are immutable for the run.
+Every run records dataset URI/version/SHA-256, UTC/session calendar, symbol/contract mapping, adjustment/roll rules and missing/duplicate/out-of-order behavior. Reject when future information enters a feature/label, timestamps are ambiguous, changed data reuses an authoritative timestamp, a required gap crosses a decision window or exact inputs cannot be recovered.
 
-Reject a run when:
+## Experiment design
 
-- future information enters a feature or label;
-- bar close or calendar publication time is ambiguous;
-- a changed observation reuses the same authoritative timestamp;
-- an unexplained data gap crosses a decision window;
-- time-zone/session conversion is not versioned;
-- the exact run cannot be reproduced from recorded inputs.
+- purged walk-forward folds with embargo at least the maximum feature/label horizon;
+- one untouched final OOS segment after design/parameter freeze;
+- reported parameter/feature/trial search budget;
+- previous deterministic baseline, refactor parity, candidate, no-skill benchmark and adverse-cost variants;
+- no selection using final OOS results.
 
-## 3. Experiment design
+Fold boundaries, purge/embargo and all selected parameters are machine-readable RunManifest fields and validated by tests.
 
-Use purged walk-forward folds with an embargo at least as long as the maximum feature/label horizon. Keep one final OOS segment untouched until design and parameters are frozen. Parameter selection, feature selection and repeated trials are included in the reported search budget.
+## Execution and costs
 
-Required comparisons:
+Each evaluation explicitly models observed/conservative spread, commissions/fees, slippage, decision/queue/broker delay, partial fills/rejects where relevant, order-size/capacity, market impact, session/liquidity constraints, FX conversion, borrow/funding when applicable.
 
-- previous deterministic baseline;
-- refactor parity at identical parameters;
-- candidate strategy;
-- simple/no-skill benchmark;
-- stress variants for costs, delay and missing data.
+A candidate fails when its edge disappears under a reasonable adverse-cost scenario or relies on a fill unavailable at the decision timestamp.
 
-## 4. Execution and cost model
+## Metrics
 
-Include:
-
-- observed/conservative spread;
-- commissions and fees;
-- slippage distribution;
-- decision, queue and broker delay;
-- partial fills and rejects where applicable;
-- order-size/capacity and market-impact assumption;
-- trading-session and liquidity constraints.
-
-A candidate fails when the economic edge disappears under a reasonable adverse-cost scenario or when profitability depends on fills unavailable at the decision timestamp.
-
-## 5. Metrics
-
-Report distributions and confidence intervals, not one headline Sharpe. Minimum set:
+Minimum distributions and confidence intervals:
 
 ```text
 net return, volatility, Sharpe/Sortino, max drawdown and duration,
 turnover, hit rate, payoff ratio, trade count, exposure, tail loss,
-cost share, capacity, time-in-market and recovery from drawdown
+cost share, capacity, time-in-market and drawdown recovery
 ```
 
-Slice by year/month, time-of-day, volatility, spread/liquidity and market regime. Report the worst meaningful slice and concentration of PnL by event/day/instrument.
+Slice by fold, time-of-day, volatility, spread/liquidity and regime. Report the worst meaningful slice and concentration of PnL by event/day/instrument.
 
-## 6. Determinism and parity
+## Determinism and parity
 
-Same code, manifest and input bytes must reproduce the decision stream and summary within the declared tolerance. Refactors run a golden parity fixture. Simulator, SHADOW and later PAPER must share intent/risk semantics; differences in fill model are explicit.
+The same source, manifest, input bytes and seed reproduce the decision stream and summary within declared tolerance. Refactors run a golden parity fixture. Replay, SHADOW and later PAPER share intent/risk semantics; fill-model differences are explicit.
 
-## 7. Failure-path tests
+## Failure-path tests
 
-At minimum:
-
-- stale/missing/out-of-order quote;
-- changed duplicate timestamp;
-- calendar/information gap;
+- stale/missing/out-of-order quote and changed duplicate timestamp;
+- calendar/information gap and timezone boundary;
 - zero/negative/NaN/Inf input;
-- spread/cost spike;
-- delayed or partial execution;
-- process restart and replay;
-- duplicate/uncertain command result;
-- position change between preview and apply;
-- kill-switch and flatten-only mode.
+- spread/cost spike and execution delay;
+- partial/rejected/duplicate event;
+- process restart and deterministic replay;
+- position/generation change between preview and apply;
+- kill switch, flatten-only and unavailable authority.
 
-## 8. Promotion stages
+## Promotion stages
 
-### R0 — deterministic unit fixture
+| Stage | Requirement | Capability |
+|---|---|---|
+| R0 deterministic fixture | feature/decision/data-quality golden tests | none |
+| R1 historical replay | purged walk-forward, final OOS, costs/capacity and stability thresholds | none |
+| R2 live SHADOW | real-time complete inputs, stable latency, sufficient independent decisions and replay parity | read-only |
+| R3 PAPER proposal | separate human-reviewed runtime/config/risk/operations change | bounded PAPER if approved |
+| R4 LIVE proposal | unsupported; separate legal/operational/security/activation architecture | none today |
 
-Feature and decision golden tests pass.
+## RunSummary decision
 
-### R1 — historical replay
-
-Purged walk-forward and final OOS pass declared statistical/economic thresholds.
-
-### R2 — live SHADOW
-
-Observe real-time data without mutation. Require complete packets, stable latency, no authority/session failures and enough independent decisions across regimes.
-
-### R3 — PAPER proposal
-
-A human-reviewed change may provision bounded PAPER capability after research, risk and operations review. This document does not authorize it.
-
-### R4 — capped LIVE proposal
-
-Unsupported. Requires a separate architecture, risk, legal/operational and activation review. No current artifact implies LIVE readiness.
-
-## 9. Run output
-
-Each run writes a compact JSON summary containing manifest/source/input digests, fold boundaries, parameters, costs, metrics, reason codes and decision-stream digest. Do not generate round manifests, closure bundles, root attestations or campaign finalizer receipts.
+A compact RunSummary records validation checks as stable codes and values. Do not generate closure grades, campaign receipts, finalizer attestations or self-approving promotion artifacts.

@@ -1,8 +1,8 @@
 # Runtime observability and SLO contract
 
-Status: current
+Status: current target contract; implementation state is tracked in `development/PLAN.md`
 Applies to: Gateway, Execution Service, OMS, risk, simulator and IB PAPER
-Last verified commit: moving-main
+Verification: same-revision CI
 
 Observability is organized around trading state transitions, not obsolete build scripts. Every metric carries `environment`, `venue` and a bounded `reason_code`; account, token, credential and full strategy prompt values are never labels.
 

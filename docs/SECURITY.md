@@ -1,8 +1,8 @@
 # Security contract
 
-Status: current
+Status: current target contract; implementation state is tracked in `development/PLAN.md`
 Applies to: `HeptaTrade/`, `adapters/mcp/`, `systemd/`, `scripts/hepta_agent_*`
-Last verified commit: moving-main
+Verification: same-revision CI
 
 ## 1. Threat model
 

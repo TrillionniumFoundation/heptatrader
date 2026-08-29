@@ -1,6 +1,8 @@
-﻿# XTQMT as First-class Venue (parallel to CTP / IB)
+# XTQMT as First-class Venue (parallel to CTP / IB)
 
-Status: Stage-1 scaffold committed.
+Status: proposal
+Applies to: proposed XT/QMT venue; no active runtime capability
+Verification: same-revision CI for repository placement only
 
 ## What is done now
 

@@ -1,14 +1,14 @@
 # Agent decision snapshot and target-position contract
 
-Status: current target contract; implementation status is tracked in `PLAN.md`
-Applies to: `HeptaTrade/tools/`, `HeptaTrade/tool_host/`, `HeptaTrade/execution/`, `adapters/mcp/`
-Last verified commit: moving-main
+Status: current target contract; implementation state is tracked in `PLAN.md`
+Applies to: `HeptaTrade/intent/`, `HeptaTrade/tools/`, `HeptaTrade/tool_host/`, `HeptaTrade/execution/`, `adapters/mcp/`
+Verification: same-revision CI
 
 ## 1. Boundary
 
-An ordinary Agent expresses a desired portfolio state; it does not choose authoritative account state, current position, broker order ID, final quantity, venue route or risk result.
+An ordinary Agent expresses a desired portfolio state and execution bounds. It does not choose authoritative current position, account value, broker order ID, final quantity, venue route, reference price or risk result.
 
-The ordinary mutation path is:
+Ordinary mutation path:
 
 ```text
 decision.get_snapshot
@@ -16,7 +16,7 @@ intent.preview_target_position
 intent.apply_target_position
 ```
 
-Raw `trade.place_order` is an operator/professional-strategy interface and must not be exposed in ordinary Agent deployment profiles.
+Raw `trade.place_order` is operator-only and must be absent from ordinary Agent deployment profiles and examples.
 
 ## 2. `decision.get_snapshot`
 
@@ -26,85 +26,73 @@ Input:
 {"instrument":"EUR.USD"}
 ```
 
-The result is a single bounded object assembled by one Execution authority. It includes:
+The result is one bounded object from one Execution-owned state generation. It includes owner scope, instrument, execution epoch, fencing generation, state/event/collection watermarks, capture/freshness timestamps, quote, account, positions, active/recent orders, risk limits/usage and health.
 
-```json
-{
-  "authoritative": true,
-  "instrument": "EUR.USD",
-  "execution_service_epoch": "...",
-  "fencing_generation": 7,
-  "collection_watermark": 100,
-  "event_watermark": 98,
-  "snapshot_watermark": 100,
-  "collection_started_at_ms": 0,
-  "collection_completed_at_ms": 0,
-  "quote": {},
-  "account": {},
-  "positions": [],
-  "orders": [],
-  "risk_limits": {},
-  "health": {}
-}
-```
-
-The service captures epoch/generation/watermark values before and after collection. Any change that makes the object internally inconsistent rejects the request. `authoritative=true` is emitted only after those checks.
+A change in epoch, fence, generation or invalidating event during collection rejects the request. `authoritative=true` is emitted only after all consistency checks pass.
 
 ## 3. `intent.preview_target_position`
 
-Input fields:
+Input:
 
-| Field | Rule |
-|---|---|
-| `instrument` | server-bound canonical instrument |
-| `target_position` | finite signed target in instrument units |
-| `max_slippage_bps` | finite, non-negative and no wider than session policy |
-| `expires_at_ms` | bounded future deadline |
+```json
+{
+  "instrument": "EUR.USD",
+  "target_position": 1.0,
+  "max_slippage_bps": 5.0,
+  "expires_at_ms": 0
+}
+```
 
-The trusted service computes:
+Trusted code computes:
 
 ```text
 delta = target_position - authoritative_current_position
 ```
 
-It then derives side, absolute quantity, order shape and valuation from its snapshot. Portfolio netting and deterministic risk run in trusted code. A no-op target returns a typed no-op preview, not a zero-quantity order.
+It derives side, quantity, order shape and authoritative valuation; applies portfolio netting/budget and deterministic risk; and returns either a typed no-op, rejection or bounded plan with an opaque preview permit.
 
-Preview output includes an opaque permit binding:
+Agent input can narrow bounds but cannot provide current position, quote, account, risk usage, generation or final plan.
 
-- normalized intent and target;
-- current authoritative position;
-- execution epoch and fencing generation;
-- quote/account/position/snapshot generations;
-- risk-policy version;
+## 4. Preview permit
+
+The permit binds:
+
+- owner/session/account/execution domain;
+- normalized target and bounds;
+- execution epoch, fence and state/event watermarks;
+- authoritative current position and quote identity;
 - derived execution plan;
+- portfolio/risk-policy versions;
 - expiry and command fingerprint.
 
-## 4. `intent.apply_target_position`
+The permit is stored by Execution authority, not reconstructed from untrusted client JSON. It is single-use across command IDs and replayable only by the exact accepted command.
 
-Input contains the same normalized intent, the preview permit and a stable caller-generated command ID. Execution atomically consumes or replays the permit.
+## 5. `intent.apply_target_position`
 
-Apply fails closed when:
-
-- the permit is expired, unknown or already consumed by another command;
-- intent fields differ from the preview;
-- epoch, fencing, quote, account or position generation changed;
-- the target would violate current deterministic risk;
-- the derived reduction would cross zero under reduce-only policy;
-- journal persistence or venue authority is unavailable.
-
-A same-command retry returns the durable result. A changed request under the same command ID returns an idempotency conflict.
-
-## 5. Agent-visible versus authoritative fields
-
-Agent-visible inputs are goals and bounds. These are never accepted from Agent input as authoritative facts:
+Input contains the same normalized intent, preview permit and a stable caller-generated `command_id`. Execution atomically performs:
 
 ```text
-current position, account equity, margin, active orders,
-reference/valuation price, quote timestamp/generation,
-execution epoch/fence, broker order ID, final risk decision
+lookup permit
+-> validate owner/expiry/unconsumed state
+-> revalidate epoch/fence/generation/intent/plan
+-> rerun current deterministic safety gates
+-> persist command and permit consumption
+-> send or return durable replay
 ```
 
-## 6. Capability model
+Apply fails closed on permit expiry/absence, cross-command reuse, input mismatch, generation change, risk rejection, journal failure or unavailable venue authority.
+
+## 6. Idempotency
+
+| Case | Result |
+|---|---|
+| same command ID + same normalized request after accepted apply | durable duplicate/replay result |
+| same command ID + changed request | idempotency conflict |
+| different command ID + already consumed permit | permit-consumed rejection |
+| expired/stale generation permit | typed stale/expired rejection |
+| no-op target | typed no-op; no zero-quantity venue command |
+
+## 7. Capability profiles
 
 Recommended ordinary Agent capabilities:
 
@@ -113,23 +101,22 @@ system.read market.read account.read portfolio.read orders.read risk.read
 decision.snapshot intent.preview intent.apply trade.cancel trade.flatten events.read
 ```
 
-`operator.trade.place` is separate and absent from ordinary Agent environment examples. WATCH sessions have no mutation capability. LIVE environments remain unsupported.
+Operator raw-order authority uses a separate profile and preferably a separate local socket/identity. WATCH is read-only. LIVE remains unsupported.
 
-## 7. Result reason codes
-
-At minimum:
+## 8. Stable reason families
 
 ```text
-INTENT_NO_CHANGE
-INTENT_TARGET_INVALID
+DECISION_SNAPSHOT_*
+INTENT_POLICY_INVALID
 INTENT_TARGET_LIMIT
-INTENT_SNAPSHOT_STALE
-INTENT_GENERATION_CHANGED
+INTENT_NO_CHANGE
+INTENT_PLAN_READY
 INTENT_PREVIEW_EXPIRED
+INTENT_PREVIEW_NOT_FOUND
+INTENT_PREVIEW_CONSUMED
 INTENT_PREVIEW_MISMATCH
+INTENT_GENERATION_CHANGED
 INTENT_RISK_REJECTED
 INTENT_JOURNAL_FAILED
 INTENT_UNSUPPORTED_ENVIRONMENT
 ```
-
-Reason codes are stable machine contracts; free-form detail is diagnostic only.

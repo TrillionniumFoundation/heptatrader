@@ -1,4 +1,8 @@
-﻿# QMT -> HeptaTrader Bridge (MVP)
+# QMT -> HeptaTrader Bridge (MVP)
+
+Status: proposal
+Applies to: proposed QMT signal/bridge work; no active runtime capability
+Verification: same-revision CI for repository placement only
 
 目标：把 QMT 侧导出的篮子订单 CSV 转成 Hepta OMS v2 JSONL 事件，先打通“信号入湖”，再接执行器。
 

@@ -1,85 +1,70 @@
 # Deterministic risk model
 
-Status: current  
-Applies to: `HeptaTrade/risk/`, Simulator and IB PAPER policy authorities  
-Last verified commit: moving `main`
+Status: current
+Applies to: `HeptaTrade/risk/`, Simulator, portfolio compiler and IB PAPER policy authorities
+Verification: same-revision CI
 
-## One policy, stricter venue rules
+## One common policy, stricter venue rules
 
-`DeterministicRiskPolicy` (`deterministic-risk-v2`) is the venue-independent pre-trade core. Simulator and IB PAPER construct normalized trusted inputs and evaluate:
+`DeterministicRiskPolicy` is the venue-independent pre-trade core. A venue may add stricter security type, session, tick-size, order-shape or quote-generation rules; it may never bypass or weaken the common decision.
 
-- order-submission gate and global kill switch;
-- BUY/SELL and MKT/LMT normalization;
-- finite positive quantity and authoritative valuation price;
-- per-order quantity and notional;
-- rolling order-attempt rate and active-order budget;
-- complete portfolio snapshot and fresh quote;
-- projected gross absolute position;
-- optional net-position and per-strategy gross budgets;
-- optional daily-loss and drawdown budgets;
-- flatten-only and strict reduce-only semantics;
-- limit-price deviation from an authoritative reference.
+## Rule/source contract
 
-A venue may enforce stricter rules such as security type, DAY-only, market-vs-limit mode, tick size, session hours or quote-generation binding. It must not bypass or loosen the common decision.
+Every enabled dimension must have:
+
+```text
+field -> authoritative owner -> generation/freshness -> missing behavior -> reason code -> tests
+```
+
+| Dimension | Required authority | Missing/invalid behavior |
+|---|---|---|
+| quantity/order shape | normalized trusted plan | reject |
+| valuation/reference price | Execution-owned fresh quote | reject |
+| rate/active orders | OMS/venue projection | reject risk increase |
+| gross/net position | authoritative position snapshot | reject risk increase |
+| strategy gross/budget | portfolio compiler/budget authority | reject risk increase |
+| daily PnL/drawdown | authoritative account/PnL state | reject when rule enabled |
+| snapshot completeness | state authority generation | reject |
+| kill/submission/flatten mode | reviewed runtime policy | enforce; safe reduction separate |
+
+A rule must not be advertised as active if its source is not wired. Zero may disable an explicitly optional limit; unknown data never silently becomes zero usage.
 
 ## Strict reduction proof
 
-A trusted caller marks an order as exposure-reducing, but the risk core verifies the claim independently. One normalized order changes one instrument, so a non-crossing reduction must satisfy:
+A trusted caller may mark an order exposure-reducing, but the policy verifies that one normalized instrument order satisfies:
 
 ```text
-projected_gross + order_quantity == current_gross
 projected_gross < current_gross
+projected_gross + order_quantity == current_gross
 ```
 
-within a narrow deterministic floating-point tolerance. A `+10 -> -5` position flip produced by `SELL 15` reduces gross from 10 to 5, but `5 + 15 != 10`; it is rejected as `RISK_REDUCE_ONLY_CROSS_ZERO`.
+within a deterministic tolerance. A `+10 -> -5` flip from `SELL 15` fails because the order crosses zero and creates opposite exposure.
 
-A proven strict reduction remains available when the account is already above a cap, the entry-rate/active-order budget is exhausted, or the new-entry/kill-switch gate is closed. Order shape, finite values, maximum single-order quantity/notional and limit-price sanity still apply. Cancel and authoritative flatten remain separate safety paths.
+A proven strict reduction remains available above a cap or when entry/rate/active-order gates are closed. It still obeys finite values, maximum single-order quantity/notional and valid order shape.
 
-## Portfolio inputs
+## Evaluation order
 
-The common policy supports optional caps for:
+1. validate policy values;
+2. validate normalized side/type/quantity and finite authoritative prices;
+3. validate authoritative snapshot values and freshness;
+4. prove strict reduction if claimed;
+5. enforce kill/submission/flatten and rate/active-order gates;
+6. enforce gross/net/strategy/PnL/drawdown budgets;
+7. enforce venue-independent price band;
+8. return stable reason code and bounded detail.
 
-```text
-absolute projected net position
-per-strategy projected gross position
-daily loss
-drawdown
-```
+## Consistency with preview/apply
 
-A zero limit disables that optional dimension. Non-finite or structurally invalid portfolio values always fail closed. These fields must come from an authoritative decision snapshot; Agent-supplied values are never accepted as portfolio truth.
+Preview and apply use the same policy version and authoritative snapshot type. Apply rejects or re-previews when the bound generation changes. Agent-provided position, PnL, quote, margin, limit usage or freshness is ignored.
 
-## Stable reason codes
+## Required tests
 
-The common layer emits machine-readable `RISK_*` codes, including:
-
-```text
-RISK_GLOBAL_KILL_SWITCH_ON
-RISK_ORDER_SUBMISSION_DISABLED
-RISK_ORDER_QUANTITY_LIMIT
-RISK_ORDER_NOTIONAL_LIMIT
-RISK_ORDER_RATE_LIMIT
-RISK_ACTIVE_ORDER_LIMIT
-RISK_GROSS_POSITION_LIMIT
-RISK_NET_POSITION_LIMIT
-RISK_STRATEGY_GROSS_LIMIT
-RISK_DAILY_LOSS_LIMIT
-RISK_DRAWDOWN_LIMIT
-RISK_FLATTEN_ONLY
-RISK_REDUCE_ONLY_CROSS_ZERO
-RISK_QUOTE_STALE
-RISK_SNAPSHOT_INCOMPLETE
-RISK_PRICE_DEVIATION_LIMIT
-RISK_POSITION_SNAPSHOT_INVALID
-```
-
-IB PAPER maps shared codes to its existing `IB_PAPER_*` external contract where compatibility requires it. Free-form detail is diagnostic only.
-
-## Configuration and authority
-
-Simulator limits are explicit non-secret environment values. Invalid, zero, negative, non-finite or out-of-range mandatory limits prevent runtime startup. IB PAPER binds its reviewed limits into its authorization credential.
-
-Quote freshness and snapshot completeness are established by the Execution-owned venue/state path before policy evaluation. Agent request fields never provide `referencePrice`, current position, portfolio PnL, limit usage or freshness truth.
-
-## Tests
-
-`hepta_deterministic_risk_policy_tests` covers every common entry limit, stale/incomplete state, NaN/Inf, optional portfolio budgets, above-limit reduction escape and the cross-zero failure. Simulator E2E exercises the same policy before journal/send; IB PAPER retains venue-specific guard and broker-state tests.
+- allow, exact boundary and over-boundary for every rule;
+- NaN/Inf/negative/unknown values;
+- stale/incomplete generation;
+- above-limit account with proven safe reduction;
+- cross-zero pseudo reduction;
+- rate/active-order exhaustion during safe exit;
+- preview/apply generation change;
+- same command same payload and same command changed payload;
+- Simulator/IB PAPER parity for common decisions.

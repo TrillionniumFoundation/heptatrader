@@ -1,4 +1,8 @@
-﻿# QMT SDK 详细查阅结论（基于安装目录）
+# QMT SDK 详细查阅结论（基于安装目录）
+
+Status: proposal
+Applies to: historical local QMT SDK observations; not reproducible on current CI
+Verification: same-revision CI for repository placement only
 
 参考目录：`D:\国金证券QMT交易端\bin.x64\Lib\site-packages\xtquant`
 

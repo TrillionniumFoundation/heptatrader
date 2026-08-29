@@ -1,5 +1,9 @@
 # ADR 0001: Gateway Release symbol budget baseline
 
+Status: accepted
+Applies to: Release `hepta-tool-gatewayd` privileged-symbol boundary
+Verification: same-revision CI
+
 - **Status:** Accepted
 - **Date:** 2026-08-29
 - **Scope:** `hepta-tool-gatewayd` Release builds

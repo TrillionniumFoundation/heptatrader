@@ -1,4 +1,8 @@
-﻿# Hepta ↔ QMT(XT) 接口映射表（第一版）
+# Hepta ↔ QMT(XT) 接口映射表（第一版）
+
+Status: proposal
+Applies to: proposed XT/QMT mapping; no active runtime capability
+Verification: same-revision CI for repository placement only
 
 参考路径：`D:\国金证券QMT交易端\bin.x64\Lib\site-packages\xtquant`
 主要依据：`xttrader.py`、`xtconstant.py`

@@ -1,5 +1,7 @@
-# Security documentation moved
+# Security hardening entry point
 
-The current security and secret-handling contract is [`docs/SECURITY.md`](docs/SECURITY.md) and configuration precedence is [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+Status: current pointer
+Applies to: repository security contracts
+Verification: same-revision CI
 
-This file remains only as a compatibility pointer. It intentionally contains no references to deleted PowerShell render/check scripts.
+Canonical security, broker-network, kill-switch, reconciliation and incident contracts live under [`docs/`](docs/README.md). This root file intentionally contains no parallel checklist or release/certification process.

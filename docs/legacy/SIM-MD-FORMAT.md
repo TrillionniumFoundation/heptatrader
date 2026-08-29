@@ -1,5 +1,9 @@
 # HeptaSimulator 仿真行情标准格式（V1）
 
+Status: deprecated
+Applies to: deprecated legacy CSV simulator format
+Verification: retained for archaeology; not an active contract
+
 ## 1. 文件编码
 - UTF-8（无 BOM）
 - 换行：LF 或 CRLF 均可

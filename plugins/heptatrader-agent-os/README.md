@@ -1,6 +1,8 @@
 # HeptaTrader Agent OS plugin
 
 Status: current
+Applies to: `plugins/heptatrader-agent-os/`, installed MCP launcher metadata
+Verification: same-revision CI
 
 This plugin exposes the local HeptaTrader Tool Gateway as MCP tools. It contains no broker credential, account secret, PAPER/LIVE grant or local execution authority.
 

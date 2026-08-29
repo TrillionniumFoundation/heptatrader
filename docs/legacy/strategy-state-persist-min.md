@@ -1,4 +1,8 @@
-﻿# IB 多策略状态持久化（最小版本）
+# IB 多策略状态持久化（最小版本）
+
+Status: deprecated
+Applies to: deprecated legacy multi-strategy persistence notes
+Verification: retained for archaeology; not an active contract
 
 ## 开关
 - `HEPTA_STRATEGY_STATE_PERSIST=1`：启用策略状态持久化。

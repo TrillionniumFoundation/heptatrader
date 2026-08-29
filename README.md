@@ -1,54 +1,52 @@
 # HeptaTrader
 
-HeptaTrader is a **model-agnostic deterministic trading control and execution runtime for AI Agents**. Codex, OpenClaw and other clients may inspect authoritative state and submit bounded intents through MCP or the native client. They never own the broker session, OMS, portfolio truth, final risk decision, reconciliation or kill switch.
+HeptaTrader is a **model-agnostic deterministic trading control and execution runtime for AI agents**, with an experimental reproducible quantitative-research plane. Codex is the first supported Agent client through MCP; it never owns broker credentials, portfolio truth, final risk decisions, OMS state or venue sessions.
 
-> HeptaTrader is not an “LLM directly calls a broker API” framework. The model is replaceable; the trusted runtime is not.
+> HeptaTrader is not an “LLM directly calls a broker API” framework. Models are replaceable clients; the trusted runtime is deterministic.
 
-## Runtime truth
+## Capability truth
 
-| Capability | State | Runtime truth |
-|---|---|---|
-| Tool Gateway / typed Unix protocol | implemented | peer identity, session, capability, schema hash and bounded framing |
-| Execution Service / OMS journal | implemented | journal-before-send, stable command IDs, fencing and uncertain recovery |
-| Deterministic simulator | implemented | local end-to-end execution and failure-path testing |
-| IB PAPER | experimental | separately owned broker authority, deterministic risk, kill switch and reconciliation |
-| CTP | unsupported / fail-closed | no real transport; must return `VENUE_NOT_IMPLEMENTED` |
-| XT/QMT | unsupported / fail-closed | no real transport; no synthetic connection, ACK or local order success |
-| LIVE | unsupported | no default or certified LIVE authority |
-| Codex / OpenClaw | client adapters | no broker credential or authoritative state ownership |
-| EURUSD SHADOW | experimental research | deterministic replay/decision output only; grants no PAPER/LIVE capability |
+| Capability | State |
+|---|---|
+| Typed local Tool Gateway, native client and MCP bridge | Implemented |
+| Session/capability enforcement and bounded framing | Implemented |
+| OMS journal, stable command IDs, replay/recovery contracts | Implemented |
+| Deterministic simulator | Implemented for contract and failure-path tests |
+| Shared deterministic risk core | Implemented; authoritative portfolio wiring is being completed |
+| Decision snapshot and target-position intent | In progress |
+| IB PAPER | Experimental; external SDK/host required |
+| Research/replay | Experimental; SHADOW only |
+| CTP and XT/QMT transport | Unsupported / fail-closed |
+| LIVE mutation | Unsupported |
 
-The canonical capability table is [`docs/CAPABILITY-MATRIX.md`](docs/CAPABILITY-MATRIX.md). The canonical work plan and gap registry are [`docs/development/PLAN.md`](docs/development/PLAN.md).
+The authoritative matrix is [`docs/CAPABILITY-MATRIX.md`](docs/CAPABILITY-MATRIX.md). The single gap registry is [`docs/development/PLAN.md`](docs/development/PLAN.md).
 
 ## Authority boundary
 
 ```text
-Codex / Agent / Operator
-          |
-          | MCP / heptactl / native client
-          v
+Codex / Agent / operator
+        |
+        | bounded MCP/native tools
+        v
 Tool Gateway
-          |
-          | authenticated typed Unix protocol
-          v
+        |
+        | authenticated typed Unix protocol
+        v
 Execution Service
-          |\
-          | +-- decision snapshot / deterministic risk
-          | +-- OMS journal / idempotency / reconciliation
-          v
-Simulator or implemented broker adapter
+        |-- authoritative state / portfolio / deterministic risk
+        |-- OMS journal / idempotency / reconciliation
+        v
+Simulator or explicitly supported PAPER adapter
 ```
 
 Non-negotiable invariants:
 
-1. only Execution Service may send venue mutations;
-2. Agent and Gateway hold no broker credential and link no broker adapter;
-3. every new mutation is durable before send;
-4. an uncertain retry reuses the exact command ID and payload;
-5. session, lease, epoch and fencing state are rechecked at authority boundaries;
-6. account, position and order truth comes from venue/Execution projections;
-7. unknown identity, quote, configuration, persistence or reconciliation state fails closed;
-8. cancel, strict reduce-only and authoritative flatten remain available when safe exit is possible.
+1. only Execution Service performs venue mutation;
+2. every new mutation is durable before send;
+3. retries use the same command ID and normalized payload;
+4. unknown identity, state, quote, generation, persistence or reconciliation fails closed;
+5. safe cancel/reduce-only/flatten paths remain available when provable;
+6. research artifacts never grant runtime capability.
 
 ## Development loop
 
@@ -56,39 +54,30 @@ Non-negotiable invariants:
 ./scripts/dev_core.sh
 ```
 
-Or:
+This runs repository-truth checks, Release core build, core CTest and Python contract tests. The matching GitHub Actions workflow is read-only and never approves or merges its own PR.
+
+## Minimal simulator install
 
 ```bash
 cmake --preset core-release
-cmake --build --preset core-release
-ctest --preset core-release
-```
-
-The loop builds the IB-disabled deterministic runtime, runs core CTest and Python contract tests, and is also exercised by a read-only GitHub Actions job. It does not generate round manifests, evidence-closure bundles, host attestations or self-merging automation.
-
-## Minimal runtime install
-
-```bash
-cmake --preset core-release
-cmake --build --preset core-release
+cmake --build --preset core-release --target hepta_runtime_binaries
 cmake --install build/core-release --component runtime
 ```
-
-The runtime component contains only binaries, MCP bridge/launcher, systemd templates, sysusers/tmpfiles and example configuration. Signing, SBOM and distribution assembly are separate, on-demand release concerns.
 
 ## Repository map
 
 ```text
-HeptaTrade/       active C++ Gateway, Execution, OMS, risk, state and venue runtime
-adapters/mcp/     MCP bridge
-plugins/          Agent client metadata
+HeptaTrade/       active C++ Gateway, Execution, OMS, risk, state and simulator/PAPER runtime
+adapters/mcp/     MCP adapter
+plugins/          Agent client metadata only
+schemas/          canonical protocol/schema catalog (planned/being introduced)
 strategies/       versioned strategy definitions
-research/         machine-readable research contract and reproducibility manifest
-scripts/          bounded development/config/research utilities
-systemd/          fixed Gateway, simulator and IB PAPER service definitions
-tests/            core contract, integration and failure-path tests
-docs/             current, experimental and proposal documentation
+research/         compact research run contract
+scripts/          bounded development and runtime utilities
+systemd/          active service/socket templates and examples
+tests/            unit, contract, integration and failure-path tests
+docs/             current contracts, proposals and deprecated documentation
 legacy/           inactive historical source; active targets may not depend on it
 ```
 
-Start at [`docs/README.md`](docs/README.md). A current document must describe paths and commands that exist at the same revision; future design is labelled experimental/proposal and never advertised as implemented capability.
+Start with [`docs/PRODUCT-SCOPE.md`](docs/PRODUCT-SCOPE.md), [`docs/README.md`](docs/README.md) and the canonical plan.

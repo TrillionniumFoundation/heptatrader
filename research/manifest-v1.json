@@ -1,8 +1,15 @@
 {
   "schema": "heptatrader.research-manifest.v1",
   "mode": "shadow",
+  "run_contract": {
+    "manifest": "RunManifest",
+    "event_log": "EventLog",
+    "summary": "RunSummary",
+    "campaign_or_finalizer_required": false
+  },
   "strategy": {
     "id": "eurusd-confirmed-momentum-shadow-v2",
+    "version": "2.0.0",
     "definition": "strategies/eurusd-confirmed-momentum-shadow-v2.json",
     "implementation": "scripts/hepta_eurusd_confirmed_momentum_strategy.py",
     "context_builder": "scripts/hepta_market_context_builder.py",
@@ -10,11 +17,22 @@
   },
   "data_contract": {
     "time_zone": "UTC",
+    "calendar": "explicit_by_run",
+    "symbol_mapping": "explicit_by_run",
+    "datasets": "required_by_run_with_uri_and_sha256",
     "quote_order": "strictly_monotonic_or_exact_unchanged_repeat",
     "duplicate_policy": "reject_changed_same_timestamp",
     "missing_data_policy": "fail_closed",
-    "digest": "sha256",
     "lookahead": "forbidden"
+  },
+  "experiment": {
+    "split": "purged_walk_forward_with_embargo",
+    "folds": "required_by_run",
+    "purge_ms": "required_by_run",
+    "embargo_ms": "required_by_run",
+    "final_out_of_sample": true,
+    "parameter_search_budget": "required_by_run",
+    "deterministic_seed": 0
   },
   "cost_model": {
     "commission": "required_by_run",
@@ -24,9 +42,12 @@
     "market_impact": "required_for_capacity_claim"
   },
   "validation": {
-    "split": "purged_walk_forward_with_embargo",
-    "final_out_of_sample": true,
-    "regime_slices": ["time_of_day", "volatility", "trend", "spread"],
+    "regime_slices": [
+      "time_of_day",
+      "volatility",
+      "trend",
+      "spread"
+    ],
     "required_failure_tests": [
       "missing_quote",
       "stale_quote",
@@ -38,7 +59,8 @@
     ]
   },
   "output": {
-    "decision_schema": "hepta.strategy-decision-receipt.v1",
+    "event_schema": "heptatrader.research-event.v1",
+    "summary_schema": "heptatrader.run-summary.v1",
     "deterministic": true,
     "numeric_tolerance": 1e-12,
     "records_input_digests": true,

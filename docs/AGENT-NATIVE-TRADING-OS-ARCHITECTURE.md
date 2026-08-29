@@ -1,130 +1,97 @@
-# HeptaTrader AI-Agent Trading Runtime Architecture
+# HeptaTrader AI-Agent trading runtime architecture
 
-Status: current  
-Applies to: `HeptaTrade/`, `adapters/mcp/`, `plugins/`, `systemd/`  
-Last verified commit: moving `main`
+Status: current
+Applies to: `HeptaTrade/`, `adapters/mcp/`, `plugins/`, `research/`, `systemd/`
+Verification: same-revision CI
 
-## 1. Product boundary
+## 1. Architectural statement
 
-HeptaTrader is a model-agnostic deterministic trading control and execution runtime. Codex, OpenClaw and other agents are replaceable clients. They may query state and submit bounded intent, but they are not broker, order, portfolio or risk authorities.
+HeptaTrader is a deterministic trading runtime used by AI agents. Codex and other models are untrusted, replaceable clients. They may inspect bounded authoritative state and submit goals; they never own the broker session, account truth, OMS, final risk decision, reconciliation or kill switch.
 
-```text
-Codex / Agent / Operator
-          |
-          | MCP / heptactl / native client
-          v
-Tool Gateway
-          |
-          | authenticated typed Unix protocol
-          v
-Execution Service
-          |
-          | deterministic venue contract
-          v
-Simulator / IB PAPER
-```
+## 2. Four planes
 
-CTP and XT are scaffolds and must fail closed until a real transport, authoritative state projection and recovery contract exist. LIVE is unsupported.
+### Research plane
 
-## 2. Control-plane responsibilities
+Point-in-time inputs, deterministic feature/strategy code, replay, costs and validation. Outputs forecasts or bounded target intents. Research has no runtime capability.
 
-### Agent adapters
+### Agent plane
 
-- `adapters/mcp/hepta_mcp_server.py`
-- `plugins/heptatrader-agent-os/`
-- `HeptaTrade/client/`
-- `HeptaTrade/cli/heptactl*`
+MCP/native clients, identity-bound session and capability catalog. Ordinary Agents use decision snapshots and target-position intent. Raw orders are an operator-only surface.
 
-Responsibilities: discovery, request encoding, response parsing and bounded orchestration. They do not hold broker credentials, create venue order IDs or infer PAPER/LIVE authority.
+### Portfolio and risk plane
 
-### Tool Gateway
+Trusted target normalization, cross-strategy netting, capital budgets, authoritative valuation and deterministic risk. This plane converts desired state into an execution delta.
 
-- `HeptaTrade/tool_host/`
-- `HeptaTrade/tools/`
+### Execution plane
 
-Responsibilities: peer identity, session token, capability, environment, schema and parameter validation; forwarding to the selected Execution Service; relaying owner-scoped events. It must not link broker SDK or credential symbols.
+OMS, journal-before-send, stable command IDs, fencing, venue lifecycle, callback projection, reconciliation, kill switch and safe exits.
 
-### Execution Service
-
-- `HeptaTrade/execution/`
-- `HeptaTrade/oms_journal*`
-- `HeptaTrade/state/`
-- `HeptaTrade/risk/`
-
-The Execution Service is the only order authority. It owns:
-
-- command-id idempotency and payload conflict detection;
-- journal-before-send and durable receipts;
-- service/session/decision fencing;
-- deterministic pre-trade risk;
-- venue order lifecycle and correlation;
-- authoritative quote/order/position/account state;
-- uncertain recovery and reconciliation;
-- kill switch, cancel, reduce-only and flatten paths.
-
-### Venue adapters
-
-A venue adapter translates deterministic commands to venue protocol and venue events back to authoritative projections. It must not decide strategy, capital allocation or policy. A missing transport must return a stable unsupported error and may never synthesize a successful connection or broker ACK.
-
-## 3. Data and decision planes
-
-The runtime currently has a narrow experimental EURUSD SHADOW research path. A general AI-native quantitative system still requires explicit deterministic contracts for:
+## 3. Process boundary
 
 ```text
-point-in-time data
- -> features
- -> forecast / target exposure
- -> portfolio netting and capital allocation
- -> risk sizing
- -> order plan
- -> execution
+Agent UID                       Execution UID
+---------                       -------------
+Codex/model                     broker adapter + credential
+MCP adapter                     authoritative venue state
+Tool Gateway                    OMS journal / reconciliation
+session token                   deterministic final risk
+        |                               ^
+        +--- typed local IPC ----------+
 ```
 
-Ordinary strategy agents should converge on forecast/target/TradeIntent APIs. Raw `trade.place_order` remains an execution-level capability for explicitly authorized execution/operator sessions; it is not the preferred long-term strategy API.
+Gateway may validate identity, session, capability, schema and request bounds. It cannot link a broker adapter or send a venue mutation. Execution revalidates authority before every mutation.
 
-## 4. Mutation invariant
+## 4. Trusted state flow
 
 ```text
-Agent intent
- -> peer/session/capability validation
- -> normalized request and snapshot binding
- -> deterministic risk
- -> execution permit and command ID
- -> durable journal
- -> venue send
- -> execution event projection
- -> authoritative reconciliation
+venue event
+-> adapter normalization
+-> authoritative state generation
+-> OMS/reconciliation projection
+-> decision snapshot
+-> intent/portfolio/risk evaluation
+-> durable command
+-> venue send
 ```
 
-Required invariants:
+Free-form model text never enters the trusted state machine. Only typed, bounded fields cross the Agent boundary.
 
-1. Only Execution Service sends to a venue.
-2. Agent/Gateway never owns broker credential or broker session.
-3. Every risk-increasing mutation is durable before external send.
-4. An uncertain retry reuses the exact command ID and payload.
-5. Expired/fenced session, owner or lease cannot increase risk.
-6. Venue/Execution projection is authoritative for orders and positions.
-7. Unknown identity, protocol, quote, config, persistence or kill-switch state fails closed.
-8. Cancel, reduce-only and flatten remain available whenever they can safely reduce risk.
+## 5. Mutation lifecycle
 
-## 5. Snapshot and event model
+```text
+validate identity/session/capability
+-> obtain generation-consistent snapshot
+-> normalize target and derive plan
+-> deterministic risk
+-> issue/bind preview permit
+-> apply revalidation
+-> append durable command
+-> send venue mutation
+-> project callback/fill/reject
+-> reconcile uncertain outcomes
+```
 
-Agent decisions should bind to a single Execution-owned snapshot identity containing service epoch, fencing generation and collection watermark. Tool discovery and descriptor metadata are session control-plane data and should be cached rather than rebuilt for every market sample. Incremental state changes should use the bounded event feed instead of repeated full polling.
+Same-command retries return the durable outcome. A changed payload under the same ID is rejected. A lost/uncertain response is resolved through command status and authoritative reconciliation, not a new order.
 
-## 6. Supported modes
+## 6. Failure policy
 
-### Simulator
+Risk increase fails closed on unknown identity, missing config, stale quote, incomplete account/position/order state, generation change, persistence failure, disconnected authority, unsupported venue or reconciliation break. Safe cancel/strict reduction/flatten remains independently available when provable.
 
-`hepta-executiond` provides a deterministic process-local venue for contract, recovery and fault tests. It is not proof of IB/CTP/XT venue parity.
+## 7. Deployment boundary
 
-### IB PAPER
+- minimal install contains simulator runtime, Gateway, MCP adapter, CLI and active service templates;
+- IB PAPER is an explicit optional build/install path;
+- CTP, XT/QMT and LIVE are not activated by examples or config;
+- mutually untrusted Agents use separate OS identities, sockets, tokens and capabilities;
+- only broker-owning Execution UID has broker network reachability.
 
-`hepta-ib-executiond` is the broker-owning PAPER authority when built with the IB SDK. It runs under a separate OS identity with credential isolation, journal, quote/state projection, hard risk limits, kill switch and reconciliation.
+## 8. Scale path
 
-### LIVE
+Scale proceeds in this order:
 
-LIVE is unsupported. A future LIVE path must reuse the same Execution authority, journal, fencing, risk and reconciliation contracts; no Agent or legacy monolith bypass is allowed.
-
-## 7. Development and release boundary
-
-`./scripts/dev_core.sh` and the minimal GitHub workflow protect runtime correctness and authority boundaries. Packaging signatures, SBOM, host compliance and formal release evidence are separate on-demand concerns and must not become ordinary strategy iteration gates.
+1. deterministic single-Agent Simulator closure;
+2. generation-consistent intent/permit closure;
+3. IB PAPER parity and soak;
+4. portfolio compiler and multi-strategy budgets;
+5. multi-Agent lifecycle/evaluation;
+6. separately reviewed LIVE architecture, if ever pursued.

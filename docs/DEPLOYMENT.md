@@ -1,8 +1,8 @@
 # Minimal runtime deployment
 
-Status: current  
-Applies to: `cmake/RuntimeInstall.cmake`, `systemd/`, `sysusers.d/`, `tmpfiles.d/`  
-Last verified commit: moving `main`
+Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Applies to: `cmake/RuntimeInstall.cmake`, `systemd/`, `sysusers.d/`, `tmpfiles.d/`
+Verification: same-revision CI
 
 The repository provides one small `runtime` install component. It assembles the deterministic Simulator/Gateway path and MCP client adapter without restoring release bundles, evidence closure or host certification.
 

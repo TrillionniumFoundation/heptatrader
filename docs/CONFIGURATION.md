@@ -1,74 +1,64 @@
 # Runtime configuration
 
-Status: current  
-Applies to: `scripts/resolve_hepta_config.py`, runtime environment files  
-Last verified commit: moving `main`
+Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Applies to: `scripts/resolve_hepta_config.py`, `systemd/*.env.example`, runtime config parsers
+Verification: same-revision CI
+
+## Supported profiles
+
+Only two profiles are accepted:
+
+```text
+sim
+paper
+```
+
+`live` is unsupported and must be rejected by CLI, environment and XML/config parsing. A broker account string never selects a profile. PAPER requires an explicit reviewed configuration and separate authorization credential.
 
 ## Single source rule
 
-Use one canonical configuration source:
+Configuration source precedence is explicit:
 
 ```text
 --config
 HEPTA_CONFIG_PATH
-HEPTA_TRADER_CONFIG_PATH   (legacy compatibility only)
+HEPTA_TRADER_CONFIG_PATH   (deprecated compatibility alias)
 ```
 
-If more than one source is present, all paths must resolve to the same file. Relative paths are resolved from `--project-root`, not from a hard-coded user workspace.
-
-Preferred production invocation:
-
-```bash
-python3 scripts/resolve_hepta_config.py \
-  --project-root "$PWD" \
-  --config /etc/heptatrader/runtime.xml \
-  --profile paper \
-  --format env
-```
+If multiple sources are present they must resolve to the same file. Relative paths resolve from `--project-root`; no user workspace, build directory or legacy `Tools/` scan is allowed.
 
 ## Profile lock
 
-Supported profiles are `sim`, `paper`, and `live`. Resolution order:
+Resolution order:
 
-1. `--profile`
-2. `HEPTA_PROFILE`
-3. `<Runtime Profile="..."/>`
-4. `IBServer.Mode=IB` plus a `DU*` account implies `paper`
-5. another `IBServer.Mode=IB` account implies `live`
-6. otherwise `sim`
+1. `--profile`;
+2. `HEPTA_PROFILE`;
+3. explicit profile in the selected config;
+4. otherwise `sim`.
 
-An explicit/environment profile that disagrees with the XML fails closed.
+Any disagreement fails closed. Broker mode/account fields do not infer `paper` or `live`.
 
-## Production restrictions
+## PAPER restrictions
 
-For `paper` or `live`:
+For `paper`:
 
-- the config path must be explicit;
-- `*.example` is forbidden;
-- an implicit search through build trees, `Tools/` or user workspaces is forbidden;
-- secrets must not be committed to the repository.
-
-The repository keeps examples only. Target deployment should inject credentials through systemd credentials, a secret manager or a root-owned private file appropriate to the concrete runtime.
+- config path is explicit and non-template;
+- account, host, port, client ID and hard limits are validated by the PAPER profile;
+- broker credential and activation material are injected by deployment authority, not stored in repository config;
+- missing or conflicting authorization, quote, state or kill-switch inputs prevent risk increase.
 
 ## Fingerprint
 
-The resolver emits:
+The resolver emits canonical path, profile, SHA-256 and source provenance. A fingerprint identifies input bytes; it does not grant mutation capability.
+
+## Examples
+
+Active examples are purpose-specific:
 
 ```text
-config_path
-profile
-sha256
-sources.config
-sources.profile
-is_example
+systemd/hepta-execution-simulator.env.example
+systemd/hepta-tool-gateway.env.example
+systemd/hepta-agent-trust-domain.json.example
 ```
 
-The fingerprint identifies the exact input but does not itself grant PAPER/LIVE authority. Final authority remains a property of the running Gateway/Execution session, credentials and deterministic risk policy.
-
-## Tests
-
-```bash
-python3 -m unittest discover -s tests/python -p 'test_*.py'
-```
-
-The tests cover conflicting sources, identical aliases, profile mismatch, production template rejection, implicit production rejection and repository-relative defaults.
+IB PAPER examples are installed only by an explicit PAPER component. Historical CTP/XT/Windows examples belong under `legacy/` and are never part of the minimal runtime install.

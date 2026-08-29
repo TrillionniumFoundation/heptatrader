@@ -1,218 +1,212 @@
 # HeptaTrader canonical development plan
 
 Status: current
-Applies to: active runtime, Agent contracts, research/replay and repository development loop
-Last verified base: `4e62a27ba1d2ba1cdadd810ae6533af90352a2b1`
+Authority: this is the single canonical gap registry and implementation sequence
+Applies to: active runtime, Agent contracts, portfolio/risk, research/replay, deployment and CI
+Verification: same-revision CI; baseline audited at `e3cb6afe018024af543031c2d6c83322a1237300`
 
 ## 1. Product truth
 
-HeptaTrader is a model-agnostic, local-first trading control and execution runtime for AI Agents. Codex, OpenClaw and other clients may inspect authoritative state and submit bounded intents. They are never the broker authority, portfolio truth, final risk authority or OMS owner.
+HeptaTrader is a **model-agnostic deterministic trading control and execution runtime for AI agents**, plus a reproducible quantitative-research plane. Codex is the first supported Agent client, not the broker authority or a required runtime dependency.
 
-The project optimizes for two outcomes:
+The product has four planes:
 
-1. safe and deterministic conversion of an Agent intent into an execution result;
-2. fast, reproducible strategy research whose output can be replayed and independently evaluated.
+1. **Research plane** — point-in-time data, deterministic features, experiments, costs, replay and validation.
+2. **Agent plane** — bounded forecasts and target-position intents through MCP/native clients.
+3. **Portfolio and risk plane** — netting, capital budgets, authoritative snapshots and deterministic policy.
+4. **Execution plane** — OMS, journal-before-send, idempotency, reconciliation, venue adapters and safe exits.
 
-The project does **not** optimize for release ceremony, round/evidence closure, campaign finalizers, self-merging automation or documentation volume.
+Current implementation is strongest in the execution plane. The work below closes the remaining gaps without advertising unsupported LIVE, CTP or XT/QMT capability.
 
-## 2. Non-negotiable runtime invariants
+## 2. Explicit non-goals
+
+The repository does not optimize for:
+
+- release rounds, closure grades or evidence-bundle ceremony;
+- campaign opener/renewer/finalizer workflows;
+- self-approving or self-merging automation;
+- Agent possession of broker credentials or raw venue state;
+- automatic SHADOW-to-PAPER/LIVE promotion;
+- universal latency claims without same-fixture measurements.
+
+A new process, receipt or durable state is justified only when it prevents a named trading failure that cannot be prevented more simply.
+
+## 3. Non-negotiable runtime invariants
 
 1. Only Execution Service may perform venue mutations.
 2. Agent, MCP bridge and Tool Gateway hold no broker credentials and link no broker adapter.
 3. Every new mutation is durably journaled before venue send.
-4. Retries reuse the exact command ID; changed payload under the same ID is rejected.
-5. Session, decision lease, execution epoch and fencing generation are checked at the authority boundary.
-6. Orders, positions, cash and account state come from authoritative venue/Execution projections.
-7. Unknown identity, configuration, quote, persistence or reconciliation state fails closed.
-8. Cancel, reduce-only and authoritative flatten remain available when safe exit is possible.
-9. CTP and XT/QMT report `VENUE_NOT_IMPLEMENTED` until real transport and lifecycle tests exist.
-10. LIVE is unsupported until a separately reviewed activation change explicitly enables it.
+4. A retry reuses the exact command ID and normalized payload; changed payload is an idempotency conflict.
+5. Session, decision lease, execution epoch and fencing generation are checked at authority boundaries.
+6. Orders, positions, cash, PnL, risk usage and account state come from authoritative Execution/venue projections.
+7. Unknown identity, configuration, quote, persistence, generation or reconciliation state fails closed.
+8. Cancel, strict reduce-only and authoritative flatten remain available whenever a safe exit can be proved.
+9. Unsupported adapters return a typed unsupported result and never synthetic connection, ACK, order or fill success.
+10. LIVE configuration, capability and mutation remain absent until a separate reviewed activation change.
 
-## 3. Architecture target
+## 4. Target architecture
 
 ```text
-Agent model / operator
+Point-in-time data -> research/replay -> forecast/target intent
+                                           |
+Codex / Agent / operator ------------------+
         |
-        | bounded forecast or target-position intent
+        | MCP/native typed contract
         v
-Agent adapter (MCP/native)
+Tool Gateway: identity, session, capability, schema and bounds
         |
-        | typed schema + stable command id
-        v
-Tool Gateway
-        |
-        | identity/session/capability enforcement
         v
 Execution Service
-        |\
-        | +-- decision snapshot / portfolio netting / deterministic risk
-        | +-- OMS journal / idempotency / recovery / reconciliation
+        |-- authoritative state + generation-consistent decision snapshot
+        |-- portfolio netting + capital/risk budget
+        |-- deterministic risk + preview permit authority
+        |-- OMS journal + idempotency + uncertain recovery
+        |-- metrics + reason codes + reconciliation
         v
-Simulator or implemented broker adapter
+Simulator or explicitly supported PAPER adapter
 ```
 
-The dependency direction is one-way:
+Dependency direction is one-way:
 
 ```text
-agent adapters -> intent contracts -> portfolio/risk -> execution -> venue
-venue events -> OMS/reconciliation -> authoritative state -> read tools
+agent adapters -> intent -> portfolio/risk -> execution -> venue
+venue events -> OMS/reconcile -> authoritative state -> reads/snapshots
+research artifacts -> reviewed intent inputs only; never runtime capability
 ```
 
 No active target may depend on `legacy/`.
 
-## 4. Gap registry
+## 5. Canonical gap registry
 
-The table is the only canonical gap list. A gap closes only when its acceptance evidence is present at the same commit.
+Allowed states are `planned`, `in progress`, `blocked` and `closed`. A gap closes only when implementation, negative tests, documentation and same-head CI evidence agree.
 
-| ID | Gap | Priority | Acceptance evidence | State |
+| ID | Gap | P | Required closure evidence | State |
 |---|---|---:|---|---|
-| G-001 | Root/current documentation can contradict code | P0 | canonical docs index, link/path integrity test, current/experimental/deprecated labels | in progress |
-| G-002 | Active root still exposes historical build switches or source surfaces | P0 | active CMake has no legacy build switch; inactive monolith assets live under `legacy/`; dependency check | in progress |
-| G-003 | CTP/XT scaffolds can be mistaken for usable venues | P0 | fail-closed implementations, capability matrix and tests | foundation complete |
-| G-004 | Risk core lacks complete reduce-only, freshness and portfolio-budget semantics | P0 | deterministic risk policy and table-driven/property tests | in progress |
-| G-005 | Ordinary Agent API is raw-order-centric | P0 | decision snapshot plus target-position preview/apply tools; raw place authority reserved for operator profile | in progress |
-| G-006 | State reads used by decisions are not explicitly generation-consistent | P0 | one decision snapshot binds execution epoch, fencing generation and collection/event watermarks | in progress |
-| G-007 | Research pipeline is encoded as campaign/receipt ceremony | P1 | one research manifest, deterministic replay command and compact strategy contract | in progress |
-| G-008 | Minimal runtime build and install are not continuously verified | P0 | bounded CI runs build, CTest, Python tests and install smoke; no write permission or self-merge | foundation complete |
-| G-009 | Observability is based on obsolete scripts rather than execution semantics | P1 | runtime metric/SLO contract covering decision, journal, send, callback and reconcile paths | in progress |
-| G-010 | Large modules and duplicate schemas slow development | P1 | generated/schema-single-source proposal plus bounded module ownership map; incremental refactors only | planned |
-| G-011 | Strategy validation lacks leakage, walk-forward, cost and capacity gates | P1 | research validation contract and machine-readable manifest fields | in progress |
-| G-012 | LIVE states appear more mature than actual capability | P0 | capability matrix, configuration and tool exposure all mark LIVE unsupported | in progress |
+| G-001 | Repository and current documentation can contradict code | P0 | canonical index; all current local links/commands/headers checked; exact capability claims | in progress |
+| G-002 | Historical monolith surfaces remain discoverable as active product paths | P0 | inactive sources under `legacy/`; active dependency check; no legacy build switch | in progress |
+| G-003 | CTP/XT scaffolds can be mistaken for usable venues | P0 | typed fail-closed adapters and negative tests; proposals separated from current docs | in progress |
+| G-004 | LIVE/profile truth is inconsistent across config, tools and examples | P0 | only `sim` and `paper` accepted; no account-string mode inference; no LIVE tool environment; clean examples | in progress |
+| G-005 | Risk rules are ahead of their authoritative data sources | P0 | each enabled rule maps to a snapshot field/source/generation; missing fields fail closed; Simulator and IB PAPER use common policy | in progress |
+| G-006 | Ordinary Agent API remains raw-order-centric | P0 | ordinary profile exposes snapshot and target-position preview/apply; raw place is operator-only and absent from Agent examples | in progress |
+| G-007 | Decision state is assembled from loosely parsed JSON instead of one typed generation | P0 | typed snapshot; epoch/fence/generation/watermark consistency; stale/incomplete negative tests | in progress |
+| G-008 | Preview permits lack a complete authoritative lifecycle | P0 | server-issued opaque permit; expiry/generation binding; atomic consume; same-command replay; cross-command rejection | planned |
+| G-009 | Research runtime still contains campaign/custodian/finalizer ceremony | P0 | canonical `RunManifest`, append-only `EventLog` and `RunSummary`; no campaign/lease/finalizer dependency in current path | in progress |
+| G-010 | Strategy validation is mostly narrative rather than executable | P1 | deterministic replay command; data digests; purged walk-forward; explicit costs/capacity/regime output; parity tests | in progress |
+| G-011 | No portfolio compiler, cross-strategy netting or capital budget authority | P1 | typed strategy intents -> netted portfolio target; deterministic budget decisions and tests | planned |
+| G-012 | Observability contract is not fully implemented in runtime | P1 | bounded counters/gauges/latencies at risk, journal, send, callback and reconcile transitions; no sensitive labels | planned |
+| G-013 | Tool, protocol and result schemas are duplicated in C++ and Python | P1 | one canonical schema catalog; generated/validated bindings; drift test | planned |
+| G-014 | Large modules and script-shaped libraries slow safe iteration | P1 | ownership map; thin CLI entry points; targeted extraction without changing authority | planned |
+| G-015 | CI lacks complete fault, replay and optional reliability lanes | P1 | fast PR lane plus optional sanitizers/fuzz/crash/replay/performance lanes; read-only permissions | in progress |
+| G-016 | Install tree can expose stale or unsupported deployment surfaces | P0 | minimal simulator/Agent install; PAPER only when explicitly built; no stale XML/CTP/LIVE examples; install smoke | in progress |
 
-Allowed states are `planned`, `in progress`, `blocked` and `closed`. Avoid invented closure grades, round numbers or evidence bundles.
-
-## 5. Workstreams
+## 6. Workstreams and acceptance contracts
 
 ### W1 — Repository and documentation truth
 
 Deliverables:
 
-- one root README describing actual capability;
-- one canonical docs index;
-- this plan and a compact architecture/contract/test set;
-- stale command/path checker;
-- historical and proposal documents separated from current contracts.
+- root README and capability matrix describe the same product truth;
+- every current document has `Status`, `Applies to` and `Verification` metadata;
+- proposals live under `docs/proposals/`; historical material lives under `docs/legacy/` or `legacy/`;
+- repository integrity checks all current documents, local links, commands and forbidden capability tokens.
 
-Exit criteria:
+Exit command:
 
-- every current document references existing paths;
-- no current document mentions deleted release gates, PowerShell scripts, campaign finalizers or nonexistent runbooks;
-- capability claims match build targets and adapters.
+```bash
+python3 scripts/check_repository_integrity.py
+```
 
-### W2 — Deterministic risk and portfolio boundary
-
-Deliverables:
-
-- finite-value validation;
-- per-order quantity/notional and price-band controls;
-- rolling order-rate and active-order limits;
-- quote freshness and state-generation checks;
-- gross/net/strategy budget inputs;
-- strict reduce-only that cannot cross through zero;
-- deterministic reason codes and explainable decision output.
-
-Exit criteria:
-
-- Simulator and IB PAPER use the same policy object;
-- every reject branch has a test;
-- safe reduction remains available above a limit, but cannot flip exposure.
-
-### W3 — Agent intent contract
-
-Ordinary Agent sessions receive:
-
-- `decision.get_snapshot`;
-- `intent.preview_target_position`;
-- `intent.apply_target_position`;
-- read, event, cancel and authoritative flatten tools allowed by capability.
-
-Raw order placement is reserved for an explicitly separate operator capability and is never exposed by ordinary Agent deployment examples.
-
-Exit criteria:
-
-- target delta, side, quantity and order shape are derived in trusted code from an authoritative snapshot;
-- preview permit binds target, snapshot generations, risk-policy version and expiry;
-- apply consumes the permit or replays the same durable command;
-- stale or changed generations fail closed.
-
-### W4 — Authoritative decision snapshot
-
-A decision snapshot is one bounded JSON object containing:
-
-- account summary and positions;
-- active/recent orders;
-- normalized quote for the requested instrument;
-- risk limits;
-- health/recovery state;
-- execution service epoch and fencing generation;
-- collection, event and snapshot watermarks;
-- observed/completed timestamps and freshness status.
-
-Exit criteria:
-
-- all components are collected from one Execution authority;
-- generation or epoch changes during collection reject the snapshot;
-- Agent cannot provide or widen any authoritative field.
-
-### W5 — Research and replay
+### W2 — Configuration and deployment truth
 
 Deliverables:
 
-- `research/manifest-v1.json` declaring datasets, strategy implementation, parameters, costs and unsupported promotion modes;
-- deterministic replay output with input digest and code revision;
-- leakage, walk-forward, cost, capacity and regime checks;
-- SHADOW output separated from PAPER/LIVE authorization.
+- runtime profiles: `sim`, `paper`; LIVE is rejected as unsupported;
+- no profile is inferred from account text;
+- simulator and PAPER examples are separate and minimal;
+- credentials are injected only by deployment authority;
+- unsupported venue examples are not installed.
 
-Exit criteria:
+### W3 — Authoritative state, portfolio and deterministic risk
 
-- research can run without root custody/campaign/finalizer machinery;
-- the same manifest reproduces the same decision stream within declared numeric tolerance;
-- no research artifact grants runtime capability.
+Each enabled risk dimension must document and implement:
 
-### W6 — Bounded development loop
+```text
+field -> authority -> generation -> freshness -> missing behavior -> reason code
+```
 
-Required PR checks:
+Required dimensions are order quantity/notional, rolling rate, active orders, gross/net position, strategy budget, daily loss, drawdown, quote freshness, snapshot completeness and strict no-cross-zero reduction.
 
-1. syntax/config validation;
-2. Release core build with IB disabled;
-3. core CTest;
-4. Python contract tests;
-5. minimal runtime install smoke;
-6. documentation/path and active-to-legacy dependency checks.
+### W4 — Agent intent and permit authority
 
-Nightly or optional checks may add sanitizers, fuzzing, long replay and fault injection. They must not be disguised as ordinary source-development prerequisites.
+Ordinary Agent tools:
 
-CI has read-only repository permission. It never approves or merges its own PR.
+```text
+decision.get_snapshot
+intent.preview_target_position
+intent.apply_target_position
+account/portfolio/orders/risk reads
+events.wait
+trade.cancel_order
+risk.preview_flatten / trade.flatten_position when supported
+```
 
-## 6. Performance budgets
+Raw order placement belongs to a separately provisioned operator profile. Preview/apply must use server-derived position, price, quantity, risk and generation fields.
 
-Correctness comes first, but every hot path must record a monotonic duration for:
+### W5 — Research and strategy validation
 
-- market event -> authoritative quote projection;
-- intent receipt -> decision snapshot complete;
-- snapshot -> deterministic risk decision;
+The current research path is capability-free and uses only:
+
+```text
+RunManifest -> deterministic EventLog -> RunSummary
+```
+
+A run records source revision, strategy/config/data digests, calendar/session semantics, fold boundaries, costs, capacity assumptions, decisions, metrics, failures and output digest. No research artifact contains a runtime token, preview permit or promotion grant.
+
+### W6 — Runtime observability and reliability
+
+Required transition timing:
+
+- market event -> authoritative projection;
+- intent receipt -> decision snapshot;
+- snapshot -> risk decision;
 - accepted command -> journal durable;
 - journal durable -> venue send;
 - venue callback -> OMS projection;
-- reconnect -> authoritative reconciliation complete.
+- reconnect -> reconciliation complete.
 
-Initial regression budgets are expressed as relative baselines, not unsupported universal latency claims. A change fails when p99 regresses by more than 20% on the same fixture without an accepted explanation.
+Same-fixture p99 regression budget is initially 20%; correctness and fail-closed behavior take precedence.
 
-## 7. Definition of done
+### W7 — Schema and module discipline
 
-A work item is done only when all applicable statements are true:
+- canonical wire/schema definitions have one source of truth;
+- C++/Python/MCP bindings are generated or mechanically validated;
+- command-line scripts remain thin;
+- large-file extraction is incremental and covered by parity tests.
 
-- implementation and documentation agree;
+## 7. Implementation sequence
+
+1. Close W1/W2 truth gaps before adding capability.
+2. Close state/risk/intent/permit gaps on Simulator with full negative tests.
+3. Apply the same contracts to IB PAPER without weakening them.
+4. Replace current research campaign machinery with the compact run protocol.
+5. Add portfolio netting/capital budgets and executable validation.
+6. Instrument observability, fault lanes and schema drift checks.
+7. Mark the PR ready only after the exact head passes the bounded core workflow and temporary diagnostics are removed.
+
+## 8. Definition of done
+
+A gap is `closed` only when all applicable statements are true:
+
+- implementation and current documentation agree at the same revision;
 - negative and failure-path tests exist;
-- no unsupported venue or LIVE capability is advertised;
-- no Agent-controlled field is treated as authoritative market/account state;
-- idempotency and crash/retry behavior are defined;
-- observability exposes a stable reason code;
-- the exact branch head passes bounded CI;
-- no temporary self-removing or self-merging workflow remains.
+- unsupported venue/LIVE capability is neither accepted nor advertised;
+- Agent-controlled fields are never treated as authoritative market/account/risk state;
+- idempotency, crash/retry, expiry and reconciliation behavior are defined;
+- stable machine reason codes and bounded observability exist;
+- no active dependency points to `legacy/`;
+- exact-head PR CI passes with read-only repository permission;
+- no temporary source snapshot, finalizer, self-approval or self-merge workflow remains.
 
-## 8. Change discipline
+## 9. Change discipline
 
-Prefer small deterministic contracts over orchestration frameworks. Add a state, receipt or process only when it prevents a concrete trading failure that cannot be prevented more simply. Every new component must name its authority, inputs, durable state, failure mode, timeout and owner.
-
-Documentation is an executable contract, not a certification narrative. When code changes, update the nearest canonical document and tests in the same commit.
+Prefer a small deterministic state machine over orchestration. Every new component must name its authority, inputs, durable state, failure mode, timeout and owner. Every removed component must have no remaining runtime, test, documentation or install dependency.
