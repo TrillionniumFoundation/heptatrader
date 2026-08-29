@@ -6,7 +6,10 @@ function(hepta_register_core_test target)
     target_include_directories(${target} PRIVATE
         ../HeptaTrade
         ../HeptaTrade/adapter_ib)
-    target_compile_features(${target} PRIVATE cxx_std_11)
+    set_target_properties(${target} PROPERTIES
+        CXX_STANDARD 11
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES LABELS "core")
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
@@ -141,7 +144,3 @@ hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS})
-# Compatibility alias for existing developer commands; the target now means
-# exactly the fast core suite, not release certification.
-add_custom_target(hepta_agent_os_test_binaries
-    DEPENDS hepta_core_test_binaries)
