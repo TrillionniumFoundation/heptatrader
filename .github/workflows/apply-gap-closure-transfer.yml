@@ -1,0 +1,91 @@
+name: apply-gap-closure-transfer
+
+on:
+  push:
+    branches: [codex/patch-transfer-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-gap-closure-transfer
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout transfer branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev python3
+
+      - name: Validate transfer patch
+        run: |
+          set -euo pipefail
+          test -s gap-closure-transfer.patch
+          grep -F 'diff --git ' gap-closure-transfer.patch >/dev/null
+          git apply --check gap-closure-transfer.patch
+
+      - name: Apply to exact candidate branch
+        run: |
+          set -euo pipefail
+          git fetch origin codex/close-all-runtime-gaps
+          git checkout -B codex/close-all-runtime-gaps \
+            origin/codex/close-all-runtime-gaps
+          git apply --index ../heptatrader/gap-closure-transfer.patch 2>/dev/null || \
+            git apply --index "$GITHUB_WORKSPACE/gap-closure-transfer.patch"
+          git diff --cached --check
+
+      - name: Verify remaining blocker closure
+        run: |
+          set -euo pipefail
+          git grep -n 'decision.get_snapshot' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'intent.preview_target_position' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'intent.apply_target_position' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'operator.trade.place' -- HeptaTrade tests docs systemd
+          git grep -n -E \
+            'collection_watermark|event_watermark|snapshot_watermark' \
+            -- HeptaTrade tests
+          git grep -n -E \
+            '(decisionGetSnapshot|decision_get_snapshot)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          git grep -n -E \
+            '(intentPreviewTargetPosition|intent_preview_target_position)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          git grep -n -E \
+            '(applyTargetPosition|intent_apply_target_position)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          test -d legacy
+          for path in HeptaSimulator HeptaStrategy Interface Tools doc \
+              HeptaTrader.sln HeptaTrader_Linux.sln; do
+            test ! -e "$path"
+          done
+          test -f research/manifest-v1.json
+          python3 -m json.tool research/manifest-v1.json >/dev/null
+
+      - name: Build and test exact patched tree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: '2'
+        run: ./scripts/dev_core.sh
+
+      - name: Commit and push exact patched tree
+        run: |
+          set -euo pipefail
+          git config user.name 'heptatrader-gap-closure-bot'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: close remaining Agent runtime gaps'
+          git push origin HEAD:codex/close-all-runtime-gaps
