@@ -71,6 +71,8 @@ TEXT_SUFFIXES = frozenset({
     ".c", ".cc", ".cpp", ".h", ".hpp", ".py", ".cmake", ".json",
     ".yml", ".yaml", ".service", ".socket", ".in", ".conf",
 })
+CPP_SUFFIXES = frozenset({".c", ".cc", ".cpp", ".h", ".hpp"})
+BUILD_SUFFIXES = frozenset({".cmake", ".in"})
 
 
 def _text(path: Path) -> str:
@@ -109,6 +111,33 @@ def _active_text_files() -> list[Path]:
     return result
 
 
+def _has_active_legacy_dependency(path: Path) -> bool:
+    """Detect executable/build references, not prose such as legacy/fake."""
+    text = _text(path).replace("\\", "/")
+    if path.suffix in CPP_SUFFIXES:
+        return any(
+            "legacy/" in line
+            for line in text.splitlines()
+            if re.match(r"^\s*#\s*include\s*[<\"]", line)
+        )
+
+    if path.name == "CMakeLists.txt" or path.suffix in BUILD_SUFFIXES:
+        for line in text.splitlines():
+            code = line.split("#", 1)[0]
+            if re.search(r"(?:^|[\s\"'({=;/])(?:\.\./|\./)*legacy/", code):
+                return True
+        return False
+
+    # Runtime/deployment references are meaningful only as a path token. This
+    # avoids treating ordinary prose like "legacy/fake wrappers" as a build
+    # dependency while still catching command/config paths.
+    for line in text.splitlines():
+        code = line.split("#", 1)[0]
+        if re.search(r"(?:^|[\s\"'({=])(?:\.\./|\./|/)*legacy/", code):
+            return True
+    return False
+
+
 def validate() -> list[str]:
     errors: list[str] = []
 
@@ -134,12 +163,12 @@ def validate() -> list[str]:
                 errors.append(f"{relative}: stale legacy build token: {token}")
 
     for path in _active_text_files():
-        if "legacy/" in _text(path).replace("\\", "/"):
+        if _has_active_legacy_dependency(path):
             errors.append(
                 f"{path.relative_to(ROOT)}: active runtime depends on legacy/")
 
     workflows = ROOT / ".github" / "workflows"
-    if (workflows.exists()):
+    if workflows.exists():
         if (workflows / "finalize-remaining-gaps.yml").exists():
             errors.append("self-merging finalizer workflow is present")
         for path in workflows.glob("*.y*ml"):
