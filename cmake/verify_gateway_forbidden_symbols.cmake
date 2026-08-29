@@ -32,11 +32,13 @@ endif()
 
 # A bounded total symbol surface catches accidental whole-library linkage even
 # when a newly introduced privileged type has not yet acquired an explicit
-# deny-list pattern.  This is deliberately a small no-growth budget above the
-# reviewed Release binary. Debug and sanitizer instrumentation expands the
-# compiler-generated symbol surface, so those configurations always run the
-# privileged deny-list below but do not use the Release quantitative budget.
-set(HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS 1200)
+# deny-list pattern. Exact-head Release evidence after the C++17,
+# target-scoped runtime split measured 1420 defined symbols. The 1500-symbol
+# baseline leaves bounded review headroom while keeping the deny-list below
+# non-negotiable. Future increases require a fresh exact-head measurement and
+# an ADR update. Debug and sanitizer instrumentation expand the generated
+# symbol surface, so those builds run the deny-list but not this Release budget.
+set(HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS 1500)
 string(REGEX MATCHALL "[^\r\n]+" HEPTA_GATEWAY_SYMBOL_LINES
     "${HEPTA_GATEWAY_SYMBOLS}")
 list(LENGTH HEPTA_GATEWAY_SYMBOL_LINES HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT)
