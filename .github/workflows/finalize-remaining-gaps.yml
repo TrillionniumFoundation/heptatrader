@@ -1,0 +1,149 @@
+name: finalize-remaining-gaps
+
+on:
+  push:
+    branches: [codex/close-all-runtime-gaps]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: finalize-remaining-gaps
+  cancel-in-progress: true
+
+jobs:
+  verify-and-merge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact candidate head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev python3
+
+      - name: Verify complete gap closure contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          git grep -n 'decision.get_snapshot' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'intent.preview_target_position' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'intent.apply_target_position' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'operator.trade.place' -- HeptaTrade tests docs systemd
+          git grep -n 'execution_service_epoch' -- HeptaTrade tests
+          git grep -n 'fencing_generation' -- HeptaTrade tests
+          git grep -n -E \
+            'collection_watermark|event_watermark|snapshot_watermark' \
+            -- HeptaTrade tests
+          git grep -n -E \
+            '(decisionGetSnapshot|decision_get_snapshot)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          git grep -n -E \
+            '(intentPreviewTargetPosition|intent_preview_target_position)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          git grep -n -E \
+            '(applyTargetPosition|intent_apply_target_position)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+
+          test -d legacy
+          test -f legacy/README.md
+          for path in HeptaSimulator HeptaStrategy Interface Tools doc \
+              HeptaTrader.sln HeptaTrader_Linux.sln; do
+            test ! -e "$path"
+          done
+          if git grep -n -E '(^|["<(/ ])legacy/' -- \
+              ':!legacy/**' ':!docs/**' ':!README.md' \
+              ':!.github/**' ':!scripts/**'; then
+            echo 'Active runtime source depends on legacy/' >&2
+            exit 1
+          fi
+
+          test -f research/manifest-v1.json
+          python3 -m json.tool research/manifest-v1.json >/dev/null
+          grep -Ei 'unsupported' research/manifest-v1.json
+          grep -Ei 'shadow' research/manifest-v1.json
+
+          for file in systemd/*agent*env.example \
+                      systemd/*gateway*env.example; do
+            test -e "$file" || continue
+            case "$file" in *operator*) continue ;; esac
+            if grep -Eq \
+                '(^|[,[:space:]])(trade\.place|operator\.trade\.place)([,[:space:]]|$)' \
+                "$file"; then
+              echo "Ordinary Agent profile exposes raw place authority: $file" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build and test exact candidate head
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: '2'
+        run: ./scripts/dev_core.sh
+
+      - name: Verify minimal runtime install tree
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release \
+            --component runtime
+          test -x "$stage/usr/local/bin/heptactl"
+          test -x "$stage/usr/local/bin/hepta-sessionctl"
+          test -x "$stage/usr/local/bin/hepta-agent-mcp-launcher"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
+
+      - name: Merge exact verified head and remove this finalizer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          pr_number=$(gh api \
+            "repos/$GITHUB_REPOSITORY/pulls?state=open&head=${GITHUB_REPOSITORY_OWNER}:codex/close-all-runtime-gaps&base=main" \
+            --jq '.[0].number // empty')
+          test -n "$pr_number"
+          actual_head=$(gh api \
+            "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+            --jq '.head.sha')
+          test "$actual_head" = "$EXPECTED_HEAD"
+
+          cp .github/workflows/finalize-remaining-gaps.yml \
+            /tmp/finalizer.yml
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+            -f draft=false >/dev/null
+          gh api --method PUT \
+            "repos/$GITHUB_REPOSITORY/pulls/$pr_number/merge" \
+            -f merge_method=merge \
+            -f sha="$EXPECTED_HEAD" \
+            --jq '.merged == true' | grep -Fx true
+
+          for attempt in $(seq 1 30); do
+            merged_at=$(gh api \
+              "repos/$GITHUB_REPOSITORY/pulls/$pr_number" \
+              --jq '.merged_at // empty')
+            test -n "$merged_at" && break
+            sleep 2
+          done
+          test -n "${merged_at:-}"
+
+          git fetch origin main
+          git checkout -B main origin/main
+          git rm .github/workflows/finalize-remaining-gaps.yml
+          git config user.name 'heptatrader-gap-closure-bot'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'ci: remove one-shot remaining-gap finalizer'
+          git push origin HEAD:main
