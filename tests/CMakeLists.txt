@@ -7,9 +7,14 @@ function(hepta_register_core_test target)
         ../HeptaTrade
         ../HeptaTrade/adapter_ib)
     set_target_properties(${target} PROPERTIES
-        CXX_STANDARD 11
+        CXX_STANDARD 17
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES LABELS "core")
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
@@ -141,6 +146,12 @@ add_executable(hepta_ib_paper_kill_switch_tests
     ../HeptaTrade/execution/ib_paper_kill_switch.cpp)
 target_link_libraries(hepta_ib_paper_kill_switch_tests pthread)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
+
+add_executable(hepta_deterministic_risk_policy_tests
+    deterministic_risk_policy_tests.cpp)
+target_link_libraries(hepta_deterministic_risk_policy_tests
+    hepta_risk_core)
+hepta_register_core_test(hepta_deterministic_risk_policy_tests)
 
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS})

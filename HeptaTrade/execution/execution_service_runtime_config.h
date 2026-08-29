@@ -32,6 +32,16 @@ struct ExecutionServiceRuntimeConfig
     std::uint64_t simulatorQuoteTtlMs = 60000;
     std::uint64_t simulatorQuoteRefreshIntervalMs = 10000;
 
+    bool simulatorOrderSubmissionEnabled = true;
+    bool simulatorGlobalKillSwitch = false;
+    bool simulatorFlattenOnly = false;
+    double simulatorMaxOrderQuantity = 25000.0;
+    double simulatorMaxOrderNotional = 250000.0;
+    std::size_t simulatorMaxOrdersPerMinute = 30;
+    std::size_t simulatorMaxActiveOrders = 50;
+    double simulatorMaxGrossPosition = 100000.0;
+    double simulatorMaxPriceDeviationBps = 30.0;
+
     bool Enabled() const;
     bool Validate(std::string& reason) const;
 

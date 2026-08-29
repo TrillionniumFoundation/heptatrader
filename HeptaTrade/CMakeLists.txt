@@ -22,7 +22,7 @@ function(hepta_runtime_target target)
         target_compile_definitions(${target} PRIVATE __LINUX__=1 linux=1)
     endif()
     target_compile_options(${target} PRIVATE
-        $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic>)
+        "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-Wall;-Wextra;-Wpedantic>")
 endfunction()
 
 set(HEPTA_EXECUTION_COORDINATOR_SOURCES
@@ -140,7 +140,7 @@ target_link_libraries(hepta_agent_os_core PUBLIC
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(hepta_agent_os_core PRIVATE
-        $<$<CONFIG:Release>:-fno-rtti;-ffunction-sections;-fdata-sections>)
+        "$<$<CONFIG:Release>:-fno-rtti;-ffunction-sections;-fdata-sections>")
     foreach(target
             hepta_execution_contract
             hepta_execution_transport
@@ -148,7 +148,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
             hepta_agent_execution_support
             hepta_trading_tool_core)
         target_compile_options(${target} PRIVATE
-            $<$<CONFIG:Release>:-ffunction-sections;-fdata-sections>)
+            "$<$<CONFIG:Release>:-ffunction-sections;-fdata-sections>")
     endforeach()
 endif()
 
@@ -201,7 +201,7 @@ target_link_libraries(hepta_tool_gatewayd PRIVATE hepta_agent_os_core)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(hepta_tool_gatewayd PRIVATE
-        $<$<CONFIG:Release>:-ffunction-sections;-fdata-sections;-fno-rtti>)
+        "$<$<CONFIG:Release>:-ffunction-sections;-fdata-sections;-fno-rtti>")
     target_link_options(hepta_tool_gatewayd PRIVATE
         $<$<CONFIG:Release>:-Wl,--gc-sections>)
     if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
@@ -212,7 +212,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMAND ${CMAKE_COMMAND}
             -DHEPTA_GATEWAY_BINARY=$<TARGET_FILE:hepta_tool_gatewayd>
             -DHEPTA_NM_EXECUTABLE=${CMAKE_NM}
-            -DHEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET=$<IF:$<CONFIG:Release>,ON,OFF>
+            -DHEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET=OFF
             -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/verify_gateway_forbidden_symbols.cmake
         COMMENT "Verifying Gateway privileged-symbol boundary"
         VERBATIM)

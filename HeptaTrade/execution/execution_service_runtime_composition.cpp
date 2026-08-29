@@ -3,6 +3,7 @@
 #include "execution_decision_lease_authority.h"
 #include "execution_event_feed_server.h"
 #include "unix_execution_service_server.h"
+#include "../risk/deterministic_risk_policy.h"
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -16,6 +17,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 namespace
 {
 std::string EscapeJson(const std::string& value)
@@ -157,8 +159,9 @@ class ExecutionServiceRuntimeComposition::SimulatorPolicyAuthority :
 {
 public:
     SimulatorPolicyAuthority(ExecutionCoordinator& coordinator,
-                             DeterministicExecutionVenue& venue)
-        : m_coordinator(coordinator), m_venue(venue)
+                             DeterministicExecutionVenue& venue,
+                             const ExecutionServiceRuntimeConfig& config)
+        : m_coordinator(coordinator), m_venue(venue), m_config(config)
     {
     }
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override
@@ -423,14 +426,34 @@ public:
             const bool blocked = m_coordinator.IsMutationBlocked(&blockReason);
             const std::map<std::string, double> positions = m_venue.Positions();
             double grossAbsolutePosition = 0.0;
-            for (std::map<std::string, double>::const_iterator it = positions.begin();
-                 it != positions.end(); ++it)
+            for (std::map<std::string, double>::const_iterator it =
+                     positions.begin(); it != positions.end(); ++it)
                 grossAbsolutePosition += std::fabs(it->second);
             output << "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
                    << "\"mutation_blocked\":" << (blocked ? "true" : "false")
                    << ",\"reason\":\"" << EscapeJson(blockReason) << "\","
-                   << "\"gross_absolute_position\":"
-                   << grossAbsolutePosition << "}";
+                   << "\"order_submission_enabled\":"
+                   << (m_config.simulatorOrderSubmissionEnabled ? "true" : "false")
+                   << ",\"global_kill_switch\":"
+                   << (m_config.simulatorGlobalKillSwitch ? "true" : "false")
+                   << ",\"flatten_only\":"
+                   << (m_config.simulatorFlattenOnly ? "true" : "false")
+                   << ",\"max_order_quantity\":"
+                   << m_config.simulatorMaxOrderQuantity
+                   << ",\"max_order_notional\":"
+                   << m_config.simulatorMaxOrderNotional
+                   << ",\"max_orders_per_minute\":"
+                   << m_config.simulatorMaxOrdersPerMinute
+                   << ",\"max_active_orders\":"
+                   << m_config.simulatorMaxActiveOrders
+                   << ",\"max_gross_position\":"
+                   << m_config.simulatorMaxGrossPosition
+                   << ",\"max_price_deviation_bps\":"
+                   << m_config.simulatorMaxPriceDeviationBps
+                   << ",\"gross_absolute_position\":"
+                   << grossAbsolutePosition
+                   << ",\"active_order_count\":"
+                   << m_venue.ActiveOrderIds().size() << "}";
         }
         else
         {
@@ -468,9 +491,10 @@ private:
         if (m_coordinator.IsSessionOwnerRecoveryOnly(
                 command.context.agentId, command.context.sessionId))
             return Reject(command.context, "SESSION_RECOVERY_ONLY",
-                "root custodian disabled new entry for this session owner",
-                -1);
-        const std::uint64_t now = static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
+                "root custodian disabled new entry for this session owner", -1);
+
+        const std::uint64_t now =
+            static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
         const MarketQuoteSnapshot quote =
             m_venue.GetQuoteSnapshot(command.instrument, now);
         if (quote.state == MarketSubscriptionState::Unavailable)
@@ -479,6 +503,54 @@ private:
         if (!quote.IsFresh(now))
             return Reject(command.context, "AUTHORITATIVE_QUOTE_STALE",
                 "Execution-owned quote is not fresh", -1);
+
+        const std::map<std::string, double> positions = m_venue.Positions();
+        double gross = 0.0;
+        for (std::map<std::string, double>::const_iterator it = positions.begin();
+             it != positions.end(); ++it) gross += std::fabs(it->second);
+        const double current = m_venue.Position(command.instrument);
+        const double signedQuantity = command.order.action == "BUY" ?
+            command.order.totalQuantity : -command.order.totalQuantity;
+        const double projected = gross - std::fabs(current) +
+            std::fabs(current + signedQuantity);
+        const double authoritativePrice = command.order.action == "BUY" ?
+            quote.ask : quote.bid;
+
+        std::vector<std::int64_t> attempts;
+        m_coordinator.GetPlaceSendAttemptTimes(
+            command.context.account, command.context.executionDomain,
+            static_cast<std::int64_t>(now) - 60000, attempts);
+
+        DeterministicRiskLimits limits;
+        limits.orderSubmissionEnabled = m_config.simulatorOrderSubmissionEnabled;
+        limits.globalKillSwitch = m_config.simulatorGlobalKillSwitch;
+        limits.flattenOnly = m_config.simulatorFlattenOnly;
+        limits.maxOrderQuantity = m_config.simulatorMaxOrderQuantity;
+        limits.maxOrderNotional = m_config.simulatorMaxOrderNotional;
+        limits.maxOrdersPerMinute = m_config.simulatorMaxOrdersPerMinute;
+        limits.maxActiveOrders = m_config.simulatorMaxActiveOrders;
+        limits.maxGrossPosition = m_config.simulatorMaxGrossPosition;
+        limits.maxPriceDeviationBps = m_config.simulatorMaxPriceDeviationBps;
+
+        DeterministicRiskContext risk;
+        risk.action = command.order.action;
+        risk.orderType = command.order.orderType;
+        risk.quantity = command.order.totalQuantity;
+        risk.valuationPrice = command.order.orderType == "LMT" ?
+            command.order.lmtPrice : authoritativePrice;
+        risk.submittedPrice = command.order.lmtPrice;
+        risk.referencePrice = authoritativePrice;
+        risk.ordersInLastMinute = attempts.size();
+        risk.activeOrderCount = m_venue.ActiveOrderIds().size();
+        risk.grossAbsolutePosition = gross;
+        risk.projectedGrossAbsolutePosition = projected;
+        risk.exposureReducing = projected < gross;
+        const DeterministicRiskDecision decision =
+            DeterministicRiskPolicy::Evaluate(limits, risk);
+        if (!decision.allow)
+            return Reject(command.context, decision.reasonCode,
+                decision.detail, -1);
+
         ExecutionCommandResult accepted;
         accepted.status = ExecutionCommandStatus::Accepted;
         accepted.commandId = command.context.toolCallId;
@@ -518,6 +590,7 @@ private:
     }
     ExecutionCoordinator& m_coordinator;
     DeterministicExecutionVenue& m_venue;
+    const ExecutionServiceRuntimeConfig m_config;
 };
 ExecutionServiceRuntimeComposition::ExecutionServiceRuntimeComposition(
     const ExecutionServiceRuntimeConfig& config)
@@ -780,7 +853,8 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     if (!m_coordinator->ReconcileOrderOwners(std::set<long>(), true,
             removedOwners, reconcileReason) && m_recoveryReason.empty())
         m_recoveryReason = reconcileReason;
-    m_policyAuthority.reset(new SimulatorPolicyAuthority(*m_coordinator, m_venue));
+    m_policyAuthority.reset(new SimulatorPolicyAuthority(
+        *m_coordinator, m_venue, m_config));
     if (!StartSimulatorQuoteFeed(reason))
     {
         m_policyAuthority.reset();

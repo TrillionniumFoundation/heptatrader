@@ -11,6 +11,7 @@
 | `ITERATION.md` | 本地开发与最小 PR gate 契约 |
 | `OMS-EVENT-SCHEMA.md` | OMS journal/event 语义 |
 | `RECONCILE-RULES.md` | uncertain recovery 与 authoritative reconciliation |
+| `RISK-MODEL.md` | Simulator/IB PAPER 共用的确定性风险语义 |
 | `RUNBOOK-INCIDENT.md` | 事故处置入口 |
 | `RUNBOOK-KILLSWITCH.md` | kill switch 与安全退出 |
 | `BROKER-NETWORK-ISOLATION.md` | broker 端口网络边界 |

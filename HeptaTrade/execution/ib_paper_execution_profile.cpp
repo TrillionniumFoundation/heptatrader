@@ -1,4 +1,5 @@
 #include "ib_paper_execution_profile.h"
+#include "../risk/deterministic_risk_policy.h"
 
 #include <cerrno>
 #include <cctype>
@@ -256,6 +257,23 @@ bool ReadPrivateCredential(const std::string& path, std::string& value,
                               value[value.size() - 1] == '\r'))
         value.resize(value.size() - 1);
     return true;
+}
+std::string MapCommonRiskReason(const std::string& code)
+{
+    if (code == "RISK_ORDER_QUANTITY_LIMIT" ||
+        code == "RISK_ORDER_QUANTITY_INVALID")
+        return "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
+    if (code == "RISK_ORDER_NOTIONAL_LIMIT" ||
+        code == "RISK_VALUATION_PRICE_INVALID")
+        return "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
+    if (code == "RISK_ORDER_RATE_LIMIT")
+        return "IB_PAPER_ORDER_RATE_EXCEEDED";
+    if (code == "RISK_ACTIVE_ORDER_LIMIT")
+        return "IB_PAPER_MAX_ACTIVE_ORDERS_EXCEEDED";
+    if (code == "RISK_GROSS_POSITION_LIMIT" ||
+        code == "RISK_POSITION_SNAPSHOT_INVALID")
+        return "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED";
+    return code;
 }
 }
 
@@ -651,15 +669,8 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         return false;
     }
     const double quantity = std::fabs(command.order.totalQuantity);
-    if (!std::isfinite(quantity) || quantity <= 0.0 ||
-        quantity > m_config.maxOrderQuantity)
-    {
-        reason = "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
-        return false;
-    }
     if (command.timeInForce != "DAY" ||
-        (command.order.action != "BUY" &&
-         command.order.action != "SELL"))
+        (command.order.action != "BUY" && command.order.action != "SELL"))
     {
         reason = "IB_PAPER_ORDER_INTENT_INVALID";
         return false;
@@ -667,8 +678,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
     if (m_config.UsesExternalLimitDay())
     {
         if (!(command.order.totalQuantity > 0.0) ||
-            command.order.auxPrice != 0.0 ||
-            command.order.outsideRth ||
+            command.order.auxPrice != 0.0 || command.order.outsideRth ||
             !command.order.orderRef.empty())
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_FIELDS_INVALID";
@@ -699,8 +709,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
             return false;
         }
     }
-    if (!std::isfinite(command.referencePrice) ||
-        command.referencePrice <= 0.0)
+    if (!std::isfinite(command.referencePrice) || command.referencePrice <= 0.0)
     {
         reason = "IB_PAPER_REFERENCE_PRICE_REQUIRED";
         return false;
@@ -719,29 +728,34 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_EXTERNAL_LIMIT_PRICE_MISMATCH";
         return false;
     }
-    if (authoritativePrice >
-        m_config.maxOrderNotional / quantity)
-    {
-        reason = "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
-        return false;
-    }
-    if (snapshot.activeOrderCount >= m_config.maxActiveOrders)
-    {
-        reason = "IB_PAPER_MAX_ACTIVE_ORDERS_EXCEEDED";
-        return false;
-    }
-    if (!std::isfinite(snapshot.grossAbsolutePosition) ||
-        snapshot.grossAbsolutePosition < 0.0 ||
-        snapshot.grossAbsolutePosition > m_config.maxGrossPosition ||
-        quantity > m_config.maxGrossPosition - snapshot.grossAbsolutePosition)
-    {
-        reason = "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED";
-        return false;
-    }
+
     PruneRateWindow(nowMs);
-    if (m_acceptedPlaceTimesMs.size() >= m_config.maxOrdersPerMinute)
+    DeterministicRiskLimits limits;
+    limits.maxOrderQuantity = m_config.maxOrderQuantity;
+    limits.maxOrderNotional = m_config.maxOrderNotional;
+    limits.maxOrdersPerMinute = m_config.maxOrdersPerMinute;
+    limits.maxActiveOrders = m_config.maxActiveOrders;
+    limits.maxGrossPosition = m_config.maxGrossPosition;
+    limits.maxPriceDeviationBps = 0.0;
+
+    DeterministicRiskContext context;
+    context.action = command.order.action;
+    context.orderType = command.order.orderType;
+    context.quantity = quantity;
+    context.valuationPrice = authoritativePrice;
+    context.submittedPrice = command.order.lmtPrice;
+    context.referencePrice = authoritativePrice;
+    context.ordersInLastMinute = m_acceptedPlaceTimesMs.size();
+    context.activeOrderCount = snapshot.activeOrderCount;
+    context.grossAbsolutePosition = snapshot.grossAbsolutePosition;
+    context.projectedGrossAbsolutePosition =
+        snapshot.grossAbsolutePosition + quantity;
+    context.exposureReducing = false;
+    const DeterministicRiskDecision decision =
+        DeterministicRiskPolicy::Evaluate(limits, context);
+    if (!decision.allow)
     {
-        reason = "IB_PAPER_ORDER_RATE_EXCEEDED";
+        reason = MapCommonRiskReason(decision.reasonCode);
         return false;
     }
     reason.clear();
