@@ -212,7 +212,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMAND ${CMAKE_COMMAND}
             -DHEPTA_GATEWAY_BINARY=$<TARGET_FILE:hepta_tool_gatewayd>
             -DHEPTA_NM_EXECUTABLE=${CMAKE_NM}
-            -DHEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET=OFF
+            -DHEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET=$<IF:$<CONFIG:Release>,ON,OFF>
             -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/verify_gateway_forbidden_symbols.cmake
         COMMENT "Verifying Gateway privileged-symbol boundary"
         VERBATIM)
