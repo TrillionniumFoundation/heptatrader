@@ -1,0 +1,60 @@
+{
+  "schema": "heptatrader.research-manifest.v1",
+  "mode": "shadow",
+  "strategy": {
+    "id": "eurusd-confirmed-momentum-shadow-v2",
+    "definition": "strategies/eurusd-confirmed-momentum-shadow-v2.json",
+    "implementation": "scripts/hepta_eurusd_confirmed_momentum_strategy.py",
+    "context_builder": "scripts/hepta_market_context_builder.py",
+    "replay_evaluator": "scripts/hepta_strategy_replay_evaluator.py"
+  },
+  "data_contract": {
+    "time_zone": "UTC",
+    "quote_order": "strictly_monotonic_or_exact_unchanged_repeat",
+    "duplicate_policy": "reject_changed_same_timestamp",
+    "missing_data_policy": "fail_closed",
+    "digest": "sha256",
+    "lookahead": "forbidden"
+  },
+  "cost_model": {
+    "commission": "required_by_run",
+    "spread": "observed_or_conservative_fixture",
+    "slippage_bps": "required_by_run",
+    "decision_to_fill_delay_ms": "required_by_run",
+    "market_impact": "required_for_capacity_claim"
+  },
+  "validation": {
+    "split": "purged_walk_forward_with_embargo",
+    "final_out_of_sample": true,
+    "regime_slices": ["time_of_day", "volatility", "trend", "spread"],
+    "required_failure_tests": [
+      "missing_quote",
+      "stale_quote",
+      "out_of_order_quote",
+      "duplicate_changed_timestamp",
+      "calendar_gap",
+      "cost_spike",
+      "execution_delay"
+    ]
+  },
+  "output": {
+    "decision_schema": "hepta.strategy-decision-receipt.v1",
+    "deterministic": true,
+    "numeric_tolerance": 1e-12,
+    "records_input_digests": true,
+    "records_source_revision": true
+  },
+  "capability": {
+    "paper_mutation": false,
+    "live_mutation": false,
+    "broker_access": false,
+    "session_management": false
+  },
+  "unsupported": [
+    "paper_promotion",
+    "live_promotion",
+    "dynamic_campaign_authority",
+    "root_custodian_or_finalizer",
+    "release_or_certification_evidence"
+  ]
+}

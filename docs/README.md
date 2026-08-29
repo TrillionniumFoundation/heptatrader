@@ -1,42 +1,54 @@
-# HeptaTrader documentation
+# HeptaTrader documentation map
 
-本目录只把**当前代码可以支持的契约**标记为 current。设计草案、实验性 venue 和历史研究流程必须显式标注状态，不能与可运行能力混写。
+Status: current
+Applies to: repository documentation
+Last verified commit: moving-main
 
-## Current
+Documentation is an executable engineering contract. “Current” means the described path, command and capability exist in the same revision. Historical process narratives are preserved by Git history rather than kept as misleading active files.
 
-| 文档 | 用途 |
+## Canonical current contracts
+
+| Document | Authority |
 |---|---|
-| `AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md` | 当前模型无关 Agent trading runtime 架构与权限边界 |
-| `CAPABILITY-MATRIX.md` | 各 venue、运行模式、Agent 和研究能力的真实成熟度 |
-| `ITERATION.md` | 本地开发与最小 PR gate 契约 |
-| `OMS-EVENT-SCHEMA.md` | OMS journal/event 语义 |
-| `RECONCILE-RULES.md` | uncertain recovery 与 authoritative reconciliation |
-| `RISK-MODEL.md` | Simulator/IB PAPER 共用的确定性风险语义 |
-| `RUNBOOK-INCIDENT.md` | 事故处置入口 |
-| `RUNBOOK-KILLSWITCH.md` | kill switch 与安全退出 |
-| `BROKER-NETWORK-ISOLATION.md` | broker 端口网络边界 |
-| `CONFIGURATION.md` | 配置来源、profile lock 与 secret 注入 |
-| `DEPLOYMENT.md` | 最小 runtime install 与 systemd 组装 |
-| `OBSERVABILITY.md` | 当前运行时指标与 SLO |
-| `SECURITY.md` | 当前安全边界与不变量 |
+| [`development/PLAN.md`](development/PLAN.md) | single gap registry, priorities, acceptance evidence and definition of done |
+| [`AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md) | runtime components, dependency direction and authority boundary |
+| [`CAPABILITY-MATRIX.md`](CAPABILITY-MATRIX.md) | implemented/experimental/unsupported capability truth |
+| [`development/AGENT-INTENT-CONTRACT.md`](development/AGENT-INTENT-CONTRACT.md) | ordinary Agent snapshot and target-position interface |
+| [`RISK-MODEL.md`](RISK-MODEL.md) | venue-neutral deterministic risk semantics |
+| [`OMS-EVENT-SCHEMA.md`](OMS-EVENT-SCHEMA.md) | durable command/event semantics |
+| [`RECONCILE-RULES.md`](RECONCILE-RULES.md) | authoritative recovery and uncertain-command handling |
+| [`CONFIGURATION.md`](CONFIGURATION.md) | config source precedence, profile lock and secret handling |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | minimal runtime installation and fixed service assembly |
+| [`SECURITY.md`](SECURITY.md) | threat model, identities, credentials and failure policy |
+| [`OBSERVABILITY.md`](OBSERVABILITY.md) | runtime metrics, SLOs and operational alerts |
+| [`ITERATION.md`](ITERATION.md) | bounded local/PR development loop |
+| [`development/TEST-STRATEGY.md`](development/TEST-STRATEGY.md) | test layers, fault cases and exact-head evidence |
+| [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md) | incident classification and safe response |
+| [`RUNBOOK-KILLSWITCH.md`](RUNBOOK-KILLSWITCH.md) | kill switch, flatten and terminal control |
+| [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md) | broker network egress boundary |
 
-## Experimental
+## Research
 
-| 文档 | 状态 |
+| Document | State |
 |---|---|
-| `EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md` | 现有 EURUSD 研究实现；只读 SHADOW，不代表通用研究平台 |
-| `QMT-BRIDGE-MVP.md` | proposal/scaffold；真实 XT/QMT transport 尚未实现 |
-| `QMT-SDK-REVIEW.md` | SDK 调研，不是运行时能力证明 |
-| `XTQMT-VENUE-PLAN.md` | proposal |
+| [`../research/README.md`](../research/README.md) | current research/replay contract |
+| [`STRATEGY-VALIDATION-PLAN.md`](STRATEGY-VALIDATION-PLAN.md) | current validation gates for any strategy candidate |
+| [`EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md`](EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md) | experimental EURUSD strategy contract; SHADOW only |
 
-## 文档规则
+## Proposals
 
-每份文档开头应包含：
+QMT/XT and other unimplemented venue plans belong under `docs/proposals/`. A proposal may describe an intended API, but must not appear in runtime capability lists until transport, lifecycle, reconciliation and negative-path tests exist.
+
+## Required document header
+
+Every current, experimental or proposal document starts with:
 
 ```text
 Status: current | experimental | proposal | deprecated
 Applies to: <paths/components>
-Last verified commit: <commit or moving-main>
+Last verified commit: <sha or moving-main>
 ```
 
-current 文档中的命令和路径必须存在于当前仓库。失效的 release gate、PowerShell、round、P1 campaign、attestation、finalizer、witness 或已删除脚本不得继续出现在 current 文档中。
+## Prohibited current-document content
+
+Current documents must not refer to deleted PowerShell gates, round/P1 campaigns, evidence closure, renew/repair/finalizer orchestration, attestation bundles, self-merging workflows, hard-coded personal workspaces or nonexistent runbooks.
