@@ -1,45 +1,48 @@
-# HeptaTrader AI-Native Trading Runtime Architecture
+# HeptaTrader AI-Agent Trading Runtime Architecture
 
-Status: current runtime contract.
+Status: current  
+Applies to: `HeptaTrade/`, `adapters/mcp/`, `plugins/`, `systemd/`  
+Last verified commit: moving `main`
 
-本文只描述当前代码中的交易运行时。发布包、round、P1、认证、evidence closure、动态 PAPER campaign 和宿主证明不属于本架构。
+## 1. Product boundary
 
-## 1. 数据与调用路径
+HeptaTrader is a model-agnostic deterministic trading control and execution runtime. Codex, OpenClaw and other agents are replaceable clients. They may query state and submit bounded intent, but they are not broker, order, portfolio or risk authorities.
 
 ```text
-Agent / Codex / OpenClaw
-        |
-        | MCP / heptactl / native client
-        v
+Codex / Agent / Operator
+          |
+          | MCP / heptactl / native client
+          v
 Tool Gateway
-        |
-        | typed authenticated Unix protocol
-        v
+          |
+          | authenticated typed Unix protocol
+          v
 Execution Service
-        |
-        | deterministic venue contract
-        v
-Simulator / IB / CTP / XT adapter
+          |
+          | deterministic venue contract
+          v
+Simulator / IB PAPER
 ```
 
-Agent 可以提交查询和有界交易意图，但不拥有 broker session、订单状态机、最终风险判断、持久化执行状态或对账真相。
+CTP and XT are scaffolds and must fail closed until a real transport, authoritative state projection and recovery contract exist. LIVE is unsupported.
 
-## 2. 组件职责
+## 2. Control-plane responsibilities
 
-### Agent entry
+### Agent adapters
 
 - `adapters/mcp/hepta_mcp_server.py`
+- `plugins/heptatrader-agent-os/`
+- `HeptaTrade/client/`
 - `HeptaTrade/cli/heptactl*`
-- `HeptaTrade/client/native_tool_client*`
 
-入口只做工具发现、请求编码和结果解析，不得出现第二条 broker path。
+Responsibilities: discovery, request encoding, response parsing and bounded orchestration. They do not hold broker credentials, create venue order IDs or infer PAPER/LIVE authority.
 
 ### Tool Gateway
 
 - `HeptaTrade/tool_host/`
 - `HeptaTrade/tools/`
 
-Gateway 校验 peer identity、session、capability、schema 和参数，并把 mutation 转发给 Execution Service。它不链接 broker adapter，不持有 broker credential。
+Responsibilities: peer identity, session token, capability, environment, schema and parameter validation; forwarding to the selected Execution Service; relaying owner-scoped events. It must not link broker SDK or credential symbols.
 
 ### Execution Service
 
@@ -48,68 +51,80 @@ Gateway 校验 peer identity、session、capability、schema 和参数，并把 
 - `HeptaTrade/state/`
 - `HeptaTrade/risk/`
 
-Execution Service 是唯一订单 authority，负责 journal-before-send、command-id 幂等、fencing、确定性风控、订单生命周期、authoritative snapshot、reconciliation 和 uncertain recovery。
+The Execution Service is the only order authority. It owns:
+
+- command-id idempotency and payload conflict detection;
+- journal-before-send and durable receipts;
+- service/session/decision fencing;
+- deterministic pre-trade risk;
+- venue order lifecycle and correlation;
+- authoritative quote/order/position/account state;
+- uncertain recovery and reconciliation;
+- kill switch, cancel, reduce-only and flatten paths.
 
 ### Venue adapters
 
-- `HeptaTrade/simulator/`
-- `HeptaTrade/adapter_ib/`
-- `HeptaTrade/adapter_ctp/`
-- `HeptaTrade/adapter_xt/`
+A venue adapter translates deterministic commands to venue protocol and venue events back to authoritative projections. It must not decide strategy, capital allocation or policy. A missing transport must return a stable unsupported error and may never synthesize a successful connection or broker ACK.
 
-adapter 只翻译 venue 协议和事件，不决定策略、资本分配或风险政策。
+## 3. Data and decision planes
 
-## 3. 固定运行模式
+The runtime currently has a narrow experimental EURUSD SHADOW research path. A general AI-native quantitative system still requires explicit deterministic contracts for:
 
-### Simulator
+```text
+point-in-time data
+ -> features
+ -> forecast / target exposure
+ -> portfolio netting and capital allocation
+ -> risk sizing
+ -> order plan
+ -> execution
+```
 
-`hepta-executiond` 使用确定性 simulator venue，适合本地开发、回放和故障测试。
+Ordinary strategy agents should converge on forecast/target/TradeIntent APIs. Raw `trade.place_order` remains an execution-level capability for explicitly authorized execution/operator sessions; it is not the preferred long-term strategy API.
 
-### IB PAPER
-
-`hepta-ib-executiond` 是固定的 broker-owning PAPER authority。它通过独立 OS identity、文件系统 kill switch、broker network policy、credential、journal 和 reconciliation 运行。
-
-仓库不再提供动态 PAPER domain、campaign open/close、renew、repair、attestation 或 finalizer 编排。session 由 operator 使用 `hepta-sessionctl` 显式 provision/revoke；部署侧负责安全创建 token 文件。
-
-### LIVE
-
-LIVE 不是默认或已认证能力。任何未来 LIVE 路径必须复用同一 Execution authority、risk、journal、fencing 和 reconciliation，不得从 Agent 或 legacy monolith 旁路进入。
-
-## 4. 不可破坏的 invariant
-
-1. 只有 Execution Service 可以向 venue 发送订单。
-2. Agent/Gateway 不持有 broker credential，也不能直接连接 broker API。
-3. mutation 在外部发送前进入 durable journal。
-4. uncertain retry 复用原 command ID。
-5. 过期 session、owner 或 lease 不能继续增加风险。
-6. 持仓和活动订单以 venue/Execution 投影为准。
-7. 协议、身份、quote、配置、持久化或 kill switch 不确定时 fail closed。
-8. 合法的 cancel、reduce-only 和 flatten 退出路径保持可用。
-
-## 5. 一次 mutation
+## 4. Mutation invariant
 
 ```text
 Agent intent
-  -> peer/session/capability check
-  -> schema and normalized intent
-  -> quote freshness + deterministic pre-trade risk
-  -> execution permit + command ID
-  -> durable journal
-  -> venue send
-  -> execution event projection
-  -> authoritative reconciliation
+ -> peer/session/capability validation
+ -> normalized request and snapshot binding
+ -> deterministic risk
+ -> execution permit and command ID
+ -> durable journal
+ -> venue send
+ -> execution event projection
+ -> authoritative reconciliation
 ```
 
-## 6. 策略边界
+Required invariants:
 
-策略和 AI 层应输出 forecast、target exposure 或有界 TradeIntent。最终手数、组合净额、订单类型、拆单、撤单和 venue routing 属于确定性 portfolio/risk/execution 层。
+1. Only Execution Service sends to a venue.
+2. Agent/Gateway never owns broker credential or broker session.
+3. Every risk-increasing mutation is durable before external send.
+4. An uncertain retry reuses the exact command ID and payload.
+5. Expired/fenced session, owner or lease cannot increase risk.
+6. Venue/Execution projection is authoritative for orders and positions.
+7. Unknown identity, protocol, quote, config, persistence or kill-switch state fails closed.
+8. Cancel, reduce-only and flatten remain available whenever they can safely reduce risk.
 
-legacy monolith 默认关闭；新功能不得继续扩展直接下单式策略 API。
+## 5. Snapshot and event model
 
-## 7. 开发循环
+Agent decisions should bind to a single Execution-owned snapshot identity containing service epoch, fencing generation and collection watermark. Tool discovery and descriptor metadata are session control-plane data and should be cached rather than rebuilt for every market sample. Incremental state changes should use the bounded event feed instead of repeated full polling.
 
-```bash
-./scripts/dev_core.sh
-```
+## 6. Supported modes
 
-该入口只保护会造成交易错误或权限越界的核心 invariant。仓库没有强制 CI、发布证据、安装认证或 round gate。
+### Simulator
+
+`hepta-executiond` provides a deterministic process-local venue for contract, recovery and fault tests. It is not proof of IB/CTP/XT venue parity.
+
+### IB PAPER
+
+`hepta-ib-executiond` is the broker-owning PAPER authority when built with the IB SDK. It runs under a separate OS identity with credential isolation, journal, quote/state projection, hard risk limits, kill switch and reconciliation.
+
+### LIVE
+
+LIVE is unsupported. A future LIVE path must reuse the same Execution authority, journal, fencing, risk and reconciliation contracts; no Agent or legacy monolith bypass is allowed.
+
+## 7. Development and release boundary
+
+`./scripts/dev_core.sh` and the minimal GitHub workflow protect runtime correctness and authority boundaries. Packaging signatures, SBOM, host compliance and formal release evidence are separate on-demand concerns and must not become ordinary strategy iteration gates.
