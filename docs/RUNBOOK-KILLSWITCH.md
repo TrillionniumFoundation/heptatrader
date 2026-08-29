@@ -1,122 +1,56 @@
-# RUNBOOK-KILLSWITCH
+# PAPER kill switch
 
-## 适用边界
+## 当前语义
 
-本页原有的 `HEPTA_GLOBAL_KILL_SWITCH` / `HEPTA_FLATTEN_ONLY` 操作仅适用于
-legacy 单进程执行路径，不能作为新的独立 IB PAPER execution authority 的
-控制方式。`hepta-ib-executiond` 不接受环境变量形式的 PAPER kill switch。
+Canonical IB PAPER daemon 使用只读文件系统 kill switch：
 
-新的 canonical PAPER authority 使用固定控制面：
+- control directory 由 runtime 配置提供；当前 fixed service 使用 `/run/hepta/ib-paper-control`。
+- marker 名称固定为 `kill-switch`。
+- **合法 marker 存在**：`Engaged`，阻断新增风险。
+- **marker 稳定缺失**：`Disarmed`，仍需通过其余风控才能新增风险。
+- **目录、marker、inode、权限、owner、link count 或 I/O 状态不确定**：`Uncertain`，与 engaged 一样阻断新增风险。
 
-- 目录：`/run/hepta/ib-paper-control`，必须为 `root:hepta-ib-exec 0750`。
-- marker：`kill-switch`，必须为 single-link regular file，
-  `root:hepta-ib-exec 0440`。
-- marker 存在表示 engaged；缺失只有在 pinned directory identity 连续安全时才
-  表示 disarmed；权限、owner、inode、symlink 或 I/O 状态不确定时一律阻断新增风险。
-- execution service 对该目录只有读权限，不能自行解除 kill switch；cancel 风险退出
-  仍保留 owner/fencing 校验后可用。
-- tmpfiles 声明默认创建 engaged marker。当前阶段不得解除；只有 provisioned-host
-  集成门、最小限额审核和单独 PAPER 授权全部通过后，才可制定 root operator 的
-  原子解除/恢复步骤。
-- Round19 的 broker-free systemd rehearsal 只允许验证 tmpfiles 首次/重复创建、marker
-  inode 稳定、service mount namespace 只读和 service/root mutation 失败；整个过程
-  marker 必须保持 engaged。Docker rehearsal 即使为绿也不构成上述“provisioned-host
-  集成门”通过，native disposable-VM 门之前仍禁止解除。
+Execution service 只读取状态，不能自行解除 kill switch。Agent、MCP adapter、Tool Gateway 和 venue adapter 均不得修改 control directory。
 
-## Capped PAPER one-shot operator seam
+## 文件系统约束
 
-达到 provisioned-host、最小限额和单独 PAPER cycle 授权后，只允许 root 通过
-`hepta-ib-paper-domain-authority` 的 one-shot 控制面建立短窗口。Agent skill、Gateway、
-Execution service 和 broker adapter 都不得直接修改 marker。
+生产读取器要求：
 
-约束：
+- service 以非 root 身份运行；
+- control directory 为 root owner、service group、`0750`、稳定目录 identity；
+- marker 为 root owner、同一 service group、`0440`、single-link regular file；
+- symlink、hard-link、目录替换、跨设备 marker 或 observation 期间发生变化均视为 uncertain；
+- marker 缺失必须经过二次确认，目录 identity 变化会被永久 latch 为 uncertain，直到进程重启并重新建立安全边界。
 
-- `--cycle-id` 与 canonical TradeIntent 的 `sha256:` digest 必须同时提供；root receipt
-  永久绑定二者。
-- `--operator-ttl-sec` 只能是 5–20 秒。超过窗口由 systemd transient watchdog 自动
-  re-engage；人工 re-engage 应在 `place` 返回后立即执行，不等待成交。
-- operator 先把 watchdog timer 注册到 PID 1 并确认 active，然后才对已验证的精确
-  marker inode 做 `unlinkat`。timer 未确认时 marker 保持 engaged。
-- re-engage 使用 pinned control-directory FD 原子发布新的 single-link
-  `root:hepta-ib-exec-<domain> 0440` marker，并 fsync 文件和目录。
-- runtime lease 只写入 `/run/hepta/ib-paper-one-shot`（`0700 root:root`）；持久 receipt
-  只写入 `/var/lib/hepta-ib-paper-one-shot`（`0700 root:root`），均不得包含 token、
-  permit、账户号或 broker credential。
-- 即使 runtime lease 丢失或损坏，watchdog re-engage 也必须先恢复 marker，再以失败
-  状态退出；Execution 将任何不确定 marker 状态视为阻断新增风险。
+## 操作原则
 
-示例（仅在独立 operator 审批已经成立后）：
+### Engage
+
+由受控的 root/operator 路径原子创建合法 marker，并在允许新增风险前确认 Execution 已观察到 engaged。发生事故时，先 engage，再处理撤单、减仓和对账。
+
+### Disarm
+
+仓库不提供自动 disarm、one-shot operator 或 campaign 脚本。解除必须由部署侧的受控 operator 完成，并至少确认：
+
+1. broker/Execution session identity 正确；
+2. authoritative position 与 active orders 已完成 reconciliation；
+3. 风险限额、账户和 instrument 配置正确；
+4. control directory/marker 操作是原子的；
+5. 任何不确定结果都回到 engaged。
+
+不要让 Agent 通过 shell、工具参数或环境变量解除 canonical PAPER kill switch。
+
+## 退出路径
+
+Kill switch 的目标是阻断风险增加，不应无条件阻断安全退出。cancel、reduce-only 或 authoritative flatten 仍必须满足 owner、fencing、订单状态和 venue 约束。
+
+## Legacy 说明
+
+`HEPTA_GLOBAL_KILL_SWITCH` 和 `HEPTA_FLATTEN_ONLY` 仅属于 legacy monolith 路径，不是 `hepta-ib-executiond` 的 canonical PAPER 控制面。新代码不得依赖这些环境变量绕过文件系统 kill switch。
+
+## 核心验证
 
 ```bash
-sudo /usr/libexec/hepta-ib-paper-domain-authority \
-  --operator-disarm --domain alpha \
-  --cycle-id capped-paper-example-v1 \
-  --intent-sha256 sha256:<64-hex> --operator-ttl-sec 20
-
-# Agent 只能在该窗口内通过 canonical risk.preview_order -> trade.place_order。
-# place 返回后，无论 accepted/rejected/uncertain 都立即执行：
-sudo /usr/libexec/hepta-ib-paper-domain-authority \
-  --operator-reengage --domain alpha \
-  --cycle-id capped-paper-example-v1 \
-  --intent-sha256 sha256:<same-64-hex>
+cmake --build build/core --target hepta_ib_paper_kill_switch_tests
+ctest --test-dir build/core --output-on-failure -R hepta_ib_paper_kill_switch_tests
 ```
-
-PAPER session 的 root revoke token 不得放入 `hepta-gw-*` 所有的私有目录；
-`hepta-sessionctl` 校验 token inode 的 owner、mode、类型和稳定读取，不检查 parent
-ownership；但非 root 调用者无法穿越 `0700 root:root` parent。root operator 必须通过
-受审计的 privileged 调用使用
-`/run/hepta-session-operator-<domain>` 这类 `0700 root:root` 目录保存 revoke 副本，
-Agent 可用副本发布到独立的 `0700 hepta-agent-<domain>` 目录。revoke 后两份 token
-都必须 exact-unlink/销毁；若 revoke 不确定，先隔离 Agent 副本并等待 TTL fence。
-
-以下章节保留为 legacy 路径说明。
-
-## 目标
-统一前置风控入口，支持：
-- 全局 Kill Switch（阻断所有新单）
-- Flatten-Only（仅允许减仓/平仓）
-- 拒单理由码统一 `RISK_XXX`
-
-## 配置项（IBRisk）
-- `GlobalKillSwitch`：`1` 时阻断所有新单
-- `FlattenOnly`：`1` 时仅允许减仓单（需要已知持仓）
-
-## 环境变量（高优先级）
-- `HEPTA_GLOBAL_KILL_SWITCH=1`
-- `HEPTA_FLATTEN_ONLY=1`
-
-## 快速操作
-1. 打开全局 Kill Switch（立即阻断）：
-   - 设置 `HEPTA_GLOBAL_KILL_SWITCH=1` 后重启进程
-2. 切换为 Flatten-Only：
-   - 设置 `HEPTA_FLATTEN_ONLY=1` 后重启进程
-3. 恢复正常：
-   - `HEPTA_GLOBAL_KILL_SWITCH=0`
-   - `HEPTA_FLATTEN_ONLY=0`
-
-## 关键理由码
-- `RISK_GLOBAL_KILL_SWITCH_ON`
-- `RISK_FLATTEN_ONLY_POSITION_UNKNOWN`
-- `RISK_FLATTEN_ONLY_BLOCK`
-- `RISK_CIRCUIT_BREAKER_TRIPPED`
-- `RISK_DUPLICATE_ORDER`
-
-## 验收命令
-```powershell
-# 1) 编译（按现有工程方式）
-msbuild .\HeptaTrader.sln /p:Configuration=Release /p:Platform=x64
-
-# 2) 验证全局 Kill Switch（预期拒单理由包含 RISK_GLOBAL_KILL_SWITCH_ON）
-$env:HEPTA_ALLOW_IB_ORDERS="1"
-$env:HEPTA_GLOBAL_KILL_SWITCH="1"
-$env:HEPTA_IB_TEST_ORDER_LOOP="1"
-.\x64\Release\HeptaTrader.exe
-
-# 3) 验证 Flatten-Only（持仓未知时预期 RISK_FLATTEN_ONLY_POSITION_UNKNOWN）
-$env:HEPTA_GLOBAL_KILL_SWITCH="0"
-$env:HEPTA_FLATTEN_ONLY="1"
-.\x64\Release\HeptaTrader.exe
-```
-
-## CTP 扩展点
-`PreTradeRiskContext` 保留 `venue` / `adapterTag` 字段，可在 CTP 下单适配层复用同一风控引擎，保持理由码统一。
