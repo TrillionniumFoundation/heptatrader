@@ -1,25 +1,26 @@
 # Runtime and research scripts
 
-`scripts/` 只保留直接服务于核心 OS 的小型入口。
+`scripts/` contains bounded entry points used by the deterministic runtime or research loop. Large reusable logic should migrate into typed C++ libraries or a Python package rather than growing additional orchestration layers.
 
-## 开发
+## Development
 
-- `dev_core.sh`：配置、构建并运行核心测试。
-- `resolve_hepta_config.py`：解析运行配置。
-- `validate_sim_data.py`：校验 simulator 数据。
-- `verify_oms_journal_replay.py`：校验 OMS journal replay。
+- `dev_core.sh` — repository integrity, configure, core build, CTest and Python tests.
+- `check_repository_integrity.py` — documentation/path, active/legacy, workflow, manifest and unsupported-venue truth checks.
+- `resolve_hepta_config.py` — canonical config source and profile lock.
+- `validate_sim_data.py` — simulator input validation.
+- `verify_oms_journal_replay.py` — OMS journal replay verification.
 
 ## Agent runtime
 
-- `hepta_agent_mcp_launcher.py`：固定身份和环境下启动 MCP bridge。
-- `hepta_agent_trust_domain.py`：严格读取 trust-domain 配置。
-- `hepta_broker_egress_policy.py`：加载固定 UID/端口的最小 nftables 边界。
+- `hepta_agent_mcp_launcher.py` — launch the MCP bridge under a fixed identity/environment.
+- `hepta_agent_trust_domain.py` — strict trust-domain config reader.
+- `hepta_broker_egress_policy.py` — minimal UID/port nftables boundary.
 
-## Research and strategy
+## Research
 
-- `hepta_market_*`、`hepta_official_source_capture.py`：市场上下文与数据规范化。
-- `hepta_strategy_*`：策略契约、shadow runner 和 replay evaluation。
-- `hepta_eurusd_confirmed_momentum_strategy.py`：当前 EURUSD 策略实现。
-- `validate_hepta_strategy_decision_receipt.py`：验证有界 shadow 决策 receipt。
+- `hepta_market_*` and `hepta_official_source_capture.py` — market context and deterministic normalization.
+- `hepta_strategy_*` — strategy contract, SHADOW runner and replay evaluation.
+- `hepta_eurusd_confirmed_momentum_strategy.py` — experimental EURUSD implementation.
+- `validate_hepta_strategy_decision_receipt.py` — bounded SHADOW decision validation.
 
-本目录不再包含发布打包、质量门禁、P1/round、动态 PAPER campaign、repair/renew/supervisor、attestation、terminal witness、Windows 一键上线或硬编码用户工作区脚本。
+The canonical machine-readable research contract is `research/manifest-v1.json`. This directory contains no release round, evidence-closure, dynamic PAPER campaign, repair/renew/finalizer, host attestation, self-merge or hard-coded personal-workspace workflow.

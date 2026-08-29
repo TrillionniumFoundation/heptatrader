@@ -153,5 +153,11 @@ target_link_libraries(hepta_deterministic_risk_policy_tests
     hepta_risk_core)
 hepta_register_core_test(hepta_deterministic_risk_policy_tests)
 
+add_executable(hepta_unsupported_venue_adapter_tests
+    unsupported_venue_adapter_tests.cpp
+    ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
+    ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
+hepta_register_core_test(hepta_unsupported_venue_adapter_tests)
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS})

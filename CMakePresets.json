@@ -14,10 +14,8 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "BUILD_TESTING": "ON",
-        "HEPTA_ENABLE_IBAPI": "OFF",
-        "HEPTA_ENABLE_LEGACY_0DTE_BRIDGE": "OFF",
-        "HEPTA_BUILD_LEGACY_MONOLITH": "OFF",
-        "HEPTA_BUILD_LEGACY_SIMULATOR": "OFF"
+        "HEPTA_INSTALL_RUNTIME": "ON",
+        "HEPTA_ENABLE_IBAPI": "OFF"
       }
     },
     {
@@ -34,12 +32,12 @@
     {
       "name": "core-release",
       "configurePreset": "core-release",
-      "targets": ["hepta_core_test_binaries"]
+      "targets": ["hepta_core_test_binaries", "hepta_runtime_binaries"]
     },
     {
       "name": "core-debug",
       "configurePreset": "core-debug",
-      "targets": ["hepta_core_test_binaries"]
+      "targets": ["hepta_core_test_binaries", "hepta_runtime_binaries"]
     }
   ],
   "testPresets": [
@@ -48,6 +46,11 @@
       "configurePreset": "core-release",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "core"
+        }
       },
       "execution": {
         "noTestsAction": "error"
@@ -58,6 +61,11 @@
       "configurePreset": "core-debug",
       "output": {
         "outputOnFailure": true
+      },
+      "filter": {
+        "include": {
+          "label": "core"
+        }
       },
       "execution": {
         "noTestsAction": "error"

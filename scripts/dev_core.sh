@@ -28,9 +28,6 @@ configure_args=(
   -DBUILD_TESTING=ON
   -DHEPTA_INSTALL_RUNTIME=ON
   -DHEPTA_ENABLE_IBAPI=OFF
-  -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF
-  -DHEPTA_BUILD_LEGACY_MONOLITH=OFF
-  -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
 )
 
 if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
@@ -42,6 +39,7 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   fi
 fi
 
+python3 "${ROOT_DIR}/scripts/check_repository_integrity.py"
 cmake "${configure_args[@]}"
 cmake --build "${BUILD_DIR}" \
   --target hepta_core_test_binaries hepta_runtime_binaries \

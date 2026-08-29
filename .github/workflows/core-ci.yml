@@ -17,7 +17,7 @@ concurrency:
 jobs:
   core:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -31,15 +31,18 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             cmake ninja-build g++ libssl-dev python3
 
-      - name: Validate entry points
+      - name: Validate repository contracts and entry points
         run: |
           bash -n scripts/dev_core.sh
           python3 -m py_compile \
+            scripts/check_repository_integrity.py \
             scripts/resolve_hepta_config.py \
             scripts/hepta_agent_mcp_launcher.py
           python3 -m json.tool CMakePresets.json >/dev/null
+          python3 -m json.tool research/manifest-v1.json >/dev/null
           python3 -m json.tool \
             plugins/heptatrader-agent-os/.mcp.json >/dev/null
+          python3 scripts/check_repository_integrity.py
 
       - name: Build and test the deterministic core
         env:
@@ -60,6 +63,7 @@ jobs:
           test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
           test -f "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           test -f "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
+          test -f "$stage/usr/local/share/heptatrader/research/manifest-v1.json"
           grep -F '/usr/local/libexec/heptatrader/hepta-tool-gatewayd' \
             "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \

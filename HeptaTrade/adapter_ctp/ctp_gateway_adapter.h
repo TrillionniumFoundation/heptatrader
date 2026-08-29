@@ -1,14 +1,16 @@
-﻿#pragma once
+#pragma once
+
 #include <string>
-#include <queue>
 
-// CTP adapter scaffold to eventually replace direct m_TradeChannel/m_mdCollector calls.
-
-struct HeptaCTPConfig {
+// Unsupported CTP seam. A real implementation must add transport, lifecycle,
+// order correlation, authoritative projection, recovery and reconciliation.
+struct HeptaCTPConfig
+{
     std::string mode = "CTP";
 };
 
-class HeptaCTPGatewayAdapter {
+class HeptaCTPGatewayAdapter
+{
 public:
     HeptaCTPGatewayAdapter();
     ~HeptaCTPGatewayAdapter();
@@ -16,8 +18,10 @@ public:
     bool Init(const HeptaCTPConfig& cfg);
     bool Connect();
     void Disconnect();
-    
+    const char* GetStatusString() const;
+
 private:
     HeptaCTPConfig m_cfg;
     bool m_connected = false;
+    std::string m_status = "VENUE_NOT_IMPLEMENTED";
 };

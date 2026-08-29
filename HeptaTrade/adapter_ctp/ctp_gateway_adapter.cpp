@@ -1,4 +1,9 @@
-﻿#include "ctp_gateway_adapter.h"
+#include "ctp_gateway_adapter.h"
+
+namespace
+{
+const char* const kUnsupported = "VENUE_NOT_IMPLEMENTED";
+}
 
 HeptaCTPGatewayAdapter::HeptaCTPGatewayAdapter() = default;
 HeptaCTPGatewayAdapter::~HeptaCTPGatewayAdapter() = default;
@@ -7,20 +12,24 @@ bool HeptaCTPGatewayAdapter::Init(const HeptaCTPConfig& cfg)
 {
     m_cfg = cfg;
     m_connected = false;
-    // No reviewed CTP transport is bound to this adapter.  Returning success
-    // here previously allowed the scaffold to be mistaken for a live venue.
+    m_status = kUnsupported;
     return false;
 }
 
 bool HeptaCTPGatewayAdapter::Connect()
 {
-    // Fail closed until a real transport, authoritative state projection and
-    // recovery contract are implemented.
     m_connected = false;
+    m_status = kUnsupported;
     return false;
 }
 
 void HeptaCTPGatewayAdapter::Disconnect()
 {
     m_connected = false;
+    m_status = kUnsupported;
+}
+
+const char* HeptaCTPGatewayAdapter::GetStatusString() const
+{
+    return m_status.c_str();
 }

@@ -1,11 +1,10 @@
-# Minimal runtime assembly.  This component intentionally excludes release
+# Minimal runtime assembly. This component intentionally excludes release
 # signing, SBOM, host certification and broker credentials.
 
 set(HEPTA_RUNTIME_LIBEXEC_DIR
     "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader")
 set(HEPTA_RUNTIME_EXECUTABLE_DIR
     "${CMAKE_INSTALL_FULL_LIBEXECDIR}/heptatrader")
-set(HEPTA_RUNTIME_DOC_DIR "${CMAKE_INSTALL_FULL_DOCDIR}")
 set(HEPTA_GENERATED_SYSTEMD_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/generated/systemd")
 file(MAKE_DIRECTORY "${HEPTA_GENERATED_SYSTEMD_DIR}")
@@ -93,11 +92,26 @@ install(DIRECTORY
         PATTERN "README.md")
 
 install(FILES
+        "${CMAKE_SOURCE_DIR}/research/manifest-v1.json"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research"
+    COMPONENT runtime)
+
+install(FILES
         "${CMAKE_SOURCE_DIR}/docs/README.md"
         "${CMAKE_SOURCE_DIR}/docs/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md"
         "${CMAKE_SOURCE_DIR}/docs/CAPABILITY-MATRIX.md"
         "${CMAKE_SOURCE_DIR}/docs/CONFIGURATION.md"
         "${CMAKE_SOURCE_DIR}/docs/DEPLOYMENT.md"
         "${CMAKE_SOURCE_DIR}/docs/ITERATION.md"
+        "${CMAKE_SOURCE_DIR}/docs/RISK-MODEL.md"
+        "${CMAKE_SOURCE_DIR}/docs/SECURITY.md"
+        "${CMAKE_SOURCE_DIR}/docs/OBSERVABILITY.md"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+    COMPONENT runtime)
+
+install(FILES
+        "${CMAKE_SOURCE_DIR}/docs/development/PLAN.md"
+        "${CMAKE_SOURCE_DIR}/docs/development/AGENT-INTENT-CONTRACT.md"
+        "${CMAKE_SOURCE_DIR}/docs/development/TEST-STRATEGY.md"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/development"
     COMPONENT runtime)
