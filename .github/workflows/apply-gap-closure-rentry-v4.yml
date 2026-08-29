@@ -1,0 +1,169 @@
+name: apply-gap-closure-rentry-v4
+
+on:
+  push:
+    branches: [codex/patch-transfer-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-gap-closure-rentry-v4
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout transfer branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev python3 curl ca-certificates
+
+      - name: Download and validate independently replayed v3 patch
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            --retry 5 --retry-delay 2 \
+            'https://rentry.co/heptatrader-gap-closure-v3-7599c4fd-20260829-7f11c5a9/raw' \
+            --output "$RUNNER_TEMP/gap-closure-v3.patch"
+          test -s "$RUNNER_TEMP/gap-closure-v3.patch"
+          grep -F 'diff --git ' "$RUNNER_TEMP/gap-closure-v3.patch" >/dev/null
+
+          git apply --numstat "$RUNNER_TEMP/gap-closure-v3.patch" | \
+            while IFS=$'\t' read -r added deleted path; do
+              case "$path" in
+                HeptaTrade/*|tests/*|docs/*|research/*|systemd/*|legacy/*|\
+                scripts/*|cmake/*|.github/workflows/core-ci.yml|\
+                CMakeLists.txt|CMakePresets.json|README.md|\
+                HeptaSimulator/*|HeptaStrategy/*|Interface/*|Tools/*|doc/*|\
+                HeptaTrader.sln|HeptaTrader_Linux.sln|\
+                \{HeptaSimulator\ =\>\ legacy/HeptaSimulator\}/*|\
+                \{HeptaStrategy\ =\>\ legacy/HeptaStrategy\}/*|\
+                \{Interface\ =\>\ legacy/Interface\}/*|\
+                \{Tools\ =\>\ legacy/Tools\}/*|\
+                \{doc\ =\>\ legacy/doc\}/*)
+                  ;;
+                *)
+                  echo "Patch touches forbidden path: $path" >&2
+                  exit 1
+                  ;;
+              esac
+              case "$path" in
+                *.pem|*.key|*.p12|*.pfx|*.env|*secret*)
+                  echo "Patch touches sensitive path: $path" >&2
+                  exit 1
+                  ;;
+              esac
+            done
+
+      - name: Apply only to a coherent candidate tree
+        run: |
+          set -euo pipefail
+          git fetch origin codex/close-all-runtime-gaps
+          git checkout -B codex/close-all-runtime-gaps \
+            origin/codex/close-all-runtime-gaps
+          patch="$RUNNER_TEMP/gap-closure-v3.patch"
+          if git apply --reverse --check "$patch"; then
+            echo 'Patch is already fully applied; validating exact remote tree.'
+          elif git apply --check "$patch"; then
+            git apply --index "$patch"
+          else
+            git apply --3way --index "$patch"
+          fi
+          git diff --cached --check
+
+      - name: Verify complete remaining-gap contract
+        run: |
+          set -euo pipefail
+          git grep -n 'decision.get_snapshot' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'intent.preview_target_position' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'intent.apply_target_position' -- HeptaTrade tests docs adapters plugins systemd
+          git grep -n 'operator.trade.place' -- HeptaTrade tests docs systemd
+          git grep -n 'execution_service_epoch' -- HeptaTrade tests
+          git grep -n 'fencing_generation' -- HeptaTrade tests
+          git grep -n -E \
+            'collection_watermark|event_watermark|snapshot_watermark' \
+            -- HeptaTrade tests
+          git grep -n -E \
+            '(decisionGetSnapshot|decision_get_snapshot)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          git grep -n -E \
+            '(intentPreviewTargetPosition|intent_preview_target_position)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+          git grep -n -E \
+            '(applyTargetPosition|intent_apply_target_position)[[:space:]]*=' \
+            -- 'HeptaTrade/**/*.cpp' \
+            ':!HeptaTrade/tools/trading_tool_registry.cpp'
+
+          test -d legacy
+          test -f legacy/README.md
+          for path in HeptaSimulator HeptaStrategy Interface Tools doc \
+              HeptaTrader.sln HeptaTrader_Linux.sln; do
+            test ! -e "$path"
+          done
+          if git grep -n -E '(^|["<(/ ])legacy/' -- \
+              ':!legacy/**' ':!docs/**' ':!README.md' \
+              ':!.github/**' ':!scripts/**'; then
+            echo 'Active runtime source depends on legacy/' >&2
+            exit 1
+          fi
+
+          test -f research/manifest-v1.json
+          python3 -m json.tool research/manifest-v1.json >/dev/null
+          grep -Ei 'unsupported' research/manifest-v1.json
+          grep -Ei 'shadow' research/manifest-v1.json
+
+          for file in systemd/*agent*env.example \
+                      systemd/*gateway*env.example; do
+            test -e "$file" || continue
+            case "$file" in *operator*) continue ;; esac
+            if grep -Eq \
+                '(^|[,[:space:]])(trade\.place|operator\.trade\.place)([,[:space:]]|$)' \
+                "$file"; then
+              echo "Ordinary Agent profile exposes raw place authority: $file" >&2
+              exit 1
+            fi
+          done
+
+      - name: Build and test exact candidate tree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: '2'
+        run: ./scripts/dev_core.sh
+
+      - name: Verify minimal runtime install tree
+        run: |
+          set -euo pipefail
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release \
+            --component runtime
+          test -x "$stage/usr/local/bin/heptactl"
+          test -x "$stage/usr/local/bin/hepta-sessionctl"
+          test -x "$stage/usr/local/bin/hepta-agent-mcp-launcher"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
+
+      - name: Commit and push exact candidate tree when changed
+        run: |
+          set -euo pipefail
+          if git diff --cached --quiet; then
+            echo 'Remote candidate already contains the exact verified patch.'
+            exit 0
+          fi
+          git config user.name 'heptatrader-gap-closure-bot'
+          git config user.email \
+            '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'feat: complete Execution-owned Agent intent wiring'
+          git push origin HEAD:codex/close-all-runtime-gaps
