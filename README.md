@@ -1,17 +1,17 @@
 # HeptaTrader
 
-HeptaTrader 是一个面向 Agent/AI 的确定性量化交易运行时。仓库只维护能够直接改善研究、决策、风控和执行迭代的代码；发布认证、source bundle、round manifest、evidence closure、安装树证明和强制 CI 不再进入源码路径。
+HeptaTrader 是一个面向 Agent/AI 的确定性量化交易运行时。仓库只维护直接服务于研究、策略决策、风控、OMS 和执行的代码；发布认证、round、evidence closure、安装树证明、动态 PAPER campaign 和强制 CI 不再进入核心 OS。
 
-## 当前核心
+## 核心运行时
 
-- Tool Gateway 与受限 Agent 会话
-- 确定性 Execution Service、OMS journal、幂等与 fencing
-- broker/venue 适配边界
-- pre-trade risk、kill switch、reconciliation 与 authoritative snapshot
-- simulator、shadow/paper 策略运行脚本
-- 市场上下文、策略回放和决策 receipt
+- Tool Gateway、typed Unix protocol 与受限 Agent 会话
+- Execution Service、OMS journal、command-id 幂等与 fencing
+- pre-trade risk、kill switch、authoritative snapshot 与 reconciliation
+- simulator、IB PAPER 和 venue adapter
+- MCP/native client
+- 市场上下文、策略回放、shadow runner 与决策 receipt
 
-Agent 不直接持有 broker session，LLM 不拥有订单状态机、最终风控、对账或 kill switch。
+Agent 不直接持有 broker session。LLM 不拥有订单状态机、最终风险判断、订单 ID、对账真相或 kill switch。
 
 ## 快速开发循环
 
@@ -19,54 +19,33 @@ Agent 不直接持有 broker session，LLM 不拥有订单状态机、最终风�
 ./scripts/dev_core.sh
 ```
 
-该脚本只做三件事：IB-disabled 配置、构建 19 个核心测试二进制、运行 `core` CTest 标签。它不会生成 source archive、VM bundle、release manifest、evidence index、安装树或 rootful systemd 认证环境，也不会成为 PR 的强制前置流程。
-
-手动等价命令：
-
-```bash
-cmake -S . -B build/core \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DBUILD_TESTING=ON \
-  -DHEPTA_ENABLE_IBAPI=OFF \
-  -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
-  -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
-cmake --build build/core --target hepta_core_test_binaries --parallel 2
-ctest --test-dir build/core --output-on-failure --parallel 2 -L core
-```
+该入口只执行 IB-disabled Release 配置、构建核心测试二进制并运行 `core` CTest 标签。它不生成 bundle、manifest、evidence index、安装树、VM 或 rootful systemd 认证环境，也不是 PR 的强制门禁。
 
 ## 保留的安全边界
-
-以下约束属于交易内核，不属于发布仪式：
 
 - journal-before-send
 - command ID 幂等与 execution fencing
 - Agent、Gateway 与 broker authority 隔离
-- bounded framing、peer credential 与 token 文件约束
-- broker authoritative reconciliation
+- bounded framing、peer credential 与 session token 约束
+- authoritative reconciliation
 - fail-closed risk、kill switch 与安全恢复
-- Gateway 禁止链接 broker/credential 权限符号的边界检查
+- Gateway 禁止链接 broker/credential 权限符号
+- 固定 IB Execution UID 的 broker 端口网络隔离
 
-## 目录
+## 精简后的运行面
 
 ```text
-HeptaTrade/     核心运行时、OMS、风险、执行、Agent 工具与 venue adapter
-strategies/     版本化策略定义
-configs/        paper/shadow 配置
+HeptaTrade/     执行、OMS、风险、状态、Agent 工具与 venue adapter
 adapters/mcp/   MCP 入口
-scripts/        运行、研究、故障注入与恢复工具
-tests/          19 个快速核心测试
-docs/           当前架构、交易协议和运行手册
-systemd/        核心运行服务定义
+strategies/     版本化策略定义
+scripts/        开发、市场数据、策略回放与最小运行时辅助工具
+systemd/        固定 Gateway、Simulator、IB PAPER 服务定义
+tests/          快速核心测试
+docs/           当前运行时契约
 ```
 
-## 不再进入本仓库的内容
+运行时不再内置动态 domain/PAPER campaign 的创建、renew、repair、finalizer、attestation 或 witness 编排。部署侧只需启动固定服务、提供 session token、broker credential 和配置；session 可通过 `hepta-sessionctl` 显式管理。
 
-- release manifest、round 编号快照和 source baseline
-- source/runtime/vendor bundle closure
-- evidence set/index/ingestion receipt
-- install-tree、VM、rootful systemd/AppArmor certification
-- repository layout/code-quality policy manifest
-- P1 watch/shadow/paper canary、soak、attestation 和 terminal witness 编排
-- 发布 readiness、go/no-go、freeze、rollout 和 round 状态文档
+## 仓库外职责
 
-如需对外分发制品，应由独立、按需触发的发布流程消费固定 commit；不得重新阻塞核心 OS 的开发循环。
+对外分发所需的签名、SBOM、安装包或宿主合规验证，应由独立、按需触发的流程消费固定 commit。它们不得重新成为普通功能提交或策略迭代的前置条件。

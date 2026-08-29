@@ -1,8 +1,8 @@
 [Unit]
 Description=HeptaTrader IB PAPER execution authority
 Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
-Requires=hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
-After=hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket network.target
+Requires=hepta-broker-egress-policy.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
+After=hepta-broker-egress-policy.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket network.target
 Conflicts=hepta-execution-simulator.service hepta-execution-simulator.socket hepta-execution-events-simulator.socket
 
 [Service]
@@ -58,6 +58,3 @@ ReadWritePaths=/var/lib/hepta-ib-execution
 ReadOnlyPaths=/run/hepta/ib-paper-control
 StandardOutput=journal
 StandardError=journal
-
-# Deliberately no [Install] section. The daemon is PAPER-only, receives both
-# authority credentials through systemd, and may reach only a loopback Gateway.

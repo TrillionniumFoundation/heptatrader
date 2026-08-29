@@ -1,1 +1,0 @@
-{"confidence_threshold":0.62,"decision_interval_seconds":120,"instrument":"EUR.USD","live_authorized":false,"max_holding_seconds":900,"max_order_quantity":25000,"model_agent":"telegram-bot-8681289317","paper_only":true,"sample_interval_seconds":10,"schema":"hepta.local-ai-paper-strategy.v1","version":1}
