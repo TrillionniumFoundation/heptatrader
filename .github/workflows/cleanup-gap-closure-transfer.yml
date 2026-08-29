@@ -1,0 +1,90 @@
+name: cleanup-gap-closure-transfer
+
+on:
+  push:
+    branches: [codex/patch-transfer-probe]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: cleanup-gap-closure-transfer
+  cancel-in-progress: true
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Wait for independently verified main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 300); do
+            main_sha=$(gh api \
+              "repos/$GITHUB_REPOSITORY/git/ref/heads/main" \
+              --jq '.object.sha')
+            runs=$(gh api \
+              "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$main_sha&per_page=100")
+            green=$(jq -r \
+              '[.workflow_runs[] | select(.name == "core-runtime" and .head_sha == $sha and .status == "completed" and .conclusion == "success")] | length' \
+              --arg sha "$main_sha" <<<"$runs")
+            if test "$green" -gt 0; then
+              rm -rf repo
+              git clone --depth 1 --branch main \
+                "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+                repo >/dev/null 2>&1
+              if test -f repo/research/manifest-v1.json && \
+                 test -f repo/legacy/README.md && \
+                 test ! -e repo/HeptaSimulator && \
+                 test ! -e repo/HeptaStrategy && \
+                 test ! -e repo/Interface && \
+                 test ! -e repo/Tools && \
+                 test ! -e repo/doc && \
+                 grep -F 'decision.get_snapshot' \
+                   repo/HeptaTrade/tools/trading_tool_registry.cpp >/dev/null && \
+                 grep -F 'intent.preview_target_position' \
+                   repo/HeptaTrade/tools/trading_tool_registry.cpp >/dev/null && \
+                 grep -F 'intent.apply_target_position' \
+                   repo/HeptaTrade/tools/trading_tool_registry.cpp >/dev/null && \
+                 grep -F 'Verify remaining blocker closure' \
+                   repo/.github/workflows/core-ci.yml >/dev/null && \
+                 ! grep -F 'TEMPORARY FINALIZER' \
+                   repo/.github/workflows/core-ci.yml >/dev/null; then
+                echo "$main_sha" > /tmp/verified-main-sha
+                break
+              fi
+            fi
+            sleep 6
+          done
+          test -s /tmp/verified-main-sha
+
+      - name: Close superseded stacked PR and remove temporary branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          main_sha=$(cat /tmp/verified-main-sha)
+          gh api --method POST \
+            "repos/$GITHUB_REPOSITORY/issues/3/comments" \
+            -f body="Superseded by the fully verified gap-closure tree on main at ${main_sha}. The physical legacy isolation is included there." \
+            >/dev/null || true
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/issues/3" \
+            -f state=closed -f state_reason=completed >/dev/null || true
+
+          for branch in \
+              codex/legacy-isolation \
+              codex/agent-intent-contract \
+              codex/research-docs-simplification \
+              codex/patch-transfer-probe; do
+            encoded=${branch//\//%2F}
+            gh api --method DELETE \
+              "repos/$GITHUB_REPOSITORY/git/refs/heads/$encoded" \
+              >/dev/null 2>&1 || true
+          done
