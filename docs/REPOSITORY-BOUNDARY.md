@@ -9,7 +9,11 @@ grant PAPER, LIVE, broker, or mutation authority.
 - Source tree: reviewed local Round122 candidate (local filesystem path omitted)
 - Source commit: `e8b67c7e3c16e3e7c9316f71756ce78c4ab4d585`
 - Source version: `0.1.0-beta.1-round122`
-- Source baseline manifest digest: `sha256:7d4ae21bbf4ddb248662c7687914af5fc5c98601ca9c415b58c8286cf4624f72`
+- Candidate baseline manifest digest (before publication normalization):
+  `sha256:7d4ae21bbf4ddb248662c7687914af5fc5c98601ca9c415b58c8286cf4624f72`
+- Published snapshot manifest digest: `sha256:5c015021a60a98cba8ee4c984bd7529786d36068c8b455951fec6d095f15e3cb`
+- Published source baseline commit: `dbb277be2da7bc019bad4eff62e2f6c33f71e8f4`
+- Published Round122 manifest commit: `be80bb763a1d20f82803621373c82bf8fadc2f49`
 - The older `HeptaTrader-master` worktree contained uncommitted local repair
   experiments.  It was left untouched and is not silently mixed into this
   reviewed snapshot.
