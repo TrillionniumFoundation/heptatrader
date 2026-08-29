@@ -63,16 +63,3 @@ jobs:
             "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \
             "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
-
-      - name: Export exact source snapshot
-        run: |
-          tar --exclude=.git --exclude=build \
-            -czf "$RUNNER_TEMP/heptatrader-source.tgz" .
-
-      - name: Upload exact source snapshot
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: heptatrader-source-${{ github.sha }}
-          path: ${{ runner.temp }}/heptatrader-source.tgz
-          retention-days: 1
-          if-no-files-found: error
