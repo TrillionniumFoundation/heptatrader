@@ -1,0 +1,40 @@
+[Unit]
+Description=HeptaTrader read-only SHADOW WATCH collector (%i)
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Requires=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
+After=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
+OnSuccess=hepta-shadow-watch-export@%i.service
+
+[Service]
+Type=oneshot
+User=hepta-agent-%i
+Group=hepta-agent-%i
+SupplementaryGroups=
+EnvironmentFile=/etc/heptatrader/trust-domains/%i.shadow-watch.env
+ExecStart=/usr/libexec/hepta-shadow-watch-collector --domain-config /etc/heptatrader/trust-domains/uid-${HEPTA_SHADOW_AGENT_UID}.json --output /var/lib/hepta-shadow-watch-%i/private/snapshot.json --instrument EUR.USD
+StateDirectory=hepta-shadow-watch-%i
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/hepta-shadow-watch-%i

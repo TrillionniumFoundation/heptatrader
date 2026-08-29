@@ -1,0 +1,65 @@
+{
+  "isolation_requirement": "untrusted-agents-must-use-distinct-trust-domains",
+  "live_authorized": false,
+  "multi_domain_templates": {
+    "agent_group": "hepta-agent-{domain_id}",
+    "agent_name": "hepta-agent-{domain_id}",
+    "execution_event_socket": "/run/hepta-execution-{domain_id}/events.sock",
+    "execution_fence_credential_path": "/etc/heptatrader/credentials/trust-domains/{domain_id}/hepta-execution-simulator-fence",
+    "execution_group": "hepta-exec-{domain_id}",
+    "execution_name": "hepta-exec-{domain_id}",
+    "execution_socket": "/run/hepta-execution-{domain_id}/execution.sock",
+    "execution_state_directory": "/var/lib/hepta-execution-{domain_id}",
+    "gateway_group": "hepta-gw-{domain_id}",
+    "gateway_name": "hepta-gw-{domain_id}",
+    "gateway_state_directory": "/var/lib/hepta-tool-gateway-{domain_id}",
+    "lease_credential_path": "/etc/heptatrader/credentials/trust-domains/{domain_id}/hepta-supervisor-lease.key",
+    "socket_path": "/run/hepta-agent-{domain_id}/tools.sock",
+    "supervisor_socket": "/run/hepta-tool-gateway-{domain_id}/session-supervisor.sock",
+    "token_directory": "/run/hepta-agent-{domain_id}/sessions"
+  },
+  "one_execution_authority_per_domain": true,
+  "paper_authorized": false,
+  "shared_connect_group": {
+    "gid": 2001,
+    "name": "hepta-gateway",
+    "roles": [
+      "explicit-single-domain-compatibility"
+    ]
+  },
+  "schema": "hepta.agent-trust-domain-policy.v1",
+  "single_domain_compatibility": {
+    "agent_gid": 2004,
+    "agent_uid": 2004,
+    "domain_id": "default",
+    "socket_path": "/run/hepta-agent/tools.sock",
+    "token_directory": "/run/hepta-agent"
+  },
+  "trust_boundary": "one-agent-or-mutually-trusting-process-group",
+  "unique_fields": [
+    "gateway_name",
+    "gateway_uid",
+    "gateway_group",
+    "gateway_gid",
+    "connect_group",
+    "connect_group_gid",
+    "agent_name",
+    "agent_uid",
+    "agent_group",
+    "agent_gid",
+    "execution_name",
+    "execution_uid",
+    "execution_group",
+    "execution_gid",
+    "socket_path",
+    "token_directory",
+    "supervisor_socket",
+    "lease_credential_path",
+    "gateway_state_directory",
+    "execution_socket",
+    "execution_event_socket",
+    "execution_fence_credential_path",
+    "execution_state_directory"
+  ],
+  "version": 1
+}

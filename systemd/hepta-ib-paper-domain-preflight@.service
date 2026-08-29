@@ -1,0 +1,60 @@
+[Unit]
+Description=HeptaTrader per-domain IB PAPER authority preflight (%i)
+Documentation=file:/usr/share/doc/heptatrader/BROKER-NETWORK-ISOLATION.md
+# The symmetric daemon lifecycle can enqueue more than one preflight start for
+# one bounded daemon restart. Keep the same explicit, bounded dependency budget.
+StartLimitIntervalSec=1800s
+StartLimitBurst=5
+BindsTo=hepta-broker-egress-policy.service hepta-execution-ib-paper@%i.service
+After=hepta-broker-egress-policy.service
+Before=hepta-execution-ib-paper@%i.service hepta-execution-ib-paper@%i.socket hepta-execution-events-ib-paper@%i.socket
+PartOf=hepta-execution-ib-paper@%i.service
+# The reverse BindsTo plus this cleanup policy releases the host flock,
+# tombstone and egress authority after daemon startup failure or exit.
+StopWhenUnneeded=yes
+RefuseManualStart=yes
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=root
+ExecStart=/usr/libexec/hepta-ib-paper-domain-authority --guard --domain %i
+ExecStopPost=/usr/libexec/hepta-ib-paper-domain-authority --finalize-stop --domain %i
+UMask=0077
+WatchdogSec=15s
+WatchdogSignal=SIGTERM
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+Restart=no
+RuntimeDirectory=hepta/ib-paper-host-authority
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+# Parent-directory mounts preserve visibility of atomic file/directory
+# replacement; binding each watched file would pin the old inode.
+ReadOnlyPaths=/usr/share/heptatrader /etc/heptatrader /run/hepta
+ReadWritePaths=/run/hepta/ib-paper-host-authority
+StandardOutput=journal
+StandardError=journal
+
+# Deliberately no [Install]. The preflight reruns in each PAPER start
+# transaction and never creates identities, credentials, or runtime state.

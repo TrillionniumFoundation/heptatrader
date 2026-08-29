@@ -1,0 +1,20 @@
+[Unit]
+Description=HeptaTrader IB PAPER execution authority socket
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Conflicts=hepta-execution-simulator.service hepta-execution-simulator.socket hepta-execution-events-simulator.socket
+PartOf=hepta-execution-ib-paper.service
+
+[Socket]
+ListenStream=/run/hepta-execution/execution.sock
+Accept=no
+Backlog=16
+SocketUser=hepta-gateway
+SocketGroup=hepta-gateway
+SocketMode=0660
+DirectoryMode=0755
+FileDescriptorName=execution
+Service=hepta-execution-ib-paper.service
+RemoveOnStop=yes
+
+# Deliberately no [Install] section. PAPER authority activation requires an
+# explicit, reviewed start after credentials and the environment file exist.

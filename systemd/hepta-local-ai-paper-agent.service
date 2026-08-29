@@ -1,0 +1,30 @@
+[Unit]
+Description=HeptaTrader continuous local-only AI PAPER agent
+After=network-online.target hepta-tool-gateway@alpha.service hepta-execution-ib-paper@alpha.service hepta-ib-paper-campaign-operator@alpha.socket hepta-local-paper-safe-recover.timer hepta-local-paper-session-renew.timer hepta-local-paper-supervisor.timer hepta-local-ai-paper-24h-stop.timer hepta-local-ai-paper-end-flat-retry.timer
+Requisite=hepta-tool-gateway@alpha.service hepta-execution-ib-paper@alpha.service hepta-ib-paper-campaign-operator@alpha.socket hepta-local-paper-safe-recover.timer hepta-local-paper-session-renew.timer hepta-local-paper-supervisor.timer hepta-local-ai-paper-24h-stop.timer hepta-local-ai-paper-end-flat-retry.timer
+OnFailure=hepta-local-paper-safe-recover.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/home/qian-qi/.openclaw/workspace/quant/HeptaTrader-master
+EnvironmentFile=/etc/heptatrader/local-ai-paper-agent.env
+ExecCondition=/usr/libexec/hepta-local-paper-repair pre-start-guard
+ExecStart=/usr/libexec/hepta-local-ai-paper-agent --campaign-id ${HEPTA_LOCAL_AI_CAMPAIGN_ID} --strategy-id ${HEPTA_LOCAL_AI_STRATEGY_ID} --strategy-version ${HEPTA_LOCAL_AI_STRATEGY_VERSION} --strategy-sha256 ${HEPTA_LOCAL_AI_STRATEGY_SHA256} --auth-generation ${HEPTA_LOCAL_AI_AUTH_GENERATION} --auth-profile-id ${HEPTA_LOCAL_AI_AUTH_PROFILE_ID} --auth-profile-allowlist-sha256 ${HEPTA_LOCAL_AI_AUTH_PROFILE_ALLOWLIST_SHA256}
+Restart=no
+StateDirectory=hepta-local-ai-paper-agent
+StateDirectoryMode=0700
+RuntimeDirectory=hepta-local-ai-paper-agent
+RuntimeDirectoryMode=0711
+UMask=0077
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL CAP_SETGID CAP_SETUID
+AmbientCapabilities=
+RestrictNamespaces=yes
+SystemCallFilter=~@mount
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/hepta-local-ai-paper-agent /home/qian-qi/.openclaw
+InaccessiblePaths=/var/lib/hepta-local-ai-paper-agent/session-authority

@@ -1,0 +1,5 @@
+[Unit]
+Description=HeptaTrader disposable PAPER-domain effective-systemd gate
+DefaultDependencies=no
+Wants=systemd-journald.service
+After=systemd-journald.service

@@ -1,0 +1,32 @@
+{
+  "authorized_connectors": [
+    {
+      "domain_id": "default",
+      "gid": 2003,
+      "identity": "hepta-ib-exec",
+      "role": "ib-paper-execution-authority",
+      "uid": 2003
+    }
+  ],
+  "chain": "output",
+  "default_for_protected_ports": "reject",
+  "family": "inet",
+  "identity_manifest_sha256": "sha256:1d429014517daf3e8d19fb1b1af7f28c02a5bedca7e8732664699f2f65aeb03b",
+  "paper_identity_manifest": {
+    "default_paper_authorized": false,
+    "max_identities": 1,
+    "path": "/etc/heptatrader/hepta-agent-trust-domain-paper-identities-v1.json",
+    "required": false,
+    "schema": "hepta.agent-trust-domain-paper-identities.v1"
+  },
+  "preserve_other_egress": true,
+  "protected_tcp_destination_ports": [
+    4001,
+    4002,
+    7496,
+    7497
+  ],
+  "schema": "hepta.broker-network-policy.v1",
+  "table": "hepta_broker_egress_v1",
+  "version": 1
+}

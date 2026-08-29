@@ -1,0 +1,8 @@
+# Apply as a reviewed drop-in to the system service that hosts Codex or
+# OpenClaw. This does not name or start an Agent implementation.
+[Service]
+User=hepta-agent
+Group=hepta-agent
+SupplementaryGroups=
+UMask=0077
+NoNewPrivileges=yes

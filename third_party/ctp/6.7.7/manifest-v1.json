@@ -1,0 +1,156 @@
+{
+  "schema": "hepta.vendor-asset-manifest.v1",
+  "vendor": "CTP",
+  "version": "6.7.7",
+  "distribution_origin": "legacy repository import",
+  "origin_url": null,
+  "license_file": null,
+  "license_review_required": true,
+  "distribution_authorized": false,
+  "capability_status": "disabled-experimental",
+  "paper_authorized": false,
+  "live_authorized": false,
+  "canonical_headers": [
+    {
+      "path": "third_party/ctp/6.7.7/include/ThostFtdcMdApi.h",
+      "size": 5738,
+      "sha256": "5bb871ef994236c746e680722a828c508d5c5b3b6463817e6ce374c0502aa646"
+    },
+    {
+      "path": "third_party/ctp/6.7.7/include/ThostFtdcTraderApi.h",
+      "size": 46743,
+      "sha256": "e5798cc855a82ca5c17a6c4e0f80cff32e597698ccb961bf95fe37b43d031da5"
+    },
+    {
+      "path": "third_party/ctp/6.7.7/include/ThostFtdcUserApiDataType.h",
+      "size": 266437,
+      "sha256": "06b37588faa5f5ac0f77f485c6e604009bb5d90dd21739345d23fc383f1bd40f"
+    },
+    {
+      "path": "third_party/ctp/6.7.7/include/ThostFtdcUserApiStruct.h",
+      "size": 305290,
+      "sha256": "bcf3cf77ad5b8ded9780f043160d39cde4d92d35e890e13f8dadfa9488c5b920"
+    }
+  ],
+  "compatibility_include_directories": [
+    "Interface/CTPTradeApi32",
+    "Interface/CTPTradeApi64",
+    "Interface/CTPTradeApiLinux"
+  ],
+  "platform_assets": [
+    {
+      "path": "Interface/CTPTradeApi32/error.dtd",
+      "platform": "windows-x86",
+      "size": 175,
+      "sha256": "a94aecdb30de057c7a883e88f0c8ad0ce5f76cb0f00cfee5a0dadba6f8264a3a"
+    },
+    {
+      "path": "Interface/CTPTradeApi32/error.xml",
+      "platform": "windows-x86",
+      "size": 23114,
+      "sha256": "fdcd540a98f10438263e8fa63f05620d3024910d8a21b3ce7a823ac84ac4f263"
+    },
+    {
+      "path": "Interface/CTPTradeApi32/thostmduserapi_se.dll",
+      "platform": "windows-x86",
+      "size": 2402304,
+      "sha256": "c25c15d237affe71744364535fc1e0d4bbe34dea115c07a18d526fd7f73fbbb3"
+    },
+    {
+      "path": "Interface/CTPTradeApi32/thostmduserapi_se.lib",
+      "platform": "windows-x86",
+      "size": 3764,
+      "sha256": "8618ec6e9d34bd4ab3cb51dbbb42dbed6d774c38df99a6e4221360bd2122f8ad"
+    },
+    {
+      "path": "Interface/CTPTradeApi32/thosttraderapi_se.dll",
+      "platform": "windows-x86",
+      "size": 2707456,
+      "sha256": "848e3050f18298edbc7e1dc687063d161aa4fe2bbdd8b23732ddca6acb578b01"
+    },
+    {
+      "path": "Interface/CTPTradeApi32/thosttraderapi_se.lib",
+      "platform": "windows-x86",
+      "size": 3902,
+      "sha256": "54d1225d86c9194993f2ab484f5a694342c675cfbb199121001667f12a662ab0"
+    },
+    {
+      "path": "Interface/CTPTradeApi32/版本.txt",
+      "platform": "windows-x86",
+      "size": 5,
+      "sha256": "42c9984374ad3497a076b7b8eedf474fe4e18d8f829478facf0018f40c53d755"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/error.dtd",
+      "platform": "windows-x86_64",
+      "size": 175,
+      "sha256": "a94aecdb30de057c7a883e88f0c8ad0ce5f76cb0f00cfee5a0dadba6f8264a3a"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/error.xml",
+      "platform": "windows-x86_64",
+      "size": 23114,
+      "sha256": "fdcd540a98f10438263e8fa63f05620d3024910d8a21b3ce7a823ac84ac4f263"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/thostmduserapi_se.dll",
+      "platform": "windows-x86_64",
+      "size": 3044352,
+      "sha256": "72a833786836ce6e6026bc0c19a06bd3c1b0279cb1ea9df0297b1c2916cad98b"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/thostmduserapi_se.lib",
+      "platform": "windows-x86_64",
+      "size": 3822,
+      "sha256": "02dfc5ef9b70e30430a935807f8c61f926beab719cf85005bb408dd9dc6065a1"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/thosttraderapi_se.dll",
+      "platform": "windows-x86_64",
+      "size": 3428864,
+      "sha256": "d79cc036fc90733a30cee8e8e30bdea17b346333c69413f33d44ebc7a96b1fad"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/thosttraderapi_se.lib",
+      "platform": "windows-x86_64",
+      "size": 3960,
+      "sha256": "b345f201edc4d16efd5356aff5a0f1c875bbb7124b2a80fadb725dbf5b49ce76"
+    },
+    {
+      "path": "Interface/CTPTradeApi64/版本.txt",
+      "platform": "windows-x86_64",
+      "size": 5,
+      "sha256": "42c9984374ad3497a076b7b8eedf474fe4e18d8f829478facf0018f40c53d755"
+    },
+    {
+      "path": "Interface/CTPTradeApiLinux/error.dtd",
+      "platform": "linux-x86_64",
+      "size": 175,
+      "sha256": "a94aecdb30de057c7a883e88f0c8ad0ce5f76cb0f00cfee5a0dadba6f8264a3a"
+    },
+    {
+      "path": "Interface/CTPTradeApiLinux/error.xml",
+      "platform": "linux-x86_64",
+      "size": 23114,
+      "sha256": "fdcd540a98f10438263e8fa63f05620d3024910d8a21b3ce7a823ac84ac4f263"
+    },
+    {
+      "path": "Interface/CTPTradeApiLinux/thostmduserapi_se.so",
+      "platform": "linux-x86_64",
+      "size": 4869685,
+      "sha256": "6da3e23a041418b57506811a9a36b43c2dd53d5e9becf4b88ae083807d6084de"
+    },
+    {
+      "path": "Interface/CTPTradeApiLinux/thosttraderapi_se.so",
+      "platform": "linux-x86_64",
+      "size": 5480894,
+      "sha256": "54a231681ba68b0462a693a078251e9d12f98bf55a1569ed8f9c63de39c8bd22"
+    },
+    {
+      "path": "Interface/CTPTradeApiLinux/version.txt",
+      "platform": "linux-x86_64",
+      "size": 5,
+      "sha256": "42c9984374ad3497a076b7b8eedf474fe4e18d8f829478facf0018f40c53d755"
+    }
+  ]
+}

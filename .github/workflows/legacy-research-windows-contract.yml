@@ -1,0 +1,72 @@
+name: legacy-research-windows-contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Full reviewed commit SHA containing the legacy inputs
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  legacy-research-contract:
+    # This workflow quarantines the historical Windows/monolith gate. It does
+    # not build, launch, connect to a broker, or create release approval.
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout exact reviewed legacy input
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+          ref: ${{ inputs.reviewed_sha }}
+
+      - name: Validate reviewed SHA and versioned legacy contract
+        shell: pwsh
+        env:
+          HEPTA_REVIEWED_SHA: ${{ inputs.reviewed_sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $expected = $env:HEPTA_REVIEWED_SHA
+          if ($expected -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'reviewed_sha must be a lowercase full commit SHA'
+          }
+          $actual = (git rev-parse HEAD).Trim()
+          if ($actual -cne $expected) {
+            throw "legacy checkout identity drift: $actual"
+          }
+          $required = @(
+            'scripts/ci_gate.ps1',
+            'scripts/ci_gate_pr.ps1',
+            'scripts/ci_gate_release.ps1',
+            'scripts/ib_gateway_healthcheck.ps1',
+            'scripts/run_ib_regression_round.ps1',
+            'scripts/run_ctp_regression_round.ps1'
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "versioned legacy input is absent: $path"
+            }
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path -LiteralPath $path),
+              [ref]$tokens,
+              [ref]$errors
+            )
+            if ($errors.Count -ne 0) {
+              throw "legacy PowerShell parse failure: $path"
+            }
+          }
+          @(
+            'release_eligible=false',
+            'host_execution_authorized=false',
+            'broker_connection_authorized=false',
+            'paper_authorized=false',
+            'live_authorized=false'
+          ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY

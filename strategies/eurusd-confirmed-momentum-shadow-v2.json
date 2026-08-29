@@ -1,0 +1,88 @@
+{
+  "decision_policy": {
+    "direct_broker_access": false,
+    "missing_required_evidence": "NO_TRADE",
+    "mutation_attempted": false,
+    "stale_or_conflicting_evidence": "NO_TRADE",
+    "unknown_or_transition_regime": "NO_TRADE"
+  },
+  "evidence_requirements": {
+    "authoritative_account": true,
+    "authoritative_health": true,
+    "authoritative_orders": true,
+    "authoritative_positions": true,
+    "authoritative_quote": true,
+    "authoritative_risk": true,
+    "economic_calendar_required": true,
+    "information_provenance_required": true,
+    "minimum_bar_observations": 40,
+    "minimum_raw_quote_observations": 361,
+    "minimum_resampled_quote_observations": 7,
+    "minimum_history_span_seconds": 5400
+  },
+  "feature_calculation_version": "eurusd-shadow-features-v2",
+  "feature_windows": {
+    "atr_bars": 14,
+    "bar_interval_seconds": 300,
+    "breakout_bars": 20,
+    "fast_ema_bars": 12,
+    "quote_confirmation_seconds": 900,
+    "quote_lookback_seconds": 5400,
+    "quote_maximum_gap_seconds": 15,
+    "quote_resample_seconds": 900,
+    "slow_ema_bars": 36,
+    "slope_lookback_bars": 6
+  },
+  "freshness_limits": {
+    "bar_age_ms": 600000,
+    "economic_calendar_age_ms": 900000,
+    "information_observation_age_ms": 900000,
+    "portfolio_snapshot_age_ms": 10000,
+    "quote_age_ms": 5000
+  },
+  "instrument": {
+    "asset_class": "CASH",
+    "canonical_symbol": "EUR.USD",
+    "currency": "USD",
+    "exchange": "IDEALPRO",
+    "symbol": "EUR"
+  },
+  "live_authorized": false,
+  "paper_only": true,
+  "regime": {
+    "maximum_range_ema_separation_bps": 0.75,
+    "minimum_trend_ema_separation_bps": 1.5,
+    "minimum_trend_slope_bps": 0.5
+  },
+  "schema": "hepta.confirmed-momentum-strategy.v2",
+  "setup": {
+    "allowed_regimes": [
+      "trend"
+    ],
+    "conflicting_information_action": "NO_TRADE",
+    "estimated_slippage_bps": 0.15,
+    "event_exclusion_after_seconds": 900,
+    "event_exclusion_before_seconds": 1800,
+    "maximum_window_return_bps": 40.0,
+    "maximum_spread_bps": 1.5,
+    "maximum_step_volatility_bps": 12.0,
+    "minimum_cost_multiple": 3.0,
+    "minimum_confirmation_return_bps": 2.0,
+    "minimum_step_volatility_bps": 0.05,
+    "minimum_window_return_bps": 5.0,
+    "require_zero_active_orders": true,
+    "require_zero_gross_exposure": true,
+    "require_zero_position": true
+  },
+  "shadow_intent_contract": {
+    "limit_price_rule": "BUY_AT_AUTHORITATIVE_ASK_OR_SELL_AT_AUTHORITATIVE_BID",
+    "maximum_holding_seconds": 1800,
+    "maximum_intent_horizon_seconds": 60,
+    "maximum_quantity": 1,
+    "order_type": "LMT",
+    "stop_atr_multiple": 0.75,
+    "time_in_force": "DAY"
+  },
+  "strategy_id": "eurusd-confirmed-momentum-shadow",
+  "strategy_version": "2.0.0"
+}

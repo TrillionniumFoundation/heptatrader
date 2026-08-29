@@ -1,0 +1,3440 @@
+{
+  "blocked_reason": null,
+  "clean_checkout_certified": true,
+  "excluded_unsafe_tree": "compat/unsafe-direct-broker",
+  "generated_at": "2026-08-05T03:46:06.995264+00:00",
+  "git_head": "da121d4594fa218350f875068baf70895c7a1ba4",
+  "live_authorized": false,
+  "paper_authorized": false,
+  "release_authorized": false,
+  "schema": "hepta.versioned-source-baseline.v1",
+  "source_baseline_frozen": true,
+  "source_manifest": {
+    "file_count": 570,
+    "files": [
+      {
+        "mode": "0644",
+        "path": ".agents/plugins/marketplace.json",
+        "sha256": "sha256:07da28ec5aba90b01974e275eff4711219898d99ffb5d42860555be7ee1556fb",
+        "size": 395
+      },
+      {
+        "mode": "0644",
+        "path": ".github/workflows/ci-gate.yml",
+        "sha256": "sha256:dd0681b0b44fea7d7289cb99a1f0958afe0ca768d7764b444277566a8a85df8a",
+        "size": 31989
+      },
+      {
+        "mode": "0644",
+        "path": ".gitignore",
+        "sha256": "sha256:d4dbfbbb8d72e17b37b5467dd1d4b5cc52ac660fb477915ec56f303f63bee5ce",
+        "size": 1141
+      },
+      {
+        "mode": "0644",
+        "path": "CMakeLists.txt",
+        "sha256": "sha256:ce1ca2529a14b9f92b4c852d677d2aa3bf64db8514f0e3fccfea8a08fe31a4e0",
+        "size": 21580
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/CMakeLists.txt",
+        "sha256": "sha256:52149f7fdbad1467df713cfe15bbf3be9d31ec9c24b469ce9313093fb4b2a133",
+        "size": 54464
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/HeptaDemoStrategyTrader.cpp",
+        "sha256": "sha256:a70d20e7c6d9ac160fdda246036e2966abc0c6744d26e87a8cc4b8c69f2b261d",
+        "size": 302020
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
+        "sha256": "sha256:def91264aa7a032ca46dbfd31c20c31e601a2c2d341b645783429709d7a9e41f",
+        "size": 415
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ctp/ctp_gateway_adapter.h",
+        "sha256": "sha256:56ed5d6681a899cc3f5bae4fc83ce68f869871457e846ca30e2e5f63f02c9d44",
+        "size": 459
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_api_wrapper.cpp",
+        "sha256": "sha256:5eea3140fbc0c17cebe035b72c24edd43e6a52095b5e54d98db78343dd739f8e",
+        "size": 28429
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_api_wrapper.h",
+        "sha256": "sha256:1a33418a24024314c68da457717bf9cb57907f436663c57b7d991a23c988ce32",
+        "size": 4438
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_decimal_compat.cpp",
+        "sha256": "sha256:c61a7ec886a3444552254908aa33e72c5e99d3044ff32a970db1f4db4b2ed2e3",
+        "size": 2223
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
+        "sha256": "sha256:a04623f5431583e22f30b1671fb849d40a9d273250cd48375f5e3f93cda67779",
+        "size": 65131
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.h",
+        "sha256": "sha256:c9b23df46be93fe080a36ec92c6228edf5085859a60088d9701ac64f36048b7c",
+        "size": 13653
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp",
+        "sha256": "sha256:90e26fef481ca7603e0cdddbc9583cbe3177dc7ad3750157be1af992e071e1f5",
+        "size": 3167
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+        "sha256": "sha256:7a9d467b8afc42c54482535cdcc15245b36507e1737fc9e241520d2c142d2190",
+        "size": 3016
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.h",
+        "sha256": "sha256:ad74f05d5b049ccd64fb87f6756c8e12863d5cdcf62bc64baec34c58623e5b5c",
+        "size": 1103
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_venue_correlation.cpp",
+        "sha256": "sha256:17f4e339a033895197195a658c5f5abcf7e5a030f6ec025209ea8feec4893ba2",
+        "size": 3551
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_ib/ib_venue_correlation.h",
+        "sha256": "sha256:74f1d9317447ba71737dc20a6eeea2d375b834ded0c816abecdc439c2086921b",
+        "size": 633
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
+        "sha256": "sha256:9938948b7a14140cea9fb2fc537d7f716efffe51d94c981bd33c161f65c87ba6",
+        "size": 8542
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/adapter_xt/xt_gateway_adapter.h",
+        "sha256": "sha256:288b6a70d163c97849f00a79b14a19a7270264dd8fb0a056f5c537d47c17ba08",
+        "size": 3413
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/agent/decision_lease_manager.cpp",
+        "sha256": "sha256:e60be1af057521e2fe2f0ab53a2610f95475c771e0e48a7090168bf951012aff",
+        "size": 10726
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/agent/decision_lease_manager.h",
+        "sha256": "sha256:f4031850168b2c458c34f81acb9ea0078ec942892bd748254656b5975d77af01",
+        "size": 4649
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/hepta_sessionctl.cpp",
+        "sha256": "sha256:b9f607968247d8a7104d1b560f5c44b5426a11b133063347027ea9085f4f3396",
+        "size": 1756
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/hepta_sessionctl_command.cpp",
+        "sha256": "sha256:8827cfc31d582c6b0dd244b966ea7138c5c37cbb475cc3200bdc0e31172b5c33",
+        "size": 10075
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/hepta_sessionctl_command.h",
+        "sha256": "sha256:8a93e8a1282632e401f0d4c2c3cf48ef86a821cfad4a7c35f78d462d29c89931",
+        "size": 873
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/heptactl.cpp",
+        "sha256": "sha256:d3fab38f8c5765090d5484ddaec749ab89d5e127c1569d3c8f9383c8e9c4e76e",
+        "size": 3944
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/heptactl_command.cpp",
+        "sha256": "sha256:4e2100dcdbffcd176415ee5468da3337b0fbe39adad525255b5aa763e0f04b46",
+        "size": 7252
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/heptactl_command.h",
+        "sha256": "sha256:60e384f9fe3968ebf7e90a58ffcacc00be509a60718aab4f0491c6ee74bb888f",
+        "size": 487
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/heptactl_exit_codes.cpp",
+        "sha256": "sha256:44f2d68153e5c0520a398fe6682b87017158b461c30452a309abd4158ec39b0b",
+        "size": 1013
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cli/heptactl_exit_codes.h",
+        "sha256": "sha256:d6e9d86b6b43e19a13d2217849a447df77b6e271cfc0540ff99a48738c328d2b",
+        "size": 574
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/client/native_tool_client.cpp",
+        "sha256": "sha256:a5e518d96b87ed6537200c2be84c88556fee78e632c72fd439bbff4940547285",
+        "size": 8490
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/client/native_tool_client.h",
+        "sha256": "sha256:088963a6cd9b064746d53b1151b8ac4b923eaa4528e37b06ed37c9b82384f938",
+        "size": 1355
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/client/native_tool_discovery_contract.cpp",
+        "sha256": "sha256:f14bff53881d10fb95666daed478383104f97f44f56d7ea4fc336a7ae72038b8",
+        "size": 30278
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/client/native_tool_discovery_contract.h",
+        "sha256": "sha256:a033cf851b39782f40ec58a7a2483e0beecaeb676b6779e657c3e114d9e882c9",
+        "size": 819
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/cmake/HeptaTraderAgentOsSdkConfig.cmake.in",
+        "sha256": "sha256:20b3c7e93b85ef48bba09b2a770865923ed87670040f1945350837def1d60105",
+        "size": 88
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/events/execution_event_hub.cpp",
+        "sha256": "sha256:a34c2238bc40674808df34c0d29ec191dfbca72c4e9c29a84de6902d9afbe929",
+        "size": 9396
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/events/execution_event_hub.h",
+        "sha256": "sha256:5521183b71873e514cedad3d34334004e7017f1d0297f37fbdf1acb1ee035b6a",
+        "size": 4144
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/events/owner_scoped_health_publisher.cpp",
+        "sha256": "sha256:f0c3096055599137efcc278d761fbbf6c88f3ef2874a89355b8ed467c4decb68",
+        "size": 2102
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/events/owner_scoped_health_publisher.h",
+        "sha256": "sha256:16a374366730e7478f94115f791fbc6696697b64bbf62f42dd1d5590f00b2d8d",
+        "size": 1203
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_authoritative_flatten.cpp",
+        "sha256": "sha256:db91b7833f714913ba19b2be42d27a20f33dd571dc29f6ea1a9b3a0dbd0dd856",
+        "size": 15492
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_authoritative_flatten_dispatch.cpp",
+        "sha256": "sha256:4534c1d85b974a56d4a1b8d954f7e5a2d8fcaf0d4c30cfa713e4ffd51ae04745",
+        "size": 12359
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_authority.h",
+        "sha256": "sha256:829abd12c0f1db4ea7a85996d269aea2aa96b09809de7f6a7bd464bf90481f72",
+        "size": 7869
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_coordinator.cpp",
+        "sha256": "sha256:97c38c3a1747084273b7e7d1b1fb48aac72dbdaf7ee555ee41b4f8b34bd2c594",
+        "size": 54669
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_coordinator.h",
+        "sha256": "sha256:4e68bbf7c0513fbd0adc8b8665b19cd2524eb97539c0de570f27948489c7de29",
+        "size": 13761
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_decision_lease_authority.cpp",
+        "sha256": "sha256:7a175aa8309a6578d05e6680eb20363254268b288f5527b94dd921682344d3e2",
+        "size": 4316
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_decision_lease_authority.h",
+        "sha256": "sha256:adf7d3e7dd6f8e10fc543f1ba5f751d4eaa6430a5063a967a63641c38330458a",
+        "size": 1351
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed.cpp",
+        "sha256": "sha256:907cc5c8842783b512c2042521740884ce53e5fa3b1bdb1d81cc001179d7f91a",
+        "size": 21402
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed.h",
+        "sha256": "sha256:b2f05d5e32200fdbae9ad3c8b9e577db31c1ab751c5faa9fc78552485c350912",
+        "size": 250
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_client.cpp",
+        "sha256": "sha256:66635d247facd20a7835a5486a95f74740fde79ba2894390fd392f4fc6fb4dfa",
+        "size": 6256
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_client.h",
+        "sha256": "sha256:6913e086d6d2d873cb4681af97859a5cef416651cfc5339d37e52c69b60b23b5",
+        "size": 873
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_contract.h",
+        "sha256": "sha256:d437af4ae06b0f15876c7ea683d915c0c1ae3d9a575690425d7991678d97234a",
+        "size": 1267
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_server.cpp",
+        "sha256": "sha256:e27a417eb958ecfc9010b448334b8c105b2d6caec15ecf94e99c7fedf36ee0ef",
+        "size": 13400
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_server.h",
+        "sha256": "sha256:35fd4e02da36a41d73fddadcbb1a8d8c165dfe2dae50b198366f2a01e5709c4d",
+        "size": 3024
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_transport.cpp",
+        "sha256": "sha256:fda3596405fd979d7681f52c5b6865bba8db5125929cbdefe5081170f93c1f50",
+        "size": 3814
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_event_feed_transport.h",
+        "sha256": "sha256:7b74dbb666fe55f2970631e0eaa6ab2c1c1439f60080ee3e9be81805d8f992bb",
+        "size": 788
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_gateway_context_binding.h",
+        "sha256": "sha256:febfbe18b65e945f3746271d2881362d008468b5bc7b5d3462b879e471d108b3",
+        "size": 1198
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",
+        "sha256": "sha256:59d48f6ad4052d65d6100032cfd71415b7c40b3dc48772085627e7bf2b63eaa5",
+        "size": 10456
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_service_protocol.cpp",
+        "sha256": "sha256:7c069831b49795cf1e70abe7653db96df91b8462b8271837c5158889dfa753bd",
+        "size": 32432
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_service_protocol.h",
+        "sha256": "sha256:de6536695db053c3e1b806b9812f735a34a4fafa7e043d22199ecf5126358344",
+        "size": 1650
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_service_runtime_composition.cpp",
+        "sha256": "sha256:55a1e41b428ac122e70623d74925b623bb02e9769cd0b838331106ae3d83f240",
+        "size": 33746
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_service_runtime_composition.h",
+        "sha256": "sha256:8aa6305d068536c4c053eb2fa1dfd79a43b940c9a6355d40f39ed2e9fb308de9",
+        "size": 2412
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_service_runtime_config.cpp",
+        "sha256": "sha256:53eb15a322688db3c639407a4e9595fbbe1e570b2762bffd610653a22f8ac265",
+        "size": 10211
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/execution_service_runtime_config.h",
+        "sha256": "sha256:522f0634910344bb7034150d4aaab73c0199de86a2781aeaeae0b797d86e30e1",
+        "size": 1693
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/hepta_executiond.cpp",
+        "sha256": "sha256:b04bb992ad5adf57fa38c10f2076ebb1795e8e6a81f372a894741d53a963fc64",
+        "size": 2050
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/hepta_ib_executiond.cpp",
+        "sha256": "sha256:02e9ce990cef5c352a7aaa88400cfcecf57363dccb3292ecc3cba683c365b6ce",
+        "size": 2037
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+        "sha256": "sha256:60677d4be930c1ad2d8e7e37d27d4439140c49bd0a76f54cba48c374db0e3b55",
+        "size": 8349
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+        "sha256": "sha256:70aa49ea772066f313a5ba8ac87363e051bc9e920a74e4bece324c5b7d9e3887",
+        "size": 3020
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_hook_authority.cpp",
+        "sha256": "sha256:d56ba5d0cdd9503e88809de2cead830d031a074d2d5f44a0ff59b679caa214d6",
+        "size": 2536
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_hook_authority.h",
+        "sha256": "sha256:90f6b47da8b84f902f190c9f4970a33a78e6583d5c9de270b26083f4972341a4",
+        "size": 1081
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+        "sha256": "sha256:05f8ce2f8b324a55e2cb3c68c88c7f7d0c2ed65c9001cd2f119ee56ff22e1116",
+        "size": 33433
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_profile.h",
+        "sha256": "sha256:2c67b37db18bc4736aa966fc46a53924553bba2a877d9c6496185436f448533b",
+        "size": 6649
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_runtime_composition.cpp",
+        "sha256": "sha256:73461a3e71d44b5fdc9917630fab2aa2fbec09231a1f70daa72dfe3643326795",
+        "size": 44617
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_runtime_composition.h",
+        "sha256": "sha256:7b450f9e3250b2af0200fecf52666cfe9e2645ad53dc45a3dd18869751db8a6f",
+        "size": 4710
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_runtime_config.cpp",
+        "sha256": "sha256:1914991cb8cef822c5a6cc7d21dd3887df971c4ee517ec513a6ed72da6644df4",
+        "size": 21765
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_runtime_config.h",
+        "sha256": "sha256:5fb1e6353f1d41ed98219bea4d56c0c62875f54bc9728d13cac2670879604e48",
+        "size": 2293
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_execution_runtime_flatten.cpp",
+        "sha256": "sha256:c57c128945a2ffe9c82ac2e31167a39145ac05b58eea8966c554c2bf27a8167c",
+        "size": 4295
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp",
+        "sha256": "sha256:d9d42b555f1c1d5d79264a786931175224c2ee8673a0b42ec1d716e2dd02e798",
+        "size": 4036
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_flatten_plan_binding.h",
+        "sha256": "sha256:42987b5825011a8636d8e38405141f7bcf81449746b3ebc2177503ef7bed55e4",
+        "size": 407
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+        "sha256": "sha256:7d9e236de64bc1f7a20def73e0ace18e7e7b305b246687fbd8725b6152121dab",
+        "size": 12326
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/ib_paper_kill_switch.h",
+        "sha256": "sha256:832fb28727495b87ee10e93e17b9fc8b54e3bca6abceaeec8395986cba3301db",
+        "size": 3082
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/trading_contract.h",
+        "sha256": "sha256:54d2f19f23da38133e31991ac85f6f0215ed95ff71e1d1b770ac4e0c23043390",
+        "size": 2006
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service.cpp",
+        "sha256": "sha256:d384f12b64210ecb1ceca441e1166b1e1ad48770ed41c9bea33da3b40fa46644",
+        "size": 39162
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service.h",
+        "sha256": "sha256:9882df8fe4c53d88ba907ad2475d965e5e53c2cb774a90b20ef5e42d17abe5ca",
+        "size": 254
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_client.cpp",
+        "sha256": "sha256:600c7fff1f5ac2d3fb163b5dcdf64fe9600027bea4013221cecc952b92de6920",
+        "size": 20215
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_client.h",
+        "sha256": "sha256:fd4dceb85b4d46eb9a0b6631faf0ef20184bc09c8a0a695f2b2ab569ff038a2c",
+        "size": 4660
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_flatten.cpp",
+        "sha256": "sha256:7f3d8a957b09bbd4f9b34f1f5d3eed822b996634533620142314402def81fac6",
+        "size": 2910
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_flatten_client.cpp",
+        "sha256": "sha256:a9a103e629dbc1141596f0ac5a642a1f7b288a0f15ac612abd6ee690581340a6",
+        "size": 3093
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_flatten_permit.cpp",
+        "sha256": "sha256:99965625327765912cac452d5bea02f370989b5228c42d4552710be2c4f699f9",
+        "size": 7819
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_internal.h",
+        "sha256": "sha256:9ef714d1c8bf22202415bf6d2a76f994015459415c02649e326bd0a65b7cf4b2",
+        "size": 1844
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_server.h",
+        "sha256": "sha256:e8cd2a05d6fb4b01cdb180c910bd3ebcac525d7d7432c330473f70e5030dd6ce",
+        "size": 7419
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/execution/unix_execution_service_transport.cpp",
+        "sha256": "sha256:14534dba28a0fbd8cf6c50d75c907f696545e0ec5e92dfdcc0d839c13a8f2b66",
+        "size": 5065
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/ib_fx_multi_strategy.cpp",
+        "sha256": "sha256:2678b0822ac0e552c781f87801fbb259591d42d4de854daf32a5f826a01bb7e0",
+        "size": 174489
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/ib_fx_multi_strategy.h",
+        "sha256": "sha256:12a9b191a1c3ffb953a40cdf4a501d894bad7a9d7fb2edb06c79de3778896ec1",
+        "size": 13385
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/oms_journal.cpp",
+        "sha256": "sha256:ace531350d8847ebae72873795c792e56e1dfd847f8f891c049317f408565049",
+        "size": 28822
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/oms_journal.h",
+        "sha256": "sha256:24fe282d2ee5399494b5a34875fe2802950ada1a7272145c65eab9ce1f46fb14",
+        "size": 3819
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/oms_recover.cpp",
+        "sha256": "sha256:88e1ae3bf4b86f2156afe6c0bb4d2c5fc8376846e04c2a44101d81ed7cebcb0a",
+        "size": 2378
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/oms_recover.h",
+        "sha256": "sha256:7ba20bb4025f5a7218775eb94a118c59a187097a84329d93341bd81295502467",
+        "size": 975
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/openclaw_0dte_bridge.cpp",
+        "sha256": "sha256:62a8e1ac6689ba1f1e584a420b32eb7a0f834b2cb83dfb0f69b527fca579fa32",
+        "size": 15498
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/openclaw_0dte_bridge.h",
+        "sha256": "sha256:fd5c5a840b554ec6dbaac5c5739744d51763638d61d733a5576720a828c3b025",
+        "size": 1879
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/order_watchdog.cpp",
+        "sha256": "sha256:330121fc87ba32f892a0d68b51f2f267946b7131a0ee98b9cbfc6769945c4478",
+        "size": 15127
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/order_watchdog.h",
+        "sha256": "sha256:8603826856fc22eaa6bdc96f1d26952b963e958f82364bcbe74909a9455bc316",
+        "size": 3693
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/reconcile/reconcile_engine.cpp",
+        "sha256": "sha256:ddaccfc2dd63cffebcd91becf704ead350cc8cd152da4d0609ac91fab26cf3e4",
+        "size": 14561
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/reconcile/reconcile_engine.h",
+        "sha256": "sha256:35772736ba521b984c763c6cbb78d0948640c28f2cd9affd8b44a52b00bc88e6",
+        "size": 1918
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+        "sha256": "sha256:f08a9739003df6f9026885661eded2495dc96c504934b7680b9e3d421038a9c9",
+        "size": 2761
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/risk/pre_trade_risk_engine.h",
+        "sha256": "sha256:c39891bb6ecd2c8fafc5b50f2bbda9a216e47c967db07b3826285180a8b1b8fd",
+        "size": 1251
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/simulator/deterministic_execution_venue.cpp",
+        "sha256": "sha256:5a6b2ca339b49af9174fcf305922764a9de392b7e982e04b67d82b92c02b9a75",
+        "size": 10702
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/simulator/deterministic_execution_venue.h",
+        "sha256": "sha256:95eab0eefb77c39c305f90bdda6662dab8f9dbeb5e54ae8af74fa892f608b0a2",
+        "size": 2494
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+        "sha256": "sha256:55874ed8877c229a7b31b8af7e7cc43cfa77c0640c3e192e23f4623e9af70988",
+        "size": 35737
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/authoritative_trading_snapshot_store.h",
+        "sha256": "sha256:92e41bb6198f30741c26b5921585f6866a47cde4794dc0543d4b3567719c3e44",
+        "size": 11689
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_account_position_consumer.cpp",
+        "sha256": "sha256:046a5d715bf6807edd03cbe2d29e1e7113e9e21164a2b49d4e27cb8ecbde33f4",
+        "size": 7071
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_account_position_consumer.h",
+        "sha256": "sha256:53e0b80b4ddb3f2a83120a87946ba02d7003c24bfe1f40dd7c9fc73851fd790d",
+        "size": 2287
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_open_order_consumer.cpp",
+        "sha256": "sha256:2a3472bc74a1a31856a4cd9bd2eaed7c12e5c27bd9f31a20c50e3be7120c021e",
+        "size": 4756
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_open_order_consumer.h",
+        "sha256": "sha256:9950b626663eebb5ff3a14ef61da0c26258adc91adffa8d86b51b7d35605d805",
+        "size": 2379
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_order_projector.cpp",
+        "sha256": "sha256:deee863dafbfa504c7465d8be3d4f136ec9547c25138f659a8362c0f9359d9a2",
+        "size": 9274
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_order_projector.h",
+        "sha256": "sha256:592f77abe08a7b6056493467a8c4992e6c9b07f02aa570675f8d7cc17eb5bfd3",
+        "size": 2758
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_quote_subscription_set.cpp",
+        "sha256": "sha256:72b359278309fcac24c124bdcf6fdeee24bb0ff06d6726048bf34c926cf88422",
+        "size": 16263
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_quote_subscription_set.h",
+        "sha256": "sha256:fe9c80e5f46c3f1db589e6c9625397be5097c52cc27d44d31eafbccb1a918b27",
+        "size": 4903
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_recovery_coordinator.cpp",
+        "sha256": "sha256:37a3e9e55c875f77e003c1073989af62b08d9efb0cf8c19a320dd0da97143006",
+        "size": 20420
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_recovery_coordinator.h",
+        "sha256": "sha256:d536426d1273e30d2dd4cc90675e2a16737b44e6e9c210c481d98226c1ab12c6",
+        "size": 6325
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_recovery_event_consumer.cpp",
+        "sha256": "sha256:cdf7b86f2add245abded9ad107cb0fe11f152a9091d40b5a0b8d4e7c98291ef1",
+        "size": 4721
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_authoritative_recovery_event_consumer.h",
+        "sha256": "sha256:4c179ec2ab6aed166d32d73cf7d73ed621b38c9fe9f6f44122326ccd8b4d241b",
+        "size": 2321
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_connection_lifecycle_state_machine.cpp",
+        "sha256": "sha256:c9c512c948a64ee160325d13ea59aa17c0ca7d22714c2ed9c5ba7a7c94cc97d8",
+        "size": 3079
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_connection_lifecycle_state_machine.h",
+        "sha256": "sha256:4be1e38b6ef11329eec23f437133e01b7795e6908201c330251c864e06d4e740",
+        "size": 1745
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_contract_identity.cpp",
+        "sha256": "sha256:f879a31300346b23e91703269f1d6a386874ce90c7e95bbebd11f6e21873805f",
+        "size": 3622
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/ib_contract_identity.h",
+        "sha256": "sha256:14fc3e8bb85ca796ae3c2d30ff8fcca378ce28843528b5eda25b5e5115a42feb",
+        "size": 483
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/snapshot_refresh_coordinator.cpp",
+        "sha256": "sha256:95a6b6eccc720a8ca038ae067bce3acdae335dcb7aca8669e665cbddc67cc915",
+        "size": 4584
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/state/snapshot_refresh_coordinator.h",
+        "sha256": "sha256:bd16efbc13fe8e9f120fe7d514c1aeef46e933cfcbc1c66deca2dcf181ffa269",
+        "size": 2318
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/agent_os_runtime_composition.cpp",
+        "sha256": "sha256:986104cd7d238c40ebe82a493def72b69703e7a23373fe9544b83e575c9c688f",
+        "size": 4573
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/agent_os_runtime_composition.h",
+        "sha256": "sha256:463024c772c8c08cefe36c538c9d60d4ce87d1581975eae0797605c12eadba3f",
+        "size": 1464
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/agent_os_runtime_config.cpp",
+        "sha256": "sha256:987daeadaf5da8ad575ecab47da359897425db5803b1cfd4045d151b6aac6c84",
+        "size": 5496
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/agent_os_runtime_config.h",
+        "sha256": "sha256:b0a4d24aa0403eefe3615952cebd12b93cf70157cbbe7491b7238474dcb722bc",
+        "size": 1265
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/execution_event_relay.cpp",
+        "sha256": "sha256:a3ee3025af7fd68868423098e41bc8d5514484431194003918be8a52b17286a1",
+        "size": 6570
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/execution_event_relay.h",
+        "sha256": "sha256:af231dae6a854aa34e1d95a57d1edfc46a7729a85b501ad8e83bab0519b98576",
+        "size": 2000
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/execution_gateway_runtime_composition.cpp",
+        "sha256": "sha256:1a4df92bee7f01f719e8142a15a8971e76a6d47055476f8b15e35f80b387b67a",
+        "size": 23397
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/execution_gateway_runtime_composition.h",
+        "sha256": "sha256:ba8dbe50b76cdde0772fba4851face4472baa655acc2d1ef895a04b6a6e82f99",
+        "size": 4581
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/execution_gateway_runtime_config.cpp",
+        "sha256": "sha256:062c1f7bdab30ede2cc3bf4a73d1e1138ad89b7388a37719cb02cf3c66b5775c",
+        "size": 5980
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/execution_gateway_runtime_config.h",
+        "sha256": "sha256:2228707520442d0fedd3ecd6a343e045bfddbafc18f625014708465abc031301",
+        "size": 885
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/hepta_tool_gatewayd.cpp",
+        "sha256": "sha256:788da0ceabe1226eb278472b0f9f7c0dedba197bd6b4c86496c9bd0ef9141c7e",
+        "size": 3233
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/session_supervisor_audit_journal.cpp",
+        "sha256": "sha256:321d4d619c501e76b16cc3457a45c94a7e586e92dde79eb138981c60e8e6174d",
+        "size": 24754
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/session_supervisor_audit_journal.h",
+        "sha256": "sha256:7ac551a898fff024371bb825bc6723abe990affd6bb610f34a0cb94859b4ab57",
+        "size": 2622
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/session_supervisor_lease_store.cpp",
+        "sha256": "sha256:44f114288334153016dbf83628c2bbc3bbd1e5f342977cb1d8dece7d0d8719ab",
+        "size": 22088
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/session_supervisor_lease_store.h",
+        "sha256": "sha256:27ec44ba151f85a60b6cdc32973d4ddfa4849c04ab1b0900a0a0be28dcb8f9e8",
+        "size": 2006
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/session_supervisor_protocol.cpp",
+        "sha256": "sha256:1b36350d464bd4deb73e71a618015ec4b5c350ee7641b8a4c21a3e1f9633c219",
+        "size": 10152
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/session_supervisor_protocol.h",
+        "sha256": "sha256:748fee54ece0af723f7f4f13d7296ab764357f68dbb92773f0156a08815b64e9",
+        "size": 1035
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/tool_decision_audit.cpp",
+        "sha256": "sha256:07a821fbeda925e8ad7645d18010fcfc89313f5b8a627d84d46afe64a5a879c9",
+        "size": 6939
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/tool_decision_audit.h",
+        "sha256": "sha256:cc3a944ed41ae19b514e19226e02f0c7bcf0ce55d6994a087d84459ce6eb3c47",
+        "size": 1590
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/tool_gateway_runtime_composition.cpp",
+        "sha256": "sha256:e75684de0ed94c64e43fbfa240f44f2eededc357a249ce68e4d673a03b92f699",
+        "size": 13875
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/tool_gateway_runtime_composition.h",
+        "sha256": "sha256:aacc64d4325ce5d49e294911509f28964636b009a9c9ed233758b3f6e678db8c",
+        "size": 1592
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/tool_gateway_session_policy.cpp",
+        "sha256": "sha256:f14666d7726d153b59df6aeb33295e902381552f9069a34920a12b960789a992",
+        "size": 16356
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/tool_gateway_session_policy.h",
+        "sha256": "sha256:392525bed8fb246364f1338f3f60adf2578ff471cb0a293a68804cd652913c95",
+        "size": 1793
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_host.cpp",
+        "sha256": "sha256:05fec61fb381253db26e39918f6cc3c41fc8478ed12efd7effe836ee0c19a3b6",
+        "size": 22781
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_host.h",
+        "sha256": "sha256:d1eb53b1b3766f76f2fd70adce77b8d02c9f4fa4531984e846d91cb71b9c4ff3",
+        "size": 12387
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_session_catalog.cpp",
+        "sha256": "sha256:c86ae9af19b2f16ca7dccbe11a4f7610e9602de40bc453cc2f4d5a05047edcbe",
+        "size": 6895
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_session_catalog.h",
+        "sha256": "sha256:d34d27b690d0e5e9e9834fa029dab33d8d5ad7a31f4922e10cf74b550e8e2814",
+        "size": 1639
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_session_control_plane.cpp",
+        "sha256": "sha256:c1f1fe6060018ef8aea9cc259c790bc2f29a85ae86de7ad695f67df0e315ce4d",
+        "size": 9165
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_session_control_plane.h",
+        "sha256": "sha256:5746d8755fb192236c76fd5269d933dd7270f3515fc69e3c1b7bfce6198a6e14",
+        "size": 3950
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_session_lifecycle.cpp",
+        "sha256": "sha256:8d6cec855d3fd956a0df4b1d9582d0761d87097448f6ed2d3689cb3b8340ec00",
+        "size": 18956
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/trading_tool_watch_transaction.cpp",
+        "sha256": "sha256:b3cc3757b6cbdf80e1776cdffcb760b32176cf3e2bc495b2b3ff08220d505b98",
+        "size": 15368
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/typed_tool_framing.cpp",
+        "sha256": "sha256:27c0433c095844b228e228074c6b7fceb1ae2a6bb7e7261ba54d7921078b14a9",
+        "size": 3023
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/typed_tool_protocol.cpp",
+        "sha256": "sha256:862bb05789369df7678f27f9758e54b390194e091b1301f5781a4ae455a402db",
+        "size": 20327
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/typed_tool_protocol.h",
+        "sha256": "sha256:34015b3548354a24f59ee5f222cc05f0a3631ccd8c40c4ba6cf1a91ec73b8f45",
+        "size": 1119
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/typed_tool_result_codec.cpp",
+        "sha256": "sha256:c7f8988afe337e8d93c34ba33bcfb32d7fd2800b4171baa3abf711b3f2892bff",
+        "size": 14320
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_session_supervisor_client.cpp",
+        "sha256": "sha256:4490f88b2a1950c162f5106053c010c9fcd6228889db1b3f7b4e82e7110f35af",
+        "size": 4511
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_session_supervisor_client.h",
+        "sha256": "sha256:e06936f94916b99ea2c86f8e9fb87bc2694a9c67122d63d430646f11dd126ded",
+        "size": 453
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_session_supervisor_server.cpp",
+        "sha256": "sha256:1da84ff9ff081b7e84dbceded35a6ad732d10abe95f641c37c6eb00305371156",
+        "size": 39985
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_session_supervisor_server.h",
+        "sha256": "sha256:6d96b3492717aea1ee411b19a2ba108ae9db365d396bd3b04da8508c371ad4c5",
+        "size": 4161
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_tool_client.cpp",
+        "sha256": "sha256:3b4b96306e7e1a3c28f49d2c687a8db281dffc8d30e36dbb3db1ec25388a3269",
+        "size": 1486
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_tool_client.h",
+        "sha256": "sha256:8086fa0255a241e5f582749cc27192d678ea5e0e51e98be3e5eb0bc5af527318",
+        "size": 425
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_tool_server.cpp",
+        "sha256": "sha256:ae1b744d93eca4616580aeb34751c9ba3eb2a57a9cfc442d00fc4b094764e8a6",
+        "size": 26106
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tool_host/unix_tool_server.h",
+        "sha256": "sha256:61d1bdcba3ed1ca358c398ed2e3161e0e0ef75e9fd3fde5bc7bdb04fe0928ac2",
+        "size": 4653
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tools/trading_tool_registry.cpp",
+        "sha256": "sha256:34ddf640e7de2d24d26024ac34fcaf7e52bfa2eb3cff07d23827100f3e2fd29e",
+        "size": 29692
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tools/trading_tool_registry.h",
+        "sha256": "sha256:a68aa87c69fc7e370c2fb107dec278f9ca60eadb8847fa1f4934a8e1f20750d6",
+        "size": 5807
+      },
+      {
+        "mode": "0644",
+        "path": "HeptaTrade/tools/trading_tool_wire_contract.h",
+        "sha256": "sha256:217ea26a85b5ba7744c8d82a05cc4acbe0c95ac361fa6d18e61c9a27eae44a95",
+        "size": 15087
+      },
+      {
+        "mode": "0644",
+        "path": "README.md",
+        "sha256": "sha256:4f28ad0ba8204171d5095ffb8f54a0cc65c488891e65e0c8e5650522c00f377f",
+        "size": 49584
+      },
+      {
+        "mode": "0644",
+        "path": "VERSION",
+        "sha256": "sha256:4e88cc3269b627623363806a15dd3e407dc458db7669a9a918255e109bbe89c3",
+        "size": 13
+      },
+      {
+        "mode": "0644",
+        "path": "adapters/mcp/hepta_mcp_server.py",
+        "sha256": "sha256:0322e07e6e3c38e8b325e87df0f454d4fd63f24225d849b6e2a896aff3ce0921",
+        "size": 21112
+      },
+      {
+        "mode": "0644",
+        "path": "cmake/verify_gateway_forbidden_symbols.cmake",
+        "sha256": "sha256:f2ceab5ddbfba5b464f0980d9e330656b115217fb4880f0190faef5803952b89",
+        "size": 4332
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/build_heptatrader_distribution_artifact_set.sh",
+        "sha256": "sha256:9350c29837dd4c0ed6c3997bc7d9625f954ec95a681bf92a5e14c71eae8c96b3",
+        "size": 415
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/build_heptatrader_evidence_index.sh",
+        "sha256": "sha256:ebd4729fec979b7cfbf9b81cf878cd427045dfdc8b284020b73f8597e779b3d0",
+        "size": 393
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/build_heptatrader_evidence_ingestion_request.sh",
+        "sha256": "sha256:3a099bbad16765c2d6d969f74d4e4eda913fa6a5baa185304482d942c59c6d15",
+        "size": 417
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/build_heptatrader_evidence_set.sh",
+        "sha256": "sha256:29455a1994c4207af9e9a87b98617175fb9739e371784c1c362c50a96010a0e9",
+        "size": 389
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/build_heptatrader_runtime_package.sh",
+        "sha256": "sha256:5729d6f2408efc274bb0d684b9042abab64926ca296d012f39c11f60753381e4",
+        "size": 408
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/build_heptatrader_vendor_overlay_set.sh",
+        "sha256": "sha256:378d01f598619a6839d68ebf58ef8a4106b744c8dcf7dc6ef500ee4dc58c40a1",
+        "size": 414
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/check_hepta_agent_os_units.sh",
+        "sha256": "sha256:e89539bf8741261155f203a15a304e7c860d68556c89f5d7720aa363f12829b5",
+        "size": 387
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/check_hepta_execution_provisioned_host.sh",
+        "sha256": "sha256:2bd761f007cd58b415eb58b82964e50c4d4e9df9c3cd644c2223c1143b255237",
+        "size": 399
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_clean_source_bundle.sh",
+        "sha256": "sha256:dba46723c8bec3841d46e02c5964cb16ca436630c58c9ca3749728ea39d981d3",
+        "size": 399
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_distribution_artifact_set.sh",
+        "sha256": "sha256:7483e7bf2bbdebf9e10540b5e1d34eb322ba62b1473943afc47c44933aa09bf7",
+        "size": 417
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_evidence_index.sh",
+        "sha256": "sha256:c93a6882d05416703f19838ff4f3af6844071d98cebbc9091f93f5d0d6c77cf1",
+        "size": 395
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_evidence_ingestion_receipt.sh",
+        "sha256": "sha256:1059f996aa688ed3434e94a921d967b3a6fa8589cb7d673ea8ec5e16d8c4459b",
+        "size": 419
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_evidence_set.sh",
+        "sha256": "sha256:df4a9e1c4e14f4b9a2f5c58a21c3351546c1d227f49d9e48eb186551b88a0d9e",
+        "size": 391
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_runtime_package.sh",
+        "sha256": "sha256:b409022afce291974bc9cf686bbc7135207cb8f7b72bed8a6efae10e9d54d89d",
+        "size": 410
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_source_baseline.sh",
+        "sha256": "sha256:1c9ffedcfc168b97d45519caa204c282b8b0a9d1e2853fba6a04047c33fdea9c",
+        "size": 397
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_vendor_assets.sh",
+        "sha256": "sha256:5c913cf2d23d9031a7a072a7ce065729077b91d73931a4f2064781c08647d07e",
+        "size": 393
+      },
+      {
+        "mode": "0755",
+        "path": "compat/hepta-ops-generated/verify_heptatrader_vendor_overlay_set.sh",
+        "sha256": "sha256:53be0541cdb7aae7d2cb89bcd30339f028a4676afdb2284ed7f41a81c33c63ea",
+        "size": 416
+      },
+      {
+        "mode": "0644",
+        "path": "docs/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md",
+        "sha256": "sha256:d9c69753a3747d4cee566c06bf21e00384c6d5c7d81d2cc5ee1cf6d217e8fe6d",
+        "size": 79183
+      },
+      {
+        "mode": "0644",
+        "path": "docs/AUTONOMOUS-PAPER-CAMPAIGN.md",
+        "sha256": "sha256:aabb48d7398f50856365be64dc7e9b3cf8b92e2f7d7cebc4bdcc5dc436b1aebb",
+        "size": 10063
+      },
+      {
+        "mode": "0644",
+        "path": "docs/BROKER-NETWORK-ISOLATION.md",
+        "sha256": "sha256:a6c0d6a014ddb5f174a765270fa95daceffe434969d9129dc99942a7ca06e175",
+        "size": 22214
+      },
+      {
+        "mode": "0644",
+        "path": "docs/EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md",
+        "sha256": "sha256:259406a65d8be004490f2e40e658b01190a6e267738155814570e16d31f1e833",
+        "size": 13802
+      },
+      {
+        "mode": "0644",
+        "path": "docs/IB-PROD-HARDENING.md",
+        "sha256": "sha256:12fb8b454c68fd14eb30bbe41403024f9e985a26e8a0593c62108793eef23267",
+        "size": 4047
+      },
+      {
+        "mode": "0644",
+        "path": "docs/ROUND38-CONSOLIDATION.md",
+        "sha256": "sha256:b4212ac6d00857e670a9304caa0cce3f47703bbf03cce6742a84f491f9841456",
+        "size": 13449
+      },
+      {
+        "mode": "0644",
+        "path": "docs/RUNBOOK-KILLSWITCH.md",
+        "sha256": "sha256:67badea4731d31ea7f691d942bf3be2346ec0ba3ffc2f9fc335df572a8271a85",
+        "size": 5665
+      },
+      {
+        "mode": "0644",
+        "path": "docs/RUNBOOK-STARTUP.md",
+        "sha256": "sha256:ef3eead89fad72a68e635f1a6f8f1978618c987ca30b95339fc7324d2ca4874b",
+        "size": 71353
+      },
+      {
+        "mode": "0644",
+        "path": "docs/archive/README.md",
+        "sha256": "sha256:5ec2fc6acfc485618ef6c1ae822373add023b013aa05074dcd21df12c6184704",
+        "size": 394
+      },
+      {
+        "mode": "0644",
+        "path": "docs/archive/ROUND37-CONSOLIDATION.md",
+        "sha256": "sha256:6d07d58bf3cb1349466edcb0211adb3fa1189803743da48582bfc207c8010a8f",
+        "size": 5826
+      },
+      {
+        "mode": "0644",
+        "path": "hepta_ops/__init__.py",
+        "sha256": "sha256:4ca0f1e6ab2f860fffde2dfd1aa8be843272067e40fc17f3832b89158fd19937",
+        "size": 177
+      },
+      {
+        "mode": "0644",
+        "path": "hepta_ops/agent_os_source.py",
+        "sha256": "sha256:b938dae4e84bfd6f5bc46dfb9f06004cc2cd8ac4f407d4c0d34a127d826922d7",
+        "size": 13177
+      },
+      {
+        "mode": "0644",
+        "path": "hepta_ops/cli.py",
+        "sha256": "sha256:1f1164e1fb99aa57c0798d48d4171404dfdcb9a06a92ec55163f9d35a13deb37",
+        "size": 36828
+      },
+      {
+        "mode": "0644",
+        "path": "hepta_ops/registry.py",
+        "sha256": "sha256:141678e29ef56c0df485a7f6bcb32318c10c2c079a092cfb40fa86affd24a8a7",
+        "size": 7265
+      },
+      {
+        "mode": "0644",
+        "path": "hepta_ops/sandbox.py",
+        "sha256": "sha256:dd564ab3ff25cfe6f2656053c7a9cc74ec220a2d7cff0d8f57616bb9cad3cf47",
+        "size": 2851
+      },
+      {
+        "mode": "0644",
+        "path": "ops/hepta-ops-v1.json",
+        "sha256": "sha256:3a4db541ff6910f95a28f7ec9fc4ae8f7d7205a849b6eb6101ac248ea8e2f778",
+        "size": 11696
+      },
+      {
+        "mode": "0644",
+        "path": "plugins/heptatrader-agent-os/.codex-plugin/plugin.json",
+        "sha256": "sha256:2e4804f857fd3df4de6c50f3d99b13608155ca46cfcfd6116924010fc7b7858c",
+        "size": 904
+      },
+      {
+        "mode": "0644",
+        "path": "plugins/heptatrader-agent-os/.mcp.json",
+        "sha256": "sha256:5a0394345f1fcca8067c98d786fa2350b1fe7bae176a3dc339aeae0fb8ebc0d4",
+        "size": 127
+      },
+      {
+        "mode": "0644",
+        "path": "plugins/heptatrader-agent-os/README.md",
+        "sha256": "sha256:9b3004323e3fad5783a0e69a41d30346a63c32f513ba679f0f64e740235fa3c9",
+        "size": 6245
+      },
+      {
+        "mode": "0644",
+        "path": "policies/heptatrader-agent-os-source-v2.json",
+        "sha256": "sha256:2320e96b2e4c24ca82f84f2c2ecf6030622a7cff4562b9082f228fb96baa37d4",
+        "size": 30763
+      },
+      {
+        "mode": "0644",
+        "path": "policies/heptatrader-code-quality-v1.json",
+        "sha256": "sha256:83e28d28bfd6190c4704868ca1b72c25c94b5b4fb92900247da85d50b278a70d",
+        "size": 12978
+      },
+      {
+        "mode": "0644",
+        "path": "policies/heptatrader-evidence-receipt-trust-v1.json",
+        "sha256": "sha256:f87323c2b060b15f1c8e86abb0216f82b5cf529d852bb988b382696855a656c4",
+        "size": 477
+      },
+      {
+        "mode": "0644",
+        "path": "policies/heptatrader-evidence-retention-v1.json",
+        "sha256": "sha256:36c415c94e51b219e3fc8d8497d15042ee34f181dc078a3cb1ea92244abfde29",
+        "size": 3567
+      },
+      {
+        "mode": "0644",
+        "path": "policies/heptatrader-workspace-layout-v1.json",
+        "sha256": "sha256:52c590998046cb101d2c6c2ea1b6da633f1830230a598bee434e9d3a49936d6a",
+        "size": 790
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/aggregate_hepta_execution_native_systemd_gate.py",
+        "sha256": "sha256:89822a79d843817872f8acfd2d00d74e2e752f96059bd03f5c22e67eea4aef78",
+        "size": 52410
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/audit_heptatrader_workspace_layout.py",
+        "sha256": "sha256:0abad5b658b8d6d55e43f4ac2f03b1dc11cdbfc5f89d4fca4eeccaac15e7990e",
+        "size": 15051
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/build_hepta_execution_native_vm_bundle.py",
+        "sha256": "sha256:37c5ba83504c59173a85ffbf74c7e8458cc4dd450018274273cdef562b618c62",
+        "size": 118300
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_hepta_p1_observation_policy.py",
+        "sha256": "sha256:2cc59ff3ef0456db106d09248bc61127807ad382ef26d6f0a959ffcb5f457013",
+        "size": 40038
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/build_hepta_shadow_install_manifest.py",
+        "sha256": "sha256:fc895a1c7a982cadf7261429b3f756b3b6b2164ca58f23223a8c555177dab561",
+        "size": 3214
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/build_hepta_shadow_runtime_archive.py",
+        "sha256": "sha256:1a97c98dca39241b58637c549da0ea3ee70e34ecbbe00ac29500c70312e67fe5",
+        "size": 10842
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_agent_os_source_bundle.py",
+        "sha256": "sha256:862f530527a9526c1c37c86d7ccddfcd5ce95d52ea0b0bae738ee4122f999a36",
+        "size": 2461
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_clean_source_bundle.py",
+        "sha256": "sha256:61292cfea18b83d5dfa7583403df33dfec20624c443ec3d6d7bb5c7f0bfc6951",
+        "size": 34685
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_delivery_closure.py",
+        "sha256": "sha256:767e6714035f31fc291812a968232b06458e1b219b14d8b548510db44c589304",
+        "size": 78937
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_distribution_artifact_set.py",
+        "sha256": "sha256:51664e613d0acd26c118fb67bef6e655a4cfae4e9eeb5fe31a133f12902912db",
+        "size": 15324
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_engineering_artifact_map.py",
+        "sha256": "sha256:d1cf83e3e9c7d6ea8a2a390130ef26c9f7576d099801e7583ea383381c85fc57",
+        "size": 2930
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_engineering_closure.py",
+        "sha256": "sha256:802a00aa156508bb911560e1ecd489db50370b203346e349b0a5392d750fcdf2",
+        "size": 78915
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_evidence_index.py",
+        "sha256": "sha256:698e16d7347e9cca4c553d80a6311ddb2faef24c9d789c0edf3cf0d2a5cd012d",
+        "size": 32107
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/build_heptatrader_evidence_ingestion_request.py",
+        "sha256": "sha256:661db87fb84574266940c0d9156189624757d40d9488bb6a2f0dda3bcb18192a",
+        "size": 24550
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/build_heptatrader_evidence_set.py",
+        "sha256": "sha256:89bab66e2bff0737693a9a634abc20128a8c65f119cdf77123f9b2df57d023b2",
+        "size": 20627
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_recovery_evidence.py",
+        "sha256": "sha256:cc95596a059869d915aa20b6b65f1e286bd77a08e6e6568663afe0e65ba0890b",
+        "size": 18582
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_release_validation_closure.py",
+        "sha256": "sha256:0729d2126f396de1cd0877d7b65e3201662ec365b53194f88ec71c7a02c887da",
+        "size": 59387
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_round36_certification.py",
+        "sha256": "sha256:6ef46debb11cb6bbfad466d024127a0623d70c85cf2949fc12a11cc2b2302c49",
+        "size": 36941
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_round38_verification_reports.py",
+        "sha256": "sha256:0a0de3d26b8c18bfd35fcf5dcc755fbd3ba0219876916c259dc96f405502f57a",
+        "size": 2581
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_runtime_package.py",
+        "sha256": "sha256:f4ae6b16fb4936b544cf8f4ef287d4827c7876993ac1a740b32adb6860b4aedc",
+        "size": 48602
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/build_heptatrader_vendor_overlay_set.py",
+        "sha256": "sha256:ecb388f79b99d933182e12df2498f7bc9cfe8db6bef20395957d1a3bfdf815f5",
+        "size": 22074
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/build_heptatrader_verification_evidence.py",
+        "sha256": "sha256:c800b2928789d5045e24ca5218d1ab61089ae93c13398b4aa9f2cef18c7932bc",
+        "size": 90358
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_hepta_agent_os_product_boundary.py",
+        "sha256": "sha256:6506d6e47a4b8b0d6857d43c2a1ffc201d8c4bd94abddbd6aec71ac55ddccf7c",
+        "size": 18828
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_hepta_agent_os_provisioned_host.py",
+        "sha256": "sha256:80b516f72ea82e39dc1882a3344624b504f2ff2413dd936b8f6d09537400e2ff",
+        "size": 42990
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_hepta_agent_os_units.py",
+        "sha256": "sha256:ad9df4fe0762bc7f6b7a8107fbfe64610aebf698a955004b34bd745fc8c6ee34",
+        "size": 56486
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_hepta_agent_trust_domains.py",
+        "sha256": "sha256:17a8ec7e5de85e55f4db7151cd7974f9ec46bf0e57d96015cb417c2c144e3572",
+        "size": 34584
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_hepta_broker_network_policy.py",
+        "sha256": "sha256:9c5d41e1ef365d3f8b18ab4d2e8c438796c31083eafc7ba5ca9ca334db7359af",
+        "size": 18924
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_hepta_execution_provisioned_host.py",
+        "sha256": "sha256:1fb1b2ebc598422bd918a59a6ad1a34ee154e6fe5bd7f0b8e0a90178c25fd026",
+        "size": 66982
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_heptatrader_code_quality.py",
+        "sha256": "sha256:6356141081d1bf3a30fc190607e2d4ab46148b429e861bb203496cb411815bc3",
+        "size": 53753
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_heptatrader_ctest_inventory.py",
+        "sha256": "sha256:b4a9ccb081fbb22bd9325528f2239ed86555c10a15785edbcaaff6e2529e340b",
+        "size": 7649
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/check_no_direct_broker_paths.py",
+        "sha256": "sha256:9ff1f78307605d36d38b847a2a3525c713d7c42a997999a7be3f6c788d56a101",
+        "size": 39911
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/converge_ctp_vendor_headers.py",
+        "sha256": "sha256:c4f9a41a03bc5bad2aab0f6a361369424ca5e6e8fa4f2c4dde5d33f49cc28843",
+        "size": 12220
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/freeze_heptatrader_source_baseline.py",
+        "sha256": "sha256:e0efe04cbea3f94d38ff0ebb5b5593fbbc22e85223bad40f1729fb916bfa44c3",
+        "size": 3176
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/fx_strategy_paper.py",
+        "sha256": "sha256:0228addab41bd85057ad31e41d0a2f897095d1e878c697219c1d399c55c295b0",
+        "size": 392
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_agent_mcp_launcher.py",
+        "sha256": "sha256:ae9a0341428db7b3f24e5d87ed1f8250ff6eed251690ecd7652d607e70101785",
+        "size": 3798
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_agent_session_bootstrap.py",
+        "sha256": "sha256:1df11cf63c9c4f84d30dac7d435f9ab57aa57bf4281c7ab957333a0f4d71e9af",
+        "size": 100344
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_agent_trust_domain.py",
+        "sha256": "sha256:50cd914355f2d2d000cdd2ff2aca45abe1e7520a5178112b062b2d4f248ca0c1",
+        "size": 32697
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_bounded_shadow_closure_verifier.py",
+        "sha256": "sha256:c956cfa742ac7dca02318d6fc119ca17ae167f80aa3511ab3f09821d388a069c",
+        "size": 52999
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_bounded_shadow_observer.py",
+        "sha256": "sha256:6427809539665d1154fe2894f776712db9c1574c76697f5910c3c06f810fae72",
+        "size": 59696
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_broker_egress_policy.py",
+        "sha256": "sha256:f9d30e774556af29e21b671079d1dda6821601cfc866ccb4dcd3541f20a876c4",
+        "size": 53580
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_campaignctl.py",
+        "sha256": "sha256:91e847dfb437b480e50d0c6e102da732621d998c1f9ae88abdf81467036e748d",
+        "size": 8178
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_eurusd_confirmed_momentum_strategy.py",
+        "sha256": "sha256:a9ac9eaf6e3e88affda50ba2c7d6e858512a37ff5adca81fae98a2fc7989333d",
+        "size": 27382
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_ib_paper_campaign_operator.py",
+        "sha256": "sha256:b6d10df903c8d070199bed14b3a712d3d819a3c6e8aa0b441923cb8efe4c633b",
+        "size": 107047
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_ib_paper_domain_authority.py",
+        "sha256": "sha256:5c787f44ed5af01a7837c0deb1e8200732c4dd0208263bfe679264bc792faf84",
+        "size": 54214
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_market_context_builder.py",
+        "sha256": "sha256:c0c1450696eef6330af3db203b98893a127a4f961273e896f0628a1a71c6d2eb",
+        "size": 56634
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_market_evidence_normalizer.py",
+        "sha256": "sha256:055cd2ab7b4f9cabec9920470ad578b3ec290f7bd5bf9520738a088d27708bc9",
+        "size": 38755
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_market_official_source_extractor.py",
+        "sha256": "sha256:fea8620b44ddc53a5729a3d99cc12967d885ffccf32b04019cfcea59b8122d7d",
+        "size": 46516
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_official_source_capture.py",
+        "sha256": "sha256:2f2ac78a28050c3d4d25e2b6e7461778f400f7b719fb36de0271f834a9948efe",
+        "size": 13451
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_ops.py",
+        "sha256": "sha256:a0887cd9470481f20a61660de9759b810ae83df56eafcaef18c86e3ba19a293e",
+        "size": 511
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_load_probe_validator.py",
+        "sha256": "sha256:a82b2cedb3efbe7e3bd3de7643657a25ff7789d9e647aea24fde882c0c979c25",
+        "size": 46046
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_paper_admission_verifier.py",
+        "sha256": "sha256:d8842ace2dde3c74f9125531937772c9f69b683ab93c7c6f50581e5d018e3570",
+        "size": 345252
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_p1_paper_kill_switch_bootstrap.py",
+        "sha256": "sha256:24c4757f5d97cb16da612d0cb953837d3f8a8c8135da2b01a27ae1bf72fa43cc",
+        "size": 35146
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_p1_paper_zero_exposure_attestor.py",
+        "sha256": "sha256:e34875e3d29f6469d5838b90d04c8346cfe2224cccdd92905ab44938a13e9f81",
+        "size": 100138
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_p1_paper_zero_exposure_snapshot_producer.py",
+        "sha256": "sha256:0b774a11d4c6f1d0700b7f949cc730005c62b67e848d0fb99e9ff70051e1564b",
+        "size": 182061
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_auditor.py",
+        "sha256": "sha256:68e5db6a50870336741172346dbcba17b92a9a5516855cfe95a629ca21dfc8a3",
+        "size": 217174
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_campaign_coordinator.py",
+        "sha256": "sha256:bf0d8e6cb903f3a403ab21171933b1aef33f65b286de607c7642094a6f87adaa",
+        "size": 161896
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_campaign_freezer.py",
+        "sha256": "sha256:93d6d9b4f9509b89e99cdb1bf821eb1e534a43cf13be8a5e2855e66b8c0cce4b",
+        "size": 62046
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_evidence_recorder.py",
+        "sha256": "sha256:4360f82b0a23ab1493feabf74beda0dd701fc635dd36482ac62c49eff752ce03",
+        "size": 219592
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_fault_pin_producer.py",
+        "sha256": "sha256:810461131529b8ccd68572247a7cd1262b602cf15879afeb5c201ac9bbbff5f5",
+        "size": 34404
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_independent_observer.py",
+        "sha256": "sha256:88abd6be198a893d04e81398acfcb19b8316700290cd1d8bf97eecb524c8bc0a",
+        "size": 136984
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_observer_worker.py",
+        "sha256": "sha256:79f62a2048121942d1dc66031b202ca35f66ca89f084fdfb12ed31b3ebe4f076",
+        "size": 41971
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_policy_planner.py",
+        "sha256": "sha256:a17740a9641cf5cb8b4663334faa8c4fd849c9dd0560910d196d1dce1b53b354",
+        "size": 27982
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_safety_soak_recorder_worker.py",
+        "sha256": "sha256:d084ebb3c8bfe75234213f1827cc2bb5a682411d450309fab19603a765f93c7e",
+        "size": 38245
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_p1_safety_soak_root_fault_injector.py",
+        "sha256": "sha256:73c0d0d3afe8478d4f2aebee54e4e4927cc2de1a80288cbf1a526113e5c92225",
+        "size": 105373
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_shadow_admission_launcher.py",
+        "sha256": "sha256:c792af5ae158166af10b872d79fcec9ba46d49beac02b88a6a9f70d951f668a9",
+        "size": 231981
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_shadow_host_controller.py",
+        "sha256": "sha256:7453a983de99c98581de89bf26bb450be588c2727210a662eb0f7f46fa15c152",
+        "size": 84132
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_shadow_observer_controller.py",
+        "sha256": "sha256:2d5897c5e6f8adb5066e11d0296428c0e583dd71156a9e7968229c1c956311ef",
+        "size": 48948
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_p1_watch_activation_transaction.py",
+        "sha256": "sha256:c9a5177d4a2a9e6eeb2215e37c766ff3d0a464268e77648c38c6fdc6ee76ed8f",
+        "size": 198527
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_p1_watch_profile_deployer.py",
+        "sha256": "sha256:506215bd40306e25b9a04c474616e6af9ed44d311c465a8033ddb0878f034b4f",
+        "size": 251804
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_p1_watch_to_paper_handoff.py",
+        "sha256": "sha256:cc6a5d26e28c93b19c8c4620cb531d2acc8eae4a4baea3d2e43336070745e565",
+        "size": 90195
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_paper_receipt_contracts.py",
+        "sha256": "sha256:944757976e1a86c2a39f4b800f7987d3b0382e086d90d90b5f3ba6d204692817",
+        "size": 49870
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_rootful_review_closure_consumer.py",
+        "sha256": "sha256:4df771d4808aa75c637bd73bd8158ccf0efb929bcbcba0afc11695f29341028d",
+        "size": 53346
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_rootful_systemd_environment_provenance.py",
+        "sha256": "sha256:6e1698f02713337911fb352200b8cf5b79f9be94e7a29ec90e7629c2b04f3936",
+        "size": 100162
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_service_identities.py",
+        "sha256": "sha256:a966104b90fe9b10019777174b954cfd303a247257ac54362386007820e35779",
+        "size": 1613
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/hepta_shadow_host_installer.py",
+        "sha256": "sha256:ef38fa4f063fa8c9ea18627fca8b4182f92899e94599c5781ef23ac1a4918e5b",
+        "size": 144750
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_shadow_market_history.py",
+        "sha256": "sha256:556b1a57fbad16cc467118936f0c33df120b88065c620ec7a30cca930b59486d",
+        "size": 100141
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_shadow_watch_collector.py",
+        "sha256": "sha256:e6c6824d46dd978793cc517b509def54c3f050ab2e4c83502bb77f3640a9385a",
+        "size": 24146
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_shadow_watch_custodian.py",
+        "sha256": "sha256:f3e1d1a987c620b2b6c442b58c7ec4603276571d9d2f57274e90885ae872f544",
+        "size": 113910
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_shadow_watch_exporter.py",
+        "sha256": "sha256:ca9b018afe2df8bc1a81a57e2c37c30b694a24432bb0d82406468af77eb99bf3",
+        "size": 24862
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_strategy_contracts.py",
+        "sha256": "sha256:ec03f64b708eb1fbff212917582cbe539ff5af8c9eaae6aae7536e55d7faf1a1",
+        "size": 4925
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_strategy_replay_evaluator.py",
+        "sha256": "sha256:c754d0b3a95daed22f55d6aca595964fbdd3d6b0e8855d7a5bbbca7d2d26f7d7",
+        "size": 61894
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/hepta_strategy_shadow_runner.py",
+        "sha256": "sha256:d1f5202dadb3db6ba93e6b7bd029ea05071b3d08ef900ccf015fe0c942c76ef1",
+        "size": 27787
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/heptatrader_secure_artifacts.py",
+        "sha256": "sha256:494bda46f69827c29873b2e0bede11939aba163ef912458ffa7b7b928b3d1521",
+        "size": 1890
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/ib_paper_order_loop.py",
+        "sha256": "sha256:e1b6b72fc4a30716f0dfb043c88e1dcfeb26667c33f42bff6d3ae22da447ea5d",
+        "size": 389
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/inventory_heptatrader_legacy_wrappers.py",
+        "sha256": "sha256:9b5b4dc1fb8d3408cefe6b638f034c9142196f362d71481af962c9541a0c6456",
+        "size": 37917
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_execution_gateway_soak.py",
+        "sha256": "sha256:5bc6d782b5b752427871a0a8fc111f524b614ca00fc6663e920ac95f024b612d",
+        "size": 71477
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/run_hepta_agent_os_rootful_systemd_e2e_gate.py",
+        "sha256": "sha256:cb5f81e19409339c2b07e3e719d2835f46880717c0fe2bda1e6428e40eebe2a6",
+        "size": 200652
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_hepta_agent_os_systemd_lifecycle_gate.py",
+        "sha256": "sha256:15bc0fbba875427f34a492fb80a3cce3c1a17792a2deb381c465135d7bde7b5e",
+        "size": 18378
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/run_hepta_broker_network_hard_isolation_gate.py",
+        "sha256": "sha256:7393ec616ccdb618e4a26bc3df89bc6250d19dfb2ec6f11db59e7c998d95821d",
+        "size": 105417
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_hepta_broker_network_rootful_gate.py",
+        "sha256": "sha256:8d9c4ad73b5e13e2b0fbf1fe49ebdbdd2f5fdc2c465172c44609d68ad6da9047",
+        "size": 17885
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/run_hepta_execution_native_systemd_gate.py",
+        "sha256": "sha256:bf35ca628e6a47faa55d9563cbc4bbd506a216c054541474afde5932c14c1057",
+        "size": 89384
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_hepta_execution_rootful_systemd_gate.py",
+        "sha256": "sha256:7a68437851382df21f7a5e10d7f35a637f651c8589ff3d37c341de5b16f649fe",
+        "size": 81433
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_hepta_p1_campaign_rootful_liveness_gate.py",
+        "sha256": "sha256:a9168448b5bf40cb5a8f6fc2f7490fc9c8b3746d9e51201fa27385af812aab47",
+        "size": 43517
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/run_hepta_p1_dual_domain_rootful_gate.py",
+        "sha256": "sha256:c1ef8d9994139730e6b399a6f00e293bfbc0e96f09a1fb7b8c2ace6b0e2b0659",
+        "size": 149769
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/run_hepta_paper_domain_rootful_systemd_gate.py",
+        "sha256": "sha256:bed801da25c23adce35577fad6722e618d6c6373b24b19db3d003d9061700aa8",
+        "size": 136403
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_heptatrader_coverage_evidence.py",
+        "sha256": "sha256:cac59b822d36e1505427860a58fcf583a21ea661daee5d5167230dde22a7ad24",
+        "size": 14189
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_heptatrader_ctest_evidence.py",
+        "sha256": "sha256:299704a435e7a159ebb7374fdf281b0f768590f2edab756dc00187a633916611",
+        "size": 10812
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_heptatrader_openclaw_loader_gate.py",
+        "sha256": "sha256:b633e3b694efd7e2679029a3edce7b92414ea9c4ee8be835dad0d4c5f5a4987b",
+        "size": 9912
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/run_ib_regression_round.ps1",
+        "sha256": "sha256:a8cd6a33f616e129929e62c2854147f16331ec5a0963c3121b40c3f018f09ab2",
+        "size": 2431
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/strategy_iterate_paper.py",
+        "sha256": "sha256:31b4f5c796b564abca7fd7b0f50ae4535cb51fac7f454194c9d40c7952be6c10",
+        "size": 2375
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/validate_hepta_strategy_decision_receipt.py",
+        "sha256": "sha256:da4768e541a1e0087e6bfac82c56c80754452cfaa9dc5987cd7769cb010eaeb4",
+        "size": 9958
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/verify_hepta_execution_native_vm_bundle.py",
+        "sha256": "sha256:72a06751f5fb77b7f6549c981469cc22ac0f6c043c22354ae43b699daf94e1bc",
+        "size": 64326
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_agent_os_source_bundle.py",
+        "sha256": "sha256:5689c7a6a743ad09cbe5e90fb516449343d3f9be116964e52afcab7eb9c2ba78",
+        "size": 2772
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_clean_source_bundle.py",
+        "sha256": "sha256:555ae4679f95273aa807d30d4c92e9b865f693405fd4fdc8aaae462678dc1904",
+        "size": 26749
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_delivery_closure.py",
+        "sha256": "sha256:a00f1b69530d2812ee5453c70ac9fdd8175113b4627c991d0575ddea071617c0",
+        "size": 7254
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_distribution_artifact_set.py",
+        "sha256": "sha256:7581fd1a9f14f1dfad13bbbceab6a134d472ac0117e7feefc19e37c4c81bca32",
+        "size": 46316
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_engineering_closure.py",
+        "sha256": "sha256:013622f0d0ea6517a23fb01b18ce9ec5a0d27bfacc4ab4a89a4072f514d8feb8",
+        "size": 8814
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_evidence_index.py",
+        "sha256": "sha256:be19439eca24f6b45b4c93a7d2fce97dda7189f6ca07de0af70c8ace1d687e19",
+        "size": 9175
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/verify_heptatrader_evidence_ingestion_receipt.py",
+        "sha256": "sha256:62e24c6532a68960735569a46d429b3604893870c92364a4dc65d7cba46cf6bd",
+        "size": 35000
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/verify_heptatrader_evidence_set.py",
+        "sha256": "sha256:f46b1d9d6b22207bb05d4c7fef6ff5ec22c9fd67920877091407c8795c8cbcbd",
+        "size": 52050
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_prebuilt_assets.py",
+        "sha256": "sha256:e21415e7673e23ce0d8a2ef936c94793871bd01cb3464f9598337c96d58731bd",
+        "size": 20954
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_recovery_materialization.py",
+        "sha256": "sha256:a7215df115feba6131f561e0d9b7c5602df35a44b92e9daa275d8c2cb299443e",
+        "size": 50798
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_release_validation_closure.py",
+        "sha256": "sha256:428be3f5a985ec4e62c2b5dd3116e469013e886a47dde8afac1f1215e32e9a88",
+        "size": 9753
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_round36_certification.py",
+        "sha256": "sha256:57bac763649836628b688e7343302d6e3db7963be956eeee6358a973e850b0f4",
+        "size": 15989
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_runtime_package.py",
+        "sha256": "sha256:b29f7b31db2127aff6730d41c0609eaa97f2b9397850f167a3587a41e4ff8850",
+        "size": 92736
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_source_baseline.py",
+        "sha256": "sha256:9d63f86edc06c51f23292e4a1196f991631667f66179a3fdaa0d3e6f972bf0e5",
+        "size": 8797
+      },
+      {
+        "mode": "0644",
+        "path": "scripts/verify_heptatrader_vendor_assets.py",
+        "sha256": "sha256:c713ec05787b666416e9a0d0994d005802452e45321d34c705cb1bc18727db16",
+        "size": 16123
+      },
+      {
+        "mode": "0755",
+        "path": "scripts/verify_heptatrader_vendor_overlay_set.py",
+        "sha256": "sha256:1fd9352e4689a04f73726e78cdc06a808790c6ea57c4a60b7ad1c91b6ceec9dc",
+        "size": 17475
+      },
+      {
+        "mode": "0644",
+        "path": "strategies/eurusd-confirmed-momentum-shadow-v2.json",
+        "sha256": "sha256:7d66ab21eb7e70854c50cd4a0b5938d9cffcb28aa7f3a1159681efece6115bd8",
+        "size": 2742
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-agent-broker-egress-policy.conf.example",
+        "sha256": "sha256:4a690f008d2eea33988b9695c1b08c66d8490be26c6e61c9feef0da1baada9c6",
+        "size": 596
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-agent-host-identity.conf.example",
+        "sha256": "sha256:7deb8b9a88e8b184e0f5c2a6c57714dbf1095ff4e00f38d571c2caaefde20c52",
+        "size": 234
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-agent-trust-domain-paper-identities-v1.json.example",
+        "sha256": "sha256:4a94d555cad61a9de67b809cfae301eadd6ebf2511714c93343f10decb34e435",
+        "size": 257
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-agent-trust-domain-policy-v1.json",
+        "sha256": "sha256:edeca02e052be8404ba301d86535a0dc3d8cbab8fc762685d11083a7fe810774",
+        "size": 2299
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-agent-trust-domain.json.example",
+        "sha256": "sha256:943feaf55c78ced8fe980152f745b76e4f79ebff7525e04a277b4b0ffd8a66fc",
+        "size": 1383
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-broker-egress-policy.service",
+        "sha256": "sha256:3d439cd8f015d415db0e5c8f7363a0a07b92f818be69cf28aeadbfdd7c8446ac",
+        "size": 1614
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-broker-network-policy-v1.json",
+        "sha256": "sha256:08d430d53e4813cd0a43a23beeb92344af2130dca425814cbf7285059d90f90c",
+        "size": 867
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-events-ib-paper.socket",
+        "sha256": "sha256:4a58da656d74768bab130ded53706cde07842ca26f22e7a497cd43d8cf0a1e69",
+        "size": 699
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-events-ib-paper@.socket",
+        "sha256": "sha256:b76f995a701b37ad1b63d65334592d664e428d68ae23a9c4e9666398e72741ae",
+        "size": 1058
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-events-simulator.socket",
+        "sha256": "sha256:724306b57b8eed1d1241129753f05dc25a5c00bdfdb11601543a4427ac111224",
+        "size": 682
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-events-simulator@.socket",
+        "sha256": "sha256:91b80c815b316c413b9ad49d4d4d4b76a5c2b5cfbcd3d8b28654dee3add1d022",
+        "size": 770
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-gateway-paper-domain.env.example",
+        "sha256": "sha256:7cb482306a66267a2e198e9c0de6a2d96354a166a8740d0eebff086b4ae681a9",
+        "size": 1223
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-gateway-paper.env.example",
+        "sha256": "sha256:493985e64f906a85658a2d9d3ef24cf0c7cb6a01ea0c1f424a9bbc3cc68b3e82",
+        "size": 1483
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper-domain.env.example",
+        "sha256": "sha256:e0b4e7c74eb5e85829941e76fd8e6ac254a7cec5c5a25b158005eb28d0affa95",
+        "size": 1178
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper.env.example",
+        "sha256": "sha256:f9d5fedb47c1ac446982ac7a5f5c08823fd27f55ee2f455ba96aa1cacae68e7f",
+        "size": 1452
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper.service",
+        "sha256": "sha256:3f7ef9b3c562fe97b9a9a68a1240758565985dc368799f7d4ecc39f567580a4f",
+        "size": 2047
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper.service.d/10-hepta-broker-egress-policy.conf",
+        "sha256": "sha256:31644357eda7b012ac44c1bee2745d2f908e2abb340b88e9aa832fdbe7e948b0",
+        "size": 91
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper.socket",
+        "sha256": "sha256:5162d4cd035acb22dd122dedd8c8b195c5b074d6ec342645a148e4b6bd457e22",
+        "size": 717
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper@.service",
+        "sha256": "sha256:6a2a720102af61bb94939be2ab9f7f62147b9e1f84e78365596e6c835eb2cb25",
+        "size": 2682
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper@.service.d/10-hepta-broker-egress-policy.conf",
+        "sha256": "sha256:31644357eda7b012ac44c1bee2745d2f908e2abb340b88e9aa832fdbe7e948b0",
+        "size": 91
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-ib-paper@.socket",
+        "sha256": "sha256:50af3f45aa465ebec898759639b23c02be9d6fd6fdc5edb4e33f335fa5136a41",
+        "size": 1066
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-simulator.env.example",
+        "sha256": "sha256:0c1dd795d1af6fcb9efdcabe588d5b802976b43606241735f929af27582f58fb",
+        "size": 603
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-simulator.service",
+        "sha256": "sha256:17e4acec67d5f49e6c05e3b8be7ae5b06a8685422ddbfce93ccfde7df486cea4",
+        "size": 1813
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-simulator.socket",
+        "sha256": "sha256:3a2fddad47d5375389ac5a8d9594ba713d001df0e4859a5f67ae650fa6384134",
+        "size": 685
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-simulator@.service",
+        "sha256": "sha256:26299a1c7c7a8c35550242187d8f8a13d02d5621229698ab2bb585d4b68d538d",
+        "size": 1973
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-execution-simulator@.socket",
+        "sha256": "sha256:98ec082e89b543c39191e571ef61d80feaffefe993928a282a4ebbfbc76fa6b5",
+        "size": 801
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-ib-paper-campaign-operator@.service",
+        "sha256": "sha256:7511658b073cb0ab1005d042234a7a58cca6962b4519202742454a5763b8ddf9",
+        "size": 1491
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-ib-paper-campaign-operator@.socket",
+        "sha256": "sha256:a31b92f8d30ff7cf52d2fb500b15e72efb2774f588cd93ef4513ba720ab7d82e",
+        "size": 518
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-ib-paper-campaign-policy-v1.json.example",
+        "sha256": "sha256:c0e63e961c919bc55922126aa258496d3e0bc95e0fe2cc41938702345c0aad57",
+        "size": 763
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-ib-paper-domain-authorizations-v1.json.example",
+        "sha256": "sha256:b37a5092a5f841a0ee9aaf1eb6fa492047aadafa5d99be17a74c69aa029930a6",
+        "size": 268
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-ib-paper-domain-preflight@.service",
+        "sha256": "sha256:8951260bfe8e9ce377d8185b976677bf26c005d65228e1969ad680aa0e82ff28",
+        "size": 2128
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-safety-soak-campaign@.service",
+        "sha256": "sha256:4695b1b864d5fcbdbdec272dedad612a54458b01abb47daa11d6556ad39aae53",
+        "size": 1979
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-safety-soak-observer-worker@.service",
+        "sha256": "sha256:09433f12e2716b643ea91233d6a7a6a346ccc8736ba04548582af22bbdd4b0cd",
+        "size": 1251
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-safety-soak-recorder-worker@.service",
+        "sha256": "sha256:69c18304e4de74d2bfcd136035035e0a218bfc42c358955a5b89781d0a9887eb",
+        "size": 1210
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-safety-soak@.target",
+        "sha256": "sha256:e48651e1847c1404904cf6b5367e07d4a0a521f859b3ed15ae696f26840b7f37",
+        "size": 976
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-watch-activation-reconcile.service",
+        "sha256": "sha256:0622f2db1d4ec3bbfedd0f7065b0e6abab1d269a6b0b7fbafcd55c58c2482d33",
+        "size": 1722
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-watch-activation-reconcile.timer",
+        "sha256": "sha256:4fb9f64c6b19d58fcb20e20b87684e85904f30752515b9f60c6e5b78917ffe32",
+        "size": 222
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-p1-watch-activation.service",
+        "sha256": "sha256:aabbda80baf1ce938cc0a35db9665891ddaef03a58dc1e21996fbd05a69aab88",
+        "size": 1739
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-service-identities-v1.json",
+        "sha256": "sha256:1d429014517daf3e8d19fb1b1af7f28c02a5bedca7e8732664699f2f65aeb03b",
+        "size": 489
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-collector@.service",
+        "sha256": "sha256:3362f1857c85ca7f6f10373b94295464ab1ea1bfb99ef4ac1ac7a261ba03fa51",
+        "size": 1345
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-collector@.timer",
+        "sha256": "sha256:dec1d2a2e321e5e4a7b6d314cf65de53596fe91addc252da61dfd42945ac55b6",
+        "size": 361
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-custodian-reconcile@.service",
+        "sha256": "sha256:f87dc6a9d2bbe5243c80f90683a1b3e8d9a5870d3f8c83c53107f786b37cd2e6",
+        "size": 1254
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-custodian-reconcile@.timer",
+        "sha256": "sha256:c359f03991161fa4ec445a23d50c4e2f6c7cc4c0c9b3bdbfc843566ec07c96c1",
+        "size": 265
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-custodian@.service",
+        "sha256": "sha256:c8d77d0a4a5aad593f6b040d2ae3f5b5917f606bcc4bed11eeb12ffc6b37a655",
+        "size": 1848
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-domain.env.example",
+        "sha256": "sha256:2fe3fb891690cc286e352f6f03e6f61f90c642d8624298d513af790ef32e58da",
+        "size": 259
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-shadow-watch-export@.service",
+        "sha256": "sha256:0720f80da29b1394fe5ec8355f766698012bb2d0c3bdcc80f93869300acebbf4",
+        "size": 1532
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-systemd-gate.apparmor",
+        "sha256": "sha256:29bd3a1c3c2790ea05627b472114420ac5f064937e1ecd833d3e0cda98682bc2",
+        "size": 1976
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway-domain.env.example",
+        "sha256": "sha256:13388545909e61be3d4ed8b47ce80b1ecf6ef14b037fe64c11944e1312cf0bdd",
+        "size": 1307
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway.env.example",
+        "sha256": "sha256:5e47b32b417d41dfff119820b68ca0c5cc46ecd091c2ad08483dda007c7fa026",
+        "size": 1002
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway.service",
+        "sha256": "sha256:2f027d427ff48ab48e90073763bf5eb3f23e2877b1ecde68cf48dca963d0fc1c",
+        "size": 1687
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway.service.d/10-hepta-broker-egress-policy.conf",
+        "sha256": "sha256:31644357eda7b012ac44c1bee2745d2f908e2abb340b88e9aa832fdbe7e948b0",
+        "size": 91
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway.socket",
+        "sha256": "sha256:124b2ae17bbde59044a898059794c68c2670e19514bbaad4cb0b80a74e48e035",
+        "size": 317
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway@.service",
+        "sha256": "sha256:7dbc0b301a0355751686ef3d46cac192c9a4d6144d9d01043c83499dcac731ba",
+        "size": 1807
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway@.service.d/10-hepta-broker-egress-policy.conf",
+        "sha256": "sha256:31644357eda7b012ac44c1bee2745d2f908e2abb340b88e9aa832fdbe7e948b0",
+        "size": 91
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-gateway@.socket",
+        "sha256": "sha256:fbf487f603dfc4633f2fdea199501a56eb433b5e431d3834d261604330b8f468",
+        "size": 331
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-session-supervisor.socket",
+        "sha256": "sha256:c9957deecd2dc22b85cd6094212df8aaec6e00a0242d6eaa0a516d8b3f5e2971",
+        "size": 345
+      },
+      {
+        "mode": "0644",
+        "path": "systemd/hepta-tool-session-supervisor@.socket",
+        "sha256": "sha256:8bce50b5d07c745a18b5b26c000db54f1178b91ba3660d62b249ab30c7af5727",
+        "size": 357
+      },
+      {
+        "mode": "0644",
+        "path": "tests/CMakeLists.txt",
+        "sha256": "sha256:625af6439a3a75eb0d8e798be8cb310aef623613e04ed82a937f447a8a204ad7",
+        "size": 77330
+      },
+      {
+        "mode": "0644",
+        "path": "tests/agent_os_rootful_systemd/Dockerfile",
+        "sha256": "sha256:9563e9483891645dd78c7cc42783daaf7653c5d1cfc6977308d44e1985f23bd9",
+        "size": 7233
+      },
+      {
+        "mode": "0644",
+        "path": "tests/agent_os_rootful_systemd/hepta-agent-os-rootful-e2e.target",
+        "sha256": "sha256:65a3d56c383be693de4b8f93395e7da5d551eeca125b9aef49b220d91412c7f4",
+        "size": 161
+      },
+      {
+        "mode": "0755",
+        "path": "tests/agent_os_rootful_systemd/hepta-agent-os-systemd-entrypoint",
+        "sha256": "sha256:f53fe39aa8bd10fe859b177747b36f5627919d1e08a500061de4c68d3201a767",
+        "size": 6145
+      },
+      {
+        "mode": "0755",
+        "path": "tests/agent_os_rootful_systemd/hepta_agent_os_rootful_inner_gate.py",
+        "sha256": "sha256:41bfea4d29483a00e2afac217d98e788bc2b71d22c253496a0d47163c4d07124",
+        "size": 102171
+      },
+      {
+        "mode": "0644",
+        "path": "tests/agent_os_rootful_systemd/hepta_broker_network_rootful_probe.py",
+        "sha256": "sha256:9ff1e348fb46289a015afb452103f2f4997f5f8407ac3323eb2bd7a446d458fd",
+        "size": 8880
+      },
+      {
+        "mode": "0644",
+        "path": "tests/agent_os_runtime_composition_tests.cpp",
+        "sha256": "sha256:53f53ae82e633fb604c4ea5e9d4c12c068ef62e4f29f8b1c9207099776787123",
+        "size": 6390
+      },
+      {
+        "mode": "0644",
+        "path": "tests/agent_os_runtime_config_tests.cpp",
+        "sha256": "sha256:a9622a4fa27f045cf3bb297a4760196704dd3e9beae21cda87ec927a2cc499e4",
+        "size": 2694
+      },
+      {
+        "mode": "0644",
+        "path": "tests/agent_simulator_e2e_tests.cpp",
+        "sha256": "sha256:8501757e7dd1d66e2096fdc519510cbca75ff66f63fa559a7eb400e42ec2b88d",
+        "size": 32562
+      },
+      {
+        "mode": "0755",
+        "path": "tests/aggregate_hepta_execution_native_systemd_gate_fixture.py",
+        "sha256": "sha256:9af3886709c8c792f4fc37cc35a9d9ef03a5b8d4f531f4d0ee7d0fb1f6df2775",
+        "size": 30216
+      },
+      {
+        "mode": "0644",
+        "path": "tests/authoritative_trading_snapshot_store_tests.cpp",
+        "sha256": "sha256:86a4ac6922ea86e8db90c871836a4358b8873eba6cab257b62a3f86853c9bab1",
+        "size": 15018
+      },
+      {
+        "mode": "0644",
+        "path": "tests/broker_network_rootful/Dockerfile",
+        "sha256": "sha256:6cd1944220d3f75a89ac746ff9aaed02675fffab24a2c21d1fde5581ae555d34",
+        "size": 2080
+      },
+      {
+        "mode": "0644",
+        "path": "tests/broker_network_rootful/hepta_broker_network_opt_in_gate.py",
+        "sha256": "sha256:b713a487e2e1e036bb9c07c9375475622d7d3bc123262c2547c422d71bb46adb",
+        "size": 29494
+      },
+      {
+        "mode": "0755",
+        "path": "tests/build_hepta_execution_native_vm_bundle_fixture.py",
+        "sha256": "sha256:30c48ca3bde8f25c042583f629465311b712ba01027a6e168e63e8f67c2579f4",
+        "size": 40255
+      },
+      {
+        "mode": "0644",
+        "path": "tests/build_heptatrader_clean_source_bundle_tests.py",
+        "sha256": "sha256:8a4835e9479a79eb6378be1647cadf1ecae7f166d4f6b4e3e3f00b9d43dd278f",
+        "size": 31053
+      },
+      {
+        "mode": "0644",
+        "path": "tests/check_hepta_agent_os_install_tree.py",
+        "sha256": "sha256:e9b0eaf4e4dbefd8a64a7fb17ec4536e08fa800723cd9205d82053139c0e4504",
+        "size": 55895
+      },
+      {
+        "mode": "0644",
+        "path": "tests/check_hepta_agent_os_provisioned_host_fixture.py",
+        "sha256": "sha256:f7563da6c185640432cb59d3628d4b40381b52f2fbcec1b0db4d171f645b6aba",
+        "size": 39610
+      },
+      {
+        "mode": "0644",
+        "path": "tests/check_hepta_agent_os_sdk_install_tree.py",
+        "sha256": "sha256:ee1c93c133a9efa33662efa530449a0e07aa8e52b476a7b3030d9493db9b38d9",
+        "size": 10995
+      },
+      {
+        "mode": "0644",
+        "path": "tests/check_hepta_execution_install_tree.py",
+        "sha256": "sha256:aec7401fee9fbb691582ef9d2c8e277f41869f070f62107bffa9a822a43d437d",
+        "size": 35157
+      },
+      {
+        "mode": "0644",
+        "path": "tests/check_hepta_execution_provisioned_host_fixture.py",
+        "sha256": "sha256:643ea84ddc0eb2c0888d528a7cffae525fe7e214b5e1a303e54684d272f05f1b",
+        "size": 27966
+      },
+      {
+        "mode": "0644",
+        "path": "tests/check_no_direct_broker_paths_tests.py",
+        "sha256": "sha256:dda2aa5b3fa7be6948c214a0dbdddf01db8bcbc53f90edd51e424f48ddc7d98d",
+        "size": 39807
+      },
+      {
+        "mode": "0644",
+        "path": "tests/decision_lease_manager_tests.cpp",
+        "sha256": "sha256:f627bfaf83395de54c0dae4279dc03997c3ad8d15b96ef6f0ec48afd30801bbf",
+        "size": 9458
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_coordinator_tests.cpp",
+        "sha256": "sha256:9ee7a00d0ed863bad3d84f335111330ce0e593f84b5955061b1bc8f1af54c78e",
+        "size": 66454
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_decision_lease_authority_tests.cpp",
+        "sha256": "sha256:9b9cd03336c83ebc9935d31e82c5f6423b99bfe814dcfa4c5d9f9824d0ad4ba4",
+        "size": 4138
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_event_feed_tests.cpp",
+        "sha256": "sha256:a849a29d3a0c9fb07629a45c6866d2deaec9075cd5ff4231810e00a5a41b4e4c",
+        "size": 29755
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_event_hub_tests.cpp",
+        "sha256": "sha256:dbce28ada65ac1a71318d8e95f7e7311a5124dd5d3bd6281e4b0e7522903b1be",
+        "size": 5291
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_gateway_runtime_composition_tests.cpp",
+        "sha256": "sha256:6a062479a4a0f871dc0ef06de5b271ccd7fd48c10f8ed7d33d57d9e9f0be95e3",
+        "size": 42138
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_service_process_e2e_tests.cpp",
+        "sha256": "sha256:db060719aee23345fa683bc2a403b957ce4eac107e91f4e6e18456a19b15f919",
+        "size": 76199
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_service_runtime_composition_tests.cpp",
+        "sha256": "sha256:cdcc5f54db369f22698ae986e61523b8621ad18cb48b67657b9762486bce9199",
+        "size": 40754
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_service_runtime_config_tests.cpp",
+        "sha256": "sha256:fe2a2e472b01ad78997aa8937e2fd119c2afc762f300c29331e310cc66b8900e",
+        "size": 6476
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_systemd_client_probe.cpp",
+        "sha256": "sha256:81705ff7e8198fb328f93247cff374ed8daecd85dc4b50bf91fbe25a7654de33",
+        "size": 10510
+      },
+      {
+        "mode": "0644",
+        "path": "tests/execution_systemd_sandbox_probe.cpp",
+        "sha256": "sha256:fdf4f415ef635b97f2fe15ae52d06c8ac0c6325d15b1abb6561d8ca00a2d998f",
+        "size": 30298
+      },
+      {
+        "mode": "0644",
+        "path": "tests/fixtures/hepta-agent-trust-domains-v1.json",
+        "sha256": "sha256:bfb278862100d895f0d759131c9d3d5ec4624b32c072249e84721d9f8846ebcd",
+        "size": 2936
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_agent_os_identity_permissions.py",
+        "sha256": "sha256:dfc4a1f4397570aa7379349102eeee88a9b5109da74cfee001af62b32b16276f",
+        "size": 9452
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_agent_session_bootstrap_tests.py",
+        "sha256": "sha256:c818c7feeb1ce08a05a335e555bb8faaead7970a7d508fcd103e06c03a5dc30e",
+        "size": 80491
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_agent_trust_domain_tests.py",
+        "sha256": "sha256:286201b9dfa03c34153ba53e501663450e370c88ab885a0cdd1f33e4723a1bb7",
+        "size": 42829
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_bounded_shadow_closure_verifier_tests.py",
+        "sha256": "sha256:e95c96a2495ac8c603746b70045755c96fcbabab08dc3eac33bb21acc90d117a",
+        "size": 28799
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_bounded_shadow_observer_tests.py",
+        "sha256": "sha256:db4d54026e0617910980163e0867a22258f0ae7721d6749644dd9f33fa8ad082",
+        "size": 42838
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_broker_egress_policy_tests.py",
+        "sha256": "sha256:06307722e822d1bbb4506852fb291344dfc75667affbf210eb336aa4b89825de",
+        "size": 41587
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_ib_paper_campaign_operator_tests.py",
+        "sha256": "sha256:a241e3415da2f688da1cbaddb405c339047859e13714574d8865515aade318b6",
+        "size": 88440
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_ib_paper_domain_authority_tests.py",
+        "sha256": "sha256:1d16749f9a88d93adcb9e29cf814c995fe215bfbbf40e7344ca1df2864802fe7",
+        "size": 38953
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_market_evidence_normalizer_tests.py",
+        "sha256": "sha256:ef8fe36d0aea76eacee52d917ab7a346fb664eb937723602f768812e24f5ee1b",
+        "size": 18560
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_market_official_source_extractor_tests.py",
+        "sha256": "sha256:85a728ae54f93780c09590c2390f8f3aa42fbfb0af891e6f7eacbd17aa1563d3",
+        "size": 25131
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_mcp_adapter_tests.py",
+        "sha256": "sha256:ed1443ebc52fb4072ae0460b7956f23b85a510e938b4aefcae4a5b28bb9649f1",
+        "size": 21961
+      },
+      {
+        "mode": "0755",
+        "path": "tests/hepta_official_source_capture_tests.py",
+        "sha256": "sha256:10126603f62b2964949d0c3c373ca093af7f2089e4a65d675d32cd81b19f0729",
+        "size": 4576
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_load_probe_validator_tests.py",
+        "sha256": "sha256:2781f740c0b3518bcf59dbe5d6a76d7623df5c3239dea8d5594fa3f8d709c1c0",
+        "size": 20074
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_observer_controller_tests.py",
+        "sha256": "sha256:b86854bfe8864ee60da70de096be7cdda273a9512309ad62d2e6b543cdb92fae",
+        "size": 62344
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_paper_admission_verifier_tests.py",
+        "sha256": "sha256:3775a3670cc7a2447b8f8c96e1937cfc61a68e77ef2ab4e2681abd53390c9f2d",
+        "size": 182104
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_paper_kill_switch_bootstrap_tests.py",
+        "sha256": "sha256:b022ecad50fb8521ec39c45c1ebeebcf1977f01e1947ae22fdc07432e0a69657",
+        "size": 16050
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_paper_zero_exposure_attestor_tests.py",
+        "sha256": "sha256:a746661c5af361d363bbc2808b55e4e3e0f37f48edff6ecdb4b49f3a31ade826",
+        "size": 47469
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_paper_zero_exposure_snapshot_producer_tests.py",
+        "sha256": "sha256:92f5dd20f125f35af85cb7a5cf0f28cd04488132185b94e59cbd5514b4c4a7b6",
+        "size": 72746
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_auditor_tests.py",
+        "sha256": "sha256:321aba28a62c7286e4a5599a745cb23e2f0e501ce998dbff716c4cd6d4adae6e",
+        "size": 104093
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_campaign_coordinator_tests.py",
+        "sha256": "sha256:268b8983a7a0c43adc95c6f09a5fe4766b6774b237f5f3f46916b7fded675898",
+        "size": 99762
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_campaign_freezer_tests.py",
+        "sha256": "sha256:3659118807283bd54e79e7c0e93548e185a18e337265dd475f7248c0421e4675",
+        "size": 16845
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_evidence_recorder_tests.py",
+        "sha256": "sha256:298fdb4b7409e120249db5ab70fa29b83db0c41f9e29ac17d1d3bca100131251",
+        "size": 87533
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_fault_pin_producer_tests.py",
+        "sha256": "sha256:5b513478e5e9c580e9dd531b18e54b20516a867ba925c575384565fae904ea9e",
+        "size": 12759
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_independent_observer_tests.py",
+        "sha256": "sha256:7238ec1681ad0a3d79e3fe915a06ed1bdb0847daf82f5f3afca66ccae1f48af0",
+        "size": 62050
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_policy_planner_tests.py",
+        "sha256": "sha256:83ae197601e1c8ae1b17b34037e2a842a5472ef81512555876c65f8ab3424383",
+        "size": 16385
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_safety_soak_root_fault_injector_tests.py",
+        "sha256": "sha256:edf3a2c0d7b25cdabe393aeaa14944cefb00964634f377667eeaddc961e7d2d7",
+        "size": 53531
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_shadow_admission_launcher_tests.py",
+        "sha256": "sha256:7d2d9b38fb075e8223fce74cb956d51fb1dfbb9bb14b37a4f143ae1e99a3afa5",
+        "size": 176646
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_shadow_host_controller_tests.py",
+        "sha256": "sha256:d5bd93a069e994fc1741848f4c31b78c9c02f88451d8af4d8015c66ebf9bfd72",
+        "size": 109085
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_watch_activation_transaction_tests.py",
+        "sha256": "sha256:f8bfaa88f55104bb319b782eee2a9dbe21b468898015b7470ebb453da2ae4b68",
+        "size": 110832
+      },
+      {
+        "mode": "0755",
+        "path": "tests/hepta_p1_watch_profile_deployer_tests.py",
+        "sha256": "sha256:722d3ad3b079822c3c8b1830a8eb900eb418937a66f518da5ab28d8df59012c7",
+        "size": 201630
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_p1_watch_to_paper_handoff_tests.py",
+        "sha256": "sha256:90178148c84c311da0acfbbc1670e4795305a876c3f1ea19d1765172f93657bd",
+        "size": 41144
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_paper_receipt_contracts_tests.py",
+        "sha256": "sha256:1b2aee96f69314f4c836917415f8355e339aa8abafb21dda68b2a59a6c4c7be9",
+        "size": 61265
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_repository_governance_tests.py",
+        "sha256": "sha256:226a231684507ccae8d7ab64bdf6b67fd588fd596d13c71a007a6b19beade3de",
+        "size": 60820
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_rootful_review_closure_consumer_tests.py",
+        "sha256": "sha256:e3befcf398f4a8d58dc1dc7464fce21c5573ea829eb22bab4a1f060854b7b4e3",
+        "size": 13468
+      },
+      {
+        "mode": "0755",
+        "path": "tests/hepta_rootful_systemd_base_tests.py",
+        "sha256": "sha256:a170d73e36a13b811520c44c00f2bf68f75eeaca9bc54a70936650a453440d20",
+        "size": 4024
+      },
+      {
+        "mode": "0755",
+        "path": "tests/hepta_rootful_systemd_environment_provenance_tests.py",
+        "sha256": "sha256:38a04707e94b4ca1ce09e38cca6584f274a707a555352f8dc81dfbe2d639c799",
+        "size": 46775
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_sessionctl_tests.cpp",
+        "sha256": "sha256:b94eea9138a8d6b25584da92ba55bce63508319519a811fe526ff246a078eef2",
+        "size": 5069
+      },
+      {
+        "mode": "0755",
+        "path": "tests/hepta_shadow_host_installer_tests.py",
+        "sha256": "sha256:cc13ee766ecb6e8391ffc5534ba792efe4df65a3beabd3e1b4b815e8a00e64da",
+        "size": 126164
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_shadow_market_history_tests.py",
+        "sha256": "sha256:63742ac48f0c28a9d8809655a0096f7872fdd726ccc2974beef5513d06f34348",
+        "size": 44940
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_shadow_watch_collector_tests.py",
+        "sha256": "sha256:2a72f0af9f171cc33370a0b9c2cb9758c25fe43314a71d7bc51d630249a3f506",
+        "size": 42876
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_shadow_watch_custodian_tests.py",
+        "sha256": "sha256:0d1cc9e7eb116c5d90f4e2b222fc13e4bcf35957d7c1d81d9eedf79a641942e4",
+        "size": 72995
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_strategy_pipeline_tests.py",
+        "sha256": "sha256:49757ca8ec86e3b025e5b4d7ce8e0adba83a3cb0d3c22e3008dd032040f2f31e",
+        "size": 44453
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_strategy_replay_evaluator_tests.py",
+        "sha256": "sha256:bbd40c183961d0fb28950578e22ba22c5d13443c1b3ead6bf3cfc51344c70a7d",
+        "size": 23087
+      },
+      {
+        "mode": "0644",
+        "path": "tests/hepta_strategy_shadow_runner_tests.py",
+        "sha256": "sha256:1f940ce09b206e80c9d40f924ca7181b926155964c4e0bc9eeed7dda21b0e9fc",
+        "size": 23119
+      },
+      {
+        "mode": "0755",
+        "path": "tests/hepta_systemd_gate_apparmor_tests.py",
+        "sha256": "sha256:0d9911d48975c088dc81508a13d28f6fad2da2af98a26b3b09d4a7011dca9b40",
+        "size": 4372
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptactl_response_boundary_fixture.py",
+        "sha256": "sha256:0826ea2a951f7a4061f49735c35cc5ccbd2fa698376ea6ea0849336ebdfe265f",
+        "size": 14935
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptactl_tests.cpp",
+        "sha256": "sha256:df5765101c0662926cb5b330684cce3c3501bf2aff0ffefa409782199fcf2ee4",
+        "size": 8677
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader-agent-os-ctest-inventory-v1.json",
+        "sha256": "sha256:cfb8ee6b6fe5e8d3e398621cb887936e017a1879786878d89dd0ce77c7d6618f",
+        "size": 5473
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader-repository-ctest-inventory-v1.json",
+        "sha256": "sha256:a3c223e579939c6d950c3d6488ec01970f5b3e38390bc53f02bd2b6c91bd5ee0",
+        "size": 6503
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_agent_os_source_bundle_tests.py",
+        "sha256": "sha256:10e9e5c1d5bcd3b57f4c75f3922d7bab93dc44fe22d116034d7b2034bb0c2ce6",
+        "size": 53790
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_code_quality_tests.py",
+        "sha256": "sha256:899db663c0cb68760c73124f9c5b88bb8b18d62da2d3beb7810237f0569d753b",
+        "size": 35735
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_ctest_inventory_tests.py",
+        "sha256": "sha256:79ac5b109c491100bc64ce3ecd4f5c709c7631deda6bdfd0b05a5b4aa9565451",
+        "size": 3290
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_delivery_closure_tests.py",
+        "sha256": "sha256:54d8294cb7e623f53cd30e1c665e44aec1ceb05d6a8b494942b391b143646bb8",
+        "size": 49543
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_distribution_artifact_set_tests.py",
+        "sha256": "sha256:4cbf11dd513bb2c6a088bf94b6640ad9ba89da8b71f695eb0d5f8d1dbc7dc746",
+        "size": 44011
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_engineering_closure_tests.py",
+        "sha256": "sha256:12525f1f4c96dcb5c6742087b3780cc0082d195aedd5289dd8795bcfb0cdda44",
+        "size": 34940
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_evidence_ingestion_receipt_tests.py",
+        "sha256": "sha256:371ec9fe1043dcbe135f2f1fe25468d0161df5d0657245a3e096ce5062e18fa3",
+        "size": 66871
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_evidence_set_tests.py",
+        "sha256": "sha256:cbbf5bfbc7a20b7c3187da7174a623cbac68b74a427581ec96c9a547ddc442eb",
+        "size": 62256
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_legacy_wrapper_inventory_tests.py",
+        "sha256": "sha256:cf725a5e0df1823247424abfccccbcc068370afcd7aede97e18fe732d4a58814",
+        "size": 13899
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_optional_loader_lifecycle_gate_tests.py",
+        "sha256": "sha256:e77de87e0e3755f44e6b437b39a19b11f90ae8d0553238170b9646bfc4634101",
+        "size": 7231
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_plugin_package_tests.py",
+        "sha256": "sha256:4a54b5c8a2f1a4e9efdd743f130f1fdc539d5802db46ff8c5d32e452e244cad1",
+        "size": 9996
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_prebuilt_asset_tests.py",
+        "sha256": "sha256:4c5336ff11d8ef0f28754920afe83a4b5cd374c953abc4f970ae378344d89d1e",
+        "size": 7230
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_recovery_materialization_tests.py",
+        "sha256": "sha256:3c591ccb89fa14ba7a8569f0fbd2bcd1b2766dd399d189cc5ab341962db13af4",
+        "size": 34735
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_release_validation_closure_tests.py",
+        "sha256": "sha256:01945ed1bdfe42d1ec378d0cd833cd0a8ee4dbd55f203caa3a11bf6c1fed3413",
+        "size": 20682
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_release_validation_installed_layout_tests.py",
+        "sha256": "sha256:19adc0ac2cecf4f48afd1192688f550279b94c368a548b92ca000413128f6969",
+        "size": 13830
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_round36_certification_tests.py",
+        "sha256": "sha256:b90d914c0a236033d7258d9d482a1ae51779f1b4cc2e8da82360e7c52ee2cbaa",
+        "size": 28585
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_runtime_package_tests.py",
+        "sha256": "sha256:a601ada0e2921e90fbeb4b04f95a59d39721d26dc80227ad27b72136fea5987c",
+        "size": 60671
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_secure_artifacts_tests.py",
+        "sha256": "sha256:d38601577e8b003fbd0393eb9ce1bf92c64d81eff2b66a2d362fd13ee034128d",
+        "size": 1900
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_source_baseline_tests.py",
+        "sha256": "sha256:b34fbd0a575c9fe23aaef5ae73d5c36c685f638538d1bce7ccc67c6cfd626eb6",
+        "size": 5325
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_vendor_overlay_set_tests.py",
+        "sha256": "sha256:6f11eefb969b14bffe9d1f55d8d0cd67d81533a5a020a341626a3366d0e6a5ae",
+        "size": 15817
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_verification_evidence_tests.py",
+        "sha256": "sha256:fbaec3e8c55003cb8c2d85623b0e7ca1aa270b739531d81fea035603e07bc6c0",
+        "size": 51556
+      },
+      {
+        "mode": "0644",
+        "path": "tests/heptatrader_workspace_layout_tests.py",
+        "sha256": "sha256:fe6979af11b7264d3e9a4d6d38b9c055315f9db589249639f2ea801a1064b3bf",
+        "size": 7265
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_account_position_consumer_tests.cpp",
+        "sha256": "sha256:4beb2518e2207bf0b408e95ee7b75e959f5ad286b41a33af9a9a87e3946b97c8",
+        "size": 5197
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_event_queue_tests.cpp",
+        "sha256": "sha256:0b112abcaf64a5d1ff462d0852df6afbde2be20354a64b7d0fd7d9beb164a0bc",
+        "size": 56812
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_open_order_consumer_tests.cpp",
+        "sha256": "sha256:be7dcf91e405d1c448e1c7f63c9d549b1fa595384ff88bcf1efb86883952d02f",
+        "size": 5550
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_order_projector_tests.cpp",
+        "sha256": "sha256:7739f915964efa1523b25aa2a1fe34c2da723ebb66efc75209c80a4c9fc0e552",
+        "size": 5713
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_quote_subscription_set_tests.cpp",
+        "sha256": "sha256:102b47ccb5674770eef9aa59d843d59c2f5a68be0e03ac281b2087f810fde0d5",
+        "size": 11203
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_recovery_coordinator_tests.cpp",
+        "sha256": "sha256:c51b3ba564ad88b42f2916f68e1530f4401ae964cf96d71af2cc1c1b8d70b43e",
+        "size": 9107
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_authoritative_recovery_event_consumer_tests.cpp",
+        "sha256": "sha256:dbd74d21eb3c0e2bcabbf258e96855b3033202ce4ab2f74748d580cca26a14e3",
+        "size": 3702
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_connection_lifecycle_state_machine_tests.cpp",
+        "sha256": "sha256:2ec0b9a8a81778167c38b385ca696edada61164b72d664f66345d16656f6c9c3",
+        "size": 2152
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_order_lifecycle_tests.cpp",
+        "sha256": "sha256:267b9540d1e2c778d26ec0afdbb6572f96e9208f31bc66e7283d2bf593649ea2",
+        "size": 4059
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_paper_agent_tool_e2e_tests.cpp",
+        "sha256": "sha256:dd6de8bf7e61317dd394937fe2cc3485916b5862846da1e65c59ffd2dcde0f45",
+        "size": 26079
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_paper_execution_process_e2e_tests.cpp",
+        "sha256": "sha256:01599ec7dda57c971c54b7c672c4ec936f7fe113f93f1205c2046c4b84943c69",
+        "size": 41164
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_paper_execution_profile_tests.cpp",
+        "sha256": "sha256:e2415ebd70683ee4903831060c340d71e4f3ec21d89997d96d77e0a63231d33c",
+        "size": 45664
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_paper_execution_runtime_composition_tests.cpp",
+        "sha256": "sha256:3b6619394f23ab94d354b091b7b14e4d85866a5f36367e893fd0c90a0c75d43b",
+        "size": 46018
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_paper_execution_runtime_config_tests.cpp",
+        "sha256": "sha256:70f17f27b0071f3f75935b247c45bcc3df2505dcca775707cb7e49d80647dffa",
+        "size": 15957
+      },
+      {
+        "mode": "0644",
+        "path": "tests/ib_paper_kill_switch_tests.cpp",
+        "sha256": "sha256:4eed6ae32b8424d74597b91989ddcdb54c03333692844b31c924b6d88d64ca44",
+        "size": 5427
+      },
+      {
+        "mode": "0644",
+        "path": "tests/native_systemd/platform-policy-v1.json",
+        "sha256": "sha256:b415f63b930ee21f092ebfca7d2fe9573dd7529ab7bdc02965ad87db479124b0",
+        "size": 654
+      },
+      {
+        "mode": "0644",
+        "path": "tests/native_tool_client_tests.cpp",
+        "sha256": "sha256:1433300ee4784f1c4bc67f6adf277c40e6f4ecbd1ddf1972a874a59bfb9e94d1",
+        "size": 21721
+      },
+      {
+        "mode": "0644",
+        "path": "tests/oms_journal_durability_tests.cpp",
+        "sha256": "sha256:56e5de10d5a6f74b43c556b0d2a82abe0778889ae605d56a377d3ff77bd14264",
+        "size": 9739
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/Dockerfile",
+        "sha256": "sha256:333c1e41b9663cd55768a9ef1e788bb15c69ce441caf3d6b76cdc0472d4ba949",
+        "size": 2831
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta-p1-campaign-rootful-liveness.target",
+        "sha256": "sha256:61d5ef7cf2042d98917f07ab44d0930fe8471e64284595db5ff8d41942bd1ffd",
+        "size": 159
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta-p1-liveness-coordinator.service",
+        "sha256": "sha256:29d8642f1be2958181557a8f55db5635518313a0a22d4c4c79b2d8ea18b5ef47",
+        "size": 901
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta-p1-liveness-systemd-entrypoint",
+        "sha256": "sha256:dabec6382d3963048796a7cd1dd9d87977f10f3438d945a3b42d4a6f64fe9c1b",
+        "size": 1900
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta-p1-liveness-watchdog.service",
+        "sha256": "sha256:04326f47c7b7624724e84e6486f44908373db1c194a5f08893b53039bf78957f",
+        "size": 962
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta-p1-liveness-worker.service",
+        "sha256": "sha256:daffac0ee9dcedbcddeb2dd99ec49ac0a96b97a33ced52fecee1fb9815b5edad",
+        "size": 956
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta_p1_liveness_daemon.py",
+        "sha256": "sha256:242f77a79c4c0f81a4d968546ab4da9d4cad336c66b4bf99efaacc0035a71c31",
+        "size": 6578
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_campaign_rootful_liveness_systemd/hepta_p1_liveness_inner_gate.py",
+        "sha256": "sha256:48cb80a4f92a0caea4faa2183b760b4711dcff8fcc82d1ba6585dc9b3875d005",
+        "size": 23163
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_dual_domain_rootful_systemd/Dockerfile",
+        "sha256": "sha256:c5adfadd7f2b4dd8dd2f72d5758ee451bf5739d2acbf0ecc08dbb7f26c1bbdd4",
+        "size": 3763
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta-p1-dual-domain-rootful.target",
+        "sha256": "sha256:d63e8b59a3784692492753c59dbcdc8cbcd8d644e547bf9435b517183fd04b7f",
+        "size": 163
+      },
+      {
+        "mode": "0755",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta-p1-dual-domain-systemd-entrypoint",
+        "sha256": "sha256:4ea71d584ebf1665b297db43d2de442d500e6b011f4aafe336132687329ccb83",
+        "size": 3462
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta-p1-dual-paper@.service",
+        "sha256": "sha256:52487cdd5af5d1ad6dbf7ee3482df44acf3c6b6cbbe8380973c4013084b322da",
+        "size": 1760
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta-p1-dual-paper@.socket",
+        "sha256": "sha256:75d2becc1a011fcc007a7c113b422a712b1ed5fc5054451057327293aba108ed",
+        "size": 326
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta-p1-dual-watch@.service",
+        "sha256": "sha256:de2112e56974f1bd6eb9a7554320aef037b273080042872c0c3604542fe6df07",
+        "size": 1518
+      },
+      {
+        "mode": "0644",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta-p1-dual-watch@.socket",
+        "sha256": "sha256:f9ae728d91b1a0319c569ad72b4f170226ae314f660613c58eac7dbdb270199c",
+        "size": 314
+      },
+      {
+        "mode": "0755",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta_p1_dual_domain_daemon.py",
+        "sha256": "sha256:76e1ec98a87d6a7749f88c798c088947b2b5ae5caf361b85ade53833a791dc4e",
+        "size": 15641
+      },
+      {
+        "mode": "0755",
+        "path": "tests/p1_dual_domain_rootful_systemd/hepta_p1_dual_domain_inner_gate.py",
+        "sha256": "sha256:70de92b27d5cae2854e388ceb8a74dd1d75e200c9c4078837f55cb84c7d9a945",
+        "size": 36500
+      },
+      {
+        "mode": "0644",
+        "path": "tests/paper_domain_rootful_systemd/Dockerfile",
+        "sha256": "sha256:3911e7a9d2b81664e0a426bdc6336845574c3057bb67a5050173d069496dceef",
+        "size": 3391
+      },
+      {
+        "mode": "0644",
+        "path": "tests/paper_domain_rootful_systemd/hepta-paper-domain-rootful-systemd.target",
+        "sha256": "sha256:68ee1bb8caa63f21338484d6f232413a08e7c5ab71dc9ec3c82af51218239dad",
+        "size": 163
+      },
+      {
+        "mode": "0644",
+        "path": "tests/paper_domain_rootful_systemd/hepta-paper-domain-systemd-entrypoint",
+        "sha256": "sha256:d51c68f386274232594d56940afea35eca218d3e006eda202a6f818c2d4cf14b",
+        "size": 4160
+      },
+      {
+        "mode": "0644",
+        "path": "tests/paper_domain_rootful_systemd/hepta_paper_domain_rootful_inner_gate.py",
+        "sha256": "sha256:f66b2afb24c88a9ee9fa9d2982dc353b30e90de069c24fff61ded7f28aca8df6",
+        "size": 48351
+      },
+      {
+        "mode": "0644",
+        "path": "tests/paper_domain_rootful_systemd/hepta_paper_inert_execution_stub.py",
+        "sha256": "sha256:8e44265cb78ebe30e2a690bfe5f962bafa0692097e6ec29ab1cd1d429f9980a2",
+        "size": 1355
+      },
+      {
+        "mode": "0644",
+        "path": "tests/rootful_systemd/Dockerfile",
+        "sha256": "sha256:663e15395c683154d4514df1eb5e12c244e0525a31a6eb739cda1d0346ab9334",
+        "size": 6623
+      },
+      {
+        "mode": "0644",
+        "path": "tests/rootful_systemd/hepta-rootful-systemd-gate.target",
+        "sha256": "sha256:4b03eb1e76769537c07e37d55d4bb140369577481143bfed739b6e8c3926b8e3",
+        "size": 166
+      },
+      {
+        "mode": "0755",
+        "path": "tests/rootful_systemd/hepta-systemd-entrypoint",
+        "sha256": "sha256:5237af97aade3a691a49699cf4449ba476bf88e1261ad4c85410a046c952ea14",
+        "size": 2354
+      },
+      {
+        "mode": "0755",
+        "path": "tests/rootful_systemd/hepta_execution_rootful_inner_gate.py",
+        "sha256": "sha256:cad4248ba01b95049bee098422125c03e508ab945cf4f1e2544ec93173827533",
+        "size": 67818
+      },
+      {
+        "mode": "0644",
+        "path": "tests/rootful_systemd_base/Dockerfile",
+        "sha256": "sha256:07cc725567bf063abb38c5a4d4047bae583e3db27ae931a2d1361e2591349222",
+        "size": 4079
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_execution_gateway_soak_provenance_fixture.py",
+        "sha256": "sha256:b3fc5cdd30ea2b7e478318778afeafb7b8e21004aff0a722f6b94ae67f75e06e",
+        "size": 19877
+      },
+      {
+        "mode": "0755",
+        "path": "tests/run_hepta_agent_os_rootful_systemd_e2e_gate_fixture.py",
+        "sha256": "sha256:2d8134d014a8fc17ef63a82f2b214290be3017500f18a3ebcd67047ac6ccafe4",
+        "size": 111016
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_hepta_broker_network_hard_isolation_gate_fixture.py",
+        "sha256": "sha256:a952c063943f96c0785ee5d869c5e98bca08ee81bb7b23e0c109aaae3f1386ba",
+        "size": 27461
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_hepta_broker_network_rootful_gate_fixture.py",
+        "sha256": "sha256:0ef8f288ca650fb504ff57a1a797b11352b94654d97b1655a10999724e543d1c",
+        "size": 7685
+      },
+      {
+        "mode": "0755",
+        "path": "tests/run_hepta_execution_native_systemd_gate_fixture.py",
+        "sha256": "sha256:9d1afdc0744fe46589055a01763cd6f9d3011ff66bd99c72aa069928c5f763f8",
+        "size": 36614
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_hepta_execution_rootful_systemd_gate_fixture.py",
+        "sha256": "sha256:e39fc801dca354687941a85d5662ae5b8dbf8695f5a0b559d168263921e45ff8",
+        "size": 12420
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_hepta_p1_campaign_rootful_liveness_gate_fixture.py",
+        "sha256": "sha256:07e05253da9d854c23a0da6dd1239de02f04743a2f834c8d59cadd3342cbb4bd",
+        "size": 19141
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_hepta_p1_dual_domain_rootful_gate_fixture.py",
+        "sha256": "sha256:06bcdc8d8cab8a2d0ca27780495cb2071e2107b5437092982f60387da0457dda",
+        "size": 57566
+      },
+      {
+        "mode": "0644",
+        "path": "tests/run_hepta_paper_domain_rootful_systemd_gate_fixture.py",
+        "sha256": "sha256:6e316a6c9726b450cb42b56b28f1653d8a46d6f70ffb467ff880256938e51b0f",
+        "size": 31316
+      },
+      {
+        "mode": "0644",
+        "path": "tests/snapshot_refresh_coordinator_tests.cpp",
+        "sha256": "sha256:a91aa4d2e715efd54b70ec7ac8baa0ee9392bae05d324e3f66fded6797535c90",
+        "size": 5494
+      },
+      {
+        "mode": "0644",
+        "path": "tests/tool_gateway_runtime_composition_tests.cpp",
+        "sha256": "sha256:c76b69edbb08665a4ef27b89dce90ac0fd0aad503e84ca78729c69112b6b6ccf",
+        "size": 14912
+      },
+      {
+        "mode": "0644",
+        "path": "tests/tool_gateway_session_policy_tests.cpp",
+        "sha256": "sha256:d1000646d8705aaf4698154678543940c248bda91b97eaa9f0f742e733774013",
+        "size": 6334
+      },
+      {
+        "mode": "0644",
+        "path": "tests/trading_contract_tests.cpp",
+        "sha256": "sha256:425cd5d5d282dca7f9907621ca2cffc7442feb0e9eaf0f4ffc189bf0f440f3b5",
+        "size": 1290
+      },
+      {
+        "mode": "0644",
+        "path": "tests/trading_tool_host_tests.cpp",
+        "sha256": "sha256:6c5803f447b30e7d9bd602fc0dff339ae12891406225b1dd4a630402f0d3fbdd",
+        "size": 38341
+      },
+      {
+        "mode": "0644",
+        "path": "tests/trading_tool_registry_tests.cpp",
+        "sha256": "sha256:fc014c4742128187b2d75a6972ef09c4dca1a838f1dffb55d30bb5b3ce3e04ae",
+        "size": 27988
+      },
+      {
+        "mode": "0644",
+        "path": "tests/trading_tool_session_catalog_tests.cpp",
+        "sha256": "sha256:dbc00202c2edbc2237f8d2325abee671cd6ebc2a51ebe1512f30dbcedf2b0a4b",
+        "size": 2570
+      },
+      {
+        "mode": "0644",
+        "path": "tests/unix_session_supervisor_server_tests.cpp",
+        "sha256": "sha256:2d6c76d991a6603caee5af812a9f29e95ebee5a3bfa80ad58bfb7d53f564426d",
+        "size": 83901
+      },
+      {
+        "mode": "0644",
+        "path": "tests/unix_tool_server_tests.cpp",
+        "sha256": "sha256:ff308057c769d575aa05e38e42d572b9e11bbc35367ddb0d5d223be4387b1bc7",
+        "size": 59278
+      },
+      {
+        "mode": "0755",
+        "path": "tests/verify_hepta_execution_native_vm_bundle_fixture.py",
+        "sha256": "sha256:bba62e53c43dd756914738854771cce7c1432d08b18def9aeca031542dd8e20b",
+        "size": 39237
+      },
+      {
+        "mode": "0644",
+        "path": "third_party/ctp/6.5.1-tools/README.md",
+        "sha256": "sha256:780fad946acd054f7336412b3f566713a60b59d241e6e7b6882c83b477982d03",
+        "size": 705
+      },
+      {
+        "mode": "0644",
+        "path": "third_party/ctp/6.5.1-tools/manifest-v1.json",
+        "sha256": "sha256:f1202daa4acbd838f7e068632ab73d9f6b2d0bd2d75a459d17a74d39736b3044",
+        "size": 1477
+      },
+      {
+        "mode": "0644",
+        "path": "third_party/ctp/6.7.7/README.md",
+        "sha256": "sha256:f7d19f83c31820cd4a3609908f73129b8f4c5e83feb9bb51d0389bd93602cd09",
+        "size": 1570
+      },
+      {
+        "mode": "0644",
+        "path": "third_party/ctp/6.7.7/manifest-v1.json",
+        "sha256": "sha256:d606b4c987b6448dd05bddbee761ec6ad4babae95aab4f96e551b933b7745291",
+        "size": 5281
+      },
+      {
+        "mode": "0644",
+        "path": "third_party/prebuilt-dependencies/README.md",
+        "sha256": "sha256:d6c48444da7b773be447833ae8753c113008de569ea4142ac4ae54e3d8df41fa",
+        "size": 1134
+      },
+      {
+        "mode": "0644",
+        "path": "third_party/prebuilt-dependencies/manifest-v1.json",
+        "sha256": "sha256:215198dbc83af2183e4f3ee0199a034a1edd95af6b6047bcf09edc156637dc74",
+        "size": 6807
+      },
+      {
+        "mode": "0644",
+        "path": "tmpfiles.d/heptatrader-agent-os.conf",
+        "sha256": "sha256:33e61c6e927ff1e980e58ebd7d8082f8f2585db8985db1db2dffddc55a7511ef",
+        "size": 490
+      },
+      {
+        "mode": "0644",
+        "path": "tmpfiles.d/heptatrader-ib-paper.conf",
+        "sha256": "sha256:2e464185c71d26bf57768a8291225392b6fbe505ad8369aeaef72e5c301a539e",
+        "size": 359
+      }
+    ],
+    "sha256": "sha256:c55e62dadd082a7e45c6e53999729ba4ce2b0ff71c8a877a48c95090287300e9"
+  },
+  "version": "0.1.0-beta.1-accelerated-paper-canary.1-round95",
+  "worktree_status_entry_count": 0
+}

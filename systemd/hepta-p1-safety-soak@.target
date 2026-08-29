@@ -1,0 +1,11 @@
+[Unit]
+Description=HeptaTrader P1 non-authorizing safety-soak lifecycle (%i)
+Requires=hepta-p1-safety-soak-campaign@%i.service
+After=hepta-p1-safety-soak-campaign@%i.service
+Conflicts=hepta-execution-ib-paper.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
+Conflicts=hepta-execution-ib-paper@alpha.service hepta-execution-ib-paper@alpha.socket hepta-execution-events-ib-paper@alpha.socket
+Conflicts=hepta-ib-paper-domain-preflight@alpha.service hepta-ib-paper-campaign-operator@alpha.service hepta-ib-paper-campaign-operator@alpha.socket
+Conflicts=hepta-execution-ib-live.service hepta-execution-ib-live.socket hepta-execution-events-ib-live.socket
+Conflicts=hepta-execution-ib-live@alpha.service hepta-execution-ib-live@alpha.socket hepta-execution-events-ib-live@alpha.socket
+Conflicts=hepta-ib-live-domain-preflight@alpha.service hepta-ib-live-campaign-operator@alpha.service hepta-ib-live-campaign-operator@alpha.socket
+StopWhenUnneeded=yes

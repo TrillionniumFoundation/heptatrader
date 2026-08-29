@@ -1,0 +1,8 @@
+{
+  "authorizations": [],
+  "live_authorized": false,
+  "network_identity_manifest_sha256": "sha256:4a94d555cad61a9de67b809cfae301eadd6ebf2511714c93343f10decb34e435",
+  "paper_authorized": false,
+  "schema": "hepta.ib-paper-domain-authorizations.v1",
+  "version": 1
+}

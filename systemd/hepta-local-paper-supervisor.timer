@@ -1,0 +1,12 @@
+[Unit]
+Description=Minute stability supervision for local EURUSD PAPER trading
+
+[Timer]
+OnBootSec=60s
+OnUnitInactiveSec=60s
+AccuracySec=5s
+RandomizedDelaySec=0
+Unit=hepta-local-paper-supervisor.service
+
+[Install]
+WantedBy=timers.target

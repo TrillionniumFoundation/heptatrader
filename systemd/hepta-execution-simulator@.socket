@@ -1,0 +1,19 @@
+[Unit]
+Description=HeptaTrader trust-domain Simulator execution socket (%i)
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Conflicts=hepta-execution-ib-paper.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket hepta-execution-ib-paper@%i.service hepta-execution-ib-paper@%i.socket hepta-execution-events-ib-paper@%i.socket
+
+[Socket]
+ListenStream=/run/hepta-execution-%i/execution.sock
+Accept=no
+Backlog=16
+SocketUser=hepta-gw-%i
+SocketGroup=hepta-gw-%i
+SocketMode=0600
+DirectoryMode=0711
+FileDescriptorName=execution
+Service=hepta-execution-simulator@%i.service
+RemoveOnStop=yes
+
+# Deliberately no [Install]. Only the matching domain Gateway UID can open
+# this socket; Execution independently verifies SO_PEERCRED and domain context.

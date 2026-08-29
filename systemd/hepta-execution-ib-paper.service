@@ -1,0 +1,63 @@
+[Unit]
+Description=HeptaTrader IB PAPER execution authority
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Requires=hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
+After=hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket network.target
+Conflicts=hepta-execution-simulator.service hepta-execution-simulator.socket hepta-execution-events-simulator.socket
+
+[Service]
+Type=simple
+Sockets=hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
+User=hepta-ib-exec
+Group=hepta-ib-exec
+WorkingDirectory=/
+ExecStart=/usr/libexec/hepta-ib-executiond
+Environment=HEPTA_IB_PAPER_CONTROL_DIRECTORY=/run/hepta/ib-paper-control
+EnvironmentFile=/etc/heptatrader/hepta-execution-ib-paper.env
+LoadCredential=hepta-execution-fence:/etc/heptatrader/credentials/hepta-execution-ib-paper-fence
+LoadCredential=hepta-ib-paper-authorization:/etc/heptatrader/credentials/hepta-ib-paper-authorization
+LoadCredential=hepta-fx-cash-baseline:/etc/heptatrader/credentials/hepta-fx-cash-baseline
+StateDirectory=hepta-ib-execution
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+TimeoutStartSec=240s
+TimeoutStopSec=35s
+KillMode=control-group
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=127.0.0.0/8
+IPAddressAllow=::1/128
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/var/lib/hepta-ib-execution
+ReadOnlyPaths=/run/hepta/ib-paper-control
+StandardOutput=journal
+StandardError=journal
+
+# Deliberately no [Install] section. The daemon is PAPER-only, receives both
+# authority credentials through systemd, and may reach only a loopback Gateway.

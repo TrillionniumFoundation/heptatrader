@@ -1,0 +1,14 @@
+[Unit]
+Description=HeptaTrader P1 fixture WATCH socket (%i)
+
+[Socket]
+ListenStream=/run/hepta-p1-dual/watch-%i.sock
+Accept=no
+Backlog=8
+SocketUser=hepta-p1-watch-%i
+SocketGroup=hepta-p1-watch-%i
+SocketMode=0600
+DirectoryMode=0755
+FileDescriptorName=p1-watch
+Service=hepta-p1-dual-watch@%i.service
+RemoveOnStop=yes

@@ -1,0 +1,14 @@
+[Unit]
+Description=HeptaTrader P1 fixture inert PAPER socket (%i)
+
+[Socket]
+ListenStream=/run/hepta-p1-dual/paper-%i.sock
+Accept=no
+Backlog=8
+SocketUser=hepta-p1-paper-%i
+SocketGroup=hepta-p1-paper-%i
+SocketMode=0600
+DirectoryMode=0755
+FileDescriptorName=p1-paper-inert
+Service=hepta-p1-dual-paper@%i.service
+RemoveOnStop=yes

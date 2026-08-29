@@ -1,0 +1,481 @@
+{
+  "schema": "hepta.code-quality-policy.v1",
+  "version": 1,
+  "native_line_budgets": {
+    "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp": 1530,
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp": 1143,
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp": 64,
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp": 400,
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp": 98,
+    "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp": 120,
+        "HeptaTrade/client/native_tool_discovery_contract.cpp": 850,
+        "HeptaTrade/execution/execution_authoritative_flatten.cpp": 485,
+        "HeptaTrade/execution/execution_authoritative_flatten_dispatch.cpp": 358,
+        "HeptaTrade/execution/execution_coordinator.cpp": 1315,
+        "HeptaTrade/execution/execution_coordinator_cancel.cpp": 215,
+        "HeptaTrade/execution/execution_coordinator_reconnect.cpp": 152,
+        "HeptaTrade/execution/execution_coordinator_recovery.cpp": 105,
+        "HeptaTrade/execution/execution_coordinator_terminal.cpp": 48,
+        "HeptaTrade/execution/execution_place_order_dispatch.cpp": 280,
+    "HeptaTrade/execution/execution_event_feed.cpp": 570,
+    "HeptaTrade/execution/execution_event_feed_client.cpp": 175,
+    "HeptaTrade/execution/execution_event_feed_server.cpp": 350,
+        "HeptaTrade/execution/execution_event_feed_transport.cpp": 150,
+        "HeptaTrade/execution/execution_service_runtime_composition.cpp": 875,
+    "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp": 319,
+    "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp": 190,
+        "HeptaTrade/execution/ib_paper_execution_hook_authority.cpp": 68,
+    "HeptaTrade/execution/ib_paper_execution_runtime_broker.cpp": 705,
+    "HeptaTrade/execution/ib_paper_execution_runtime_composition.cpp": 628,
+        "HeptaTrade/execution/ib_paper_execution_runtime_events.cpp": 943,
+        "HeptaTrade/execution/ib_paper_execution_runtime_flatten.cpp": 128,
+    "HeptaTrade/execution/ib_paper_execution_runtime_policy.cpp": 460,
+    "HeptaTrade/execution/ib_paper_execution_runtime_recent_orders.cpp": 220,
+    "HeptaTrade/execution/ib_paper_execution_runtime_event_drain.cpp": 150,
+    "HeptaTrade/execution/ib_paper_execution_runtime_quote_admission.cpp": 600,
+    "HeptaTrade/execution/ib_paper_execution_runtime_startup.cpp": 238,
+    "HeptaTrade/execution/ib_paper_execution_runtime_state.cpp": 562,
+    "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp": 319,
+    "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp": 693,
+    "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp": 134,
+    "HeptaTrade/execution/paper_terminal_external_latch.cpp": 970,
+    "HeptaTrade/execution/paper_terminal_mutation_manifest.cpp": 1476,
+        "HeptaTrade/execution/unix_execution_service.cpp": 1087,
+        "HeptaTrade/execution/unix_execution_service_client.cpp": 500,
+        "HeptaTrade/execution/unix_execution_service_flatten.cpp": 82,
+        "HeptaTrade/execution/unix_execution_service_flatten_client.cpp": 78,
+        "HeptaTrade/execution/unix_execution_service_flatten_permit.cpp": 228,
+        "HeptaTrade/execution/unix_execution_service_transport.cpp": 180,
+    "HeptaTrade/tool_host/agent_os_runtime_composition.cpp": 165,
+    "HeptaTrade/tool_host/session_supervisor_audit_journal.cpp": 700,
+    "HeptaTrade/tool_host/tool_decision_audit.cpp": 190,
+    "HeptaTrade/tool_host/trading_tool_host.cpp": 1208,
+    "HeptaTrade/tool_host/trading_tool_host_terminal.cpp": 150,
+    "HeptaTrade/tool_host/trading_tool_session_lifecycle.cpp": 547,
+    "HeptaTrade/tool_host/trading_tool_session_recovery.cpp": 80,
+    "HeptaTrade/tool_host/trading_tool_watch_transaction.cpp": 398,
+    "HeptaTrade/tool_host/typed_tool_framing.cpp": 130,
+    "HeptaTrade/tool_host/typed_tool_protocol.cpp": 507,
+    "HeptaTrade/tool_host/typed_tool_result_codec.cpp": 480,
+    "HeptaTrade/tool_host/unix_tool_server.cpp": 691
+  },
+  "native_structure_budgets": {
+    "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp": {
+      "maximum_function_lines": 144,
+      "maximum_cyclomatic_complexity": 43,
+      "maximum_cognitive_complexity": 50
+    },
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp": {
+      "maximum_function_lines": 80,
+      "maximum_cyclomatic_complexity": 35,
+      "maximum_cognitive_complexity": 40
+    },
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp": {
+      "maximum_function_lines": 56,
+      "maximum_cyclomatic_complexity": 10,
+      "maximum_cognitive_complexity": 12
+    },
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp": {
+      "maximum_function_lines": 80,
+      "maximum_cyclomatic_complexity": 25,
+      "maximum_cognitive_complexity": 25
+    },
+    "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp": {
+      "maximum_function_lines": 93,
+      "maximum_cyclomatic_complexity": 25,
+      "maximum_cognitive_complexity": 24
+    },
+    "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp": {
+      "maximum_function_lines": 30,
+      "maximum_cyclomatic_complexity": 10,
+      "maximum_cognitive_complexity": 12
+    },
+        "HeptaTrade/client/native_tool_discovery_contract.cpp": {
+            "maximum_function_lines": 110,
+            "maximum_cyclomatic_complexity": 55,
+            "maximum_cognitive_complexity": 85
+        },
+        "HeptaTrade/execution/execution_authoritative_flatten.cpp": {
+            "maximum_function_lines": 291,
+            "maximum_cyclomatic_complexity": 42,
+            "maximum_cognitive_complexity": 55
+        },
+        "HeptaTrade/execution/execution_authoritative_flatten_dispatch.cpp": {
+            "maximum_function_lines": 153,
+            "maximum_cyclomatic_complexity": 23,
+            "maximum_cognitive_complexity": 31
+        },
+        "HeptaTrade/execution/execution_coordinator.cpp": {
+            "maximum_function_lines": 194,
+            "maximum_cyclomatic_complexity": 38,
+            "maximum_cognitive_complexity": 41
+        },
+        "HeptaTrade/execution/execution_coordinator_cancel.cpp": {
+            "maximum_function_lines": 194,
+            "maximum_cyclomatic_complexity": 39,
+            "maximum_cognitive_complexity": 41
+        },
+    "HeptaTrade/execution/execution_coordinator_reconnect.cpp": {
+      "maximum_function_lines": 66,
+      "maximum_cyclomatic_complexity": 19,
+      "maximum_cognitive_complexity": 24
+    },
+    "HeptaTrade/execution/execution_coordinator_recovery.cpp": {
+      "maximum_function_lines": 55,
+      "maximum_cyclomatic_complexity": 12,
+      "maximum_cognitive_complexity": 15
+    },
+    "HeptaTrade/execution/execution_coordinator_terminal.cpp": {
+      "maximum_function_lines": 48,
+      "maximum_cyclomatic_complexity": 10,
+      "maximum_cognitive_complexity": 9
+    },
+    "HeptaTrade/execution/execution_place_order_dispatch.cpp": {
+      "maximum_function_lines": 139,
+      "maximum_cyclomatic_complexity": 22,
+      "maximum_cognitive_complexity": 28
+    },
+    "HeptaTrade/execution/execution_event_feed.cpp": {
+      "maximum_function_lines": 130,
+      "maximum_cyclomatic_complexity": 60,
+      "maximum_cognitive_complexity": 70
+    },
+    "HeptaTrade/execution/execution_event_feed_client.cpp": {
+      "maximum_function_lines": 90,
+      "maximum_cyclomatic_complexity": 30,
+      "maximum_cognitive_complexity": 35
+    },
+    "HeptaTrade/execution/execution_event_feed_server.cpp": {
+      "maximum_function_lines": 130,
+      "maximum_cyclomatic_complexity": 45,
+      "maximum_cognitive_complexity": 55
+    },
+    "HeptaTrade/execution/execution_event_feed_transport.cpp": {
+      "maximum_function_lines": 35,
+      "maximum_cyclomatic_complexity": 15,
+      "maximum_cognitive_complexity": 20
+    },
+        "HeptaTrade/execution/execution_service_runtime_composition.cpp": {
+            "maximum_function_lines": 165,
+            "maximum_cyclomatic_complexity": 20,
+            "maximum_cognitive_complexity": 26
+        },
+        "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp": {
+            "maximum_function_lines": 80,
+            "maximum_cyclomatic_complexity": 17,
+            "maximum_cognitive_complexity": 15
+        },
+        "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp": {
+            "maximum_function_lines": 101,
+            "maximum_cyclomatic_complexity": 30,
+            "maximum_cognitive_complexity": 28
+        },
+        "HeptaTrade/execution/ib_paper_execution_hook_authority.cpp": {
+            "maximum_function_lines": 17,
+            "maximum_cyclomatic_complexity": 4,
+            "maximum_cognitive_complexity": 3
+        },
+        "HeptaTrade/execution/ib_paper_execution_runtime_broker.cpp": {
+            "maximum_function_lines": 230,
+            "maximum_cyclomatic_complexity": 57,
+            "maximum_cognitive_complexity": 73
+        },
+        "HeptaTrade/execution/ib_paper_execution_runtime_composition.cpp": {
+            "maximum_function_lines": 61,
+            "maximum_cyclomatic_complexity": 22,
+            "maximum_cognitive_complexity": 23
+        },
+        "HeptaTrade/execution/ib_paper_execution_runtime_events.cpp": {
+            "maximum_function_lines": 133,
+            "maximum_cyclomatic_complexity": 59,
+            "maximum_cognitive_complexity": 60
+        },
+        "HeptaTrade/execution/ib_paper_execution_runtime_flatten.cpp": {
+            "maximum_function_lines": 56,
+            "maximum_cyclomatic_complexity": 14,
+            "maximum_cognitive_complexity": 12
+        },
+        "HeptaTrade/execution/ib_paper_execution_runtime_policy.cpp": {
+            "maximum_function_lines": 194,
+            "maximum_cyclomatic_complexity": 40,
+            "maximum_cognitive_complexity": 47
+        },
+    "HeptaTrade/execution/ib_paper_execution_runtime_recent_orders.cpp": {
+      "maximum_function_lines": 60,
+      "maximum_cyclomatic_complexity": 17,
+      "maximum_cognitive_complexity": 17
+    },
+    "HeptaTrade/execution/ib_paper_execution_runtime_event_drain.cpp": {
+      "maximum_function_lines": 120,
+      "maximum_cyclomatic_complexity": 27,
+      "maximum_cognitive_complexity": 48
+    },
+    "HeptaTrade/execution/ib_paper_execution_runtime_quote_admission.cpp": {
+      "maximum_function_lines": 120,
+      "maximum_cyclomatic_complexity": 27,
+      "maximum_cognitive_complexity": 60
+    },
+    "HeptaTrade/execution/ib_paper_execution_runtime_startup.cpp": {
+      "maximum_function_lines": 83,
+      "maximum_cyclomatic_complexity": 33,
+      "maximum_cognitive_complexity": 38
+    },
+    "HeptaTrade/execution/ib_paper_execution_runtime_state.cpp": {
+      "maximum_function_lines": 172,
+      "maximum_cyclomatic_complexity": 59,
+      "maximum_cognitive_complexity": 68
+    },
+    "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp": {
+      "maximum_function_lines": 174,
+      "maximum_cyclomatic_complexity": 53,
+      "maximum_cognitive_complexity": 74
+    },
+    "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp": {
+      "maximum_function_lines": 290,
+      "maximum_cyclomatic_complexity": 81,
+      "maximum_cognitive_complexity": 89
+    },
+    "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp": {
+            "maximum_function_lines": 47,
+            "maximum_cyclomatic_complexity": 11,
+            "maximum_cognitive_complexity": 10
+        },
+    "HeptaTrade/execution/paper_terminal_external_latch.cpp": {
+      "maximum_function_lines": 153,
+      "maximum_cyclomatic_complexity": 62,
+      "maximum_cognitive_complexity": 61
+    },
+    "HeptaTrade/execution/paper_terminal_mutation_manifest.cpp": {
+      "maximum_function_lines": 243,
+      "maximum_cyclomatic_complexity": 63,
+      "maximum_cognitive_complexity": 65
+    },
+    "HeptaTrade/execution/unix_execution_service.cpp": {
+      "maximum_function_lines": 110,
+      "maximum_cyclomatic_complexity": 19,
+      "maximum_cognitive_complexity": 23
+    },
+        "HeptaTrade/execution/unix_execution_service_client.cpp": {
+            "maximum_function_lines": 90,
+            "maximum_cyclomatic_complexity": 30,
+            "maximum_cognitive_complexity": 35
+        },
+        "HeptaTrade/execution/unix_execution_service_flatten.cpp": {
+            "maximum_function_lines": 42,
+            "maximum_cyclomatic_complexity": 6,
+            "maximum_cognitive_complexity": 5
+        },
+        "HeptaTrade/execution/unix_execution_service_flatten_client.cpp": {
+            "maximum_function_lines": 28,
+            "maximum_cyclomatic_complexity": 5,
+            "maximum_cognitive_complexity": 4
+        },
+        "HeptaTrade/execution/unix_execution_service_flatten_permit.cpp": {
+            "maximum_function_lines": 77,
+            "maximum_cyclomatic_complexity": 12,
+            "maximum_cognitive_complexity": 14
+        },
+        "HeptaTrade/execution/unix_execution_service_transport.cpp": {
+      "maximum_function_lines": 30,
+      "maximum_cyclomatic_complexity": 12,
+      "maximum_cognitive_complexity": 15
+    },
+    "HeptaTrade/tool_host/agent_os_runtime_composition.cpp": {
+      "maximum_function_lines": 45,
+      "maximum_cyclomatic_complexity": 10,
+      "maximum_cognitive_complexity": 10
+    },
+    "HeptaTrade/tool_host/session_supervisor_audit_journal.cpp": {
+      "maximum_function_lines": 160,
+      "maximum_cyclomatic_complexity": 45,
+      "maximum_cognitive_complexity": 65
+    },
+    "HeptaTrade/tool_host/tool_decision_audit.cpp": {
+      "maximum_function_lines": 50,
+      "maximum_cyclomatic_complexity": 8,
+      "maximum_cognitive_complexity": 8
+    },
+    "HeptaTrade/tool_host/trading_tool_host.cpp": {
+      "maximum_function_lines": 114,
+      "maximum_cyclomatic_complexity": 40,
+      "maximum_cognitive_complexity": 44
+    },
+    "HeptaTrade/tool_host/trading_tool_host_terminal.cpp": {
+      "maximum_function_lines": 90,
+      "maximum_cyclomatic_complexity": 31,
+      "maximum_cognitive_complexity": 31
+    },
+    "HeptaTrade/tool_host/trading_tool_session_lifecycle.cpp": {
+      "maximum_function_lines": 106,
+      "maximum_cyclomatic_complexity": 25,
+      "maximum_cognitive_complexity": 26
+    },
+    "HeptaTrade/tool_host/trading_tool_session_recovery.cpp": {
+      "maximum_function_lines": 60,
+      "maximum_cyclomatic_complexity": 15,
+      "maximum_cognitive_complexity": 18
+    },
+    "HeptaTrade/tool_host/trading_tool_watch_transaction.cpp": {
+      "maximum_function_lines": 77,
+      "maximum_cyclomatic_complexity": 23,
+      "maximum_cognitive_complexity": 27
+    },
+    "HeptaTrade/tool_host/typed_tool_framing.cpp": {
+      "maximum_function_lines": 40,
+      "maximum_cyclomatic_complexity": 10,
+      "maximum_cognitive_complexity": 12
+    },
+    "HeptaTrade/tool_host/typed_tool_protocol.cpp": {
+      "maximum_function_lines": 64,
+      "maximum_cyclomatic_complexity": 35,
+      "maximum_cognitive_complexity": 34
+    },
+    "HeptaTrade/tool_host/typed_tool_result_codec.cpp": {
+      "maximum_function_lines": 100,
+      "maximum_cyclomatic_complexity": 50,
+      "maximum_cognitive_complexity": 75
+    },
+    "HeptaTrade/tool_host/unix_tool_server.cpp": {
+      "maximum_function_lines": 168,
+      "maximum_cyclomatic_complexity": 25,
+      "maximum_cognitive_complexity": 28
+    }
+  },
+  "include_graph": {
+    "maximum_edges": 80,
+    "maximum_local_fan_in": 11,
+    "maximum_local_fan_out": 8
+  },
+  "cmake": {
+    "files": [
+      "HeptaTrade/CMakeLists.txt",
+      "tests/CMakeLists.txt"
+    ],
+    "forbidden_source_discovery": [
+      "aux_source_directory("
+    ],
+    "maximum_cpp_references": 388
+  },
+  "coverage": {
+    "line_minimum_percent": 70,
+    "toolchain": {
+      "schema": "hepta.coverage-toolchain.v1",
+      "version": 1,
+      "provisioned": false,
+      "runner_labels": [
+        "self-hosted",
+        "linux",
+        "x64",
+        "heptatrader-coverage-v1"
+      ],
+      "python": {
+        "configured_path": "/opt/heptatrader/coverage-v1/bin/python",
+        "realpath": null,
+        "sha256": null,
+        "size": null,
+        "mode": null
+      },
+      "gcov": {
+        "configured_path": "/opt/heptatrader/coverage-v1/bin/gcov",
+        "realpath": null,
+        "sha256": null,
+        "size": null,
+        "mode": null
+      },
+      "immutable_tool_root_receipt": {
+        "configured_path": "/opt/heptatrader/coverage-v1/immutable-tool-root-receipt.json",
+        "realpath": null,
+        "sha256": null,
+        "size": null,
+        "mode": null
+      },
+      "distributions": [
+        {
+          "name": "colorlog",
+          "version": "6.12.0",
+          "root": null,
+          "file_count": null,
+          "files_sha256": null
+        },
+        {
+          "name": "gcovr",
+          "version": "7.2",
+          "root": null,
+          "file_count": null,
+          "files_sha256": null
+        },
+        {
+          "name": "Jinja2",
+          "version": "3.1.6",
+          "root": null,
+          "file_count": null,
+          "files_sha256": null
+        },
+        {
+          "name": "lxml",
+          "version": "6.1.1",
+          "root": null,
+          "file_count": null,
+          "files_sha256": null
+        },
+        {
+          "name": "MarkupSafe",
+          "version": "3.0.3",
+          "root": null,
+          "file_count": null,
+          "files_sha256": null
+        },
+        {
+          "name": "Pygments",
+          "version": "2.20.0",
+          "root": null,
+          "file_count": null,
+          "files_sha256": null
+        }
+      ]
+    }
+  },
+  "ci_archive": {
+    "actionlint_config": ".github/actionlint.yaml",
+    "checkout_contract": {
+      "action": "actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+      "expected_count": 8,
+      "fetch_depth": 2,
+      "ref": "${{ github.event.pull_request.head.sha || github.sha }}"
+    },
+    "canonical_forbidden_fragments": [
+      "D:\\",
+      "HeptaTrader.sln",
+      "ib_gateway_healthcheck.ps1",
+      "run_ctp_regression_round.ps1",
+      "run_ib_regression_round.ps1",
+      "scripts/ci_gate",
+      "x64/"
+    ],
+    "require_action_sha_pinning": true,
+    "revision": "HEAD",
+    "workflows": [
+      ".github/workflows/ci-gate.yml"
+    ],
+    "supplemental_workflows": [
+      ".github/workflows/legacy-research-windows-contract.yml"
+    ],
+    "supplemental_workflow_sha256": {
+      ".github/workflows/legacy-research-windows-contract.yml": "b17f9af74f30aee92cab265ea24c66951d823b813699074cdd36f67176607274"
+    },
+    "member_manifests": [
+      "policies/heptatrader-agent-os-source-v2.json"
+    ],
+    "path_prefixes": [
+      "scripts",
+      "tests",
+      "policies",
+      "release-manifests"
+    ],
+    "root_executable_suffixes": [
+      ".py",
+      ".ps1",
+      ".sh"
+    ]
+  }
+}

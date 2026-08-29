@@ -1,0 +1,14 @@
+# Apply alongside hepta-agent-host-identity.conf.example to the reviewed system
+# service that hosts Codex or OpenClaw.  AF_INET/AF_INET6 stay available for
+# model-provider access; the required nftables unit denies only the four
+# versioned IB API destination ports to every UID except explicitly bound,
+# dedicated IB Execution identities. Simulator identities remain denied.
+[Unit]
+BindsTo=hepta-broker-egress-policy.service
+After=hepta-broker-egress-policy.service
+
+[Service]
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

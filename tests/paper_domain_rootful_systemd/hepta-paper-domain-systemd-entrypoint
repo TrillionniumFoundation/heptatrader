@@ -1,0 +1,113 @@
+#!/bin/sh
+
+set -eu
+
+fail()
+{
+    printf '%s\n' "hepta PAPER-domain systemd entrypoint: fail-closed" >&2
+    exit 125
+}
+
+[ "$(id -u)" = "0" ] || fail
+[ "$$" = "1" ] || fail
+[ "${HEPTA_PAPER_DOMAIN_SYSTEMD_DISPOSABLE:-}" = "1" ] || fail
+run_id="${HEPTA_PAPER_DOMAIN_SYSTEMD_RUN_ID:-}"
+[ "${#run_id}" -eq 32 ] || fail
+case "$run_id" in *[!0-9a-f]*|'') fail;; esac
+
+[ ! -S /run/docker.sock ] || fail
+[ ! -S /var/run/docker.sock ] || fail
+[ -r /sys/fs/cgroup/cgroup.controllers ] || fail
+[ "$(cat /proc/1/cgroup)" = "0::/" ] || fail
+
+cgroup_mount="$({ findmnt -rn -T /sys/fs/cgroup -o FSTYPE,TARGET,FSROOT; } \
+    2>/dev/null)" || fail
+set -- $cgroup_mount
+[ "$#" -eq 3 ] || fail
+[ "$1" = "cgroup2" ] || fail
+[ "$2" = "/sys/fs/cgroup" ] || fail
+case "$3" in
+    /) ;;
+    /system.slice/docker-*.scope)
+        cgroup_id="${3#/system.slice/docker-}"
+        cgroup_id="${cgroup_id%.scope}"
+        [ "${#cgroup_id}" -eq 64 ] || fail
+        case "$cgroup_id" in *[!0-9a-f]*) fail;; esac
+        ;;
+    *) fail ;;
+esac
+
+mount -o remount,rw,nosuid,nodev,noexec /sys/fs/cgroup || fail
+case ",$(findmnt -rn -T /sys/fs/cgroup -o OPTIONS)," in
+    *,rw,*) ;;
+    *) fail ;;
+esac
+
+probe=/sys/fs/cgroup/hepta-paper-domain-entrypoint-probe
+[ ! -e "$probe" ] || fail
+mkdir "$probe" || fail
+rmdir "$probe" || fail
+
+[ "$(findmnt -rn -T /etc/heptatrader -o FSTYPE,TARGET)" = \
+    "tmpfs /etc/heptatrader" ] || fail
+[ "$(findmnt -rn -T /usr/share/heptatrader -o FSTYPE,TARGET)" = \
+    "tmpfs /usr/share/heptatrader" ] || fail
+install -d -o 0 -g 0 -m 0755 /etc/heptatrader \
+    /etc/heptatrader/credentials \
+    /etc/heptatrader/credentials/trust-domains \
+    /etc/heptatrader/trust-domains \
+    /usr/share/heptatrader || fail
+
+install -o 0 -g 0 -m 0644 \
+    /opt/hepta-paper-gate/provision/hepta-broker-network-policy-v1.json \
+    /usr/share/heptatrader/hepta-broker-network-policy-v1.json || fail
+install -o 0 -g 0 -m 0644 \
+    /opt/hepta-paper-gate/provision/hepta-service-identities-v1.json \
+    /usr/share/heptatrader/hepta-service-identities-v1.json || fail
+install -o 0 -g 0 -m 0600 \
+    /opt/hepta-paper-gate/provision/network-a.json \
+    /etc/heptatrader/hepta-agent-trust-domain-paper-identities-v1.json || fail
+install -o 0 -g 0 -m 0600 \
+    /opt/hepta-paper-gate/provision/authority-a.json \
+    /etc/heptatrader/hepta-ib-paper-domain-authorizations-v1.json || fail
+install -o 0 -g 0 -m 0600 \
+    /opt/hepta-paper-gate/provision/network-b.json \
+    /etc/heptatrader/test-openclaw-b-network.json || fail
+install -o 0 -g 0 -m 0600 \
+    /opt/hepta-paper-gate/provision/authority-b.json \
+    /etc/heptatrader/test-openclaw-b-authority.json || fail
+
+for domain in codex-a openclaw-b; do
+    case "$domain" in
+        codex-a) gid=2121 ;;
+        openclaw-b) gid=2122 ;;
+        *) fail ;;
+    esac
+    install -o 0 -g 0 -m 0644 \
+        "/opt/hepta-paper-gate/provision/$domain.ib-paper.env" \
+        "/etc/heptatrader/trust-domains/$domain.ib-paper.env" || fail
+    install -d -o 0 -g 0 -m 0700 \
+        "/etc/heptatrader/credentials/trust-domains/$domain" || fail
+    install -o 0 -g 0 -m 0400 \
+        /opt/hepta-paper-gate/provision/inert-fence \
+        "/etc/heptatrader/credentials/trust-domains/$domain/hepta-execution-ib-paper-fence" || fail
+    install -o 0 -g 0 -m 0400 \
+        /opt/hepta-paper-gate/provision/inert-authorization \
+        "/etc/heptatrader/credentials/trust-domains/$domain/hepta-ib-paper-authorization" || fail
+    install -d -o 0 -g "$gid" -m 0750 \
+        "/run/hepta/ib-paper-control-$domain" || fail
+    printf '%s' engaged >"/run/hepta/ib-paper-control-$domain/kill-switch" || fail
+    chown 0:"$gid" "/run/hepta/ib-paper-control-$domain/kill-switch" || fail
+    chmod 0440 "/run/hepta/ib-paper-control-$domain/kill-switch" || fail
+done
+install -d -o 0 -g 0 -m 0700 /run/hepta/ib-paper-host-authority || fail
+
+sentinel=/run/hepta-paper-domain-rootful-systemd.disposable
+[ ! -e "$sentinel" ] || fail
+printf '%s\n' "$run_id" >"$sentinel" || fail
+chown 0:0 "$sentinel" || fail
+chmod 0400 "$sentinel" || fail
+
+exec /usr/lib/systemd/systemd \
+    --unit=hepta-paper-domain-rootful-systemd.target \
+    --show-status=no

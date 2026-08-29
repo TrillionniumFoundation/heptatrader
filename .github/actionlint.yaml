@@ -1,0 +1,8 @@
+self-hosted-runner:
+  labels:
+    - heptatrader-coverage-v1
+    - heptatrader-ib-sdk-v1
+
+config-variables: null
+
+paths:

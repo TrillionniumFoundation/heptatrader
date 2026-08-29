@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Config Generated_at="2016-12-26 23:21:47">
+  <!-- Configs for HeptaSimulator -->
+  <User type="2">
+    <SimulatorServer Front="D:\quant\dat\HisMarketDataIndex.xml" Interval="0" Instrument="D:\quant\dat\Instrument.xml"/>
+    <Account PreBalance="0"/>
+  </User>
+  <Subscription>
+<!--
+    <Instrument ID="j1909"/>
+-->
+  </Subscription>
+    <StrategyConfigFile>
+
+    </StrategyConfigFile>
+ <Result>
+  	<TotalResult bSave="1" Interval="10" />
+  	<InsResult ID="IC1907" bSave="0" Interval="1"/>
+  </Result>
+  <System>
+    <Cache Need="0" Path="" Instrument="MA305,pp2305"/>
+  </System>
+</Config>

@@ -1,0 +1,15 @@
+[Unit]
+Description=HeptaTrader trust-domain session supervisor socket (%i)
+
+[Socket]
+ListenStream=/run/hepta-tool-gateway-%i/session-supervisor.sock
+FileDescriptorName=hepta-supervisor
+SocketMode=0600
+DirectoryMode=0700
+SocketUser=hepta-gw-%i
+SocketGroup=hepta-gw-%i
+Service=hepta-tool-gateway@%i.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

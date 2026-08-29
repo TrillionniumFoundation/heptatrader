@@ -1,0 +1,33 @@
+<?xml version="1.0" ?>
+<Config Generated_at="2026-02-27 18:35:00">
+  <User>
+    <MarketDataServer Front="tcp://180.168.146.187:10110" BrokerID="9999" UserID="" PassWord=""/>
+    <TradeServer Front="tcp://180.168.146.187:10100" BrokerID="9999" UserID="" PassWord="" ProductInfo="Hepta" AppID="simnow_client_test" AuthCode=""/>
+  </User>
+  <Subscription>
+    <Instrument ID="cu2605"/>
+  </Subscription>
+  <HisDataFolder>D:\quant\dat\</HisDataFolder>
+  <StrategyConfigFile></StrategyConfigFile>
+  <Runtime Profile="paper"/>
+  <IBServer Mode="IB" Host="127.0.0.1" Port="4002" ClientId="101" Account="DU999999" ReadOnly="1" />
+  <IBRisk
+    EnableOrderSubmission="0"
+    MaxOrderQuantity="1"
+    MaxDailyOrders="1"
+    EnableAutoCircuitBreaker="1"
+    FuseOnErrorCount="3"
+    MaxPriceDeviationBps="30"
+    DuplicateOrderWindowSec="3"
+    DuplicatePriceTolerance="0.0001"
+    EnableErrorCodeBlacklist="1"
+    ErrorCodeBlacklist="201,202,10147,10148"
+    RequireTwsConnected="1"
+    RequireNextValidId="1"
+    RequireAccountConfigured="1"
+    AccountWhitelist="DU*"
+    AllowLiveTrading="0"
+    LiveKillSwitch="1"
+    GlobalKillSwitch="0"
+    FlattenOnly="0" />
+</Config>

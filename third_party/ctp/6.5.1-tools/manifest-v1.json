@@ -1,0 +1,45 @@
+{
+  "assets": [
+    {
+      "architecture": "windows-x86",
+      "format": "pe32-dll",
+      "path": "Tools/thostmduserapi_se.dll",
+      "sha256": "153a4c90a62d469890314b849943ee2612a0e33a2cc52a051c5e2d81b5bd15b4",
+      "size": 2232832
+    },
+    {
+      "architecture": "windows-x86",
+      "format": "pe32-dll",
+      "path": "Tools/thosttraderapi_se.dll",
+      "sha256": "9c78f9ac887f92449db4724ede2e200f96fd53ea484fff69100fc17aa2013ce7",
+      "size": 2536448
+    },
+    {
+      "architecture": "linux-x86_64",
+      "format": "elf64-shared-object",
+      "path": "Tools/Centos/thostmduserapi_se.so",
+      "sha256": "a0c50b03d2329482a0105a5658e35267c6bc473107f240485cd67ff3bec56dcd",
+      "size": 4681931
+    },
+    {
+      "architecture": "linux-x86_64",
+      "format": "elf64-shared-object",
+      "path": "Tools/Centos/thosttraderapi_se.so",
+      "sha256": "7309c4b249301a5ac08f13451e6cb33451c3935447e7269cc3136897383df950",
+      "size": 5313803
+    }
+  ],
+  "capability_status": "archived-legacy-runtime",
+  "distribution_authorized": false,
+  "license_file": null,
+  "license_review_required": true,
+  "origin": "legacy-repository-import",
+  "origin_url": null,
+  "payload_count": 4,
+  "repository_import_commit": "8c0bc21a94c4cc764f0ee622ca50ea6db17cde97",
+  "schema": "hepta.ctp-tools-overlay-manifest.v1",
+  "separate_from": "third_party/ctp/6.7.7/manifest-v1.json",
+  "vendor": "CTP",
+  "version": "6.5.1",
+  "version_marker": "v6.5.1_20200908 10:25:08"
+}

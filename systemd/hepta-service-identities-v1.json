@@ -1,0 +1,25 @@
+{
+  "identities": {
+    "hepta-agent": {
+      "gid": 2004,
+      "role": "agent-tool-client",
+      "uid": 2004
+    },
+    "hepta-exec": {
+      "gid": 2002,
+      "role": "simulator-execution-authority",
+      "uid": 2002
+    },
+    "hepta-gateway": {
+      "gid": 2001,
+      "role": "tool-gateway",
+      "uid": 2001
+    },
+    "hepta-ib-exec": {
+      "gid": 2003,
+      "role": "ib-paper-execution-authority",
+      "uid": 2003
+    }
+  },
+  "schema": "hepta.service-identities.v1"
+}

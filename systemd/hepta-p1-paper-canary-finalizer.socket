@@ -1,0 +1,13 @@
+[Unit]
+Description=HeptaTrader fixed-alpha external P1 PAPER canary root finalizer socket
+Documentation=file:/usr/share/doc/heptatrader/AUTONOMOUS-PAPER-CAMPAIGN.md
+
+[Socket]
+ListenStream=/run/hepta-p1-paper-canary-finalizer.sock
+Accept=yes
+MaxConnections=1
+SocketUser=hepta-agent-alpha
+SocketGroup=hepta-agent-alpha
+SocketMode=0600
+DirectoryMode=0711
+RemoveOnStop=yes

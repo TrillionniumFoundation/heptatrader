@@ -1,0 +1,15 @@
+[Unit]
+Description=HeptaTrader OS-only session supervisor socket
+
+[Socket]
+ListenStream=/run/hepta-tool-gateway/session-supervisor.sock
+FileDescriptorName=hepta-supervisor
+SocketMode=0600
+DirectoryMode=0700
+SocketUser=hepta-gateway
+SocketGroup=hepta-gateway
+Service=hepta-tool-gateway.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

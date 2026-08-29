@@ -1,0 +1,55 @@
+[Unit]
+Description=HeptaTrader trust-domain Tool Gateway (%i)
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Requires=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
+After=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
+
+[Service]
+Type=simple
+User=hepta-gw-%i
+Group=hepta-gw-%i
+SupplementaryGroups=
+ExecStart=/usr/libexec/hepta-tool-gatewayd
+EnvironmentFile=/etc/heptatrader/trust-domains/%i.env
+Environment=HEPTA_TOOL_SOCKET=/run/hepta-agent-%i/tools.sock
+Environment=HEPTA_TOOL_AGENT_ID=%i
+Sockets=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
+Environment=HEPTA_TOOL_SUPERVISOR_LEASE_STORE=/var/lib/hepta-tool-gateway-%i/session-leases.hsl2
+Environment=HEPTA_TOOL_SUPERVISOR_AUDIT_JOURNAL=/var/lib/hepta-tool-gateway-%i/session-audit.jsonl
+LoadCredential=hepta-supervisor-lease-key:/etc/heptatrader/credentials/trust-domains/%i/hepta-supervisor-lease.key
+RuntimeDirectory=hepta-tool-gateway-%i
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+StateDirectory=hepta-tool-gateway-%i
+StateDirectoryMode=0700
+UMask=0077
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=20s
+KillMode=mixed
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadWritePaths=/run/hepta-tool-gateway-%i /var/lib/hepta-tool-gateway-%i
+
+[Install]
+WantedBy=multi-user.target

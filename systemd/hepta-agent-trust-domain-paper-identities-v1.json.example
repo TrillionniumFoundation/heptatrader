@@ -1,0 +1,8 @@
+{
+  "identities": [],
+  "live_authorized": false,
+  "paper_authorized": false,
+  "schema": "hepta.agent-trust-domain-paper-identities.v1",
+  "source_policy_sha256": "sha256:08d430d53e4813cd0a43a23beeb92344af2130dca425814cbf7285059d90f90c",
+  "version": 1
+}

@@ -1,0 +1,47 @@
+[Unit]
+Description=Reconcile HeptaTrader fixed round114 alpha WATCH activation
+Documentation=file:/usr/share/doc/heptatrader/BROKER-NETWORK-ISOLATION.md
+DefaultDependencies=no
+After=local-fs.target systemd-remount-fs.service hepta-p1-watch-activation.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+LoadCredential=hepta-p1-watch-activation-transaction.py:/usr/libexec/hepta-p1-watch-activation-transaction
+LoadCredential=hepta-p1-watch-profile-deployer.py:/usr/libexec/hepta-p1-watch-profile-deployer
+LoadCredential=hepta-broker-egress-policy.py:/usr/libexec/hepta-broker-egress-policy
+LoadCredential=hepta-shadow-host-installer.py:/usr/libexec/hepta-shadow-host-installer
+Environment=HEPTA_ACTIVATION_REQUIRE_CREDENTIALS=1
+ExecStart=/usr/bin/python3.12 -I -S ${CREDENTIALS_DIRECTORY}/hepta-p1-watch-activation-transaction.py reconcile
+UMask=0077
+TimeoutStartSec=3min
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_SYS_PTRACE CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ReadOnlyPaths=/etc/heptatrader
+ReadOnlyPaths=/usr/libexec
+ReadOnlyPaths=/usr/lib/systemd/system
+ReadWritePaths=/etc/systemd/system
+ReadWritePaths=/run/systemd/system
+ReadWritePaths=/var/lib/hepta/p1-admission
+ReadWritePaths=/var/lib/hepta/shadow-observation
+ReadWritePaths=/var/lib/heptatrader
+StandardOutput=journal
+StandardError=journal

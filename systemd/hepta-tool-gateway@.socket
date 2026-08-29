@@ -1,0 +1,15 @@
+[Unit]
+Description=HeptaTrader trust-domain Tool Gateway socket (%i)
+
+[Socket]
+ListenStream=/run/hepta-agent-%i/tools.sock
+FileDescriptorName=hepta-tool
+SocketMode=0600
+DirectoryMode=0711
+SocketUser=hepta-agent-%i
+SocketGroup=hepta-agent-%i
+Service=hepta-tool-gateway@%i.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

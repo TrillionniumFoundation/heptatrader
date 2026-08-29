@@ -1,0 +1,21 @@
+{
+  "name": "heptatrader-agent-os",
+  "version": "0.1.0",
+  "description": "Expose HeptaTrader's identity-bound OS trading tools through a local MCP bridge.",
+  "author": {
+    "name": "HeptaTrader"
+  },
+  "interface": {
+    "displayName": "HeptaTrader Agent OS",
+    "shortDescription": "Use identity-bound HeptaTrader OS tools.",
+    "longDescription": "Connects Codex or OpenClaw to the local HeptaTrader Tool Gateway. The plugin holds no broker credentials and all reads and mutations remain authorized by the Gateway and Execution Service.",
+    "developerName": "HeptaTrader",
+    "category": "Developer Tools",
+    "capabilities": ["MCP tools"],
+    "defaultPrompt": [
+      "Inspect HeptaTrader health, account, positions, orders, and risk before taking any action.",
+      "Use only tools exposed by this session; never infer PAPER or LIVE authority."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

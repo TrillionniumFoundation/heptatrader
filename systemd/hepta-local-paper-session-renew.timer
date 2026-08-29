@@ -1,0 +1,12 @@
+[Unit]
+Description=Hourly recovery-lease renewal for long local PAPER campaigns
+
+[Timer]
+OnBootSec=60s
+OnUnitInactiveSec=1h
+AccuracySec=5s
+RandomizedDelaySec=0
+Unit=hepta-local-paper-session-renew.service
+
+[Install]
+WantedBy=timers.target

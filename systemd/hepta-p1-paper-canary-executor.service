@@ -1,0 +1,41 @@
+[Unit]
+Description=HeptaTrader fixed external P1 PAPER canary executor
+Requires=hepta-p1-paper-canary-finalizer.socket
+After=hepta-p1-paper-canary-finalizer.socket
+ConditionPathExists=/run/hepta-p1-paper-canary/active-execution-handoff.v1.json
+
+[Service]
+Type=exec
+User=hepta-agent-alpha
+Group=hepta-agent-alpha
+UMask=0077
+LoadCredential=hepta-p1-paper-canary-executor.py:/usr/libexec/hepta-p1-paper-canary-executor
+LoadCredential=execution-handoff.v1.json:/run/hepta-p1-paper-canary/active-execution-handoff.v1.json
+ExecStart=/usr/bin/python3.12 -I -S /run/credentials/hepta-p1-paper-canary-executor/hepta-p1-paper-canary-executor.py
+WorkingDirectory=/
+Environment=LC_ALL=C
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ReadWritePaths=/var/lib/hepta/p1-paper-canary
+ReadOnlyPaths=/var/lib/hepta/p1-paper-canary-control /etc/heptatrader /usr/libexec /usr/bin /run/hepta-agent-alpha /run/hepta-execution-alpha
+RuntimeMaxSec=10min
+TimeoutStopSec=15
+KillMode=mixed
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

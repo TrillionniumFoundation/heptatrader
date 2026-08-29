@@ -1,0 +1,25 @@
+﻿<?xml version="1.0" ?>
+<Config Generated_at="2016-12-26 23:21:47">
+    <!-- Configs for HeptaTrader -->
+    <User>
+	<MarketDataServer Front="tcp://182.254.243.31:30011" BrokerID="9999" UserID="" PassWord=""/>
+	<TradeServer Front="tcp://182.254.243.31:30001" BrokerID="9999" UserID="" PassWord="" ProductInfo="Hepta" AppID="simnow_client_test" AuthCode=""/>
+    </User>
+    <Subscription>
+	<Instrument ID="cu2605"/>
+	<Instrument ID="fg2605"/>
+	<Instrument ID="rb2605"/>
+	<Instrument ID="im2603"/>
+    <Instrument ID="if2603"/>
+    </Subscription>
+
+  <HisDataFolder>
+    D:\quant\dat\
+  </HisDataFolder>
+    <StrategyConfigFile>
+
+    </StrategyConfigFile>
+
+</Config>
+
+

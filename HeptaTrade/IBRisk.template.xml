@@ -1,0 +1,51 @@
+<!-- Merge into HeptaTraderConfig.xml when using IB channel -->
+<IBServer Mode="IB" Host="127.0.0.1" Port="7497" ClientId="101" Account="DUxxxxxx" ReadOnly="1" />
+
+<IBRisk
+  EnableOrderSubmission="0"
+  MaxOrderQuantity="1"
+  MaxDailyOrders="1"
+  EnableAutoCircuitBreaker="1"
+  FuseOnErrorCount="3"
+  MaxPriceDeviationBps="30"
+  DuplicateOrderWindowSec="3"
+  DuplicatePriceTolerance="0.0001"
+  EnableErrorCodeBlacklist="1"
+  ErrorCodeBlacklist="201,202,10147,10148"
+  RequireTwsConnected="1"
+  RequireNextValidId="1"
+  RequireAccountConfigured="1"
+  AccountWhitelist="DU*"
+  AllowLiveTrading="0"
+  LiveKillSwitch="1"
+  GlobalKillSwitch="0"
+  FlattenOnly="0" />
+
+<!--
+说明：
+- EnableOrderSubmission: 订单总开关（0=关闭，1=允许提交）
+- MaxOrderQuantity: 单笔最大下单量
+- MaxDailyOrders: 单日最大下单次数
+- EnableAutoCircuitBreaker: 异常自动熔断（错误计数到阈值后关闭下单）
+- FuseOnErrorCount: 熔断阈值（连续错误次数）
+- MaxPriceDeviationBps: 限价单价格偏离保护（相对最新tick，单位bps）
+- DuplicateOrderWindowSec: 重复单抑制窗口（秒）
+- DuplicatePriceTolerance: 重复单价格容忍（绝对值）
+- EnableErrorCodeBlacklist: 启用错误码黑名单熔断
+- ErrorCodeBlacklist: 黑名单错误码（逗号分隔，命中即熔断）
+- RequireTwsConnected: 启动前必须连接 TWS/Gateway
+- RequireNextValidId: 启动前必须拿到 nextValidId
+- RequireAccountConfigured: 启动前要求 Account 非空
+- AccountWhitelist: 账户白名单（支持前缀通配，如 DU*；默认仅 Paper）
+- AllowLiveTrading: 是否显式授权实盘（0=否，1=是）
+- LiveKillSwitch: 实盘 Kill Switch（1=开启阻断实盘，0=关闭）
+- GlobalKillSwitch: 全局 Kill Switch（1=阻断所有新单）
+- FlattenOnly: 仅允许减仓/平仓单（1=开启）
+
+环境变量（优先级高于配置）：
+- HEPTA_IB_ACCOUNT_WHITELIST（如 DU*,U1234567）
+- HEPTA_ALLOW_IB_LIVE（1 才允许实盘）
+- HEPTA_IB_LIVE_KILL_SWITCH（1=阻断实盘，0=放行）
+- HEPTA_GLOBAL_KILL_SWITCH（1=阻断所有新单）
+- HEPTA_FLATTEN_ONLY（1=仅允许减仓/平仓）
+-->

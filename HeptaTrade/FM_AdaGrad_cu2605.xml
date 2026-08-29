@@ -1,0 +1,12 @@
+<FMModel>
+<W0>0.0999471</W0> <GW0>22.6596</GW0>
+<Weights>-0.0719492 0.00820499 -0.0226953 -0.00976795 0.0117432</Weights>
+<GWeights>3.0324e-05 6.96472e-06 0.000106931 0.120243 10.662</GWeights>
+</FMModel>
+<Scalers>
+<Scaler id="0"><Mean>5.25456e-05</Mean><Var>0.590777</Var></Scaler>
+<Scaler id="1"><Mean>2.89757e-05</Mean><Var>0.590777</Var></Scaler>
+<Scaler id="2"><Mean>0.000195716</Mean><Var>0.590778</Var></Scaler>
+<Scaler id="3"><Mean>0.00325562</Mean><Var>0.592177</Var></Scaler>
+<Scaler id="4"><Mean>-0.0438773</Mean><Var>0.74013</Var></Scaler>
+</Scalers>

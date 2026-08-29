@@ -1,0 +1,16 @@
+.github/workflows/ci-gate.yml
+.gitignore
+HeptaSimulator/CMakeLists.txt
+HeptaStrategy/heptaNetValueEvaluation.h
+HeptaTrade/HeptaDemoStrategyTrader.cpp
+HeptaTrade/adapter_ib/ib_api_wrapper.cpp
+HeptaTrade/adapter_ib/ib_api_wrapper.h
+HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
+HeptaTrade/adapter_ib/ib_gateway_adapter.h
+HeptaTrade/ib_fx_multi_strategy.cpp
+HeptaTrade/ib_fx_multi_strategy.h
+docs/IB-FX-TREND-STRATEGY.md
+scripts/hepta_env_profiles.ps1
+scripts/run_ib_adv_scheduler_stress_30m.ps1
+scripts/run_ib_regression_10m.ps1
+scripts/start_ib_paper_oneclick.ps1

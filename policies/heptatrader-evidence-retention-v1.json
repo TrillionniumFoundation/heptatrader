@@ -1,0 +1,142 @@
+{
+  "schema": "hepta.evidence-retention-policy.v1",
+  "version": 1,
+  "object_store": {
+    "key_template": "sha256/{sha256}",
+    "upload_required_before_source_removal": true,
+    "source_removal_implemented": false
+  },
+  "tiers": {
+    "certification": {
+      "retention_days": null,
+      "git_payload_allowed": false,
+      "git_index_allowed": true
+    },
+    "forensic": {
+      "retention_days": 365,
+      "git_payload_allowed": false,
+      "git_index_allowed": true
+    },
+    "latest": {
+      "retention_days": 30,
+      "git_payload_allowed": false,
+      "git_index_allowed": true
+    },
+    "ephemeral": {
+      "retention_days": 7,
+      "git_payload_allowed": false,
+      "git_index_allowed": false
+    }
+  },
+  "rules": [
+    {
+      "name": "round-closure",
+      "priority": 100,
+      "tier": "certification",
+      "globs": [
+        "heptatrader-round*-closure*.json"
+      ]
+    },
+    {
+      "name": "round38-engineering-evidence",
+      "priority": 99,
+      "tier": "certification",
+      "globs": [
+        "heptatrader-round*-engineering-artifacts-v*/*"
+      ]
+    },
+    {
+      "name": "delivery-closure-artifact",
+      "priority": 98,
+      "tier": "certification",
+      "globs": [
+        "heptatrader-round*-semantic-delivery-artifacts-v*/no-git-soak-ibapi-off.json",
+        "heptatrader-round*-semantic-delivery-artifacts-v*/no-git-soak-ibapi-on.json",
+        "heptatrader-round*-semantic-delivery-artifacts-v*/source-baseline-manifest.json",
+        "heptatrader-round*-semantic-delivery-artifacts-v*/strict-source-bundle.tar",
+        "heptatrader-round*-semantic-delivery-artifacts-v*/strict-source-bundle-manifest.json",
+        "heptatrader-round*-semantic-delivery-artifacts-v*/worktree-soak-ibapi-off.json",
+        "heptatrader-round*-semantic-delivery-artifacts-v*/worktree-soak-ibapi-on.json"
+      ]
+    },
+    {
+      "name": "evidence-set-manifest",
+      "priority": 95,
+      "tier": "certification",
+      "globs": [
+        "heptatrader-round*-evidence-set-manifest-v2.json"
+      ]
+    },
+    {
+      "name": "certification-soak",
+      "priority": 90,
+      "tier": "certification",
+      "globs": [
+        "execution-boundary-soak-round*-8-final.json"
+      ]
+    },
+    {
+      "name": "release-source-bundle",
+      "priority": 80,
+      "tier": "certification",
+      "globs": [
+        "heptatrader-agent-os-*-clean-source.tar",
+        "heptatrader-agent-os-*-clean-source-manifest.json"
+      ]
+    },
+    {
+      "name": "native-vm-certification",
+      "priority": 70,
+      "tier": "certification",
+      "globs": [
+        "native-vm-bundles*/*.json",
+        "native-vm-bundles*/*.tar"
+      ]
+    },
+    {
+      "name": "blocked-rehearsal",
+      "priority": 60,
+      "tier": "forensic",
+      "globs": [
+        "*blocked*.json",
+        "*fault*.json"
+      ]
+    },
+    {
+      "name": "repository-governance-report",
+      "priority": 55,
+      "tier": "latest",
+      "globs": [
+        "heptatrader-*-inventory*.json",
+        "heptatrader-round*-repository-governance*.json"
+      ]
+    },
+    {
+      "name": "ci-soak",
+      "priority": 50,
+      "tier": "latest",
+      "globs": [
+        "execution-gateway-short-soak.json",
+        "ci-execution-gateway-soak.json"
+      ]
+    },
+    {
+      "name": "latest-operational-report",
+      "priority": 40,
+      "tier": "latest",
+      "globs": [
+        "*status*.json",
+        "*health*.json"
+      ]
+    },
+    {
+      "name": "ephemeral-build-output",
+      "priority": 10,
+      "tier": "ephemeral",
+      "globs": [
+        "*.log",
+        "*.tmp"
+      ]
+    }
+  ]
+}

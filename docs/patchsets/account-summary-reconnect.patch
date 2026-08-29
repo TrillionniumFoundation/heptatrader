@@ -1,0 +1,694 @@
+diff --git a/HeptaTrade/adapter_ib/ib_gateway_adapter.cpp b/HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
+index ada5fce..b771672 100644
+--- a/HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
++++ b/HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
+@@ -10,6 +10,9 @@
+ #include <fstream>
+ #include <mutex>
+ #include <chrono>
++#include <vector>
++#include <atomic>
++#include <climits>
+ 
+ namespace {
+ std::mutex g_obsLogMutex;
+@@ -36,6 +39,27 @@ std::string EscapeJson(const std::string& s) {
+     return out;
+ }
+ 
++std::string JoinSortedCodes(const std::unordered_set<int>& codes) {
++    std::vector<int> sorted(codes.begin(), codes.end());
++    std::sort(sorted.begin(), sorted.end());
++    std::ostringstream oss;
++    for (std::size_t i = 0; i < sorted.size(); ++i) {
++        if (i > 0) oss << ",";
++        oss << sorted[i];
++    }
++    return oss.str();
++}
++
++int FuseWeightForError(int ibErrorCode) {
++    if (ibErrorCode <= 0) return 0;
++    // Informational / connectivity chatter (mostly already ignored by fuseIgnoreErrorCodes)
++    if (ibErrorCode >= 2100 && ibErrorCode < 2200) return 0;
++    // Order validation / routing / broker-side warnings: mild weight
++    if ((ibErrorCode >= 100 && ibErrorCode < 1000) || (ibErrorCode >= 10000 && ibErrorCode < 11000)) return 1;
++    // Everything else defaults to medium severity
++    return 2;
++}
++
+ std::string ObsLogPath() {
+     const char* p = std::getenv("HEPTA_IB_OBS_LOG");
+     if (p != nullptr && *p != '\0') {
+@@ -62,6 +86,53 @@ std::string UtcNowIso8601Ms() {
+     return buf;
+ }
+ 
++bool IsIbAckStatus(const std::string& status) {
++    return (status == "ApiPending" || status == "PendingSubmit" || status == "PreSubmitted" || status == "Submitted" || status == "Filled" || status == "Cancelled" || status == "ApiCancelled" || status == "Inactive");
++}
++
++bool IsIbFinalStatus(const std::string& status) {
++    return (status == "Filled" || status == "Cancelled" || status == "ApiCancelled" || status == "Inactive" || status == "Rejected");
++}
++int GetEnvIntClamped(const char* name, int defValue, int minValue) {
++    const char* raw = std::getenv(name);
++    if (raw == nullptr || *raw == '\0') return defValue;
++    char* endPtr = nullptr;
++    long v = std::strtol(raw, &endPtr, 10);
++    if (endPtr == raw) return defValue;
++    if (v < static_cast<long>(minValue)) v = static_cast<long>(minValue);
++    if (v > static_cast<long>(INT_MAX)) v = static_cast<long>(INT_MAX);
++    return static_cast<int>(v);
++}
++
++bool ShouldEmitObsLatencySample(const char* path, const char* stage) {
++    const int sampleEvery = GetEnvIntClamped("HEPTA_IB_ADV_OBS_LAT_SAMPLE_EVERY", 1, 1);
++    const int minIntervalMs = GetEnvIntClamped("HEPTA_IB_ADV_OBS_LAT_MIN_INTERVAL_MS", 0, 0);
++    if (sampleEvery <= 1 && minIntervalMs <= 0) return true;
++
++    static std::atomic<unsigned long long> seq{0};
++    if (sampleEvery > 1) {
++        const unsigned long long n = seq.fetch_add(1, std::memory_order_relaxed) + 1;
++        if ((n % static_cast<unsigned long long>(sampleEvery)) != 0ULL) {
++            return false;
++        }
++    }
++
++    if (minIntervalMs > 0) {
++        static std::mutex gateMutex;
++        static std::unordered_map<std::string, long long> lastEmitMsByKey;
++        const std::string key = std::string(path ? path : "") + "|" + std::string(stage ? stage : "");
++        const long long nowMs = static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(
++            std::chrono::steady_clock::now().time_since_epoch()).count());
++        std::lock_guard<std::mutex> lk(gateMutex);
++        auto it = lastEmitMsByKey.find(key);
++        if (it != lastEmitMsByKey.end() && (nowMs - it->second) < static_cast<long long>(minIntervalMs)) {
++            return false;
++        }
++        lastEmitMsByKey[key] = nowMs;
++    }
++
++    return true;
++}
+ void AppendObsLogLine(const std::string& line) {
+     std::lock_guard<std::mutex> lk(g_obsLogMutex);
+     std::ofstream ofs(ObsLogPath().c_str(), std::ios::out | std::ios::app);
+@@ -92,6 +163,23 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
+     m_orderSubmitTs.clear();
+     m_cancelSubmitTs.clear();
+     m_symbolNetPosition.clear();
++
++    m_cachedRiskCfg.enableOrderSubmission = m_cfg.risk.enableOrderSubmission;
++    m_cachedRiskCfg.globalKillSwitch = m_cfg.risk.globalKillSwitch;
++    m_cachedRiskCfg.flattenOnly = m_cfg.risk.flattenOnly;
++    m_cachedRiskCfg.maxOrderQuantity = m_cfg.risk.maxOrderQuantity;
++    m_cachedRiskCfg.maxDailyOrders = m_cfg.risk.maxDailyOrders;
++    m_cachedRiskCfg.maxPriceDeviationBps = m_cfg.risk.maxPriceDeviationBps;
++    m_cachedRiskCfg.allowLiveTrading = m_cfg.risk.allowLiveTrading;
++    m_cachedRiskCfg.liveKillSwitch = m_cfg.risk.liveKillSwitch;
++
++    m_cachedAccountWhitelisted = IsAccountWhitelisted(m_cfg.account);
++    m_cachedPaperAccount = IsPaperAccount(m_cfg.account);
++
++    m_riskCtxScratch = PreTradeRiskContext{};
++    m_riskCtxScratch.venue = "IB";
++    m_riskCtxScratch.account = m_cfg.account;
++    m_riskCtxScratch.adapterTag = "ib_gateway_adapter";
+     EmitObsEvent("init", "\"host\":\"" + EscapeJson(m_cfg.host) + "\",\"port\":" + std::to_string(m_cfg.port) + ",\"clientId\":" + std::to_string(m_cfg.clientId));
+     return true;
+ }
+@@ -122,6 +210,10 @@ void HeptaIBGatewayAdapter::Disconnect() {
+     m_connected = false;
+ }
+ 
++bool HeptaIBGatewayAdapter::IsConnected() const {
++    return m_api ? m_api->IsConnected() : false;
++}
++
+ bool HeptaIBGatewayAdapter::PollOnce(int timeoutMs) {
+     if (!m_api) return false;
+     return m_api->PollOnce(timeoutMs);
+@@ -132,12 +224,22 @@ bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
+     if (!m_api->TryDequeueEvent(outEvent)) return false;
+ 
+     if (outEvent.type == IBEventType::Connected) {
++        m_connected = true;
+         EmitObsEvent("connect.connected_event", "\"id\":" + std::to_string(outEvent.id));
++    } else if (outEvent.type == IBEventType::ConnectionClosed) {
++        m_connected = false;
++        EmitObsEvent("connect.closed", "\"status\":\"" + EscapeJson(outEvent.value) + "\"");
+     } else if (outEvent.type == IBEventType::NextValidId) {
++        m_connected = true;
+         EmitObsEvent("connect.next_valid_id", "\"nextValidId\":" + std::to_string(outEvent.id));
+     } else if (outEvent.type == IBEventType::OrderStatus) {
+         const long orderId = static_cast<long>(outEvent.id);
+         auto now = std::chrono::steady_clock::now();
++        auto& life = m_orderLifecycle[orderId];
++        life.sentToBroker = true;
++        if (IsIbAckStatus(outEvent.key)) life.brokerAck = true;
++        if (IsIbFinalStatus(outEvent.key)) life.finalState = true;
++        life.lastStatus = outEvent.key;
+         auto itOrder = m_orderSubmitTs.find(orderId);
+         if (itOrder != m_orderSubmitTs.end()) {
+             long ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - itOrder->second).count();
+@@ -169,12 +271,12 @@ long HeptaIBGatewayAdapter::GetLastValidOrderId() const {
+ }
+ 
+ bool HeptaIBGatewayAdapter::ReqAccountSummary() {
+-    if (!m_api) return false;
++    if (!m_api || !m_api->IsConnected()) return false;
+     return m_api->ReqAccountSummary();
+ }
+ 
+ bool HeptaIBGatewayAdapter::ReqPositions() {
+-    if (!m_api) return false;
++    if (!m_api || !m_api->IsConnected()) return false;
+     return m_api->ReqPositions();
+ }
+ 
+@@ -192,6 +294,7 @@ void HeptaIBGatewayAdapter::UpdateReferencePrice(double price) {
+ 
+ void HeptaIBGatewayAdapter::SetRuntimeFlattenOnly(bool enabled, const std::string& reason) {
+     m_cfg.risk.flattenOnly = enabled;
++    m_cachedRiskCfg.flattenOnly = enabled;
+     std::string fields = "\"enabled\":" + std::string(enabled ? "true" : "false");
+     if (!reason.empty()) {
+         fields += ",\"reason\":\"" + EscapeJson(reason) + "\"";
+@@ -216,6 +319,23 @@ bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLit
+         return false;
+     }
+ 
++    std::string preflightCode;
++    std::string preflightDetail;
++    if (!RunPreflightChecksDetailed(preflightCode, preflightDetail)) {
++        std::string extra = "\"detail\":\"" + EscapeJson(preflightDetail) + "\"";
++        return reject(preflightCode.empty() ? "RISK_PREFLIGHT_FAILED" : preflightCode, extra);
++    }
++
++    if (c.symbol.empty() || c.secType.empty() || c.exchange.empty() || c.currency.empty()) {
++        return reject("RISK_CONTRACT_INVALID", "\"detail\":\"missing contract fields\"");
++    }
++    if (!(o.totalQuantity > 0.0) || std::isnan(o.totalQuantity) || std::isinf(o.totalQuantity)) {
++        return reject("RISK_QTY_INVALID", "\"detail\":\"qty must be finite and > 0\"");
++    }
++    if (o.orderType == "LMT" && (!(o.lmtPrice > 0.0) || std::isnan(o.lmtPrice) || std::isinf(o.lmtPrice))) {
++        return reject("RISK_PRICE_INVALID", "\"detail\":\"limit price must be finite and > 0\"");
++    }
++
+     if (!IsSameTradingDay()) {
+         std::time_t t = std::time(nullptr);
+         std::tm nowTm{};
+@@ -227,11 +347,24 @@ bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLit
+         m_dayOfYear = nowTm.tm_yday;
+         m_todayOrderCount = 0;
+         m_consecutiveErrorCount = 0;
++        m_errorFuseScore = 0;
++        m_errorCodeCounts.clear();
+         m_circuitBreakerTripped = false;
++        m_circuitBreakerTripTs = 0;
+     }
+ 
+     if (m_circuitBreakerTripped) {
+-        return reject("RISK_CIRCUIT_BREAKER_TRIPPED");
++        std::time_t nowTs = std::time(nullptr);
++        if (m_cfg.risk.circuitBreakerCooldownSec > 0 && m_circuitBreakerTripTs > 0 && (nowTs - m_circuitBreakerTripTs) >= m_cfg.risk.circuitBreakerCooldownSec) {
++            m_circuitBreakerTripped = false;
++            m_consecutiveErrorCount = 0;
++            m_errorFuseScore = 0;
++            m_errorCodeCounts.clear();
++            m_circuitBreakerTripTs = 0;
++            EmitObsEvent("risk.circuit_breaker_recovered", "\"reason\":\"cooldown_elapsed\"");
++        } else {
++            return reject("RISK_CIRCUIT_BREAKER_TRIPPED");
++        }
+     }
+ 
+     std::time_t nowTs = std::time(nullptr);
+@@ -239,19 +372,7 @@ bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLit
+         return reject("RISK_DUPLICATE_ORDER");
+     }
+ 
+-    PreTradeRiskConfig riskCfg;
+-    riskCfg.enableOrderSubmission = m_cfg.risk.enableOrderSubmission;
+-    riskCfg.globalKillSwitch = m_cfg.risk.globalKillSwitch;
+-    riskCfg.flattenOnly = m_cfg.risk.flattenOnly;
+-    riskCfg.maxOrderQuantity = m_cfg.risk.maxOrderQuantity;
+-    riskCfg.maxDailyOrders = m_cfg.risk.maxDailyOrders;
+-    riskCfg.maxPriceDeviationBps = m_cfg.risk.maxPriceDeviationBps;
+-    riskCfg.allowLiveTrading = m_cfg.risk.allowLiveTrading;
+-    riskCfg.liveKillSwitch = m_cfg.risk.liveKillSwitch;
+-
+-    PreTradeRiskContext riskCtx;
+-    riskCtx.venue = "IB";
+-    riskCtx.account = m_cfg.account;
++    PreTradeRiskContext& riskCtx = m_riskCtxScratch;
+     riskCtx.symbol = c.symbol;
+     riskCtx.action = o.action;
+     riskCtx.orderType = o.orderType;
+@@ -259,9 +380,10 @@ bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLit
+     riskCtx.limitPrice = o.lmtPrice;
+     riskCtx.referencePrice = m_lastReferencePrice;
+     riskCtx.todayOrderCount = m_todayOrderCount;
+-    riskCtx.accountWhitelisted = IsAccountWhitelisted(m_cfg.account);
+-    riskCtx.paperAccount = IsPaperAccount(m_cfg.account);
+-    riskCtx.adapterTag = "ib_gateway_adapter";
++    riskCtx.accountWhitelisted = m_cachedAccountWhitelisted;
++    riskCtx.paperAccount = m_cachedPaperAccount;
++    riskCtx.positionKnown = false;
++    riskCtx.netPosition = 0.0;
+ 
+     auto posIt = m_symbolNetPosition.find(c.symbol);
+     if (posIt != m_symbolNetPosition.end()) {
+@@ -269,7 +391,7 @@ bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLit
+         riskCtx.netPosition = posIt->second;
+     }
+ 
+-    PreTradeRiskDecision decision = PreTradeRiskEngine::Evaluate(riskCfg, riskCtx);
++    PreTradeRiskDecision decision = PreTradeRiskEngine::Evaluate(m_cachedRiskCfg, riskCtx);
+     if (!decision.allow) {
+         return reject(decision.reasonCode, "\"detail\":\"" + EscapeJson(decision.detail) + "\"");
+     }
+@@ -281,12 +403,41 @@ bool HeptaIBGatewayAdapter::PlaceOrder(const IBContractLite& c, const IBOrderLit
+         RememberLastOrder(c, o, nowTs);
+         if (outOrderId) *outOrderId = orderId;
+         m_orderSubmitTs[orderId] = std::chrono::steady_clock::now();
++        auto& life = m_orderLifecycle[orderId];
++        life.sentToBroker = true;
++        life.finalState = false;
++        life.lastStatus = "LOCAL_SENT";
+         m_lastRejectReason.clear();
++    } else {
++        m_lastRejectReason = "IB_API_PLACE_REJECTED";
++        m_orderLifecycle.erase(orderId);
+     }
+     EmitLatency("order", "api_place", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(), ok,
+         "\"orderId\":" + std::to_string(orderId) + ",\"symbol\":\"" + EscapeJson(c.symbol) + "\",\"qty\":" + std::to_string(o.totalQuantity) + ",\"type\":\"" + EscapeJson(o.orderType) + "\"");
+     return ok;
+ }
++bool HeptaIBGatewayAdapter::CanCancelOrder(long orderId, std::string* suppressReason) const {
++    auto it = m_orderLifecycle.find(orderId);
++    if (it == m_orderLifecycle.end()) {
++        if (suppressReason) *suppressReason = "NO_BROKER_SUBMIT";
++        return false;
++    }
++    const auto& life = it->second;
++    if (!life.sentToBroker) {
++        if (suppressReason) *suppressReason = "NO_BROKER_SUBMIT";
++        return false;
++    }
++    if (!life.brokerAck) {
++        if (suppressReason) *suppressReason = "NO_BROKER_ACK";
++        return false;
++    }
++    if (life.finalState) {
++        if (suppressReason) *suppressReason = "ALREADY_FINAL";
++        return false;
++    }
++    return true;
++}
++
+ bool HeptaIBGatewayAdapter::CancelOrder(long orderId) {
+     auto t0 = std::chrono::steady_clock::now();
+     if (!m_api || !m_connected) {
+@@ -294,6 +445,12 @@ bool HeptaIBGatewayAdapter::CancelOrder(long orderId) {
+             "\"orderId\":" + std::to_string(orderId) + ",\"reason\":\"not_connected\"");
+         return false;
+     }
++    std::string suppress;
++    if (!CanCancelOrder(orderId, &suppress)) {
++        EmitLatency("cancel", "guard_block", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(), false,
++            "\"orderId\":" + std::to_string(orderId) + ",\"reason\":\"" + EscapeJson(suppress) + "\"");
++        return false;
++    }
+     bool ok = m_api->CancelOrder(orderId);
+     if (ok) {
+         m_cancelSubmitTs[orderId] = std::chrono::steady_clock::now();
+@@ -316,75 +473,119 @@ int HeptaIBGatewayAdapter::GetTodayOrderCount() const {
+ }
+ 
+ bool HeptaIBGatewayAdapter::RunPreflightChecks(std::string& reason) const {
++    std::string code;
++    std::string detail;
++    const bool ok = RunPreflightChecksDetailed(code, detail);
++    if (ok) {
++        reason = "RISK_OK";
++    } else if (!detail.empty()) {
++        reason = code + ": " + detail;
++    } else {
++        reason = code;
++    }
++    return ok;
++}
++
++bool HeptaIBGatewayAdapter::RunPreflightChecksDetailed(std::string& reasonCode, std::string& detail) const {
++    reasonCode = "RISK_OK";
++    detail.clear();
++
+     if (!m_api) {
+-        reason = "IB API wrapper is null";
++        reasonCode = "RISK_IB_API_NULL";
++        detail = "IB API wrapper is null";
+         return false;
+     }
+     if (m_cfg.risk.globalKillSwitch) {
+-        reason = "RISK_GLOBAL_KILL_SWITCH_ON";
++        reasonCode = "RISK_GLOBAL_KILL_SWITCH_ON";
++        detail = "global kill switch enabled";
+         return false;
+     }
+     if (m_cfg.risk.requireTwsConnected && !m_connected) {
+-        reason = "IB is not connected";
++        reasonCode = "RISK_NOT_CONNECTED";
++        detail = "IB gateway is not connected";
+         return false;
+     }
+     if (m_cfg.risk.requireNextValidId && GetLastValidOrderId() <= 0) {
+-        reason = "nextValidId not ready";
++        reasonCode = "RISK_NEXT_VALID_ID_NOT_READY";
++        detail = "nextValidId not ready";
+         return false;
+     }
+     if (m_cfg.risk.requireAccountConfigured && m_cfg.account.empty()) {
+-        reason = "account is empty";
++        reasonCode = "RISK_ACCOUNT_NOT_CONFIGURED";
++        detail = "account is empty";
+         return false;
+     }
+     if (!m_cfg.account.empty() && !IsAccountWhitelisted(m_cfg.account)) {
+-        reason = "account is not in whitelist";
++        reasonCode = "RISK_ACCOUNT_NOT_WHITELISTED";
++        detail = "account is not in whitelist";
+         return false;
+     }
+     if (m_cfg.risk.enableOrderSubmission && !m_cfg.account.empty() && !IsPaperAccount(m_cfg.account)) {
+         if (!m_cfg.risk.allowLiveTrading) {
+-            reason = "live trading is not explicitly authorized";
++            reasonCode = "RISK_LIVE_NOT_AUTHORIZED";
++            detail = "live trading is not explicitly authorized";
+             return false;
+         }
+         if (m_cfg.risk.liveKillSwitch) {
+-            reason = "live kill switch is ON";
++            reasonCode = "RISK_LIVE_KILL_SWITCH_ON";
++            detail = "live kill switch is ON";
+             return false;
+         }
+     }
+     if (m_cfg.risk.maxOrderQuantity <= 0) {
+-        reason = "maxOrderQuantity must be > 0";
++        reasonCode = "RISK_CONFIG_INVALID_MAX_ORDER_QTY";
++        detail = "maxOrderQuantity must be > 0";
+         return false;
+     }
+     if (m_cfg.risk.maxDailyOrders <= 0) {
+-        reason = "maxDailyOrders must be > 0";
++        reasonCode = "RISK_CONFIG_INVALID_MAX_DAILY_ORDERS";
++        detail = "maxDailyOrders must be > 0";
+         return false;
+     }
+     if (m_cfg.risk.maxPriceDeviationBps < 0.0) {
+-        reason = "maxPriceDeviationBps must be >= 0";
++        reasonCode = "RISK_CONFIG_INVALID_MAX_PRICE_DEV_BPS";
++        detail = "maxPriceDeviationBps must be >= 0";
+         return false;
+     }
+     if (m_cfg.risk.duplicateOrderWindowSec < 0) {
+-        reason = "duplicateOrderWindowSec must be >= 0";
++        reasonCode = "RISK_CONFIG_INVALID_DUP_WINDOW_SEC";
++        detail = "duplicateOrderWindowSec must be >= 0";
+         return false;
+     }
+     if (m_cfg.risk.duplicatePriceTolerance < 0.0) {
+-        reason = "duplicatePriceTolerance must be >= 0";
++        reasonCode = "RISK_CONFIG_INVALID_DUP_TOL";
++        detail = "duplicatePriceTolerance must be >= 0";
+         return false;
+     }
+-    reason = "OK";
+     return true;
+ }
+ 
+ void HeptaIBGatewayAdapter::NotifyErrorEvent(int ibErrorCode) {
++    if (ibErrorCode != 0 &&
++        m_cfg.risk.fuseIgnoreErrorCodes.find(ibErrorCode) != m_cfg.risk.fuseIgnoreErrorCodes.end()) {
++        EmitObsEvent("risk.error_ignored_for_fuse",
++            "\"error_code\":" + std::to_string(ibErrorCode) +
++            ",\"ignored_codes\":\"" + JoinSortedCodes(m_cfg.risk.fuseIgnoreErrorCodes) + "\"");
++        return;
++    }
++
+     ++m_consecutiveErrorCount;
++    if (ibErrorCode != 0) m_errorCodeCounts[ibErrorCode] += 1;
++    const int fuseWeight = FuseWeightForError(ibErrorCode);
++    if (fuseWeight > 0) m_errorFuseScore += fuseWeight;
+ 
+     if (m_cfg.risk.enableErrorCodeBlacklist && ibErrorCode != 0 &&
+         m_cfg.risk.errorCodeBlacklist.find(ibErrorCode) != m_cfg.risk.errorCodeBlacklist.end()) {
+         m_circuitBreakerTripped = true;
++        m_circuitBreakerTripTs = std::time(nullptr);
++        EmitObsEvent("risk.circuit_breaker", "\"reason\":\"RISK_IB_ERROR_BLACKLIST\",\"error_code\":" + std::to_string(ibErrorCode));
+         return;
+     }
+ 
+-    if (m_cfg.risk.enableAutoCircuitBreaker && m_consecutiveErrorCount >= m_cfg.risk.fuseOnErrorCount) {
++    if (m_cfg.risk.enableAutoCircuitBreaker && m_errorFuseScore >= m_cfg.risk.fuseOnErrorCount) {
+         m_circuitBreakerTripped = true;
++        m_circuitBreakerTripTs = std::time(nullptr);
++        EmitObsEvent("risk.circuit_breaker", "\"reason\":\"RISK_IB_ERROR_FUSE\",\"error_count\":" + std::to_string(m_consecutiveErrorCount) + ",\"fuse_score\":" + std::to_string(m_errorFuseScore));
+     }
+ }
+ 
+@@ -450,6 +651,9 @@ void HeptaIBGatewayAdapter::EmitObsEvent(const char* eventName, const std::strin
+ }
+ 
+ void HeptaIBGatewayAdapter::EmitLatency(const char* path, const char* stage, long latencyMs, bool ok, const std::string& fieldsJson) const {
++    if (!ShouldEmitObsLatencySample(path, stage)) {
++        return;
++    }
+     std::string fields = "\"path\":\"" + EscapeJson(path ? path : "") + "\",\"stage\":\"" + EscapeJson(stage ? stage : "") +
+         "\",\"latency_ms\":" + std::to_string(latencyMs) + ",\"ok\":" + std::string(ok ? "true" : "false");
+     if (!fieldsJson.empty()) fields += "," + fieldsJson;
+@@ -490,8 +694,30 @@ std::string HeptaIBGatewayAdapter::GetLastRejectReason() const {
+     return m_lastRejectReason;
+ }
+ 
++
+ const char* HeptaIBGatewayAdapter::GetStatusString() const {
+     if (m_api) return m_api->GetStatusString();
+-    return "IB_API_NULL";
++    return m_connected ? "IB_CONNECTED" : "IB_DISCONNECTED";
++}
++
++std::string HeptaIBGatewayAdapter::GetPositionSummary() const {
++    if (m_symbolNetPosition.empty()) return "flat";
++    std::ostringstream oss;
++    bool first = true;
++    for (const auto& kv : m_symbolNetPosition) {
++        if (!first) oss << ";";
++        first = false;
++        oss << kv.first << ":" << kv.second;
++    }
++    return oss.str();
+ }
+ 
++
++
++
++
++
++
++
++
++
+diff --git a/HeptaTrade/adapter_ib/ib_gateway_adapter.h b/HeptaTrade/adapter_ib/ib_gateway_adapter.h
+index b39f233..fa60c97 100644
+--- a/HeptaTrade/adapter_ib/ib_gateway_adapter.h
++++ b/HeptaTrade/adapter_ib/ib_gateway_adapter.h
+@@ -1,4 +1,4 @@
+-#pragma once
++﻿#pragma once
+ 
+ #include <string>
+ #include <memory>
+@@ -20,15 +20,16 @@ struct HeptaIBRiskConfig {
+     double maxPriceDeviationBps = 30.0;
+     int duplicateOrderWindowSec = 3;
+     double duplicatePriceTolerance = 0.0001;
++    int circuitBreakerCooldownSec = 15;
+ 
+     bool enableErrorCodeBlacklist = true;
+     std::unordered_set<int> errorCodeBlacklist = {201, 202, 10147, 10148};
++    std::unordered_set<int> fuseIgnoreErrorCodes = {2104, 2106, 2107, 2109, 2119, 2158, 399};
+ 
+     bool requireTwsConnected = true;
+     bool requireNextValidId = true;
+     bool requireAccountConfigured = true;
+ 
+-    // live safety defaults
+     std::unordered_set<std::string> accountWhitelist = {"DU*"};
+     bool allowLiveTrading = false;
+     bool liveKillSwitch = true;
+@@ -59,9 +60,12 @@ public:
+     bool ReqAccountSummary();
+     bool ReqPositions();
+     bool ReqMktData(int reqId, const IBContractLite& c);
++    bool IsConnected() const;
+     bool PlaceOrder(const IBContractLite& c, const IBOrderLite& o, long* outOrderId = nullptr);
+     bool CancelOrder(long orderId);
++    bool CanCancelOrder(long orderId, std::string* suppressReason = nullptr) const;
+     const char* GetStatusString() const;
++    std::string GetPositionSummary() const;
+ 
+     void UpdateReferencePrice(double price);
+     void SetRuntimeFlattenOnly(bool enabled, const std::string& reason = "");
+@@ -70,10 +74,18 @@ public:
+     bool IsCircuitBreakerTripped() const;
+     int GetTodayOrderCount() const;
+     bool RunPreflightChecks(std::string& reason) const;
++    bool RunPreflightChecksDetailed(std::string& reasonCode, std::string& detail) const;
+     void NotifyErrorEvent(int ibErrorCode = 0);
+     std::string GetLastRejectReason() const;
+ 
+ private:
++    struct OrderLifecycleState {
++        bool sentToBroker = false;
++        bool brokerAck = false;
++        bool finalState = false;
++        std::string lastStatus;
++    };
++
+     long NextOrderId();
+     bool IsSameTradingDay() const;
+     bool IsDuplicateOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) const;
+@@ -91,6 +103,8 @@ private:
+     bool m_circuitBreakerTripped = false;
+     int m_todayOrderCount = 0;
+     int m_consecutiveErrorCount = 0;
++    int m_errorFuseScore = 0;
++    std::time_t m_circuitBreakerTripTs = 0;
+     int m_dayOfYear = -1;
+     long m_localOrderSeed = 1;
+ 
+@@ -104,4 +118,15 @@ private:
+     std::unordered_map<long, std::chrono::steady_clock::time_point> m_cancelSubmitTs;
+     std::string m_lastRejectReason;
+     std::unordered_map<std::string, double> m_symbolNetPosition;
++    std::unordered_map<long, OrderLifecycleState> m_orderLifecycle;
++    std::unordered_map<int, int> m_errorCodeCounts;
++    // Hot-path risk evaluation cache/scratch to reduce per-order allocations.
++    PreTradeRiskConfig m_cachedRiskCfg;
++    PreTradeRiskContext m_riskCtxScratch;
++    bool m_cachedAccountWhitelisted = false;
++    bool m_cachedPaperAccount = false;
+ };
++
++
++
++
+diff --git a/docs/IB-PROD-HARDENING.md b/docs/IB-PROD-HARDENING.md
+new file mode 100644
+index 0000000..40ff9c9
+--- /dev/null
++++ b/docs/IB-PROD-HARDENING.md
+@@ -0,0 +1,100 @@
++﻿# IB Production Hardening (Task A)
++
++Date: 2026-02-28
++Scope: `HeptaTrade/adapter_ib/*` and `HeptaTrade/HeptaDemoStrategyTrader.cpp`
++
++## 1) Patch set delivered
++
++### A. Clearer preflight failure codes (machine-readable)
++Files:
++- `HeptaTrade/adapter_ib/ib_gateway_adapter.h`
++- `HeptaTrade/adapter_ib/ib_gateway_adapter.cpp`
++- `HeptaTrade/HeptaDemoStrategyTrader.cpp`
++
++Changes:
++- Added `RunPreflightChecksDetailed(std::string& reasonCode, std::string& detail)` to return explicit risk code + detail.
++- Kept legacy `RunPreflightChecks(std::string& reason)` as compatibility wrapper.
++- Upgraded preflight checks to return explicit codes such as:
++  - `RISK_IB_API_NULL`
++  - `RISK_NOT_CONNECTED`
++  - `RISK_NEXT_VALID_ID_NOT_READY`
++  - `RISK_ACCOUNT_NOT_CONFIGURED`
++  - `RISK_ACCOUNT_NOT_WHITELISTED`
++  - `RISK_LIVE_NOT_AUTHORIZED`
++  - `RISK_LIVE_KILL_SWITCH_ON`
++  - config-invalid codes for max qty/daily/dev/dup fields.
++- `HeptaDemoStrategyTrader` now logs and journals startup preflight using explicit code + detail (instead of only free text).
++
++### B. Order-gate safety tightened in adapter order path
++File:
++- `HeptaTrade/adapter_ib/ib_gateway_adapter.cpp`
++
++Changes:
++- `PlaceOrder(...)` now re-runs preflight on each order attempt (`RunPreflightChecksDetailed`) before risk engine evaluation.
++- Added hard input validation before submit:
++  - Reject if contract is incomplete (`RISK_CONTRACT_INVALID`)
++  - Reject if qty is non-finite / <= 0 (`RISK_QTY_INVALID`)
++  - Reject invalid LMT price (`RISK_PRICE_INVALID`)
++- If IB API `PlaceOrder` returns false, adapter now sets `m_lastRejectReason = "IB_API_PLACE_REJECTED"` for deterministic diagnostics.
++
++### C. Better failure observability and distinct exits
++Files:
++- `HeptaTrade/adapter_ib/ib_gateway_adapter.cpp`
++- `HeptaTrade/HeptaDemoStrategyTrader.cpp`
++
++Changes:
++- Added observability events when circuit breaker trips (`risk.circuit_breaker`) with explicit reason:
++  - `RISK_IB_ERROR_BLACKLIST`
++  - `RISK_IB_ERROR_FUSE`
++- Added explicit IB exit constants in trader and used them in IB startup/order-loop paths:
++  - `-10` connect fail
++  - `-11` readOnly/order-gate blocked
++  - `-12` preflight failed
++  - `-13` cancel failed
++  - `-14` live not authorized
++  - `-15` live kill switch ON
++  - `-23` **new** IB test place rejected (no longer conflated with preflight `-12`)
++
++---
++
++## 2) Minimal regression commands
++
++Run from project root: `D:\quant\HeptaTrader-master`
++
++### A. IB healthcheck
++```powershell
++powershell -ExecutionPolicy Bypass -File .\scripts\ib_gateway_healthcheck.ps1
++```
++
++### B. IB paper order loop (risk-gate + place/cancel path)
++```powershell
++python .\scripts\ib_paper_order_loop.py --rounds 1 --qty 1000 --price 6.0 --cancel-delay 5
++```
++
++Alternative one-shot wrapper (if your environment already uses it):
++```powershell
++powershell -ExecutionPolicy Bypass -File .\scripts\run_ib_paper_loop.ps1
++```
++
++---
++
++## 3) Build result (Release|x64)
++
++Command:
++```powershell
++D:\VSstudio\MSBuild\Current\Bin\amd64\MSBuild.exe D:\quant\HeptaTrader-master\HeptaTrader.sln /t:Build /p:Configuration=Release /p:Platform=x64 /m
++```
++
++Result:
++- **Success**
++- 0 errors
++- 9 warnings (existing `C4244` narrowing warnings in `adapter_ib/ib_gateway_adapter.cpp`; no new build blockers)
++
++---
++
++## 4) Remaining risks / follow-ups
++
++1. **Warning debt**: existing `C4244` conversions in adapter latency math remain; should be cleaned to avoid hidden overflow/precision loss.
++2. **Preflight timeouts**: current preflight validates connectivity/nextValidId but not "data freshness" SLA (e.g., stale account/position snapshots).
++3. **Strategy-side guardrails**: strategy intents still rely on adapter-side risk checks; consider additional per-strategy hard caps in `ib_fx_multi_strategy` for defense in depth.
++4. **End-to-end CI**: add automated assertion that explicit risk codes appear in logs/journal for known reject scenarios.

@@ -1,0 +1,108 @@
+﻿
+#include "heptaEmptyStrategy.h"
+
+#ifndef heptaDouble_EQ
+#include <limits>
+#define heptaDouble_EQ (std::numeric_limits<double>::epsilon())
+#endif // !heptaDouble_EQ
+
+#ifndef MAX_PATH
+#define MAX_PATH          260
+#endif // !MAX_PATH
+
+
+heptaEmptyStrategy::heptaEmptyStrategy()
+	: m_bShowPosition(true)
+{
+}
+
+
+heptaEmptyStrategy::~heptaEmptyStrategy()
+{
+}
+
+std::string heptaEmptyStrategy::GetStrategyName()
+{
+	std::string strStrategyName("EmptyStrategy");
+	if (m_strStrategyName.size() > 0)
+	{
+		strStrategyName.append("_");
+		strStrategyName.append(m_strStrategyName);
+	}
+	return strStrategyName;
+}
+
+void heptaEmptyStrategy::PriceUpdate(heptaMarketDataPtr pPriceData)
+{
+	if (pPriceData.get() == NULL)
+	{
+		return;
+	}
+	m_strCurrentUpdateTime = pPriceData->UpdateTime;
+	if ((!m_bStrategyReady))
+	{
+		return;
+	}
+}
+
+void heptaEmptyStrategy::InitialStrategy(const char* pConfigFilePath)
+{
+	if (pConfigFilePath == NULL
+		|| strlen(pConfigFilePath) == 0)
+	{
+		char exeFullPath[MAX_PATH];
+		memset(exeFullPath, 0, MAX_PATH);
+#ifdef _MSC_VER
+		TCHAR TexeFullPath[MAX_PATH];
+		::GetModuleFileName(NULL, TexeFullPath, MAX_PATH);
+
+		int iLength;
+		//»ñÈ¡×Ö½Ú³¤¶È   
+		iLength = WideCharToMultiByte(CP_ACP, 0, TexeFullPath, -1, NULL, 0, NULL, NULL);
+		//½«tcharÖµ¸³¸ø_char    
+		WideCharToMultiByte(CP_ACP, 0, TexeFullPath, -1, exeFullPath, iLength, NULL, NULL);
+
+		m_strConfigFileFullPath = exeFullPath;
+		std::size_t found = m_strConfigFileFullPath.find_last_of("/\\");
+		m_strConfigFileFullPath = m_strConfigFileFullPath.substr(0, found);
+		m_strConfigFileFullPath.append("\\EmptyStrategy.xml");
+#else
+		size_t cnt = readlink("/proc/self/exe", exeFullPath, MAX_PATH);
+		if (cnt < 0 || cnt >= MAX_PATH)
+		{
+			printf("***Error***\n");
+			exit(-1);
+		}
+
+		m_strConfigFileFullPath = exeFullPath;
+		std::size_t found = m_strConfigFileFullPath.find_last_of("/\\");
+		m_strConfigFileFullPath = m_strConfigFileFullPath.substr(0, found);
+		m_strConfigFileFullPath.append("/EmptyStrategy.xml");
+#endif		
+	}
+	else
+	{
+		m_strConfigFileFullPath = pConfigFilePath;
+	}
+
+}
+
+void heptaEmptyStrategy::OnReady()
+{
+
+	std::vector<std::string> SubscribeInstrument;
+
+	for (auto it = m_InstrumentMap.begin(); it != m_InstrumentMap.end(); it++)
+	{
+		SubscribeInstrument.push_back(it->first);
+
+		if (SubscribeInstrument.size() >= 10)
+		{
+			//SubScribePrice(SubscribeInstrument);
+
+			SubscribeInstrument.clear();
+		}
+	}
+
+	//SubScribePrice(SubscribeInstrument);
+}

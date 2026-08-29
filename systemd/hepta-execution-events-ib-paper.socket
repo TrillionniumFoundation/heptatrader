@@ -1,0 +1,20 @@
+[Unit]
+Description=HeptaTrader IB PAPER execution event feed socket
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Conflicts=hepta-execution-simulator.service hepta-execution-simulator.socket hepta-execution-events-simulator.socket
+PartOf=hepta-execution-ib-paper.service
+
+[Socket]
+ListenStream=/run/hepta-execution/events.sock
+Accept=no
+Backlog=32
+SocketUser=hepta-gateway
+SocketGroup=hepta-gateway
+SocketMode=0660
+DirectoryMode=0755
+FileDescriptorName=events
+Service=hepta-execution-ib-paper.service
+RemoveOnStop=yes
+
+# Deliberately no [Install] section. This read-only PAPER feed is activated
+# only together with the reviewed IB PAPER execution authority.

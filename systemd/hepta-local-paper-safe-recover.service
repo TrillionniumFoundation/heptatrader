@@ -1,0 +1,16 @@
+[Unit]
+Description=Fail-closed recovery for the finite local AI PAPER campaign
+After=network-online.target hepta-local-ai-paper-24h-stop.timer
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/libexec/hepta-local-paper-safe-recover-guard
+TimeoutStartSec=300s
+UMask=0077
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectSystem=strict
+ReadWritePaths=/etc/heptatrader /etc/systemd/system /var/lib/hepta-local-ai-paper-agent -/run/hepta-agent-alpha
+LockPersonality=yes

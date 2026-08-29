@@ -1,0 +1,53 @@
+[Unit]
+Description=HeptaTrader external PAPER terminal latch committer (%i)
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Conflicts=hepta-execution-ib-paper@%i.service hepta-execution-ib-paper@%i.socket hepta-execution-events-ib-paper@%i.socket
+After=hepta-execution-ib-paper@%i.service hepta-execution-ib-paper@%i.socket hepta-execution-events-ib-paper@%i.socket
+
+[Service]
+Type=oneshot
+User=hepta-ib-exec-%i
+Group=hepta-ib-exec-%i
+WorkingDirectory=/
+ExecStart=/usr/libexec/hepta-paper-terminal-latch-committer --state-directory /var/lib/hepta-ib-execution-%i
+LoadCredential=hepta-paper-terminal-commit-capsule:/run/hepta/paper-terminal-witness/%i/commit-capsule.v1
+StateDirectory=hepta-ib-execution-%i
+StateDirectoryMode=0700
+UMask=0077
+TimeoutStartSec=30s
+TimeoutStopSec=5s
+KillMode=control-group
+
+NoNewPrivileges=yes
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX
+IPAddressDeny=any
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+ReadOnlyPaths=/run /tmp /var/tmp
+ReadWritePaths=/var/lib/hepta-ib-execution-%i
+StandardOutput=journal
+StandardError=journal
+
+# Deliberately no [Install] section. Root starts this one-shot only after a
+# durable post-cutoff witness and while normal broker authority is absent.

@@ -1,0 +1,5 @@
+[Unit]
+Description=HeptaTrader disposable P1 dual-domain effective-systemd gate
+DefaultDependencies=no
+Wants=systemd-journald.socket
+After=systemd-journald.socket

@@ -1,0 +1,15 @@
+[Unit]
+Description=HeptaTrader Agent-exclusive Tool Gateway socket
+
+[Socket]
+ListenStream=/run/hepta-agent/tools.sock
+FileDescriptorName=hepta-tool
+SocketMode=0600
+DirectoryMode=0711
+SocketUser=hepta-agent
+SocketGroup=hepta-agent
+Service=hepta-tool-gateway.service
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

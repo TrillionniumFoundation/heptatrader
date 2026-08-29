@@ -1,0 +1,45 @@
+[Unit]
+Description=HeptaTrader P1 recurring independent-observer worker (%i)
+After=local-fs.target
+PartOf=hepta-p1-safety-soak@%i.target
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=root
+UMask=0077
+EnvironmentFile=/run/hepta-p1-safety-soak/%i-worker.env
+ExecStart=/usr/libexec/hepta-p1-safety-soak-observer-worker --run --runtime-manifest /var/lib/hepta/p1-safety-soak/%i/runtime-manifest.json --expected-runtime-manifest-file-sha256 ${HEPTA_P1_RUNTIME_FILE_SHA256}
+Restart=on-failure
+RestartSec=1s
+WatchdogSec=30s
+TimeoutStartSec=45s
+TimeoutStopSec=30s
+KillMode=mixed
+ReadWritePaths=/var/lib/hepta/p1-safety-soak/%i
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+KeyringMode=private
+RemoveIPC=yes
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SYS_PTRACE CAP_NET_ADMIN
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+IPAddressDeny=any
+SystemCallArchitectures=native
+Environment=PATH=/usr/sbin:/usr/bin:/sbin:/bin
+Environment=LANG=C
+Environment=LC_ALL=C

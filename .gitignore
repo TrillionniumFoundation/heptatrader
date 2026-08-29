@@ -1,0 +1,97 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/Interface/MySql
+
+# Locally reviewed but nonredistributable CTP canonical-header overlay.
+# Only README.md and manifest-v1.json under the version root are source
+# artifacts; compatibility forwarders remain versioned under Interface/.
+/third_party/ctp/6.7.7/include/
+
+# build/IDE artifacts
+.vs/
+x64/
+**/Debug/
+**/Release/
+*.user
+*.suo
+*.VC.db
+*.opendb
+
+# local configs / secrets
+HeptaTrade/HeptaTraderConfig.xml
+Tools/HeptaTraderConfig.xml
+x64/Debug/HeptaTraderConfig.xml
+**/HeptaTraderConfig.xml
+
+# recursive build artifacts
+/bin/
+/build-*/
+**/.vs/
+**/x64/
+**/Debug/
+**/Release/
+**/build/
+**/builddebug/
+**/buildrelease/
+**/*.obj
+**/*.pdb
+**/*.ilk
+**/*.idb
+**/*.ipdb
+**/*.iobj
+**/*.tlog
+**/*.lastbuildstate
+**/*.recipe
+**/*.log
+**/*.tmp
+**/*.user
+**/*.suo
+**/*.VC.db
+**/*.opendb
+
+# runtime artifacts
+runtime-logs/
+**/runtime-logs/
+.hepta-release-logs/
+/evidence-requests/
+**/__pycache__/
+**/*.py[cod]
+*.jsonl
+*.pid
+
+# Repository publication hygiene.  Keep generated broker/session state and
+# non-redistributable dependency overlays out of the source repository.  The
+# manifests under third_party/ are the source-of-truth records; an operator
+# may provide matching payloads in a separate local overlay after license
+# review.
+.deploy/
+validation/baseline-*/
+Tools/Trade/*/*.con
+Tools/Quotes/*/*.con
+Tools/Trade/TradeLog_*.csv
+/Tools/Centos/KindleGenerator.out
+/Tools/Centos/MarketDataReceiver.out
+/Tools/MarketDataReceiver.exe
+
+# Non-redistributable CTP/IB payload overlays (metadata-only distribution).
+Interface/CTPTradeApi32/*.dll
+Interface/CTPTradeApi32/*.lib
+Interface/CTPTradeApi32/error.dtd
+Interface/CTPTradeApi32/error.xml
+Interface/CTPTradeApi32/版本.txt
+Interface/CTPTradeApi64/*.dll
+Interface/CTPTradeApi64/*.lib
+Interface/CTPTradeApi64/error.dtd
+Interface/CTPTradeApi64/error.xml
+Interface/CTPTradeApi64/版本.txt
+Interface/CTPTradeApiLinux/*.so
+Interface/CTPTradeApiLinux/error.dtd
+Interface/CTPTradeApiLinux/error.xml
+Interface/CTPTradeApiLinux/version.txt
+Tools/Centos/thost*.so
+Tools/thost*.dll
+Interface/IBApi/bin/*.dll
+Interface/IBApi/lib/*.lib
+Interface/lib/**/Release/*

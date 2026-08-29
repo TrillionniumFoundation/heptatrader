@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "heptatrader": {
+      "command": "/usr/libexec/hepta-agent-mcp-launcher",
+      "env": {}
+    }
+  }
+}

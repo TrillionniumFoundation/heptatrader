@@ -1,0 +1,19 @@
+[Unit]
+Description=HeptaTrader Simulator-only execution authority socket
+Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Conflicts=hepta-execution-ib-paper.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
+
+[Socket]
+ListenStream=/run/hepta-execution/execution.sock
+Accept=no
+Backlog=16
+SocketUser=hepta-gateway
+SocketGroup=hepta-gateway
+SocketMode=0660
+DirectoryMode=0755
+FileDescriptorName=execution
+Service=hepta-execution-simulator.service
+RemoveOnStop=yes
+
+# Deliberately no [Install] section. Deployment review must create the fixed
+# service identities and explicitly start this socket before any certification.

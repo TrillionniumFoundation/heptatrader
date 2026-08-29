@@ -1,0 +1,15 @@
+[Unit]
+Description=Hepta OpenClaw AI-native trader supervised scout (hard hold)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/qian-qi/.openclaw/workspace/quant/HeptaTrader-master
+Environment=OPENCLAW_AI_NATIVE_MODEL_FAILURE_POLICY=no-signal
+Environment=OPENCLAW_AI_NATIVE_PROMPT_VERSION=ai-native-v1
+ExecStart=/usr/bin/python3 scripts/openclaw_agent_trader_ai_native_supervisor.py --refresh-data-plane --write-defaults
+StandardOutput=append:/home/qian-qi/.openclaw/workspace/quant/HeptaTrader-master/runtime-logs/systemd-agent-trader-ai-native.out.log
+StandardError=append:/home/qian-qi/.openclaw/workspace/quant/HeptaTrader-master/runtime-logs/systemd-agent-trader-ai-native.err.log
+
+[Install]
+WantedBy=default.target
