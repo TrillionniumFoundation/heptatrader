@@ -26,6 +26,9 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             cmake ninja-build g++ libssl-dev python3
 
+      - name: Repair deterministic refactor patch boundaries
+        run: python3 scripts/fix_risk_patch.py
+
       - name: Apply deterministic risk parity refactor
         run: python3 scripts/apply_risk_parity.py
 
@@ -43,7 +46,10 @@ jobs:
 
       - name: Commit successful refactor and remove one-shot machinery
         run: |
-          rm scripts/apply_risk_parity.py .github/workflows/apply-risk-parity.yml
+          rm \
+            scripts/apply_risk_parity.py \
+            scripts/fix_risk_patch.py \
+            .github/workflows/apply-risk-parity.yml
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add -A
