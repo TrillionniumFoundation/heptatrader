@@ -1,0 +1,44 @@
+name: core-runtime
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: core-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev python3
+
+      - name: Validate entry points
+        run: |
+          bash -n scripts/dev_core.sh
+          python3 -m py_compile scripts/resolve_hepta_config.py
+          python3 -m json.tool CMakePresets.json >/dev/null
+
+      - name: Build and test the deterministic core
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: ./scripts/dev_core.sh

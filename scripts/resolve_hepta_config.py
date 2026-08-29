@@ -1,173 +1,204 @@
 #!/usr/bin/env python3
+"""Resolve one canonical HeptaTrader runtime configuration.
+
+Production profiles never use implicit paths or template files.  The module is
+importable so the same conflict and profile rules are exercised by unit tests
+and command-line callers.
+"""
+
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
 import os
+from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
-from pathlib import Path
-
-VALID_PROFILES = {"sim", "paper", "live"}
-PROD_PROFILES = {"paper", "live"}
 
 
-def fail(msg: str, code: int = 2):
-    print(f"[CONFIG-ERROR] {msg}", file=sys.stderr)
-    sys.exit(code)
+VALID_PROFILES = frozenset({"sim", "paper", "live"})
+PRODUCTION_PROFILES = frozenset({"paper", "live"})
+CONFIG_ENV_KEYS = ("HEPTA_CONFIG_PATH", "HEPTA_TRADER_CONFIG_PATH")
 
 
-def norm_profile(v: str | None) -> str | None:
-    if v is None:
+class ConfigError(RuntimeError):
+    """Stable fail-fast configuration error."""
+
+
+def _profile(value: str | None) -> str | None:
+    if value is None:
         return None
-    x = v.strip().lower()
-    return x or None
+    normalized = value.strip().lower()
+    return normalized or None
 
 
-def canonical_path_str(v: str | None) -> str | None:
-    if not v:
+def _validated_profile(value: str | None, source: str) -> str | None:
+    normalized = _profile(value)
+    if normalized is not None and normalized not in VALID_PROFILES:
+        raise ConfigError(
+            f"invalid {source}={normalized}; allowed: sim/paper/live")
+    return normalized
+
+
+def _canonical_path(value: str | None, project_root: Path) -> Path | None:
+    if value is None or not value.strip():
         return None
-    return str(Path(v).expanduser().resolve())
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        path = project_root / path
+    return path.resolve()
 
 
-def ensure_valid_profile(v: str | None, source: str) -> str | None:
-    if v is None:
-        return None
-    if v not in VALID_PROFILES:
-        fail(f"Invalid {source}={v}; allowed: sim/paper/live")
-    return v
-
-
-def detect_profile_from_xml(root: ET.Element) -> str:
+def _detect_profile(root: ET.Element) -> str:
     runtime = root.find("Runtime")
     if runtime is not None:
-        p = norm_profile(runtime.attrib.get("Profile") or runtime.findtext("Profile"))
-        if p:
-            return p
+        configured = _profile(
+            runtime.attrib.get("Profile") or runtime.findtext("Profile"))
+        if configured:
+            return _validated_profile(configured, "config profile") or "sim"
 
     ib = root.find("IBServer")
-    if ib is not None and (ib.attrib.get("Mode", "").upper() == "IB"):
+    if ib is not None and ib.attrib.get("Mode", "").strip().upper() == "IB":
         account = (ib.attrib.get("Account") or "").strip().upper()
-        if account.startswith("DU"):
-            return "paper"
-        return "live"
-
+        return "paper" if account.startswith("DU") else "live"
     return "sim"
 
 
-def file_sha256(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def resolve(project_root: Path, explicit_config: str | None, explicit_profile: str | None) -> dict:
-    env_cfg = os.getenv("HEPTA_CONFIG_PATH")
-    legacy_env_cfg = os.getenv("HEPTA_TRADER_CONFIG_PATH")
+def _select_config(
+    project_root: Path,
+    explicit_config: str | None,
+) -> tuple[Path, str]:
+    configured = [
+        ("arg", _canonical_path(explicit_config, project_root)),
+        ("HEPTA_CONFIG_PATH", _canonical_path(
+            os.getenv("HEPTA_CONFIG_PATH"), project_root)),
+        ("HEPTA_TRADER_CONFIG_PATH", _canonical_path(
+            os.getenv("HEPTA_TRADER_CONFIG_PATH"), project_root)),
+    ]
+    present = [(source, path) for source, path in configured if path is not None]
+    if len({path for _, path in present}) > 1:
+        values = ", ".join(f"{source}={path}" for source, path in present)
+        raise ConfigError(
+            "conflicting config sources: " + values +
+            "; keep one source or make all paths identical")
 
-    cfg_arg = canonical_path_str(explicit_config)
-    cfg_env = canonical_path_str(env_cfg)
-    cfg_legacy = canonical_path_str(legacy_env_cfg)
+    for source, path in configured:
+        if path is not None:
+            return path, source
 
-    configured = [("arg", cfg_arg), ("HEPTA_CONFIG_PATH", cfg_env), ("HEPTA_TRADER_CONFIG_PATH", cfg_legacy)]
-    non_empty = [(k, v) for (k, v) in configured if v]
+    # Implicit resolution is intentionally development-only.  Do not scan
+    # build trees, Tools/, user workspaces or PAPER examples.
+    candidates = (
+        project_root / "HeptaTrade" / "HeptaTraderConfig.xml",
+        project_root / "HeptaTrade" / "HeptaTraderConfig.xml.example",
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve(), "auto"
+    return candidates[0].resolve(), "auto"
 
-    if len(non_empty) > 1:
-        unique_values = {v for _, v in non_empty}
-        if len(unique_values) > 1:
-            fail(
-                "Conflict between config sources: "
-                + ", ".join([f"{k}={v}" for k, v in non_empty])
-                + ". Please keep exactly one source or make them identical."
-            )
 
-    if cfg_arg:
-        chosen_cfg = cfg_arg
-        cfg_source = "arg"
-    elif cfg_env:
-        chosen_cfg = cfg_env
-        cfg_source = "HEPTA_CONFIG_PATH"
-    elif cfg_legacy:
-        chosen_cfg = cfg_legacy
-        cfg_source = "HEPTA_TRADER_CONFIG_PATH"
-    else:
-        candidates = [
-            project_root / "x64" / "Debug" / "HeptaTraderConfig.xml",
-            project_root / "HeptaTrade" / "HeptaTraderConfig.xml",
-            project_root / "HeptaTrade" / "HeptaTraderConfig.paper.xml",
-            project_root / "Tools" / "HeptaTraderConfig.xml",
-            project_root / "HeptaTrade" / "HeptaTraderConfig.xml.example",
-        ]
-        selected = next((c for c in candidates if c.exists()), candidates[0])
-        chosen_cfg = str(selected)
-        cfg_source = "auto"
-
-    cfg_path = Path(chosen_cfg).resolve()
-    if not cfg_path.exists():
-        fail(f"Config file not found: {cfg_path}")
+def resolve(
+    project_root: Path,
+    explicit_config: str | None = None,
+    explicit_profile: str | None = None,
+) -> dict[str, object]:
+    project_root = project_root.expanduser().resolve()
+    config_path, config_source = _select_config(project_root, explicit_config)
+    if not config_path.is_file():
+        raise ConfigError(f"config file not found: {config_path}")
 
     try:
-        root = ET.parse(cfg_path).getroot()
-    except Exception as e:
-        fail(f"Config XML parse failed: {cfg_path} :: {e}")
+        root = ET.parse(config_path).getroot()
+    except (ET.ParseError, OSError) as error:
+        raise ConfigError(
+            f"config XML parse failed: {config_path}: {error}") from error
 
-    xml_profile = ensure_valid_profile(detect_profile_from_xml(root), "profile inferred from config")
-    env_profile = ensure_valid_profile(norm_profile(os.getenv("HEPTA_PROFILE")), "HEPTA_PROFILE")
-    arg_profile = ensure_valid_profile(norm_profile(explicit_profile), "--profile")
+    inferred_profile = _validated_profile(
+        _detect_profile(root), "profile inferred from config") or "sim"
+    env_profile = _validated_profile(os.getenv("HEPTA_PROFILE"), "HEPTA_PROFILE")
+    arg_profile = _validated_profile(explicit_profile, "--profile")
 
     if env_profile and arg_profile and env_profile != arg_profile:
-        fail(f"Conflict profile: HEPTA_PROFILE={env_profile} but --profile={arg_profile}")
+        raise ConfigError(
+            f"conflicting profiles: HEPTA_PROFILE={env_profile}, "
+            f"--profile={arg_profile}")
 
-    locked_profile = arg_profile or env_profile or xml_profile
+    locked_profile = arg_profile or env_profile or inferred_profile
+    if (arg_profile or env_profile) and locked_profile != inferred_profile:
+        raise ConfigError(
+            f"profile lock mismatch: requested={locked_profile}, "
+            f"config={inferred_profile}")
 
-    if locked_profile != xml_profile and (arg_profile or env_profile):
-        fail(
-            f"Profile lock mismatch: requested profile={locked_profile}, "
-            f"but config infers profile={xml_profile}."
-        )
-
-    is_example = cfg_path.name.lower().endswith(".example")
-    if is_example and locked_profile in PROD_PROFILES:
-        fail(
-            f"Production profile={locked_profile} cannot use template config: {cfg_path}. "
-            "Render a private non-.example config first."
-        )
+    is_template = config_path.name.lower().endswith(".example")
+    if locked_profile in PRODUCTION_PROFILES:
+        if config_source == "auto":
+            raise ConfigError(
+                f"production profile={locked_profile} requires an explicit "
+                "--config or HEPTA_CONFIG_PATH")
+        if is_template:
+            raise ConfigError(
+                f"production profile={locked_profile} cannot use template "
+                f"config: {config_path}")
 
     if locked_profile == "sim":
         ib = root.find("IBServer")
-        if ib is not None and ib.attrib.get("Mode", "").upper() == "IB":
-            fail("Profile=sim conflicts with IBServer.Mode=IB in config.")
+        if ib is not None and ib.attrib.get("Mode", "").strip().upper() == "IB":
+            raise ConfigError("profile=sim conflicts with IBServer.Mode=IB")
 
-    sha = file_sha256(cfg_path)
     return {
-        "config_path": str(cfg_path),
+        "config_path": str(config_path),
         "profile": locked_profile,
-        "sha256": sha,
+        "sha256": _sha256(config_path),
         "sources": {
-            "config": cfg_source,
-            "profile": "arg" if arg_profile else ("HEPTA_PROFILE" if env_profile else "config"),
+            "config": config_source,
+            "profile": (
+                "arg" if arg_profile else
+                "HEPTA_PROFILE" if env_profile else
+                "config"
+            ),
         },
-        "is_example": is_example,
+        "is_example": is_template,
     }
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Resolve canonical Hepta config + profile lock")
-    ap.add_argument("--project-root", default=r"D:\quant\HeptaTrader-master")
-    ap.add_argument("--config")
-    ap.add_argument("--profile", choices=["sim", "paper", "live"])
-    ap.add_argument("--format", choices=["json", "env"], default="json")
-    args = ap.parse_args()
+def _default_project_root() -> Path:
+    return Path(__file__).resolve().parents[1]
 
-    result = resolve(Path(args.project_root), args.config, args.profile)
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="Resolve canonical HeptaTrader config and profile lock")
+    parser.add_argument("--project-root", type=Path,
+                        default=_default_project_root())
+    parser.add_argument("--config")
+    parser.add_argument("--profile", choices=sorted(VALID_PROFILES))
+    parser.add_argument("--format", choices=("json", "env"), default="json")
+    args = parser.parse_args(argv)
+
+    try:
+        result = resolve(args.project_root, args.config, args.profile)
+    except ConfigError as error:
+        print(f"[CONFIG-ERROR] {error}", file=sys.stderr)
+        return 2
+
     if args.format == "json":
-        print(json.dumps(result, ensure_ascii=False))
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     else:
         print(f"HEPTA_CONFIG_PATH={result['config_path']}")
         print(f"HEPTA_PROFILE={result['profile']}")
         print(f"HEPTA_CONFIG_SHA256={result['sha256']}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

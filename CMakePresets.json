@@ -1,0 +1,67 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "core-release",
+      "displayName": "Core runtime (Release, IB disabled)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/core-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "HEPTA_ENABLE_IBAPI": "OFF",
+        "HEPTA_ENABLE_LEGACY_0DTE_BRIDGE": "OFF",
+        "HEPTA_BUILD_LEGACY_MONOLITH": "OFF",
+        "HEPTA_BUILD_LEGACY_SIMULATOR": "OFF"
+      }
+    },
+    {
+      "name": "core-debug",
+      "displayName": "Core runtime (Debug, IB disabled)",
+      "inherits": "core-release",
+      "binaryDir": "${sourceDir}/build/core-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "core-release",
+      "configurePreset": "core-release",
+      "targets": ["hepta_core_test_binaries"]
+    },
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug",
+      "targets": ["hepta_core_test_binaries"]
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "core-release",
+      "configurePreset": "core-release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    },
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "execution": {
+        "noTestsAction": "error"
+      }
+    }
+  ]
+}
