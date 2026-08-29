@@ -1,5 +1,0 @@
-[Unit]
-Description=HeptaTrader disposable rootful effective-systemd gate container
-DefaultDependencies=no
-Wants=systemd-journald.socket
-After=systemd-journald.socket
