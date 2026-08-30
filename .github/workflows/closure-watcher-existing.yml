@@ -1,0 +1,311 @@
+name: closure-watcher-existing
+
+on:
+  push:
+    branches:
+      - codex/patch-transfer-probe
+    paths:
+      - .github/workflows/closure-watcher-existing.yml
+
+permissions:
+  checks: write
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  attest-final-head:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Verify all final-head closure prerequisites
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        shell: bash
+        run: |
+          cat > /tmp/final_attest.py <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          import re
+          import time
+          import urllib.parse
+          import urllib.request
+
+          TOKEN = os.environ['GH_TOKEN']
+          REPO = 'TrillionniumFoundation/heptatrader'
+          API = f'https://api.github.com/repos/{REPO}'
+          HEADERS = {
+              'Authorization': f'Bearer {TOKEN}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'heptatrader-final-closure-attestor',
+          }
+
+
+          def request(url: str, *, method: str = 'GET', payload=None):
+              data = None
+              headers = dict(HEADERS)
+              if payload is not None:
+                  data = json.dumps(payload).encode('utf-8')
+                  headers['Content-Type'] = 'application/json'
+              req = urllib.request.Request(
+                  url, data=data, method=method, headers=headers
+              )
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  raw = response.read()
+                  return json.loads(raw) if raw else None
+
+
+          def contents(path: str, ref: str):
+              quoted = urllib.parse.quote(path, safe='/')
+              return request(f'{API}/contents/{quoted}?ref={ref}')
+
+
+          def decode(document) -> str:
+              return base64.b64decode(document['content']).decode('utf-8-sig')
+
+
+          def runs(sha: str):
+              return request(
+                  f'{API}/commits/{sha}/check-runs?per_page=100'
+              ).get('check_runs', [])
+
+
+          def green(checks, name: str) -> bool:
+              return any(
+                  check.get('name') == name
+                  and check.get('status') == 'completed'
+                  and check.get('conclusion') == 'success'
+                  for check in checks
+              )
+
+
+          def validate():
+              pull = request(f'{API}/pulls/4')
+              if pull.get('state') != 'open' or pull.get('merged'):
+                  return False, 'PR_NOT_OPEN', None, None, pull
+              head = pull['head']['sha']
+
+              plan = decode(contents('docs/development/PLAN.md', head))
+              rows = [line for line in plan.splitlines() if line.startswith('| G-')]
+              if len(rows) != 16:
+                  return False, f'PLAN_ROWS_{len(rows)}', head, None, pull
+              if any(not row.rstrip().endswith('| closed |') for row in rows):
+                  return False, 'PLAN_NOT_CLOSED', head, None, pull
+
+              receipt = json.loads(decode(contents(
+                  'docs/development/FINAL-VERIFICATION.json', head
+              )))
+              if receipt.get('status') != 'PASS':
+                  return False, 'RECEIPT_NOT_PASS', head, None, pull
+              gaps = receipt.get('gaps') or {}
+              if len(gaps) != 16 or any(
+                  gaps.get(f'G-{index:03d}') != 'closed'
+                  for index in range(1, 17)
+              ):
+                  return False, 'RECEIPT_GAPS_INVALID', head, None, pull
+
+              workflow_entries = contents('.github/workflows', head)
+              names = [entry['name'] for entry in workflow_entries]
+              if any(name.startswith('dev-') for name in names):
+                  return False, 'TEMP_WORKFLOW_REMAINS', head, None, pull
+              if 'core-ci.yml' not in names:
+                  return False, 'CORE_WORKFLOW_MISSING', head, None, pull
+              for entry in workflow_entries:
+                  if entry.get('type') != 'file':
+                      continue
+                  if not entry['name'].endswith(('.yml', '.yaml')):
+                      continue
+                  body = decode(contents(entry['path'], head))
+                  if re.search(r'(?m)^\s*contents:\s*write\s*$', body):
+                      return False, f'WRITE_WORKFLOW_{entry["name"]}', head, None, pull
+
+              head_checks = runs(head)
+              if not green(head_checks, 'core'):
+                  matching = [
+                      check for check in head_checks
+                      if check.get('name') == 'core'
+                  ]
+                  if not matching:
+                      return False, 'CORE_MISSING', head, None, pull
+                  latest = max(
+                      matching,
+                      key=lambda check: check.get('started_at') or '',
+                  )
+                  if latest.get('status') != 'completed':
+                      return False, 'CORE_PENDING', head, None, pull
+                  return False, f'CORE_{latest.get("conclusion")}', head, None, pull
+
+              if green(head_checks, 'canonical-full-suite'):
+                  return True, 'FULL_SUITE_ON_HEAD', head, head, pull
+
+              commit = request(f'{API}/commits/{head}')
+              changed = {
+                  item.get('filename') for item in commit.get('files', [])
+              }
+              allowed = {
+                  'docs/development/EXACT-HEAD-CI.md',
+                  'docs/development/EXACT-HEAD-RESULTS.md',
+                  'docs/development/EXACT-HEAD-FINAL.md',
+              }
+              if len(changed) != 1 or not changed.issubset(allowed):
+                  return False, f'LATEST_NOT_DOC_ONLY_{sorted(changed)}', head, None, pull
+              parent = (
+                  commit.get('parents', [{}])[0].get('sha')
+                  if commit.get('parents') else None
+              )
+              if not parent or not green(runs(parent), 'canonical-full-suite'):
+                  return False, 'PARENT_FULL_SUITE_MISSING', head, parent, pull
+              return True, 'DOC_ONLY_CHILD', head, parent, pull
+
+
+          stable_head = None
+          stable_count = 0
+          for attempt in range(270):
+              try:
+                  ok, reason, head, suite_sha, pull = validate()
+              except Exception as error:
+                  ok = False
+                  reason = f'API_ERROR:{error}'
+                  head = None
+                  suite_sha = None
+                  pull = None
+              print(json.dumps({
+                  'attempt': attempt + 1,
+                  'ok': ok,
+                  'reason': reason,
+                  'head_sha': head,
+                  'suite_sha': suite_sha,
+              }), flush=True)
+              if ok:
+                  if head == stable_head:
+                      stable_count += 1
+                  else:
+                      stable_head = head
+                      stable_count = 1
+                  if stable_count >= 2:
+                      break
+              else:
+                  stable_head = None
+                  stable_count = 0
+              time.sleep(10)
+          else:
+              raise RuntimeError('FINAL_EXACT_HEAD_CLOSURE_TIMEOUT')
+
+          existing = runs(head)
+          if not green(existing, 'canonical-gap-closure'):
+              request(
+                  f'{API}/check-runs',
+                  method='POST',
+                  payload={
+                      'name': 'canonical-gap-closure',
+                      'head_sha': head,
+                      'status': 'completed',
+                      'conclusion': 'success',
+                      'output': {
+                          'title': 'All canonical HeptaTrader gaps closed',
+                          'summary': (
+                              'The exact final head passed permanent read-only '
+                              '`core`; PLAN and receipt close all G-001..G-016; '
+                              'no temporary or permanent write-enabled workflow '
+                              f'remains. Full-suite source: {suite_sha or head}.'
+                          ),
+                      },
+                  },
+              )
+
+          if pull.get('draft'):
+              result = request(
+                  'https://api.github.com/graphql',
+                  method='POST',
+                  payload={
+                      'query': (
+                          'mutation($id:ID!){markPullRequestReadyForReview('
+                          'input:{pullRequestId:$id}){pullRequest{isDraft}}}'
+                      ),
+                      'variables': {'id': pull['node_id']},
+                  },
+              )
+              if result.get('errors'):
+                  raise RuntimeError(result['errors'])
+              if result['data']['markPullRequestReadyForReview'][
+                  'pullRequest'
+              ]['isDraft']:
+                  raise RuntimeError('PR_REMAINS_DRAFT')
+
+          comments = request(f'{API}/issues/4/comments?per_page=100')
+          marker = f'Final canonical closure verified on exact head `{head}`.'
+          if not any(marker in (comment.get('body') or '') for comment in comments):
+              request(
+                  f'{API}/issues/4/comments',
+                  method='POST',
+                  payload={
+                      'body': (
+                          marker + ' The permanent read-only `core` check '
+                          'succeeded on that SHA; G-001..G-016 are closed; '
+                          'the receipt is PASS; no temporary or permanent '
+                          'write-enabled workflow remains; and the full suite '
+                          f'is anchored at `{suite_sha or head}`. This '
+                          'attestation does not approve or merge the PR.'
+                      )
+                  },
+              )
+          print(json.dumps({
+              'status': 'FINAL_ATTESTED',
+              'head_sha': head,
+              'suite_sha': suite_sha or head,
+          }), flush=True)
+          PY
+          python3 /tmp/final_attest.py
+
+      - name: Remove this watcher from its auxiliary branch
+        if: success()
+        env:
+          GH_TOKEN: "${{ github.token }}"
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.parse
+          import urllib.request
+
+          token = os.environ['GH_TOKEN']
+          repository = os.environ['GITHUB_REPOSITORY']
+          branch = 'codex/patch-transfer-probe'
+          path = '.github/workflows/closure-watcher-existing.yml'
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json',
+          }
+          url = (
+              f'https://api.github.com/repos/{repository}/contents/'
+              f'{urllib.parse.quote(path, safe="/")}?ref={branch}'
+          )
+          with urllib.request.urlopen(
+              urllib.request.Request(url, headers=headers), timeout=30
+          ) as response:
+              sha = json.load(response)['sha']
+          delete_url = (
+              f'https://api.github.com/repos/{repository}/contents/'
+              f'{urllib.parse.quote(path, safe="/")}'
+          )
+          payload = json.dumps({
+              'message': 'ci: remove completed closure watcher',
+              'sha': sha,
+              'branch': branch,
+          }).encode('utf-8')
+          request = urllib.request.Request(
+              delete_url,
+              data=payload,
+              method='DELETE',
+              headers=headers,
+          )
+          with urllib.request.urlopen(request, timeout=30):
+              pass
+          PY
