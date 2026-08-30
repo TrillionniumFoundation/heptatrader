@@ -1,0 +1,240 @@
+name: dev-intent-gap-type-fix
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/dev-intent-gap-type-fix.yml
+
+permissions:
+  contents: write
+
+jobs:
+  type-fix:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): finalize intent closure type safety'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev python3
+      - name: Recover and finalize type-safe intent tree
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path.cwd()
+          target = root / "tests/target_position_tool_tests.cpp"
+          if not target.exists():
+              launcher = root / ".github/workflows/dev-intent-gap-closure.yml"
+              if not launcher.exists():
+                  raise RuntimeError("intent generated source is absent")
+              source = launcher.read_text(encoding="utf-8")
+              marker = "          python3 - <<'PY'\n"
+              start = source.find(marker)
+              if start < 0:
+                  raise RuntimeError("embedded intent closure missing")
+              start += len(marker)
+              end = source.find("\n          PY\n", start)
+              lines = [line[10:] if line.startswith("          ") else line
+                       for line in source[start:end].splitlines()]
+              exec(compile("\n".join(lines), "embedded-intent-closure", "exec"), {})
+
+          header = root / "HeptaTrade/tools/trading_tool_registry.h"
+          text = header.read_text(encoding="utf-8")
+          text = text.replace("long long expiresAtMs = 0;", "std::int64_t expiresAtMs = 0;")
+          text = text.replace(
+              '''    TradingToolResult InvokeTargetPreview(
+        const TradingToolSession& session,
+        const TradingToolCall& call);''',
+              '''    TradingToolResult InvokeTargetPreview(
+        const TradingToolSession& session,
+        const TradingToolCall& call) const;''')
+          text = text.replace(
+              '''    TradingToolResult InvokeTargetApply(
+        const TradingToolSession& session,
+        const TradingToolCall& call);''',
+              '''    TradingToolResult InvokeTargetApply(
+        const TradingToolSession& session,
+        const TradingToolCall& call) const;''')
+          text = text.replace(
+              "    std::unordered_map<std::string, TargetPreviewRecord> m_targetPreviews;",
+              "    mutable std::unordered_map<std::string, TargetPreviewRecord> m_targetPreviews;")
+          header.write_text(text, encoding="utf-8")
+
+          registry = root / "HeptaTrade/tools/trading_tool_registry.cpp"
+          text = registry.read_text(encoding="utf-8")
+          text = text.replace("long long EpochMs()", "std::int64_t EpochMs()")
+          text = text.replace("long long& value)", "std::int64_t& value)")
+          text = text.replace("std::numeric_limits<long long>::min()",
+                              "std::numeric_limits<std::int64_t>::min()")
+          text = text.replace("std::numeric_limits<long long>::max()",
+                              "std::numeric_limits<std::int64_t>::max()")
+          text = text.replace("static_cast<long long>(number)",
+                              "static_cast<std::int64_t>(number)")
+          text = text.replace("const long long started", "const std::int64_t started")
+          text = text.replace("const long long completed", "const std::int64_t completed")
+          text = text.replace("const long long now", "const std::int64_t now")
+          text = text.replace("long long permitExpiry", "std::int64_t permitExpiry")
+          text = text.replace(
+              "std::chrono::milliseconds(std::max(1LL, record.expiresAtMs - now))",
+              "std::chrono::milliseconds(\n"
+              "            std::max<std::int64_t>(1, record.expiresAtMs - now))")
+          text = text.replace(
+              '''TradingToolResult TradingToolRegistry::InvokeTargetPreview(
+    const TradingToolSession& session,
+    const TradingToolCall& call)
+{''',
+              '''TradingToolResult TradingToolRegistry::InvokeTargetPreview(
+    const TradingToolSession& session,
+    const TradingToolCall& call) const
+{''')
+          text = text.replace(
+              '''TradingToolResult TradingToolRegistry::InvokeTargetApply(
+    const TradingToolSession& session,
+    const TradingToolCall& call)
+{''',
+              '''TradingToolResult TradingToolRegistry::InvokeTargetApply(
+    const TradingToolSession& session,
+    const TradingToolCall& call) const
+{''')
+          if "#include <cstdint>" not in text:
+              text = text.replace(
+                  "#include <cstring>\n", "#include <cstdint>\n#include <cstring>\n", 1)
+          if "#include <exception>" not in text:
+              text = text.replace(
+                  "#include <cstring>\n", "#include <cstring>\n#include <exception>\n", 1)
+          registry.write_text(text, encoding="utf-8")
+
+          target = root / "tests/target_position_tool_tests.cpp"
+          text = target.read_text(encoding="utf-8")
+          text = text.replace("long long NowMs()", "std::int64_t NowMs()")
+          text = text.replace("long long expires", "std::int64_t expires")
+          text = text.replace("const long long expires", "const std::int64_t expires")
+          if "#include <cstdint>" not in text:
+              text = text.replace(
+                  "#include <chrono>\n", "#include <chrono>\n#include <cstdint>\n", 1)
+          if "std::int64_t quoteObservedAtMs" not in text:
+              text = text.replace(
+                  "    double ask = 1.1002;\n",
+                  "    double ask = 1.1002;\n"
+                  "    std::int64_t quoteObservedAtMs = NowMs() - 10;\n", 1)
+          text = text.replace("std::to_string(NowMs() - 1)",
+                              "std::to_string(quoteObservedAtMs)")
+          if "ExecutionCommandResult FlattenPosition(" not in text:
+              marker = '''    ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
+    {
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        result.orderId = command.orderId;
+        return result;
+    }
+'''
+              addition = marker + '''    ExecutionCommandResult FlattenPosition(
+        const FlattenPositionCommand& command) override
+    {
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        return result;
+    }
+'''
+              if marker not in text:
+                  raise RuntimeError("target test fake authority marker missing")
+              text = text.replace(marker, addition, 1)
+          target.write_text(text, encoding="utf-8")
+
+          permit = root / "tests/execution_preview_permit_tests.cpp"
+          if permit.exists():
+              text = permit.read_text(encoding="utf-8")
+              text = text.replace("long long NowMs()", "std::int64_t NowMs()")
+              text = text.replace("long long& expiresAtMs", "std::int64_t& expiresAtMs")
+              text = text.replace("long long expiry = 0;", "std::int64_t expiry = 0;")
+              if "#include <cstdint>" not in text:
+                  text = text.replace(
+                      "#include <chrono>\n", "#include <chrono>\n#include <cstdint>\n", 1)
+              permit.write_text(text, encoding="utf-8")
+
+          tests_cmake = root / "tests/CMakeLists.txt"
+          text = tests_cmake.read_text(encoding="utf-8")
+          text = text.replace(
+              "target_link_libraries(hepta_oms_journal_durability_tests pthread)",
+              "target_link_libraries(hepta_oms_journal_durability_tests\n"
+              "    pthread hepta_observability_core)")
+          if ("../HeptaTrade/intent/authoritative_decision_snapshot.cpp\n"
+              "    ../HeptaTrade/intent/bounded_json.cpp") not in text:
+              text = text.replace(
+                  "    ../HeptaTrade/intent/authoritative_decision_snapshot.cpp\n"
+                  "    ../HeptaTrade/intent/target_position_intent.cpp)",
+                  "    ../HeptaTrade/intent/authoritative_decision_snapshot.cpp\n"
+                  "    ../HeptaTrade/intent/bounded_json.cpp\n"
+                  "    ../HeptaTrade/intent/target_position_intent.cpp)", 1)
+          tests_cmake.write_text(text, encoding="utf-8")
+
+          bounded = root / "HeptaTrade/intent/bounded_json.cpp"
+          text = bounded.read_text(encoding="utf-8")
+          if "#include <utility>" not in text:
+              text = text.replace(
+                  "#include <limits>\n", "#include <limits>\n#include <utility>\n", 1)
+          bounded.write_text(text, encoding="utf-8")
+
+          # Repair accidental two-argument set::insert expansions from an
+          # earlier recovery pass without changing initializer-list entries.
+          for path in (root / "tests").glob("*.cpp"):
+              text = path.read_text(encoding="utf-8-sig")
+              text = text.replace(
+                  '.insert("operator.trade.place", "intent.apply")',
+                  '.insert("operator.trade.place");\n'
+                  '    session.capabilities.insert("intent.apply")')
+              path.write_text(text, encoding="utf-8")
+
+          telemetry = root / "HeptaTrade/observability/runtime_telemetry.cpp"
+          if telemetry.exists():
+              text = telemetry.read_text(encoding="utf-8")
+              if "#include <cctype>" not in text:
+                  text = text.replace(
+                      "#include <algorithm>\n",
+                      "#include <algorithm>\n#include <cctype>\n", 1)
+              telemetry.write_text(text, encoding="utf-8")
+
+          for relative in (
+              ".github/workflows/dev-intent-gap-closure.yml",
+              ".github/workflows/dev-intent-gap-recover.yml",
+              ".github/workflows/dev-intent-gap-compile-fix.yml",
+              ".github/workflows/dev-intent-gap-type-fix.yml",
+              ".github/workflows/dev-gap-closure-run.yml",
+              ".github/workflows/dev-gap-closure-recover.yml",
+              ".github/workflows/dev-source-export.yml",
+          ):
+              path = root / relative
+              if path.exists():
+                  path.unlink()
+          PY
+      - name: Verify clean exact tree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          rm -rf build/core-release
+          python3 scripts/check_repository_integrity.py
+          ./scripts/dev_core.sh
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+      - name: Commit verified tree
+        run: |
+          git config user.name "Tomasrgbsf"
+          git config user.email "tomasbraynt@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -s -m "feat: close authoritative target-position intent gaps"
+          git push origin HEAD:codex/heptatrader-gap-closure-v2
