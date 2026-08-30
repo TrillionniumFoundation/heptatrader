@@ -1,0 +1,582 @@
+name: dev-portfolio-risk-closure
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/dev-portfolio-risk-closure.yml
+
+permissions:
+  contents: write
+
+jobs:
+  close-portfolio-risk:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): launch portfolio and risk gap closure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev python3
+      - name: Apply deterministic portfolio and risk closure
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path.cwd()
+
+          def run_embedded(path: Path) -> None:
+              source = path.read_text(encoding="utf-8")
+              marker = "          python3 - <<'PY'\n"
+              start = source.find(marker)
+              if start < 0:
+                  raise RuntimeError(f"embedded program missing: {path}")
+              start += len(marker)
+              end = source.find("\n          PY\n", start)
+              if end < 0:
+                  raise RuntimeError(f"embedded terminator missing: {path}")
+              lines = [line[10:] if line.startswith("          ") else line
+                       for line in source[start:end].splitlines()]
+              exec(compile("\n".join(lines), str(path), "exec"), {})
+
+          # Recover the prior target-position slice if an earlier runner lost a
+          # fast-forward race. The type-fix program is idempotent and performs
+          # its own recovery from the authoritative launcher.
+          if not (root / "tests/target_position_tool_tests.cpp").exists():
+              candidates = [
+                  root / ".github/workflows/dev-intent-gap-type-fix.yml",
+                  root / ".github/workflows/dev-intent-gap-compile-fix.yml",
+                  root / ".github/workflows/dev-intent-gap-closure.yml",
+              ]
+              candidate = next((p for p in candidates if p.exists()), None)
+              if candidate is None:
+                  raise RuntimeError("authoritative intent closure source is absent")
+              run_embedded(candidate)
+
+          portfolio_h = r'''#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+using PortfolioMicrounits = std::int64_t;
+
+struct StrategyTargetIntent
+{
+    std::string strategyId;
+    std::string instrument;
+    PortfolioMicrounits targetPosition = 0;
+    std::uint64_t snapshotGeneration = 0;
+};
+
+struct StrategyCapitalBudget
+{
+    std::string strategyId;
+    PortfolioMicrounits maximumGrossTarget = 0;
+};
+
+struct PortfolioCapitalPolicy
+{
+    PortfolioMicrounits maximumGrossTarget = 0;
+    std::size_t maximumStrategies = 0;
+    std::size_t maximumInstruments = 0;
+    std::map<std::string, StrategyCapitalBudget> strategyBudgets;
+};
+
+struct AuthoritativePortfolioInput
+{
+    bool complete = false;
+    std::uint64_t generation = 0;
+    std::map<std::string, PortfolioMicrounits> currentPositions;
+};
+
+struct PortfolioTargetDelta
+{
+    std::string instrument;
+    PortfolioMicrounits currentPosition = 0;
+    PortfolioMicrounits targetPosition = 0;
+    PortfolioMicrounits delta = 0;
+};
+
+struct PortfolioCompileResult
+{
+    bool accepted = false;
+    std::string reasonCode;
+    std::map<std::string, PortfolioMicrounits> netTargets;
+    std::map<std::string, PortfolioMicrounits> strategyGrossTargets;
+    PortfolioMicrounits portfolioGrossTarget = 0;
+    std::vector<PortfolioTargetDelta> deltas;
+};
+
+// Deterministic cross-strategy netting and capital authority. All arithmetic
+// is exact signed fixed-point microunits. Conversion from venue quantity or
+// money is an explicit boundary concern and never occurs silently here.
+class PortfolioCompiler
+{
+public:
+    static const char* Version();
+
+    static PortfolioCompileResult Compile(
+        const std::vector<StrategyTargetIntent>& intents,
+        const AuthoritativePortfolioInput& authoritative,
+        const PortfolioCapitalPolicy& policy);
+};
+'''
+
+          portfolio_cpp = r'''#include "portfolio_compiler.h"
+
+#include <algorithm>
+#include <cctype>
+#include <limits>
+#include <set>
+
+namespace
+{
+bool CanonicalId(const std::string& value, std::size_t maximum)
+{
+    if (value.empty() || value.size() > maximum) return false;
+    for (std::size_t i = 0; i < value.size(); ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        if (!(std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == ':'))
+            return false;
+    }
+    return true;
+}
+
+bool CheckedAdd(PortfolioMicrounits left,
+                PortfolioMicrounits right,
+                PortfolioMicrounits& output)
+{
+    if ((right > 0 && left > std::numeric_limits<PortfolioMicrounits>::max() - right) ||
+        (right < 0 && left < std::numeric_limits<PortfolioMicrounits>::min() - right))
+        return false;
+    output = left + right;
+    return true;
+}
+
+bool CheckedSubtract(PortfolioMicrounits left,
+                     PortfolioMicrounits right,
+                     PortfolioMicrounits& output)
+{
+    if (right == std::numeric_limits<PortfolioMicrounits>::min())
+        return false;
+    return CheckedAdd(left, -right, output);
+}
+
+bool CheckedAbsolute(PortfolioMicrounits value,
+                     PortfolioMicrounits& output)
+{
+    if (value == std::numeric_limits<PortfolioMicrounits>::min()) return false;
+    output = value < 0 ? -value : value;
+    return true;
+}
+
+PortfolioCompileResult Reject(const char* reason)
+{
+    PortfolioCompileResult result;
+    result.reasonCode = reason;
+    return result;
+}
+}
+
+const char* PortfolioCompiler::Version()
+{
+    return "portfolio-compiler-v1";
+}
+
+PortfolioCompileResult PortfolioCompiler::Compile(
+    const std::vector<StrategyTargetIntent>& intents,
+    const AuthoritativePortfolioInput& authoritative,
+    const PortfolioCapitalPolicy& policy)
+{
+    if (!authoritative.complete || authoritative.generation == 0)
+        return Reject("PORTFOLIO_SNAPSHOT_INCOMPLETE");
+    if (policy.maximumGrossTarget <= 0 ||
+        policy.maximumStrategies == 0 || policy.maximumInstruments == 0)
+        return Reject("PORTFOLIO_POLICY_INVALID");
+    if (intents.empty())
+    {
+        PortfolioCompileResult result;
+        result.accepted = true;
+        result.reasonCode = "PORTFOLIO_NO_INTENTS";
+        return result;
+    }
+
+    std::vector<StrategyTargetIntent> ordered = intents;
+    std::sort(ordered.begin(), ordered.end(),
+        [](const StrategyTargetIntent& left,
+           const StrategyTargetIntent& right) {
+            if (left.strategyId != right.strategyId)
+                return left.strategyId < right.strategyId;
+            if (left.instrument != right.instrument)
+                return left.instrument < right.instrument;
+            return left.targetPosition < right.targetPosition;
+        });
+
+    std::set<std::string> strategies;
+    std::set<std::string> instruments;
+    std::set<std::string> uniqueIntents;
+    PortfolioCompileResult result;
+    for (std::size_t i = 0; i < ordered.size(); ++i)
+    {
+        const StrategyTargetIntent& intent = ordered[i];
+        if (!CanonicalId(intent.strategyId, 64) ||
+            !CanonicalId(intent.instrument, 128))
+            return Reject("PORTFOLIO_INTENT_IDENTITY_INVALID");
+        if (intent.snapshotGeneration != authoritative.generation)
+            return Reject("PORTFOLIO_INTENT_GENERATION_MISMATCH");
+        const std::string unique = intent.strategyId + '\x1f' + intent.instrument;
+        if (!uniqueIntents.insert(unique).second)
+            return Reject("PORTFOLIO_DUPLICATE_STRATEGY_INSTRUMENT");
+        strategies.insert(intent.strategyId);
+        instruments.insert(intent.instrument);
+        if (strategies.size() > policy.maximumStrategies)
+            return Reject("PORTFOLIO_STRATEGY_COUNT_LIMIT");
+        if (instruments.size() > policy.maximumInstruments)
+            return Reject("PORTFOLIO_INSTRUMENT_COUNT_LIMIT");
+
+        const std::map<std::string, StrategyCapitalBudget>::const_iterator budget =
+            policy.strategyBudgets.find(intent.strategyId);
+        if (budget == policy.strategyBudgets.end() ||
+            budget->second.strategyId != intent.strategyId ||
+            budget->second.maximumGrossTarget <= 0)
+            return Reject("PORTFOLIO_STRATEGY_BUDGET_MISSING");
+
+        PortfolioMicrounits absoluteTarget = 0;
+        if (!CheckedAbsolute(intent.targetPosition, absoluteTarget))
+            return Reject("PORTFOLIO_ARITHMETIC_OVERFLOW");
+        PortfolioMicrounits strategyGross =
+            result.strategyGrossTargets[intent.strategyId];
+        if (!CheckedAdd(strategyGross, absoluteTarget, strategyGross))
+            return Reject("PORTFOLIO_ARITHMETIC_OVERFLOW");
+        if (strategyGross > budget->second.maximumGrossTarget)
+            return Reject("PORTFOLIO_STRATEGY_BUDGET_EXCEEDED");
+        result.strategyGrossTargets[intent.strategyId] = strategyGross;
+
+        PortfolioMicrounits net = result.netTargets[intent.instrument];
+        if (!CheckedAdd(net, intent.targetPosition, net))
+            return Reject("PORTFOLIO_ARITHMETIC_OVERFLOW");
+        result.netTargets[intent.instrument] = net;
+    }
+
+    for (std::map<std::string, PortfolioMicrounits>::const_iterator it =
+             result.netTargets.begin(); it != result.netTargets.end(); ++it)
+    {
+        PortfolioMicrounits absoluteTarget = 0;
+        if (!CheckedAbsolute(it->second, absoluteTarget) ||
+            !CheckedAdd(result.portfolioGrossTarget,
+                        absoluteTarget, result.portfolioGrossTarget))
+            return Reject("PORTFOLIO_ARITHMETIC_OVERFLOW");
+    }
+    if (result.portfolioGrossTarget > policy.maximumGrossTarget)
+        return Reject("PORTFOLIO_CAPITAL_BUDGET_EXCEEDED");
+
+    std::set<std::string> deltaInstruments = instruments;
+    for (std::map<std::string, PortfolioMicrounits>::const_iterator it =
+             authoritative.currentPositions.begin();
+         it != authoritative.currentPositions.end(); ++it)
+    {
+        if (!CanonicalId(it->first, 128))
+            return Reject("PORTFOLIO_SNAPSHOT_INSTRUMENT_INVALID");
+        deltaInstruments.insert(it->first);
+    }
+    for (std::set<std::string>::const_iterator it = deltaInstruments.begin();
+         it != deltaInstruments.end(); ++it)
+    {
+        PortfolioTargetDelta delta;
+        delta.instrument = *it;
+        const std::map<std::string, PortfolioMicrounits>::const_iterator current =
+            authoritative.currentPositions.find(*it);
+        if (current != authoritative.currentPositions.end())
+            delta.currentPosition = current->second;
+        const std::map<std::string, PortfolioMicrounits>::const_iterator target =
+            result.netTargets.find(*it);
+        if (target != result.netTargets.end())
+            delta.targetPosition = target->second;
+        if (!CheckedSubtract(
+                delta.targetPosition, delta.currentPosition, delta.delta))
+            return Reject("PORTFOLIO_ARITHMETIC_OVERFLOW");
+        if (delta.delta != 0) result.deltas.push_back(delta);
+    }
+    result.accepted = true;
+    result.reasonCode = "PORTFOLIO_COMPILED";
+    return result;
+}
+'''
+          portfolio_dir = root / "HeptaTrade/portfolio"
+          portfolio_dir.mkdir(parents=True, exist_ok=True)
+          (portfolio_dir / "portfolio_compiler.h").write_text(
+              portfolio_h, encoding="utf-8")
+          (portfolio_dir / "portfolio_compiler.cpp").write_text(
+              portfolio_cpp, encoding="utf-8")
+
+          portfolio_test = r'''#include "../HeptaTrade/portfolio/portfolio_compiler.h"
+
+#include <algorithm>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <string>
+#include <vector>
+
+namespace
+{
+void Require(bool condition, const char* expression, int line)
+{
+    if (condition) return;
+    std::cerr << "requirement failed at line " << line << ": "
+              << expression << '\n';
+    std::abort();
+}
+#define REQUIRE(expression) Require(static_cast<bool>(expression), #expression, __LINE__)
+
+PortfolioCapitalPolicy Policy()
+{
+    PortfolioCapitalPolicy policy;
+    policy.maximumGrossTarget = 1000000;
+    policy.maximumStrategies = 8;
+    policy.maximumInstruments = 16;
+    StrategyCapitalBudget alpha;
+    alpha.strategyId = "alpha";
+    alpha.maximumGrossTarget = 800000;
+    policy.strategyBudgets[alpha.strategyId] = alpha;
+    StrategyCapitalBudget hedge;
+    hedge.strategyId = "hedge";
+    hedge.maximumGrossTarget = 800000;
+    policy.strategyBudgets[hedge.strategyId] = hedge;
+    return policy;
+}
+
+AuthoritativePortfolioInput Snapshot()
+{
+    AuthoritativePortfolioInput snapshot;
+    snapshot.complete = true;
+    snapshot.generation = 7;
+    snapshot.currentPositions["EUR.USD"] = 50000;
+    snapshot.currentPositions["USD.JPY"] = 10000;
+    return snapshot;
+}
+
+StrategyTargetIntent Intent(const char* strategy,
+                            const char* instrument,
+                            PortfolioMicrounits target)
+{
+    StrategyTargetIntent intent;
+    intent.strategyId = strategy;
+    intent.instrument = instrument;
+    intent.targetPosition = target;
+    intent.snapshotGeneration = 7;
+    return intent;
+}
+
+void TestCrossStrategyNettingAndDeterminism()
+{
+    std::vector<StrategyTargetIntent> intents;
+    intents.push_back(Intent("alpha", "EUR.USD", 400000));
+    intents.push_back(Intent("hedge", "EUR.USD", -150000));
+    intents.push_back(Intent("hedge", "GBP.USD", 100000));
+    const PortfolioCompileResult first =
+        PortfolioCompiler::Compile(intents, Snapshot(), Policy());
+    REQUIRE(first.accepted);
+    REQUIRE(first.netTargets.at("EUR.USD") == 250000);
+    REQUIRE(first.netTargets.at("GBP.USD") == 100000);
+    REQUIRE(first.portfolioGrossTarget == 350000);
+    REQUIRE(first.deltas.size() == 3);
+
+    std::reverse(intents.begin(), intents.end());
+    const PortfolioCompileResult second =
+        PortfolioCompiler::Compile(intents, Snapshot(), Policy());
+    REQUIRE(second.accepted);
+    REQUIRE(first.netTargets == second.netTargets);
+    REQUIRE(first.strategyGrossTargets == second.strategyGrossTargets);
+    REQUIRE(first.portfolioGrossTarget == second.portfolioGrossTarget);
+}
+
+void TestFailClosedInputsAndBudgets()
+{
+    AuthoritativePortfolioInput snapshot = Snapshot();
+    snapshot.complete = false;
+    std::vector<StrategyTargetIntent> intents(1,
+        Intent("alpha", "EUR.USD", 1000));
+    REQUIRE(PortfolioCompiler::Compile(intents, snapshot, Policy()).reasonCode ==
+            "PORTFOLIO_SNAPSHOT_INCOMPLETE");
+
+    snapshot = Snapshot();
+    intents[0].snapshotGeneration = 8;
+    REQUIRE(PortfolioCompiler::Compile(intents, snapshot, Policy()).reasonCode ==
+            "PORTFOLIO_INTENT_GENERATION_MISMATCH");
+
+    intents[0] = Intent("alpha", "EUR.USD", 900000);
+    REQUIRE(PortfolioCompiler::Compile(intents, snapshot, Policy()).reasonCode ==
+            "PORTFOLIO_STRATEGY_BUDGET_EXCEEDED");
+
+    PortfolioCapitalPolicy policy = Policy();
+    policy.maximumGrossTarget = 100000;
+    intents[0] = Intent("alpha", "EUR.USD", 200000);
+    REQUIRE(PortfolioCompiler::Compile(intents, snapshot, policy).reasonCode ==
+            "PORTFOLIO_CAPITAL_BUDGET_EXCEEDED");
+}
+
+void TestDuplicatesOverflowAndMissingBudget()
+{
+    std::vector<StrategyTargetIntent> intents;
+    intents.push_back(Intent("alpha", "EUR.USD", 1));
+    intents.push_back(Intent("alpha", "EUR.USD", 2));
+    REQUIRE(PortfolioCompiler::Compile(intents, Snapshot(), Policy()).reasonCode ==
+            "PORTFOLIO_DUPLICATE_STRATEGY_INSTRUMENT");
+
+    intents.clear();
+    intents.push_back(Intent("missing", "EUR.USD", 1));
+    REQUIRE(PortfolioCompiler::Compile(intents, Snapshot(), Policy()).reasonCode ==
+            "PORTFOLIO_STRATEGY_BUDGET_MISSING");
+
+    PortfolioCapitalPolicy policy = Policy();
+    policy.strategyBudgets["alpha"].maximumGrossTarget =
+        std::numeric_limits<PortfolioMicrounits>::max();
+    policy.strategyBudgets["hedge"].maximumGrossTarget =
+        std::numeric_limits<PortfolioMicrounits>::max();
+    policy.maximumGrossTarget = std::numeric_limits<PortfolioMicrounits>::max();
+    intents.clear();
+    intents.push_back(Intent("alpha", "EUR.USD",
+        std::numeric_limits<PortfolioMicrounits>::max()));
+    intents.push_back(Intent("hedge", "EUR.USD", 1));
+    REQUIRE(PortfolioCompiler::Compile(intents, Snapshot(), policy).reasonCode ==
+            "PORTFOLIO_ARITHMETIC_OVERFLOW");
+}
+}
+
+int main()
+{
+    TestCrossStrategyNettingAndDeterminism();
+    TestFailClosedInputsAndBudgets();
+    TestDuplicatesOverflowAndMissingBudget();
+    return 0;
+}
+'''
+          (root / "tests/portfolio_compiler_tests.cpp").write_text(
+              portfolio_test, encoding="utf-8")
+
+          cmake = root / "HeptaTrade/CMakeLists.txt"
+          text = cmake.read_text(encoding="utf-8")
+          if "add_library(hepta_portfolio_core STATIC" not in text:
+              marker = "add_library(hepta_risk_core STATIC\n"
+              if marker not in text:
+                  raise RuntimeError("risk core marker missing")
+              block = (
+                  "add_library(hepta_portfolio_core STATIC\n"
+                  "    portfolio/portfolio_compiler.cpp)\n"
+                  "hepta_runtime_target(hepta_portfolio_core)\n\n")
+              text = text.replace(marker, block + marker, 1)
+          cmake.write_text(text, encoding="utf-8")
+
+          tests_cmake = root / "tests/CMakeLists.txt"
+          text = tests_cmake.read_text(encoding="utf-8")
+          if "hepta_portfolio_compiler_tests" not in text:
+              marker = "add_custom_target(hepta_core_test_binaries\n"
+              block = '''add_executable(hepta_portfolio_compiler_tests
+    portfolio_compiler_tests.cpp)
+target_link_libraries(hepta_portfolio_compiler_tests
+    hepta_portfolio_core)
+hepta_register_core_test(hepta_portfolio_compiler_tests)
+
+'''
+              if marker not in text:
+                  raise RuntimeError("core test target marker missing")
+              text = text.replace(marker, block + marker, 1)
+          text = text.replace(
+              "target_link_libraries(hepta_oms_journal_durability_tests pthread)",
+              "target_link_libraries(hepta_oms_journal_durability_tests\n"
+              "    pthread hepta_observability_core)")
+          tests_cmake.write_text(text, encoding="utf-8")
+
+          risk_h = root / "HeptaTrade/risk/deterministic_risk_policy.h"
+          text = risk_h.read_text(encoding="utf-8")
+          text = text.replace("    bool quoteFresh = true;",
+                              "    bool quoteFresh = false;")
+          text = text.replace("    bool portfolioSnapshotComplete = true;",
+                              "    bool portfolioSnapshotComplete = false;")
+          risk_h.write_text(text, encoding="utf-8")
+
+          simulator = root / "HeptaTrade/execution/execution_service_runtime_composition.cpp"
+          text = simulator.read_text(encoding="utf-8")
+          marker = "        risk.exposureReducing = projected < gross;\n"
+          addition = marker + (
+              "        risk.quoteFresh = quote.IsFresh(now);\n"
+              "        risk.portfolioSnapshotComplete = true;\n")
+          if "risk.portfolioSnapshotComplete = true;" not in text:
+              if marker not in text:
+                  raise RuntimeError("simulator risk assignment marker missing")
+              text = text.replace(marker, addition, 1)
+          simulator.write_text(text, encoding="utf-8")
+
+          ib_profile = root / "HeptaTrade/execution/ib_paper_execution_profile.cpp"
+          text = ib_profile.read_text(encoding="utf-8")
+          marker = "    context.exposureReducing = false;\n"
+          addition = marker + (
+              "    context.quoteFresh = true;\n"
+              "    context.portfolioSnapshotComplete = snapshot.complete;\n")
+          if "context.portfolioSnapshotComplete = snapshot.complete;" not in text:
+              if marker not in text:
+                  raise RuntimeError("IB risk assignment marker missing")
+              text = text.replace(marker, addition, 1)
+          ib_profile.write_text(text, encoding="utf-8")
+
+          # Unit fixtures must state completeness explicitly; negative cases can
+          # and do override these values afterwards.
+          for path in (root / "tests").glob("*.cpp"):
+              text = path.read_text(encoding="utf-8-sig")
+              text = text.replace(
+                  "DeterministicRiskContext context;\n",
+                  "DeterministicRiskContext context;\n"
+                  "    context.quoteFresh = true;\n"
+                  "    context.portfolioSnapshotComplete = true;\n")
+              text = text.replace(
+                  "DeterministicRiskContext risk;\n",
+                  "DeterministicRiskContext risk;\n"
+                  "    risk.quoteFresh = true;\n"
+                  "    risk.portfolioSnapshotComplete = true;\n")
+              path.write_text(text, encoding="utf-8")
+
+          for relative in (
+              ".github/workflows/dev-portfolio-risk-closure.yml",
+              ".github/workflows/dev-intent-gap-closure.yml",
+              ".github/workflows/dev-intent-gap-recover.yml",
+              ".github/workflows/dev-intent-gap-compile-fix.yml",
+              ".github/workflows/dev-intent-gap-type-fix.yml",
+              ".github/workflows/dev-gap-closure-run.yml",
+              ".github/workflows/dev-gap-closure-recover.yml",
+              ".github/workflows/dev-source-export.yml",
+          ):
+              path = root / relative
+              if path.exists():
+                  path.unlink()
+          PY
+      - name: Verify exact resulting tree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          rm -rf build/core-release
+          python3 scripts/check_repository_integrity.py
+          ./scripts/dev_core.sh
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+      - name: Commit verified portfolio/risk closure
+        run: |
+          git config user.name "Tomasrgbsf"
+          git config user.email "tomasbraynt@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -s -m "feat: close deterministic portfolio and risk gaps"
+          git push origin HEAD:codex/heptatrader-gap-closure-v2
