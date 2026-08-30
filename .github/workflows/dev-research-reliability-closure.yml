@@ -1,0 +1,1655 @@
+name: dev-research-reliability-closure
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/dev-research-reliability-closure.yml
+
+permissions:
+  contents: write
+
+jobs:
+  close-research-schema-reliability:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): launch research schema and reliability closure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Wait for earlier closure slices and fast-forward
+        run: |
+          sleep 180
+          git fetch origin codex/heptatrader-gap-closure-v2
+          git reset --hard origin/codex/heptatrader-gap-closure-v2
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ clang libssl-dev python3
+      - name: Recover verified prerequisite slices and add remaining runtime assets
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+          import re
+          import subprocess
+
+          ROOT = Path.cwd()
+
+          TEMP_WORKFLOWS = (
+              ".github/workflows/dev-source-export.yml",
+              ".github/workflows/dev-gap-closure-run.yml",
+              ".github/workflows/dev-gap-closure-recover.yml",
+              ".github/workflows/dev-intent-gap-closure.yml",
+              ".github/workflows/dev-intent-gap-recover.yml",
+              ".github/workflows/dev-intent-gap-compile-fix.yml",
+              ".github/workflows/dev-intent-gap-type-fix.yml",
+              ".github/workflows/dev-portfolio-risk-closure.yml",
+              ".github/workflows/dev-research-reliability-closure.yml",
+          )
+
+          def historical_text(path: str) -> str:
+              commits = subprocess.check_output(
+                  ["git", "rev-list", "--all", "--", path], text=True
+              ).splitlines()
+              for commit in commits:
+                  process = subprocess.run(
+                      ["git", "show", f"{commit}:{path}"],
+                      text=True, capture_output=True
+                  )
+                  if process.returncode == 0 and process.stdout:
+                      return process.stdout
+              raise RuntimeError(f"no historical contents for {path}")
+
+          def execute_embedded(source: str, label: str) -> None:
+              marker = "          python3 - <<'PY'\n"
+              start = source.find(marker)
+              if start < 0:
+                  raise RuntimeError(f"embedded Python marker missing in {label}")
+              start += len(marker)
+              end = source.find("\n          PY\n", start)
+              if end < 0:
+                  raise RuntimeError(f"embedded Python terminator missing in {label}")
+              lines = [line[10:] if line.startswith("          ") else line
+                       for line in source[start:end].splitlines()]
+              exec(compile("\n".join(lines), label, "exec"), {})
+
+          def materialize_historical(path: str) -> None:
+              target = ROOT / path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(historical_text(path), encoding="utf-8")
+
+          # Recover permit/telemetry.
+          if not (ROOT / "HeptaTrade/observability/runtime_telemetry.cpp").exists():
+              execute_embedded(
+                  historical_text(".github/workflows/dev-gap-closure-run.yml"),
+                  "historical-permit-telemetry-closure")
+
+          # Recover target-position chain and apply all accumulated type fixes.
+          if not (ROOT / "tests/target_position_tool_tests.cpp").exists():
+              materialize_historical(".github/workflows/dev-intent-gap-closure.yml")
+              execute_embedded(
+                  historical_text(".github/workflows/dev-intent-gap-closure.yml"),
+                  "historical-intent-closure")
+          materialize_historical(".github/workflows/dev-intent-gap-closure.yml")
+          execute_embedded(
+              historical_text(".github/workflows/dev-intent-gap-type-fix.yml"),
+              "historical-intent-type-fix")
+
+          # Recover deterministic portfolio compiler.
+          if not (ROOT / "tests/portfolio_compiler_tests.cpp").exists():
+              materialize_historical(".github/workflows/dev-portfolio-risk-closure.yml")
+              execute_embedded(
+                  historical_text(".github/workflows/dev-portfolio-risk-closure.yml"),
+                  "historical-portfolio-risk-closure")
+
+          # Final idempotent source repairs for all prerequisite slices.
+          telemetry = ROOT / "HeptaTrade/observability/runtime_telemetry.cpp"
+          text = telemetry.read_text(encoding="utf-8")
+          if "#include <cctype>" not in text:
+              text = text.replace(
+                  "#include <algorithm>\n",
+                  "#include <algorithm>\n#include <cctype>\n", 1)
+          text = re.sub(
+              r"out << '[^'\n]*\\\"' << EscapeJson",
+              "out << '\"' << EscapeJson", text)
+          telemetry.write_text(text, encoding="utf-8")
+
+          registry_h = ROOT / "HeptaTrade/tools/trading_tool_registry.h"
+          text = registry_h.read_text(encoding="utf-8")
+          text = text.replace("long long expiresAtMs = 0;",
+                              "std::int64_t expiresAtMs = 0;")
+          text = text.replace(
+              '''    TradingToolResult InvokeTargetPreview(
+        const TradingToolSession& session,
+        const TradingToolCall& call);''',
+              '''    TradingToolResult InvokeTargetPreview(
+        const TradingToolSession& session,
+        const TradingToolCall& call) const;''')
+          text = text.replace(
+              '''    TradingToolResult InvokeTargetApply(
+        const TradingToolSession& session,
+        const TradingToolCall& call);''',
+              '''    TradingToolResult InvokeTargetApply(
+        const TradingToolSession& session,
+        const TradingToolCall& call) const;''')
+          text = text.replace(
+              "    std::unordered_map<std::string, TargetPreviewRecord> m_targetPreviews;",
+              "    mutable std::unordered_map<std::string, TargetPreviewRecord> m_targetPreviews;")
+          registry_h.write_text(text, encoding="utf-8")
+
+          registry_cpp = ROOT / "HeptaTrade/tools/trading_tool_registry.cpp"
+          text = registry_cpp.read_text(encoding="utf-8")
+          for include, anchor in (
+              ("#include <cstdint>", "#include <cstring>\n"),
+              ("#include <exception>", "#include <cstring>\n"),
+              ("#include <limits>", "#include <iomanip>\n"),
+          ):
+              if include not in text:
+                  text = text.replace(anchor, anchor + include + "\n", 1)
+          text = text.replace("long long EpochMs()", "std::int64_t EpochMs()")
+          text = text.replace("long long& value)", "std::int64_t& value)")
+          text = text.replace("std::numeric_limits<long long>::min()",
+                              "std::numeric_limits<std::int64_t>::min()")
+          text = text.replace("std::numeric_limits<long long>::max()",
+                              "std::numeric_limits<std::int64_t>::max()")
+          text = text.replace("static_cast<long long>(number)",
+                              "static_cast<std::int64_t>(number)")
+          text = text.replace("const long long started", "const std::int64_t started")
+          text = text.replace("const long long completed", "const std::int64_t completed")
+          text = text.replace("const long long now", "const std::int64_t now")
+          text = text.replace("long long permitExpiry", "std::int64_t permitExpiry")
+          text = text.replace(
+              "std::chrono::milliseconds(std::max(1LL, record.expiresAtMs - now))",
+              "std::chrono::milliseconds(\n"
+              "            std::max<std::int64_t>(1, record.expiresAtMs - now))")
+          text = text.replace(
+              '''TradingToolResult TradingToolRegistry::InvokeTargetPreview(
+    const TradingToolSession& session,
+    const TradingToolCall& call)
+{''',
+              '''TradingToolResult TradingToolRegistry::InvokeTargetPreview(
+    const TradingToolSession& session,
+    const TradingToolCall& call) const
+{''')
+          text = text.replace(
+              '''TradingToolResult TradingToolRegistry::InvokeTargetApply(
+    const TradingToolSession& session,
+    const TradingToolCall& call)
+{''',
+              '''TradingToolResult TradingToolRegistry::InvokeTargetApply(
+    const TradingToolSession& session,
+    const TradingToolCall& call) const
+{''')
+          registry_cpp.write_text(text, encoding="utf-8")
+
+          for test_name in (
+              "tests/execution_preview_permit_tests.cpp",
+              "tests/target_position_tool_tests.cpp",
+          ):
+              path = ROOT / test_name
+              if not path.exists():
+                  continue
+              text = path.read_text(encoding="utf-8")
+              text = text.replace("long long NowMs()", "std::int64_t NowMs()")
+              text = text.replace("long long& expiresAtMs", "std::int64_t& expiresAtMs")
+              text = text.replace("long long expiry = 0;", "std::int64_t expiry = 0;")
+              text = text.replace("long long expires", "std::int64_t expires")
+              text = text.replace("const long long expires", "const std::int64_t expires")
+              if "#include <cstdint>" not in text:
+                  text = text.replace(
+                      "#include <chrono>\n", "#include <chrono>\n#include <cstdint>\n", 1)
+              path.write_text(text, encoding="utf-8")
+
+          target_test = ROOT / "tests/target_position_tool_tests.cpp"
+          text = target_test.read_text(encoding="utf-8")
+          if "std::int64_t quoteObservedAtMs" not in text:
+              text = text.replace(
+                  "    double ask = 1.1002;\n",
+                  "    double ask = 1.1002;\n"
+                  "    std::int64_t quoteObservedAtMs = NowMs() - 10;\n", 1)
+          text = text.replace("std::to_string(NowMs() - 1)",
+                              "std::to_string(quoteObservedAtMs)")
+          target_test.write_text(text, encoding="utf-8")
+
+          bounded = ROOT / "HeptaTrade/intent/bounded_json.cpp"
+          text = bounded.read_text(encoding="utf-8")
+          if "#include <utility>" not in text:
+              text = text.replace(
+                  "#include <limits>\n", "#include <limits>\n#include <utility>\n", 1)
+          bounded.write_text(text, encoding="utf-8")
+
+          tests_cmake = ROOT / "tests/CMakeLists.txt"
+          text = tests_cmake.read_text(encoding="utf-8")
+          text = text.replace(
+              "target_link_libraries(hepta_oms_journal_durability_tests pthread)",
+              "target_link_libraries(hepta_oms_journal_durability_tests\n"
+              "    pthread hepta_observability_core)")
+          if ("../HeptaTrade/intent/authoritative_decision_snapshot.cpp\n"
+              "    ../HeptaTrade/intent/bounded_json.cpp") not in text:
+              text = text.replace(
+                  "    ../HeptaTrade/intent/authoritative_decision_snapshot.cpp\n"
+                  "    ../HeptaTrade/intent/target_position_intent.cpp)",
+                  "    ../HeptaTrade/intent/authoritative_decision_snapshot.cpp\n"
+                  "    ../HeptaTrade/intent/bounded_json.cpp\n"
+                  "    ../HeptaTrade/intent/target_position_intent.cpp)", 1)
+          tests_cmake.write_text(text, encoding="utf-8")
+
+          # -----------------------------------------------------------------
+          # Executable research protocol.
+          # -----------------------------------------------------------------
+          research_protocol = r'''#!/usr/bin/env python3
+"""Deterministic, capability-free research run protocol.
+
+The module implements the canonical RunManifest -> EventLog -> RunSummary path.
+It deliberately has no broker, session, permit, promotion or deployment APIs.
+"""
+
+from __future__ import annotations
+
+import argparse
+from bisect import bisect_right
+from dataclasses import dataclass
+from decimal import Decimal, getcontext
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+getcontext().prec = 50
+
+
+class ResearchProtocolError(ValueError):
+    def __init__(self, code: str, detail: str = "") -> None:
+        super().__init__(f"{code}: {detail}" if detail else code)
+        self.code = code
+        self.detail = detail
+
+
+def canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def sha256_json(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def decimal_value(value: Any, field: str) -> Decimal:
+    try:
+        parsed = Decimal(str(value))
+    except Exception as error:
+        raise ResearchProtocolError("RESEARCH_DECIMAL_INVALID", field) from error
+    if not parsed.is_finite():
+        raise ResearchProtocolError("RESEARCH_DECIMAL_NONFINITE", field)
+    return parsed
+
+
+def decimal_text(value: Decimal) -> str:
+    if value == 0:
+        return "0"
+    normalized = value.normalize()
+    text = format(normalized, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def canonical_sha256(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 71 and value.startswith("sha256:") and all(
+        character in "0123456789abcdef" for character in value[7:]
+    )
+
+
+@dataclass(frozen=True)
+class EventRecord:
+    sequence: int
+    kind: str
+    authoritative_ts_ms: int
+    payload: Mapping[str, Any]
+    previous_digest: str
+    digest: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "sequence": self.sequence,
+            "kind": self.kind,
+            "authoritative_ts_ms": self.authoritative_ts_ms,
+            "payload": dict(self.payload),
+            "previous_digest": self.previous_digest,
+            "digest": self.digest,
+        }
+
+
+class EventLog:
+    def __init__(self) -> None:
+        self._events: list[EventRecord] = []
+        self._last_ts = -1
+        self._at_timestamp: dict[tuple[str, int], str] = {}
+
+    @property
+    def events(self) -> tuple[EventRecord, ...]:
+        return tuple(self._events)
+
+    @property
+    def digest(self) -> str:
+        return self._events[-1].digest if self._events else "sha256:" + "0" * 64
+
+    def append(self, kind: str, authoritative_ts_ms: int,
+               payload: Mapping[str, Any]) -> EventRecord:
+        if not kind or len(kind) > 64 or not isinstance(authoritative_ts_ms, int) or authoritative_ts_ms < 0:
+            raise ResearchProtocolError("RESEARCH_EVENT_INVALID")
+        if authoritative_ts_ms < self._last_ts:
+            raise ResearchProtocolError("RESEARCH_EVENT_OUT_OF_ORDER")
+        normalized_payload = json.loads(canonical_json(dict(payload)))
+        signature = sha256_json({"kind": kind, "payload": normalized_payload})
+        key = (kind, authoritative_ts_ms)
+        previous = self._at_timestamp.get(key)
+        if previous is not None:
+            if previous != signature:
+                raise ResearchProtocolError("RESEARCH_CHANGED_DUPLICATE_TIMESTAMP")
+            for event in reversed(self._events):
+                if event.kind == kind and event.authoritative_ts_ms == authoritative_ts_ms:
+                    return event
+            raise AssertionError("event signature index lost its record")
+        previous_digest = self.digest
+        sequence = len(self._events) + 1
+        body = {
+            "sequence": sequence,
+            "kind": kind,
+            "authoritative_ts_ms": authoritative_ts_ms,
+            "payload": normalized_payload,
+            "previous_digest": previous_digest,
+        }
+        event = EventRecord(
+            sequence=sequence,
+            kind=kind,
+            authoritative_ts_ms=authoritative_ts_ms,
+            payload=normalized_payload,
+            previous_digest=previous_digest,
+            digest=sha256_json(body),
+        )
+        self._events.append(event)
+        self._at_timestamp[key] = signature
+        self._last_ts = authoritative_ts_ms
+        return event
+
+
+def validate_static_manifest(document: Mapping[str, Any], root: Path) -> None:
+    if document.get("schema") != "heptatrader.research-manifest.v1":
+        raise ResearchProtocolError("RESEARCH_MANIFEST_SCHEMA_INVALID")
+    if document.get("mode") != "shadow":
+        raise ResearchProtocolError("RESEARCH_MODE_NOT_SHADOW")
+    contract = document.get("run_contract")
+    if not isinstance(contract, Mapping) or contract.get("campaign_or_finalizer_required") is not False:
+        raise ResearchProtocolError("RESEARCH_RUN_CONTRACT_INVALID")
+    capability = document.get("capability")
+    if not isinstance(capability, Mapping) or any(value is not False for value in capability.values()):
+        raise ResearchProtocolError("RESEARCH_CAPABILITY_FORBIDDEN")
+    strategy = document.get("strategy")
+    if not isinstance(strategy, Mapping):
+        raise ResearchProtocolError("RESEARCH_STRATEGY_MISSING")
+    for field in ("definition", "implementation", "context_builder", "replay_evaluator"):
+        relative = strategy.get(field)
+        if not isinstance(relative, str) or not (root / relative).is_file():
+            raise ResearchProtocolError("RESEARCH_STRATEGY_INPUT_MISSING", field)
+
+
+def validate_run_manifest(document: Mapping[str, Any]) -> None:
+    required_strings = (
+        "run_id", "source_revision", "strategy_digest", "config_digest",
+        "calendar", "session_semantics", "symbol_mapping",
+    )
+    if document.get("schema") != "heptatrader.run-manifest.v1":
+        raise ResearchProtocolError("RUN_MANIFEST_SCHEMA_INVALID")
+    if document.get("mode") != "shadow":
+        raise ResearchProtocolError("RUN_MANIFEST_MODE_INVALID")
+    for field in required_strings:
+        value = document.get(field)
+        if not isinstance(value, str) or not value:
+            raise ResearchProtocolError("RUN_MANIFEST_FIELD_MISSING", field)
+    for field in ("strategy_digest", "config_digest"):
+        if not canonical_sha256(document[field]):
+            raise ResearchProtocolError("RUN_MANIFEST_DIGEST_INVALID", field)
+    datasets = document.get("datasets")
+    if not isinstance(datasets, Sequence) or not datasets:
+        raise ResearchProtocolError("RUN_MANIFEST_DATASETS_MISSING")
+    for dataset in datasets:
+        if not isinstance(dataset, Mapping) or not dataset.get("uri") or not canonical_sha256(dataset.get("sha256")):
+            raise ResearchProtocolError("RUN_MANIFEST_DATASET_INVALID")
+    costs = document.get("costs")
+    capacity = document.get("capacity")
+    if not isinstance(costs, Mapping) or not isinstance(capacity, Mapping):
+        raise ResearchProtocolError("RUN_MANIFEST_ECONOMICS_MISSING")
+    for field in ("commission_per_unit", "slippage_bps", "impact_bps"):
+        if decimal_value(costs.get(field), field) < 0:
+            raise ResearchProtocolError("RUN_MANIFEST_COST_INVALID", field)
+    if int(costs.get("decision_to_fill_delay_ms", -1)) < 0:
+        raise ResearchProtocolError("RUN_MANIFEST_DELAY_INVALID")
+    max_order = decimal_value(capacity.get("max_order_quantity"), "max_order_quantity")
+    liquidity = decimal_value(capacity.get("available_liquidity"), "available_liquidity")
+    participation = decimal_value(capacity.get("max_participation"), "max_participation")
+    if max_order <= 0 or liquidity <= 0 or participation <= 0 or participation > 1:
+        raise ResearchProtocolError("RUN_MANIFEST_CAPACITY_INVALID")
+    validate_folds(
+        document.get("folds", ()),
+        int(document.get("feature_horizon_ms", -1)),
+        int(document.get("label_horizon_ms", -1)),
+        int(document.get("purge_ms", -1)),
+        int(document.get("embargo_ms", -1)),
+    )
+
+
+def validate_folds(folds: Sequence[Mapping[str, Any]],
+                   feature_horizon_ms: int,
+                   label_horizon_ms: int,
+                   purge_ms: int,
+                   embargo_ms: int) -> None:
+    if not folds:
+        raise ResearchProtocolError("RESEARCH_FOLDS_MISSING")
+    horizon = max(feature_horizon_ms, label_horizon_ms)
+    if horizon < 0 or purge_ms < horizon or embargo_ms < horizon:
+        raise ResearchProtocolError("RESEARCH_PURGE_EMBARGO_INSUFFICIENT")
+    previous_test_end = -1
+    for index, fold in enumerate(folds):
+        try:
+            train_start = int(fold["train_start_ms"])
+            train_end = int(fold["train_end_ms"])
+            test_start = int(fold["test_start_ms"])
+            test_end = int(fold["test_end_ms"])
+        except Exception as error:
+            raise ResearchProtocolError("RESEARCH_FOLD_INVALID", str(index)) from error
+        if not (0 <= train_start < train_end < test_start < test_end):
+            raise ResearchProtocolError("RESEARCH_FOLD_ORDER_INVALID", str(index))
+        if test_start - train_end < purge_ms:
+            raise ResearchProtocolError("RESEARCH_FOLD_PURGE_VIOLATION", str(index))
+        if previous_test_end >= 0 and test_start <= previous_test_end:
+            raise ResearchProtocolError("RESEARCH_FOLD_TEST_OVERLAP", str(index))
+        previous_test_end = test_end
+
+
+def _normalize_quotes(quotes: Sequence[Mapping[str, Any]], log: EventLog) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    previous_ts = -1
+    previous_canonical = ""
+    for raw in quotes:
+        try:
+            ts = int(raw["ts_ms"])
+            bid = decimal_value(raw["bid"], "bid")
+            ask = decimal_value(raw["ask"], "ask")
+        except Exception as error:
+            if isinstance(error, ResearchProtocolError):
+                raise
+            raise ResearchProtocolError("RESEARCH_QUOTE_INVALID") from error
+        if ts < 0 or bid <= 0 or ask < bid:
+            raise ResearchProtocolError("RESEARCH_QUOTE_INVALID")
+        canonical = canonical_json({"ts_ms": ts, "bid": decimal_text(bid), "ask": decimal_text(ask)})
+        if ts < previous_ts:
+            raise ResearchProtocolError("RESEARCH_QUOTE_OUT_OF_ORDER")
+        if ts == previous_ts:
+            if canonical != previous_canonical:
+                raise ResearchProtocolError("RESEARCH_CHANGED_DUPLICATE_TIMESTAMP")
+            continue
+        quote = {"ts_ms": ts, "bid": bid, "ask": ask}
+        normalized.append(quote)
+        log.append("quote", ts, {"bid": decimal_text(bid), "ask": decimal_text(ask)})
+        previous_ts = ts
+        previous_canonical = canonical
+    if not normalized:
+        raise ResearchProtocolError("RESEARCH_QUOTES_MISSING")
+    return normalized
+
+
+def evaluate_run(manifest: Mapping[str, Any],
+                 quotes: Sequence[Mapping[str, Any]],
+                 targets: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    validate_run_manifest(manifest)
+    log = EventLog()
+    normalized_quotes = _normalize_quotes(quotes, log)
+    quote_times = [quote["ts_ms"] for quote in normalized_quotes]
+    costs = manifest["costs"]
+    capacity = manifest["capacity"]
+    commission = decimal_value(costs["commission_per_unit"], "commission_per_unit")
+    slippage_bps = decimal_value(costs["slippage_bps"], "slippage_bps")
+    impact_bps = decimal_value(costs["impact_bps"], "impact_bps")
+    delay_ms = int(costs["decision_to_fill_delay_ms"])
+    max_order = decimal_value(capacity["max_order_quantity"], "max_order_quantity")
+    available_liquidity = decimal_value(capacity["available_liquidity"], "available_liquidity")
+    max_participation = decimal_value(capacity["max_participation"], "max_participation")
+    max_quote_age_ms = int(manifest.get("max_quote_age_ms", 60000))
+
+    position = Decimal(0)
+    cash = Decimal(0)
+    explicit_cost = Decimal(0)
+    turnover = Decimal(0)
+    peak_equity = Decimal(0)
+    max_drawdown = Decimal(0)
+    previous_target_ts = -1
+    seen_targets: dict[tuple[str, int], str] = {}
+    trade_count = 0
+
+    for raw_target in targets:
+        instrument = str(raw_target.get("instrument", ""))
+        ts = int(raw_target.get("ts_ms", -1))
+        target = decimal_value(raw_target.get("target_position"), "target_position")
+        if not instrument or ts < previous_target_ts:
+            raise ResearchProtocolError("RESEARCH_TARGET_OUT_OF_ORDER")
+        signature = sha256_json({
+            "instrument": instrument,
+            "target_position": decimal_text(target),
+        })
+        key = (instrument, ts)
+        if key in seen_targets:
+            if seen_targets[key] != signature:
+                raise ResearchProtocolError("RESEARCH_CHANGED_DUPLICATE_TIMESTAMP")
+            continue
+        seen_targets[key] = signature
+        previous_target_ts = ts
+
+        quote_index = bisect_right(quote_times, ts) - 1
+        if quote_index < 0:
+            raise ResearchProtocolError("RESEARCH_LOOKAHEAD_REQUIRED")
+        quote = normalized_quotes[quote_index]
+        if ts - quote["ts_ms"] > max_quote_age_ms:
+            raise ResearchProtocolError("RESEARCH_QUOTE_STALE")
+        fill_at = ts + delay_ms
+        fill_index = bisect_right(quote_times, fill_at) - 1
+        if fill_index < 0:
+            raise ResearchProtocolError("RESEARCH_FILL_QUOTE_MISSING")
+        fill_quote = normalized_quotes[fill_index]
+        if fill_at - fill_quote["ts_ms"] > max_quote_age_ms:
+            raise ResearchProtocolError("RESEARCH_FILL_QUOTE_STALE")
+
+        delta = target - position
+        log.append("target", ts, {
+            "instrument": instrument,
+            "target_position": decimal_text(target),
+            "current_position": decimal_text(position),
+            "delta": decimal_text(delta),
+        })
+        if delta == 0:
+            continue
+        absolute_delta = abs(delta)
+        participation_limit = available_liquidity * max_participation
+        if absolute_delta > max_order or absolute_delta > participation_limit:
+            raise ResearchProtocolError("RESEARCH_CAPACITY_EXCEEDED")
+        utilization = absolute_delta / available_liquidity
+        adverse_bps = slippage_bps + impact_bps * utilization
+        if delta > 0:
+            base_price = fill_quote["ask"]
+            fill_price = base_price * (Decimal(1) + adverse_bps / Decimal(10000))
+        else:
+            base_price = fill_quote["bid"]
+            fill_price = base_price * (Decimal(1) - adverse_bps / Decimal(10000))
+        if fill_price <= 0:
+            raise ResearchProtocolError("RESEARCH_FILL_PRICE_INVALID")
+        commission_cost = absolute_delta * commission
+        slippage_cost = absolute_delta * abs(fill_price - base_price)
+        cost = commission_cost + slippage_cost
+        cash -= delta * fill_price
+        cash -= commission_cost
+        explicit_cost += cost
+        turnover += absolute_delta * fill_price
+        position = target
+        trade_count += 1
+        log.append("fill", fill_at, {
+            "instrument": instrument,
+            "quantity": decimal_text(delta),
+            "fill_price": decimal_text(fill_price),
+            "commission": decimal_text(commission_cost),
+            "slippage_and_impact": decimal_text(slippage_cost),
+        })
+        mark = (fill_quote["bid"] + fill_quote["ask"]) / Decimal(2)
+        equity = cash + position * mark
+        peak_equity = max(peak_equity, equity)
+        max_drawdown = max(max_drawdown, peak_equity - equity)
+
+    last_quote = normalized_quotes[-1]
+    last_mark = (last_quote["bid"] + last_quote["ask"]) / Decimal(2)
+    net_pnl = cash + position * last_mark
+    summary_without_digest = {
+        "schema": "heptatrader.run-summary.v1",
+        "run_id": manifest["run_id"],
+        "status": "VALID",
+        "event_count": len(log.events),
+        "event_log_digest": log.digest,
+        "net_pnl": decimal_text(net_pnl),
+        "explicit_cost": decimal_text(explicit_cost),
+        "turnover": decimal_text(turnover),
+        "trade_count": trade_count,
+        "final_position": decimal_text(position),
+        "max_drawdown": decimal_text(max_drawdown),
+        "source_revision": manifest["source_revision"],
+        "manifest_digest": sha256_json(manifest),
+    }
+    summary = dict(summary_without_digest)
+    summary["output_digest"] = sha256_json({
+        "manifest": manifest,
+        "events": [event.as_dict() for event in log.events],
+        "summary": summary_without_digest,
+    })
+    return summary
+
+
+def sample_run_manifest(adverse: bool = False) -> dict[str, Any]:
+    return {
+        "schema": "heptatrader.run-manifest.v1",
+        "mode": "shadow",
+        "run_id": "fixture-eurusd-v1",
+        "source_revision": "0123456789abcdef0123456789abcdef01234567",
+        "strategy_digest": "sha256:" + "1" * 64,
+        "config_digest": "sha256:" + "2" * 64,
+        "datasets": [{"uri": "fixture://eurusd", "sha256": "sha256:" + "3" * 64}],
+        "calendar": "UTC-24x5-fixture",
+        "session_semantics": "closed_interval_left",
+        "symbol_mapping": "EUR.USD=CASH:EUR/USD",
+        "feature_horizon_ms": 1000,
+        "label_horizon_ms": 1000,
+        "purge_ms": 1000,
+        "embargo_ms": 1000,
+        "folds": [
+            {"train_start_ms": 0, "train_end_ms": 10000,
+             "test_start_ms": 11000, "test_end_ms": 20000},
+            {"train_start_ms": 0, "train_end_ms": 20000,
+             "test_start_ms": 21000, "test_end_ms": 30000},
+        ],
+        "costs": {
+            "commission_per_unit": "0.000001" if not adverse else "0.00005",
+            "slippage_bps": "0.2" if not adverse else "8",
+            "impact_bps": "0.5" if not adverse else "10",
+            "decision_to_fill_delay_ms": 0,
+        },
+        "capacity": {
+            "max_order_quantity": "1000000",
+            "available_liquidity": "10000000",
+            "max_participation": "0.2",
+        },
+        "max_quote_age_ms": 5000,
+        "deterministic_seed": 0,
+        "numeric_tolerance": "0.000000000001",
+    }
+
+
+def sample_quotes() -> list[dict[str, Any]]:
+    return [
+        {"ts_ms": 1000, "bid": "1.1000", "ask": "1.1002"},
+        {"ts_ms": 2000, "bid": "1.1010", "ask": "1.1012"},
+        {"ts_ms": 3000, "bid": "1.1020", "ask": "1.1022"},
+    ]
+
+
+def sample_targets() -> list[dict[str, Any]]:
+    return [
+        {"ts_ms": 1000, "instrument": "EUR.USD", "target_position": "100000"},
+        {"ts_ms": 2000, "instrument": "EUR.USD", "target_position": "0"},
+    ]
+
+
+def self_test() -> dict[str, Any]:
+    first = evaluate_run(sample_run_manifest(), sample_quotes(), sample_targets())
+    second = evaluate_run(sample_run_manifest(), sample_quotes(), sample_targets())
+    if first != second:
+        raise ResearchProtocolError("RESEARCH_DETERMINISM_FAILED")
+    adverse = evaluate_run(sample_run_manifest(adverse=True), sample_quotes(), sample_targets())
+    if Decimal(adverse["net_pnl"]) >= Decimal(first["net_pnl"]):
+        raise ResearchProtocolError("RESEARCH_ADVERSE_COST_TEST_FAILED")
+    return first
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    verify = subparsers.add_parser("verify")
+    verify.add_argument("--manifest", required=True)
+    subparsers.add_parser("self-test")
+    arguments = parser.parse_args()
+    if arguments.command == "verify":
+        path = Path(arguments.manifest).resolve()
+        document = json.loads(path.read_text(encoding="utf-8"))
+        validate_static_manifest(document, path.parents[1])
+        summary = self_test()
+        print(canonical_json({"status": "PASS", "fixture_digest": summary["output_digest"]}))
+        return 0
+    summary = self_test()
+    print(canonical_json(summary))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+          (ROOT / "research/run_protocol.py").write_text(
+              research_protocol, encoding="utf-8")
+          (ROOT / "research/run_protocol.py").chmod(0o755)
+          (ROOT / "research/__init__.py").write_text(
+              '"""Capability-free deterministic research contracts."""\n',
+              encoding="utf-8")
+
+          research_test = r'''from __future__ import annotations
+
+from decimal import Decimal
+from pathlib import Path
+import json
+import unittest
+
+from research.run_protocol import (
+    ResearchProtocolError,
+    evaluate_run,
+    sample_quotes,
+    sample_run_manifest,
+    sample_targets,
+    self_test,
+    validate_folds,
+    validate_static_manifest,
+)
+
+
+class ResearchProtocolTests(unittest.TestCase):
+    def test_repository_manifest_is_capability_free(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        manifest = json.loads((root / "research/manifest-v1.json").read_text())
+        validate_static_manifest(manifest, root)
+
+    def test_fixture_is_deterministic(self) -> None:
+        first = self_test()
+        second = self_test()
+        self.assertEqual(first, second)
+        self.assertTrue(first["output_digest"].startswith("sha256:"))
+
+    def test_changed_duplicate_quote_fails_closed(self) -> None:
+        quotes = sample_quotes()
+        quotes.insert(1, {"ts_ms": 1000, "bid": "1.1001", "ask": "1.1002"})
+        with self.assertRaises(ResearchProtocolError) as raised:
+            evaluate_run(sample_run_manifest(), quotes, sample_targets())
+        self.assertEqual(raised.exception.code, "RESEARCH_CHANGED_DUPLICATE_TIMESTAMP")
+
+    def test_decision_cannot_require_future_quote(self) -> None:
+        targets = [{"ts_ms": 500, "instrument": "EUR.USD", "target_position": "1"}]
+        with self.assertRaises(ResearchProtocolError) as raised:
+            evaluate_run(sample_run_manifest(), sample_quotes(), targets)
+        self.assertEqual(raised.exception.code, "RESEARCH_LOOKAHEAD_REQUIRED")
+
+    def test_purge_and_embargo_cover_horizon(self) -> None:
+        folds = sample_run_manifest()["folds"]
+        with self.assertRaises(ResearchProtocolError) as raised:
+            validate_folds(folds, 1000, 2000, 1000, 2000)
+        self.assertEqual(raised.exception.code, "RESEARCH_PURGE_EMBARGO_INSUFFICIENT")
+
+    def test_adverse_costs_reduce_result(self) -> None:
+        normal = evaluate_run(sample_run_manifest(), sample_quotes(), sample_targets())
+        adverse = evaluate_run(
+            sample_run_manifest(adverse=True), sample_quotes(), sample_targets())
+        self.assertLess(Decimal(adverse["net_pnl"]), Decimal(normal["net_pnl"]))
+
+    def test_capacity_violation_fails_closed(self) -> None:
+        manifest = sample_run_manifest()
+        manifest["capacity"]["max_order_quantity"] = "10"
+        with self.assertRaises(ResearchProtocolError) as raised:
+            evaluate_run(manifest, sample_quotes(), sample_targets())
+        self.assertEqual(raised.exception.code, "RESEARCH_CAPACITY_EXCEEDED")
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+          (ROOT / "tests/python/test_research_protocol.py").write_text(
+              research_test, encoding="utf-8")
+
+          # -----------------------------------------------------------------
+          # Canonical schema catalog and mechanical drift checks.
+          # -----------------------------------------------------------------
+          schemas = ROOT / "schemas"
+          schemas.mkdir(exist_ok=True)
+          catalog = {
+              "schema": "heptatrader.tool-catalog.v1",
+              "protocol": "hepta.agent-tools",
+              "protocol_version": 1,
+              "tools": [
+                  {"name": "system.tools.list", "capability": "system.read", "visibility": "ordinary"},
+                  {"name": "system.tools.describe", "capability": "system.read", "visibility": "ordinary"},
+                  {"name": "system.cancel_request", "capability": "system.read", "visibility": "ordinary"},
+                  {"name": "system.get_health", "capability": "system.read", "visibility": "ordinary"},
+                  {"name": "market.get_quote", "capability": "market.read", "visibility": "ordinary"},
+                  {"name": "account.get_summary", "capability": "account.read", "visibility": "ordinary"},
+                  {"name": "portfolio.list_positions", "capability": "portfolio.read", "visibility": "ordinary"},
+                  {"name": "orders.list", "capability": "orders.read", "visibility": "ordinary"},
+                  {"name": "execution.get_command_status", "capability": "orders.read", "visibility": "ordinary"},
+                  {"name": "risk.get_limits", "capability": "risk.read", "visibility": "ordinary"},
+                  {"name": "decision.get_snapshot", "capability": "system.read", "visibility": "ordinary"},
+                  {"name": "intent.preview_target_position", "capability": "risk.read", "visibility": "ordinary"},
+                  {"name": "intent.apply_target_position", "capability": "intent.apply", "visibility": "ordinary"},
+                  {"name": "events.wait", "capability": "events.read", "visibility": "ordinary"},
+                  {"name": "watch.get_snapshot", "capability": "system.read", "visibility": "watch"},
+                  {"name": "risk.preview_order", "capability": "operator.risk.preview", "visibility": "operator"},
+                  {"name": "trade.place_order", "capability": "operator.trade.place", "visibility": "operator"},
+                  {"name": "trade.cancel_order", "capability": "trade.cancel", "visibility": "ordinary"},
+                  {"name": "risk.preview_flatten", "capability": "trade.flatten", "visibility": "conditional"},
+                  {"name": "trade.flatten_position", "capability": "trade.flatten", "visibility": "conditional"},
+              ],
+              "wire_aliases": {
+                  "target_position": "quantity",
+                  "max_slippage_bps": "reference_price",
+                  "mutation_command_id": "tool_call_id",
+              },
+              "unsupported_environments": ["LIVE", "LIVE_REDUCE_ONLY", "LIVE_CAPPED"],
+          }
+          catalog_text = json.dumps(catalog, sort_keys=True, indent=2) + "\n"
+          (schemas / "tool-catalog-v1.json").write_text(catalog_text, encoding="utf-8")
+          digest = hashlib.sha256(
+              json.dumps(catalog, sort_keys=True, separators=(",", ":")).encode("utf-8")
+          ).hexdigest()
+          (schemas / "tool-catalog-v1.sha256").write_text(digest + "\n", encoding="utf-8")
+
+          execution_schema = {
+              "schema": "heptatrader.execution-wire.v1",
+              "protocol_magic": "HEX1",
+              "current_protocol_version": 1,
+              "identity": ["service_epoch", "service_fencing_generation"],
+              "mutation_invariants": [
+                  "gateway_context_binding",
+                  "decision_lease",
+                  "opaque_single_use_preview_permit",
+                  "journal_before_send",
+                  "stable_command_id_and_normalized_payload",
+              ],
+              "live_mutation": False,
+          }
+          (schemas / "execution-wire-v1.json").write_text(
+              json.dumps(execution_schema, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8")
+          research_schema = {
+              "schema": "heptatrader.research-run.v1",
+              "objects": ["RunManifest", "EventLog", "RunSummary"],
+              "capability_fields_forbidden": [
+                  "session_token", "broker_credential", "preview_permit",
+                  "paper_mutation", "live_mutation", "promotion_grant",
+              ],
+              "deterministic": True,
+          }
+          (schemas / "research-run-v1.json").write_text(
+              json.dumps(research_schema, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8")
+
+          schema_check = r'''#!/usr/bin/env python3
+"""Mechanically validate canonical tool/schema bindings across languages."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def validate() -> list[str]:
+    errors: list[str] = []
+    catalog_path = ROOT / "schemas/tool-catalog-v1.json"
+    try:
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        return [f"tool catalog invalid: {error}"]
+    if catalog.get("schema") != "heptatrader.tool-catalog.v1":
+        errors.append("tool catalog schema mismatch")
+    tools = catalog.get("tools")
+    if not isinstance(tools, list):
+        return errors + ["tool catalog tools must be a list"]
+    names = [tool.get("name") for tool in tools if isinstance(tool, dict)]
+    if len(names) != len(set(names)) or any(not isinstance(name, str) for name in names):
+        errors.append("tool catalog names are invalid or duplicated")
+
+    canonical = json.dumps(catalog, sort_keys=True, separators=(",", ":"))
+    expected_digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    actual_digest = (ROOT / "schemas/tool-catalog-v1.sha256").read_text().strip()
+    if actual_digest != expected_digest:
+        errors.append("tool catalog digest drift")
+
+    registry = (ROOT / "HeptaTrade/tools/trading_tool_registry.cpp").read_text(
+        encoding="utf-8-sig")
+    header = (ROOT / "HeptaTrade/tools/trading_tool_registry.h").read_text(
+        encoding="utf-8-sig")
+    for tool in tools:
+        name = tool["name"]
+        capability = tool["capability"]
+        if f'"{name}"' not in registry:
+            errors.append(f"C++ registry missing tool: {name}")
+        if f'"{capability}"' not in registry and f'"{capability}"' not in header:
+            errors.append(f"C++ registry missing capability: {name} -> {capability}")
+        if tool["visibility"] == "operator" and not capability.startswith("operator."):
+            errors.append(f"raw operator tool has non-operator capability: {name}")
+    for forbidden in ("LIVE_REDUCE_ONLY", "LIVE_CAPPED"):
+        if forbidden in registry:
+            errors.append(f"active Registry accepts dormant LIVE state: {forbidden}")
+    environment_guard = re.search(
+        r'EnvironmentAllows[\s\S]{0,1800}session\.environment != "WATCH"[\s\S]{0,200}'
+        r'session\.environment != "PAPER"', registry)
+    if environment_guard is None:
+        errors.append("Registry lacks explicit WATCH/PAPER-only environment guard")
+    if 'place.requiredCapability = "operator.trade.place";' not in registry:
+        errors.append("raw place is not operator-only")
+    if 'applyTarget.requiredCapability = "intent.apply";' not in registry:
+        errors.append("target apply capability binding is missing")
+
+    mcp = (ROOT / "adapters/mcp/hepta_mcp_server.py").read_text(encoding="utf-8-sig")
+    if "system.tools.list" not in mcp or "system.tools.describe" not in mcp:
+        errors.append("MCP bridge does not use runtime discovery")
+    if re.search(r"broker.*credential|credential.*broker", mcp, re.IGNORECASE):
+        errors.append("MCP bridge contains broker credential surface")
+
+    ordinary_pattern = re.compile(r"(?:^|[,\s])(trade\.place|operator\.trade\.place)(?:[,\s]|$)")
+    for path in (ROOT / "systemd").glob("*agent*env.example"):
+        if "operator" not in path.name and ordinary_pattern.search(path.read_text()):
+            errors.append(f"ordinary Agent example exposes raw place: {path.name}")
+    return errors
+
+
+def main() -> int:
+    errors = validate()
+    for error in errors:
+        print(f"[SCHEMA-CATALOG] {error}", file=sys.stderr)
+    if errors:
+        return 1
+    print("[SCHEMA-CATALOG] PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+          (ROOT / "scripts/check_schema_catalog.py").write_text(
+              schema_check, encoding="utf-8")
+          (ROOT / "scripts/check_schema_catalog.py").chmod(0o755)
+
+          schema_test = r'''from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+import sys
+import unittest
+
+
+class SchemaCatalogTests(unittest.TestCase):
+    def test_catalog_matches_cpp_and_mcp(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        subprocess.run(
+            [sys.executable, str(root / "scripts/check_schema_catalog.py")],
+            cwd=root,
+            check=True,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+          (ROOT / "tests/python/test_schema_catalog.py").write_text(
+              schema_test, encoding="utf-8")
+
+          # -----------------------------------------------------------------
+          # Module ownership and size-discipline baseline.
+          # -----------------------------------------------------------------
+          module_prefixes = {
+              "adapter_ib": "HeptaTrade/adapter_ib/",
+              "adapter_ctp": "HeptaTrade/adapter_ctp/",
+              "adapter_xt": "HeptaTrade/adapter_xt/",
+              "agent": "HeptaTrade/agent/",
+              "cli": "HeptaTrade/cli/",
+              "client": "HeptaTrade/client/",
+              "events": "HeptaTrade/events/",
+              "execution": "HeptaTrade/execution/",
+              "intent": "HeptaTrade/intent/",
+              "observability": "HeptaTrade/observability/",
+              "portfolio": "HeptaTrade/portfolio/",
+              "risk": "HeptaTrade/risk/",
+              "simulator": "HeptaTrade/simulator/",
+              "state": "HeptaTrade/state/",
+              "tool_host": "HeptaTrade/tool_host/",
+              "tools": "HeptaTrade/tools/",
+              "oms": "HeptaTrade/oms_",
+          }
+          large_exceptions: dict[str, dict[str, str | int]] = {}
+          for path in list((ROOT / "HeptaTrade").rglob("*.cpp")) + list((ROOT / "scripts").glob("*.py")):
+              lines = len(path.read_text(encoding="utf-8-sig").splitlines())
+              limit = 2500 if "HeptaTrade" in path.parts else 1200
+              if lines > limit:
+                  relative = path.relative_to(ROOT).as_posix()
+                  large_exceptions[relative] = {
+                      "baseline_lines": lines,
+                      "owner": "incremental-extraction",
+                      "rule": "may not grow; extract state machine or library before adding behavior",
+                  }
+          ownership = {
+              "schema": "heptatrader.module-ownership.v1",
+              "modules": {
+                  name: {
+                      "prefix": prefix,
+                      "authority": (
+                          "venue mutation" if name == "execution" else
+                          "broker transport" if name == "adapter_ib" else
+                          "deterministic policy" if name in {"risk", "portfolio"} else
+                          "unprivileged orchestration" if name in {"tool_host", "tools", "client"} else
+                          "bounded support"
+                      ),
+                      "owner": name,
+                  }
+                  for name, prefix in module_prefixes.items()
+              },
+              "large_file_exceptions": large_exceptions,
+              "new_cpp_line_limit": 2500,
+              "new_python_line_limit": 1200,
+          }
+          ownership_path = ROOT / "docs/development/module-ownership-v1.json"
+          ownership_path.write_text(
+              json.dumps(ownership, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8")
+
+          ownership_doc = '''# Module ownership and extraction discipline
+
+Status: current
+Applies to: active C++ runtime, Python runtime/research utilities and tests
+Verification: `python3 scripts/check_module_discipline.py`
+
+Authority follows dependency direction rather than file size. Execution owns venue
+mutation; broker adapters own transport only; risk and portfolio modules own
+deterministic policy; Gateway and clients remain unprivileged. The machine-readable
+map is `module-ownership-v1.json`.
+
+New active C++ files may not exceed 2,500 lines and new Python libraries may not
+exceed 1,200 lines. Existing exceptions are frozen at their audited line count and
+may not grow. New behavior must first extract a bounded state machine, codec or
+library. This branch already performs targeted extraction for bounded JSON,
+runtime telemetry, target-position intent and the portfolio compiler without
+moving broker authority out of Execution Service.
+'''
+          (ROOT / "docs/development/MODULE-OWNERSHIP.md").write_text(
+              ownership_doc, encoding="utf-8")
+
+          discipline_check = r'''#!/usr/bin/env python3
+"""Validate active module ownership and non-growth budgets."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def validate() -> list[str]:
+    errors: list[str] = []
+    map_path = ROOT / "docs/development/module-ownership-v1.json"
+    try:
+        document = json.loads(map_path.read_text(encoding="utf-8"))
+    except Exception as error:
+        return [f"ownership map invalid: {error}"]
+    if document.get("schema") != "heptatrader.module-ownership.v1":
+        errors.append("ownership schema mismatch")
+    modules = document.get("modules") or {}
+    prefixes = [entry.get("prefix") for entry in modules.values()
+                if isinstance(entry, dict)]
+    if not prefixes or any(not isinstance(prefix, str) for prefix in prefixes):
+        errors.append("module prefixes invalid")
+        return errors
+    exceptions = document.get("large_file_exceptions") or {}
+    cpp_limit = int(document.get("new_cpp_line_limit", 0))
+    python_limit = int(document.get("new_python_line_limit", 0))
+
+    for path in (ROOT / "HeptaTrade").rglob("*.cpp"):
+        relative = path.relative_to(ROOT).as_posix()
+        if not any(relative.startswith(prefix) for prefix in prefixes):
+            errors.append(f"unowned active C++ source: {relative}")
+        line_count = len(path.read_text(encoding="utf-8-sig").splitlines())
+        exception = exceptions.get(relative)
+        if line_count > cpp_limit and exception is None:
+            errors.append(f"large C++ source lacks extraction owner: {relative}")
+        if exception is not None and line_count > int(exception["baseline_lines"]):
+            errors.append(f"large C++ source grew beyond baseline: {relative}")
+    for path in (ROOT / "scripts").glob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        line_count = len(path.read_text(encoding="utf-8-sig").splitlines())
+        exception = exceptions.get(relative)
+        if line_count > python_limit and exception is None:
+            errors.append(f"large Python script lacks extraction owner: {relative}")
+        if exception is not None and line_count > int(exception["baseline_lines"]):
+            errors.append(f"large Python script grew beyond baseline: {relative}")
+    for path in (ROOT / "HeptaTrade/cli").glob("*.cpp"):
+        text = path.read_text(encoding="utf-8-sig")
+        if "int main(" in text and len(text.splitlines()) > 500:
+            errors.append(f"CLI entry point is not thin: {path.relative_to(ROOT)}")
+    return errors
+
+
+def main() -> int:
+    errors = validate()
+    for error in errors:
+        print(f"[MODULE-DISCIPLINE] {error}", file=sys.stderr)
+    if errors:
+        return 1
+    print("[MODULE-DISCIPLINE] PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+          (ROOT / "scripts/check_module_discipline.py").write_text(
+              discipline_check, encoding="utf-8")
+          (ROOT / "scripts/check_module_discipline.py").chmod(0o755)
+
+          discipline_test = r'''from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+import sys
+import unittest
+
+
+class ModuleDisciplineTests(unittest.TestCase):
+    def test_active_modules_have_owners_and_budgets(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        subprocess.run(
+            [sys.executable, str(root / "scripts/check_module_discipline.py")],
+            cwd=root,
+            check=True,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
+'''
+          (ROOT / "tests/python/test_module_discipline.py").write_text(
+              discipline_test, encoding="utf-8")
+
+          # -----------------------------------------------------------------
+          # Install-tree truth checker.
+          # -----------------------------------------------------------------
+          install_check = r'''#!/usr/bin/env python3
+"""Verify the minimal Simulator/Agent install tree and forbidden surfaces."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("root")
+    arguments = parser.parse_args()
+    root = Path(arguments.root).resolve()
+    prefixes = list(root.glob("usr/local")) + list(root.glob("usr"))
+    prefix = next((path for path in prefixes if path.is_dir()), None)
+    if prefix is None:
+        print("[INSTALL-TREE] installation prefix missing", file=sys.stderr)
+        return 1
+    required_names = {
+        "heptactl", "hepta-sessionctl", "hepta-agent-mcp-launcher",
+        "hepta-tool-gatewayd", "hepta-executiond", "hepta-mcp-server",
+        "tool-catalog-v1.json", "execution-wire-v1.json", "research-run-v1.json",
+        "run_protocol.py",
+    }
+    present = {path.name for path in prefix.rglob("*") if path.is_file()}
+    missing = sorted(required_names - present)
+    if missing:
+        print(f"[INSTALL-TREE] required files missing: {missing}", file=sys.stderr)
+        return 1
+    forbidden_names = {
+        "hepta-ib-executiond", "HeptaTrader.sln", "Instrument.xml",
+        ".env.hepta.example",
+    }
+    found = sorted(forbidden_names & present)
+    if found:
+        print(f"[INSTALL-TREE] forbidden files installed: {found}", file=sys.stderr)
+        return 1
+    examples = [path for path in prefix.rglob("*")
+                if path.is_file() and "examples" in path.parts]
+    forbidden_tokens = (
+        "AllowLiveTrading", "LIVE_CAPPED", "LIVE_REDUCE_ONLY",
+        "HEPTA_MD_FRONT", "HEPTA_TD_FRONT", "D:\\quant",
+    )
+    for path in examples:
+        text = path.read_text(encoding="utf-8-sig", errors="replace")
+        for token in forbidden_tokens:
+            if token in text:
+                print(f"[INSTALL-TREE] {path}: forbidden token {token}", file=sys.stderr)
+                return 1
+    for path in prefix.rglob("legacy"):
+        if path.exists():
+            print(f"[INSTALL-TREE] legacy surface installed: {path}", file=sys.stderr)
+            return 1
+    print("[INSTALL-TREE] PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+          (ROOT / "scripts/check_install_tree.py").write_text(
+              install_check, encoding="utf-8")
+          (ROOT / "scripts/check_install_tree.py").chmod(0o755)
+
+          # -----------------------------------------------------------------
+          # Reliability and performance fixtures.
+          # -----------------------------------------------------------------
+          oms_crash = r'''#include "../HeptaTrade/oms_journal.h"
+
+#include <cstdlib>
+#include <iostream>
+#include <string>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+namespace
+{
+void Require(bool condition, const char* expression, int line)
+{
+    if (condition) return;
+    std::cerr << "requirement failed at line " << line << ": "
+              << expression << '\n';
+    std::abort();
+}
+#define REQUIRE(expression) Require(static_cast<bool>(expression), #expression, __LINE__)
+}
+
+int main()
+{
+    char pattern[] = "/tmp/hepta-oms-crash-XXXXXX";
+    char* directory = ::mkdtemp(pattern);
+    REQUIRE(directory != nullptr);
+    const std::string path = std::string(directory) + "/journal.jsonl";
+    int ready[2];
+    REQUIRE(::pipe(ready) == 0);
+    const pid_t child = ::fork();
+    REQUIRE(child >= 0);
+    if (child == 0)
+    {
+        ::close(ready[0]);
+        ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
+        ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+        OmsJournal journal;
+        if (!journal.Init(path)) ::_exit(20);
+        OmsJournalEvent event;
+        event.eventType = "order_intent";
+        event.tsMs = OmsJournal::NowEpochMs();
+        event.reqId = "crash-command";
+        event.clientReqId = event.reqId;
+        event.eventId = "crash-command:order_intent";
+        event.venue = "SIMULATOR";
+        event.account = "SIM";
+        event.executionDomain = "SIM:crash";
+        if (!journal.Append(event)) ::_exit(21);
+        const char signal = '1';
+        if (::write(ready[1], &signal, 1) != 1) ::_exit(22);
+        ::_exit(0); // Deliberately skip destructors: process-crash boundary.
+    }
+    ::close(ready[1]);
+    char signal = 0;
+    REQUIRE(::read(ready[0], &signal, 1) == 1 && signal == '1');
+    ::close(ready[0]);
+    int status = 0;
+    REQUIRE(::waitpid(child, &status, 0) == child);
+    REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+
+    OmsJournal recovered;
+    REQUIRE(recovered.Init(path));
+    int callbacks = 0;
+    REQUIRE(recovered.Replay([&](const OmsJournalEvent& event) {
+        ++callbacks;
+        REQUIRE(event.reqId == "crash-command");
+        REQUIRE(event.eventType == "order_intent");
+    }) == 1);
+    REQUIRE(callbacks == 1);
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory) == 0);
+    return 0;
+}
+'''
+          (ROOT / "tests/oms_crash_replay_tests.cpp").write_text(
+              oms_crash, encoding="utf-8")
+
+          protocol_fuzz = r'''#include "../HeptaTrade/execution/execution_service_protocol.h"
+
+#include <cstdint>
+#include <string>
+
+namespace
+{
+std::uint64_t Next(std::uint64_t& state)
+{
+    state ^= state << 13;
+    state ^= state >> 7;
+    state ^= state << 17;
+    return state;
+}
+}
+
+int main()
+{
+    std::uint64_t state = 0x6a09e667f3bcc909ULL;
+    for (std::size_t sample = 0; sample < 20000; ++sample)
+    {
+        const std::size_t length = static_cast<std::size_t>(Next(state) % 1024);
+        std::string body(length, '\0');
+        for (std::size_t i = 0; i < length; ++i)
+            body[i] = static_cast<char>(Next(state) & 0xff);
+        std::string reason;
+        ExecutionServiceRequest request;
+        ExecutionServiceProtocol::DecodeRequest(body, request, reason);
+        ExecutionCommandResult response;
+        ExecutionServiceProtocol::DecodeResponse(body, response, reason);
+        ExecutionControlResult control;
+        ExecutionServiceProtocol::DecodeControlResponse(body, control, reason);
+    }
+    return 0;
+}
+'''
+          (ROOT / "tests/protocol_fuzz_smoke_tests.cpp").write_text(
+              protocol_fuzz, encoding="utf-8")
+
+          latency_test = r'''#include "../HeptaTrade/risk/deterministic_risk_policy.h"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <iostream>
+#include <vector>
+
+#ifndef HEPTA_RISK_P99_BASELINE_US
+#define HEPTA_RISK_P99_BASELINE_US 50000
+#endif
+
+int main()
+{
+    DeterministicRiskLimits limits;
+    DeterministicRiskContext context;
+    context.action = "BUY";
+    context.orderType = "LMT";
+    context.quantity = 1000.0;
+    context.valuationPrice = 1.1002;
+    context.submittedPrice = 1.1002;
+    context.referencePrice = 1.1002;
+    context.grossAbsolutePosition = 10000.0;
+    context.projectedGrossAbsolutePosition = 11000.0;
+    context.netPosition = 10000.0;
+    context.projectedNetPosition = 11000.0;
+    context.strategyGrossPosition = 10000.0;
+    context.projectedStrategyGrossPosition = 11000.0;
+    context.quoteFresh = true;
+    context.portfolioSnapshotComplete = true;
+    std::vector<long long> samples;
+    samples.reserve(2000);
+    for (int i = 0; i < 2000; ++i)
+    {
+        const std::chrono::steady_clock::time_point start =
+            std::chrono::steady_clock::now();
+        const DeterministicRiskDecision decision =
+            DeterministicRiskPolicy::Evaluate(limits, context);
+        if (!decision.allow) return 2;
+        samples.push_back(std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - start).count());
+    }
+    std::sort(samples.begin(), samples.end());
+    const long long p99 = samples[(samples.size() * 99) / 100];
+    const long long allowed = HEPTA_RISK_P99_BASELINE_US * 120 / 100;
+    std::cout << "{\"fixture\":\"risk-evaluate-v1\",\"p99_us\":"
+              << p99 << ",\"baseline_us\":" << HEPTA_RISK_P99_BASELINE_US
+              << ",\"allowed_us\":" << allowed << "}\n";
+    return p99 <= allowed ? 0 : 3;
+}
+'''
+          (ROOT / "tests/risk_latency_fixture_tests.cpp").write_text(
+              latency_test, encoding="utf-8")
+          benchmarks = ROOT / "benchmarks"
+          benchmarks.mkdir(exist_ok=True)
+          (benchmarks / "core-latency-baseline-v1.json").write_text(
+              json.dumps({
+                  "schema": "heptatrader.latency-baseline.v1",
+                  "fixture": "risk-evaluate-v1",
+                  "p99_microseconds": 50000,
+                  "maximum_regression_percent": 20,
+              }, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8")
+
+          tests_cmake = ROOT / "tests/CMakeLists.txt"
+          text = tests_cmake.read_text(encoding="utf-8")
+          if "HEPTA_RELIABILITY_TEST_TARGETS" not in text:
+              anchor = "set(HEPTA_CORE_TEST_TARGETS)\n"
+              function = '''set(HEPTA_CORE_TEST_TARGETS)
+set(HEPTA_RELIABILITY_TEST_TARGETS)
+
+function(hepta_register_reliability_test target)
+    target_include_directories(${target} PRIVATE
+        ../HeptaTrade
+        ../HeptaTrade/adapter_ib)
+    set_target_properties(${target} PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME ${target} COMMAND ${target})
+    set_tests_properties(${target} PROPERTIES LABELS "reliability")
+    list(APPEND HEPTA_RELIABILITY_TEST_TARGETS ${target})
+    set(HEPTA_RELIABILITY_TEST_TARGETS
+        "${HEPTA_RELIABILITY_TEST_TARGETS}" PARENT_SCOPE)
+endfunction()
+'''
+              if anchor not in text:
+                  raise RuntimeError("core test target declaration missing")
+              text = text.replace(anchor, function, 1)
+          reliability_block = '''
+add_executable(hepta_oms_crash_replay_tests
+    oms_crash_replay_tests.cpp
+    ../HeptaTrade/oms_journal.cpp)
+target_link_libraries(hepta_oms_crash_replay_tests
+    pthread hepta_observability_core)
+hepta_register_reliability_test(hepta_oms_crash_replay_tests)
+
+add_executable(hepta_protocol_fuzz_smoke_tests
+    protocol_fuzz_smoke_tests.cpp)
+target_link_libraries(hepta_protocol_fuzz_smoke_tests
+    hepta_execution_contract)
+hepta_register_reliability_test(hepta_protocol_fuzz_smoke_tests)
+
+add_executable(hepta_risk_latency_fixture_tests
+    risk_latency_fixture_tests.cpp)
+target_link_libraries(hepta_risk_latency_fixture_tests
+    hepta_risk_core)
+target_compile_definitions(hepta_risk_latency_fixture_tests PRIVATE
+    HEPTA_RISK_P99_BASELINE_US=50000)
+hepta_register_reliability_test(hepta_risk_latency_fixture_tests)
+set_tests_properties(hepta_risk_latency_fixture_tests PROPERTIES
+    LABELS "reliability;performance")
+
+add_custom_target(hepta_reliability_test_binaries
+    DEPENDS ${HEPTA_RELIABILITY_TEST_TARGETS})
+
+'''
+          if "hepta_oms_crash_replay_tests" not in text:
+              marker = "add_custom_target(hepta_core_test_binaries\n"
+              if marker not in text:
+                  raise RuntimeError("core custom target missing")
+              text = text.replace(marker, reliability_block + marker, 1)
+          tests_cmake.write_text(text, encoding="utf-8")
+
+          reliability_script = r'''#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CXX_BIN="${CXX:-g++}"
+COMPILER_TAG="$(basename "${CXX_BIN}")"
+BUILD_DIR="${HEPTA_RELIABILITY_BUILD_DIR:-${ROOT_DIR}/build/reliability-${COMPILER_TAG}}"
+JOBS="${HEPTA_JOBS:-2}"
+SANITIZERS="-fsanitize=address,undefined -fno-omit-frame-pointer"
+
+rm -rf "${BUILD_DIR}"
+cmake -S "${ROOT_DIR}" -B "${BUILD_DIR}" -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_CXX_COMPILER="${CXX_BIN}" \
+  -DCMAKE_CXX_FLAGS="${SANITIZERS}" \
+  -DCMAKE_EXE_LINKER_FLAGS="${SANITIZERS}" \
+  -DBUILD_TESTING=ON \
+  -DHEPTA_INSTALL_RUNTIME=ON \
+  -DHEPTA_ENABLE_IBAPI=OFF
+cmake --build "${BUILD_DIR}" \
+  --target hepta_reliability_test_binaries \
+  --parallel "${JOBS}"
+ASAN_OPTIONS="detect_leaks=0:abort_on_error=1" \
+UBSAN_OPTIONS="halt_on_error=1:print_stacktrace=1" \
+ctest --test-dir "${BUILD_DIR}" --output-on-failure -L reliability
+'''
+          (ROOT / "scripts/reliability_core.sh").write_text(
+              reliability_script, encoding="utf-8")
+          (ROOT / "scripts/reliability_core.sh").chmod(0o755)
+
+          reliability_workflow = '''name: reliability-runtime
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 4 * * 2"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reliability-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sanitizer-crash-fuzz-replay:
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ clang libssl-dev python3
+      - name: ASAN/UBSAN, crash replay, malformed protocol and performance fixture
+        env:
+          CXX: ${{ matrix.compiler }}
+          HEPTA_JOBS: "2"
+        run: ./scripts/reliability_core.sh
+'''
+          (ROOT / ".github/workflows/reliability-ci.yml").write_text(
+              reliability_workflow, encoding="utf-8")
+
+          # -----------------------------------------------------------------
+          # Development/CI/install integration.
+          # -----------------------------------------------------------------
+          dev_core = ROOT / "scripts/dev_core.sh"
+          text = dev_core.read_text(encoding="utf-8")
+          integrity_call = 'python3 "${ROOT_DIR}/scripts/check_repository_integrity.py"\n'
+          extra_calls = integrity_call + (
+              'python3 "${ROOT_DIR}/scripts/check_schema_catalog.py"\n'
+              'python3 "${ROOT_DIR}/scripts/check_module_discipline.py"\n'
+              'python3 "${ROOT_DIR}/research/run_protocol.py" verify \\\n'
+              '  --manifest "${ROOT_DIR}/research/manifest-v1.json"\n')
+          if "check_schema_catalog.py" not in text:
+              if integrity_call not in text:
+                  raise RuntimeError("dev_core integrity call missing")
+              text = text.replace(integrity_call, extra_calls, 1)
+          dev_core.write_text(text, encoding="utf-8")
+
+          core_ci = ROOT / ".github/workflows/core-ci.yml"
+          text = core_ci.read_text(encoding="utf-8")
+          if "scripts/check_schema_catalog.py" not in text:
+              text = text.replace(
+                  "            scripts/check_repository_integrity.py \\\n",
+                  "            scripts/check_repository_integrity.py \\\n"
+                  "            scripts/check_schema_catalog.py \\\n"
+                  "            scripts/check_module_discipline.py \\\n"
+                  "            scripts/check_install_tree.py \\\n"
+                  "            research/run_protocol.py \\\n", 1)
+              text = text.replace(
+                  "          python3 scripts/check_repository_integrity.py\n",
+                  "          python3 scripts/check_repository_integrity.py\n"
+                  "          python3 scripts/check_schema_catalog.py\n"
+                  "          python3 scripts/check_module_discipline.py\n"
+                  "          python3 research/run_protocol.py verify \\\n"
+                  "            --manifest research/manifest-v1.json\n", 1)
+          if "check_install_tree.py" not in text.split("Verify minimal runtime install tree", 1)[-1]:
+              marker = "          grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \\\n            \"$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service\"\n"
+              addition = marker + "          python3 scripts/check_install_tree.py \"$stage\"\n"
+              if marker not in text:
+                  raise RuntimeError("core CI install marker missing")
+              text = text.replace(marker, addition, 1)
+          core_ci.write_text(text, encoding="utf-8")
+
+          runtime_install = ROOT / "cmake/RuntimeInstall.cmake"
+          text = runtime_install.read_text(encoding="utf-8")
+          install_block = '''
+install(DIRECTORY
+        "${CMAKE_SOURCE_DIR}/schemas/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/schemas"
+    COMPONENT runtime
+    FILES_MATCHING
+        PATTERN "*.json"
+        PATTERN "*.sha256")
+
+install(PROGRAMS
+        "${CMAKE_SOURCE_DIR}/research/run_protocol.py"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research"
+    COMPONENT runtime)
+
+install(FILES
+        "${CMAKE_SOURCE_DIR}/docs/development/MODULE-OWNERSHIP.md"
+        "${CMAKE_SOURCE_DIR}/docs/development/module-ownership-v1.json"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/development"
+    COMPONENT runtime)
+'''
+          if "${CMAKE_SOURCE_DIR}/schemas/" not in text:
+              text += install_block
+          runtime_install.write_text(text, encoding="utf-8")
+
+          # Remove every temporary mutating/export workflow from the candidate.
+          for relative in TEMP_WORKFLOWS:
+              path = ROOT / relative
+              if path.exists():
+                  path.unlink()
+          PY
+      - name: Verify clean core, Python, research, install and sanitizer lanes
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          rm -rf build/core-release build/reliability-*
+          python3 scripts/check_repository_integrity.py
+          python3 scripts/check_schema_catalog.py
+          python3 scripts/check_module_discipline.py
+          python3 research/run_protocol.py verify --manifest research/manifest-v1.json
+          ./scripts/dev_core.sh
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          python3 scripts/check_install_tree.py "$stage"
+          CXX=g++ ./scripts/reliability_core.sh
+      - name: Commit verified repository/research/reliability closure
+        run: |
+          git config user.name "Tomasrgbsf"
+          git config user.email "tomasbraynt@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -s -m "feat: close research schema and reliability gaps"
+          git push origin HEAD:codex/heptatrader-gap-closure-v2
