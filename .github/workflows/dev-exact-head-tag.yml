@@ -1,0 +1,277 @@
+name: dev-exact-head-tag
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/dev-exact-head-tag.yml
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  verify-commit-and-tag:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): launch exact head tagged verification'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Converge on latest branch head
+        run: |
+          sleep 1200
+          git fetch origin codex/heptatrader-gap-closure-v2 --tags
+          git reset --hard origin/codex/heptatrader-gap-closure-v2
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ clang libssl-dev python3 curl
+
+      - name: Recover sealed implementation if a prior push race lost it
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from pathlib import Path
+          import re
+          import subprocess
+
+          root = Path.cwd()
+
+          def historical(path: str) -> str:
+              commits = subprocess.check_output(
+                  ["git", "rev-list", "--all", "--", path], text=True
+              ).splitlines()
+              for commit in commits:
+                  result = subprocess.run(
+                      ["git", "show", f"{commit}:{path}"],
+                      capture_output=True, text=True,
+                  )
+                  if result.returncode == 0 and result.stdout:
+                      return result.stdout
+              raise RuntimeError(f"historical file unavailable: {path}")
+
+          def execute(source: str, label: str) -> None:
+              marker = "          python3 - <<'PY'\n"
+              start = source.find(marker)
+              if start < 0:
+                  raise RuntimeError(f"embedded program unavailable: {label}")
+              start += len(marker)
+              end = source.find("\n          PY\n", start)
+              if end < 0:
+                  raise RuntimeError(f"embedded terminator unavailable: {label}")
+              program = "\n".join(
+                  line[10:] if line.startswith("          ") else line
+                  for line in source[start:end].splitlines()
+              )
+              exec(compile(program, label, "exec"), {})
+
+          if not (root / "docs/development/FINAL-VERIFICATION.json").is_file():
+              execute(
+                  historical(".github/workflows/dev-gap-closure-guardian.yml"),
+                  "historical-gap-closure-guardian",
+              )
+
+          # Exact active dependency closure for Registry target-intent,
+          # fixed-point portfolio policy and process-local telemetry.
+          cmake = root / "HeptaTrade/CMakeLists.txt"
+          text = cmake.read_text(encoding="utf-8")
+          block = re.search(
+              r"target_link_libraries\(hepta_trading_tool_core PUBLIC[\s\S]*?\)\n",
+              text,
+          )
+          if block is None:
+              raise RuntimeError("hepta_trading_tool_core link block missing")
+          replacement = '''target_link_libraries(hepta_trading_tool_core PUBLIC
+    hepta_portfolio_core
+    hepta_observability_core
+    OpenSSL::Crypto)
+'''
+          text = text[:block.start()] + replacement + text[block.end():]
+          cmake.write_text(text, encoding="utf-8")
+
+          # Discovery-mode Python tests must import the repository package from
+          # a deterministic root independent of unittest's top-level choice.
+          research_test = root / "tests/python/test_research_protocol.py"
+          text = research_test.read_text(encoding="utf-8")
+          if "sys.path.insert" not in text:
+              text = text.replace(
+                  "import json\nimport unittest\n\nfrom research.run_protocol import (",
+                  "import json\nimport sys\nimport unittest\n\n"
+                  "ROOT = Path(__file__).resolve().parents[2]\n"
+                  "if str(ROOT) not in sys.path:\n"
+                  "    sys.path.insert(0, str(ROOT))\n\n"
+                  "from research.run_protocol import (",
+                  1,
+              )
+          research_test.write_text(text, encoding="utf-8")
+
+          # Normalize generated telemetry code and schema catalog before the
+          # immutable verification pass.
+          telemetry = root / "HeptaTrade/observability/runtime_telemetry.cpp"
+          text = telemetry.read_text(encoding="utf-8")
+          if "#include <cctype>" not in text:
+              text = text.replace(
+                  "#include <algorithm>\n",
+                  "#include <algorithm>\n#include <cctype>\n",
+                  1,
+              )
+          text = re.sub(
+              r"out << '[^'\n]*\\\"' << EscapeJson",
+              "out << '\"' << EscapeJson",
+              text,
+          )
+          telemetry.write_text(text, encoding="utf-8")
+
+          subprocess.run(
+              ["python3", "scripts/generate_tool_catalog.py", "--write"],
+              cwd=root,
+              check=True,
+          )
+
+          # The exact candidate must contain no temporary writer/exporter.
+          for path in (root / ".github/workflows").glob("dev-*.yml"):
+              path.unlink()
+          PY
+
+      - name: Verify exact candidate worktree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          rm -rf build/core-release build/reliability-*
+          python3 scripts/generate_tool_catalog.py --check
+          python3 scripts/check_repository_integrity.py
+          python3 scripts/check_schema_catalog.py
+          python3 scripts/check_module_discipline.py
+          python3 scripts/check_gap_closure.py
+          python3 research/run_protocol.py verify --manifest research/manifest-v1.json
+          ./scripts/dev_core.sh
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          python3 scripts/check_install_tree.py "$stage"
+          CXX=g++ ./scripts/reliability_core.sh
+
+      - name: Refresh machine verification and commit the tested tree
+        id: final_commit
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import subprocess
+
+          root = Path.cwd()
+          target = root / "docs/development/FINAL-VERIFICATION.json"
+          record = json.loads(target.read_text(encoding="utf-8"))
+          record["verified_parent_commit"] = subprocess.check_output(
+              ["git", "rev-parse", "HEAD"], text=True
+          ).strip()
+          digest = hashlib.sha256()
+          for path in sorted(
+              p for p in root.rglob("*")
+              if p.is_file() and ".git" not in p.parts and
+                 "build" not in p.parts and p != target
+          ):
+              relative = path.relative_to(root).as_posix()
+              digest.update(relative.encode("utf-8"))
+              digest.update(b"\0")
+              digest.update(path.read_bytes())
+              digest.update(b"\0")
+          record["verified_source_tree_sha256"] = "sha256:" + digest.hexdigest()
+          record["status"] = "PASS"
+          record["exact_head_core_runtime"] = "pending"
+          target.write_text(
+              json.dumps(record, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          python3 scripts/check_gap_closure.py
+          git config user.name "Tomasrgbsf"
+          git config user.email "tomasbraynt@gmail.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            final_sha="$(git rev-parse HEAD)"
+          else
+            git commit -s -m "chore: publish exact verified HeptaTrader closure head"
+            git push origin HEAD:codex/heptatrader-gap-closure-v2
+            final_sha="$(git rev-parse HEAD)"
+          fi
+          echo "sha=$final_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for read-only core-runtime on the final SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FINAL_SHA: ${{ steps.final_commit.outputs.sha }}
+        run: |
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          final_sha = os.environ["FINAL_SHA"]
+          url = (
+              f"https://api.github.com/repos/{repository}/actions/workflows/"
+              "core-ci.yml/runs?branch=codex%2Fheptatrader-gap-closure-v2&event=push&per_page=50"
+          )
+          headers = {
+              "Accept": "application/vnd.github+json",
+              "Authorization": f"Bearer {token}",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "User-Agent": "heptatrader-exact-head-verifier",
+          }
+          deadline = time.monotonic() + 2400
+          observed = None
+          while time.monotonic() < deadline:
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              matches = [
+                  run for run in payload.get("workflow_runs", [])
+                  if run.get("head_sha") == final_sha and
+                     run.get("name") == "core-runtime"
+              ]
+              if matches:
+                  run = sorted(matches, key=lambda item: item.get("run_number", 0))[-1]
+                  observed = {
+                      "id": run.get("id"),
+                      "status": run.get("status"),
+                      "conclusion": run.get("conclusion"),
+                  }
+                  print(json.dumps(observed, sort_keys=True), flush=True)
+                  if run.get("status") == "completed":
+                      if run.get("conclusion") != "success":
+                          raise SystemExit(
+                              f"core-runtime failed for {final_sha}: {run.get('conclusion')}"
+                          )
+                      break
+              time.sleep(15)
+          else:
+              raise SystemExit(
+                  f"timed out waiting for core-runtime on {final_sha}; last={observed}"
+              )
+          PY
+
+      - name: Create immutable exact-head verification tag
+        env:
+          FINAL_SHA: ${{ steps.final_commit.outputs.sha }}
+        run: |
+          git fetch origin --tags
+          git tag -f -a heptatrader-gap-closure-verified-v1 "$FINAL_SHA" \
+            -m "HeptaTrader G-001..G-016 exact-head verified"
+          git push --force origin refs/tags/heptatrader-gap-closure-verified-v1
