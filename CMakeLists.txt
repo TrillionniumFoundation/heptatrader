@@ -12,18 +12,13 @@ add_subdirectory(HeptaTrade)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 
-    # The owner-pressure fixture tracks only client-side Unix socket connects.
-    # Its first pressure callback waits until all four clients are connected,
-    # then keeps one request active long enough to saturate the configured
-    # two-entry owner queue. These linker wrappers are test-only; production
-    # UnixToolServer queue limits and scheduling are unchanged.
+    # Force-include a source-level synchronization barrier only in the Unix
+    # tool-server test target. It tracks the test's client sockets and makes
+    # the owner-queue saturation assertion deterministic without changing
+    # production UnixToolServer scheduling, limits or symbols.
     if(TARGET hepta_unix_tool_server_tests AND UNIX AND NOT APPLE)
-        target_sources(hepta_unix_tool_server_tests PRIVATE
-            tests/unix_tool_server_test_interposer.cpp)
-        target_link_options(hepta_unix_tool_server_tests PRIVATE
-            "-Wl,--wrap=connect"
-            "-Wl,--wrap=close"
-            "-Wl,--wrap=usleep")
+        target_compile_options(hepta_unix_tool_server_tests PRIVATE
+            "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/tests/unix_tool_server_pressure_barrier.h")
     endif()
 endif()
 
