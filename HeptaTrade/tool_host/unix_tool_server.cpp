@@ -430,6 +430,12 @@ bool UnixToolServer::DecodeIngress(
     std::string reason;
     peerCredentialAvailable = false;
     decodedRequest = false;
+    // Framing/schema failures happen before a tool name can be trusted.  Use
+    // the canonical read-only health tool as the envelope identity so the
+    // protocol diagnostic (for example FRAME_LENGTH_REJECTED) can still be
+    // returned to the peer without triggering the generic result-envelope
+    // fallback.  No mutation authority is inferred from this placeholder.
+    rejection.toolName = "system.get_health";
     if (::getsockopt(clientFd, SOL_SOCKET, SO_PEERCRED, &credentials, &credentialsLength) != 0)
     {
         rejection.status = TradingToolCallStatus::Rejected;
