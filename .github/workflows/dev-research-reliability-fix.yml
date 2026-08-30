@@ -16,6 +16,7 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          root = Path.cwd()
           source = Path(
               ".github/workflows/dev-research-reliability-closure.yml"
           ).read_text(encoding="utf-8")
@@ -32,4 +33,122 @@ jobs:
               for line in source[start:end].splitlines()
           )
           exec(compile(program, "historical-research-reliability-closure", "exec"), {})
+
+          generator = r'''#!/usr/bin/env python3
+"""Generate and verify the canonical Agent tool catalog."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import sys
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+CATALOG_PATH = ROOT / "schemas/tool-catalog-v1.json"
+DIGEST_PATH = ROOT / "schemas/tool-catalog-v1.sha256"
+
+
+def document() -> dict[str, Any]:
+    return {
+        "schema": "heptatrader.tool-catalog.v1",
+        "protocol": "hepta.agent-tools",
+        "protocol_version": 1,
+        "tools": [
+            {"name": "system.tools.list", "capability": "system.read", "visibility": "ordinary"},
+            {"name": "system.tools.describe", "capability": "system.read", "visibility": "ordinary"},
+            {"name": "system.cancel_request", "capability": "system.read", "visibility": "ordinary"},
+            {"name": "system.get_health", "capability": "system.read", "visibility": "ordinary"},
+            {"name": "system.get_metrics", "capability": "system.read", "visibility": "ordinary"},
+            {"name": "market.get_quote", "capability": "market.read", "visibility": "ordinary"},
+            {"name": "account.get_summary", "capability": "account.read", "visibility": "ordinary"},
+            {"name": "portfolio.list_positions", "capability": "portfolio.read", "visibility": "ordinary"},
+            {"name": "orders.list", "capability": "orders.read", "visibility": "ordinary"},
+            {"name": "execution.get_command_status", "capability": "orders.read", "visibility": "ordinary"},
+            {"name": "risk.get_limits", "capability": "risk.read", "visibility": "ordinary"},
+            {"name": "decision.get_snapshot", "capability": "system.read", "visibility": "ordinary"},
+            {"name": "intent.preview_target_position", "capability": "risk.read", "visibility": "ordinary"},
+            {"name": "intent.apply_target_position", "capability": "intent.apply", "visibility": "ordinary"},
+            {"name": "events.wait", "capability": "events.read", "visibility": "ordinary"},
+            {"name": "watch.get_snapshot", "capability": "system.read", "visibility": "watch"},
+            {"name": "risk.preview_order", "capability": "operator.risk.preview", "visibility": "operator"},
+            {"name": "trade.place_order", "capability": "operator.trade.place", "visibility": "operator"},
+            {"name": "trade.cancel_order", "capability": "trade.cancel", "visibility": "ordinary"},
+            {"name": "risk.preview_flatten", "capability": "trade.flatten", "visibility": "conditional"},
+            {"name": "trade.flatten_position", "capability": "trade.flatten", "visibility": "conditional"},
+        ],
+        "wire_aliases": {
+            "target_position": "quantity",
+            "max_slippage_bps": "reference_price",
+            "mutation_command_id": "tool_call_id",
+        },
+        "unsupported_environments": ["LIVE", "LIVE_REDUCE_ONLY", "LIVE_CAPPED"],
+    }
+
+
+def canonical(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def rendered(value: dict[str, Any]) -> str:
+    return json.dumps(value, sort_keys=True, indent=2) + "\n"
+
+
+def expected_digest(value: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
+
+
+def write() -> None:
+    value = document()
+    CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CATALOG_PATH.write_text(rendered(value), encoding="utf-8")
+    DIGEST_PATH.write_text(expected_digest(value) + "\n", encoding="utf-8")
+
+
+def check() -> int:
+    value = document()
+    errors: list[str] = []
+    try:
+        actual = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
+    except Exception as error:
+        print(f"[TOOL-CATALOG] catalog unreadable: {error}", file=sys.stderr)
+        return 1
+    if actual != value:
+        errors.append("catalog content drift")
+    try:
+        digest = DIGEST_PATH.read_text(encoding="utf-8").strip()
+    except Exception as error:
+        errors.append(f"digest unreadable: {error}")
+    else:
+        if digest != expected_digest(value):
+            errors.append("catalog digest drift")
+    for error in errors:
+        print(f"[TOOL-CATALOG] {error}", file=sys.stderr)
+    if errors:
+        return 1
+    print("[TOOL-CATALOG] PASS")
+    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--write", action="store_true")
+    mode.add_argument("--check", action="store_true")
+    arguments = parser.parse_args()
+    if arguments.write:
+        write()
+        print("[TOOL-CATALOG] generated")
+        return 0
+    return check()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+          target = root / "scripts/generate_tool_catalog.py"
+          target.write_text(generator, encoding="utf-8")
+          target.chmod(0o755)
           PY
