@@ -12,15 +12,13 @@ add_subdirectory(HeptaTrade)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 
-    # The owner-backpressure test deliberately holds the first same-owner
-    # request until the server emits the bounded rejection it is asserting.
-    # Link wrapping keeps this synchronization test-only and leaves runtime
-    # queue semantics unchanged.
+    # Extend only the first owner-pressure callback in this test executable.
+    # The test-only linker wrapper gives all concurrent clients a deterministic
+    # overlap window without changing UnixToolServer production queue limits.
     if(TARGET hepta_unix_tool_server_tests AND UNIX AND NOT APPLE)
         target_sources(hepta_unix_tool_server_tests PRIVATE
             tests/unix_tool_server_test_interposer.cpp)
         target_link_options(hepta_unix_tool_server_tests PRIVATE
-            "-Wl,--wrap=send"
             "-Wl,--wrap=usleep")
     endif()
 endif()
