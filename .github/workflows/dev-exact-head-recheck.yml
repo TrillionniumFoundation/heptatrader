@@ -54,6 +54,7 @@ jobs:
           generator = Path("scripts/generate_tool_catalog.py")
           text = generator.read_text(encoding="utf-8")
           text = text.replace("DIGEST_PATH", "DIGEST")
+          text = text.replace("expected_digest", "digest")
           generator.write_text(text, encoding="utf-8")
           compile(text, str(generator), "exec")
           PY
@@ -146,4 +147,4 @@ jobs:
             "feat: close and verify all canonical HeptaTrader gaps"
           git push origin HEAD:codex/heptatrader-gap-closure-v2
 
-# trigger: catalog check constant v4
+# trigger: catalog digest function v5
