@@ -139,3 +139,5 @@ jobs:
           git commit -s -m \
             "feat: close and verify all canonical HeptaTrader gaps"
           git push origin HEAD:codex/heptatrader-gap-closure-v2
+
+# trigger: research reliability bridge v2
