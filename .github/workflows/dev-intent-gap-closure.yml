@@ -1,0 +1,1812 @@
+name: dev-intent-gap-closure
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/dev-intent-gap-closure.yml
+
+permissions:
+  contents: write
+
+jobs:
+  close-intent-gaps:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): launch authoritative intent gap closure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev python3
+      - name: Apply authoritative snapshot and target-position tool chain
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          ROOT = Path.cwd()
+
+          def read(path: str) -> str:
+              return (ROOT / path).read_text(encoding="utf-8-sig")
+
+          def write(path: str, text: str) -> None:
+              target = ROOT / path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_text(text, encoding="utf-8")
+
+          def add_include(path: str, anchor: str, include: str) -> None:
+              text = read(path)
+              if include in text:
+                  return
+              if anchor not in text:
+                  raise RuntimeError(f"{path}: include anchor missing: {anchor}")
+              write(path, text.replace(anchor, anchor + "\n" + include, 1))
+
+          # Recover the first verified slice when a prior runner was interrupted.
+          telemetry = ROOT / "HeptaTrade/observability/runtime_telemetry.cpp"
+          old_launchers = [
+              ROOT / ".github/workflows/dev-gap-closure-run.yml",
+              ROOT / ".github/workflows/dev-gap-closure-recover.yml",
+          ]
+          if not telemetry.exists():
+              launcher = next((p for p in old_launchers if p.exists() and
+                               "Apply permit lifecycle tests" in p.read_text(encoding="utf-8")), None)
+              if launcher is None:
+                  raise RuntimeError("permit/telemetry closure slice is absent")
+              source = launcher.read_text(encoding="utf-8")
+              marker = "          python3 - <<'PY'\n"
+              start = source.find(marker)
+              start += len(marker)
+              end = source.find("\n          PY\n", start)
+              if start < len(marker) or end < 0:
+                  raise RuntimeError("cannot recover embedded permit closure program")
+              lines = [line[10:] if line.startswith("          ") else line
+                       for line in source[start:end].splitlines()]
+              exec(compile("\n".join(lines), "embedded-permit-closure", "exec"), {})
+          telemetry_text = telemetry.read_text(encoding="utf-8")
+          if "#include <cctype>" not in telemetry_text:
+              telemetry_text = telemetry_text.replace(
+                  "#include <algorithm>\n", "#include <algorithm>\n#include <cctype>\n", 1)
+              telemetry.write_text(telemetry_text, encoding="utf-8")
+
+          bounded_json_h = r'''#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <string>
+#include <vector>
+
+class BoundedJsonValue
+{
+public:
+    enum class Type
+    {
+        Null = 0,
+        Boolean,
+        Number,
+        String,
+        Array,
+        Object
+    };
+
+    BoundedJsonValue();
+
+    Type GetType() const { return m_type; }
+    bool IsNull() const { return m_type == Type::Null; }
+    bool IsBoolean() const { return m_type == Type::Boolean; }
+    bool IsNumber() const { return m_type == Type::Number; }
+    bool IsString() const { return m_type == Type::String; }
+    bool IsArray() const { return m_type == Type::Array; }
+    bool IsObject() const { return m_type == Type::Object; }
+
+    bool Boolean(bool& out) const;
+    bool Number(double& out) const;
+    bool Unsigned(std::uint64_t& out) const;
+    bool String(std::string& out) const;
+    const std::vector<BoundedJsonValue>& Array() const { return m_array; }
+    const std::map<std::string, BoundedJsonValue>& Object() const { return m_object; }
+    const BoundedJsonValue* Find(const std::string& key) const;
+
+private:
+    friend class BoundedJsonParser;
+    Type m_type;
+    bool m_boolean;
+    double m_number;
+    std::string m_string;
+    std::vector<BoundedJsonValue> m_array;
+    std::map<std::string, BoundedJsonValue> m_object;
+};
+
+bool ParseBoundedJson(const std::string& input,
+                      BoundedJsonValue& value,
+                      std::string& reason,
+                      std::size_t maximumBytes = 1024u * 1024u,
+                      std::size_t maximumDepth = 64,
+                      std::size_t maximumNodes = 100000);
+'''
+
+          bounded_json_cpp = r'''#include "bounded_json.h"
+
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
+#include <limits>
+
+BoundedJsonValue::BoundedJsonValue()
+    : m_type(Type::Null), m_boolean(false), m_number(0.0)
+{
+}
+
+bool BoundedJsonValue::Boolean(bool& out) const
+{
+    if (!IsBoolean()) return false;
+    out = m_boolean;
+    return true;
+}
+
+bool BoundedJsonValue::Number(double& out) const
+{
+    if (!IsNumber()) return false;
+    out = m_number;
+    return true;
+}
+
+bool BoundedJsonValue::Unsigned(std::uint64_t& out) const
+{
+    if (!IsNumber() || m_number < 0.0 || !std::isfinite(m_number) ||
+        std::floor(m_number) != m_number ||
+        m_number > static_cast<double>(std::numeric_limits<std::uint64_t>::max()))
+        return false;
+    out = static_cast<std::uint64_t>(m_number);
+    return true;
+}
+
+bool BoundedJsonValue::String(std::string& out) const
+{
+    if (!IsString()) return false;
+    out = m_string;
+    return true;
+}
+
+const BoundedJsonValue* BoundedJsonValue::Find(const std::string& key) const
+{
+    if (!IsObject()) return nullptr;
+    const std::map<std::string, BoundedJsonValue>::const_iterator found =
+        m_object.find(key);
+    return found == m_object.end() ? nullptr : &found->second;
+}
+
+class BoundedJsonParser
+{
+public:
+    BoundedJsonParser(const std::string& input,
+                      std::size_t maximumDepth,
+                      std::size_t maximumNodes)
+        : m_input(input), m_maximumDepth(maximumDepth),
+          m_maximumNodes(maximumNodes)
+    {
+    }
+
+    bool Parse(BoundedJsonValue& value, std::string& reason)
+    {
+        SkipWhitespace();
+        if (!ParseValue(0, value, reason)) return false;
+        SkipWhitespace();
+        if (m_offset != m_input.size())
+        {
+            reason = "JSON_TRAILING_DATA";
+            return false;
+        }
+        reason.clear();
+        return true;
+    }
+
+private:
+    void SkipWhitespace()
+    {
+        while (m_offset < m_input.size())
+        {
+            const char c = m_input[m_offset];
+            if (c != ' ' && c != '\t' && c != '\r' && c != '\n') break;
+            ++m_offset;
+        }
+    }
+
+    bool Node(std::string& reason)
+    {
+        if (++m_nodes > m_maximumNodes)
+        {
+            reason = "JSON_NODE_LIMIT";
+            return false;
+        }
+        return true;
+    }
+
+    bool Consume(char value)
+    {
+        if (m_offset >= m_input.size() || m_input[m_offset] != value)
+            return false;
+        ++m_offset;
+        return true;
+    }
+
+    bool ParseString(std::string& output, std::string& reason)
+    {
+        if (!Consume('"'))
+        {
+            reason = "JSON_STRING_REQUIRED";
+            return false;
+        }
+        output.clear();
+        while (m_offset < m_input.size())
+        {
+            const unsigned char c = static_cast<unsigned char>(m_input[m_offset++]);
+            if (c == '"') return true;
+            if (c < 0x20)
+            {
+                reason = "JSON_CONTROL_CHARACTER";
+                return false;
+            }
+            if (c != '\\')
+            {
+                output.push_back(static_cast<char>(c));
+                continue;
+            }
+            if (m_offset >= m_input.size())
+            {
+                reason = "JSON_ESCAPE_TRUNCATED";
+                return false;
+            }
+            const char escaped = m_input[m_offset++];
+            if (escaped == '"' || escaped == '\\' || escaped == '/')
+                output.push_back(escaped);
+            else if (escaped == 'b') output.push_back('\b');
+            else if (escaped == 'f') output.push_back('\f');
+            else if (escaped == 'n') output.push_back('\n');
+            else if (escaped == 'r') output.push_back('\r');
+            else if (escaped == 't') output.push_back('\t');
+            else if (escaped == 'u')
+            {
+                if (m_input.size() - m_offset < 4)
+                {
+                    reason = "JSON_UNICODE_ESCAPE_TRUNCATED";
+                    return false;
+                }
+                unsigned int codepoint = 0;
+                for (int i = 0; i < 4; ++i)
+                {
+                    const char digit = m_input[m_offset++];
+                    codepoint <<= 4;
+                    if (digit >= '0' && digit <= '9') codepoint += digit - '0';
+                    else if (digit >= 'a' && digit <= 'f') codepoint += digit - 'a' + 10;
+                    else if (digit >= 'A' && digit <= 'F') codepoint += digit - 'A' + 10;
+                    else
+                    {
+                        reason = "JSON_UNICODE_ESCAPE_INVALID";
+                        return false;
+                    }
+                }
+                if (codepoint <= 0x7f)
+                    output.push_back(static_cast<char>(codepoint));
+                else
+                    output.push_back('?');
+            }
+            else
+            {
+                reason = "JSON_ESCAPE_INVALID";
+                return false;
+            }
+            if (output.size() > 256u * 1024u)
+            {
+                reason = "JSON_STRING_LIMIT";
+                return false;
+            }
+        }
+        reason = "JSON_STRING_UNTERMINATED";
+        return false;
+    }
+
+    bool ParseNumber(BoundedJsonValue& value, std::string& reason)
+    {
+        const std::size_t start = m_offset;
+        if (m_offset < m_input.size() && m_input[m_offset] == '-') ++m_offset;
+        if (m_offset >= m_input.size())
+        {
+            reason = "JSON_NUMBER_INVALID";
+            return false;
+        }
+        if (m_input[m_offset] == '0')
+        {
+            ++m_offset;
+            if (m_offset < m_input.size() &&
+                m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+            {
+                reason = "JSON_NUMBER_INVALID";
+                return false;
+            }
+        }
+        else
+        {
+            if (m_input[m_offset] < '1' || m_input[m_offset] > '9')
+            {
+                reason = "JSON_NUMBER_INVALID";
+                return false;
+            }
+            while (m_offset < m_input.size() &&
+                   m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+                ++m_offset;
+        }
+        if (m_offset < m_input.size() && m_input[m_offset] == '.')
+        {
+            ++m_offset;
+            const std::size_t digits = m_offset;
+            while (m_offset < m_input.size() &&
+                   m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+                ++m_offset;
+            if (digits == m_offset)
+            {
+                reason = "JSON_NUMBER_INVALID";
+                return false;
+            }
+        }
+        if (m_offset < m_input.size() &&
+            (m_input[m_offset] == 'e' || m_input[m_offset] == 'E'))
+        {
+            ++m_offset;
+            if (m_offset < m_input.size() &&
+                (m_input[m_offset] == '+' || m_input[m_offset] == '-'))
+                ++m_offset;
+            const std::size_t digits = m_offset;
+            while (m_offset < m_input.size() &&
+                   m_input[m_offset] >= '0' && m_input[m_offset] <= '9')
+                ++m_offset;
+            if (digits == m_offset)
+            {
+                reason = "JSON_NUMBER_INVALID";
+                return false;
+            }
+        }
+        const std::string token = m_input.substr(start, m_offset - start);
+        char* end = nullptr;
+        errno = 0;
+        const double parsed = std::strtod(token.c_str(), &end);
+        if (errno != 0 || end == token.c_str() || *end != '\0' ||
+            !std::isfinite(parsed))
+        {
+            reason = "JSON_NUMBER_NONFINITE";
+            return false;
+        }
+        value.m_type = BoundedJsonValue::Type::Number;
+        value.m_number = parsed;
+        return true;
+    }
+
+    bool ParseArray(std::size_t depth,
+                    BoundedJsonValue& value,
+                    std::string& reason)
+    {
+        if (!Consume('[')) return false;
+        value.m_type = BoundedJsonValue::Type::Array;
+        SkipWhitespace();
+        if (Consume(']')) return true;
+        for (;;)
+        {
+            BoundedJsonValue member;
+            if (!ParseValue(depth + 1, member, reason)) return false;
+            value.m_array.push_back(member);
+            SkipWhitespace();
+            if (Consume(']')) return true;
+            if (!Consume(','))
+            {
+                reason = "JSON_ARRAY_SEPARATOR_REQUIRED";
+                return false;
+            }
+            SkipWhitespace();
+        }
+    }
+
+    bool ParseObject(std::size_t depth,
+                     BoundedJsonValue& value,
+                     std::string& reason)
+    {
+        if (!Consume('{')) return false;
+        value.m_type = BoundedJsonValue::Type::Object;
+        SkipWhitespace();
+        if (Consume('}')) return true;
+        for (;;)
+        {
+            std::string key;
+            if (!ParseString(key, reason)) return false;
+            SkipWhitespace();
+            if (!Consume(':'))
+            {
+                reason = "JSON_OBJECT_COLON_REQUIRED";
+                return false;
+            }
+            SkipWhitespace();
+            BoundedJsonValue member;
+            if (!ParseValue(depth + 1, member, reason)) return false;
+            if (!value.m_object.insert(std::make_pair(key, member)).second)
+            {
+                reason = "JSON_DUPLICATE_KEY";
+                return false;
+            }
+            SkipWhitespace();
+            if (Consume('}')) return true;
+            if (!Consume(','))
+            {
+                reason = "JSON_OBJECT_SEPARATOR_REQUIRED";
+                return false;
+            }
+            SkipWhitespace();
+        }
+    }
+
+    bool ParseValue(std::size_t depth,
+                    BoundedJsonValue& value,
+                    std::string& reason)
+    {
+        if (depth > m_maximumDepth)
+        {
+            reason = "JSON_DEPTH_LIMIT";
+            return false;
+        }
+        if (!Node(reason) || m_offset >= m_input.size())
+        {
+            if (reason.empty()) reason = "JSON_VALUE_REQUIRED";
+            return false;
+        }
+        const char c = m_input[m_offset];
+        if (c == '{') return ParseObject(depth, value, reason);
+        if (c == '[') return ParseArray(depth, value, reason);
+        if (c == '"')
+        {
+            value.m_type = BoundedJsonValue::Type::String;
+            return ParseString(value.m_string, reason);
+        }
+        if (m_input.compare(m_offset, 4, "true") == 0)
+        {
+            m_offset += 4;
+            value.m_type = BoundedJsonValue::Type::Boolean;
+            value.m_boolean = true;
+            return true;
+        }
+        if (m_input.compare(m_offset, 5, "false") == 0)
+        {
+            m_offset += 5;
+            value.m_type = BoundedJsonValue::Type::Boolean;
+            value.m_boolean = false;
+            return true;
+        }
+        if (m_input.compare(m_offset, 4, "null") == 0)
+        {
+            m_offset += 4;
+            value.m_type = BoundedJsonValue::Type::Null;
+            return true;
+        }
+        return ParseNumber(value, reason);
+    }
+
+    const std::string& m_input;
+    std::size_t m_maximumDepth;
+    std::size_t m_maximumNodes;
+    std::size_t m_offset = 0;
+    std::size_t m_nodes = 0;
+};
+
+bool ParseBoundedJson(const std::string& input,
+                      BoundedJsonValue& value,
+                      std::string& reason,
+                      std::size_t maximumBytes,
+                      std::size_t maximumDepth,
+                      std::size_t maximumNodes)
+{
+    value = BoundedJsonValue();
+    if (input.empty() || input.size() > maximumBytes ||
+        maximumDepth == 0 || maximumNodes == 0)
+    {
+        reason = "JSON_INPUT_LIMIT";
+        return false;
+    }
+    BoundedJsonParser parser(input, maximumDepth, maximumNodes);
+    return parser.Parse(value, reason);
+}
+'''
+          write("HeptaTrade/intent/bounded_json.h", bounded_json_h)
+          write("HeptaTrade/intent/bounded_json.cpp", bounded_json_cpp)
+
+          snapshot_cpp = r'''#include "authoritative_decision_snapshot.h"
+#include "bounded_json.h"
+
+#include <cmath>
+#include <iomanip>
+#include <sstream>
+#include <vector>
+
+namespace
+{
+const std::size_t kMaximumComponentBytes = 256u * 1024u;
+const std::size_t kMaximumSnapshotBytes = 1024u * 1024u;
+
+bool Reject(const char* code, const std::string& message,
+            std::string& reasonCode, std::string& detail)
+{
+    reasonCode = code;
+    detail = message;
+    return false;
+}
+
+std::string EscapeJson(const std::string& value)
+{
+    std::ostringstream out;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+    {
+        const unsigned char c = static_cast<unsigned char>(*it);
+        if (c == '"') out << "\\\"";
+        else if (c == '\\') out << "\\\\";
+        else if (c == '\n') out << "\\n";
+        else if (c == '\r') out << "\\r";
+        else if (c == '\t') out << "\\t";
+        else if (c < 0x20) out << '?';
+        else out << *it;
+    }
+    return out.str();
+}
+
+bool ParseObject(const std::string& json,
+                 BoundedJsonValue& value,
+                 std::string& reason)
+{
+    return ParseBoundedJson(json, value, reason, kMaximumComponentBytes) &&
+        value.IsObject();
+}
+
+bool RequiredBool(const BoundedJsonValue& object,
+                  const char* key,
+                  bool& value)
+{
+    const BoundedJsonValue* field = object.Find(key);
+    return field != nullptr && field->Boolean(value);
+}
+
+bool RequiredString(const BoundedJsonValue& object,
+                    const char* key,
+                    std::string& value)
+{
+    const BoundedJsonValue* field = object.Find(key);
+    return field != nullptr && field->String(value);
+}
+
+bool RequiredUnsigned(const BoundedJsonValue& object,
+                      const char* key,
+                      std::uint64_t& value)
+{
+    const BoundedJsonValue* field = object.Find(key);
+    return field != nullptr && field->Unsigned(value);
+}
+
+bool RequiredNumber(const BoundedJsonValue& object,
+                    const char* key,
+                    double& value)
+{
+    const BoundedJsonValue* field = object.Find(key);
+    return field != nullptr && field->Number(value) && std::isfinite(value);
+}
+
+bool Authoritative(const BoundedJsonValue& object)
+{
+    bool authoritative = false;
+    return RequiredBool(object, "authoritative", authoritative) && authoritative;
+}
+
+struct HealthIdentity
+{
+    std::string epoch;
+    std::uint64_t fencingGeneration = 0;
+    std::uint64_t eventWatermark = 0;
+};
+
+bool ParseHealth(const BoundedJsonValue& object, HealthIdentity& identity)
+{
+    bool ready = false;
+    return RequiredBool(object, "remote_execution_ready", ready) && ready &&
+        RequiredString(object, "execution_service_epoch", identity.epoch) &&
+        !identity.epoch.empty() &&
+        RequiredUnsigned(object, "execution_service_fencing_generation",
+                         identity.fencingGeneration) &&
+        identity.fencingGeneration != 0 &&
+        RequiredUnsigned(object, "event_watermark", identity.eventWatermark);
+}
+
+void FindInstrumentPositions(const BoundedJsonValue& value,
+                             const std::string& instrument,
+                             std::vector<double>& quantities)
+{
+    if (value.IsObject())
+    {
+        const BoundedJsonValue* instrumentField = value.Find("instrument");
+        const BoundedJsonValue* quantityField = value.Find("quantity");
+        std::string candidate;
+        double quantity = 0.0;
+        if (instrumentField != nullptr && quantityField != nullptr &&
+            instrumentField->String(candidate) && candidate == instrument &&
+            quantityField->Number(quantity) && std::isfinite(quantity))
+            quantities.push_back(quantity);
+        for (std::map<std::string, BoundedJsonValue>::const_iterator it =
+                 value.Object().begin(); it != value.Object().end(); ++it)
+            FindInstrumentPositions(it->second, instrument, quantities);
+    }
+    else if (value.IsArray())
+    {
+        for (std::vector<BoundedJsonValue>::const_iterator it =
+                 value.Array().begin(); it != value.Array().end(); ++it)
+            FindInstrumentPositions(*it, instrument, quantities);
+    }
+}
+}
+
+bool AuthoritativeDecisionSnapshotCodec::Build(
+    const std::string& agentId,
+    const std::string& sessionId,
+    const std::string& account,
+    const std::string& executionDomain,
+    const std::string& instrument,
+    std::int64_t collectionStartedAtMs,
+    std::int64_t collectionCompletedAtMs,
+    std::uint64_t collectionWatermark,
+    const AuthoritativeDecisionSnapshotPayloads& payloads,
+    TargetPositionDecisionSnapshot& snapshot,
+    std::string& outputJson,
+    std::string& reasonCode,
+    std::string& detail)
+{
+    snapshot = TargetPositionDecisionSnapshot();
+    outputJson.clear();
+    if (agentId.empty() || sessionId.empty() || account.empty() ||
+        executionDomain.empty() || instrument.empty() ||
+        collectionStartedAtMs <= 0 ||
+        collectionCompletedAtMs < collectionStartedAtMs ||
+        collectionWatermark == 0)
+        return Reject("DECISION_SNAPSHOT_REQUEST_INVALID",
+                      "snapshot owner, instrument, time or watermark is invalid",
+                      reasonCode, detail);
+
+    BoundedJsonValue healthBefore;
+    BoundedJsonValue healthAfter;
+    BoundedJsonValue quote;
+    BoundedJsonValue accountState;
+    BoundedJsonValue positions;
+    BoundedJsonValue orders;
+    BoundedJsonValue riskLimits;
+    std::string parseReason;
+    if (!ParseObject(payloads.healthBefore, healthBefore, parseReason) ||
+        !ParseObject(payloads.healthAfter, healthAfter, parseReason))
+        return Reject("DECISION_SNAPSHOT_HEALTH_INVALID", parseReason,
+                      reasonCode, detail);
+
+    HealthIdentity before;
+    HealthIdentity after;
+    if (!ParseHealth(healthBefore, before) || !ParseHealth(healthAfter, after))
+        return Reject("DECISION_SNAPSHOT_HEALTH_INVALID",
+                      "Gateway health lacks a ready execution identity or event watermark",
+                      reasonCode, detail);
+    if (before.epoch != after.epoch ||
+        before.fencingGeneration != after.fencingGeneration)
+        return Reject("DECISION_SNAPSHOT_EXECUTION_IDENTITY_CHANGED",
+                      "execution epoch or fencing generation changed during collection",
+                      reasonCode, detail);
+    if (before.eventWatermark != after.eventWatermark)
+        return Reject("DECISION_SNAPSHOT_EVENT_WATERMARK_CHANGED",
+                      "an execution event arrived during snapshot collection",
+                      reasonCode, detail);
+
+    if (!ParseObject(payloads.quote, quote, parseReason) ||
+        !ParseObject(payloads.account, accountState, parseReason) ||
+        !ParseObject(payloads.positions, positions, parseReason) ||
+        !ParseObject(payloads.orders, orders, parseReason) ||
+        !ParseObject(payloads.riskLimits, riskLimits, parseReason))
+        return Reject("DECISION_SNAPSHOT_COMPONENT_INVALID", parseReason,
+                      reasonCode, detail);
+    if (!Authoritative(quote) || !Authoritative(accountState) ||
+        !Authoritative(positions) || !Authoritative(orders) ||
+        !Authoritative(riskLimits))
+        return Reject("DECISION_SNAPSHOT_COMPONENT_INCOMPLETE",
+                      "one or more authoritative components are incomplete",
+                      reasonCode, detail);
+
+    std::string quoteInstrument;
+    std::uint64_t quoteObservedAtMs = 0;
+    bool stale = true;
+    double bid = 0.0;
+    double ask = 0.0;
+    if (!RequiredString(quote, "instrument", quoteInstrument) ||
+        quoteInstrument != instrument ||
+        !RequiredUnsigned(quote, "observed_at_ms", quoteObservedAtMs) ||
+        quoteObservedAtMs == 0 ||
+        !RequiredBool(quote, "stale", stale) || stale ||
+        !RequiredNumber(quote, "bid", bid) ||
+        !RequiredNumber(quote, "ask", ask) ||
+        !(bid > 0.0) || ask < bid ||
+        quoteObservedAtMs > static_cast<std::uint64_t>(collectionCompletedAtMs))
+        return Reject("DECISION_SNAPSHOT_QUOTE_INVALID",
+                      "quote is stale, malformed or bound to another instrument",
+                      reasonCode, detail);
+
+    std::vector<double> matchingPositions;
+    FindInstrumentPositions(positions, instrument, matchingPositions);
+    if (matchingPositions.size() > 1)
+        return Reject("DECISION_SNAPSHOT_POSITION_INVALID",
+                      "instrument position is duplicated", reasonCode, detail);
+    const double currentPosition = matchingPositions.empty() ?
+        0.0 : matchingPositions.front();
+
+    snapshot.agentId = agentId;
+    snapshot.sessionId = sessionId;
+    snapshot.account = account;
+    snapshot.executionDomain = executionDomain;
+    snapshot.executionServiceEpoch = before.epoch;
+    snapshot.fencingGeneration = before.fencingGeneration;
+    snapshot.collectionWatermark = collectionWatermark;
+    snapshot.eventWatermark = before.eventWatermark;
+    snapshot.snapshotWatermark = collectionWatermark;
+    snapshot.instrument = instrument;
+    snapshot.collectionStartedAtMs = collectionStartedAtMs;
+    snapshot.collectionCompletedAtMs = collectionCompletedAtMs;
+    snapshot.quoteObservedAtMs = static_cast<std::int64_t>(quoteObservedAtMs);
+    snapshot.bid = bid;
+    snapshot.ask = ask;
+    snapshot.currentPosition = currentPosition;
+
+    std::ostringstream output;
+    output << "{\"schema\":\"hepta.decision-snapshot.v1\","
+           << "\"authoritative\":true,\"instrument\":\""
+           << EscapeJson(instrument)
+           << "\",\"execution_service_epoch\":\""
+           << EscapeJson(before.epoch)
+           << "\",\"fencing_generation\":" << before.fencingGeneration
+           << ",\"collection_watermark\":" << collectionWatermark
+           << ",\"event_watermark\":" << before.eventWatermark
+           << ",\"snapshot_watermark\":" << collectionWatermark
+           << ",\"collection_started_at_ms\":" << collectionStartedAtMs
+           << ",\"collection_completed_at_ms\":" << collectionCompletedAtMs
+           << ",\"current_position\":" << std::setprecision(17)
+           << currentPosition
+           << ",\"quote\":" << payloads.quote
+           << ",\"account\":" << payloads.account
+           << ",\"positions\":" << payloads.positions
+           << ",\"orders\":" << payloads.orders
+           << ",\"risk_limits\":" << payloads.riskLimits
+           << ",\"health\":" << payloads.healthAfter << '}';
+    outputJson = output.str();
+    if (outputJson.size() > kMaximumSnapshotBytes)
+    {
+        outputJson.clear();
+        return Reject("DECISION_SNAPSHOT_RESPONSE_TOO_LARGE",
+                      "compound snapshot exceeds the bounded response size",
+                      reasonCode, detail);
+    }
+    reasonCode.clear();
+    detail.clear();
+    return true;
+}
+'''
+          write("HeptaTrade/intent/authoritative_decision_snapshot.cpp", snapshot_cpp)
+
+          registry_h = read("HeptaTrade/tools/trading_tool_registry.h")
+          if '#include "../intent/target_position_intent.h"' not in registry_h:
+              registry_h = registry_h.replace(
+                  '#include "../execution/execution_authority.h"',
+                  '#include "../execution/execution_authority.h"\n'
+                  '#include "../intent/target_position_intent.h"', 1)
+          for include in ("#include <atomic>", "#include <chrono>", "#include <mutex>"):
+              if include not in registry_h:
+                  registry_h = registry_h.replace("#include <functional>\n", include + "\n#include <functional>\n", 1)
+          registry_h = registry_h.replace(
+              "std::string environment; // Bound by the OS: WATCH, PAPER, LIVE_REDUCE_ONLY, LIVE_CAPPED.",
+              "std::string environment; // Bound by the OS: WATCH or PAPER only.")
+          if "struct TargetPreviewRecord" not in registry_h:
+              marker = "private:\n    typedef TradingToolReadCallbacks::Handler ReadHandler;\n"
+              insertion = r'''private:
+    struct TargetPreviewRecord
+    {
+        std::string ownerKey;
+        std::string mutationCommandId;
+        std::string rawExecutionPermit;
+        long long expiresAtMs = 0;
+        std::chrono::steady_clock::time_point steadyExpiresAt;
+        TargetPositionDecisionSnapshot snapshot;
+        TargetPositionIntentRequest request;
+        TargetPositionIntentPolicy policy;
+        TargetPositionExecutionPlan plan;
+    };
+
+    typedef TradingToolReadCallbacks::Handler ReadHandler;
+'''
+              if marker not in registry_h:
+                  raise RuntimeError("trading_tool_registry.h: private marker missing")
+              registry_h = registry_h.replace(marker, insertion, 1)
+          method_marker = "    TradingToolResult InvokeDiscovery(const TradingToolSession& session,\n                                      const TradingToolCall& call) const;\n"
+          methods = method_marker + r'''    TradingToolResult InvokeDecisionSnapshot(
+        const TradingToolSession& session,
+        const TradingToolCall& call) const;
+    TradingToolResult InvokeTargetPreview(
+        const TradingToolSession& session,
+        const TradingToolCall& call);
+    TradingToolResult InvokeTargetApply(
+        const TradingToolSession& session,
+        const TradingToolCall& call);
+    bool BuildDecisionSnapshot(
+        const TradingToolSession& session,
+        const TradingToolCall& call,
+        TargetPositionDecisionSnapshot& snapshot,
+        std::string& outputJson,
+        std::string& reasonCode,
+        std::string& detail) const;
+'''
+          if "InvokeTargetPreview" not in registry_h:
+              if method_marker not in registry_h:
+                  raise RuntimeError("trading_tool_registry.h: method marker missing")
+              registry_h = registry_h.replace(method_marker, methods, 1)
+          member_marker = "    std::unordered_map<std::string, ReadHandler> m_readHandlers;\n"
+          members = member_marker + r'''    mutable std::atomic<std::uint64_t> m_snapshotWatermark{0};
+    mutable std::mutex m_targetPreviewMutex;
+    std::unordered_map<std::string, TargetPreviewRecord> m_targetPreviews;
+'''
+          if "m_targetPreviews" not in registry_h:
+              if member_marker not in registry_h:
+                  raise RuntimeError("trading_tool_registry.h: member marker missing")
+              registry_h = registry_h.replace(member_marker, members, 1)
+          write("HeptaTrade/tools/trading_tool_registry.h", registry_h)
+
+          registry = read("HeptaTrade/tools/trading_tool_registry.cpp")
+          if '#include "../intent/authoritative_decision_snapshot.h"' not in registry:
+              registry = registry.replace(
+                  '#include "trading_tool_wire_contract.h"',
+                  '#include "trading_tool_wire_contract.h"\n'
+                  '#include "../intent/authoritative_decision_snapshot.h"\n'
+                  '#include "../intent/bounded_json.h"', 1)
+          if "#include <openssl/rand.h>" not in registry:
+              registry = registry.replace("#include <openssl/evp.h>\n", "#include <openssl/evp.h>\n#include <openssl/rand.h>\n", 1)
+          if "#include <mutex>" not in registry:
+              registry = registry.replace("#include <iomanip>\n", "#include <iomanip>\n#include <mutex>\n", 1)
+
+          helper_anchor = "bool IsCanonicalReasonCode(const std::string& value)\n"
+          helper_start = registry.find(helper_anchor)
+          namespace_end = registry.find("\n} // namespace\n", helper_start)
+          if helper_start < 0 or namespace_end < 0:
+              raise RuntimeError("trading_tool_registry.cpp: anonymous namespace marker missing")
+          helper_code = r'''
+long long EpochMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string RandomOpaque(const char* prefix)
+{
+    unsigned char bytes[32];
+    if (RAND_bytes(bytes, sizeof(bytes)) != 1) return std::string();
+    std::ostringstream out;
+    out << prefix << std::hex << std::setfill('0');
+    for (std::size_t i = 0; i < sizeof(bytes); ++i)
+        out << std::setw(2) << static_cast<unsigned int>(bytes[i]);
+    return out.str();
+}
+
+bool JsonStringField(const std::string& json,
+                     const std::string& key,
+                     std::string& value)
+{
+    BoundedJsonValue root;
+    std::string reason;
+    if (!ParseBoundedJson(json, root, reason, 1024u * 1024u) || !root.IsObject())
+        return false;
+    const BoundedJsonValue* field = root.Find(key);
+    return field != nullptr && field->String(value);
+}
+
+bool JsonLongField(const std::string& json,
+                   const std::string& key,
+                   long long& value)
+{
+    BoundedJsonValue root;
+    std::string reason;
+    if (!ParseBoundedJson(json, root, reason, 1024u * 1024u) || !root.IsObject())
+        return false;
+    const BoundedJsonValue* field = root.Find(key);
+    double number = 0.0;
+    if (field == nullptr || !field->Number(number) || !std::isfinite(number) ||
+        std::floor(number) != number ||
+        number < static_cast<double>(std::numeric_limits<long long>::min()) ||
+        number > static_cast<double>(std::numeric_limits<long long>::max()))
+        return false;
+    value = static_cast<long long>(number);
+    return true;
+}
+
+bool NearlyEqualIntent(double left, double right)
+{
+    const double scale = std::max(1.0, std::max(std::fabs(left), std::fabs(right)));
+    return std::fabs(left - right) <= scale * 1e-12;
+}
+
+bool SameDecisionSnapshot(const TargetPositionDecisionSnapshot& left,
+                          const TargetPositionDecisionSnapshot& right)
+{
+    return left.agentId == right.agentId &&
+        left.sessionId == right.sessionId &&
+        left.account == right.account &&
+        left.executionDomain == right.executionDomain &&
+        left.executionServiceEpoch == right.executionServiceEpoch &&
+        left.fencingGeneration == right.fencingGeneration &&
+        left.eventWatermark == right.eventWatermark &&
+        left.instrument == right.instrument &&
+        left.quoteObservedAtMs == right.quoteObservedAtMs &&
+        NearlyEqualIntent(left.bid, right.bid) &&
+        NearlyEqualIntent(left.ask, right.ask) &&
+        NearlyEqualIntent(left.currentPosition, right.currentPosition);
+}
+
+bool SameTargetPlan(const TargetPositionExecutionPlan& left,
+                    const TargetPositionExecutionPlan& right)
+{
+    return left.noOp == right.noOp && left.side == right.side &&
+        left.orderType == right.orderType &&
+        left.timeInForce == right.timeInForce &&
+        NearlyEqualIntent(left.quantity, right.quantity) &&
+        NearlyEqualIntent(left.referencePrice, right.referencePrice) &&
+        NearlyEqualIntent(left.limitPrice, right.limitPrice);
+}
+
+std::string TargetOwnerKey(const TradingToolSession& session)
+{
+    return session.executionContext.agentId + '\x1f' +
+        session.executionContext.sessionId;
+}
+'''
+          if "std::string RandomOpaque(" not in registry:
+              registry = registry[:namespace_end] + helper_code + registry[namespace_end:]
+
+          # Register intent-oriented tools before raw operator placement.
+          descriptor_anchor = "    TradingToolDescriptor place;\n"
+          descriptor_code = r'''    RegisterReadTool(
+        "decision.get_snapshot",
+        "Read one generation-consistent authoritative decision snapshot.",
+        "system.read", 16000,
+        "{\"type\":\"object\",\"required\":[\"instrument\"],"
+        "\"properties\":{\"instrument\":{\"type\":\"string\"}},"
+        "\"additionalProperties\":false}", ReadHandler());
+    RegisterReadTool(
+        "intent.preview_target_position",
+        "Compile a bounded target position from authoritative state and issue one opaque permit.",
+        "risk.read", 16000,
+        "{\"type\":\"object\",\"required\":[\"instrument\",\"quantity\","
+        "\"reference_price\",\"expires_at_ms\"],\"properties\":{"
+        "\"instrument\":{\"type\":\"string\"},"
+        "\"quantity\":{\"type\":\"number\",\"description\":\"signed target position\"},"
+        "\"reference_price\":{\"type\":\"number\",\"minimum\":0,\"maximum\":1000,"
+        "\"description\":\"maximum slippage in basis points\"},"
+        "\"expires_at_ms\":{\"type\":\"integer\"}},\"additionalProperties\":false}",
+        ReadHandler());
+
+    TradingToolDescriptor applyTarget;
+    applyTarget.name = "intent.apply_target_position";
+    applyTarget.description =
+        "Atomically consume a target-position permit and dispatch its exact service-previewed plan.";
+    applyTarget.requiredCapability = "intent.apply";
+    applyTarget.effect = TradingToolEffect::Trade;
+    applyTarget.timeoutMs = 16000;
+    applyTarget.inputSchema =
+        "{\"type\":\"object\",\"required\":[\"instrument\",\"quantity\","
+        "\"reference_price\",\"expires_at_ms\",\"preview_permit\"],"
+        "\"properties\":{\"instrument\":{\"type\":\"string\"},"
+        "\"quantity\":{\"type\":\"number\"},"
+        "\"reference_price\":{\"type\":\"number\",\"minimum\":0,\"maximum\":1000},"
+        "\"expires_at_ms\":{\"type\":\"integer\"},"
+        "\"preview_permit\":{\"type\":\"string\",\"minLength\":71,\"maxLength\":71}},"
+        "\"additionalProperties\":false}";
+    applyTarget.resultSchema = kExecutionResultSchema;
+    m_descriptors[applyTarget.name] = applyTarget;
+
+'''
+          if "intent.preview_target_position" not in registry:
+              if descriptor_anchor not in registry:
+                  raise RuntimeError("trading_tool_registry.cpp: place descriptor anchor missing")
+              registry = registry.replace(descriptor_anchor, descriptor_code + descriptor_anchor, 1)
+          registry = registry.replace(
+              'RegisterReadTool("risk.preview_order", "Evaluate an order without broker side effects.",\n                     "risk.preview",',
+              'RegisterReadTool("risk.preview_order", "Evaluate an operator order without broker side effects.",\n                     "operator.risk.preview",')
+          registry = registry.replace(
+              'place.requiredCapability = "trade.place";',
+              'place.requiredCapability = "operator.trade.place";')
+
+          old_env = '''    if (session.environment != "WATCH" && session.environment != "PAPER" &&
+        session.environment != "LIVE_REDUCE_ONLY" && session.environment != "LIVE_CAPPED")'''
+          new_env = '''    if (session.environment != "WATCH" && session.environment != "PAPER")'''
+          registry = registry.replace(old_env, new_env)
+          registry = registry.replace(
+              '''    if (descriptor.name == "trade.place_order" && session.environment == "LIVE_REDUCE_ONLY")
+    {
+        reasonCode = "REDUCE_ONLY_PLACE_FORBIDDEN";
+        return false;
+    }
+''', '')
+
+          # Insert the implementation before discovery encoding.
+          implementation_anchor = "TradingToolResult TradingToolRegistry::InvokeDiscovery("
+          implementation = r'''bool TradingToolRegistry::BuildDecisionSnapshot(
+    const TradingToolSession& session,
+    const TradingToolCall& call,
+    TargetPositionDecisionSnapshot& snapshot,
+    std::string& outputJson,
+    std::string& reasonCode,
+    std::string& detail) const
+{
+    if (call.instrument.empty() ||
+        session.visibleInstruments.find(call.instrument) ==
+            session.visibleInstruments.end())
+    {
+        reasonCode = "INSTRUMENT_NOT_ALLOWED";
+        return false;
+    }
+    struct Read
+    {
+        const char* name;
+        ReadHandler handler;
+        std::string payload;
+    };
+    Read reads[] = {
+        {"system.get_health", m_readCallbacks.systemGetHealth, std::string()},
+        {"market.get_quote", m_readCallbacks.marketGetQuote, std::string()},
+        {"account.get_summary", m_readCallbacks.accountGetSummary, std::string()},
+        {"portfolio.list_positions", m_readCallbacks.portfolioListPositions, std::string()},
+        {"orders.list", m_readCallbacks.ordersList, std::string()},
+        {"risk.get_limits", m_readCallbacks.riskGetLimits, std::string()},
+        {"system.get_health", m_readCallbacks.systemGetHealth, std::string()}
+    };
+    const long long started = EpochMs();
+    for (std::size_t i = 0; i < sizeof(reads) / sizeof(reads[0]); ++i)
+    {
+        if (!reads[i].handler)
+        {
+            reasonCode = "DECISION_SNAPSHOT_HANDLER_UNAVAILABLE";
+            detail = reads[i].name;
+            return false;
+        }
+        TradingToolCall readCall;
+        readCall.name = reads[i].name;
+        if (readCall.name == "market.get_quote")
+            readCall.instrument = call.instrument;
+        std::string readReason;
+        bool ok = false;
+        try
+        {
+            ok = reads[i].handler(
+                session, readCall, reads[i].payload, readReason);
+        }
+        catch (const std::exception& ex)
+        {
+            readReason = ex.what();
+        }
+        catch (...)
+        {
+            readReason = "unknown decision snapshot read exception";
+        }
+        if (!ok)
+        {
+            reasonCode = IsCanonicalReasonCode(readReason) ? readReason :
+                "DECISION_SNAPSHOT_SUBREAD_FAILED";
+            detail = IsCanonicalReasonCode(readReason) ? std::string() : readReason;
+            return false;
+        }
+    }
+    const long long completed = EpochMs();
+    AuthoritativeDecisionSnapshotPayloads payloads;
+    payloads.healthBefore = reads[0].payload;
+    payloads.quote = reads[1].payload;
+    payloads.account = reads[2].payload;
+    payloads.positions = reads[3].payload;
+    payloads.orders = reads[4].payload;
+    payloads.riskLimits = reads[5].payload;
+    payloads.healthAfter = reads[6].payload;
+    const std::uint64_t watermark = m_snapshotWatermark.fetch_add(1) + 1;
+    return AuthoritativeDecisionSnapshotCodec::Build(
+        session.executionContext.agentId,
+        session.executionContext.sessionId,
+        session.executionContext.account,
+        session.executionContext.executionDomain,
+        call.instrument,
+        started,
+        completed,
+        watermark,
+        payloads,
+        snapshot,
+        outputJson,
+        reasonCode,
+        detail);
+}
+
+TradingToolResult TradingToolRegistry::InvokeDecisionSnapshot(
+    const TradingToolSession& session,
+    const TradingToolCall& call) const
+{
+    TradingToolResult result;
+    result.toolName = call.name;
+    TargetPositionDecisionSnapshot snapshot;
+    if (!BuildDecisionSnapshot(session, call, snapshot, result.payloadJson,
+                               result.reasonCode, result.detail))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        return result;
+    }
+    result.status = TradingToolCallStatus::Ok;
+    return result;
+}
+
+TradingToolResult TradingToolRegistry::InvokeTargetPreview(
+    const TradingToolSession& session,
+    const TradingToolCall& call)
+{
+    TradingToolResult result;
+    result.toolName = call.name;
+    const long long now = EpochMs();
+    if (!std::isfinite(call.ibOrder.totalQuantity) ||
+        !std::isfinite(call.referencePrice) || call.referencePrice < 0.0 ||
+        call.referencePrice > 1000.0 || call.expiresAtMs <= now ||
+        call.expiresAtMs - now > 60000)
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        result.reasonCode = "INTENT_REQUEST_INVALID";
+        return result;
+    }
+
+    TargetPositionDecisionSnapshot snapshot;
+    std::string snapshotJson;
+    if (!BuildDecisionSnapshot(session, call, snapshot, snapshotJson,
+                               result.reasonCode, result.detail))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        return result;
+    }
+
+    TargetPositionIntentRequest request;
+    request.targetPosition = call.ibOrder.totalQuantity;
+    request.maxSlippageBps = call.referencePrice;
+    request.expiresAtMs = call.expiresAtMs;
+    TargetPositionIntentPolicy policy;
+    policy.version = "execution-preview-authority-v1";
+    policy.maxOrderQuantity = 1000000000.0;
+    policy.maxAbsoluteTargetPosition = 1000000000.0;
+    policy.maxSlippageBps = 1000.0;
+    policy.maxIntentLifetimeMs = 60000;
+    TargetPositionExecutionPlan plan;
+    if (!TargetPositionIntentContract::BuildPlan(
+            snapshot, request, policy, now, plan,
+            result.reasonCode, result.detail))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        return result;
+    }
+
+    std::string rawPermit;
+    std::string mutationCommandId;
+    long long permitExpiry = call.expiresAtMs;
+    if (!plan.noOp)
+    {
+        const std::unordered_map<std::string, InstrumentRef>::const_iterator contract =
+            session.boundInstrumentContracts.find(call.instrument);
+        if (contract == session.boundInstrumentContracts.end())
+        {
+            result.status = TradingToolCallStatus::Rejected;
+            result.reasonCode = "INSTRUMENT_CONTRACT_NOT_BOUND";
+            return result;
+        }
+        if (!m_readCallbacks.riskPreviewOrder)
+        {
+            result.status = TradingToolCallStatus::Error;
+            result.reasonCode = "TARGET_PREVIEW_AUTHORITY_UNAVAILABLE";
+            return result;
+        }
+        TradingToolCall raw;
+        raw.name = "risk.preview_order";
+        raw.instrument = call.instrument;
+        raw.ibContract = contract->second;
+        raw.ibOrder.action = plan.side;
+        raw.ibOrder.orderType = plan.orderType;
+        raw.ibOrder.totalQuantity = plan.quantity;
+        raw.ibOrder.lmtPrice = plan.limitPrice;
+        raw.timeInForce = plan.timeInForce;
+        raw.referencePrice = plan.referencePrice;
+        raw.expiresAtMs = call.expiresAtMs;
+        std::string payload;
+        std::string reason;
+        if (!m_readCallbacks.riskPreviewOrder(
+                session, raw, payload, reason))
+        {
+            result.status = TradingToolCallStatus::Rejected;
+            result.reasonCode = IsCanonicalReasonCode(reason) ? reason :
+                "TARGET_PREVIEW_RISK_REJECTED";
+            result.detail = IsCanonicalReasonCode(reason) ? std::string() : reason;
+            return result;
+        }
+        if (!JsonStringField(payload, "preview_permit", rawPermit) ||
+            (!JsonStringField(payload, "mutation_command_id", mutationCommandId) &&
+             !JsonStringField(payload, "command_id", mutationCommandId)) ||
+            (!JsonLongField(payload, "expires_at_ms", permitExpiry) &&
+             permitExpiry <= now) ||
+            rawPermit.empty() || mutationCommandId.empty())
+        {
+            result.status = TradingToolCallStatus::Error;
+            result.reasonCode = "TARGET_PREVIEW_RESPONSE_INVALID";
+            return result;
+        }
+    }
+    else
+    {
+        mutationCommandId = RandomOpaque("intent-");
+        rawPermit.clear();
+        if (mutationCommandId.empty())
+        {
+            result.status = TradingToolCallStatus::Error;
+            result.reasonCode = "TARGET_PREVIEW_RANDOM_FAILED";
+            return result;
+        }
+    }
+
+    const std::string targetPermit = RandomOpaque("sha256:");
+    if (targetPermit.empty())
+    {
+        result.status = TradingToolCallStatus::Error;
+        result.reasonCode = "TARGET_PREVIEW_RANDOM_FAILED";
+        return result;
+    }
+    TargetPreviewRecord record;
+    record.ownerKey = TargetOwnerKey(session);
+    record.mutationCommandId = mutationCommandId;
+    record.rawExecutionPermit = rawPermit;
+    record.expiresAtMs = std::min(call.expiresAtMs, permitExpiry);
+    record.steadyExpiresAt = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(std::max(1LL, record.expiresAtMs - now));
+    record.snapshot = snapshot;
+    record.request = request;
+    record.policy = policy;
+    record.plan = plan;
+    {
+        std::lock_guard<std::mutex> lock(m_targetPreviewMutex);
+        const std::chrono::steady_clock::time_point steadyNow =
+            std::chrono::steady_clock::now();
+        for (std::unordered_map<std::string, TargetPreviewRecord>::iterator it =
+                 m_targetPreviews.begin(); it != m_targetPreviews.end();)
+        {
+            if (it->second.steadyExpiresAt <= steadyNow)
+                it = m_targetPreviews.erase(it);
+            else
+                ++it;
+        }
+        if (m_targetPreviews.size() >= 1024)
+        {
+            result.status = TradingToolCallStatus::Rejected;
+            result.reasonCode = "TARGET_PREVIEW_CAPACITY_EXHAUSTED";
+            return result;
+        }
+        m_targetPreviews[targetPermit] = record;
+    }
+
+    std::ostringstream payload;
+    payload << "{\"schema\":\"hepta.target-position-preview.v2\","
+            << "\"authoritative\":true,\"instrument\":\""
+            << EscapeJson(call.instrument)
+            << "\",\"target_position\":" << std::setprecision(17)
+            << request.targetPosition
+            << ",\"current_position\":" << snapshot.currentPosition
+            << ",\"no_op\":" << (plan.noOp ? "true" : "false")
+            << ",\"side\":\"" << EscapeJson(plan.side)
+            << "\",\"quantity\":" << plan.quantity
+            << ",\"reference_price\":" << plan.referencePrice
+            << ",\"limit_price\":" << plan.limitPrice
+            << ",\"preview_permit\":\"" << targetPermit
+            << "\",\"mutation_command_id\":\""
+            << EscapeJson(mutationCommandId)
+            << "\",\"expires_at_ms\":" << record.expiresAtMs
+            << ",\"decision_snapshot\":" << snapshotJson << '}';
+    result.status = TradingToolCallStatus::Ok;
+    result.payloadJson = payload.str();
+    return result;
+}
+
+TradingToolResult TradingToolRegistry::InvokeTargetApply(
+    const TradingToolSession& session,
+    const TradingToolCall& call)
+{
+    TradingToolResult result;
+    result.toolName = call.name;
+    TargetPreviewRecord record;
+    {
+        std::lock_guard<std::mutex> lock(m_targetPreviewMutex);
+        const std::unordered_map<std::string, TargetPreviewRecord>::iterator found =
+            m_targetPreviews.find(call.previewPermit);
+        if (found == m_targetPreviews.end())
+        {
+            result.status = TradingToolCallStatus::Rejected;
+            result.reasonCode = "TARGET_PREVIEW_PERMIT_UNKNOWN";
+            return result;
+        }
+        record = found->second;
+        m_targetPreviews.erase(found);
+    }
+    const long long now = EpochMs();
+    if (record.ownerKey != TargetOwnerKey(session) ||
+        record.mutationCommandId != session.executionContext.toolCallId)
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        result.reasonCode = "TARGET_PREVIEW_PERMIT_BINDING_MISMATCH";
+        return result;
+    }
+    if (now > record.expiresAtMs ||
+        std::chrono::steady_clock::now() > record.steadyExpiresAt)
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        result.reasonCode = "TARGET_PREVIEW_PERMIT_EXPIRED";
+        return result;
+    }
+    if (call.instrument != record.snapshot.instrument ||
+        call.expiresAtMs != record.request.expiresAtMs ||
+        !NearlyEqualIntent(call.ibOrder.totalQuantity,
+                           record.request.targetPosition) ||
+        !NearlyEqualIntent(call.referencePrice,
+                           record.request.maxSlippageBps))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        result.reasonCode = "TARGET_PREVIEW_REQUEST_CHANGED";
+        return result;
+    }
+
+    TargetPositionDecisionSnapshot current;
+    std::string snapshotJson;
+    if (!BuildDecisionSnapshot(session, call, current, snapshotJson,
+                               result.reasonCode, result.detail))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        return result;
+    }
+    if (!SameDecisionSnapshot(record.snapshot, current))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        result.reasonCode = "TARGET_PREVIEW_GENERATION_CHANGED";
+        return result;
+    }
+    TargetPositionExecutionPlan currentPlan;
+    if (!TargetPositionIntentContract::BuildPlan(
+            current, record.request, record.policy, now, currentPlan,
+            result.reasonCode, result.detail) ||
+        !SameTargetPlan(record.plan, currentPlan))
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        if (result.reasonCode.empty())
+            result.reasonCode = "TARGET_PREVIEW_PLAN_CHANGED";
+        return result;
+    }
+    if (record.plan.noOp)
+    {
+        result.status = TradingToolCallStatus::Ok;
+        result.reasonCode = "INTENT_NO_CHANGE";
+        return result;
+    }
+
+    const std::unordered_map<std::string, InstrumentRef>::const_iterator contract =
+        session.boundInstrumentContracts.find(call.instrument);
+    if (contract == session.boundInstrumentContracts.end())
+    {
+        result.status = TradingToolCallStatus::Rejected;
+        result.reasonCode = "INSTRUMENT_CONTRACT_NOT_BOUND";
+        return result;
+    }
+    PlaceOrderCommand command;
+    command.context = session.executionContext;
+    command.contract = contract->second;
+    command.order.action = record.plan.side;
+    command.order.orderType = record.plan.orderType;
+    command.order.totalQuantity = record.plan.quantity;
+    command.order.lmtPrice = record.plan.limitPrice;
+    command.instrument = call.instrument;
+    command.timeInForce = record.plan.timeInForce;
+    command.referencePrice = record.plan.referencePrice;
+    command.expiresAtMs = record.request.expiresAtMs;
+    command.previewPermit = record.rawExecutionPermit;
+    return FromExecution(call.name, m_execution.PlaceOrder(command));
+}
+
+'''
+          if "TradingToolRegistry::InvokeTargetPreview" not in registry:
+              index = registry.find(implementation_anchor)
+              if index < 0:
+                  raise RuntimeError("trading_tool_registry.cpp: implementation anchor missing")
+              registry = registry[:index] + implementation + registry[index:]
+
+          semantic_old = '''    std::string semanticReason;
+    std::string semanticDetail;
+    if (!ValidateCallSemantics(call, semanticReason, semanticDetail))'''
+          semantic_new = '''    if (call.name == "decision.get_snapshot")
+        return InvokeDecisionSnapshot(session, call);
+    if (call.name == "intent.preview_target_position")
+        return InvokeTargetPreview(session, call);
+    if (call.name == "intent.apply_target_position")
+        return InvokeTargetApply(session, call);
+    std::string semanticReason;
+    std::string semanticDetail;
+    if (!ValidateCallSemantics(call, semanticReason, semanticDetail))'''
+          if semantic_new not in registry:
+              if semantic_old not in registry:
+                  raise RuntimeError("trading_tool_registry.cpp: semantic dispatch marker missing")
+              registry = registry.replace(semantic_old, semantic_new, 1)
+          write("HeptaTrade/tools/trading_tool_registry.cpp", registry)
+
+          # Ordinary runtime profiles lose raw placement; internal intent apply
+          # retains access to the Execution authority and its opaque permit.
+          for path in (ROOT / "HeptaTrade/tool_host").rglob("*.cpp"):
+              text = path.read_text(encoding="utf-8-sig")
+              changed = text.replace('"trade.place"', '"intent.apply"')
+              changed = changed.replace('"risk.preview"', '"intent.preview"')
+              if changed != text:
+                  path.write_text(changed, encoding="utf-8")
+          for path in (ROOT / "systemd").glob("*.example"):
+              text = path.read_text(encoding="utf-8-sig")
+              changed = re.sub(r'(?<!operator\.)trade\.place', 'intent.apply', text)
+              changed = re.sub(r'(?<!operator\.)risk\.preview', 'intent.preview', changed)
+              if changed != text:
+                  path.write_text(changed, encoding="utf-8")
+          for path in (ROOT / "tests").glob("*.cpp"):
+              if path.name == "target_position_tool_tests.cpp":
+                  continue
+              text = path.read_text(encoding="utf-8-sig")
+              changed = text.replace('"trade.place"', '"operator.trade.place"')
+              changed = changed.replace('"risk.preview"', '"operator.risk.preview"')
+              if changed != text:
+                  path.write_text(changed, encoding="utf-8")
+
+          cmake = read("HeptaTrade/CMakeLists.txt")
+          trading_old = '''add_library(hepta_trading_tool_core STATIC
+    state/ib_contract_identity.cpp
+    tools/trading_tool_registry.cpp)'''
+          trading_new = '''add_library(hepta_trading_tool_core STATIC
+    state/ib_contract_identity.cpp
+    intent/bounded_json.cpp
+    intent/target_position_intent.cpp
+    intent/authoritative_decision_snapshot.cpp
+    tools/trading_tool_registry.cpp)'''
+          if trading_new not in cmake:
+              if trading_old not in cmake:
+                  raise RuntimeError("HeptaTrade/CMakeLists.txt: trading core marker missing")
+              cmake = cmake.replace(trading_old, trading_new, 1)
+          write("HeptaTrade/CMakeLists.txt", cmake)
+
+          target_test = r'''#include "../HeptaTrade/tools/trading_tool_registry.h"
+#include "../HeptaTrade/intent/bounded_json.h"
+
+#include <chrono>
+#include <cmath>
+#include <cstdlib>
+#include <iostream>
+#include <string>
+
+namespace
+{
+void Require(bool condition, const char* expression, int line)
+{
+    if (condition) return;
+    std::cerr << "requirement failed at line " << line << ": "
+              << expression << '\n';
+    std::abort();
+}
+#define REQUIRE(expression) Require(static_cast<bool>(expression), #expression, __LINE__)
+
+long long NowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string StringField(const std::string& json, const std::string& key)
+{
+    BoundedJsonValue value;
+    std::string reason;
+    REQUIRE(ParseBoundedJson(json, value, reason));
+    const BoundedJsonValue* field = value.Find(key);
+    std::string result;
+    REQUIRE(field != nullptr && field->String(result));
+    return result;
+}
+
+class FakeExecution : public ExecutionAuthority
+{
+public:
+    ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override
+    {
+        ++placeCalls;
+        lastPlace = command;
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        result.orderId = 77;
+        return result;
+    }
+    ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
+    {
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        result.orderId = command.orderId;
+        return result;
+    }
+    int placeCalls = 0;
+    PlaceOrderCommand lastPlace;
+};
+
+struct Fixture
+{
+    Fixture()
+    {
+        callbacks.systemGetHealth = [this](const TradingToolSession&,
+                const TradingToolCall&, std::string& payload, std::string&) {
+            payload = "{\"event_watermark\":" + std::to_string(eventWatermark) +
+                ",\"execution_service_fencing_generation\":9,"
+                "\"remote_execution_ready\":true,"
+                "\"execution_service_epoch\":\"epoch-a\"}";
+            return true;
+        };
+        callbacks.marketGetQuote = [this](const TradingToolSession&,
+                const TradingToolCall& call, std::string& payload, std::string&) {
+            payload = "{\"ask\":" + std::to_string(ask) +
+                ",\"authoritative\":true,\"stale\":false,"
+                "\"observed_at_ms\":" + std::to_string(NowMs() - 1) +
+                ",\"instrument\":\"" + call.instrument +
+                "\",\"bid\":" + std::to_string(bid) + "}";
+            return true;
+        };
+        callbacks.accountGetSummary = [](const TradingToolSession&,
+                const TradingToolCall&, std::string& payload, std::string&) {
+            payload = "{\"authoritative\":true}";
+            return true;
+        };
+        callbacks.portfolioListPositions = [this](const TradingToolSession&,
+                const TradingToolCall&, std::string& payload, std::string&) {
+            payload = "{\"positions\":[{\"quantity\":" +
+                std::to_string(position) +
+                ",\"instrument\":\"EUR.USD\"}],\"authoritative\":true}";
+            return true;
+        };
+        callbacks.ordersList = [](const TradingToolSession&,
+                const TradingToolCall&, std::string& payload, std::string&) {
+            payload = "{\"orders\":[],\"authoritative\":true}";
+            return true;
+        };
+        callbacks.riskGetLimits = [](const TradingToolSession&,
+                const TradingToolCall&, std::string& payload, std::string&) {
+            payload = "{\"max_order_quantity\":25000,\"authoritative\":true}";
+            return true;
+        };
+        callbacks.riskPreviewOrder = [this](const TradingToolSession& session,
+                const TradingToolCall& call, std::string& payload, std::string&) {
+            ++previewCalls;
+            previewOrder = call;
+            mutationId = "mutation-" + std::to_string(previewCalls) + "-000000";
+            payload = "{\"authoritative\":true,\"preview_permit\":\""
+                "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                "\",\"mutation_command_id\":\"" + mutationId +
+                "\",\"expires_at_ms\":" + std::to_string(call.expiresAtMs) + "}";
+            return session.executionContext.account == "SIM";
+        };
+
+        session.executionContext.agentId = "intent-agent";
+        session.executionContext.sessionId = "intent-session";
+        session.executionContext.toolCallId = "initial-call";
+        session.executionContext.account = "SIM";
+        session.executionContext.venue = "SIMULATOR";
+        session.executionContext.executionDomain = "SIM:intent-agent";
+        session.environment = "PAPER";
+        const char* capabilities[] = {
+            "system.read", "market.read", "account.read", "portfolio.read",
+            "orders.read", "risk.read", "intent.apply", "trade.cancel"
+        };
+        for (std::size_t i = 0; i < sizeof(capabilities) / sizeof(capabilities[0]); ++i)
+            session.capabilities.insert(capabilities[i]);
+        session.visibleInstruments.insert("EUR.USD");
+        InstrumentRef contract;
+        contract.symbol = "EUR";
+        contract.currency = "USD";
+        contract.secType = "CASH";
+        contract.exchange = "IDEALPRO";
+        session.boundInstrumentContracts["EUR.USD"] = contract;
+    }
+
+    FakeExecution execution;
+    TradingToolReadCallbacks callbacks;
+    TradingToolSession session;
+    std::uint64_t eventWatermark = 5;
+    double position = 10.0;
+    double bid = 1.1000;
+    double ask = 1.1002;
+    int previewCalls = 0;
+    std::string mutationId;
+    TradingToolCall previewOrder;
+};
+
+bool Visible(const TradingToolRegistry& registry,
+             const TradingToolSession& session,
+             const std::string& name)
+{
+    const std::vector<TradingToolDescriptor> tools = registry.ListTools(session);
+    for (std::size_t i = 0; i < tools.size(); ++i)
+        if (tools[i].name == name) return true;
+    return false;
+}
+
+TradingToolCall Target(const char* name, double target, long long expires)
+{
+    TradingToolCall call;
+    call.name = name;
+    call.instrument = "EUR.USD";
+    call.ibOrder.totalQuantity = target;
+    call.referencePrice = 5.0;
+    call.expiresAtMs = expires;
+    return call;
+}
+
+void TestIntentToolsAndRawOperatorBoundary()
+{
+    Fixture fixture;
+    TradingToolRegistry registry(fixture.execution, fixture.callbacks);
+    REQUIRE(Visible(registry, fixture.session, "decision.get_snapshot"));
+    REQUIRE(Visible(registry, fixture.session, "intent.preview_target_position"));
+    REQUIRE(Visible(registry, fixture.session, "intent.apply_target_position"));
+    REQUIRE(!Visible(registry, fixture.session, "risk.preview_order"));
+    REQUIRE(!Visible(registry, fixture.session, "trade.place_order"));
+
+    TradingToolSession operatorSession = fixture.session;
+    operatorSession.capabilities.insert("operator.risk.preview");
+    operatorSession.capabilities.insert("operator.trade.place");
+    REQUIRE(Visible(registry, operatorSession, "risk.preview_order"));
+    REQUIRE(Visible(registry, operatorSession, "trade.place_order"));
+
+    TradingToolSession watch = fixture.session;
+    watch.environment = "WATCH";
+    REQUIRE(!Visible(registry, watch, "intent.apply_target_position"));
+}
+
+void TestPreviewApplySingleUseAndGenerationBinding()
+{
+    Fixture fixture;
+    TradingToolRegistry registry(fixture.execution, fixture.callbacks);
+    const long long expires = NowMs() + 30000;
+    TradingToolCall preview = Target(
+        "intent.preview_target_position", 100.0, expires);
+    fixture.session.executionContext.toolCallId = "preview-target-1";
+    TradingToolResult result = registry.Invoke(fixture.session, preview);
+    REQUIRE(result.status == TradingToolCallStatus::Ok);
+    const std::string targetPermit = StringField(result.payloadJson, "preview_permit");
+    const std::string mutationId = StringField(result.payloadJson, "mutation_command_id");
+    REQUIRE(fixture.previewCalls == 1);
+    REQUIRE(fixture.previewOrder.ibOrder.action == "BUY");
+    REQUIRE(fixture.previewOrder.ibOrder.totalQuantity == 90.0);
+
+    TradingToolCall apply = Target(
+        "intent.apply_target_position", 100.0, expires);
+    apply.previewPermit = targetPermit;
+    fixture.session.executionContext.toolCallId = mutationId;
+    result = registry.Invoke(fixture.session, apply);
+    REQUIRE(result.status == TradingToolCallStatus::Ok);
+    REQUIRE(fixture.execution.placeCalls == 1);
+    REQUIRE(fixture.execution.lastPlace.context.toolCallId == mutationId);
+    REQUIRE(fixture.execution.lastPlace.previewPermit.find("sha256:") == 0);
+    REQUIRE(fixture.execution.lastPlace.order.totalQuantity == 90.0);
+    REQUIRE(fixture.execution.lastPlace.order.action == "BUY");
+    REQUIRE(fixture.execution.lastPlace.order.lmtPrice > fixture.ask);
+
+    result = registry.Invoke(fixture.session, apply);
+    REQUIRE(result.status == TradingToolCallStatus::Rejected);
+    REQUIRE(fixture.execution.placeCalls == 1);
+
+    fixture.session.executionContext.toolCallId = "preview-target-2";
+    preview = Target("intent.preview_target_position", -20.0, expires);
+    result = registry.Invoke(fixture.session, preview);
+    REQUIRE(result.status == TradingToolCallStatus::Ok);
+    const std::string permit2 = StringField(result.payloadJson, "preview_permit");
+    const std::string mutation2 = StringField(result.payloadJson, "mutation_command_id");
+    fixture.position = 11.0;
+    fixture.session.executionContext.toolCallId = mutation2;
+    apply = Target("intent.apply_target_position", -20.0, expires);
+    apply.previewPermit = permit2;
+    result = registry.Invoke(fixture.session, apply);
+    REQUIRE(result.status == TradingToolCallStatus::Rejected);
+    REQUIRE(result.reasonCode == "TARGET_PREVIEW_GENERATION_CHANGED");
+    REQUIRE(fixture.execution.placeCalls == 1);
+}
+
+void TestDecisionSnapshotAcceptsReorderedFieldsAndRejectsDuplicatePosition()
+{
+    Fixture fixture;
+    TradingToolRegistry registry(fixture.execution, fixture.callbacks);
+    TradingToolCall snapshotCall;
+    snapshotCall.name = "decision.get_snapshot";
+    snapshotCall.instrument = "EUR.USD";
+    TradingToolResult result = registry.Invoke(fixture.session, snapshotCall);
+    REQUIRE(result.status == TradingToolCallStatus::Ok);
+    REQUIRE(result.payloadJson.find("\"current_position\":10") != std::string::npos);
+
+    fixture.callbacks.portfolioListPositions = [](const TradingToolSession&,
+            const TradingToolCall&, std::string& payload, std::string&) {
+        payload = "{\"authoritative\":true,\"positions\":["
+            "{\"instrument\":\"EUR.USD\",\"quantity\":1},"
+            "{\"quantity\":2,\"instrument\":\"EUR.USD\"}]}";
+        return true;
+    };
+    TradingToolRegistry duplicateRegistry(fixture.execution, fixture.callbacks);
+    result = duplicateRegistry.Invoke(fixture.session, snapshotCall);
+    REQUIRE(result.status == TradingToolCallStatus::Rejected);
+    REQUIRE(result.reasonCode == "DECISION_SNAPSHOT_POSITION_INVALID");
+}
+}
+
+int main()
+{
+    TestIntentToolsAndRawOperatorBoundary();
+    TestPreviewApplySingleUseAndGenerationBinding();
+    TestDecisionSnapshotAcceptsReorderedFieldsAndRejectsDuplicatePosition();
+    return 0;
+}
+'''
+          write("tests/target_position_tool_tests.cpp", target_test)
+
+          tests_cmake = read("tests/CMakeLists.txt")
+          test_block = '''add_executable(hepta_target_position_tool_tests
+    target_position_tool_tests.cpp)
+target_link_libraries(hepta_target_position_tool_tests
+    hepta_trading_tool_core)
+hepta_register_core_test(hepta_target_position_tool_tests)
+
+'''
+          if "hepta_target_position_tool_tests" not in tests_cmake:
+              marker = "add_custom_target(hepta_core_test_binaries\n"
+              if marker not in tests_cmake:
+                  raise RuntimeError("tests/CMakeLists.txt: custom target marker missing")
+              tests_cmake = tests_cmake.replace(marker, test_block + marker, 1)
+              write("tests/CMakeLists.txt", tests_cmake)
+
+          # The final reviewed tree must contain no temporary mutating workflow.
+          for relative in (
+              ".github/workflows/dev-intent-gap-closure.yml",
+              ".github/workflows/dev-gap-closure-run.yml",
+              ".github/workflows/dev-gap-closure-recover.yml",
+              ".github/workflows/dev-source-export.yml",
+          ):
+              path = ROOT / relative
+              if path.exists():
+                  path.unlink()
+          PY
+      - name: Verify exact resulting tree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          python3 scripts/check_repository_integrity.py
+          ./scripts/dev_core.sh
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+      - name: Commit verified intent closure
+        run: |
+          git config user.name "Tomasrgbsf"
+          git config user.email "tomasbraynt@gmail.com"
+          git add -A
+          git diff --cached --check
+          git commit -s -m "feat: close authoritative target-position intent gaps"
+          git push origin HEAD:codex/heptatrader-gap-closure-v2
