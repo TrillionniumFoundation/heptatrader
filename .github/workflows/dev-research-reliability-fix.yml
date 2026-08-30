@@ -1,0 +1,35 @@
+name: dev-research-reliability-fix-history-bridge
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inert-history-bridge:
+    if: "${{ false }}"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Historical recovery bridge only
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path(
+              ".github/workflows/dev-research-reliability-closure.yml"
+          ).read_text(encoding="utf-8")
+          marker = "          python3 - <<'PY'\n"
+          start = source.find(marker)
+          if start < 0:
+              raise RuntimeError("research reliability closure marker missing")
+          start += len(marker)
+          end = source.find("\n          PY\n", start)
+          if end < 0:
+              raise RuntimeError("research reliability closure terminator missing")
+          program = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in source[start:end].splitlines()
+          )
+          exec(compile(program, "historical-research-reliability-closure", "exec"), {})
+          PY
