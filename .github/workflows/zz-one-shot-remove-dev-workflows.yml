@@ -1,0 +1,40 @@
+name: one-shot-remove-temporary-workflows
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/zz-one-shot-remove-dev-workflows.yml
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Remove every temporary writable workflow from the candidate tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          find .github/workflows -maxdepth 1 -type f \
+            \( -name 'dev-*.yml' -o -name 'dev-*.yaml' \) -print -delete
+          rm -f .github/workflows/zz-one-shot-remove-dev-workflows.yml
+          git diff --check
+          if git diff --quiet; then
+            echo 'Nothing to clean'
+            exit 0
+          fi
+          git config user.name 'Tomasrgbsf'
+          git config user.email 'tomasbraynt@gmail.com'
+          git add -A .github/workflows
+          git commit -s -m 'chore(ci): remove temporary writable workflows'
+          git push origin HEAD:codex/heptatrader-gap-closure-v2
