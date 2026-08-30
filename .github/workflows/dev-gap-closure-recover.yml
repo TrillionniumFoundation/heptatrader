@@ -1,0 +1,93 @@
+name: dev-gap-closure-recover
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-gap-closure-v2
+    paths:
+      - .github/workflows/dev-gap-closure-recover.yml
+
+permissions:
+  contents: write
+
+jobs:
+  recover-and-verify:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): recover and verify permit telemetry closure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-gap-closure-v2
+          fetch-depth: 0
+          persist-credentials: true
+      - run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev python3
+      - name: Recover or repair the closure slice
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path.cwd()
+          telemetry = root / "HeptaTrade/observability/runtime_telemetry.cpp"
+          old_launcher = root / ".github/workflows/dev-gap-closure-run.yml"
+
+          if not telemetry.exists():
+              if not old_launcher.exists():
+                  raise RuntimeError("neither applied telemetry nor original closure launcher exists")
+              source = old_launcher.read_text(encoding="utf-8")
+              marker = "          python3 - <<'PY'\n"
+              start = source.find(marker)
+              if start < 0:
+                  raise RuntimeError("cannot locate embedded closure program")
+              start += len(marker)
+              end = source.find("\n          PY\n", start)
+              if end < 0:
+                  raise RuntimeError("cannot locate embedded closure terminator")
+              embedded = source[start:end]
+              lines = []
+              for line in embedded.splitlines():
+                  lines.append(line[10:] if line.startswith("          ") else line)
+              exec(compile("\n".join(lines), "embedded-gap-closure", "exec"), {})
+
+          text = telemetry.read_text(encoding="utf-8")
+          if "#include <cctype>" not in text:
+              text = text.replace("#include <algorithm>\n", "#include <algorithm>\n#include <cctype>\n", 1)
+          text = text.replace(
+              r"out << '\\\"' << EscapeJson",
+              r'''out << '"' << EscapeJson''')
+          telemetry.write_text(text, encoding="utf-8")
+
+          for relative in (
+              ".github/workflows/dev-gap-closure-run.yml",
+              ".github/workflows/dev-gap-closure-recover.yml",
+              ".github/workflows/dev-source-export.yml",
+          ):
+              path = root / relative
+              if path.exists():
+                  path.unlink()
+          PY
+      - name: Verify exact resulting tree
+        env:
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          python3 scripts/check_repository_integrity.py
+          ./scripts/dev_core.sh
+          stage="$RUNNER_TEMP/heptatrader-runtime"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+      - name: Commit verified tree
+        run: |
+          git config user.name "Tomasrgbsf"
+          git config user.email "tomasbraynt@gmail.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            exit 0
+          fi
+          git commit -s -m "feat: close permit lifecycle and runtime telemetry gaps"
+          git push origin HEAD:codex/heptatrader-gap-closure-v2
