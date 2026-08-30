@@ -33,6 +33,7 @@ jobs:
         run: |
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           source = Path(
               ".github/workflows/dev-gap-closure-guardian.yml"
@@ -54,7 +55,14 @@ jobs:
           generator = Path("scripts/generate_tool_catalog.py")
           text = generator.read_text(encoding="utf-8")
           text = text.replace("DIGEST_PATH", "DIGEST")
-          text = text.replace("expected_digest", "digest")
+          text = text.replace(
+              "expected_digest(value)", "catalog_digest(value)"
+          )
+          text = re.sub(
+              r"(?<![A-Za-z0-9_])digest\(value\)",
+              "catalog_digest(value)",
+              text,
+          )
           generator.write_text(text, encoding="utf-8")
           compile(text, str(generator), "exec")
           PY
@@ -147,4 +155,4 @@ jobs:
             "feat: close and verify all canonical HeptaTrader gaps"
           git push origin HEAD:codex/heptatrader-gap-closure-v2
 
-# trigger: catalog digest function v5
+# trigger: catalog function collision v6
