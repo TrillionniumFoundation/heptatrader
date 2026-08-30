@@ -86,9 +86,12 @@ inline int Usleep(useconds_t microseconds)
 }
 }
 
+// Call sites use both connect(...) and ::connect(...). Omitting a leading
+// global qualifier in the replacement makes both forms expand to a valid
+// qualified name.
 #define connect(...) \
-    ::hepta_unix_tool_server_test_detail::Connect(__VA_ARGS__)
+    hepta_unix_tool_server_test_detail::Connect(__VA_ARGS__)
 #define close(...) \
-    ::hepta_unix_tool_server_test_detail::Close(__VA_ARGS__)
+    hepta_unix_tool_server_test_detail::Close(__VA_ARGS__)
 #define usleep(...) \
-    ::hepta_unix_tool_server_test_detail::Usleep(__VA_ARGS__)
+    hepta_unix_tool_server_test_detail::Usleep(__VA_ARGS__)
