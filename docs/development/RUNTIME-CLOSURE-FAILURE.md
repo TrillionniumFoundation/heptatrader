@@ -1,12 +1,10 @@
-# Remaining exact semantic-proof blocker
+# Remaining final truth-audit blocker
 
-Status: current diagnostic; affected gaps are in progress.
-Applies to: exact target protocol/idempotency or permit lifecycle black-box proof.
-Verification: exact CTests and full unchanged matrix.
+Status: current; affected canonical gaps remain in progress.
+Applies to: the first failing exact semantic proof or unchanged full-matrix command.
+Verification: final truth audit.
 
 ```text
-
-$ cmake -S . -B build/proof-v3 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DHEPTA_INSTALL_RUNTIME=ON -DHEPTA_ENABLE_IBAPI=OFF
 -- The CXX compiler identification is GNU 13.3.0
 -- Detecting CXX compiler ABI info
 -- Detecting CXX compiler ABI info - done
@@ -17,12 +15,9 @@ $ cmake -S . -B build/proof-v3 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING
 -- Performing Test CMAKE_HAVE_LIBC_PTHREAD
 -- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
 -- Found Threads: TRUE
--- Configuring done (2.6s)
--- Generating done (0.1s)
--- Build files have been written to: /home/runner/work/heptatrader/heptatrader/build/proof-v3
-
-
-$ cmake --build build/proof-v3 --parallel 2
+-- Configuring done (0.4s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/runner/work/heptatrader/heptatrader/build/final-proof
 [1/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_contract.dir/execution/execution_event_feed.cpp.o
 [2/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_contract.dir/execution/execution_service_protocol.cpp.o
 [3/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_transport.dir/execution/unix_execution_service_transport.cpp.o
@@ -37,11 +32,11 @@ $ cmake --build build/proof-v3 --parallel 2
 [12/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_server.dir/execution/execution_event_feed_server.cpp.o
 [13/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_server.dir/execution/unix_execution_service.cpp.o
 [14/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_server.dir/execution/unix_execution_service_flatten.cpp.o
-[15/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_execution_support.dir/agent/decision_lease_manager.cpp.o
-[16/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_server.dir/execution/unix_execution_service_flatten_permit.cpp.o
+[15/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_server.dir/execution/unix_execution_service_flatten_permit.cpp.o
+[16/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_execution_support.dir/agent/decision_lease_manager.cpp.o
 [17/186] Linking CXX static library HeptaTrade/libhepta_observability_core.a
-[18/186] Building CXX object HeptaTrade/CMakeFiles/hepta_risk_core.dir/risk/deterministic_risk_policy.cpp.o
-[19/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_execution_support.dir/events/execution_event_hub.cpp.o
+[18/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_execution_support.dir/events/execution_event_hub.cpp.o
+[19/186] Building CXX object HeptaTrade/CMakeFiles/hepta_risk_core.dir/risk/deterministic_risk_policy.cpp.o
 [20/186] Building CXX object HeptaTrade/CMakeFiles/hepta_trading_tool_core.dir/state/ib_contract_identity.cpp.o
 [21/186] Building CXX object HeptaTrade/CMakeFiles/hepta_trading_tool_core.dir/intent/bounded_json.cpp.o
 [22/186] Building CXX object HeptaTrade/CMakeFiles/hepta_trading_tool_core.dir/intent/target_position_intent.cpp.o
@@ -53,9 +48,9 @@ $ cmake --build build/proof-v3 --parallel 2
 [28/186] Building CXX object HeptaTrade/CMakeFiles/hepta_sessionctl.dir/tool_host/unix_session_supervisor_client.cpp.o
 [29/186] Building CXX object HeptaTrade/CMakeFiles/hepta_sessionctl.dir/tool_host/session_supervisor_protocol.cpp.o
 [30/186] Linking CXX static library HeptaTrade/libhepta_execution_client.a
-[31/186] Linking CXX static library HeptaTrade/libhepta_execution_server.a
+[31/186] Building CXX object HeptaTrade/CMakeFiles/hepta_sessionctl.dir/tool_host/session_supervisor_lease_store.cpp.o
 [32/186] Linking CXX static library HeptaTrade/libhepta_agent_execution_support.a
-[33/186] Building CXX object HeptaTrade/CMakeFiles/hepta_sessionctl.dir/tool_host/session_supervisor_lease_store.cpp.o
+[33/186] Linking CXX static library HeptaTrade/libhepta_execution_server.a
 [34/186] Linking CXX static library HeptaTrade/libhepta_risk_core.a
 [35/186] Building CXX object HeptaTrade/CMakeFiles/hepta_portfolio_core.dir/portfolio/portfolio_compiler.cpp.o
 [36/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_coordinator_cancel.cpp.o
@@ -63,8 +58,8 @@ $ cmake --build build/proof-v3 --parallel 2
 [38/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_coordinator_recovery.cpp.o
 [39/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_coordinator_reconnect.cpp.o
 [40/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_coordinator_terminal.cpp.o
-[41/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_place_order_dispatch.cpp.o
-[42/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/paper_terminal_mutation_manifest.cpp.o
+[41/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/paper_terminal_mutation_manifest.cpp.o
+[42/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_place_order_dispatch.cpp.o
 [43/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_authoritative_flatten.cpp.o
 [44/186] Building CXX object HeptaTrade/CMakeFiles/hepta_execution_core.dir/execution/execution_authoritative_flatten_dispatch.cpp.o
 [45/186] Linking CXX static library HeptaTrade/libhepta_trading_tool_core.a
@@ -86,10 +81,10 @@ $ cmake --build build/proof-v3 --parallel 2
 [61/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/trading_tool_session_recovery.cpp.o
 [62/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/trading_tool_session_catalog.cpp.o
 [63/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/trading_tool_session_control_plane.cpp.o
-[64/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/typed_tool_framing.cpp.o
-[65/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/trading_tool_watch_transaction.cpp.o
-[66/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/typed_tool_protocol.cpp.o
-[67/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/typed_tool_result_codec.cpp.o
+[64/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/trading_tool_watch_transaction.cpp.o
+[65/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/typed_tool_framing.cpp.o
+[66/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/typed_tool_result_codec.cpp.o
+[67/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/typed_tool_protocol.cpp.o
 [68/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/unix_tool_server.cpp.o
 [69/186] Building CXX object HeptaTrade/CMakeFiles/hepta_agent_os_core.dir/tool_host/unix_session_supervisor_server.cpp.o
 [70/186] Building CXX object HeptaTrade/CMakeFiles/hepta_native_tool_client.dir/client/native_tool_discovery_contract.cpp.o
@@ -97,27 +92,27 @@ $ cmake --build build/proof-v3 --parallel 2
 [72/186] Building CXX object HeptaTrade/CMakeFiles/hepta_native_tool_client.dir/tool_host/unix_tool_client.cpp.o
 [73/186] Building CXX object HeptaTrade/CMakeFiles/hepta_native_tool_client.dir/tool_host/typed_tool_framing.cpp.o
 [74/186] Building CXX object HeptaTrade/CMakeFiles/hepta_native_tool_client.dir/tool_host/typed_tool_protocol.cpp.o
-[75/186] Building CXX object HeptaTrade/CMakeFiles/hepta_native_tool_client.dir/tool_host/typed_tool_result_codec.cpp.o
-[76/186] Linking CXX executable HeptaTrade/hepta-sessionctl
+[75/186] Linking CXX executable HeptaTrade/hepta-sessionctl
+[76/186] Building CXX object HeptaTrade/CMakeFiles/hepta_native_tool_client.dir/tool_host/typed_tool_result_codec.cpp.o
 [77/186] Linking CXX static library HeptaTrade/libhepta_portfolio_core.a
 [78/186] Linking CXX static library HeptaTrade/libhepta_execution_core.a
 [79/186] Linking CXX static library HeptaTrade/libhepta_native_tool_client.a
 [80/186] Linking CXX static library HeptaTrade/libhepta_agent_os_core.a
 [81/186] Building CXX object HeptaTrade/CMakeFiles/heptactl.dir/cli/heptactl.cpp.o
 [82/186] Building CXX object HeptaTrade/CMakeFiles/heptactl.dir/cli/heptactl_command.cpp.o
-[83/186] Building CXX object HeptaTrade/CMakeFiles/hepta_paper_terminal_latch_committer.dir/cli/hepta_paper_terminal_latch_committer.cpp.o
-[84/186] Building CXX object HeptaTrade/CMakeFiles/heptactl.dir/cli/heptactl_exit_codes.cpp.o
+[83/186] Building CXX object HeptaTrade/CMakeFiles/heptactl.dir/cli/heptactl_exit_codes.cpp.o
+[84/186] Building CXX object HeptaTrade/CMakeFiles/hepta_paper_terminal_latch_committer.dir/cli/hepta_paper_terminal_latch_committer.cpp.o
 [85/186] Building CXX object HeptaTrade/CMakeFiles/hepta_paper_terminal_latch_committer.dir/execution/paper_terminal_external_latch.cpp.o
-[86/186] Building CXX object HeptaTrade/CMakeFiles/hepta_tool_gatewayd.dir/tool_host/hepta_tool_gatewayd.cpp.o
-[87/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/execution/hepta_executiond.cpp.o
+[86/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/execution/hepta_executiond.cpp.o
+[87/186] Building CXX object HeptaTrade/CMakeFiles/hepta_tool_gatewayd.dir/tool_host/hepta_tool_gatewayd.cpp.o
 [88/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/execution/execution_service_runtime_config.cpp.o
-[89/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/simulator/deterministic_execution_venue.cpp.o
-[90/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/execution/execution_service_runtime_composition.cpp.o
+[89/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/execution/execution_service_runtime_composition.cpp.o
+[90/186] Building CXX object HeptaTrade/CMakeFiles/hepta_executiond.dir/simulator/deterministic_execution_venue.cpp.o
 [91/186] Building CXX object tests/CMakeFiles/hepta_trading_contract_tests.dir/trading_contract_tests.cpp.o
 [92/186] Building CXX object tests/CMakeFiles/hepta_native_tool_client_tests.dir/native_tool_client_tests.cpp.o
 [93/186] Building CXX object tests/CMakeFiles/hepta_execution_coordinator_tests.dir/__/HeptaTrade/oms_recover.cpp.o
-[94/186] Building CXX object tests/CMakeFiles/hepta_oms_journal_durability_tests.dir/oms_journal_durability_tests.cpp.o
-[95/186] Building CXX object tests/CMakeFiles/hepta_execution_coordinator_tests.dir/execution_coordinator_tests.cpp.o
+[94/186] Building CXX object tests/CMakeFiles/hepta_execution_coordinator_tests.dir/execution_coordinator_tests.cpp.o
+[95/186] Building CXX object tests/CMakeFiles/hepta_oms_journal_durability_tests.dir/oms_journal_durability_tests.cpp.o
 [96/186] Building CXX object tests/CMakeFiles/hepta_oms_journal_durability_tests.dir/__/HeptaTrade/oms_journal.cpp.o
 [97/186] Building CXX object tests/CMakeFiles/hepta_execution_event_hub_tests.dir/execution_event_hub_tests.cpp.o
 [98/186] Building CXX object tests/CMakeFiles/hepta_trading_tool_registry_tests.dir/trading_tool_registry_tests.cpp.o
@@ -130,8 +125,8 @@ $ cmake --build build/proof-v3 --parallel 2
 [105/186] Building CXX object tests/CMakeFiles/hepta_unix_tool_server_tests.dir/unix_tool_server_tests.cpp.o
 [106/186] Building CXX object tests/CMakeFiles/hepta_session_supervisor_protocol_boundary_tests.dir/session_supervisor_protocol_boundary_tests.cpp.o
 [107/186] Building CXX object tests/CMakeFiles/hepta_session_supervisor_lease_store_migration_tests.dir/session_supervisor_lease_store_migration_tests.cpp.o
-[108/186] Building CXX object tests/CMakeFiles/hepta_agent_simulator_e2e_tests.dir/agent_simulator_e2e_tests.cpp.o
-[109/186] Building CXX object tests/CMakeFiles/hepta_unix_session_supervisor_server_tests.dir/unix_session_supervisor_server_tests.cpp.o
+[108/186] Building CXX object tests/CMakeFiles/hepta_unix_session_supervisor_server_tests.dir/unix_session_supervisor_server_tests.cpp.o
+[109/186] Building CXX object tests/CMakeFiles/hepta_agent_simulator_e2e_tests.dir/agent_simulator_e2e_tests.cpp.o
 [110/186] Building CXX object tests/CMakeFiles/hepta_agent_simulator_e2e_tests.dir/__/HeptaTrade/state/authoritative_trading_snapshot_store.cpp.o
 [111/186] Building CXX object tests/CMakeFiles/hepta_agent_simulator_e2e_tests.dir/__/HeptaTrade/simulator/deterministic_execution_venue.cpp.o
 [112/186] Building CXX object tests/CMakeFiles/hepta_decision_lease_manager_tests.dir/__/HeptaTrade/agent/decision_lease_manager.cpp.o
@@ -140,8 +135,8 @@ $ cmake --build build/proof-v3 --parallel 2
 [115/186] Building CXX object tests/CMakeFiles/hepta_authoritative_trading_snapshot_store_tests.dir/authoritative_trading_snapshot_store_tests.cpp.o
 [116/186] Building CXX object tests/CMakeFiles/hepta_snapshot_refresh_coordinator_tests.dir/snapshot_refresh_coordinator_tests.cpp.o
 [117/186] Building CXX object tests/CMakeFiles/hepta_snapshot_refresh_coordinator_tests.dir/__/HeptaTrade/state/snapshot_refresh_coordinator.cpp.o
-[118/186] Building CXX object tests/CMakeFiles/hepta_authoritative_trading_snapshot_store_tests.dir/__/HeptaTrade/state/authoritative_trading_snapshot_store.cpp.o
-[119/186] Building CXX object tests/CMakeFiles/hepta_ib_order_lifecycle_tests.dir/ib_order_lifecycle_tests.cpp.o
+[118/186] Building CXX object tests/CMakeFiles/hepta_ib_order_lifecycle_tests.dir/ib_order_lifecycle_tests.cpp.o
+[119/186] Building CXX object tests/CMakeFiles/hepta_authoritative_trading_snapshot_store_tests.dir/__/HeptaTrade/state/authoritative_trading_snapshot_store.cpp.o
 [120/186] Building CXX object tests/CMakeFiles/hepta_ib_order_lifecycle_tests.dir/__/HeptaTrade/adapter_ib/ib_order_lifecycle.cpp.o
 [121/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_api_wrapper.cpp.o
 [122/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/ib_gateway_adapter_risk_tests.cpp.o
@@ -150,9 +145,9 @@ $ cmake --build build/proof-v3 --parallel 2
 [125/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_gateway_adapter.cpp.o
 [126/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp.o
 [127/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp.o
-[128/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp.o
-[129/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_order_lifecycle.cpp.o
-[130/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_venue_correlation.cpp.o
+[128/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_order_lifecycle.cpp.o
+[129/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_venue_correlation.cpp.o
+[130/186] Building CXX object tests/CMakeFiles/hepta_ib_gateway_adapter_risk_tests.dir/__/HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp.o
 [131/186] Building CXX object tests/CMakeFiles/hepta_ib_paper_kill_switch_tests.dir/ib_paper_kill_switch_tests.cpp.o
 [132/186] Building CXX object tests/CMakeFiles/hepta_ib_paper_kill_switch_tests.dir/__/HeptaTrade/execution/ib_paper_kill_switch.cpp.o
 [133/186] Building CXX object tests/CMakeFiles/hepta_deterministic_risk_policy_tests.dir/deterministic_risk_policy_tests.cpp.o
@@ -162,14 +157,14 @@ $ cmake --build build/proof-v3 --parallel 2
 [137/186] Building CXX object tests/CMakeFiles/hepta_authoritative_decision_snapshot_tests.dir/__/HeptaTrade/intent/authoritative_decision_snapshot.cpp.o
 [138/186] Building CXX object tests/CMakeFiles/hepta_authoritative_decision_snapshot_tests.dir/__/HeptaTrade/intent/bounded_json.cpp.o
 [139/186] Building CXX object tests/CMakeFiles/hepta_authoritative_decision_snapshot_tests.dir/__/HeptaTrade/intent/target_position_intent.cpp.o
-[140/186] Building CXX object tests/CMakeFiles/hepta_unsupported_venue_adapter_tests.dir/unsupported_venue_adapter_tests.cpp.o
-[141/186] Building CXX object tests/CMakeFiles/hepta_unsupported_venue_adapter_tests.dir/__/HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp.o
+[140/186] Building CXX object tests/CMakeFiles/hepta_unsupported_venue_adapter_tests.dir/__/HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp.o
+[141/186] Building CXX object tests/CMakeFiles/hepta_unsupported_venue_adapter_tests.dir/unsupported_venue_adapter_tests.cpp.o
 [142/186] Building CXX object tests/CMakeFiles/hepta_unsupported_venue_adapter_tests.dir/__/HeptaTrade/adapter_xt/xt_gateway_adapter.cpp.o
-[143/186] Building CXX object tests/CMakeFiles/hepta_runtime_telemetry_tests.dir/runtime_telemetry_tests.cpp.o
-[144/186] Building CXX object tests/CMakeFiles/hepta_execution_preview_permit_tests.dir/execution_preview_permit_tests.cpp.o
+[143/186] Building CXX object tests/CMakeFiles/hepta_execution_preview_permit_tests.dir/execution_preview_permit_tests.cpp.o
+[144/186] Building CXX object tests/CMakeFiles/hepta_runtime_telemetry_tests.dir/runtime_telemetry_tests.cpp.o
 [145/186] Building CXX object tests/CMakeFiles/hepta_portfolio_compiler_tests.dir/portfolio_compiler_tests.cpp.o
-[146/186] Building CXX object tests/CMakeFiles/hepta_target_position_tool_tests.dir/target_position_tool_tests.cpp.o
-[147/186] Building CXX object tests/CMakeFiles/hepta_oms_crash_replay_tests.dir/oms_crash_replay_tests.cpp.o
+[146/186] Building CXX object tests/CMakeFiles/hepta_oms_crash_replay_tests.dir/oms_crash_replay_tests.cpp.o
+[147/186] Building CXX object tests/CMakeFiles/hepta_target_position_tool_tests.dir/target_position_tool_tests.cpp.o
 [148/186] Building CXX object tests/CMakeFiles/hepta_protocol_fuzz_smoke_tests.dir/protocol_fuzz_smoke_tests.cpp.o
 [149/186] Building CXX object tests/CMakeFiles/hepta_risk_latency_fixture_tests.dir/risk_latency_fixture_tests.cpp.o
 [150/186] Linking CXX executable HeptaTrade/heptactl
@@ -177,11 +172,11 @@ $ cmake --build build/proof-v3 --parallel 2
 [152/186] Building CXX object tests/CMakeFiles/hepta_oms_crash_replay_tests.dir/__/HeptaTrade/oms_journal.cpp.o
 [153/186] Linking CXX executable HeptaTrade/hepta-executiond
 [154/186] Linking CXX executable tests/hepta_trading_contract_tests
-[155/186] Linking CXX executable HeptaTrade/hepta-tool-gatewayd
--- Gateway privileged-symbol boundary PASS: /home/runner/work/heptatrader/heptatrader/build/proof-v3/HeptaTrade/hepta-tool-gatewayd; defined_symbols=8699 observed; Release-only quantitative budget not enforced
-[156/186] Linking CXX executable tests/hepta_native_tool_client_tests
-[157/186] Linking CXX executable tests/hepta_oms_journal_durability_tests
-[158/186] Linking CXX executable tests/hepta_execution_coordinator_tests
+[155/186] Linking CXX executable tests/hepta_native_tool_client_tests
+[156/186] Linking CXX executable tests/hepta_execution_coordinator_tests
+[157/186] Linking CXX executable HeptaTrade/hepta-tool-gatewayd
+-- Gateway privileged-symbol boundary PASS: /home/runner/work/heptatrader/heptatrader/build/final-proof/HeptaTrade/hepta-tool-gatewayd; defined_symbols=8699 observed; Release-only quantitative budget not enforced
+[158/186] Linking CXX executable tests/hepta_oms_journal_durability_tests
 [159/186] Linking CXX executable tests/hepta_execution_event_hub_tests
 [160/186] Linking CXX executable tests/hepta_trading_tool_registry_tests
 [161/186] Linking CXX executable tests/hepta_execution_event_feed_tests
@@ -195,8 +190,8 @@ $ cmake --build build/proof-v3 --parallel 2
 [169/186] Linking CXX executable tests/hepta_execution_decision_lease_authority_tests
 [170/186] Linking CXX executable tests/hepta_authoritative_trading_snapshot_store_tests
 [171/186] Linking CXX executable tests/hepta_snapshot_refresh_coordinator_tests
-[172/186] Linking CXX executable tests/hepta_agent_simulator_e2e_tests
-[173/186] Linking CXX executable tests/hepta_ib_order_lifecycle_tests
+[172/186] Linking CXX executable tests/hepta_ib_order_lifecycle_tests
+[173/186] Linking CXX executable tests/hepta_agent_simulator_e2e_tests
 [174/186] Linking CXX executable tests/hepta_ib_paper_kill_switch_tests
 [175/186] Linking CXX executable tests/hepta_deterministic_risk_policy_tests
 [176/186] Linking CXX executable tests/hepta_ib_gateway_adapter_risk_tests
@@ -210,11 +205,8 @@ $ cmake --build build/proof-v3 --parallel 2
 [184/186] Linking CXX executable tests/hepta_oms_crash_replay_tests
 [185/186] Linking CXX executable tests/hepta_protocol_fuzz_smoke_tests
 [186/186] Linking CXX executable tests/hepta_risk_latency_fixture_tests
-
-
-$ ctest --test-dir build/proof-v3 -N
-Internal ctest changing into directory: /home/runner/work/heptatrader/heptatrader/build/proof-v3
-Test project /home/runner/work/heptatrader/heptatrader/build/proof-v3
+Internal ctest changing into directory: /home/runner/work/heptatrader/heptatrader/build/final-proof
+Test project /home/runner/work/heptatrader/heptatrader/build/final-proof
   Test  #1: hepta_trading_contract_tests
   Test  #2: hepta_native_tool_client_tests
   Test  #3: hepta_execution_coordinator_tests
@@ -249,39 +241,4 @@ Test project /home/runner/work/heptatrader/heptatrader/build/proof-v3
   Test #32: hepta_risk_latency_fixture_tests
 
 Total Tests: 32
-
-
-$ ctest --test-dir build/proof-v3 --output-on-failure -R ^hepta_target_protocol_idempotency_tests$
-Internal ctest changing into directory: /home/runner/work/heptatrader/heptatrader/build/proof-v3
-Test project /home/runner/work/heptatrader/heptatrader/build/proof-v3
-No tests were found!!!
-
-catalog <HTTPError 410: 'Gone'>
-catalog <HTTPError 410: 'Gone'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 410: 'Gone'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 410: 'Gone'>
-catalog <HTTPError 410: 'Gone'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
-catalog <HTTPError 429: 'Too Many Requests'>
 ```
