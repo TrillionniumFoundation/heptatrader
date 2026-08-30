@@ -152,3 +152,5 @@ jobs:
           git diff --cached --check
           git commit -s -m "chore: reverify exact HeptaTrader closure head"
           git push origin HEAD:codex/heptatrader-gap-closure-v2
+
+# one-shot trigger refreshed by ChatGPT on 2026-08-30
