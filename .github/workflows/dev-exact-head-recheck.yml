@@ -50,6 +50,12 @@ jobs:
               for line in source[start:end].splitlines()
           )
           exec(compile(program, "exact-gap-closure-guardian", "exec"), {})
+
+          generator = Path("scripts/generate_tool_catalog.py")
+          text = generator.read_text(encoding="utf-8")
+          text = text.replace("DIGEST_PATH", "DIGEST")
+          generator.write_text(text, encoding="utf-8")
+          compile(text, str(generator), "exec")
           PY
 
       - name: Verify every canonical closure contract on the generated tree
@@ -140,4 +146,4 @@ jobs:
             "feat: close and verify all canonical HeptaTrader gaps"
           git push origin HEAD:codex/heptatrader-gap-closure-v2
 
-# trigger: catalog bridge v3
+# trigger: catalog check constant v4
