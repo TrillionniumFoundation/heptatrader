@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <chrono>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 #include <sys/random.h>
 #include <thread>
@@ -65,6 +66,9 @@ std::uint64_t NowMs()
 std::string JsonString(const std::string& value)
 {
     std::ostringstream output;
+    // Escaped control bytes are emitted through numeric stream manipulators;
+    // pin the locale so a host process cannot alter the wire representation.
+    output.imbue(std::locale::classic());
     output << '"';
     for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
     {
@@ -137,6 +141,7 @@ bool EncodeCommandStatus(const ExecutionControlResult& result,
         return false;
     }
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "{\"authoritative\":true,\"command_id\":"
            << JsonString(result.targetCommandId)
            << ",\"command_status\":" << JsonString(status)
@@ -430,10 +435,12 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
                                    std::string& callbackReason) {
         ExecutionServiceIdentity identity;
         std::string probeReason;
+        std::uint64_t eventWatermark = 0;
         const bool configured =
             m_executionGateway && m_executionGateway->Enabled();
         const bool ready = configured &&
-            m_executionGateway->ProbeRemoteService(identity, probeReason);
+            m_executionGateway->ProbeRemoteService(
+                identity, probeReason, &eventWatermark);
         std::string authoritativeHealth;
         std::uint32_t authorizedConnectorCount = 0;
         if (m_executionConfig.externalP1CanaryLimitDay)
@@ -471,6 +478,7 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
             }
         }
         std::ostringstream output;
+        output.imbue(std::locale::classic());
         output << "{\"gateway_ready\":" << (IsRunning() ? "true" : "false")
                << ",\"tool_gateway_epoch\":"
                << JsonString(m_gatewayEpoch)
@@ -484,6 +492,8 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
                << JsonString(ready ? identity.serviceEpoch : std::string())
                << ",\"execution_service_fencing_generation\":"
                << (ready ? identity.serviceFencingGeneration : 0)
+               << ",\"event_watermark\":"
+               << (ready ? eventWatermark : 0)
                << ",\"remote_execution_reason\":"
                << JsonString(ready ? std::string() :
                     (probeReason.empty() ? "REMOTE_EXECUTION_NOT_READY" : probeReason))
@@ -677,6 +687,7 @@ bool ToolGatewayRuntimeComposition::FenceRevokedOwner(
     command.context = binding.session.executionContext;
     command.context.executionDomain = binding.executionDomain;
     std::ostringstream callId;
+    callId.imbue(std::locale::classic());
     callId << "gateway-owner-fence-" << NowMs() << '-'
            << m_fenceSequence.fetch_add(1) << '-' << reasonCode.size();
     command.context.toolCallId = callId.str();

@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: Simulator and IB PAPER runtime incidents
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; target-host validation is separate
 
 ## Severity
 

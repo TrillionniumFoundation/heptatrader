@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: all research strategies and replay outputs
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; broader venue/host validation is separate
 
 ## Objective
 
@@ -22,9 +22,23 @@ Every run records dataset URI/version/SHA-256, UTC/session calendar, symbol/cont
 
 Fold boundaries, purge/embargo and all selected parameters are machine-readable RunManifest fields and validated by tests.
 
+The checked-in deterministic fixture is executable without broker access:
+
+```bash
+python3 research/run_protocol.py verify --manifest research/manifest-v1.json
+python3 research/run_protocol.py run \
+  --manifest run-manifest.json \
+  --quotes <quotes.json> --targets <targets.json>
+```
+
+`run` and `replay` emit the canonical RunSummary and reject malformed,
+out-of-order, changed-timestamp, non-finite or capability-bearing inputs. The
+fixture is evidence for protocol correctness, not a claim that a strategy is
+profitable or PAPER/LIVE-ready.
+
 ## Execution and costs
 
-Each evaluation explicitly models observed/conservative spread, commissions/fees, slippage, decision/queue/broker delay, partial fills/rejects where relevant, order-size/capacity, market impact, session/liquidity constraints, FX conversion, borrow/funding when applicable.
+Each evaluation explicitly models observed/conservative spread, commissions/fees, slippage, decision/queue/broker delay, partial fills/rejects where relevant, order-size/capacity, market impact, session/liquidity constraints, FX conversion, borrow/funding when applicable. In the compact runner, observed bid/ask is the point-in-time base; `spread_bps` is an additive adverse fill stress, `fee_bps` is charged on each fill notional, and annualized `borrow_bps`/`funding_bps` accrue on marked short/gross exposure over a fixed 365-day year. A concrete RunManifest records an explicit `final_out_of_sample` interval after the final walk-forward test fold.
 
 A candidate fails when its edge disappears under a reasonable adverse-cost scenario or relies on a fill unavailable at the decision timestamp.
 

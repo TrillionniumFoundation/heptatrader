@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <iomanip>
+#include <locale>
 #include <limits>
 #include <openssl/evp.h>
 #include <sstream>
@@ -42,7 +43,13 @@ std::string CanonicalDouble(double value)
                   "unsupported double representation");
     std::uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
+    // Signed zero is not a distinct intent on the wire (canonical numeric
+    // encoders collapse it to `0`).  Normalize it here as well so a direct
+    // in-process caller cannot obtain a different permit digest for the same
+    // target/price request.
+    if (value == 0.0) bits = 0;
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << std::hex << std::setw(16) << std::setfill('0') << bits;
     return out.str();
 }
@@ -60,6 +67,7 @@ std::string Sha256(const std::string& value)
     if (!ok) return std::string();
 
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << "sha256:" << std::hex << std::setfill('0');
     for (unsigned int i = 0; i < length; ++i)
         out << std::setw(2) << static_cast<unsigned int>(digest[i]);
@@ -100,14 +108,23 @@ bool ValidateSnapshot(const TargetPositionDecisionSnapshot& snapshot,
         return Reject("INTENT_SNAPSHOT_INCOMPLETE",
                       "snapshot identity or generation is incomplete",
                       reasonCode, detail);
-    if (snapshot.eventWatermark > snapshot.collectionWatermark ||
-        snapshot.collectionWatermark > snapshot.snapshotWatermark)
+    // Event and collection watermarks are independent domains: the former is
+    // the Execution Service event-feed cursor, while the latter identifies
+    // this Gateway snapshot collection.  Only the collection watermark must
+    // remain monotonic within the snapshot domain.
+    // The event feed starts at sequence one, so zero is the authoritative
+    // watermark for a newly started service that has not published an event
+    // yet.  BuildSnapshot compares the before/after health identities and
+    // rejects any change during collection; fabricating a synthetic sequence
+    // here would weaken that authority boundary.
+    if (snapshot.collectionWatermark > snapshot.snapshotWatermark)
         return Reject("INTENT_SNAPSHOT_INCONSISTENT",
                       "snapshot watermarks are not monotonic",
                       reasonCode, detail);
     if (snapshot.collectionStartedAtMs <= 0 ||
         snapshot.collectionCompletedAtMs < snapshot.collectionStartedAtMs ||
         snapshot.quoteObservedAtMs <= 0 ||
+        snapshot.quoteObservedAtMs < snapshot.collectionStartedAtMs ||
         snapshot.quoteObservedAtMs > snapshot.collectionCompletedAtMs)
         return Reject("INTENT_SNAPSHOT_INCONSISTENT",
                       "snapshot timestamps are invalid",

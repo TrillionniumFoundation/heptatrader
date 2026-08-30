@@ -17,8 +17,8 @@ import sys
 import xml.etree.ElementTree as ET
 
 
-VALID_PROFILES = frozenset({"sim", "paper", "live"})
-PRODUCTION_PROFILES = frozenset({"paper", "live"})
+VALID_PROFILES = frozenset({"sim", "paper"})
+PRODUCTION_PROFILES = frozenset({"paper"})
 CONFIG_ENV_KEYS = ("HEPTA_CONFIG_PATH", "HEPTA_TRADER_CONFIG_PATH")
 
 
@@ -37,7 +37,7 @@ def _validated_profile(value: str | None, source: str) -> str | None:
     normalized = _profile(value)
     if normalized is not None and normalized not in VALID_PROFILES:
         raise ConfigError(
-            f"invalid {source}={normalized}; allowed: sim/paper/live")
+            f"invalid {source}={normalized}; allowed: sim/paper")
     return normalized
 
 
@@ -50,19 +50,20 @@ def _canonical_path(value: str | None, project_root: Path) -> Path | None:
     return path.resolve()
 
 
-def _detect_profile(root: ET.Element) -> str:
+def _detect_profile(root: ET.Element) -> str | None:
+    """Return only an explicitly configured profile.
+
+    Broker mode and account identifiers are deliberately not profile
+    selectors.  In particular, a non-DU account must never silently turn a
+    config into an unsupported LIVE profile.
+    """
     runtime = root.find("Runtime")
     if runtime is not None:
         configured = _profile(
             runtime.attrib.get("Profile") or runtime.findtext("Profile"))
         if configured:
-            return _validated_profile(configured, "config profile") or "sim"
-
-    ib = root.find("IBServer")
-    if ib is not None and ib.attrib.get("Mode", "").strip().upper() == "IB":
-        account = (ib.attrib.get("Account") or "").strip().upper()
-        return "paper" if account.startswith("DU") else "live"
-    return "sim"
+            return _validated_profile(configured, "config profile")
+    return None
 
 
 def _sha256(path: Path) -> str:
@@ -123,8 +124,7 @@ def resolve(
         raise ConfigError(
             f"config XML parse failed: {config_path}: {error}") from error
 
-    inferred_profile = _validated_profile(
-        _detect_profile(root), "profile inferred from config") or "sim"
+    configured_profile = _detect_profile(root)
     env_profile = _validated_profile(os.getenv("HEPTA_PROFILE"), "HEPTA_PROFILE")
     arg_profile = _validated_profile(explicit_profile, "--profile")
 
@@ -133,11 +133,13 @@ def resolve(
             f"conflicting profiles: HEPTA_PROFILE={env_profile}, "
             f"--profile={arg_profile}")
 
-    locked_profile = arg_profile or env_profile or inferred_profile
-    if (arg_profile or env_profile) and locked_profile != inferred_profile:
+    requested_profile = arg_profile or env_profile
+    if configured_profile is not None and requested_profile and \
+            requested_profile != configured_profile:
         raise ConfigError(
-            f"profile lock mismatch: requested={locked_profile}, "
-            f"config={inferred_profile}")
+            f"profile lock mismatch: requested={requested_profile}, "
+            f"config={configured_profile}")
+    locked_profile = requested_profile or configured_profile or "sim"
 
     is_template = config_path.name.lower().endswith(".example")
     if locked_profile in PRODUCTION_PROFILES:
@@ -150,10 +152,12 @@ def resolve(
                 f"production profile={locked_profile} cannot use template "
                 f"config: {config_path}")
 
-    if locked_profile == "sim":
-        ib = root.find("IBServer")
-        if ib is not None and ib.attrib.get("Mode", "").strip().upper() == "IB":
-            raise ConfigError("profile=sim conflicts with IBServer.Mode=IB")
+    ib = root.find("IBServer")
+    ib_mode = ib.attrib.get("Mode", "").strip().upper() if ib is not None else ""
+    if locked_profile == "sim" and ib_mode == "IB":
+        raise ConfigError("profile=sim conflicts with IBServer.Mode=IB")
+    if locked_profile == "paper" and ib_mode != "IB":
+        raise ConfigError("profile=paper requires IBServer.Mode=IB")
 
     return {
         "config_path": str(config_path),
@@ -164,7 +168,8 @@ def resolve(
             "profile": (
                 "arg" if arg_profile else
                 "HEPTA_PROFILE" if env_profile else
-                "config"
+                "config" if configured_profile else
+                "default"
             ),
         },
         "is_example": is_template,

@@ -2,7 +2,6 @@
 #include "ib_contract_identity.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <limits>
 
@@ -16,7 +15,11 @@ std::string IBAuthoritativeOrderProjector::NormalizeInstrument(const std::string
 {
     std::string normalized = value;
     std::transform(normalized.begin(), normalized.end(), normalized.begin(), [](unsigned char character) {
-        return static_cast<char>(std::toupper(character));
+        return character >= static_cast<unsigned char>('a') &&
+                character <= static_cast<unsigned char>('z') ?
+            static_cast<char>(character - static_cast<unsigned char>('a') +
+                              static_cast<unsigned char>('A')) :
+            static_cast<char>(character);
     });
     std::replace(normalized.begin(), normalized.end(), '/', '.');
     return normalized;

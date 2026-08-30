@@ -1,4 +1,5 @@
 #include "deterministic_risk_policy.h"
+#include "../observability/runtime_telemetry.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,6 +11,7 @@ DeterministicRiskDecision Allow()
     DeterministicRiskDecision decision;
     decision.allow = true;
     decision.reasonCode = "RISK_OK";
+    RuntimeRecordRiskDecision(true, decision.reasonCode);
     return decision;
 }
 
@@ -19,6 +21,7 @@ DeterministicRiskDecision Reject(const char* code, const char* detail)
     decision.allow = false;
     decision.reasonCode = code;
     decision.detail = detail;
+    RuntimeRecordRiskDecision(false, code);
     return decision;
 }
 
@@ -91,6 +94,8 @@ DeterministicRiskDecision DeterministicRiskPolicy::Evaluate(
     const DeterministicRiskLimits& limits,
     const DeterministicRiskContext& context)
 {
+    RuntimeLatencyScope riskLatency("hepta_risk_decision_latency_microseconds");
+
     std::string limitReason;
     if (!ValidateLimits(limits, limitReason))
         return Reject("RISK_LIMITS_INVALID", "risk limits are invalid");

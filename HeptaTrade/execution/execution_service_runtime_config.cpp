@@ -2,13 +2,61 @@
 #include "../risk/deterministic_risk_policy.h"
 
 #include <cerrno>
-#include <cctype>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <locale>
+#include <sstream>
 
 namespace
 {
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+
 std::string ReadString(const std::map<std::string, std::string>& values, const char* key)
 {
     const std::map<std::string, std::string>::const_iterator found = values.find(key);
@@ -17,7 +65,7 @@ std::string ReadString(const std::map<std::string, std::string>& values, const c
 
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum, std::uint64_t& parsed)
 {
-    if (value.empty() || value[0] == '-') return false;
+    if (!CanonicalUnsignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
@@ -35,12 +83,14 @@ bool ParseBool01(const std::string& value, bool& parsed)
 
 bool ParsePositiveDouble(const std::string& value, double& parsed)
 {
-    if (value.empty()) return false;
-    char* end = nullptr;
-    errno = 0;
-    const double number = std::strtod(value.c_str(), &end);
-    if (errno != 0 || end == value.c_str() || *end != '\0' ||
-        !std::isfinite(number) || number <= 0.0) return false;
+    if (!CanonicalFloating(value)) return false;
+    std::istringstream input(value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double number = 0.0;
+    input >> number;
+    if (!input || !input.eof() || !std::isfinite(number) || number <= 0.0)
+        return false;
     parsed = number;
     return true;
 }
@@ -54,8 +104,11 @@ bool CanonicalAgentId(const std::string& value)
     {
         const unsigned char character =
             static_cast<unsigned char>(value[i]);
-        if (!std::islower(character) && !std::isdigit(character) &&
-            character != '-')
+        const bool lower = character >= static_cast<unsigned char>('a') &&
+            character <= static_cast<unsigned char>('z');
+        const bool digit = character >= static_cast<unsigned char>('0') &&
+            character <= static_cast<unsigned char>('9');
+        if (!lower && !digit && character != '-')
             return false;
     }
     return true;

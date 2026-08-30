@@ -2,15 +2,58 @@
 #include "../HeptaTrade/execution/execution_coordinator.h"
 #include "../HeptaTrade/tool_host/session_supervisor_lease_store.h"
 #include "../HeptaTrade/tool_host/trading_tool_session_control_plane.h"
+#include "../HeptaTrade/intent/bounded_json.h"
 
 #include <cassert>
 #include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <fcntl.h>
 #include <iostream>
+#include <mutex>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <unistd.h>
+
+// Keep cache inspection test-only.  The production host deliberately does
+// not expose its local replay optimization as API; the friend is used here
+// to verify bounded retention/expiry without waiting a wall-clock day.
+class TradingToolHostTestAccess
+{
+public:
+    static std::size_t ReplaySize(const TradingToolHost& host)
+    {
+        std::lock_guard<std::mutex> lock(host.m_mutex);
+        return host.m_mutationReplays.size();
+    }
+
+    static void ExpireAllReplays(TradingToolHost& host)
+    {
+        std::lock_guard<std::mutex> lock(host.m_mutex);
+        const std::chrono::steady_clock::time_point expired =
+            std::chrono::steady_clock::now() - std::chrono::milliseconds(1);
+        for (std::unordered_map<std::string,
+                 TradingToolHost::MutationReplayRecord>::iterator it =
+                 host.m_mutationReplays.begin();
+             it != host.m_mutationReplays.end(); ++it)
+            it->second.steadyExpiresAt = expired;
+    }
+
+    static bool AllReplayPermitsCleared(const TradingToolHost& host)
+    {
+        std::lock_guard<std::mutex> lock(host.m_mutex);
+        for (std::unordered_map<std::string,
+                 TradingToolHost::MutationReplayRecord>::const_iterator it =
+                 host.m_mutationReplays.begin();
+             it != host.m_mutationReplays.end(); ++it)
+        {
+            if (!it->second.call.previewPermit.empty()) return false;
+        }
+        return true;
+    }
+};
 
 namespace {
 
@@ -96,7 +139,60 @@ TradingToolCall PlaceCall()
     call.timeInForce = "DAY";
     call.ibOrder.totalQuantity = 1000.0;
     call.ibOrder.lmtPrice = 1.1;
+    call.previewPermit = "sha256:" + std::string(64, 'a');
     call.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
+    return call;
+}
+
+class TargetReplayAuthority : public ExecutionAuthority
+{
+public:
+    ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override
+    {
+        ++placeCalls;
+        lastPlace = command;
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        result.orderId = 1901;
+        return result;
+    }
+
+    ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
+    {
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        result.orderId = command.orderId;
+        return result;
+    }
+
+    int placeCalls = 0;
+    PlaceOrderCommand lastPlace;
+};
+
+std::string TargetJsonStringField(const std::string& json,
+                                  const std::string& key)
+{
+    BoundedJsonValue root;
+    std::string reason;
+    assert(ParseBoundedJson(json, root, reason));
+    const BoundedJsonValue* field = root.Find(key);
+    std::string value;
+    assert(field != nullptr && field->String(value));
+    return value;
+}
+
+TradingToolCall HostTargetCall(const std::string& name,
+                               double target,
+                               std::int64_t expiresAtMs)
+{
+    TradingToolCall call;
+    call.name = name;
+    call.instrument = "EUR.USD";
+    call.ibOrder.totalQuantity = target;
+    call.referencePrice = 5.0;
+    call.expiresAtMs = expiresAtMs;
     return call;
 }
 
@@ -159,7 +255,7 @@ void TestServerBoundIdentityAndCapabilities()
 
     TradingToolHostSessionBinding invalidWatch = watch;
     invalidWatch.token = "watch-session-token-00000002";
-    invalidWatch.session.capabilities.insert("trade.place");
+    invalidWatch.session.capabilities.insert("operator.trade.place");
     assert(!host.RegisterSession(invalidWatch, reason));
     assert(reason == "WATCH_SESSION_CANNOT_TRADE");
 
@@ -183,7 +279,7 @@ void TestServerBoundIdentityAndCapabilities()
     paper.session.executionContext.agentId = "paper-agent";
     paper.session.executionContext.sessionId = "paper-session";
     paper.session.environment = "PAPER";
-    paper.session.capabilities.insert("trade.place");
+    paper.session.capabilities.insert("operator.trade.place");
     paper.allowedInstruments.insert("EUR.USD");
     paper.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
     paper.maxOrderQuantity = 1000.0;
@@ -282,11 +378,37 @@ void TestServerBoundIdentityAndCapabilities()
     cancelOnly.session.executionContext.sessionId = "cancel-session";
     cancelOnly.session.executionContext.account = "DU123";
     cancelOnly.session.environment = "PAPER";
+    cancelOnly.session.capabilities.insert("system.read");
     cancelOnly.session.capabilities.insert("trade.cancel");
     cancelOnly.maxTradeCallsPerMinute = 2;
     cancelOnly.executionDomain = "IB-PAPER";
     cancelOnly.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
     assert(host.RegisterSession(cancelOnly, reason));
+
+    // Queue cancellation is owned by UnixToolServer.  A direct host caller
+    // must receive the typed control-plane rejection instead of a misleading
+    // registry ``handler unavailable`` result.
+    TradingToolHostRequest directCancel;
+    directCancel.sessionToken = cancelOnly.token;
+    directCancel.toolCallId = "direct-cancel-001";
+    directCancel.cancelToolCallId = "queued-cancel-001";
+    directCancel.call.name = "system.cancel_request";
+    BindSchemaHash(registry, directCancel);
+    const TradingToolResult directCancelResult =
+        host.Invoke(cancelOnly.peerUid, directCancel);
+    assert(directCancelResult.status == TradingToolCallStatus::InvalidTool);
+    assert(directCancelResult.reasonCode == "CONTROL_TOOL_REQUIRED");
+
+    // The direct Host API must enforce the same idempotency-key grammar as
+    // the typed protocol; otherwise an embedded caller could inject control
+    // bytes or an all-punctuation key into replay/journal namespaces.
+    TradingToolHostRequest invalidDirectId = directCancel;
+    invalidDirectId.toolCallId = "--------";
+    assert(host.Invoke(cancelOnly.peerUid, invalidDirectId).reasonCode ==
+           "INVALID_COMMAND_ID");
+    invalidDirectId.toolCallId = std::string(129, 'a');
+    assert(host.Invoke(cancelOnly.peerUid, invalidDirectId).reasonCode ==
+           "INVALID_COMMAND_ID");
 
     TradingToolHostRequest cancelRequest;
     cancelRequest.sessionToken = cancelOnly.token;
@@ -503,7 +625,7 @@ void TestMultiInstrumentMutationOwnerHandoff()
 		binding.session.executionContext.sessionId = session;
 		binding.session.executionContext.account = "DU123";
 		binding.session.environment = "PAPER";
-		binding.session.capabilities.insert("trade.place");
+		binding.session.capabilities.insert("operator.trade.place");
 		binding.allowedInstruments.insert(instrument);
 		binding.instrumentContracts[instrument] = contract;
 		binding.maxOrderQuantity = 1000.0;
@@ -576,7 +698,7 @@ void TestFailClosedTwoPhaseOwnerFence()
 	binding.session.executionContext.sessionId = "pending-session";
 	binding.session.executionContext.account = "DU123";
 	binding.session.environment = "PAPER";
-	binding.session.capabilities.insert("trade.place");
+	binding.session.capabilities.insert("operator.trade.place");
 	binding.allowedInstruments.insert("EUR.USD");
 	binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
 	binding.maxOrderQuantity = 1000.0;
@@ -701,7 +823,7 @@ void TestInFlightMutationCannotCrossFailedOwnerFence()
 	binding.session.executionContext.sessionId = "inflight-session";
 	binding.session.executionContext.account = "DU123";
 	binding.session.environment = "PAPER";
-	binding.session.capabilities.insert("trade.place");
+	binding.session.capabilities.insert("operator.trade.place");
 	binding.allowedInstruments.insert("EUR.USD");
 	binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
 	binding.maxOrderQuantity = 1000.0;
@@ -795,7 +917,7 @@ void TestInFlightMutationLinearizesBeforeLeaseRotation()
 	binding.session.executionContext.sessionId = "inflight-rotate-session";
 	binding.session.executionContext.account = "DU123";
 	binding.session.environment = "PAPER";
-	binding.session.capabilities.insert("trade.place");
+	binding.session.capabilities.insert("operator.trade.place");
 	binding.allowedInstruments.insert("EUR.USD");
 	binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
 	binding.maxOrderQuantity = 1000.0;
@@ -883,7 +1005,7 @@ void TestInFlightPreviewLinearizesBeforeOwnerFence()
 	binding.session.executionContext.sessionId = "inflight-preview-session";
 	binding.session.executionContext.account = "DU123";
 	binding.session.environment = "PAPER";
-	binding.session.capabilities.insert("risk.preview");
+	binding.session.capabilities.insert("operator.risk.preview");
 	binding.allowedInstruments.insert("EUR.USD");
 	binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
 	binding.maxOrderQuantity = 1000.0;
@@ -909,6 +1031,9 @@ void TestInFlightPreviewLinearizesBeforeOwnerFence()
 	preview.toolCallId = "inflight-preview-read";
 	preview.call = PlaceCall();
 	preview.call.name = "risk.preview_order";
+	// The raw-place fixture carries a mutation permit; risk preview is a
+	// separate read operation and must never receive that one-time credential.
+	preview.call.previewPermit.clear();
 	BindSchemaHash(registry, preview);
 	TradingToolResult previewResult;
 	std::thread previewThread([&]() {
@@ -979,10 +1104,16 @@ void TestRecoveryQueryLinearizesAfterIngressAndClosesEntry()
 	binding.session.executionContext.sessionId = "recovery-query-session";
 	binding.session.executionContext.account = "DU123";
 	binding.session.environment = "PAPER";
-	binding.session.capabilities.insert("risk.preview");
+	binding.session.capabilities.insert("operator.risk.preview");
+	// Recovery checks cover both the legacy raw preview path and the ordinary
+	// target-position intent path.  The latter must not be able to re-enter by
+	// choosing a target that happens to increase exposure.
+	binding.session.capabilities.insert("risk.read");
+	binding.session.capabilities.insert("intent.apply");
 	binding.allowedInstruments.insert("EUR.USD");
 	binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
 	binding.maxOrderQuantity = 1000.0;
+	binding.maxTradeCallsPerMinute = 10;
 	binding.executionDomain = "IB-PAPER";
 	binding.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
 	assert(host.RegisterSession(binding, reason));
@@ -1038,6 +1169,7 @@ void TestRecoveryQueryLinearizesAfterIngressAndClosesEntry()
 	preview.toolCallId = "recovery-query-preview-inflight";
 	preview.call = PlaceCall();
 	preview.call.name = "risk.preview_order";
+	preview.call.previewPermit.clear();
 	BindSchemaHash(registry, preview);
 	TradingToolResult previewResult;
 	std::thread previewThread([&]() {
@@ -1112,6 +1244,30 @@ void TestRecoveryQueryLinearizesAfterIngressAndClosesEntry()
 	const TradingToolResult blocked = host.Invoke(binding.peerUid, preview);
 	assert(blocked.status == TradingToolCallStatus::PermissionDenied);
 	assert(blocked.reasonCode == "SESSION_RECOVERY_ONLY");
+
+	TradingToolHostRequest targetPreview;
+	targetPreview.sessionToken = binding.token;
+	targetPreview.toolCallId = "recovery-target-preview-blocked";
+	targetPreview.call.name = "intent.preview_target_position";
+	targetPreview.call.instrument = "EUR.USD";
+	targetPreview.call.ibOrder.totalQuantity = 100.0;
+	targetPreview.call.referencePrice = 5.0;
+	targetPreview.call.expiresAtMs = OmsJournal::NowEpochMs() + 30000;
+	BindSchemaHash(registry, targetPreview);
+	const TradingToolResult targetPreviewBlocked = host.Invoke(
+		binding.peerUid, targetPreview);
+	assert(targetPreviewBlocked.status == TradingToolCallStatus::PermissionDenied);
+	assert(targetPreviewBlocked.reasonCode == "SESSION_RECOVERY_ONLY");
+
+	TradingToolHostRequest targetApply = targetPreview;
+	targetApply.toolCallId = "recovery-target-apply-blocked";
+	targetApply.call.name = "intent.apply_target_position";
+	targetApply.call.previewPermit = "sha256:" + std::string(64, 'a');
+	BindSchemaHash(registry, targetApply);
+	const TradingToolResult targetApplyBlocked = host.Invoke(
+		binding.peerUid, targetApply);
+	assert(targetApplyBlocked.status == TradingToolCallStatus::PermissionDenied);
+	assert(targetApplyBlocked.reasonCode == "SESSION_RECOVERY_ONLY");
 	std::remove(path.c_str());
 	std::remove(leasePath.c_str());
 	std::remove(keyPath.c_str());
@@ -1262,7 +1418,7 @@ void TestEntryCancelAndFlattenBudgetsAreIndependent()
 	binding.session.executionContext.sessionId = "rate-budget-session";
 	binding.session.executionContext.account = "DU123";
 	binding.session.environment = "PAPER";
-	binding.session.capabilities.insert("trade.place");
+	binding.session.capabilities.insert("operator.trade.place");
 	binding.session.capabilities.insert("trade.cancel");
 	binding.session.capabilities.insert("trade.flatten");
 	binding.allowedInstruments.insert("EUR.USD");
@@ -1336,6 +1492,248 @@ void TestEntryCancelAndFlattenBudgetsAreIndependent()
 	std::remove(path.c_str());
 }
 
+void TestAcceptedTargetReplayBypassesBusyLease()
+{
+    TargetReplayAuthority authority;
+    TradingToolReadCallbacks reads;
+    reads.systemGetHealth = [](const TradingToolSession&,
+                               const TradingToolCall&,
+                               std::string& payload,
+                               std::string&) {
+        payload = "{\"event_watermark\":5,\"execution_service_fencing_generation\":9,"
+                  "\"gateway_ready\":true,"
+                  "\"remote_execution_ready\":true,\"execution_service_epoch\":\"epoch-a\"}";
+        return true;
+    };
+    std::int64_t quoteObservedAtMs = 0;
+    reads.marketGetQuote = [&quoteObservedAtMs](const TradingToolSession&,
+                                                const TradingToolCall& call,
+                                                std::string& payload,
+                                                std::string&) {
+        if (quoteObservedAtMs == 0)
+            quoteObservedAtMs = OmsJournal::NowEpochMs();
+        payload = "{\"ask\":1.1002,\"authoritative\":true,\"stale\":false,"
+                  "\"observed_at_ms\":" + std::to_string(quoteObservedAtMs) +
+                  ",\"instrument\":\"" + call.instrument +
+                  "\",\"bid\":1.1000}";
+        return true;
+    };
+    reads.accountGetSummary = [](const TradingToolSession&,
+                                 const TradingToolCall&,
+                                 std::string& payload,
+                                 std::string&) {
+        payload = "{\"authoritative\":true}";
+        return true;
+    };
+    reads.portfolioListPositions = [](const TradingToolSession&,
+                                      const TradingToolCall&,
+                                      std::string& payload,
+                                      std::string&) {
+        payload = "{\"authoritative\":true,\"positions\":[{"
+                  "\"instrument\":\"EUR.USD\",\"quantity\":10}]}";
+        return true;
+    };
+    reads.ordersList = [](const TradingToolSession&,
+                          const TradingToolCall&,
+                          std::string& payload,
+                          std::string&) {
+        payload = "{\"authoritative\":true,\"orders\":[]}";
+        return true;
+    };
+    reads.riskGetLimits = [](const TradingToolSession&,
+                             const TradingToolCall&,
+                             std::string& payload,
+                             std::string&) {
+        payload = "{\"authoritative\":true,\"max_order_quantity\":25000}";
+        return true;
+    };
+    reads.riskPreviewOrder = [](const TradingToolSession&,
+                                const TradingToolCall& call,
+                                std::string& payload,
+                                std::string&) {
+        payload = "{\"authoritative\":true,\"preview_permit\":\"sha256:"
+                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                  "\",\"mutation_command_id\":\"host-target-mutation-001\","
+                  "\"expires_at_ms\":" + std::to_string(call.expiresAtMs) + "}";
+        return true;
+    };
+
+    TradingToolRegistry registry(authority, reads);
+    DecisionLeaseManager leases;
+    bool readiness = true;
+    bool throwReadiness = false;
+    int readinessCalls = 0;
+    TradingToolHost host(
+        registry, leases,
+        [&](const TradingToolSession&, const TradingToolCall&,
+            std::string& reason) {
+            ++readinessCalls;
+            if (throwReadiness)
+                throw std::runtime_error("readiness callback failure");
+            if (!readiness)
+            {
+                reason = "remote execution became unavailable";
+                return false;
+            }
+            reason.clear();
+            return true;
+        });
+    TradingToolHostSessionBinding binding;
+    binding.token = "host-target-replay-session-token-001";
+    binding.peerUid = 1001;
+    binding.session.executionContext.agentId = "host-target-replay-agent";
+    binding.session.executionContext.sessionId = "host-target-replay-session";
+    binding.session.executionContext.account = "DU123";
+    binding.session.executionContext.venue = "IB";
+    binding.session.environment = "PAPER";
+    binding.session.capabilities.insert("system.read");
+    binding.session.capabilities.insert("risk.read");
+    binding.session.capabilities.insert("intent.apply");
+    binding.session.capabilities.insert("operator.trade.place");
+    binding.allowedInstruments.insert("EUR.USD");
+    binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
+    binding.maxOrderQuantity = 1000.0;
+    binding.maxTradeCallsPerMinute = 4;
+    binding.executionDomain = "IB-PAPER";
+    binding.decisionLeaseTtlMs = 5000;
+    binding.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
+    std::string reason;
+    assert(host.RegisterSession(binding, reason));
+
+    const std::int64_t expires = OmsJournal::NowEpochMs() + 30000;
+    TradingToolHostRequest preview;
+    preview.sessionToken = binding.token;
+    preview.toolCallId = "host-target-preview-001";
+    preview.call = HostTargetCall(
+        "intent.preview_target_position", 100.0, expires);
+    BindSchemaHash(registry, preview);
+    const TradingToolResult previewEnvelope = host.Invoke(
+        binding.peerUid, preview);
+    assert(previewEnvelope.status == TradingToolCallStatus::Ok);
+    const std::string permit = TargetJsonStringField(
+        previewEnvelope.payloadJson, "preview_permit");
+    const std::string mutationId = TargetJsonStringField(
+        previewEnvelope.payloadJson, "mutation_command_id");
+
+    TradingToolHostRequest apply;
+    apply.sessionToken = binding.token;
+    apply.toolCallId = mutationId;
+    apply.call = HostTargetCall(
+        "intent.apply_target_position", 100.0, expires);
+    apply.call.previewPermit = permit;
+    BindSchemaHash(registry, apply);
+    assert(host.Invoke(binding.peerUid, apply).status ==
+           TradingToolCallStatus::Ok);
+    assert(authority.placeCalls == 1);
+    assert(readinessCalls == 1);
+
+    // Fence the original lease and grant it to another owner.  A replay must
+    // still resolve from the host ledger before readiness and
+    // EnsureDecisionLease instead of surfacing TRADING_STATE_NOT_READY,
+    // DECISION_LEASE_BUSY or dispatching a second order.
+    readiness = false;
+    DecisionLeaseOwner owner;
+    owner.agentId = binding.session.executionContext.agentId;
+    owner.sessionId = binding.session.executionContext.sessionId;
+    leases.FenceOwner(owner);
+    DecisionLeaseKey key;
+    key.executionDomain = binding.executionDomain;
+    key.account = binding.session.executionContext.account;
+    key.instrument = "EUR.USD";
+    DecisionLeaseOwner blocker;
+    blocker.agentId = "host-target-replay-blocker";
+    blocker.sessionId = "host-target-replay-blocker-session";
+    assert(leases.Acquire(key, blocker, std::chrono::milliseconds(5000)).Succeeded());
+
+    const TradingToolResult replay = host.Invoke(binding.peerUid, apply);
+    assert(replay.status == TradingToolCallStatus::Duplicate);
+    assert(replay.reasonCode == "DUPLICATE_TOOL_CALL");
+    assert(authority.placeCalls == 1);
+    assert(readinessCalls == 1);
+
+    // A new mutation whose pre-dispatch readiness callback throws must fail
+    // closed without reaching the authority. The callback exception itself is
+    // never exposed over the tool wire.
+    throwReadiness = true;
+    readiness = true;
+    TradingToolHostRequest readinessFailure;
+    readinessFailure.sessionToken = binding.token;
+    readinessFailure.toolCallId = "host-readiness-exception-001";
+    readinessFailure.call = PlaceCall();
+    BindSchemaHash(registry, readinessFailure);
+    const TradingToolResult readinessResult = host.Invoke(
+        binding.peerUid, readinessFailure);
+    assert(readinessResult.status == TradingToolCallStatus::Rejected);
+    assert(readinessResult.reasonCode == "TRADING_STATE_NOT_READY");
+    assert(readinessResult.detail == "mutation readiness check failed");
+    assert(authority.placeCalls == 1);
+}
+
+void TestMutationReplayCacheBoundedAndExpires()
+{
+    TargetReplayAuthority authority;
+    TradingToolRegistry registry(authority);
+    DecisionLeaseManager leases;
+    TradingToolHost host(registry, leases);
+
+    TradingToolHostSessionBinding binding;
+    binding.token = "host-mutation-cache-session-token-001";
+    binding.peerUid = 1001;
+    binding.session.executionContext.agentId = "host-mutation-cache-agent";
+    binding.session.executionContext.sessionId = "host-mutation-cache-session";
+    binding.session.executionContext.account = "DU123";
+    binding.session.executionContext.venue = "IB";
+    binding.session.environment = "PAPER";
+    binding.session.capabilities.insert("operator.trade.place");
+    binding.allowedInstruments.insert("EUR.USD");
+    binding.instrumentContracts["EUR.USD"] = PlaceCall().ibContract;
+    binding.maxOrderQuantity = 1000.0;
+    // The test intentionally drives more than the host's 2048-entry local
+    // replay bound.  Keep the session/rate budget above that workload.
+    binding.maxTradeCallsPerMinute = 3000;
+    binding.executionDomain = "IB-PAPER";
+    binding.decisionLeaseTtlMs = 5000;
+    binding.expiresAtMs = OmsJournal::NowEpochMs() + 10 * 60 * 1000;
+    std::string reason;
+    assert(host.RegisterSession(binding, reason));
+
+    const std::size_t totalCalls = 2050;
+    TradingToolHostRequest lastRequest;
+    for (std::size_t i = 0; i < totalCalls; ++i)
+    {
+        TradingToolHostRequest request;
+        request.sessionToken = binding.token;
+        request.toolCallId = "host-mutation-cache-" + std::to_string(i);
+        request.call = PlaceCall();
+        BindSchemaHash(registry, request);
+        const TradingToolResult result = host.Invoke(binding.peerUid, request);
+        assert(result.status == TradingToolCallStatus::Ok);
+        lastRequest = request;
+    }
+    assert(authority.placeCalls == static_cast<int>(totalCalls));
+    assert(TradingToolHostTestAccess::ReplaySize(host) == 2048);
+    // A one-time preview credential must not be retained in the host-local
+    // replay witness after the authority has accepted the mutation.
+    assert(TradingToolHostTestAccess::AllReplayPermitsCleared(host));
+
+    // A still-live exact retry is deterministic and does not dispatch again.
+    const TradingToolResult duplicate = host.Invoke(
+        binding.peerUid, lastRequest);
+    assert(duplicate.status == TradingToolCallStatus::Duplicate);
+    assert(duplicate.reasonCode == "DUPLICATE_TOOL_CALL");
+    assert(authority.placeCalls == static_cast<int>(totalCalls));
+
+    // Expire the local optimization without waiting 24 hours.  The same
+    // command then falls through to the durable authority and is reinserted,
+    // proving expiry pruning rather than an unbounded stale replay map.
+    TradingToolHostTestAccess::ExpireAllReplays(host);
+    const TradingToolResult afterExpiry = host.Invoke(
+        binding.peerUid, lastRequest);
+    assert(afterExpiry.status == TradingToolCallStatus::Ok);
+    assert(authority.placeCalls == static_cast<int>(totalCalls + 1));
+    assert(TradingToolHostTestAccess::ReplaySize(host) == 1);
+}
+
 } // namespace
 
 int main()
@@ -1351,6 +1749,8 @@ int main()
 	TestRecoveryQueryLinearizesAfterIngressAndClosesEntry();
 	TestInFlightWatchReadLinearizesBeforeOwnerFence();
 	TestEntryCancelAndFlattenBudgetsAreIndependent();
+	TestAcceptedTargetReplayBypassesBusyLease();
+	TestMutationReplayCacheBoundedAndExpires();
     std::cout << "trading_tool_host_tests: PASS" << std::endl;
     return 0;
 }

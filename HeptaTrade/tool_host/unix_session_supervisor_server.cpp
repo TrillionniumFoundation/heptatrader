@@ -8,6 +8,7 @@
 #include <fcntl.h>
 #include <cstring>
 #include <limits>
+#include <locale>
 #include <openssl/evp.h>
 #include <poll.h>
 #include <sstream>
@@ -373,7 +374,7 @@ std::string BuildPaperFinalizationReceipt(
 	const std::string& ownerSetCanonical,
 	const ExecutionControlResult& audit)
 {
-	std::ostringstream receipt;
+	std::ostringstream receipt; receipt.imbue(std::locale::classic());
 	receipt << "schema=hepta.paper-session-finalization-receipt.v1\n"
 		<< "version=1\n"
 		<< "status=AUDIT_SEALED\n"
@@ -816,7 +817,7 @@ std::string BuildPaperTerminalWitnessAckReceipt(
 	const std::map<std::string, std::string>& evidence,
 	const std::string& evidenceFileSha256)
 {
-	std::ostringstream receipt;
+	std::ostringstream receipt; receipt.imbue(std::locale::classic());
 	receipt << "schema=hepta.paper-session-terminal-ack-receipt.v3\n"
 		<< "version=3\n"
 		<< "status=TERMINAL_ACKED\n";
@@ -1009,7 +1010,6 @@ bool PopulateAuditFromReceipt(
 	return true;
 }
 }
-
 UnixSessionSupervisorServer::UnixSessionSupervisorServer(
 	TradingToolSessionControlPlane& controlPlane)
 	: m_controlPlane(controlPlane), m_stop(true), m_listenFd(-1),
@@ -1019,12 +1019,10 @@ UnixSessionSupervisorServer::UnixSessionSupervisorServer(
 	  m_rootCustodianUid(0)
 {
 }
-
 UnixSessionSupervisorServer::~UnixSessionSupervisorServer()
 {
 	Stop();
 }
-
 bool UnixSessionSupervisorServer::Start(const std::string& socketPath,
 	const std::map<std::uint32_t, std::string>& authorizedIssuers,
 	const BindingResolver& bindingResolver, std::string& reason,

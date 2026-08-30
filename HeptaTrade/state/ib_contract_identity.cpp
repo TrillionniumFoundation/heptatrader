@@ -1,23 +1,42 @@
 #include "ib_contract_identity.h"
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 
 namespace {
 
+bool IsAsciiSpace(unsigned char character)
+{
+    return character == static_cast<unsigned char>(' ') ||
+        character == static_cast<unsigned char>('\t') ||
+        character == static_cast<unsigned char>('\n') ||
+        character == static_cast<unsigned char>('\r') ||
+        character == static_cast<unsigned char>('\f') ||
+        character == static_cast<unsigned char>('\v');
+}
+
+char AsciiUpper(unsigned char character)
+{
+    return character >= static_cast<unsigned char>('a') &&
+            character <= static_cast<unsigned char>('z') ?
+        static_cast<char>(character - static_cast<unsigned char>('a') +
+                          static_cast<unsigned char>('A')) :
+        static_cast<char>(character);
+}
+
 std::string NormalizeToken(std::string value)
 {
     value.erase(value.begin(), std::find_if(value.begin(), value.end(), [](unsigned char character) {
-        return std::isspace(character) == 0;
+        return !IsAsciiSpace(character);
     }));
     value.erase(std::find_if(value.rbegin(), value.rend(), [](unsigned char character) {
-        return std::isspace(character) == 0;
+        return !IsAsciiSpace(character);
     }).base(), value.end());
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char character) {
-        return static_cast<char>(std::toupper(character));
+        return AsciiUpper(character);
     });
     return value;
 }
@@ -25,7 +44,7 @@ std::string NormalizeToken(std::string value)
 std::string NormalizeSimpleKey(std::string value)
 {
     value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char character) {
-        return std::isspace(character) != 0;
+        return IsAsciiSpace(character);
     }), value.end());
     std::replace(value.begin(), value.end(), '/', '.');
     return NormalizeToken(value);
@@ -34,7 +53,7 @@ std::string NormalizeSimpleKey(std::string value)
 std::string NormalizeLocalSymbol(std::string value)
 {
     value.erase(std::remove_if(value.begin(), value.end(), [](unsigned char character) {
-        return std::isspace(character) != 0;
+        return IsAsciiSpace(character);
     }), value.end());
     return NormalizeToken(value);
 }
@@ -43,6 +62,7 @@ std::string StrikeToken(double strike)
 {
     if (!std::isfinite(strike) || strike <= 0.0) return std::string();
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << std::setprecision(15) << strike;
     return out.str();
 }
@@ -61,6 +81,7 @@ std::string DerivativeIdentity(const IBContractLite& contract, const std::string
     if (symbol.empty() || expiry.empty()) return std::string();
 
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << securityType << ":" << symbol << ":" << expiry;
     if (securityType == "OPT" || securityType == "FOP")
     {

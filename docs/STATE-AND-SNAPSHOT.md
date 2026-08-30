@@ -1,8 +1,8 @@
 # Authoritative state and decision snapshot contract
 
-Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Status: current Simulator/core implementation contract; external PAPER projection remains separately validated
 Applies to: `HeptaTrade/state/`, `HeptaTrade/execution/`, `HeptaTrade/intent/`, `HeptaTrade/tool_host/`
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; target-host checks are separate
 
 ## Authority
 
@@ -56,3 +56,8 @@ expiry and command fingerprint
 ```
 
 Apply revalidates the binding at Execution authority and atomically consumes or replays it.
+
+The core contract fixtures cover stale/incomplete snapshots, epoch/fence/
+generation mismatches and permit binding. The Simulator path is the only
+implemented venue path in this contract; IB PAPER host certification remains an
+external acceptance activity.

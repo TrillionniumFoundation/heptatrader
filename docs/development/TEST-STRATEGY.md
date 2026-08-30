@@ -1,8 +1,8 @@
 # Test strategy
 
 Status: current
-Applies to: `tests/`, `tests/python/`, `.github/workflows/core-ci.yml`
-Verification: same-revision CI
+Applies to: `tests/`, `tests/python/`, `.github/workflows/core-ci.yml`, `.github/workflows/canonical-full-suite.yml`
+Verification: `canonical-full-suite` on the exact revision
 
 ## Principle
 
@@ -49,7 +49,7 @@ Agent-equivalent call -> Gateway -> Execution -> Simulator
 
 Cover target preview/apply/no-op, raw-place denial for ordinary Agent, cancel, flatten, duplicate retry, process restart, stale generation and reconciliation.
 
-## Optional/nightly reliability lane
+## Canonical reliability lane
 
 - ASAN/UBSAN;
 - protocol, schema and journal fuzzing;
@@ -58,7 +58,14 @@ Cover target preview/apply/no-op, raw-place denial for ordinary Agent, cancel, f
 - disconnect, callback correction, duplicate/out-of-order event injection;
 - same-fixture latency baseline and p99 regression.
 
-These are optional or scheduled and never disguised as ordinary source-development prerequisites.
+`.github/workflows/canonical-full-suite.yml` runs these checks on pull requests
+and pushes to `main` with `contents: read`. The separately scheduled
+`reliability-runtime` workflow repeats the same bounded lane for diagnostics;
+neither workflow can mutate repository state.
+
+The canonical full-suite jobs are required for final exact-head closure; the
+separate scheduled workflow is supplemental diagnostics and never substitutes
+for the exact-head result.
 
 ## Research validation tests
 
@@ -75,8 +82,11 @@ These are optional or scheduled and never disguised as ordinary source-developme
 
 ```bash
 python3 scripts/check_repository_integrity.py
+python3 scripts/check_schema_catalog.py
+python3 scripts/check_module_discipline.py
 ./scripts/dev_core.sh
 cmake --install build/core-release --component runtime
+python3 scripts/check_install_tree.py <staged-install-root>
 ```
 
 CI has read-only repository permission. It contains no finalizer, self-approval, self-merge or temporary source-export step at review readiness.

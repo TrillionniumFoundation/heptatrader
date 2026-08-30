@@ -32,7 +32,7 @@ bool IsLowerHex(const std::string& value, std::size_t length)
 
 bool ParseUnsigned(const std::string& value, std::uint64_t& parsed)
 {
-    if (value.empty()) return false;
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
     for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
         if (*it < '0' || *it > '9') return false;
     char* end = nullptr;

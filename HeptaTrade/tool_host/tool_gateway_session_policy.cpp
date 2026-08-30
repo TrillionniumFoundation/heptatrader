@@ -2,16 +2,64 @@
 
 #include <algorithm>
 #include <cerrno>
-#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <locale>
 #include <set>
+#include <sstream>
 #include <vector>
 
 namespace
 {
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+
 std::string Read(const std::map<std::string, std::string>& values, const char* key)
 {
     const std::map<std::string, std::string>::const_iterator found = values.find(key);
@@ -32,13 +80,28 @@ bool CanonicalText(const std::string& value, std::size_t maximum)
 bool CanonicalInstrument(const std::string& value)
 {
     if (value.empty() || value.size() > 128) return false;
+    bool previousSeparator = false;
+    bool sawAlphaNumeric = false;
     for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
     {
         const unsigned char byte = static_cast<unsigned char>(*it);
-        if (!std::isalnum(byte) && byte != '.' && byte != '-' && byte != '_' &&
-            byte != '/' && byte != ':') return false;
+        const bool alphaNumeric =
+            (byte >= 'a' && byte <= 'z') || (byte >= 'A' && byte <= 'Z') ||
+            (byte >= '0' && byte <= '9');
+        if (alphaNumeric)
+        {
+            sawAlphaNumeric = true;
+            previousSeparator = false;
+            continue;
+        }
+        const bool separator = byte == '.' || byte == '-' || byte == '_' ||
+            byte == '/' || byte == ':';
+        if (!separator || previousSeparator || it == value.begin() ||
+            it + 1 == value.end())
+            return false;
+        previousSeparator = true;
     }
-    return true;
+    return sawAlphaNumeric && !previousSeparator;
 }
 
 bool CanonicalDomainSuffix(const std::string& value)
@@ -49,7 +112,11 @@ bool CanonicalDomainSuffix(const std::string& value)
     for (std::size_t i = 1; i < value.size(); ++i)
     {
         const unsigned char byte = static_cast<unsigned char>(value[i]);
-        if (!std::islower(byte) && !std::isdigit(byte) && byte != '-')
+        const bool lower = byte >= static_cast<unsigned char>('a') &&
+            byte <= static_cast<unsigned char>('z');
+        const bool digit = byte >= static_cast<unsigned char>('0') &&
+            byte <= static_cast<unsigned char>('9');
+        if (!lower && !digit && byte != '-')
             return false;
     }
     return true;
@@ -77,7 +144,7 @@ bool PaperDomainMatchesAgent(const std::string& executionDomain,
 bool ParseUnsigned(const std::string& value, std::uint64_t minimum,
                    std::uint64_t maximum, std::uint64_t& parsed)
 {
-    if (value.empty()) return false;
+    if (!CanonicalUnsignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
@@ -90,12 +157,11 @@ bool ParseUnsigned(const std::string& value, std::uint64_t minimum,
 
 bool ParsePositiveDouble(const std::string& value, double& parsed)
 {
-    if (value.empty()) return false;
-    char* end = nullptr;
-    errno = 0;
-    parsed = std::strtod(value.c_str(), &end);
-    return errno == 0 && end != value.c_str() && *end == '\0' &&
-        std::isfinite(parsed) && parsed > 0.0;
+    if (!CanonicalFloating(value)) return false;
+    std::istringstream input(value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws >> parsed;
+    return input && input.eof() && std::isfinite(parsed) && parsed > 0.0;
 }
 
 std::vector<std::string> Split(const std::string& value, char delimiter)
@@ -143,8 +209,8 @@ std::set<std::string> ExpectedCapabilities(bool paper)
     capabilities.insert("risk.read");
     if (paper)
     {
-        capabilities.insert("risk.preview");
-        capabilities.insert("trade.place");
+        capabilities.insert("intent.preview");
+        capabilities.insert("intent.apply");
         capabilities.insert("trade.cancel");
         capabilities.insert("trade.flatten");
     }

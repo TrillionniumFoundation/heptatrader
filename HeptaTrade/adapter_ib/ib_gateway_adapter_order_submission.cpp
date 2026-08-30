@@ -6,7 +6,13 @@
 #include <cstring>
 #include <ctime>
 #include <exception>
+#include <limits>
 namespace {
+// The low-level adapter does not receive the runtime's millisecond quote
+// generation, so retain only a short epoch-local reference window.  The
+// higher PAPER guard applies its exact configured quote TTL as a second fence.
+const std::time_t kReferencePriceMaxAgeSec = 5;
+
 std::string EscapeJson(const std::string& value) {
     std::string escaped;
     escaped.reserve(value.size() + 8);
@@ -27,7 +33,11 @@ std::string EscapeJson(const std::string& value) {
 std::string NormalizeIbOptionRight(std::string right) {
     std::transform(
         right.begin(), right.end(), right.begin(), [](unsigned char ch) {
-            return static_cast<char>(std::toupper(ch));
+            return ch >= static_cast<unsigned char>('a') &&
+                    ch <= static_cast<unsigned char>('z') ?
+                static_cast<char>(ch - static_cast<unsigned char>('a') +
+                                  static_cast<unsigned char>('A')) :
+                static_cast<char>(ch);
         });
     if (right == "CALL") return "C";
     if (right == "PUT") return "P";
@@ -175,33 +185,109 @@ bool HeptaIBGatewayAdapter::CircuitBreakerAllowsOrder(std::time_t nowTs) {
         "\"reason\":\"cooldown_elapsed\"");
     return true;
 }
-void HeptaIBGatewayAdapter::PopulatePreTradeRiskContext(
+
+void HeptaIBGatewayAdapter::PruneOrderAttemptTimes() {
+    const std::chrono::steady_clock::time_point now =
+        std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::duration window =
+        std::chrono::seconds(60);
+    while (!m_orderAttemptTimes.empty() &&
+           now - m_orderAttemptTimes.front() >= window)
+        m_orderAttemptTimes.pop_front();
+}
+
+void HeptaIBGatewayAdapter::PopulateDeterministicRiskContext(
     const IBContractLite& contract, const IBOrderLite& order) {
-    PreTradeRiskContext& risk = m_riskCtxScratch;
-    risk.symbol = contract.symbol;
+    DeterministicRiskContext& risk = m_riskCtxScratch;
+    risk = DeterministicRiskContext{};
     risk.action = order.action;
     risk.orderType = order.orderType;
-    risk.totalQuantity = order.totalQuantity;
-    risk.limitPrice = order.lmtPrice;
+    risk.quantity = order.totalQuantity;
+    risk.submittedPrice = order.lmtPrice;
     risk.referencePrice = m_lastReferencePrice;
-    risk.todayOrderCount = m_todayOrderCount;
-    risk.accountWhitelisted = m_cachedAccountWhitelisted;
-    risk.paperAccount = m_cachedPaperAccount;
-    risk.positionKnown = false;
-    risk.netPosition = 0.0;
+    risk.valuationPrice = order.orderType == "LMT" ?
+        order.lmtPrice : m_lastReferencePrice;
+    PruneOrderAttemptTimes();
+    risk.ordersInLastMinute = m_orderAttemptTimes.size();
+    risk.activeOrderCount = m_correlationSnapshot.activeOrderIds.size();
+    risk.grossAbsolutePosition = m_riskSnapshot.grossAbsolutePosition;
 
-    std::unordered_map<std::string, double>::const_iterator position =
-        m_symbolNetPosition.find(contract.symbol);
-    if (position == m_symbolNetPosition.end() &&
-        contract.secType == "CASH" && !contract.symbol.empty() &&
-        !contract.currency.empty()) {
-        position = m_symbolNetPosition.find(
-            contract.symbol + "." + contract.currency);
+    // Only consume generation-bound authoritative maps here.  The callback
+    // convenience map (`m_symbolNetPosition`) survives reconnects and may
+    // contain stale values, so using it could falsely prove a reduction in a
+    // fresh broker epoch.  Broker position keys are normally CONID/CONTRACT
+    // identities rather than the display symbol; use the adapter's canonical
+    // resolver so options/futures cannot be collapsed by symbol.  An absent
+    // key in a complete snapshot is the authoritative zero position.
+    double current = 0.0;
+    bool knownPosition = false;
+    std::string positionReason;
+    if (contract.secType == "CASH" &&
+        !m_cfg.authoritativeCashFxContracts.empty()) {
+        // Campaign-owned CASH exposure is keyed by the configured
+        // instrument, not by the broker's base-currency callback key.
+        for (std::map<std::string, InstrumentRef>::const_iterator it =
+                 m_cfg.authoritativeCashFxContracts.begin();
+             it != m_cfg.authoritativeCashFxContracts.end(); ++it) {
+            if (!SameCashFxContract(it->second, contract)) continue;
+            const bool fxReady = m_riskSnapshot.accountComplete &&
+                m_riskSnapshot.fxCashComplete &&
+                m_riskSnapshot.connectionEpoch == m_connectionEpoch &&
+                m_riskSnapshot.fxCashGeneration != 0;
+            if (fxReady)
+                knownPosition = ResolveAuthoritativePositionQuantity(
+                    it->first, it->second, current, positionReason);
+            break;
+        }
+    } else {
+        const bool positionsReady = m_riskSnapshot.positionsComplete &&
+            m_riskSnapshot.connectionEpoch == m_connectionEpoch &&
+            m_riskSnapshot.positionsGeneration != 0;
+        if (positionsReady)
+            knownPosition = ResolveAuthoritativePositionQuantity(
+                // Do not use the display symbol as an exact map key: a
+                // symbol collision across option/future series must be
+                // resolved by the full authoritative contract identity.
+                std::string(), contract, current, positionReason);
     }
-    if (position != m_symbolNetPosition.end()) {
-        risk.positionKnown = true;
-        risk.netPosition = position->second;
+    const double signedQuantity = order.action == "BUY" ?
+        order.totalQuantity : (order.action == "SELL" ?
+            -order.totalQuantity : 0.0);
+    risk.netPosition = current;
+    risk.projectedNetPosition = current + signedQuantity;
+
+    const bool validGross = std::isfinite(risk.grossAbsolutePosition) &&
+        risk.grossAbsolutePosition >= 0.0;
+    if (knownPosition && validGross && std::isfinite(signedQuantity)) {
+        risk.projectedGrossAbsolutePosition =
+            risk.grossAbsolutePosition - std::fabs(current) +
+            std::fabs(current + signedQuantity);
+        risk.exposureReducing =
+            std::fabs(current + signedQuantity) < std::fabs(current);
+    } else {
+        // Unknown position data is never treated as a free reduction.  Use a
+        // conservative increase projection; the complete-snapshot gate below
+        // rejects the order unless the authoritative state is available.
+        risk.projectedGrossAbsolutePosition =
+            validGross ? risk.grossAbsolutePosition + order.totalQuantity :
+                std::numeric_limits<double>::quiet_NaN();
+        risk.exposureReducing = false;
     }
+
+    const std::time_t now = std::time(nullptr);
+    const std::time_t referenceAge = now - m_lastReferencePriceTs;
+    const bool referencePresent = std::isfinite(m_lastReferencePrice) &&
+        m_lastReferencePrice > 0.0 && m_lastReferencePriceTs > 0 &&
+        referenceAge >= 0 && referenceAge <= kReferencePriceMaxAgeSec;
+    risk.quoteFresh = !m_cachedRiskLimits.requireFreshQuote || referencePresent;
+    risk.portfolioSnapshotComplete =
+        !m_cachedRiskLimits.requireCompleteSnapshot ||
+        (knownPosition && m_eventStreamAuthoritative && m_riskSnapshot.complete &&
+        m_riskSnapshot.connectionEpoch == m_connectionEpoch &&
+        m_riskSnapshot.accountGeneration != 0 &&
+        m_riskSnapshot.positionsGeneration != 0 &&
+        m_correlationSnapshot.complete &&
+        m_correlationSnapshot.connectionEpoch == m_connectionEpoch);
 }
 bool HeptaIBGatewayAdapter::RunFinalOrderSendCheck(
     const IBFinalOrderSendContext* context,
@@ -306,6 +392,11 @@ bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
     const std::chrono::steady_clock::time_point& startedAt) {
     if (!BeginBrokerMutation("IB_RECOVERY_AUDIT_PLACE_MUTATION"))
         return false;
+    // Count every broker send attempt (including an API rejection) in the
+    // rolling common-policy budget.  This is appended immediately before the
+    // sole mutation call, after all gates have passed.
+    PruneOrderAttemptTimes();
+    m_orderAttemptTimes.push_back(std::chrono::steady_clock::now());
     const bool accepted = m_api->PlaceOrder(orderId, contract, order);
     if (accepted) {
         ++m_todayOrderCount;
@@ -370,9 +461,19 @@ bool HeptaIBGatewayAdapter::PlaceOrderInternal(
         return RejectOrder(
             contract, startedAt, "RISK_DUPLICATE_ORDER", std::string());
 
-    PopulatePreTradeRiskContext(contract, order);
-    const PreTradeRiskDecision decision =
-        PreTradeRiskEngine::Evaluate(m_cachedRiskCfg, m_riskCtxScratch);
+    PopulateDeterministicRiskContext(contract, order);
+    // `maxDailyOrders` is retained as the adapter-local calendar-day budget;
+    // the common policy separately evaluates the rolling minute budget.
+    // Proven strict reductions may still pass this entry budget, matching the
+    // shared safe-exit rule.
+    if (m_todayOrderCount >= m_cfg.risk.maxDailyOrders &&
+        !m_riskCtxScratch.exposureReducing)
+        return RejectOrder(
+            contract, startedAt, "RISK_DAILY_ORDER_LIMIT", std::string());
+
+    const DeterministicRiskDecision decision =
+        DeterministicRiskPolicy::Evaluate(
+            m_cachedRiskLimits, m_riskCtxScratch);
     if (!decision.allow)
         return RejectOrder(
             contract, startedAt, decision.reasonCode,

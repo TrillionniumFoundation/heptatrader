@@ -2,7 +2,7 @@
 
 Status: experimental
 Applies to: `strategies/eurusd-confirmed-momentum-shadow-v2.json`, deterministic market context and strategy evaluation
-Verification: same-revision CI for contract/fixtures; no PAPER/LIVE claim
+Verification: `canonical-full-suite` on the exact revision; no PAPER/LIVE claim
 
 ## Purpose
 
@@ -20,12 +20,12 @@ immutable point-in-time quote/bar/calendar inputs
 -> RunSummary
 ```
 
-The canonical machine contract is `research/manifest-v1.json`; target object semantics are in `RESEARCH-PROTOCOL.md`. Existing large research scripts remain implementation details while G-009/G-010 are in progress and must not redefine the canonical run protocol.
+The canonical machine contract is `research/manifest-v1.json`; target object semantics are in `RESEARCH-PROTOCOL.md`. The static manifest is a checked-in verification contract, not a runnable economics manifest; a concrete replay supplies a full `RunManifest`. Existing large research scripts remain implementation details while G-009/G-010 are in progress and must not redefine the canonical run protocol.
 
 ## Input rules
 
 - UTC and explicit market/session calendar;
-- strict ordering; exact unchanged timestamp repeat may be deduplicated;
+- per-instrument strict ordering; independent instrument streams may be interleaved, and an exact unchanged timestamp repeat may be deduplicated;
 - changed data at an identical authoritative timestamp is rejected;
 - gaps/stale terminal samples fail closed;
 - features use only information available at evaluation time;
@@ -41,4 +41,8 @@ Each event/summary records strategy id/version, source/input digests, evaluation
 
 ## Evaluation
 
-Evaluation includes spread, commission, slippage, decision-to-fill delay, adverse-cost sensitivity, purged walk-forward, final untouched OOS, time/regime slices and capacity assumptions. Even a passing candidate remains SHADOW until a separate reviewed runtime change provisions bounded PAPER capability.
+Evaluation includes observed spread plus any conservative spread stress,
+commission/fees, slippage, decision-to-fill delay, annualized borrow/funding,
+adverse-cost sensitivity, purged walk-forward, final untouched OOS, time/regime
+slices and capacity assumptions. Even a passing candidate remains SHADOW until
+a separate reviewed runtime change provisions bounded PAPER capability.

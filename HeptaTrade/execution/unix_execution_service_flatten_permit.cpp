@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 #include <sys/random.h>
 
@@ -21,6 +22,8 @@ template <typename T>
 std::string Number(T value)
 {
     std::ostringstream output;
+    if (value == 0) return "0";
+    output.imbue(std::locale::classic());
     output << std::setprecision(17) << value;
     return output.str();
 }
@@ -134,13 +137,17 @@ bool UnixExecutionServiceServer::IssueFlattenPreviewPermit(
     }
     const std::string fingerprint = Fingerprint(command);
     const std::string ownerKey = OwnerKey(command);
+    std::string replacedPermit;
     std::size_t ownerCount = 0;
     for (std::unordered_map<std::string, PreviewPermitRecord>::iterator it =
              m_previewPermits.begin(); it != m_previewPermits.end();)
     {
         if (it->second.fingerprint == fingerprint)
         {
-            it = m_previewPermits.erase(it);
+            // Replace an exact older preview only after capacity checks pass;
+            // a failed replacement must not revoke a usable credential.
+            replacedPermit = it->first;
+            ++it;
             continue;
         }
         if (it->second.ownerKey == ownerKey) ++ownerCount;
@@ -151,7 +158,7 @@ bool UnixExecutionServiceServer::IssueFlattenPreviewPermit(
         reason = "EXECUTION_PREVIEW_PERMIT_OWNER_CAPACITY_EXCEEDED";
         return false;
     }
-    if (m_previewPermits.size() >= 128)
+    if (m_previewPermits.size() >= 128 && replacedPermit.empty())
     {
         reason = "EXECUTION_PREVIEW_PERMIT_CAPACITY_EXCEEDED";
         return false;
@@ -170,6 +177,7 @@ bool UnixExecutionServiceServer::IssueFlattenPreviewPermit(
     record.flattenPositionGeneration =
         preview.authoritativeFlattenPositionGeneration;
     record.flattenPlanBinding = preview.authoritativeFlattenPlanBinding;
+    if (!replacedPermit.empty()) m_previewPermits.erase(replacedPermit);
     m_previewPermits[permit] = record;
     reason.clear();
     return true;
@@ -191,7 +199,6 @@ bool UnixExecutionServiceServer::ConsumeFlattenPreviewPermit(
         return false;
     }
     const PreviewPermitRecord record = found->second;
-    m_previewPermits.erase(found);
     if (record.expiresAtMs <= now ||
         record.steadyExpiresAt <= steadyNow)
     {
@@ -218,11 +225,64 @@ bool UnixExecutionServiceServer::ConsumeFlattenPreviewPermit(
         reason = "EXECUTION_FLATTEN_PREVIEW_BINDING_MISSING";
         return false;
     }
+    // Erase only after expiry, payload, command-id and authoritative snapshot
+    // validation all pass.  A rejected retry therefore leaves the credential
+    // available for the exact legitimate command.
+    m_previewPermits.erase(found);
     command.hasAuthoritativePreviewSnapshot = true;
     command.previewPositionQuantity = record.flattenPositionQuantity;
     command.previewPositionConnectionEpoch = record.flattenConnectionEpoch;
     command.previewPositionGeneration = record.flattenPositionGeneration;
     command.authoritativePreviewPlanBinding = record.flattenPlanBinding;
+    // Do not let the one-time credential escape into a later dispatch or be
+    // accidentally logged/reused by a caller holding the command object.
+    command.previewPermit.clear();
+    reason.clear();
+    return true;
+}
+
+bool UnixExecutionServiceServer::ValidateFlattenPreviewPermit(
+    const FlattenPositionCommand& command,
+    std::string& reason) const
+{
+    const long long now = EpochNowMs();
+    const std::chrono::steady_clock::time_point steadyNow =
+        std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(m_previewMutex);
+    const std::unordered_map<std::string, PreviewPermitRecord>::const_iterator
+        found = m_previewPermits.find(command.previewPermit);
+    if (found == m_previewPermits.end())
+    {
+        reason = "EXECUTION_PREVIEW_PERMIT_UNKNOWN_OR_CONSUMED";
+        return false;
+    }
+    const PreviewPermitRecord& record = found->second;
+    if (record.expiresAtMs <= now ||
+        record.steadyExpiresAt <= steadyNow)
+    {
+        reason = "EXECUTION_PREVIEW_PERMIT_EXPIRED";
+        return false;
+    }
+    if (record.fingerprint != Fingerprint(command))
+    {
+        reason = "EXECUTION_PREVIEW_PERMIT_ORDER_MISMATCH";
+        return false;
+    }
+    if (record.mutationCommandId != command.context.toolCallId)
+    {
+        reason = "EXECUTION_PREVIEW_PERMIT_COMMAND_ID_MISMATCH";
+        return false;
+    }
+    if (!record.flattenSnapshot ||
+        !std::isfinite(record.flattenPositionQuantity) ||
+        record.flattenConnectionEpoch == 0 ||
+        record.flattenPositionGeneration == 0 ||
+        record.flattenPlanBinding.empty() ||
+        record.flattenPlanBinding.size() > 8192)
+    {
+        reason = "EXECUTION_FLATTEN_PREVIEW_BINDING_MISSING";
+        return false;
+    }
     reason.clear();
     return true;
 }

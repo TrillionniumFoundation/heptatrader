@@ -137,6 +137,11 @@ public:
         const PaperTerminalFenceBinding& binding,
         PaperTerminalMutationUniverse& universe,
         std::string& reason);
+    // Retained for source compatibility with the legacy monolith, but it is
+    // deliberately fail-closed in the standalone authority.  A mutation
+    // block can only be cleared by a method that records/validates the
+    // corresponding authoritative reconciliation proof (for example
+    // ResolveUncertain* or ResolveProjectionBlockAfterAuthoritativeResync).
     void ResetMutationBlockAfterReconcile();
     bool ResolveProjectionBlockAfterAuthoritativeResync();
     void RecordOrderTerminal(long orderId);

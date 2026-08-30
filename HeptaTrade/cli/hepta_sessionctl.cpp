@@ -3,6 +3,7 @@
 #include "../tool_host/unix_session_supervisor_client.h"
 
 #include <iostream>
+#include <locale>
 #include <string>
 
 namespace
@@ -78,6 +79,9 @@ int main(int argc, char** argv)
         std::cerr << reason << '\n';
         return 3;
     }
+    // This CLI emits JSON directly.  Pin the stream so integer fields cannot
+    // acquire locale grouping (for example `1,000`) in an embedding process.
+    std::cout.imbue(std::locale::classic());
     std::cout << "{\"accepted\":" << (result.accepted ? "true" : "false")
               << ",\"reason_code\":\"" << JsonEscape(result.ReasonCode())
               << "\",\"lease_generation\":" << result.leaseGeneration;

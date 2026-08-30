@@ -116,6 +116,41 @@ class ConfigResolverTests(unittest.TestCase):
         with self.assertRaisesRegex(resolver.ConfigError, "profile=sim"):
             resolver.resolve(self.root, str(config), None)
 
+    def test_live_profile_is_rejected_at_every_input_boundary(self) -> None:
+        config = self.write(
+            "HeptaTrade/live.xml",
+            "<Config><Runtime Profile=\"live\"/></Config>",
+        )
+        with self.assertRaisesRegex(resolver.ConfigError, "allowed: sim/paper"):
+            resolver.resolve(self.root, str(config), None)
+        sim = self.write("HeptaTrade/sim-live-account.xml", "<Config>"
+                         "<Runtime Profile=\"sim\"/>"
+                         "<IBServer Mode=\"IB\" Account=\"U123\"/>"
+                         "</Config>")
+        with patch.dict(os.environ, {"HEPTA_PROFILE": "live"}):
+            with self.assertRaisesRegex(resolver.ConfigError, "allowed: sim/paper"):
+                resolver.resolve(self.root, str(sim), None)
+        with self.assertRaisesRegex(resolver.ConfigError, "invalid --profile"):
+            resolver.resolve(self.root, str(sim), "live")
+
+    def test_ib_account_never_infers_live(self) -> None:
+        config = self.write(
+            "HeptaTrade/ib-no-profile.xml",
+            "<Config><IBServer Mode=\"IB\" Account=\"U123\"/></Config>",
+        )
+        # With no explicit profile the documented default is sim, which then
+        # rejects the incompatible IB mode rather than inferring LIVE.
+        with self.assertRaisesRegex(resolver.ConfigError, "profile=sim"):
+            resolver.resolve(self.root, str(config), None)
+
+    def test_explicit_paper_profile_requires_ib_mode(self) -> None:
+        config = self.write(
+            "HeptaTrade/sim-mode.xml",
+            "<Config><Runtime/><IBServer Mode=\"SIM\"/></Config>",
+        )
+        with self.assertRaisesRegex(resolver.ConfigError, "requires IBServer.Mode=IB"):
+            resolver.resolve(self.root, str(config), "paper")
+
     def test_default_project_root_is_repository_relative(self) -> None:
         expected = (ROOT).resolve()
         self.assertEqual(resolver._default_project_root(), expected)

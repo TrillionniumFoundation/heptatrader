@@ -94,6 +94,23 @@ void TestNoOp()
     assert(plan.quantity == 0.0);
 }
 
+void TestSignedZeroHasOnePermitIdentity()
+{
+    std::string code;
+    TargetPositionDecisionSnapshot snapshot = Snapshot();
+    snapshot.currentPosition = 0.0;
+    TargetPositionIntentRequest positive = Request(0.0);
+    TargetPositionIntentRequest negative = Request(-0.0);
+    const TargetPositionIntentPolicy policy = Policy();
+    const TargetPositionExecutionPlan positivePlan =
+        Build(snapshot, positive, policy, code);
+    const TargetPositionExecutionPlan negativePlan =
+        Build(snapshot, negative, policy, code);
+    // Signed zero is one canonical wire value; a direct in-process caller
+    // must not receive a distinct permit for the same no-op intent.
+    assert(positivePlan.previewPermit == negativePlan.previewPermit);
+}
+
 void TestPermitBindsSnapshotAndIntent()
 {
     std::string code;
@@ -152,7 +169,16 @@ void TestLimitsAndInvalidState()
     assert(code == "INTENT_MARKET_STATE_INVALID");
 
     invalid = Snapshot();
-    invalid.eventWatermark = invalid.snapshotWatermark + 1;
+    // Event-feed and collection watermarks are independent domains.  A
+    // freshly started feed has an authoritative zero cursor until its first
+    // event; that must not block a safe target preview.
+    invalid.eventWatermark = 0;
+    assert(TargetPositionIntentContract::BuildPlan(
+        invalid, Request(5.0), Policy(), 10000, plan, code, detail));
+    assert(code == "INTENT_PLAN_READY");
+
+    invalid = Snapshot();
+    invalid.collectionWatermark = invalid.snapshotWatermark + 1;
     assert(!TargetPositionIntentContract::BuildPlan(
         invalid, Request(5.0), Policy(), 10000, plan, code, detail));
     assert(code == "INTENT_SNAPSHOT_INCONSISTENT");
@@ -184,6 +210,7 @@ int main()
 {
     TestBuyAndSellPlans();
     TestNoOp();
+    TestSignedZeroHasOnePermitIdentity();
     TestPermitBindsSnapshotAndIntent();
     TestLimitsAndInvalidState();
     TestDerivedQuantityLimitAndCrossZeroPlan();

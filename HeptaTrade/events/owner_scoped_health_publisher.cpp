@@ -1,5 +1,6 @@
 #include "owner_scoped_health_publisher.h"
 
+#include <locale>
 #include <sstream>
 
 OwnerScopedHealthPublisher::OwnerScopedHealthPublisher(
@@ -60,6 +61,7 @@ std::uint64_t OwnerScopedHealthPublisher::PublishAggregated(
 		state.lastPublishedMs = nowMs;
 	}
 	std::ostringstream aggregated;
+	aggregated.imbue(std::locale::classic());
 	aggregated << reasonCode << ":count=" << count;
 	return Publish(target, status, aggregated.str());
 }

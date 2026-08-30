@@ -1,0 +1,134 @@
+{
+  "large_file_exceptions": {
+    "HeptaTrade/tool_host/session_supervisor_lease_store.cpp": {
+      "baseline_lines": 3128,
+      "owner": "incremental-extraction",
+      "rule": "may not grow; extract state machine or library before adding behavior"
+    },
+    "HeptaTrade/tool_host/unix_session_supervisor_server.cpp": {
+      "baseline_lines": 3654,
+      "owner": "incremental-extraction",
+      "rule": "may not grow; extract state machine or library before adding behavior"
+    },
+    "scripts/hepta_market_context_builder.py": {
+      "baseline_lines": 1499,
+      "owner": "incremental-extraction",
+      "rule": "may not grow; extract state machine or library before adding behavior"
+    },
+    "scripts/hepta_market_official_source_extractor.py": {
+      "baseline_lines": 1252,
+      "owner": "incremental-extraction",
+      "rule": "may not grow; extract state machine or library before adding behavior"
+    },
+    "scripts/hepta_shadow_market_history.py": {
+      "baseline_lines": 2771,
+      "owner": "incremental-extraction",
+      "rule": "may not grow; extract state machine or library before adding behavior"
+    },
+    "scripts/hepta_strategy_replay_evaluator.py": {
+      "baseline_lines": 1654,
+      "owner": "incremental-extraction",
+      "rule": "may not grow; strict expiry boundary is intentional; extract state machine or library before adding behavior"
+    },
+    "research/run_protocol.py": {
+      "baseline_lines": 1790,
+      "owner": "research-protocol-incremental-extraction",
+      "rule": "frozen while evaluator/CLI extraction is planned; may not grow"
+    }
+  },
+  "modules": {
+    "adapter_ctp": {
+      "authority": "bounded support",
+      "owner": "adapter_ctp",
+      "prefix": "HeptaTrade/adapter_ctp/"
+    },
+    "adapter_ib": {
+      "authority": "broker transport",
+      "owner": "adapter_ib",
+      "prefix": "HeptaTrade/adapter_ib/"
+    },
+    "adapter_xt": {
+      "authority": "bounded support",
+      "owner": "adapter_xt",
+      "prefix": "HeptaTrade/adapter_xt/"
+    },
+    "agent": {
+      "authority": "bounded support",
+      "owner": "agent",
+      "prefix": "HeptaTrade/agent/"
+    },
+    "cli": {
+      "authority": "bounded support",
+      "owner": "cli",
+      "prefix": "HeptaTrade/cli/"
+    },
+    "client": {
+      "authority": "unprivileged orchestration",
+      "owner": "client",
+      "prefix": "HeptaTrade/client/"
+    },
+    "events": {
+      "authority": "bounded support",
+      "owner": "events",
+      "prefix": "HeptaTrade/events/"
+    },
+    "execution": {
+      "authority": "venue mutation",
+      "owner": "execution",
+      "prefix": "HeptaTrade/execution/"
+    },
+    "intent": {
+      "authority": "bounded support",
+      "owner": "intent",
+      "prefix": "HeptaTrade/intent/"
+    },
+    "observability": {
+      "authority": "bounded support",
+      "owner": "observability",
+      "prefix": "HeptaTrade/observability/"
+    },
+    "oms": {
+      "authority": "bounded support",
+      "owner": "oms",
+      "prefix": "HeptaTrade/oms_"
+    },
+    "portfolio": {
+      "authority": "deterministic policy",
+      "owner": "portfolio",
+      "prefix": "HeptaTrade/portfolio/"
+    },
+    "risk": {
+      "authority": "deterministic policy",
+      "owner": "risk",
+      "prefix": "HeptaTrade/risk/"
+    },
+    "research": {
+      "authority": "deterministic research/replay",
+      "owner": "research",
+      "prefix": "research/"
+    },
+    "simulator": {
+      "authority": "bounded support",
+      "owner": "simulator",
+      "prefix": "HeptaTrade/simulator/"
+    },
+    "state": {
+      "authority": "bounded support",
+      "owner": "state",
+      "prefix": "HeptaTrade/state/"
+    },
+    "tool_host": {
+      "authority": "unprivileged orchestration",
+      "owner": "tool_host",
+      "prefix": "HeptaTrade/tool_host/"
+    },
+    "tools": {
+      "authority": "unprivileged orchestration",
+      "owner": "tools",
+      "prefix": "HeptaTrade/tools/"
+    }
+  },
+  "new_cpp_line_limit": 2500,
+  "new_python_line_limit": 1200,
+  "schema": "heptatrader.module-ownership.v1"
+}

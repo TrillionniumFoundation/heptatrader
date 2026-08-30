@@ -21,6 +21,8 @@ DeterministicRiskLimits Limits()
 DeterministicRiskContext Context()
 {
     DeterministicRiskContext context;
+    context.quoteFresh = true;
+    context.portfolioSnapshotComplete = true;
     context.action = "BUY";
     context.orderType = "LMT";
     context.quantity = 2.0;

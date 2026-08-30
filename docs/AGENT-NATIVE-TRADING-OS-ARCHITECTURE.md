@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: `HeptaTrade/`, `adapters/mcp/`, `plugins/`, `research/`, `systemd/`
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; external PAPER host checks are separate
 
 ## 1. Architectural statement
 
@@ -12,7 +12,10 @@ HeptaTrader is a deterministic trading runtime used by AI agents. Codex and othe
 
 ### Research plane
 
-Point-in-time inputs, deterministic feature/strategy code, replay, costs and validation. Outputs forecasts or bounded target intents. Research has no runtime capability.
+Point-in-time inputs, deterministic feature/strategy code, replay, costs and
+validation. The compact capability-free runner is covered by the deterministic
+fixture; broader strategy promotion remains experimental. Outputs forecasts or
+bounded target intents. Research has no runtime capability.
 
 ### Agent plane
 
@@ -80,7 +83,7 @@ Risk increase fails closed on unknown identity, missing config, stale quote, inc
 ## 7. Deployment boundary
 
 - minimal install contains simulator runtime, Gateway, MCP adapter, CLI and active service templates;
-- IB PAPER is an explicit optional build/install path;
+- IB PAPER is an explicit, separately reviewed and externally validated path;
 - CTP, XT/QMT and LIVE are not activated by examples or config;
 - mutually untrusted Agents use separate OS identities, sockets, tokens and capabilities;
 - only broker-owning Execution UID has broker network reachability.
@@ -92,6 +95,6 @@ Scale proceeds in this order:
 1. deterministic single-Agent Simulator closure;
 2. generation-consistent intent/permit closure;
 3. IB PAPER parity and soak;
-4. portfolio compiler and multi-strategy budgets;
+4. portfolio compiler integration and production multi-strategy budgets;
 5. multi-Agent lifecycle/evaluation;
 6. separately reviewed LIVE architecture, if ever pursued.

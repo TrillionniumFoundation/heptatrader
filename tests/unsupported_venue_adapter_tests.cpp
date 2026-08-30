@@ -26,13 +26,45 @@ int main()
 
     long long orderId = -1;
     assert(!xt.PlaceOrder("EUR.USD", "BUY", 1.0, 1.0, &orderId));
-    assert(orderId == 0);
+    assert(orderId == -1);
     assert(!xt.CancelOrder(1));
 
+    // Drain request-level unsupported diagnostics before exercising the
+    // callback bridge; those diagnostics intentionally retain operation-
+    // specific detail text.
     XTEvent event;
     bool sawError = false;
     while (xt.TryDequeueEvent(event))
+    {
         sawError = sawError || event.type == XTEventType::Error;
+        assert(event.type == XTEventType::Error);
+    }
+    assert(sawError);
+
+    // The callback bridge is a future transport seam, not an authority in
+    // the unsupported scaffold.  Synthetic callback injection must remain a
+    // typed rejection and must never advertise connection, order, fill or
+    // acknowledgement success.
+    xt.OnXtConnected();
+    xt.OnXtDisconnected("injected");
+    xt.OnXtAccountStatus("ready");
+    xt.OnXtAsset(100.0, 50.0);
+    xt.OnXtPosition("EUR.USD", 1.0);
+    xt.OnXtOrderStatus(7, "Filled", "injected");
+    xt.OnXtTrade(7, "EUR.USD", "BUY", 1.0, 1.0);
+    xt.OnXtOrderError(7, "E", "injected");
+    xt.OnXtCancelError(7, "E", "injected");
+    xt.OnXtAsyncOrderResponse(7, true, "injected");
+    xt.OnXtAsyncCancelResponse(7, true, "injected");
+    assert(std::string(xt.GetStatusString()) == "XT_TRANSPORT_NOT_BUILT");
+
+    sawError = false;
+    while (xt.TryDequeueEvent(event))
+    {
+        sawError = sawError || event.type == XTEventType::Error;
+        assert(event.type == XTEventType::Error);
+        assert(event.value == "XT_TRANSPORT_NOT_BUILT");
+    }
     assert(sawError);
     return 0;
 }

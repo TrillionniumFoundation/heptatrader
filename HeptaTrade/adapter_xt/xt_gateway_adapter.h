@@ -89,6 +89,10 @@ public:
     void OnXtAsyncCancelResponse(long long orderId, bool ok, const std::string& detail = "");
 
 private:
+    // The callback bridge is intentionally inert until a real XT transport is
+    // linked.  Public callback entry points must never be able to turn this
+    // unsupported scaffold into an apparent connected/acknowledged venue.
+    void RejectUnsupportedCallback(const char* source, long long id = 0);
     void PushEvent(const XTEvent& e);
     XTEvent MakeEvent(XTEventType type, long long id, const std::string& key,
                       const std::string& value, double number, const std::string& source) const;

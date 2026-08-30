@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <utility>
 #include <limits>
+#include <locale>
 namespace {
 std::unique_ptr<IIBApiWrapper> CreateDefaultIBApiWrapper() {
     return std::unique_ptr<IIBApiWrapper>(CreateIBApiWrapper());
@@ -50,6 +51,7 @@ std::string JoinSortedCodes(const std::unordered_set<int>& codes) {
     std::vector<int> sorted(codes.begin(), codes.end());
     std::sort(sorted.begin(), sorted.end());
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     for (std::size_t i = 0; i < sorted.size(); ++i) {
         if (i > 0) oss << ",";
         oss << sorted[i];
@@ -68,7 +70,13 @@ int FuseWeightForError(int ibErrorCode) {
 }
 
 std::string NormalizeIbOptionRight(std::string right) {
-    std::transform(right.begin(), right.end(), right.begin(), [](unsigned char ch) { return static_cast<char>(std::toupper(ch)); });
+    std::transform(right.begin(), right.end(), right.begin(), [](unsigned char ch) {
+        return ch >= static_cast<unsigned char>('a') &&
+                ch <= static_cast<unsigned char>('z') ?
+            static_cast<char>(ch - static_cast<unsigned char>('a') +
+                              static_cast<unsigned char>('A')) :
+            static_cast<char>(ch);
+    });
     if (right == "CALL") return "C";
     if (right == "PUT") return "P";
     return right;
@@ -76,6 +84,7 @@ std::string NormalizeIbOptionRight(std::string right) {
 
 std::string ContractDuplicateKey(const IBContractLite& c) {
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     oss << c.symbol << "|" << c.secType << "|" << c.exchange << "|" << c.primaryExchange << "|"
         << c.currency << "|" << c.lastTradeDateOrContractMonth << "|" << NormalizeIbOptionRight(c.right) << "|"
         << std::fixed << std::setprecision(8) << c.strike << "|"
@@ -107,20 +116,36 @@ std::string UtcNowIso8601Ms() {
         return std::string();
     }
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << date << '.' << std::setfill('0') << std::setw(3)
         << static_cast<int>(ms.count()) << 'Z';
     return out.str();
 }
 
+bool ParseCanonicalUnsignedEnv(const char* raw, unsigned long long& parsed) {
+    if (raw == nullptr || *raw == '\0') return false;
+    const std::string value(raw);
+    if (value.size() > 1 && value[0] == '0') return false;
+    for (const char c : value)
+        if (c < '0' || c > '9') return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0') return false;
+    parsed = number;
+    return true;
+}
+
 int GetEnvIntClamped(const char* name, int defValue, int minValue) {
     const char* raw = std::getenv(name);
     if (raw == nullptr || *raw == '\0') return defValue;
-    char* endPtr = nullptr;
-    long v = std::strtol(raw, &endPtr, 10);
-    if (endPtr == raw) return defValue;
-    if (v < static_cast<long>(minValue)) v = static_cast<long>(minValue);
-    if (v > static_cast<long>(INT_MAX)) v = static_cast<long>(INT_MAX);
-    return static_cast<int>(v);
+    unsigned long long parsed = 0;
+    if (!ParseCanonicalUnsignedEnv(raw, parsed)) return defValue;
+    if (parsed < static_cast<unsigned long long>(minValue))
+        parsed = static_cast<unsigned long long>(minValue);
+    if (parsed > static_cast<unsigned long long>(INT_MAX))
+        parsed = static_cast<unsigned long long>(INT_MAX);
+    return static_cast<int>(parsed);
 }
 
 bool ShouldEmitObsLatencySample(const char* path, const char* stage) {
@@ -224,6 +249,7 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_lastOrderSig.clear();
     m_lastOrderTs = 0;
     m_orderSubmitTs.clear();
+    m_orderAttemptTimes.clear();
     m_cancelSubmitTs.clear();
     m_pendingCancelOrderIds.clear();
     m_symbolNetPosition.clear();
@@ -293,22 +319,27 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_recoveryAuditBarrierReason.clear();
     m_riskSnapshot.fxCashComplete = m_fxInstrumentByBaseCurrency.empty();
 
-    m_cachedRiskCfg.enableOrderSubmission = m_cfg.risk.enableOrderSubmission;
-    m_cachedRiskCfg.globalKillSwitch = m_cfg.risk.globalKillSwitch;
-    m_cachedRiskCfg.flattenOnly = m_cfg.risk.flattenOnly;
-    m_cachedRiskCfg.maxOrderQuantity = m_cfg.risk.maxOrderQuantity;
-    m_cachedRiskCfg.maxDailyOrders = m_cfg.risk.maxDailyOrders;
-    m_cachedRiskCfg.maxPriceDeviationBps = m_cfg.risk.maxPriceDeviationBps;
-    m_cachedRiskCfg.allowLiveTrading = m_cfg.risk.allowLiveTrading;
-    m_cachedRiskCfg.liveKillSwitch = m_cfg.risk.liveKillSwitch;
+    // Keep adapter transport gates in HeptaIBRiskConfig, but route the order
+    // decision itself through the venue-independent policy.  All common
+    // budgets are explicit in the adapter config so the richer PAPER profile
+    // can bind the exact same values before this transport is called.
+    m_cachedRiskLimits = DeterministicRiskLimits{};
+    m_cachedRiskLimits.orderSubmissionEnabled =
+        m_cfg.risk.enableOrderSubmission;
+    m_cachedRiskLimits.globalKillSwitch = m_cfg.risk.globalKillSwitch;
+    m_cachedRiskLimits.flattenOnly = m_cfg.risk.flattenOnly;
+    m_cachedRiskLimits.maxOrderQuantity = m_cfg.risk.maxOrderQuantity;
+    m_cachedRiskLimits.maxOrdersPerMinute = m_cfg.risk.maxOrdersPerMinute;
+    m_cachedRiskLimits.maxPriceDeviationBps =
+        m_cfg.risk.maxPriceDeviationBps;
+    m_cachedRiskLimits.maxOrderNotional = m_cfg.risk.maxOrderNotional;
+    m_cachedRiskLimits.maxActiveOrders = m_cfg.risk.maxActiveOrders;
+    m_cachedRiskLimits.maxGrossPosition = m_cfg.risk.maxGrossPosition;
+    m_cachedRiskLimits.requireFreshQuote = m_cfg.risk.requireFreshQuote;
+    m_cachedRiskLimits.requireCompleteSnapshot =
+        m_cfg.risk.requireCompleteSnapshot;
 
-    m_cachedAccountWhitelisted = IsAccountWhitelisted(m_cfg.account);
-    m_cachedPaperAccount = IsPaperAccount(m_cfg.account);
-
-    m_riskCtxScratch = PreTradeRiskContext{};
-    m_riskCtxScratch.venue = "IB";
-    m_riskCtxScratch.account = m_cfg.account;
-    m_riskCtxScratch.adapterTag = "ib_gateway_adapter";
+    m_riskCtxScratch = DeterministicRiskContext{};
     EmitObsEvent("init", "\"host\":\"" + EscapeJson(m_cfg.host) + "\",\"port\":" + std::to_string(m_cfg.port) + ",\"clientId\":" + std::to_string(m_cfg.clientId));
     return true;
 }
@@ -371,6 +402,14 @@ bool HeptaIBGatewayAdapter::Connect() {
         return false;
     }
     ++m_connectionEpoch;
+    // Reference prices are connection-epoch scoped.  Never carry a quote
+    // observed on an older broker session into a new send decision.
+    m_lastReferencePrice = 0.0;
+    m_lastReferencePriceTs = 0;
+    // The rolling send-attempt budget is account/process scoped, not broker
+    // epoch scoped.  Retain recent attempts across reconnects so an outage
+    // cannot be used to reset the common rate limiter; Init() clears it only
+    // for a genuinely new adapter configuration generation.
     // A pending cancel is deliberately process-local and epoch-bound.  Once
     // the transport is replaced, the old order id may be reused by IB; only
     // recovery after a fresh authoritative snapshot may create a new intent.
@@ -439,6 +478,8 @@ void HeptaIBGatewayAdapter::Disconnect() {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     if (m_api) m_api->Disconnect();
     m_connected = false;
+    m_lastReferencePrice = 0.0;
+    m_lastReferencePriceTs = 0;
     m_pendingCancelOrderIds.clear();
     m_orderLifecycle.InvalidateConnectionEpoch();
     InvalidateCorrelationSnapshot("IB_CORRELATION_DISCONNECTED");
@@ -985,7 +1026,7 @@ bool HeptaIBGatewayAdapter::CancelMktData(int reqId) {
 
 void HeptaIBGatewayAdapter::UpdateReferencePrice(double price) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
-    if (price > 0.0) {
+    if (m_connected && std::isfinite(price) && price > 0.0) {
         m_lastReferencePrice = price;
         m_lastReferencePriceTs = std::time(nullptr);
     }
@@ -994,7 +1035,7 @@ void HeptaIBGatewayAdapter::UpdateReferencePrice(double price) {
 void HeptaIBGatewayAdapter::SetRuntimeFlattenOnly(bool enabled, const std::string& reason) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     m_cfg.risk.flattenOnly = enabled;
-    m_cachedRiskCfg.flattenOnly = enabled;
+    m_cachedRiskLimits.flattenOnly = enabled;
     std::string fields = "\"enabled\":" + std::string(enabled ? "true" : "false");
     if (!reason.empty()) {
         fields += ",\"reason\":\"" + EscapeJson(reason) + "\"";
@@ -1183,11 +1224,6 @@ bool HeptaIBGatewayAdapter::RunPreflightChecksDetailed(std::string& reasonCode, 
         detail = "IB API wrapper is null";
         return false;
     }
-    if (m_cfg.risk.globalKillSwitch) {
-        reasonCode = "RISK_GLOBAL_KILL_SWITCH_ON";
-        detail = "global kill switch enabled";
-        return false;
-    }
     if (!m_eventStreamAuthoritative) {
         reasonCode = "RISK_IB_EVENT_STREAM_NOT_AUTHORITATIVE";
         detail = "event loss observed; complete account, position, and open-order resynchronization is required";
@@ -1213,17 +1249,15 @@ bool HeptaIBGatewayAdapter::RunPreflightChecksDetailed(std::string& reasonCode, 
         detail = "account is not in whitelist";
         return false;
     }
-    if (m_cfg.risk.enableOrderSubmission && !m_cfg.account.empty() && !IsPaperAccount(m_cfg.account)) {
-        if (!m_cfg.risk.allowLiveTrading) {
-            reasonCode = "RISK_LIVE_NOT_AUTHORIZED";
-            detail = "live trading is not explicitly authorized";
-            return false;
-        }
-        if (m_cfg.risk.liveKillSwitch) {
-            reasonCode = "RISK_LIVE_KILL_SWITCH_ON";
-            detail = "live kill switch is ON";
-            return false;
-        }
+    // LIVE is not an active product capability.  Keep the low-level adapter
+    // fail-closed even when a caller supplies the legacy opt-in flags: the
+    // PAPER runtime is the only supported mutation composition, and no
+    // direct adapter caller may turn a non-DU account into a venue send.
+    if (m_cfg.risk.enableOrderSubmission && !m_cfg.account.empty() &&
+        !IsPaperAccount(m_cfg.account)) {
+        reasonCode = "RISK_LIVE_UNSUPPORTED";
+        detail = "LIVE trading is unsupported by the active adapter";
+        return false;
     }
     if (m_cfg.risk.maxOrderQuantity <= 0) {
         reasonCode = "RISK_CONFIG_INVALID_MAX_ORDER_QTY";
@@ -1248,6 +1282,14 @@ bool HeptaIBGatewayAdapter::RunPreflightChecksDetailed(std::string& reasonCode, 
     if (m_cfg.risk.duplicatePriceTolerance < 0.0) {
         reasonCode = "RISK_CONFIG_INVALID_DUP_TOL";
         detail = "duplicatePriceTolerance must be >= 0";
+        return false;
+    }
+    std::string commonRiskReason;
+    if (!DeterministicRiskPolicy::ValidateLimits(
+            m_cachedRiskLimits, commonRiskReason)) {
+        reasonCode = commonRiskReason.empty() ?
+            "RISK_LIMITS_INVALID" : commonRiskReason;
+        detail = "deterministic risk limits are invalid";
         return false;
     }
     return true;
@@ -1309,6 +1351,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
     }
 
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity;
@@ -1319,7 +1362,11 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
     std::size_t pos = m_lastOrderSig.rfind('|');
     if (pos != std::string::npos) {
         lastNoPrice = m_lastOrderSig.substr(0, pos);
-        lastPrice = std::atof(m_lastOrderSig.substr(pos + 1).c_str());
+        std::istringstream priceInput(m_lastOrderSig.substr(pos + 1));
+        priceInput.imbue(std::locale::classic());
+        priceInput >> std::noskipws >> lastPrice;
+        if (!priceInput || !priceInput.eof() || !std::isfinite(lastPrice))
+            return false;
     }
 
     if (lastNoPrice != sigNoPrice) return false;
@@ -1331,6 +1378,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
 
 void HeptaIBGatewayAdapter::RememberLastOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) {
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity << "|" << o.lmtPrice;
@@ -1358,7 +1406,13 @@ void HeptaIBGatewayAdapter::EmitLatency(const char* path, const char* stage, lon
 bool HeptaIBGatewayAdapter::IsPaperAccount(const std::string& account) const {
     if (account.empty()) return false;
     std::string up = account;
-    std::transform(up.begin(), up.end(), up.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    std::transform(up.begin(), up.end(), up.begin(), [](unsigned char c) {
+        return c >= static_cast<unsigned char>('a') &&
+                c <= static_cast<unsigned char>('z') ?
+            static_cast<char>(c - static_cast<unsigned char>('a') +
+                              static_cast<unsigned char>('A')) :
+            static_cast<char>(c);
+    });
     return up.rfind("DU", 0) == 0;
 }
 
@@ -1367,13 +1421,25 @@ bool HeptaIBGatewayAdapter::IsAccountWhitelisted(const std::string& account) con
     if (m_cfg.risk.accountWhitelist.empty()) return false;
 
     std::string acc = account;
-    std::transform(acc.begin(), acc.end(), acc.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+    std::transform(acc.begin(), acc.end(), acc.begin(), [](unsigned char c) {
+        return c >= static_cast<unsigned char>('a') &&
+                c <= static_cast<unsigned char>('z') ?
+            static_cast<char>(c - static_cast<unsigned char>('a') +
+                              static_cast<unsigned char>('A')) :
+            static_cast<char>(c);
+    });
 
     for (const auto& rawRule : m_cfg.risk.accountWhitelist) {
         if (rawRule.empty()) continue;
 
         std::string rule = rawRule;
-        std::transform(rule.begin(), rule.end(), rule.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        std::transform(rule.begin(), rule.end(), rule.begin(), [](unsigned char c) {
+            return c >= static_cast<unsigned char>('a') &&
+                    c <= static_cast<unsigned char>('z') ?
+                static_cast<char>(c - static_cast<unsigned char>('a') +
+                                  static_cast<unsigned char>('A')) :
+                static_cast<char>(c);
+        });
 
         if (!rule.empty() && rule.back() == '*') {
             rule.pop_back();
@@ -1402,6 +1468,11 @@ std::string HeptaIBGatewayAdapter::GetPositionSummary() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     if (m_symbolNetPosition.empty()) return "flat";
     std::ostringstream oss;
+    // This summary is surfaced through status/read contracts and must remain
+    // deterministic even when an embedding process installs a comma-decimal
+    // locale.  It also feeds operator diagnostics, so locale drift here can
+    // make an otherwise valid numeric position unreadable.
+    oss.imbue(std::locale::classic());
     bool first = true;
     for (const auto& kv : m_symbolNetPosition) {
         if (!first) oss << ";";

@@ -1,8 +1,8 @@
 # Security contract
 
-Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Status: current runtime contract; external PAPER host controls remain separately validated
 Applies to: `HeptaTrade/`, `adapters/mcp/`, `systemd/`, `scripts/hepta_agent_*`
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; target-host checks are separate
 
 ## 1. Threat model
 
@@ -79,4 +79,9 @@ LIVE is unsupported. A future activation must be an explicit reviewed change tha
 
 ## 8. Security tests
 
-The bounded core gate covers protocol bounds, session/token semantics, authority separation, idempotency, journal durability, kill switch, snapshot and execution lifecycle. Optional/nightly checks add sanitizer, fuzz and fault-injection coverage. CI has read-only repository permissions and no merge authority.
+The bounded core gate covers protocol bounds, session/token semantics, authority
+separation, idempotency, journal durability, kill switch, snapshot and
+execution lifecycle. The permanent `canonical-full-suite` gate adds
+ASAN/UBSAN, malformed-protocol, crash/replay and bounded performance fixtures;
+the separately scheduled reliability workflow remains useful for repeated
+diagnostics. CI has read-only repository permissions and no merge authority.

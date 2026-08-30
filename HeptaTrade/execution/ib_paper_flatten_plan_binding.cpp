@@ -1,6 +1,7 @@
 #include "ib_paper_flatten_plan_binding.h"
 
 #include <iomanip>
+#include <locale>
 #include <sstream>
 
 namespace
@@ -18,7 +19,9 @@ void AppendField(std::string& output, const char* name,
 
 std::string Number(double value)
 {
+    if (value == 0.0) return "0";
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << std::setprecision(17) << value;
     return output.str();
 }

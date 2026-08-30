@@ -5,6 +5,13 @@ set(HEPTA_RUNTIME_LIBEXEC_DIR
     "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader")
 set(HEPTA_RUNTIME_EXECUTABLE_DIR
     "${CMAKE_INSTALL_FULL_LIBEXECDIR}/heptatrader")
+# The service templates are configured at build time, before the install
+# component is staged.  Keep the documentation URI tied to the same absolute
+# prefix as the files installed below; leaving this variable undefined would
+# emit a literal ``@HEPTA_RUNTIME_DOC_DIR@`` token into the unit and make the
+# generated deployment metadata unusable.
+set(HEPTA_RUNTIME_DOC_DIR
+    "${CMAKE_INSTALL_FULL_DOCDIR}")
 set(HEPTA_GENERATED_SYSTEMD_DIR
     "${CMAKE_CURRENT_BINARY_DIR}/generated/systemd")
 file(MAKE_DIRECTORY "${HEPTA_GENERATED_SYSTEMD_DIR}")
@@ -115,5 +122,31 @@ install(FILES
         "${CMAKE_SOURCE_DIR}/docs/development/PLAN.md"
         "${CMAKE_SOURCE_DIR}/docs/development/AGENT-INTENT-CONTRACT.md"
         "${CMAKE_SOURCE_DIR}/docs/development/TEST-STRATEGY.md"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}/development"
+    COMPONENT runtime)
+
+install(DIRECTORY
+        "${CMAKE_SOURCE_DIR}/schemas/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/schemas"
+    COMPONENT runtime
+    FILES_MATCHING
+        PATTERN "*.json"
+        PATTERN "*.sha256")
+
+install(PROGRAMS
+        "${CMAKE_SOURCE_DIR}/research/run_protocol.py"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research"
+    COMPONENT runtime)
+
+install(FILES
+        "${CMAKE_SOURCE_DIR}/research/protocol_support.py"
+        "${CMAKE_SOURCE_DIR}/research/__init__.py"
+        "${CMAKE_SOURCE_DIR}/research/README.md"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research"
+    COMPONENT runtime)
+
+install(FILES
+        "${CMAKE_SOURCE_DIR}/docs/development/MODULE-OWNERSHIP.md"
+        "${CMAKE_SOURCE_DIR}/docs/development/module-ownership-v1.json"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}/development"
     COMPONENT runtime)

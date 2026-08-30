@@ -3,7 +3,7 @@
 Status: current
 Authority: this is the single canonical gap registry and implementation sequence
 Applies to: active runtime, Agent contracts, portfolio/risk, research/replay, deployment and CI
-Verification: same-revision CI; baseline audited at `e3cb6afe018024af543031c2d6c83322a1237300`
+Verification: `canonical-full-suite` on the exact revision; baseline audited at `e3cb6afe018024af543031c2d6c83322a1237300`
 
 ## 1. Product truth
 
@@ -82,7 +82,7 @@ Allowed states are `planned`, `in progress`, `blocked` and `closed`. A gap close
 
 | ID | Gap | P | Required closure evidence | State |
 |---|---|---:|---|---|
-| G-001 | Repository and current documentation can contradict code | P0 | canonical index; all current local links/commands/headers checked; exact capability claims | in progress |
+| G-001 | Repository and current documentation can contradict code | P0 | canonical index; automated metadata/link checks for current Markdown; commands and exact capability claims checked | in progress |
 | G-002 | Historical monolith surfaces remain discoverable as active product paths | P0 | inactive sources under `legacy/`; active dependency check; no legacy build switch | in progress |
 | G-003 | CTP/XT scaffolds can be mistaken for usable venues | P0 | typed fail-closed adapters and negative tests; proposals separated from current docs | in progress |
 | G-004 | LIVE/profile truth is inconsistent across config, tools and examples | P0 | only `sim` and `paper` accepted; no account-string mode inference; no LIVE tool environment; clean examples | in progress |
@@ -90,14 +90,30 @@ Allowed states are `planned`, `in progress`, `blocked` and `closed`. A gap close
 | G-006 | Ordinary Agent API remains raw-order-centric | P0 | ordinary profile exposes snapshot and target-position preview/apply; raw place is operator-only and absent from Agent examples | in progress |
 | G-007 | Decision state is assembled from loosely parsed JSON instead of one typed generation | P0 | typed snapshot; epoch/fence/generation/watermark consistency; stale/incomplete negative tests | in progress |
 | G-008 | Preview permits lack a complete authoritative lifecycle | P0 | server-issued opaque permit; expiry/generation binding; atomic consume; same-command replay; cross-command rejection | planned |
-| G-009 | Research runtime still contains campaign/custodian/finalizer ceremony | P0 | canonical `RunManifest`, append-only `EventLog` and `RunSummary`; no campaign/lease/finalizer dependency in current path | in progress |
-| G-010 | Strategy validation is mostly narrative rather than executable | P1 | deterministic replay command; data digests; purged walk-forward; explicit costs/capacity/regime output; parity tests | in progress |
+| G-009 | Research runtime still contains campaign/custodian/finalizer ceremony | P0 | canonical `RunManifest`, append-only `EventLog` and `RunSummary`; no campaign/lease/finalizer dependency in current path; installed runner fails closed when source assets are absent | in progress |
+| G-010 | Strategy validation is mostly narrative rather than executable | P1 | deterministic replay command; data digests; purged walk-forward; explicit costs/capacity/regime output; parity tests; static-manifest verification names its source checkout | in progress |
 | G-011 | No portfolio compiler, cross-strategy netting or capital budget authority | P1 | typed strategy intents -> netted portfolio target; deterministic budget decisions and tests | planned |
 | G-012 | Observability contract is not fully implemented in runtime | P1 | bounded counters/gauges/latencies at risk, journal, send, callback and reconcile transitions; no sensitive labels | planned |
-| G-013 | Tool, protocol and result schemas are duplicated in C++ and Python | P1 | one canonical schema catalog; generated/validated bindings; drift test | planned |
+| G-013 | Tool, protocol and result schemas are duplicated in C++ and Python | P1 | one canonical schema catalog; validated bindings and digest/drift test | planned |
 | G-014 | Large modules and script-shaped libraries slow safe iteration | P1 | ownership map; thin CLI entry points; targeted extraction without changing authority | planned |
-| G-015 | CI lacks complete fault, replay and optional reliability lanes | P1 | fast PR lane plus optional sanitizers/fuzz/crash/replay/performance lanes; read-only permissions | in progress |
+| G-015 | CI lacks complete fault, replay and optional reliability lanes | P1 | fast PR lane plus permanent `canonical-full-suite` sanitizers/fuzz/crash/replay/performance jobs and optional scheduled diagnostics; read-only permissions | in progress |
 | G-016 | Install tree can expose stale or unsupported deployment surfaces | P0 | minimal simulator/Agent install; PAPER only when explicitly built; no stale XML/CTP/LIVE examples; install smoke | in progress |
+
+### Current implementation checkpoint
+
+The following checked-in surfaces provide the implementation and negative-test
+evidence currently available on this branch. They do not, by themselves, close
+a gap: each row still requires a successful `canonical-full-suite` result on
+the exact head before its state may become `closed`.
+
+| Gap family | Implementation surface | Deterministic check |
+|---|---|---|
+| Repository, configuration and install truth (G-001/G-002/G-004/G-016) | `scripts/check_repository_integrity.py`, `scripts/resolve_hepta_config.py`, `cmake/RuntimeInstall.cmake` | repository/config Python tests and install-tree smoke |
+| Venue and authority boundaries (G-003/G-005/G-006/G-007) | typed CTP/XT rejection, Execution-owned snapshots, Tool Registry/Gateway and risk policy | core C++ contract and negative tests |
+| Preview/apply lifecycle (G-008) | Execution-issued opaque permit, generation/fence binding and journal-before-send path | `hepta_execution_preview_permit_tests`, target-position/tool-host tests |
+| Research/replay (G-009/G-010) | `research/run_protocol.py`, manifest and schema catalog | research protocol unit tests, deterministic `verify` fixture and fail-closed installed-runner/source-root check |
+| Portfolio, telemetry, schemas and module discipline (G-011–G-014) | `HeptaTrade/portfolio/`, `HeptaTrade/observability/`, `schemas/`, ownership map | portfolio/telemetry C++ tests plus schema/module checkers |
+| Reliability and performance (G-015) | `scripts/reliability_core.sh`, crash/replay, malformed-protocol and latency fixtures | permanent `canonical-full-suite` reliability matrix |
 
 ## 6. Workstreams and acceptance contracts
 
@@ -161,6 +177,11 @@ RunManifest -> deterministic EventLog -> RunSummary
 ```
 
 A run records source revision, strategy/config/data digests, calendar/session semantics, fold boundaries, costs, capacity assumptions, decisions, metrics, failures and output digest. No research artifact contains a runtime token, preview permit or promotion grant.
+
+The runtime install carries the capability-free runner and static contract but
+not experimental strategy source assets.  Installed `self-test`/full replay
+remain available; static-manifest verification must receive an explicit source
+checkout via `verify --root` and fails closed when required assets are missing.
 
 ### W6 — Runtime observability and reliability
 

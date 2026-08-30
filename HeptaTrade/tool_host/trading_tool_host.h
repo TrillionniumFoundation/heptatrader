@@ -4,6 +4,7 @@
 #include "../tools/trading_tool_registry.h"
 #include "trading_tool_session_catalog.h"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -60,6 +61,7 @@ struct SessionSupervisorLeaseRecord;
 // a server-side session binding; request data can never grant privileges.
 class TradingToolHost
 {
+    friend class TradingToolHostTestAccess;
 public:
     explicit TradingToolHost(TradingToolRegistry& registry);
     TradingToolHost(TradingToolRegistry& registry,
@@ -186,6 +188,10 @@ private:
         TradingToolSession session;
         TradingToolCall call;
         TradingToolResult result;
+        // Host-local replay retention is bounded and process-local.  The
+        // durable registry/Execution ledger remains the source of truth after
+        // this entry expires or the host restarts.
+        std::chrono::steady_clock::time_point steadyExpiresAt;
     };
 
     static TradingToolResult Reject(const std::string& toolName,
@@ -318,6 +324,23 @@ private:
         const TradingToolHostRequest& request,
         const TradingToolSession& session,
         const TradingToolCall& call);
+    // Check an already completed mutation before acquiring a fresh decision
+    // lease or running the new-mutation readiness probe. An accepted command
+    // must remain replayable even when a retry arrives while the instrument
+    // lease is busy or its previous credential has expired; authorization,
+    // visibility, semantic validation and the current session fence are still
+    // checked by Invoke/this probe before returning the cached witness.
+    bool TryReplayMutationBeforeLease(
+        const TradingToolHostSessionBinding& binding,
+        const TradingToolHostRequest& request,
+        const TradingToolSession& session,
+        const TradingToolCall& call,
+        TradingToolResult& result) const;
+    // Caller must hold m_mutex.  Expired entries are only a local replay
+    // optimization and may be discarded without affecting durable authority
+    // state.
+    void PruneMutationReplaysLocked(
+        std::chrono::steady_clock::time_point now) const;
 
 private:
     TradingToolRegistry& m_registry;
@@ -340,7 +363,7 @@ private:
         m_flattenWindowStartMs;
     std::unordered_map<std::string, std::uint32_t>
         m_flattenCallsInWindow;
-    std::unordered_map<std::string, MutationReplayRecord>
+    mutable std::unordered_map<std::string, MutationReplayRecord>
         m_mutationReplays;
     DecisionLeaseManager m_ownedDecisionLeases;
     DecisionLeaseManager& m_decisionLeases;

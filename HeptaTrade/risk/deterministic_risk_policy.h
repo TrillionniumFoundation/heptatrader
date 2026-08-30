@@ -52,8 +52,8 @@ struct DeterministicRiskContext
     // crossing-through-zero order cannot masquerade as reduce-only.
     bool exposureReducing = false;
 
-    bool quoteFresh = true;
-    bool portfolioSnapshotComplete = true;
+    bool quoteFresh = false;
+    bool portfolioSnapshotComplete = false;
 
     // Optional portfolio and strategy projections. They are evaluated when
     // the corresponding limit is non-zero.

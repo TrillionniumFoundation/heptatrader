@@ -1,4 +1,5 @@
-﻿#include "oms_journal.h"
+#include "oms_journal.h"
+#include "observability/runtime_telemetry.h"
 
 #include <chrono>
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <fstream>
 #include <fcntl.h>
 #include <limits>
+#include <locale>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -16,9 +18,26 @@
 
 namespace {
 
+static bool ParseCanonicalUnsignedEnv(const char* raw,
+                                      unsigned long long& parsed)
+{
+    if (raw == nullptr || *raw == '\0') return false;
+    const std::string value(raw);
+    if (value.size() > 1 && value[0] == '0') return false;
+    for (const char c : value)
+        if (c < '0' || c > '9') return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0') return false;
+    parsed = number;
+    return true;
+}
+
 static std::string JsonNumber(double v)
 {
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     oss.setf(std::ios::fixed);
     oss.precision(8);
     oss << v;
@@ -300,6 +319,7 @@ bool OmsJournal::ValidatePinnedPathLocked()
     {
         m_writePoisoned = true;
         ++m_writeFailTotal;
+        RuntimeRecordJournalFailure("OMS_PATH_IDENTITY_INVALID");
         return false;
     }
     return true;
@@ -310,6 +330,7 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
     if (m_fd < 0 || m_writePoisoned)
     {
         ++m_writeFailTotal;
+        RuntimeRecordJournalFailure("OMS_JOURNAL_UNAVAILABLE");
         return false;
     }
     if (!ValidatePinnedPathLocked()) return false;
@@ -330,6 +351,7 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
         {
             m_writePoisoned = true;
             ++m_writeFailTotal;
+            RuntimeRecordJournalFailure("OMS_WRITE_FAILED");
             return false;
         }
         offset += static_cast<std::size_t>(count);
@@ -347,6 +369,7 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
             m_writePoisoned = true;
             ++m_writeFailTotal;
             ++m_durableSyncFailures;
+            RuntimeRecordJournalFailure("OMS_FDATASYNC_FAILED");
             return false;
         }
         ++m_durableSyncWrites;
@@ -563,12 +586,17 @@ bool OmsJournal::Init(const std::string& path)
     m_durableSyncFailures = 0;
     m_maxQueueDepth = 0;
 
+    unsigned long long parsedEnv = 0;
     const char* pBatch = std::getenv("HEPTA_OMS_BATCH_SIZE");
-    m_batchSize = (pBatch && pBatch[0] != '\0') ?
-        static_cast<std::size_t>(std::max(1, std::atoi(pBatch))) : 8;
+    m_batchSize = 8;
+    if (ParseCanonicalUnsignedEnv(pBatch, parsedEnv) &&
+        parsedEnv <= std::numeric_limits<std::size_t>::max())
+        m_batchSize = static_cast<std::size_t>(std::max(1ULL, parsedEnv));
     const char* pInterval = std::getenv("HEPTA_OMS_FLUSH_INTERVAL_MS");
-    m_flushIntervalMs = (pInterval && pInterval[0] != '\0') ?
-        std::max(0, std::atoi(pInterval)) : 250;
+    m_flushIntervalMs = 250;
+    if (ParseCanonicalUnsignedEnv(pInterval, parsedEnv) &&
+        parsedEnv <= static_cast<unsigned long long>(LLONG_MAX))
+        m_flushIntervalMs = static_cast<long long>(parsedEnv);
     m_lastFlushMs = NowEpochMs();
 
     const char* pAsync = std::getenv("HEPTA_OMS_ASYNC_FLUSH");
@@ -607,6 +635,8 @@ bool OmsJournal::Init(const std::string& path)
 
 bool OmsJournal::Append(const OmsJournalEvent& evt)
 {
+    RuntimeLatencyScope appendLatency("hepta_oms_append_latency_microseconds");
+
     std::lock_guard<std::mutex> lk(m_mtx);
     if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
         evt.eventType.empty() || !std::isfinite(evt.qty) ||
@@ -638,11 +668,16 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
         ++m_criticalSyncWrites;
         if (m_asyncEnabled)
         {
-            if (m_criticalFlushQueued)
-            {
-                if (!FlushQueuedNoLock()) return false;
-                if (!FlushBufferedLocked()) return false;
-            }
+            // A critical record is written directly only after every older
+            // asynchronous record has been drained.  Otherwise a queued
+            // non-critical event can be appended to the file *after* this
+            // critical event, even though Append() observed the opposite
+            // order.  Replay is defined in append order, so preserving that
+            // ordering is mandatory whenever critical writes are synchronous.
+            // Keep the legacy knob for configuration compatibility, but do
+            // not let it disable this safety barrier.
+            if (!FlushQueuedNoLock()) return false;
+            if (!FlushBufferedLocked()) return false;
             return WriteLineDirect(line);
         }
         if (!FlushBufferedLocked()) return false;
@@ -691,6 +726,14 @@ OmsJournalHealthSnapshot OmsJournal::GetHealthSnapshot() const
     out.maxQueueDepth = m_maxQueueDepth;
     out.lastFlushMs = m_lastFlushMs;
     out.writePoisoned = m_writePoisoned;
+    RuntimeTelemetry::Global().SetGaugeKey(
+        "hepta_oms_journal_backlog",
+        static_cast<double>(out.queueDepth + out.bufferedDepth));
+    RuntimeTelemetry::Global().SetGaugeKey(
+        "hepta_oms_journal_write_failures",
+        static_cast<double>(out.writeFailTotal));
+    RuntimeTelemetry::Global().SetGaugeKey(
+        "hepta_oms_journal_poisoned", out.writePoisoned ? 1.0 : 0.0);
     return out;
 }
 
@@ -702,6 +745,8 @@ std::string OmsJournal::GetPath() const
 
 int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEvent) const
 {
+    RuntimeLatencyScope replayLatency("hepta_oms_replay_latency_microseconds");
+
     std::unique_lock<std::mutex> lk(m_mtx);
     OmsJournal* const self = const_cast<OmsJournal*>(this);
     if (!self->FlushQueuedNoLock() || !self->FlushBufferedLocked() ||
@@ -787,6 +832,9 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
 {
     const std::string reqId = evt.reqId.empty() ? evt.clientReqId : evt.reqId;
     std::ostringstream oss;
+    // Journal lines are replay identity and JSON; keep numeric formatting
+    // independent of the embedding process locale.
+    oss.imbue(std::locale::classic());
     oss << "{"
         << "\"schema_version\":" << (evt.schemaVersion > 0 ? evt.schemaVersion : kSchemaVersion)
         << ",\"event\":\"" << EscapeJson(evt.eventType) << "\""
@@ -894,11 +942,12 @@ double OmsJournal::JsonGetDouble(const std::string& json, const std::string& key
     }
     if (e == p) return defVal;
     const std::string token = json.substr(p, e - p);
-    char* parseEnd = nullptr;
-    errno = 0;
-    const double value = std::strtod(token.c_str(), &parseEnd);
-    if (errno == ERANGE || parseEnd == nullptr || *parseEnd != '\0' ||
-        !std::isfinite(value)) return defVal;
+    std::istringstream input(token);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double value = 0.0;
+    input >> value;
+    if (!input || !input.eof() || !std::isfinite(value)) return defVal;
     return value;
 }
 

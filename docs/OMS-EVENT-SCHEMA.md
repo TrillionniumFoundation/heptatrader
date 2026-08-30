@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: `HeptaTrade/oms_journal.*`, `HeptaTrade/execution/`, OMS replay tests
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision
 
 ## Purpose
 

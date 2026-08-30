@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: `HeptaTrade/execution/`, `HeptaTrade/state/`, Simulator and IB PAPER recovery
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; external PAPER host checks are separate
 
 ## Authority
 

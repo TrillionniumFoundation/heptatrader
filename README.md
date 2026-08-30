@@ -1,5 +1,9 @@
 # HeptaTrader
 
+Status: current
+Applies to: repository entry point and capability overview
+Verification: `canonical-full-suite` on the exact revision
+
 HeptaTrader is a **model-agnostic deterministic trading control and execution runtime for AI agents**, with an experimental reproducible quantitative-research plane. Codex is the first supported Agent client through MCP; it never owns broker credentials, portfolio truth, final risk decisions, OMS state or venue sessions.
 
 > HeptaTrader is not an “LLM directly calls a broker API” framework. Models are replaceable clients; the trusted runtime is deterministic.
@@ -12,10 +16,10 @@ HeptaTrader is a **model-agnostic deterministic trading control and execution ru
 | Session/capability enforcement and bounded framing | Implemented |
 | OMS journal, stable command IDs, replay/recovery contracts | Implemented |
 | Deterministic simulator | Implemented for contract and failure-path tests |
-| Shared deterministic risk core | Implemented; authoritative portfolio wiring is being completed |
-| Decision snapshot and target-position intent | In progress |
+| Shared deterministic risk core and deterministic portfolio compiler | Implemented for the Simulator/core contract path; venue/host certification remains separate |
+| Generation-consistent decision snapshot and target-position intent | Implemented for the Simulator/core contract path; IB PAPER integration remains experimental |
 | IB PAPER | Experimental; external SDK/host required |
-| Research/replay | Experimental; SHADOW only |
+| Research/replay | Experimental; compact deterministic protocol is implemented; SHADOW only |
 | CTP and XT/QMT transport | Unsupported / fail-closed |
 | LIVE mutation | Unsupported |
 
@@ -70,7 +74,7 @@ cmake --install build/core-release --component runtime
 HeptaTrade/       active C++ Gateway, Execution, OMS, risk, state and simulator/PAPER runtime
 adapters/mcp/     MCP adapter
 plugins/          Agent client metadata only
-schemas/          canonical protocol/schema catalog (planned/being introduced)
+schemas/          canonical protocol/schema catalog and drift checks
 strategies/       versioned strategy definitions
 research/         compact research run contract
 scripts/          bounded development and runtime utilities
@@ -79,5 +83,11 @@ tests/            unit, contract, integration and failure-path tests
 docs/             current contracts, proposals and deprecated documentation
 legacy/           inactive historical source; active targets may not depend on it
 ```
+
+The fast pull-request feedback is provided by `core-runtime`; final source
+parents also run the permanent read-only `canonical-full-suite` workflow. The
+latter adds the Release install smoke and the ASAN/UBSAN, crash/replay,
+malformed-protocol and performance fixtures. Neither workflow can mutate the
+repository or activate a venue.
 
 Start with [`docs/PRODUCT-SCOPE.md`](docs/PRODUCT-SCOPE.md), [`docs/README.md`](docs/README.md) and the canonical plan.

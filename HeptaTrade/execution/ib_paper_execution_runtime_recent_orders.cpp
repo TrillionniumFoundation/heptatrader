@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <locale>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -179,8 +180,9 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
             if (left.observedAtMs != right.observedAtMs)
                 return left.observedAtMs > right.observedAtMs;
             return left.orderId > right.orderId;
-        });
+    });
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << '[';
     for (std::size_t i = 0; i < matching.size() && i < 64; ++i)
     {

@@ -12,9 +12,10 @@ std::uint64_t LifecycleEpochNowMs()
 }
 bool IsKnownSessionEnvironment(const std::string& environment)
 {
-    return environment == "WATCH" || environment == "PAPER" ||
-        environment == "LIVE_REDUCE_ONLY" ||
-        environment == "LIVE_CAPPED";
+    // Production profiles are intentionally not part of the accepted session
+    // protocol.  They must be introduced only by a separately reviewed
+    // activation change, never by a caller-supplied environment string.
+    return environment == "WATCH" || environment == "PAPER";
 }
 
 bool ValidateSessionShape(
@@ -86,9 +87,18 @@ bool TradingToolHost::ValidateSessionTradePolicy(
     const TradingToolHostSessionBinding& binding,
     std::string& reason)
 {
+    // A session can reach a mutation either through the typed target-position
+    // intent or through the explicitly operator-scoped raw order tool.  Both
+    // capabilities must participate in the same registration-time policy so
+    // a WATCH binding cannot smuggle mutation authority in a capability the
+    // lifecycle validator does not recognize.
     const bool canPlace =
+        binding.session.capabilities.find("intent.apply") !=
+            binding.session.capabilities.end() ||
+        binding.session.capabilities.find("operator.trade.place") !=
+            binding.session.capabilities.end() ||
         binding.session.capabilities.find("trade.place") !=
-        binding.session.capabilities.end();
+            binding.session.capabilities.end();
     const bool canFlatten =
         binding.session.capabilities.find("trade.flatten") !=
         binding.session.capabilities.end();
@@ -99,11 +109,6 @@ bool TradingToolHost::ValidateSessionTradePolicy(
     if (canTrade && binding.session.environment == "WATCH")
     {
         reason = "WATCH_SESSION_CANNOT_TRADE";
-        return false;
-    }
-    if (canPlace && binding.session.environment == "LIVE_REDUCE_ONLY")
-    {
-        reason = "REDUCE_ONLY_PLACE_FORBIDDEN";
         return false;
     }
     if (canInstrumentMutation &&
@@ -301,82 +306,97 @@ bool TradingToolHost::UpdateSessionLeaseImpl(
     std::unique_lock<std::mutex> dispatchLock(
         m_mutationDispatchMutex, std::defer_lock);
     if (!dispatchLocked) dispatchLock.lock();
-    std::lock_guard<std::mutex> lock(m_mutex);
-    const std::unordered_map<std::string,
-        TradingToolHostSessionBinding>::iterator current =
-        m_sessions.find(currentToken);
-    if (current == m_sessions.end())
+    TradingToolSession previousTargetOwner;
+    bool rotated = false;
     {
-        reason = "SESSION_NOT_FOUND";
-        return false;
-    }
-    if (expectedCurrent != nullptr &&
-        !MatchesExpectedCurrent(current->second, *expectedCurrent))
-    {
-        current->second.enabled = false;
-        m_pendingOwnerFences.insert(SessionOwnerKey(current->second));
-        reason = "WATCH_TRANSACTION_CURRENT_BINDING_MISMATCH";
-        return false;
-    }
-    if (current->second.leaseGeneration != expectedGeneration)
-    {
-        reason = "SESSION_LEASE_GENERATION_MISMATCH";
-        return false;
-    }
-    const std::string ownerKey = SessionOwnerKey(current->second);
-    if (!current->second.enabled ||
-        m_pendingOwnerFences.find(ownerKey) != m_pendingOwnerFences.end())
-    {
-        reason = "SESSION_OWNER_FENCE_PENDING";
-        return false;
-    }
-    const bool currentAllowed = WatchTransactionAllowsLocked(
-        watchTransactionId, ownerKey, currentToken);
-    const bool replacementAllowed = WatchTransactionAllowsLocked(
-        watchTransactionId, ownerKey, replacementToken);
-    if (m_watchTokenTransactions.find(replacementToken) !=
-            m_watchTokenTransactions.end() &&
-        !replacementAllowed)
-    {
-        reason = "SESSION_TOKEN_FENCE_PENDING";
-        return false;
-    }
-    if ((m_watchTokenTransactions.find(currentToken) !=
-            m_watchTokenTransactions.end() ||
-         m_watchOwnerTransactions.find(ownerKey) !=
-            m_watchOwnerTransactions.end()) &&
-        (!currentAllowed || !replacementAllowed))
-    {
-        reason = "SESSION_OWNER_FENCE_PENDING";
-        return false;
-    }
-    if (watchTransactionId != nullptr &&
-        (!currentAllowed || !replacementAllowed))
-    {
-        reason = "WATCH_TRANSACTION_RESERVATION_MISMATCH";
-        return false;
-    }
-    if (replacementToken != currentToken &&
-        m_sessions.find(replacementToken) != m_sessions.end())
-    {
-        reason = "SESSION_TOKEN_EXISTS";
-        return false;
-    }
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const std::unordered_map<std::string,
+            TradingToolHostSessionBinding>::iterator current =
+            m_sessions.find(currentToken);
+        if (current == m_sessions.end())
+        {
+            reason = "SESSION_NOT_FOUND";
+            return false;
+        }
+        if (expectedCurrent != nullptr &&
+            !MatchesExpectedCurrent(current->second, *expectedCurrent))
+        {
+            current->second.enabled = false;
+            m_pendingOwnerFences.insert(SessionOwnerKey(current->second));
+            reason = "WATCH_TRANSACTION_CURRENT_BINDING_MISMATCH";
+            return false;
+        }
+        if (current->second.leaseGeneration != expectedGeneration)
+        {
+            reason = "SESSION_LEASE_GENERATION_MISMATCH";
+            return false;
+        }
+        const std::string ownerKey = SessionOwnerKey(current->second);
+        if (!current->second.enabled ||
+            m_pendingOwnerFences.find(ownerKey) != m_pendingOwnerFences.end())
+        {
+            reason = "SESSION_OWNER_FENCE_PENDING";
+            return false;
+        }
+        const bool currentAllowed = WatchTransactionAllowsLocked(
+            watchTransactionId, ownerKey, currentToken);
+        const bool replacementAllowed = WatchTransactionAllowsLocked(
+            watchTransactionId, ownerKey, replacementToken);
+        if (m_watchTokenTransactions.find(replacementToken) !=
+                m_watchTokenTransactions.end() &&
+            !replacementAllowed)
+        {
+            reason = "SESSION_TOKEN_FENCE_PENDING";
+            return false;
+        }
+        if ((m_watchTokenTransactions.find(currentToken) !=
+                m_watchTokenTransactions.end() ||
+             m_watchOwnerTransactions.find(ownerKey) !=
+                m_watchOwnerTransactions.end()) &&
+            (!currentAllowed || !replacementAllowed))
+        {
+            reason = "SESSION_OWNER_FENCE_PENDING";
+            return false;
+        }
+        if (watchTransactionId != nullptr &&
+            (!currentAllowed || !replacementAllowed))
+        {
+            reason = "WATCH_TRANSACTION_RESERVATION_MISMATCH";
+            return false;
+        }
+        if (replacementToken != currentToken &&
+            m_sessions.find(replacementToken) != m_sessions.end())
+        {
+            reason = "SESSION_TOKEN_EXISTS";
+            return false;
+        }
 
-    TradingToolHostSessionBinding replacement = current->second;
-    replacement.token = replacementToken;
-    replacement.expiresAtMs = expiresAtMs;
-    replacement.leaseGeneration = expectedGeneration + 1;
-    const TradingToolSessionContractRegistration registration =
-        BuildCatalogRegistration(replacement);
-    if (!m_contractCatalog.Replace(currentToken, registration, reason))
-        return false;
+        // A lease/token rotation is a new bearer epoch.  Invalidate any
+        // target permit minted under the previous epoch before exposing the
+        // replacement binding.  Build the exact registry owner identity from
+        // the server-derived execution domain (the client copy may omit it).
+        previousTargetOwner = current->second.session;
+        previousTargetOwner.executionContext.executionDomain =
+            current->second.executionDomain;
 
-    m_sessions.erase(current);
-    m_sessions[replacementToken] = replacement;
-    MoveSessionRateBudgetsLocked(currentToken, replacementToken);
-    MoveActiveDecisionLeasesLocked(currentToken, replacementToken);
-    newGeneration = replacement.leaseGeneration;
+        TradingToolHostSessionBinding replacement = current->second;
+        replacement.token = replacementToken;
+        replacement.expiresAtMs = expiresAtMs;
+        replacement.leaseGeneration = expectedGeneration + 1;
+        const TradingToolSessionContractRegistration registration =
+            BuildCatalogRegistration(replacement);
+        if (!m_contractCatalog.Replace(currentToken, registration, reason))
+            return false;
+
+        m_sessions.erase(current);
+        m_sessions[replacementToken] = replacement;
+        MoveSessionRateBudgetsLocked(currentToken, replacementToken);
+        MoveActiveDecisionLeasesLocked(currentToken, replacementToken);
+        newGeneration = replacement.leaseGeneration;
+        rotated = true;
+    }
+    if (rotated)
+        m_registry.RevokeTargetPermitsForOwner(previousTargetOwner);
     reason.clear();
     return true;
 }
@@ -442,6 +462,12 @@ bool TradingToolHost::RevokeSessionUnderDispatchLock(
             "SESSION_REMOTE_FENCE_PENDING" : fenceReason;
         return false;
     }
+    TradingToolSession targetOwner = revoked.session;
+    targetOwner.executionContext.executionDomain = revoked.executionDomain;
+    // The remote fence has committed and the dispatch lock excludes any
+    // in-flight host mutation.  Drop the registry's independent target
+    // permit/replay state before removing the bearer binding.
+    m_registry.RevokeTargetPermitsForOwner(targetOwner);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         EraseSessionLocked(token);
@@ -501,6 +527,9 @@ bool TradingToolHost::FenceRestoredSession(
             "SESSION_REMOTE_FENCE_PENDING" : fenceReason;
         return false;
     }
+    TradingToolSession targetOwner = pending.session;
+    targetOwner.executionContext.executionDomain = pending.executionDomain;
+    m_registry.RevokeTargetPermitsForOwner(targetOwner);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         m_pendingOwnerFences.erase(ownerKey);

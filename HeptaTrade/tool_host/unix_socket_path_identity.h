@@ -40,6 +40,20 @@ public:
         if (!Capture(path))
         {
             reason = "socket path identity unavailable";
+            // The caller has just bound this descriptor, so a failed first
+            // lstat must not strand the pathname.  Only remove it when the
+            // pathname still names the exact socket object represented by
+            // `fd`; a concurrent replacement is left untouched.
+            struct stat listener;
+            struct stat pathname;
+            if (::fstat(fd, &listener) == 0 &&
+                ::lstat(path.c_str(), &pathname) == 0 &&
+                S_ISSOCK(listener.st_mode) && S_ISSOCK(pathname.st_mode) &&
+                static_cast<std::uint64_t>(listener.st_dev) ==
+                    static_cast<std::uint64_t>(pathname.st_dev) &&
+                static_cast<std::uint64_t>(listener.st_ino) ==
+                    static_cast<std::uint64_t>(pathname.st_ino))
+                ::unlink(path.c_str());
             ::close(fd);
             return false;
         }

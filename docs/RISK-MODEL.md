@@ -2,11 +2,19 @@
 
 Status: current
 Applies to: `HeptaTrade/risk/`, Simulator, portfolio compiler and IB PAPER policy authorities
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; external PAPER host checks are separate
 
 ## One common policy, stricter venue rules
 
-`DeterministicRiskPolicy` is the venue-independent pre-trade core. A venue may add stricter security type, session, tick-size, order-shape or quote-generation rules; it may never bypass or weaken the common decision.
+`DeterministicRiskPolicy` is the venue-independent pre-trade core. When a
+trusted Simulator orchestration invokes the deterministic
+`PortfolioCompiler`, its typed strategy-gross and portfolio-budget decision is
+an input to this policy. The ordinary Agent target-position path is a
+single-intent flow and remains governed by Execution's complete authoritative
+position/risk projection; it does not claim cross-strategy allocator
+authority. A venue may add stricter security type, session, tick-size,
+order-shape or quote-generation rules; it may never bypass or weaken the
+common decision.
 
 ## Rule/source contract
 

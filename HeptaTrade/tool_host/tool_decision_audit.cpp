@@ -1,6 +1,8 @@
 #include "tool_decision_audit.h"
 
 #include <iomanip>
+#include <locale>
+#include <exception>
 #include <openssl/evp.h>
 #include <sstream>
 
@@ -14,7 +16,12 @@ void AppendValue(std::ostringstream& output, const char* name, const std::string
 template <typename T>
 std::string Number(T value)
 {
+    // Keep positive and negative zero on one canonical fingerprint spelling.
+    // This matters for doubles arriving from a caller that preserves the
+    // sign bit: a signed-zero alias must not split idempotency/audit records.
+    if (value == 0) return "0";
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << std::setprecision(17) << value;
     return output.str();
 }
@@ -76,8 +83,21 @@ bool ToolDecisionAudit::AppendIntent(
         reason.clear();
         return true;
     }
-    return Append(peerCredentialAvailable, peerUid, &request, binding,
-        "intent", "pending", std::string(), reason);
+    try
+    {
+        return Append(peerCredentialAvailable, peerUid, &request, binding,
+            "intent", "pending", std::string(), reason);
+    }
+    catch (const std::exception&)
+    {
+        reason = "TOOL_DECISION_AUDIT_EXCEPTION";
+        return false;
+    }
+    catch (...)
+    {
+        reason = "TOOL_DECISION_AUDIT_EXCEPTION";
+        return false;
+    }
 }
 
 void ToolDecisionAudit::AppendOutcome(
@@ -88,10 +108,21 @@ void ToolDecisionAudit::AppendOutcome(
     TradingToolResult& result) const
 {
     std::string auditReason;
-    if (Append(peerCredentialAvailable, peerUid, request, binding,
-        "outcome", TradingToolRegistry::StatusName(result.status),
-        result.reasonCode, auditReason))
-        return;
+    try
+    {
+        if (Append(peerCredentialAvailable, peerUid, request, binding,
+            "outcome", TradingToolRegistry::StatusName(result.status),
+            result.reasonCode, auditReason))
+            return;
+    }
+    catch (const std::exception&)
+    {
+        auditReason = "TOOL_DECISION_AUDIT_EXCEPTION";
+    }
+    catch (...)
+    {
+        auditReason = "TOOL_DECISION_AUDIT_EXCEPTION";
+    }
     // A mutation crossed a durable intent barrier before dispatch. If only
     // its outcome record fails, never misreport it as a definite rejection:
     // the OMS/idempotency record remains authoritative for reconciliation.
@@ -146,7 +177,23 @@ bool ToolDecisionAudit::Append(
     record.phase = phase;
     record.outcome = outcome;
     record.reasonCode = reasonCode;
-    return m_journal->AppendToolDecision(record, reason);
+    try
+    {
+        return m_journal->AppendToolDecision(record, reason);
+    }
+    catch (const std::exception&)
+    {
+        // A journal implementation is an I/O boundary.  Treat an escaping
+        // exception exactly like a failed append so callers can preserve the
+        // mutation's uncertain outcome and still close the client socket.
+        reason = "TOOL_DECISION_AUDIT_EXCEPTION";
+        return false;
+    }
+    catch (...)
+    {
+        reason = "TOOL_DECISION_AUDIT_EXCEPTION";
+        return false;
+    }
 }
 
 std::string ToolDecisionAudit::RequestFingerprint(

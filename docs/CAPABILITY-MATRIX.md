@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: repository-wide
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; external PAPER host checks are separate
 
 State definitions:
 
@@ -16,14 +16,15 @@ State definitions:
 | Capability | State | Authority / boundary |
 |---|---|---|
 | Tool discovery, schema hash and typed local framing | Implemented | Gateway session-visible catalog |
+| Canonical wire/schema catalog and drift validation | Implemented for checked-in bindings | `schemas/` plus `check_schema_catalog.py`; runtime bindings remain typed and validated |
 | Session identity and capability enforcement | Implemented | Gateway + session supervisor |
 | Stable command-id idempotency and journal-before-send | Implemented | Execution Coordinator / OMS |
 | Execution service epoch and fencing | Implemented | Execution Service |
 | Uncertain command recovery and owner-scoped control | Implemented | OMS + authoritative reconciliation |
 | Authoritative flatten/reduce-only | Implemented for supported compositions | Execution Service only |
-| Generation-consistent decision snapshot | Experimental | Execution-owned state authority |
-| Target-position preview/apply permit path | Experimental | Execution Service; ordinary Agent target |
-| Portfolio netting and strategy capital budgets | Planned | future deterministic portfolio compiler |
+| Generation-consistent decision snapshot | Implemented for Simulator/core contract tests | Execution-owned state authority; external PAPER host certification remains separate |
+| Target-position preview/apply permit path | Implemented for Simulator/core contract tests | Execution Service; ordinary Agent target |
+| Portfolio netting and strategy capital budgets | Implemented for the trusted deterministic Simulator compiler boundary | `PortfolioCompiler` consumes a complete typed intent vector; ordinary Agent target-position remains single-intent and does not advertise a multi-Agent allocator |
 | Agent-selected broker session or venue truth | Unsupported | forbidden by architecture |
 
 ## Venue support
@@ -44,8 +45,8 @@ State definitions:
 | `heptactl` | Implemented | operator/developer CLI |
 | MCP bridge | Implemented | local adapter; no broker credential or venue authority |
 | Codex plugin metadata | Implemented | launches MCP adapter only; not a complete Agent OS |
-| Ordinary target-position Agent profile | Experimental | raw place authority must be absent |
-| Multi-Agent portfolio/capital allocator | Planned | requires deterministic portfolio compiler first |
+| Ordinary target-position Agent profile | Implemented for core contract tests | raw place authority is absent; the path uses Execution-owned single-intent risk/permit authority; external PAPER integration remains experimental |
+| Multi-Agent portfolio/capital allocator | Planned | compiler exists for deterministic tests; production allocator/lifecycle is not implemented |
 
 ## Research
 
@@ -53,8 +54,8 @@ State definitions:
 |---|---|---|
 | Versioned strategy definition | Implemented | current EURUSD SHADOW definition |
 | Deterministic strategy evaluation | Experimental | strategy-specific Python path |
-| Compact manifest/replay/summary protocol | In progress | replaces campaign/finalizer machinery |
-| Purged walk-forward, costs, capacity and regime evaluation | In progress | required before PAPER proposal |
+| Compact manifest/replay/summary protocol | Implemented for the deterministic fixture | replaces campaign/finalizer machinery; broader strategy coverage remains experimental |
+| Purged walk-forward, costs, capacity and regime evaluation | Experimental | deterministic validation fields are checked; broader datasets remain required before a PAPER proposal |
 | Point-in-time dataset registry and feature registry | Planned | required for multi-strategy scale |
 | Automatic SHADOW-to-PAPER/LIVE promotion | Unsupported | explicit reviewed runtime change only |
 

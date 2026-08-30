@@ -15,6 +15,7 @@
 #include <poll.h>
 #include <set>
 #include <string>
+#include <stdexcept>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
@@ -185,6 +186,32 @@ std::string RemoveField(const std::string& body, unsigned int removedTag)
     return result;
 }
 
+std::string ReplaceField(const std::string& body, unsigned int targetTag,
+                         const std::string& replacement)
+{
+    assert(body.size() >= 8);
+    std::string result = body.substr(0, 8);
+    std::size_t offset = 8;
+    bool replaced = false;
+    while (offset < body.size())
+    {
+        const unsigned int tag = U16At(body, offset);
+        offset += 2;
+        const std::size_t length = U32At(body, offset);
+        offset += 4;
+        assert(offset + length <= body.size());
+        const std::string value = tag == targetTag ? replacement :
+            body.substr(offset, length);
+        AppendU16(result, tag);
+        AppendU32(result, value.size());
+        result.append(value);
+        replaced = replaced || tag == targetTag;
+        offset += length;
+    }
+    assert(replaced);
+    return result;
+}
+
 std::string WithUnknownField(std::string body)
 {
     AppendU16(body, 65000);
@@ -251,6 +278,11 @@ public:
 
     const std::string& StreamEpoch() const override { return m_epoch; }
 
+    std::uint64_t LatestSequence() const override
+    {
+        return m_hub.LatestSequence();
+    }
+
     std::uint64_t Publish(const ExecutionEvent& event) { return m_hub.Publish(event); }
 
     std::size_t Pending(const std::string& sessionId,
@@ -286,6 +318,69 @@ private:
     std::map<std::string, std::uint64_t> m_reads;
 };
 
+// Adversarial source used to prove that adapter/venue exception text never
+// crosses the privileged event-feed socket.  The server must convert both a
+// thrown source exception and callback fields containing path/credential text
+// into stable protocol values while keeping the worker alive.
+class AdversarialSource : public ExecutionEventFeedSource
+{
+public:
+    explicit AdversarialSource(const ExecutionServiceIdentity& identity)
+        : m_identity(identity), m_throwRead(false), m_throwLatest(false)
+    {
+    }
+
+    ExecutionEventReadResult ReadNext(const std::string& executionDomain,
+                                      const std::string& agentId,
+                                      const std::string& sessionId,
+                                      const std::string& expectedEpoch,
+                                      std::uint64_t,
+                                      int) override
+    {
+        if (m_throwRead.load())
+            throw std::runtime_error(
+                "/private/event/socket credential=secret-token");
+        ExecutionEventReadResult result;
+        result.status = ExecutionEventReadStatus::Event;
+        result.serviceIdentity = m_identity;
+        result.streamEpoch = expectedEpoch;
+        result.latestSequence = 1;
+        result.event.executionDomain = executionDomain;
+        result.event.agentId = agentId;
+        result.event.sessionId = sessionId;
+        result.event.streamEpoch = expectedEpoch;
+        result.event.sequence = 1;
+        result.event.timestampMs = 1;
+        result.event.type = "order.status";
+        result.event.venue = "SIMULATOR";
+        result.event.status = "/private/status credential=secret-token";
+        result.event.reasonCode =
+            "/private/event/socket credential=secret-token";
+        return result;
+    }
+
+    const std::string& StreamEpoch() const override
+    {
+        return m_identity.serviceEpoch;
+    }
+
+    std::uint64_t LatestSequence() const override
+    {
+        if (m_throwLatest.load())
+            throw std::runtime_error(
+                "/private/event/socket credential=secret-token");
+        return 1;
+    }
+
+    void ThrowOnRead(bool value) { m_throwRead.store(value); }
+    void ThrowOnLatest(bool value) { m_throwLatest.store(value); }
+
+private:
+    const ExecutionServiceIdentity m_identity;
+    std::atomic<bool> m_throwRead;
+    std::atomic<bool> m_throwLatest;
+};
+
 void TestProtocolV2Strictness()
 {
     const ExecutionServiceIdentity identity = Identity("feed-epoch", 9);
@@ -299,6 +394,32 @@ void TestProtocolV2Strictness()
     assert(SameIdentity(decoded.expectedServiceIdentity, identity));
     assert(decoded.afterSequence == 42);
     assert(decoded.timeoutMs == 123);
+
+    // Sequence, fencing and timestamp fields are uint64 quantities.  Keep
+    // the complete upper half of the domain representable on the wire and
+    // reject the first value beyond UINT64_MAX instead of wrapping it.
+    const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+    const ExecutionServiceIdentity maximumIdentity =
+        Identity("feed-epoch-max", maximum);
+    ExecutionEventFeedRequest maximumRequest = Request(
+        maximumIdentity, "protocol-max-session", maximum, 30000);
+    assert(ExecutionEventFeedProtocol::EncodeRequest(
+        maximumRequest, body, reason));
+    assert(ExecutionEventFeedProtocol::DecodeRequest(body, decoded, reason));
+    assert(decoded.afterSequence == maximum);
+    assert(decoded.expectedServiceIdentity.serviceFencingGeneration == maximum);
+    const std::string overflow = "18446744073709551616";
+    assert(!ExecutionEventFeedProtocol::DecodeRequest(
+        ReplaceField(body, 5, overflow), decoded, reason));
+    assert(!ExecutionEventFeedProtocol::DecodeRequest(
+        ReplaceField(body, 7, overflow), decoded, reason));
+
+    // The codec is callable independently of the Unix transport; enforce its
+    // hard body ceiling before parsing a potentially hostile field map.
+    const std::string oversizedBody(32769, 'x');
+    assert(!ExecutionEventFeedProtocol::DecodeRequest(
+        oversizedBody, decoded, reason));
+    assert(reason == "EXECUTION_EVENT_PROTOCOL_BODY_TOO_LARGE");
 
     ExecutionEventFeedRequest identityRequest;
     identityRequest.operation = ExecutionEventFeedOperation::GetServiceIdentity;
@@ -333,6 +454,57 @@ void TestProtocolV2Strictness()
     assert(SameIdentity(decodedResponse.serviceIdentity, identity));
     assert(!ExecutionEventFeedProtocol::DecodeResponse(
         WithUnknownField(body), decodedResponse, reason));
+
+    // Identity responses carry the same feed watermark as Wait responses.
+    // Exercise a non-zero value directly so this contract remains covered
+    // even when an integration runner cannot create Unix sockets.
+    ExecutionEventReadResult identityResponse;
+    identityResponse.status = ExecutionEventReadStatus::ServiceIdentity;
+    identityResponse.serviceIdentity = identity;
+    identityResponse.streamEpoch = identity.serviceEpoch;
+    identityResponse.latestSequence = 37;
+    identityResponse.reasonCode = "EXECUTION_EVENT_SERVICE_IDENTITY";
+    assert(ExecutionEventFeedProtocol::EncodeResponse(
+        identityResponse, body, reason));
+    assert(ExecutionEventFeedProtocol::DecodeResponse(
+        body, decodedResponse, reason));
+    assert(decodedResponse.status == ExecutionEventReadStatus::ServiceIdentity);
+    assert(decodedResponse.latestSequence == 37);
+
+    ExecutionEventReadResult maximumEvent;
+    maximumEvent.status = ExecutionEventReadStatus::Event;
+    maximumEvent.serviceIdentity = maximumIdentity;
+    maximumEvent.streamEpoch = maximumIdentity.serviceEpoch;
+    maximumEvent.droppedThroughSequence = maximum - 1;
+    maximumEvent.latestSequence = maximum;
+    maximumEvent.event = Event("protocol-max-session", 9001);
+    maximumEvent.event.streamEpoch = maximumIdentity.serviceEpoch;
+    maximumEvent.event.sequence = maximum;
+    maximumEvent.event.timestampMs = maximum;
+    assert(ExecutionEventFeedProtocol::EncodeResponse(
+        maximumEvent, body, reason));
+    assert(ExecutionEventFeedProtocol::DecodeResponse(
+        body, decodedResponse, reason));
+    assert(decodedResponse.latestSequence == maximum);
+    assert(decodedResponse.event.sequence == maximum);
+    assert(decodedResponse.event.timestampMs == maximum);
+
+    // Numeric fields must not silently turn an underflow or signed zero into
+    // an ordinary zero during decoding.
+    maximumEvent.latestSequence = 1;
+    maximumEvent.droppedThroughSequence = 0;
+    maximumEvent.event.sequence = 1;
+    maximumEvent.event.timestampMs = 1;
+    maximumEvent.event.filledQuantity = 1.0;
+    maximumEvent.event.remainingQuantity = 1.0;
+    maximumEvent.event.averageFillPrice = 1.0;
+    assert(ExecutionEventFeedProtocol::EncodeResponse(
+        maximumEvent, body, reason));
+    assert(!ExecutionEventFeedProtocol::DecodeResponse(
+        ReplaceField(body, 114, "-0"), decodedResponse, reason));
+    assert(!ExecutionEventFeedProtocol::DecodeResponse(
+        ReplaceField(body, 115, "1e-999"), decodedResponse, reason));
+
     gap.droppedThroughSequence = 0;
     assert(!ExecutionEventFeedProtocol::EncodeResponse(gap, body, reason));
 }
@@ -355,6 +527,9 @@ void TestUnixFeedIsolationGapIdentityAndWorkers()
     const ExecutionEventReadResult identityResult = client.GetServiceIdentity();
     assert(identityResult.status == ExecutionEventReadStatus::ServiceIdentity);
     assert(SameIdentity(identityResult.serviceIdentity, identity));
+    // Identity is also the authoritative feed watermark query.  The source
+    // has not published yet, so zero is a valid initial value.
+    assert(identityResult.latestSequence == 0);
     assert(source.ReadsFor("session-a") == 0);
 
     const ExecutionEventReadResult timeout = client.Wait(Request(identity, "session-a"));
@@ -363,6 +538,10 @@ void TestUnixFeedIsolationGapIdentityAndWorkers()
 
     source.Publish(Event("session-a", 100));
     source.Publish(Event("session-b", 200));
+    const ExecutionEventReadResult advancedIdentity =
+        client.GetServiceIdentity();
+    assert(advancedIdentity.status == ExecutionEventReadStatus::ServiceIdentity);
+    assert(advancedIdentity.latestSequence == 2);
     const ExecutionEventReadResult ownerA = client.Wait(Request(identity, "session-a"));
     assert(ownerA.status == ExecutionEventReadStatus::Event);
     assert(ownerA.event.orderId == 100);
@@ -585,6 +764,88 @@ void TestStopRejectsAcceptedWorkerBacklog()
     ::unlink(socketPath.c_str());
 }
 
+void TestEventFeedExceptionSanitization()
+{
+    const std::string socketPath = "/tmp/hepta-events-exception-sanitize-" +
+        std::to_string(::getpid()) + ".sock";
+    const ExecutionServiceIdentity identity = Identity("exception-epoch", 35);
+    AdversarialSource source(identity);
+    const std::shared_ptr<ExecutionServiceLifecycleGate> gate = ReadyGate();
+    UnixExecutionEventFeedServer server(source, identity, gate);
+    const std::set<std::uint32_t> uid{
+        static_cast<std::uint32_t>(::geteuid())};
+    std::string reason;
+    assert(server.StartFromFd(ActivatedSocket(socketPath), uid, reason,
+        8192, 500, 1, 4));
+
+    // A source callback can return an otherwise well-formed event whose
+    // reason/status accidentally contains an SDK exception and a secret.
+    // Inspect the raw response body, not only the decoded object, so this is
+    // a negative wire-leak test rather than an in-process assertion.
+    ExecutionEventFeedRequest request = Request(identity, "secret-session");
+    std::string requestBody;
+    assert(ExecutionEventFeedProtocol::EncodeRequest(
+        request, requestBody, reason));
+    const int eventFd = ConnectSocket(socketPath);
+    WriteFrame(eventFd, requestBody);
+    std::string responseBody;
+    assert(ReadFrameWithTimeout(eventFd, responseBody));
+    ::close(eventFd);
+    assert(responseBody.find("secret-token") == std::string::npos);
+    assert(responseBody.find("/private/event/socket") == std::string::npos);
+    ExecutionEventReadResult eventResult;
+    assert(ExecutionEventFeedProtocol::DecodeResponse(
+        responseBody, eventResult, reason));
+    assert(eventResult.status == ExecutionEventReadStatus::Event);
+    assert(eventResult.event.reasonCode ==
+        "EXECUTION_EVENT_CALLBACK_EXCEPTION");
+    assert(eventResult.event.status == "Error");
+
+    // The identity watermark path has its own source call; it must not let a
+    // thrown exception escape the worker or expose what() text.
+    source.ThrowOnLatest(true);
+    const int latestFd = ConnectSocket(socketPath);
+    ExecutionEventFeedRequest identityRequest;
+    identityRequest.operation = ExecutionEventFeedOperation::GetServiceIdentity;
+    std::string identityBody;
+    assert(ExecutionEventFeedProtocol::EncodeRequest(
+        identityRequest, identityBody, reason));
+    WriteFrame(latestFd, identityBody);
+    std::string latestResponseBody;
+    assert(ReadFrameWithTimeout(latestFd, latestResponseBody));
+    ::close(latestFd);
+    assert(latestResponseBody.find("secret-token") == std::string::npos);
+    ExecutionEventReadResult latestResult;
+    assert(ExecutionEventFeedProtocol::DecodeResponse(
+        latestResponseBody, latestResult, reason));
+    assert(latestResult.status == ExecutionEventReadStatus::InvalidOwner);
+    assert(latestResult.reasonCode == "EXECUTION_EVENT_SOURCE_EXCEPTION");
+    source.ThrowOnLatest(false);
+
+    // A thrown ReadNext follows the same stable-code path and the worker can
+    // continue serving subsequent clients.
+    source.ThrowOnRead(true);
+    request.sessionId = "throw-session";
+    assert(ExecutionEventFeedProtocol::EncodeRequest(
+        request, requestBody, reason));
+    const int throwFd = ConnectSocket(socketPath);
+    WriteFrame(throwFd, requestBody);
+    std::string throwResponseBody;
+    assert(ReadFrameWithTimeout(throwFd, throwResponseBody));
+    ::close(throwFd);
+    assert(throwResponseBody.find("secret-token") == std::string::npos);
+    assert(throwResponseBody.find("/private/event/socket") ==
+        std::string::npos);
+    ExecutionEventReadResult throwResult;
+    assert(ExecutionEventFeedProtocol::DecodeResponse(
+        throwResponseBody, throwResult, reason));
+    assert(throwResult.status == ExecutionEventReadStatus::InvalidOwner);
+    assert(throwResult.reasonCode == "EXECUTION_EVENT_SOURCE_EXCEPTION");
+
+    server.Stop();
+    ::unlink(socketPath.c_str());
+}
+
 void TestRelayIdentityMismatchAndResyncLatch()
 {
     const ExecutionServiceIdentity firstIdentity = Identity("relay-service-a", 40);
@@ -705,6 +966,7 @@ int main()
     TestEventFeedPeerCredentialRejection();
     TestActivatedBacklogAndNotReadyNeverReadSource();
     TestStopRejectsAcceptedWorkerBacklog();
+    TestEventFeedExceptionSanitization();
     TestRelayIdentityMismatchAndResyncLatch();
     std::cout << "execution_event_fault_matrix_evidence:"
               << " server_identity_change=verified"

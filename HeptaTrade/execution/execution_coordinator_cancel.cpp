@@ -46,14 +46,36 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderComman
     }
 
     std::string suppressReason;
-    if (m_callbacks.canCancelIbOrder &&
-        !m_callbacks.canCancelIbOrder(command.orderId, &suppressReason) &&
-        // A locally accepted order can legitimately be cancelled before IB
-        // emits Submitted/OpenOrder.  The IB adapter records a pending cancel
-        // and dispatches it on acknowledgement; all other guard failures
-        // remain fail-closed.
-        suppressReason != "NO_BROKER_ACK")
-        return RejectLocked(context, "IB_CANCEL_SUPPRESSED", suppressReason, command.orderId, requestHash);
+    bool cancelAllowed = true;
+    if (m_callbacks.canCancelIbOrder)
+    {
+        try
+        {
+            cancelAllowed = m_callbacks.canCancelIbOrder(
+                command.orderId, &suppressReason);
+        }
+        catch (const std::exception& error)
+        {
+            cancelAllowed = false;
+            suppressReason = error.what();
+        }
+        catch (...)
+        {
+            cancelAllowed = false;
+            suppressReason = "cancel safety callback threw";
+        }
+    }
+    // A locally accepted order can legitimately be cancelled before IB emits
+    // Submitted/OpenOrder.  The IB adapter records a pending cancel and
+    // dispatches it on acknowledgement; all other guard failures (including a
+    // callback exception) remain fail-closed.
+    if (!cancelAllowed && suppressReason != "NO_BROKER_ACK")
+    {
+        if (suppressReason.empty())
+            suppressReason = "cancel safety state is uncertain";
+        return RejectLocked(context, "IB_CANCEL_SUPPRESSED", suppressReason,
+                            command.orderId, requestHash);
+    }
 
     const std::string instrument = !command.instrument.empty() ? command.instrument :
         (ownerIt != m_orderOwners.end() ? ownerIt->second.instrument : "");

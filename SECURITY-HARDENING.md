@@ -2,6 +2,6 @@
 
 Status: current pointer
 Applies to: repository security contracts
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision
 
 Canonical security, broker-network, kill-switch, reconciliation and incident contracts live under [`docs/`](docs/README.md). This root file intentionally contains no parallel checklist or release/certification process.

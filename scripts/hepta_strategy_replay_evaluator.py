@@ -1106,7 +1106,7 @@ def _reject_overlapping_intents(
             continue
         intent = receipt["trade_intent"]
         earliest_entry = intent["observed_at_ms"] + entry_latency_ms
-        if earliest_entry > intent["expires_at_ms"]:
+        if earliest_entry >= intent["expires_at_ms"]:
             continue
         latest_exit = (
             intent["expires_at_ms"] +
@@ -1270,7 +1270,7 @@ def evaluate_replay(
         sell_count += int(side == "SELL")
         eligible_at_ms = int(intent["observed_at_ms"]) + latency
         expires_at_ms = int(intent["expires_at_ms"])
-        if eligible_at_ms > expires_at_ms:
+        if eligible_at_ms >= expires_at_ms:
             results.append(_unfilled_result(
                 receipt,
                 status="NOT_FILLED_LATENCY_EXCEEDED_EXPIRY",
@@ -1282,7 +1282,7 @@ def evaluate_replay(
         entry_index = bisect_left(mark_times, eligible_at_ms)
         fill: tuple[int, float, float] | None = None
         cursor = entry_index
-        while cursor < len(marks) and mark_times[cursor] <= expires_at_ms:
+        while cursor < len(marks) and mark_times[cursor] < expires_at_ms:
             candidate = _entry_price(
                 marks[cursor],
                 intent,

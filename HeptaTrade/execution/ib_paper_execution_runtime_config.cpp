@@ -1,7 +1,6 @@
 #include "ib_paper_execution_runtime_config.h"
 
 #include <cerrno>
-#include <cctype>
 #include <cstdlib>
 #include <limits>
 #include <sys/stat.h>
@@ -10,6 +9,14 @@
 
 namespace
 {
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+
 std::string ReadString(const std::map<std::string, std::string>& values,
                        const char* key)
 {
@@ -20,7 +27,7 @@ std::string ReadString(const std::map<std::string, std::string>& values,
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum,
                    std::uint64_t& parsed)
 {
-    if (value.empty() || value[0] == '-') return false;
+    if (!CanonicalUnsignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
@@ -36,7 +43,14 @@ bool CanonicalText(const std::string& value, std::size_t maximum)
     for (std::size_t i = 0; i < value.size(); ++i)
     {
         const unsigned char character = static_cast<unsigned char>(value[i]);
-        if (!(std::isalnum(character) || character == '.' || character == '_' ||
+        const bool alpha =
+            (character >= static_cast<unsigned char>('a') &&
+             character <= static_cast<unsigned char>('z')) ||
+            (character >= static_cast<unsigned char>('A') &&
+             character <= static_cast<unsigned char>('Z'));
+        const bool digit = character >= static_cast<unsigned char>('0') &&
+            character <= static_cast<unsigned char>('9');
+        if (!(alpha || digit || character == '.' || character == '_' ||
               character == '-'))
             return false;
     }
@@ -52,8 +66,11 @@ bool CanonicalAgentId(const std::string& value)
     {
         const unsigned char character =
             static_cast<unsigned char>(value[i]);
-        if (!std::islower(character) && !std::isdigit(character) &&
-            character != '-')
+        const bool lower = character >= static_cast<unsigned char>('a') &&
+            character <= static_cast<unsigned char>('z');
+        const bool digit = character >= static_cast<unsigned char>('0') &&
+            character <= static_cast<unsigned char>('9');
+        if (!lower && !digit && character != '-')
             return false;
     }
     return true;

@@ -1,8 +1,8 @@
 # Minimal runtime deployment
 
-Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Status: current Simulator/Agent install implementation; PAPER host deployment remains separately validated
 Applies to: `cmake/RuntimeInstall.cmake`, `systemd/`, `sysusers.d/`, `tmpfiles.d/`
-Verification: same-revision CI
+Verification: `canonical-full-suite` install smoke on the exact revision; target-host checks are separate
 
 The repository provides one small `runtime` install component. It assembles the deterministic Simulator/Gateway path and MCP client adapter without restoring release bundles, evidence closure or host certification.
 
@@ -24,6 +24,27 @@ Installed objects include:
 - sysusers/tmpfiles declarations, examples and current runtime documentation.
 
 The generated service files contain the exact configured executable and documentation paths. Do not configure with `/usr/local` and later copy only the unit files into a `/usr` deployment.
+
+## Installed research runner
+
+The runtime component includes `share/heptatrader/research/run_protocol.py`,
+its side-effect-free `protocol_support.py` helper, the current static manifest
+and the research schema.  It intentionally does
+not install the experimental strategy source assets referenced by the static
+manifest.  Use the installed runner's `self-test` or supply a complete
+`RunManifest` to `run`/`replay`; verify the checked-in static manifest from a
+source checkout (or pass that checkout through `verify --root`):
+
+```bash
+/usr/local/share/heptatrader/research/run_protocol.py self-test
+/usr/local/share/heptatrader/research/run_protocol.py verify \
+  --manifest /usr/local/share/heptatrader/research/manifest-v1.json \
+  --root /path/to/heptatrader
+```
+
+When those source assets are unavailable, verification returns
+`RESEARCH_STRATEGY_INPUT_MISSING` and a non-zero exit status.  Missing research
+inputs are never interpreted as a passing install check.
 
 ## Host prerequisites
 

@@ -132,6 +132,7 @@ TradingToolHostRequest PlaceRequest(const std::string& token, const std::string&
     request.call.ibOrder.totalQuantity = 100.0;
     request.call.ibOrder.lmtPrice = price;
     request.call.referencePrice = 1.1001;
+    request.call.previewPermit = "sha256:" + std::string(64, 'a');
     request.call.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
     return request;
 }
@@ -337,7 +338,7 @@ void TestAgentToolSocketToSimulatorLifecycle()
     binding.session.capabilities.insert("market.read");
     binding.session.capabilities.insert("events.read");
     binding.session.capabilities.insert("system.read");
-    binding.session.capabilities.insert("trade.place");
+    binding.session.capabilities.insert("operator.trade.place");
     binding.session.capabilities.insert("trade.cancel");
     binding.session.capabilities.insert("trade.flatten");
     binding.allowedInstruments.insert("EUR.USD");

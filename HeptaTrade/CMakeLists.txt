@@ -23,6 +23,15 @@ function(hepta_runtime_target target)
     endif()
     target_compile_options(${target} PRIVATE
         "$<$<COMPILE_LANG_AND_ID:CXX,GNU,Clang>:-Wall;-Wextra;-Wpedantic>")
+    # Release Gateway binaries are link-time optimized so dead translation
+    # unit helpers cannot inflate the agent-facing TCB symbol surface.  Keep
+    # this scoped to GCC/Clang Linux builds; Debug/sanitizer lanes retain
+    # ordinary symbols for diagnostics and the boundary check still runs.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND
+       CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        target_compile_options(${target} PRIVATE
+            "$<$<CONFIG:Release>:-flto>")
+    endif()
 endfunction()
 
 set(HEPTA_EXECUTION_COORDINATOR_SOURCES
@@ -81,9 +90,18 @@ add_library(hepta_agent_execution_support STATIC
 hepta_runtime_target(hepta_agent_execution_support)
 target_link_libraries(hepta_agent_execution_support PUBLIC Threads::Threads)
 
+add_library(hepta_observability_core STATIC
+    observability/runtime_telemetry.cpp)
+hepta_runtime_target(hepta_observability_core)
+
+add_library(hepta_portfolio_core STATIC
+    portfolio/portfolio_compiler.cpp)
+hepta_runtime_target(hepta_portfolio_core)
+
 add_library(hepta_risk_core STATIC
     risk/deterministic_risk_policy.cpp)
 hepta_runtime_target(hepta_risk_core)
+target_link_libraries(hepta_risk_core PUBLIC hepta_observability_core)
 
 add_library(hepta_execution_core STATIC
     ${HEPTA_EXECUTION_COORDINATOR_SOURCES}
@@ -103,6 +121,9 @@ target_link_libraries(hepta_execution_core PUBLIC
 
 add_library(hepta_trading_tool_core STATIC
     state/ib_contract_identity.cpp
+    intent/bounded_json.cpp
+    intent/target_position_intent.cpp
+    intent/authoritative_decision_snapshot.cpp
     tools/trading_tool_registry.cpp)
 hepta_runtime_target(hepta_trading_tool_core)
 target_link_libraries(hepta_trading_tool_core PUBLIC OpenSSL::Crypto)
@@ -132,6 +153,7 @@ add_library(hepta_agent_os_core STATIC
     tool_host/unix_tool_server.cpp)
 hepta_runtime_target(hepta_agent_os_core)
 target_link_libraries(hepta_agent_os_core PUBLIC
+    hepta_observability_core
     hepta_trading_tool_core
     hepta_execution_client
     hepta_agent_execution_support
@@ -203,7 +225,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(hepta_tool_gatewayd PRIVATE
         "$<$<CONFIG:Release>:-ffunction-sections;-fdata-sections;-fno-rtti>")
     target_link_options(hepta_tool_gatewayd PRIVATE
-        $<$<CONFIG:Release>:-Wl,--gc-sections>)
+        $<$<CONFIG:Release>:-Wl,--gc-sections>
+        $<$<CONFIG:Release>:-flto>)
     if(NOT CMAKE_NM OR NOT EXISTS "${CMAKE_NM}")
         message(FATAL_ERROR
             "Linux Gateway builds require CMAKE_NM for the privileged-symbol boundary")
@@ -312,6 +335,7 @@ if(HEPTA_ENABLE_IBAPI)
     target_include_directories(hepta_ib_executiond PRIVATE "${IBAPI_ROOT}")
     target_link_libraries(hepta_ib_executiond PRIVATE
         hepta_execution_core
+        hepta_risk_core
         hepta_ibapi_client)
     set_target_properties(hepta_ib_executiond PROPERTIES
         OUTPUT_NAME hepta-ib-executiond

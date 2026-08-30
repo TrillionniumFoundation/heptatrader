@@ -1,8 +1,8 @@
 # Runtime configuration
 
-Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Status: current configuration implementation contract; external PAPER host settings remain separately validated
 Applies to: `scripts/resolve_hepta_config.py`, `systemd/*.env.example`, runtime config parsers
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; target-host checks are separate
 
 ## Supported profiles
 
@@ -61,4 +61,7 @@ systemd/hepta-tool-gateway.env.example
 systemd/hepta-agent-trust-domain.json.example
 ```
 
-IB PAPER examples are installed only by an explicit PAPER component. Historical CTP/XT/Windows examples belong under `legacy/` and are never part of the minimal runtime install.
+IB PAPER host examples are supplied only by an explicit, separately reviewed
+deployment; the checked-in `runtime` component installs no broker credentials or
+PAPER activation material. Historical CTP/XT/Windows examples belong under
+`legacy/` and are never part of the minimal runtime install.

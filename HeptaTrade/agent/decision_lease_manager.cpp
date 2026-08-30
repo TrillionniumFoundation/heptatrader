@@ -1,6 +1,5 @@
 #include "decision_lease_manager.h"
 
-#include <cctype>
 #include <limits>
 
 namespace {
@@ -13,7 +12,13 @@ bool ValidComponent(const std::string& value)
     {
         const unsigned char ch = static_cast<unsigned char>(value[i]);
         if (ch < 0x20 || ch == 0x7f) return false;
-        if (!std::isspace(ch)) hasNonSpace = true;
+        const bool asciiSpace = ch == static_cast<unsigned char>(' ') ||
+            ch == static_cast<unsigned char>('\t') ||
+            ch == static_cast<unsigned char>('\n') ||
+            ch == static_cast<unsigned char>('\r') ||
+            ch == static_cast<unsigned char>('\f') ||
+            ch == static_cast<unsigned char>('\v');
+        if (!asciiSpace) hasNonSpace = true;
     }
     return hasNonSpace;
 }

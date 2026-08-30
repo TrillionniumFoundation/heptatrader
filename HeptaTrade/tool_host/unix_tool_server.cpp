@@ -1,6 +1,8 @@
 #include "unix_tool_server.h"
 
 #include "typed_tool_protocol.h"
+#include "../observability/runtime_telemetry.h"
+#include "../tools/trading_tool_wire_contract.h"
 
 #include <cerrno>
 #include <chrono>
@@ -12,6 +14,41 @@
 #include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
+
+namespace
+{
+// Queue ownership is an authority boundary: a request must never be able to
+// land in another session's per-owner queue because two identity strings happen
+// to contain the old delimiter.  Length-frame both components so the key is
+// injective even for bindings created by embedded callers that predate the
+// stricter wire identity grammar.
+std::string OwnerQueueKey(const std::string& agentId,
+                          const std::string& sessionId)
+{
+    return "owner:" + std::to_string(agentId.size()) + ":" + agentId +
+        std::to_string(sessionId.size()) + ":" + sessionId;
+}
+
+std::string PeerQueueKey(std::uint32_t peerUid)
+{
+    return "peer:" + std::to_string(peerUid);
+}
+
+bool ResultFieldsBounded(const TradingToolResult& result)
+{
+    const int status = static_cast<int>(result.status);
+    return status >= static_cast<int>(TradingToolCallStatus::Ok) &&
+        status <= static_cast<int>(TradingToolCallStatus::Error) &&
+        TradingToolWireContract::IsCanonicalToolName(result.toolName) &&
+        result.reasonCode.size() <= 128 && result.detail.size() <= 65536 &&
+        result.payloadJson.size() <=
+            TradingToolWireLimits::MaximumResultEnvelopeBytes() &&
+        TradingToolWireContract::IsSafePayloadJson(result.payloadJson) &&
+        result.toolName.find('\0') == std::string::npos &&
+        result.reasonCode.find('\0') == std::string::npos &&
+        result.detail.find('\0') == std::string::npos;
+}
+}
 
 UnixToolServer::UnixToolServer(TradingToolHost& host)
     : m_host(host), m_stop(true), m_listenFd(-1), m_unlinkOnStop(false),
@@ -121,9 +158,13 @@ bool UnixToolServer::Activate(int fd, const std::string& socketPath, bool unlink
             m_executionWorkers.push_back(std::thread(&UnixToolServer::ExecutionLoop, this));
         m_acceptThread = std::thread(&UnixToolServer::AcceptLoop, this);
     }
-    catch (const std::exception& ex)
+    catch (const std::exception&)
     {
-        reason = ex.what();
+        // Thread-construction diagnostics are returned to the launcher and
+        // may be surfaced through an Agent-facing supervisor.  Keep STL/OS
+        // exception text (which can contain paths or deployment details) out
+        // of that boundary.
+        reason = "TOOL_SERVER_THREAD_START_FAILED";
         Stop();
         return false;
     }
@@ -468,9 +509,9 @@ void UnixToolServer::DecodeAndQueue(int clientFd)
     const bool hasBinding = m_host.GetSession(request.sessionToken, pending.binding);
     const bool peerMatches = hasBinding && pending.binding.peerUid == pending.peerUid;
     pending.owner = peerMatches ?
-        pending.binding.session.executionContext.agentId + "\n" +
-            pending.binding.session.executionContext.sessionId :
-        "peer\n" + std::to_string(pending.peerUid);
+        OwnerQueueKey(pending.binding.session.executionContext.agentId,
+                      pending.binding.session.executionContext.sessionId) :
+        PeerQueueKey(pending.peerUid);
     if (!m_decisionAudit.AppendIntent(true, pending.peerUid, request,
             hasBinding ? &pending.binding : nullptr, pending.mutation, reason))
     {
@@ -504,9 +545,9 @@ void UnixToolServer::DecodeAndQueue(int clientFd)
             return;
         }
         pending.binding = authorizedBinding;
-        pending.owner =
-            authorizedBinding.session.executionContext.agentId + "\n" +
-            authorizedBinding.session.executionContext.sessionId;
+        pending.owner = OwnerQueueKey(
+            authorizedBinding.session.executionContext.agentId,
+            authorizedBinding.session.executionContext.sessionId);
     }
 
     const std::uint64_t nowMs = static_cast<std::uint64_t>(
@@ -654,6 +695,10 @@ void UnixToolServer::QueueRequest(
 
 void UnixToolServer::Execute(PendingRequest pending)
 {
+    RuntimeLatencyScope toolLatency(
+        "hepta_tool_execution_latency_microseconds",
+        "tool", pending.request.call.name);
+
     ++m_activeRequests;
     const std::uint64_t nowMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -666,7 +711,40 @@ void UnixToolServer::Execute(PendingRequest pending)
         result.toolName = pending.request.call.name;
         result.reasonCode = "QUEUE_DEADLINE_EXCEEDED";
     }
-    else result = m_host.Invoke(pending.peerUid, pending.request);
+    else
+    {
+        try
+        {
+            result = m_host.Invoke(pending.peerUid, pending.request);
+        }
+        catch (const std::exception&)
+        {
+            // A worker must never terminate because an embedded host/registry
+            // implementation escaped its own boundary guard. Mutations are
+            // represented as UNCERTAIN so the durable command-recovery path
+            // remains mandatory; reads are a bounded error with no side
+            // effect. Keep exception text out of the wire response.
+            result.status = pending.mutation ?
+                TradingToolCallStatus::Uncertain : TradingToolCallStatus::Error;
+            result.toolName = pending.request.call.name;
+            result.reasonCode = pending.mutation ?
+                "EXECUTION_AUTHORITY_EXCEPTION" : "TOOL_DISPATCH_EXCEPTION";
+            result.detail = pending.mutation ?
+                "execution authority outcome is uncertain" :
+                "tool dispatch failed";
+        }
+        catch (...)
+        {
+            result.status = pending.mutation ?
+                TradingToolCallStatus::Uncertain : TradingToolCallStatus::Error;
+            result.toolName = pending.request.call.name;
+            result.reasonCode = pending.mutation ?
+                "EXECUTION_AUTHORITY_EXCEPTION" : "TOOL_DISPATCH_EXCEPTION";
+            result.detail = pending.mutation ?
+                "execution authority outcome is uncertain" :
+                "tool dispatch failed";
+        }
+    }
     --m_activeRequests;
     m_decisionAudit.AppendOutcome(true, pending.peerUid, &pending.request,
         &pending.binding, pending.mutation, result);
@@ -683,9 +761,118 @@ void UnixToolServer::Execute(PendingRequest pending)
 
 void UnixToolServer::ReplyAndClose(int clientFd, const TradingToolResult& result)
 {
+    // Result payloads are generated by callbacks and may be much larger than
+    // the request ceiling. Never hand an unbounded body to WriteFrame: the
+    // peer's decoder has the same 1 MiB envelope limit and would otherwise
+    // reject the frame after the server has already committed to sending it.
+    TradingToolResult wireResult = result;
+    std::string encoded;
+    bool invalid = !ResultFieldsBounded(wireResult);
+    if (!invalid)
+    {
+        try
+        {
+            encoded = TypedToolProtocol::EncodeResultJson(wireResult);
+            if (encoded.empty() ||
+                encoded.size() >
+                    TradingToolWireLimits::MaximumResultEnvelopeBytes())
+                invalid = true;
+            if (!invalid)
+            {
+                TypedToolResultEnvelope parsed;
+                std::string validationReason;
+                if (!TypedToolProtocol::DecodeResultEnvelope(
+                        encoded, parsed, validationReason))
+                    invalid = true;
+            }
+        }
+        catch (const std::exception&)
+        {
+            invalid = true;
+        }
+        catch (...)
+        {
+            invalid = true;
+        }
+    }
+    if (invalid)
+    {
+        // Losing the result envelope after a mutation authority call is not a
+        // proven rejection: the venue may already have observed the command.
+        // Preserve/upgrade that path to UNCERTAIN so the client is forced
+        // through command reconciliation instead of issuing a second order
+        // after seeing a transport-level error. Read-only successes can use a
+        // normal error fallback.
+        bool mutationOutcome = wireResult.status ==
+            TradingToolCallStatus::Uncertain;
+        if (!mutationOutcome &&
+            (wireResult.status == TradingToolCallStatus::Ok ||
+             wireResult.status == TradingToolCallStatus::Duplicate))
+        {
+            try
+            {
+                mutationOutcome = m_host.IsMutationTool(result.toolName);
+            }
+            catch (...)
+            {
+                // Keep the conservative read/error fallback when the
+                // descriptor lookup itself is unavailable.
+            }
+        }
+        wireResult.status = mutationOutcome ?
+            TradingToolCallStatus::Uncertain : TradingToolCallStatus::Error;
+        wireResult.toolName =
+            TradingToolWireContract::IsCanonicalToolName(result.toolName) ?
+                result.toolName : "system.get_health";
+        wireResult.reasonCode = mutationOutcome ?
+            "RESULT_ENVELOPE_UNCERTAIN" : "RESULT_ENVELOPE_INVALID";
+        wireResult.detail = mutationOutcome ?
+            "result envelope failed; reconcile the mutation outcome" :
+            "result envelope failed the wire contract";
+        wireResult.payloadJson.clear();
+        wireResult.orderId = -1;
+        try
+        {
+            encoded = TypedToolProtocol::EncodeResultJson(wireResult);
+        }
+        catch (...)
+        {
+            // This literal is intentionally small and contains no user data;
+            // it is the final no-allocation fallback for a pathological
+            // encoder failure.
+            encoded = mutationOutcome ?
+                "{\"status\":\"uncertain\",\"tool\":\"system.get_health\","
+                "\"reason_code\":\"RESULT_ENVELOPE_UNCERTAIN\","
+                "\"detail\":\"result envelope failed; reconcile the mutation outcome\","
+                "\"order_id\":-1,\"payload\":null}" :
+                "{\"status\":\"error\",\"tool\":\"system.get_health\","
+                "\"reason_code\":\"RESULT_ENVELOPE_INVALID\","
+                "\"detail\":\"result envelope failed the wire contract\","
+                "\"order_id\":-1,\"payload\":null}";
+        }
+    }
+
+    try
+    {
+        RuntimeRecordToolOutcome(wireResult.toolName,
+            static_cast<int>(wireResult.status), wireResult.reasonCode);
+    }
+    catch (...)
+    {
+        // Telemetry is best effort and must not prevent the response socket
+        // from being closed when an embedding supplies a throwing sink.
+    }
     std::string reason;
-    TypedToolProtocol::WriteFrame(clientFd,
-        TypedToolProtocol::EncodeResultJson(result), m_ioTimeoutMs, reason);
+    try
+    {
+        TypedToolProtocol::WriteFrame(clientFd,
+            encoded, m_ioTimeoutMs, reason);
+    }
+    catch (...)
+    {
+        // The peer may have disconnected, or a custom framing implementation
+        // may throw. In either case cleanup below is still mandatory.
+    }
     ::shutdown(clientFd, SHUT_RDWR);
     ::close(clientFd);
 }

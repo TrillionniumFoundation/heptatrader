@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <fcntl.h>
 #include <limits>
+#include <locale>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -642,6 +643,7 @@ std::string BuildExternalLatch(
     const std::string& capsuleBodySha256)
 {
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << "HPW1\n"
         << "schema=hepta.paper-terminal-external-halt-latch.v1\n"
         << "version=1\n"

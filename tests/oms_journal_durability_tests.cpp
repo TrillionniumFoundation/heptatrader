@@ -7,6 +7,7 @@
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 namespace
 {
@@ -230,6 +231,44 @@ void TestAsyncQueueAndBufferAccounting()
     ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "250", 1);
 }
 
+void TestAsyncCriticalWritesPreserveAppendOrder()
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "1", 1);
+    ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+    ::setenv("HEPTA_OMS_CRITICAL_FLUSH_QUEUED", "0", 1);
+    ::setenv("HEPTA_OMS_BATCH_SIZE", "64", 1);
+    ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "60000", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+
+        OmsJournalEvent queued = MakeCriticalEvent("queued-before-critical");
+        queued.eventType = "ack";
+        REQUIRE(journal.Append(queued));
+
+        OmsJournalEvent critical = MakeCriticalEvent("critical-after-queued");
+        critical.eventType = "order_intent";
+        REQUIRE(journal.Append(critical));
+
+        std::vector<std::string> replayed;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& event) {
+            replayed.push_back(event.reqId);
+        }) == 2);
+        REQUIRE(replayed.size() == 2);
+        REQUIRE(replayed[0] == "queued-before-critical");
+        REQUIRE(replayed[1] == "critical-after-queued");
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
+    ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+    ::setenv("HEPTA_OMS_CRITICAL_FLUSH_QUEUED", "0", 1);
+    ::setenv("HEPTA_OMS_BATCH_SIZE", "8", 1);
+    ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "250", 1);
+}
+
 void TestUnsafePermissionsLinksAndTornFilesFailClosed()
 {
     const std::string directory = MakeTempDirectory();
@@ -274,6 +313,7 @@ int main()
     TestRepeatedInitFailsWithoutDisturbingOriginal();
     TestStrictReplayIsCallbackAtomicAndReentrant();
     TestAsyncQueueAndBufferAccounting();
+    TestAsyncCriticalWritesPreserveAppendOrder();
     TestUnsafePermissionsLinksAndTornFilesFailClosed();
     return 0;
 }

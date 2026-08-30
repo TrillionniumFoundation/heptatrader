@@ -491,6 +491,7 @@ void TestSocketRoundTripAndStrictProtocol()
     place.call.ibOrder.totalQuantity = 100.0;
     place.call.ibOrder.lmtPrice = 1.1;
     place.call.timeInForce = "DAY";
+    place.call.previewPermit = "sha256:" + std::string(64, 'a');
     place.call.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
     BindSchemaHash(registry, place);
     assert(TypedToolProtocol::EncodeRequest(place, body, reason));

@@ -1,0 +1,20 @@
+{
+  "schema": "heptatrader.research-strategy-definition.v1",
+  "strategy_id": "eurusd-confirmed-momentum-shadow-v2",
+  "strategy_version": "2.0.0",
+  "instrument": "EUR.USD",
+  "decision_output": "target_position",
+  "evaluation": "point_in_time",
+  "feature_inputs": [
+    "bid",
+    "ask",
+    "timestamp_ms"
+  ],
+  "regime_slices": [
+    "time_of_day",
+    "volatility",
+    "spread"
+  ],
+  "orchestration": "none",
+  "deterministic": true
+}

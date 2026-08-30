@@ -7,6 +7,26 @@
 
 namespace
 {
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+
+bool CanonicalSignedInteger(const std::string& value)
+{
+    if (value.empty()) return false;
+    const std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size() ||
+        (value[offset] == '0' &&
+         (offset != 0 || offset + 1u < value.size()))) return false;
+    for (std::size_t i = offset; i < value.size(); ++i)
+        if (value[i] < '0' || value[i] > '9') return false;
+    return true;
+}
+
 std::string Read(const std::map<std::string, std::string>& values, const char* key)
 {
     const std::map<std::string, std::string>::const_iterator it = values.find(key);
@@ -15,7 +35,7 @@ std::string Read(const std::map<std::string, std::string>& values, const char* k
 
 bool ParseUnsigned(const std::string& value, std::uint32_t& out)
 {
-    if (value.empty() || value[0] == '-') return false;
+    if (!CanonicalUnsignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long parsed = std::strtoul(value.c_str(), &end, 10);
@@ -32,6 +52,7 @@ bool StrictInt(const std::string& value, int fallback, int minimum, int maximum,
         out = fallback;
         return true;
     }
+    if (!CanonicalSignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const long parsed = std::strtol(value.c_str(), &end, 10);

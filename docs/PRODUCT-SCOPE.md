@@ -2,7 +2,7 @@
 
 Status: current
 Applies to: repository-wide
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; external PAPER host checks are separate
 
 ## Product statement
 
@@ -16,12 +16,15 @@ HeptaTrader is a model-agnostic deterministic trading control and execution runt
 - OMS journal, stable command IDs and replay/recovery contracts;
 - owner-scoped order control and authoritative flatten where supported;
 - shared deterministic pre-trade risk core;
+- generation-consistent decision snapshots and target-position preview/apply
+  contracts for the Simulator/core path;
+- deterministic single-account, multi-strategy portfolio netting and budget
+  compiler for the Simulator/core path;
 - bounded local/PR build and test loop.
 
 ## Experimental
 
 - IB PAPER adapter and target host integration;
-- generation-consistent decision snapshot and target-position intent path;
 - EURUSD SHADOW research strategy and replay;
 - deployment hardening outside the deterministic simulator fixture.
 

@@ -93,7 +93,10 @@ bool HeptaXTGatewayAdapter::PlaceOrder(const std::string& instrument,
                                        double /*price*/,
                                        long long* outOrderId)
 {
-    if (outOrderId) *outOrderId = 0;
+    // -1 is the invalid/sentinel value used by the adapter API.  In
+    // particular, zero must not look like a broker-issued order id after an
+    // unsupported request.
+    if (outOrderId) *outOrderId = -1;
     m_lastRejectReason = kTransportUnavailable;
     PushEvent(MakeEvent(XTEventType::Error, 0,
                         instrument + ":" + side,
@@ -123,129 +126,88 @@ bool HeptaXTGatewayAdapter::RunPreflightChecks(std::string& reason) const
     return false;
 }
 
-// The callback bridge remains as the future real transport seam.  These
-// methods do not run from Init/Connect/PlaceOrder in the scaffold build.
+// The callback bridge remains a future real-transport seam.  Until a real XT
+// binding is linked, every callback is treated as untrusted input and is
+// rejected.  In particular, an externally invoked callback must not mutate
+// lifecycle state or synthesize account/position/order/fill/ACK events.
+void HeptaXTGatewayAdapter::RejectUnsupportedCallback(const char* source,
+                                                      long long id)
+{
+    m_inited = false;
+    m_connected = false;
+    m_status = kTransportUnavailable;
+    m_lastRejectReason = kTransportUnavailable;
+    PushEvent(MakeEvent(XTEventType::Error, id, "xt_callback",
+                        kTransportUnavailable, 0.0, source));
+}
+
 void HeptaXTGatewayAdapter::OnXtConnected()
 {
-    m_connected = true;
-    m_inited = true;
-    m_status = "XT_CONNECTED";
-    m_lastRejectReason.clear();
-    PushEvent(MakeEvent(XTEventType::Connected, 0, "xt", "connected", 0.0,
-                        "xt.cb.on_connected"));
+    RejectUnsupportedCallback("xt.cb.on_connected");
 }
 
-void HeptaXTGatewayAdapter::OnXtDisconnected(const std::string& reason)
+void HeptaXTGatewayAdapter::OnXtDisconnected(const std::string& /*reason*/)
 {
-    m_connected = false;
-    m_status = "XT_DISCONNECTED";
-    PushEvent(MakeEvent(XTEventType::Disconnected, 0, "xt",
-                        reason.empty() ? "disconnected" : reason, 0.0,
-                        "xt.cb.on_disconnected"));
+    RejectUnsupportedCallback("xt.cb.on_disconnected");
 }
 
-void HeptaXTGatewayAdapter::OnXtAccountStatus(const std::string& status)
+void HeptaXTGatewayAdapter::OnXtAccountStatus(const std::string& /*status*/)
 {
-    PushEvent(MakeEvent(XTEventType::Account, 0, "account_status", status,
-                        0.0, "xt.cb.on_account_status"));
+    RejectUnsupportedCallback("xt.cb.on_account_status");
 }
 
-void HeptaXTGatewayAdapter::OnXtAsset(double totalAsset, double cash)
+void HeptaXTGatewayAdapter::OnXtAsset(double /*totalAsset*/, double /*cash*/)
 {
-    PushEvent(MakeEvent(XTEventType::Account, 0, "total_asset", "asset_update",
-                        totalAsset, "xt.cb.on_stock_asset"));
-    PushEvent(MakeEvent(XTEventType::Account, 0, "cash", "asset_update",
-                        cash, "xt.cb.on_stock_asset"));
+    RejectUnsupportedCallback("xt.cb.on_stock_asset");
 }
 
-void HeptaXTGatewayAdapter::OnXtPosition(const std::string& instrument,
-                                         double volume)
+void HeptaXTGatewayAdapter::OnXtPosition(const std::string& /*instrument*/,
+                                         double /*volume*/)
 {
-    PushEvent(MakeEvent(XTEventType::Position, 0, instrument,
-                        "position_update", volume,
-                        "xt.cb.on_stock_position"));
+    RejectUnsupportedCallback("xt.cb.on_stock_position");
 }
 
 void HeptaXTGatewayAdapter::OnXtOrderStatus(long long orderId,
-                                            const std::string& status,
-                                            const std::string& detail)
+                                            const std::string& /*status*/,
+                                            const std::string& /*detail*/)
 {
-    std::string key = "order_status";
-    const std::unordered_map<long long, std::string>::const_iterator symbol =
-        m_orderSymbol.find(orderId);
-    const std::unordered_map<long long, std::string>::const_iterator side =
-        m_orderSide.find(orderId);
-    if (symbol != m_orderSymbol.end())
-    {
-        key = symbol->second;
-        if (side != m_orderSide.end()) key += ":" + side->second;
-    }
-    std::string value = status;
-    if (!detail.empty()) value += "|" + detail;
-    PushEvent(MakeEvent(XTEventType::OrderStatus, orderId, key, value, 0.0,
-                        "xt.cb.on_stock_order"));
+    RejectUnsupportedCallback("xt.cb.on_stock_order", orderId);
 }
 
 void HeptaXTGatewayAdapter::OnXtTrade(long long orderId,
-                                      const std::string& instrument,
-                                      const std::string& side,
-                                      double qty,
-                                      double price)
+                                      const std::string& /*instrument*/,
+                                      const std::string& /*side*/,
+                                      double /*qty*/,
+                                      double /*price*/)
 {
-    m_orderSymbol[orderId] = instrument;
-    m_orderSide[orderId] = side;
-    PushEvent(MakeEvent(XTEventType::OrderStatus, orderId,
-                        instrument + ":" + side, "trade", qty,
-                        "xt.cb.on_stock_trade"));
-    PushEvent(MakeEvent(XTEventType::OrderStatus, orderId,
-                        instrument + ":" + side, "trade_price", price,
-                        "xt.cb.on_stock_trade"));
+    RejectUnsupportedCallback("xt.cb.on_stock_trade", orderId);
 }
 
 void HeptaXTGatewayAdapter::OnXtOrderError(long long orderId,
-                                           const std::string& errorCode,
-                                           const std::string& detail)
+                                           const std::string& /*errorCode*/,
+                                           const std::string& /*detail*/)
 {
-    std::string value = errorCode;
-    if (!detail.empty()) value += "|" + detail;
-    PushEvent(MakeEvent(XTEventType::Error, orderId, "order_error", value,
-                        0.0, "xt.cb.on_order_error"));
+    RejectUnsupportedCallback("xt.cb.on_order_error", orderId);
 }
 
 void HeptaXTGatewayAdapter::OnXtCancelError(long long orderId,
-                                            const std::string& errorCode,
-                                            const std::string& detail)
+                                            const std::string& /*errorCode*/,
+                                            const std::string& /*detail*/)
 {
-    std::string value = errorCode;
-    if (!detail.empty()) value += "|" + detail;
-    PushEvent(MakeEvent(XTEventType::Error, orderId, "cancel_error", value,
-                        0.0, "xt.cb.on_cancel_error"));
+    RejectUnsupportedCallback("xt.cb.on_cancel_error", orderId);
 }
 
-void HeptaXTGatewayAdapter::OnXtAsyncOrderResponse(long long orderId,
-                                                    bool ok,
-                                                    const std::string& detail)
+void HeptaXTGatewayAdapter::OnXtAsyncOrderResponse(
+    long long orderId, bool /*ok*/, const std::string& /*detail*/)
 {
-    PushEvent(MakeEvent(XTEventType::OrderAck, orderId, "order_async",
-                        ok ? "ok" : "fail", 0.0,
-                        "xt.cb.on_order_stock_async_response"));
-    if (!detail.empty())
-        PushEvent(MakeEvent(XTEventType::OrderAck, orderId,
-                            "order_async_detail", detail, 0.0,
-                            "xt.cb.on_order_stock_async_response"));
+    RejectUnsupportedCallback("xt.cb.on_order_stock_async_response", orderId);
 }
 
-void HeptaXTGatewayAdapter::OnXtAsyncCancelResponse(long long orderId,
-                                                     bool ok,
-                                                     const std::string& detail)
+void HeptaXTGatewayAdapter::OnXtAsyncCancelResponse(
+    long long orderId, bool /*ok*/, const std::string& /*detail*/)
 {
-    PushEvent(MakeEvent(XTEventType::CancelAck, orderId, "cancel_async",
-                        ok ? "ok" : "fail", 0.0,
-                        "xt.cb.on_cancel_order_stock_async_response"));
-    if (!detail.empty())
-        PushEvent(MakeEvent(XTEventType::CancelAck, orderId,
-                            "cancel_async_detail", detail, 0.0,
-                            "xt.cb.on_cancel_order_stock_async_response"));
+    RejectUnsupportedCallback("xt.cb.on_cancel_order_stock_async_response",
+                              orderId);
 }
 
 void HeptaXTGatewayAdapter::PushEvent(const XTEvent& event)

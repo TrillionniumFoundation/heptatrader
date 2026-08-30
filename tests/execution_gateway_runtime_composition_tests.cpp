@@ -187,6 +187,11 @@ public:
         return m_hub.StreamEpoch();
     }
 
+    std::uint64_t LatestSequence() const override
+    {
+        return m_hub.LatestSequence();
+    }
+
     ExecutionEventHub& m_hub;
     std::atomic<int> reads;
 };
@@ -491,6 +496,11 @@ void TestRemoteAuthorityControlsAndRelay()
     assert(probedIdentity.serviceEpoch == identity.serviceEpoch);
     assert(probedIdentity.serviceFencingGeneration ==
         identity.serviceFencingGeneration);
+    std::uint64_t eventWatermark = 99;
+    assert(gateway.ProbeRemoteService(
+        probedIdentity, reason, &eventWatermark));
+    assert(eventWatermark == upstream.LatestSequence());
+    assert(eventWatermark == 0);
     IbPlaceOrderCommand command = Place(Owner("remote-place"));
     command = Previewed(gateway, command);
     const ExecutionCommandResult placed = gateway.Authority().PlaceIbOrder(command);
@@ -516,6 +526,11 @@ void TestRemoteAuthorityControlsAndRelay()
     upstreamEvent.type = "order.accepted";
     upstreamEvent.venue = "SIMULATOR";
     upstream.Publish(upstreamEvent);
+    std::uint64_t advancedWatermark = 0;
+    assert(gateway.ProbeRemoteService(
+        probedIdentity, reason, &advancedWatermark));
+    assert(advancedWatermark == upstream.LatestSequence());
+    assert(advancedWatermark > eventWatermark);
     assert(gateway.WaitNext(command.context, localSequence, 100, received, reason));
     assert(received.type == "order.accepted");
     assert(received.upstreamServiceEpoch == identity.serviceEpoch);

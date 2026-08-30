@@ -1,6 +1,26 @@
 #include "ib_authoritative_recovery_event_consumer.h"
 
+#include <cerrno>
 #include <cstdlib>
+#include <limits>
+
+namespace
+{
+bool ParseBrokerErrorCode(const std::string& value, int& code)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::size_t i = 0; i < value.size(); ++i)
+        if (value[i] < '0' || value[i] > '9') return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long parsed = std::strtoull(value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0' ||
+        parsed > static_cast<unsigned long long>(std::numeric_limits<int>::max()))
+        return false;
+    code = static_cast<int>(parsed);
+    return true;
+}
+}
 
 IBAuthoritativeRecoveryEventConsumer::IBAuthoritativeRecoveryEventConsumer(
     IBAuthoritativeRecoveryCoordinator& recovery,
@@ -49,7 +69,14 @@ IBAuthoritativeRecoveryControlAction IBAuthoritativeRecoveryEventConsumer::Class
     }
     if (event.type != IBEventType::Error) return action;
     action.handled = true;
-    action.errorCode = std::atoi(event.key.c_str());
+    if (!ParseBrokerErrorCode(event.key, action.errorCode))
+    {
+        // A malformed broker error must not be interpreted as code zero and
+        // silently bypass the reconnect/disconnect recovery boundary.
+        action.forceDisconnect = true;
+        action.recoveryReason = "ib_error_code_invalid";
+        return action;
+    }
     if (action.errorCode == 1101 || action.errorCode == 1102)
     {
         action.reconnectEpoch = true;

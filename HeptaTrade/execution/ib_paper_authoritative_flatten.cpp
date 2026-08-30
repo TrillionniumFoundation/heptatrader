@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
+#include <locale>
 #include <sstream>
 
 namespace
@@ -14,6 +15,20 @@ bool ValidAuthoritativeContract(const InstrumentRef& contract)
         !contract.secType.empty() &&
         !contract.exchange.empty() &&
         !contract.currency.empty();
+}
+
+std::string EscapeJson(const std::string& value)
+{
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (std::string::const_iterator it = value.begin();
+         it != value.end(); ++it)
+    {
+        const unsigned char byte = static_cast<unsigned char>(*it);
+        if (byte == '"' || byte == '\\') escaped.push_back('\\');
+        escaped.push_back(byte < 0x20u ? '?' : static_cast<char>(byte));
+    }
+    return escaped;
 }
 
 bool ValidateAuthoritativePositionSnapshot(
@@ -243,6 +258,7 @@ IbPaperExecutionPolicyAuthority::PreviewFlattenPosition(
     result.authoritativeFlattenPlanBinding =
         CanonicalIbPaperFlattenPlanBinding(plan);
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "{\"source\":\"IB\",\"authoritative\":true,"
            << "\"position_connection_epoch\":"
            << plan.positionConnectionEpoch
@@ -268,7 +284,7 @@ IbPaperExecutionPolicyAuthority::PreviewFlattenPosition(
     }
     output
            << ",\"quote_subscription_id\":\""
-           << plan.quoteSubscriptionId
+           << EscapeJson(plan.quoteSubscriptionId)
            << "\",\"quote_observed_at_ms\":"
            << plan.quoteObservedAtMs
            << ",\"reduce_only\":true";

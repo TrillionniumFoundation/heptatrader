@@ -12,10 +12,13 @@
 #include <set>
 #include <vector>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <deque>
 
 #include "ib_api_wrapper.h"
 #include "ib_order_lifecycle.h"
-#include "../risk/pre_trade_risk_engine.h"
+#include "../risk/deterministic_risk_policy.h"
 
 struct HeptaIBRiskConfig {
     bool enableOrderSubmission = false;
@@ -42,6 +45,23 @@ struct HeptaIBRiskConfig {
     bool liveKillSwitch = true;
     bool globalKillSwitch = false;
     bool flattenOnly = false;
+
+    // Common deterministic-risk limits.  The low-level adapter keeps these
+    // explicit so an IB PAPER profile can bind the same reviewed budgets it
+    // applies before the broker send.  maxOrderQuantity and
+    // maxPriceDeviationBps above map one-to-one to the common policy;
+    // maxDailyOrders remains this adapter's calendar-day compatibility cap.
+    // Optional portfolio/PnL dimensions (maxNetPosition,
+    // maxStrategyGrossPosition, maxDailyLoss and maxDrawdown) are deliberately
+    // not synthesized here: no generation-bound IB authority supplies them,
+    // so they stay disabled in the shared limits rather than receiving a
+    // hidden default.
+    double maxOrderNotional = 250000.0;
+    std::size_t maxOrdersPerMinute = 30;
+    std::size_t maxActiveOrders = 50;
+    double maxGrossPosition = 100000.0;
+    bool requireFreshQuote = true;
+    bool requireCompleteSnapshot = true;
 };
 
 struct HeptaIBConfig {
@@ -320,7 +340,8 @@ private:
         std::string& reason, std::string& detail) const;
     void ResetDailyRiskStateIfNeeded();
     bool CircuitBreakerAllowsOrder(std::time_t nowTs);
-    void PopulatePreTradeRiskContext(
+    void PruneOrderAttemptTimes();
+    void PopulateDeterministicRiskContext(
         const IBContractLite& contract, const IBOrderLite& order);
     bool RunFinalOrderSendCheck(
         const IBFinalOrderSendContext* context,
@@ -421,6 +442,7 @@ private:
     std::time_t m_lastOrderTs = 0;
 
     std::unordered_map<long, std::chrono::steady_clock::time_point> m_orderSubmitTs;
+    std::deque<std::chrono::steady_clock::time_point> m_orderAttemptTimes;
     std::unordered_map<long, std::chrono::steady_clock::time_point> m_cancelSubmitTs;
     // A cancel may arrive before IB emits Submitted/OpenOrder.  Keep the
     // intent local and dispatch exactly once when broker acknowledgement
@@ -431,10 +453,10 @@ private:
     IbOrderLifecycleTracker m_orderLifecycle;
     std::unordered_map<int, int> m_errorCodeCounts;
     // Hot-path risk evaluation cache/scratch to reduce per-order allocations.
-    PreTradeRiskConfig m_cachedRiskCfg;
-    PreTradeRiskContext m_riskCtxScratch;
-    bool m_cachedAccountWhitelisted = false;
-    bool m_cachedPaperAccount = false;
+    // The adapter uses the same venue-independent policy as Simulator and
+    // the PAPER execution guard; transport checks remain in this class.
+    DeterministicRiskLimits m_cachedRiskLimits;
+    DeterministicRiskContext m_riskCtxScratch;
     bool m_eventStreamAuthoritative = true;
     std::uint64_t m_lastEventOverflowGeneration = 0;
     std::uint64_t m_connectionEpoch = 0;

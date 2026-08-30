@@ -12,6 +12,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <locale>
 #include <set>
 #include <sstream>
 #include <sys/file.h>
@@ -46,7 +47,7 @@ ExecutionCommandResult Reject(const AgentExecutionContext& context,
 }
 bool ParsePositiveUnsigned(const std::string& value, std::uint64_t& parsed)
 {
-    if (value.empty()) return false;
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
     std::uint64_t number = 0;
     for (std::size_t i = 0; i < value.size(); ++i)
     {
@@ -340,6 +341,7 @@ public:
         result.status = ExecutionCommandStatus::Accepted;
         result.commandId = command.context.toolCallId;
         std::ostringstream output;
+        output.imbue(std::locale::classic());
         output << "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
                << "\"instrument\":\"" << EscapeJson(command.instrument) << "\","
                << "\"subscription_id\":\"" << EscapeJson(quote.subscriptionId) << "\","
@@ -363,6 +365,7 @@ public:
         result.commandId = command.context.toolCallId;
         result.status = ExecutionCommandStatus::Accepted;
         std::ostringstream output;
+        output.imbue(std::locale::classic());
         if (command.query == "market.get_quote")
         {
             const std::uint64_t now = static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
@@ -469,7 +472,7 @@ private:
         const PlaceOrderCommand& command) const
     {
         if (command.expiresAtMs <= 0 ||
-            OmsJournal::NowEpochMs() > command.expiresAtMs)
+            OmsJournal::NowEpochMs() >= command.expiresAtMs)
             return Reject(command.context, "TOOL_CALL_EXPIRED",
                 "order command expired before authoritative preview/place", -1);
         if (command.instrument.empty() || command.contract.symbol.empty() ||
@@ -545,6 +548,8 @@ private:
         risk.grossAbsolutePosition = gross;
         risk.projectedGrossAbsolutePosition = projected;
         risk.exposureReducing = projected < gross;
+        risk.quoteFresh = quote.IsFresh(now);
+        risk.portfolioSnapshotComplete = true;
         const DeterministicRiskDecision decision =
             DeterministicRiskPolicy::Evaluate(limits, risk);
         if (!decision.allow)

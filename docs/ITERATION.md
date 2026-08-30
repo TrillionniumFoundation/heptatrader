@@ -1,8 +1,8 @@
 # Iteration contract
 
 Status: current
-Applies to: `scripts/dev_core.sh`, `tests/`, `.github/workflows/core-ci.yml`
-Verification: same-revision CI
+Applies to: `scripts/dev_core.sh`, `tests/`, `.github/workflows/core-ci.yml`, `.github/workflows/canonical-full-suite.yml`
+Verification: `canonical-full-suite` on the exact revision
 
 HeptaTrader 的普通开发循环只保护会造成交易错误、权限越界或配置漂移的核心 invariant；它不是发布认证流水线。
 
@@ -15,9 +15,10 @@ HeptaTrader 的普通开发循环只保护会造成交易错误、权限越界�
 默认行为：
 
 1. Release、IB-disabled、legacy-disabled 配置；
-2. 构建 `hepta_core_test_binaries`；
-3. 运行 `core` CTest；
-4. 运行 `tests/python` 中的轻量 contract tests。
+2. 检查 repository/documentation、schema/catalog 和 module ownership 契约；
+3. 构建 `hepta_core_test_binaries`；
+4. 运行 `core` CTest；
+5. 运行 `tests/python` 中的轻量 contract tests。
 
 可覆盖：
 
@@ -33,9 +34,13 @@ cmake --build --preset core-release
 ctest --preset core-release
 ```
 
-## PR gate
+## PR gates
 
-`.github/workflows/core-ci.yml` 在 pull request 和 main push 上运行同一个入口。目标是有界、可重复、约 3–12 分钟内完成的 build/test feedback，而不是恢复 round、soak、bundle、manifest、evidence closure、VM 或宿主认证森林。
+`.github/workflows/core-ci.yml` 在 pull request 和 main push 上运行快速的
+`dev_core.sh` feedback。`.github/workflows/canonical-full-suite.yml` 是最终
+审查候选的永久、只读证据门禁：它在同一 revision 上再运行安装 allowlist
+以及 ASAN/UBSAN、crash/replay、malformed-protocol 和 performance fixtures。
+两者都不恢复 round、soak、bundle、manifest、evidence closure、VM 或宿主认证森林。
 
 ## 必须留在快速门禁中的契约
 

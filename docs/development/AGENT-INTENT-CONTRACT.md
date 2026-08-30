@@ -1,8 +1,8 @@
 # Agent decision snapshot and target-position contract
 
-Status: current target contract; implementation state is tracked in `PLAN.md`
+Status: current Simulator/core implementation contract; external PAPER integration remains experimental
 Applies to: `HeptaTrade/intent/`, `HeptaTrade/tools/`, `HeptaTrade/tool_host/`, `HeptaTrade/execution/`, `adapters/mcp/`
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision; target-host checks are separate
 
 ## 1. Boundary
 
@@ -29,19 +29,29 @@ Input:
 The result is one bounded object from one Execution-owned state generation. It includes owner scope, instrument, execution epoch, fencing generation, state/event/collection watermarks, capture/freshness timestamps, quote, account, positions, active/recent orders, risk limits/usage and health.
 
 A change in epoch, fence, generation or invalidating event during collection rejects the request. `authoritative=true` is emitted only after all consistency checks pass.
+The quote's `observed_at_ms` is also bound to the collection window
+(`collection_started_at_ms <= observed_at_ms <= collection_completed_at_ms`).
+An apply revalidation may reuse the exact attested window only when the
+component fingerprint is unchanged; a changed fingerprint starts a new
+generation and cannot borrow an older timestamp floor.
 
 ## 3. `intent.preview_target_position`
 
 Input:
 
-```json
+```text
 {
   "instrument": "EUR.USD",
   "target_position": 1.0,
   "max_slippage_bps": 5.0,
-  "expires_at_ms": 0
+  "expires_at_ms": <now_ms + 30000>
 }
 ```
+
+`expires_at_ms` is a caller-supplied absolute UTC epoch in milliseconds and
+must be strictly in the future (within the bounded intent lifetime).  The
+angle-bracket expression is a schema-shaped placeholder only; a real request
+must replace it with an integer `now_ms + 1..60000` before encoding.
 
 Trusted code computes:
 
@@ -65,11 +75,11 @@ The permit binds:
 - portfolio/risk-policy versions;
 - expiry and command fingerprint.
 
-The permit is stored by Execution authority, not reconstructed from untrusted client JSON. It is single-use across command IDs and replayable only by the exact accepted command.
+The permit is stored by Execution authority, not reconstructed from untrusted client JSON. It is single-use across command IDs and replayable only by the exact accepted command. The preview response includes an Execution-issued `mutation_command_id`; the apply call's transport `command_id` must copy that value exactly. This server-issued binding is intentional: the underlying Execution preview permit is already bound to that command ID.
 
 ## 5. `intent.apply_target_position`
 
-Input contains the same normalized intent, preview permit and a stable caller-generated `command_id`. Execution atomically performs:
+Input contains the same normalized intent, preview permit and the exact `mutation_command_id` returned by the matching preview (carried as the apply call's stable `command_id`). Execution atomically performs:
 
 ```text
 lookup permit
@@ -98,8 +108,13 @@ Recommended ordinary Agent capabilities:
 
 ```text
 system.read market.read account.read portfolio.read orders.read risk.read
-decision.snapshot intent.preview intent.apply trade.cancel trade.flatten events.read
+intent.apply trade.cancel trade.flatten events.read
 ```
+
+`decision.get_snapshot` and `intent.preview_target_position` use the ordinary
+`system.read`/`risk.read` capabilities shown above; the names of tools are not
+capability strings.  `trade.place_order` and `risk.preview_order` remain in the
+separate `operator.*` profile.
 
 Operator raw-order authority uses a separate profile and preferably a separate local socket/identity. WATCH is read-only. LIVE remains unsupported.
 

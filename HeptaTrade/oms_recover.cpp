@@ -1,5 +1,6 @@
 #include "oms_recover.h"
 
+#include <locale>
 #include <sstream>
 
 std::string OmsRecover::BuildEventDedupKey(const OmsJournalEvent& e)
@@ -7,6 +8,7 @@ std::string OmsRecover::BuildEventDedupKey(const OmsJournalEvent& e)
     if (!e.eventId.empty()) return std::string("eid:") + e.eventId;
 
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     oss << "raw:" << e.eventType << "|" << e.tsMs << "|" << e.orderId << "|"
         << (e.reqId.empty() ? e.clientReqId : e.reqId) << "|"
         << e.status << "|" << e.reason << "|" << e.source;

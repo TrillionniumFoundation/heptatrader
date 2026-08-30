@@ -1,6 +1,5 @@
 #include "agent_os_runtime_config.h"
 
-#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -21,7 +20,8 @@ bool ParseUnsigned(const std::string& value, std::uint64_t maximum,
     for (std::size_t i = 0; i < value.size(); ++i)
     {
         const unsigned char character = static_cast<unsigned char>(value[i]);
-        if (!std::isdigit(character)) return false;
+        if (character < static_cast<unsigned char>('0') ||
+            character > static_cast<unsigned char>('9')) return false;
         const std::uint64_t digit = static_cast<std::uint64_t>(character - '0');
         if (digit > maximum) return false;
         if (result > (maximum - digit) / 10) return false;
@@ -49,7 +49,8 @@ bool ParseSignedInt(const std::string& value, int minimum, int maximum, int& par
     for (; offset < value.size(); ++offset)
     {
         const unsigned char character = static_cast<unsigned char>(value[offset]);
-        if (!std::isdigit(character)) return false;
+        if (character < static_cast<unsigned char>('0') ||
+            character > static_cast<unsigned char>('9')) return false;
         const std::uint64_t digit = static_cast<std::uint64_t>(character - '0');
         if (digit > limit) return false;
         if (magnitude > (limit - digit) / 10) return false;

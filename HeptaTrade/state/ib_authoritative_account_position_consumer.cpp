@@ -3,7 +3,50 @@
 #include "ib_contract_identity.h"
 
 #include <cmath>
-#include <cstdlib>
+#include <locale>
+#include <sstream>
+
+namespace
+{
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+}
 
 IBAuthoritativeAccountPositionConsumer::IBAuthoritativeAccountPositionConsumer(
     AuthoritativeTradingSnapshotStore& store,
@@ -46,9 +89,18 @@ IBAuthoritativeSnapshotConsumeStatus IBAuthoritativeAccountPositionConsumer::Con
         metricKey = metricKey.substr(0, separator);
     }
 
-    char* end = nullptr;
-    const double parsed = std::strtod(event.value.c_str(), &end);
-    if (end == event.value.c_str() || end == nullptr || *end != '\0')
+    if (!CanonicalFloating(event.value))
+    {
+        m_accountRejected = true;
+        m_accountRejectReason = "INVALID_ACCOUNT_VALUE";
+        return IBAuthoritativeSnapshotConsumeStatus::Rejected;
+    }
+    std::istringstream input(event.value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double parsed = 0.0;
+    input >> parsed;
+    if (!input || !input.eof())
         return IBAuthoritativeSnapshotConsumeStatus::Ignored;
     if (!std::isfinite(parsed))
     {

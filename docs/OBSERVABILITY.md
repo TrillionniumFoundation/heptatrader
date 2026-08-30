@@ -1,10 +1,21 @@
 # Runtime observability and SLO contract
 
-Status: current target contract; implementation state is tracked in `development/PLAN.md`
+Status: current runtime contract; implementation state is tracked in `development/PLAN.md`
 Applies to: Gateway, Execution Service, OMS, risk, simulator and IB PAPER
-Verification: same-revision CI
+Verification: `canonical-full-suite` on the exact revision
 
 Observability is organized around trading state transitions, not obsolete build scripts. Every metric carries `environment`, `venue` and a bounded `reason_code`; account, token, credential and full strategy prompt values are never labels.
+
+Runtime enforcement (implemented in `HeptaTrade/observability/runtime_telemetry.cpp`)
+parses every compound label before it becomes a series key. Label names are
+syntax-checked, duplicate/oversized sets are collapsed, and typed dimensions
+(`tool`, `event_type`, `reason_code`, status and lifecycle fields) are retained
+only from finite vocabularies. Unknown values and any sensitive dimension name
+(`account`, `token`, `credential`, `session_id`, `order_id`, `strategy`, etc.)
+become the constant `redacted`; free-form malformed values are never copied to
+the snapshot. The 2,048-series process-local cap remains a final cardinality
+backstop. `runtime_telemetry_tests` includes printable account-ID and
+token-like regression cases, including the untyped `IncrementKey` path.
 
 ## 1. Required counters
 

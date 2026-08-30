@@ -14,6 +14,8 @@ using Decimal = long long;
 #include <cstdlib>
 #include <cmath>
 #include <cstdio>
+#include <locale>
+#include <sstream>
 
 namespace {
 inline double DecimalToDouble(Decimal v) {
@@ -52,7 +54,19 @@ extern "C" Decimal __bid64_from_string(char* cstr, unsigned int, unsigned int* p
     if (pflags) *pflags = 0;
     if (!cstr) return 0;
     try {
-        return DoubleToDecimal(std::strtod(cstr, nullptr));
+        // IB's decimal text is dot-decimal protocol data.  Do not let the
+        // hosting process's C locale reinterpret it (or accept a comma
+        // prefix and silently truncate the value).
+        std::istringstream input(cstr);
+        input.imbue(std::locale::classic());
+        input >> std::noskipws;
+        double value = 0.0;
+        input >> value;
+        if (!input || !input.eof() || !std::isfinite(value)) {
+            if (pflags) *pflags = 1;
+            return 0;
+        }
+        return DoubleToDecimal(value);
     } catch (...) {
         if (pflags) *pflags = 1;
         return 0;

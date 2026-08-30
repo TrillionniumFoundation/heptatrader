@@ -3,13 +3,67 @@
 #include <cerrno>
 #include <cstdlib>
 #include <ctime>
+#include <cmath>
+#include <locale>
 #include <sstream>
 #include <unistd.h>
 
 namespace {
 
+bool CanonicalSignedInteger(const std::string& value)
+{
+    if (value.empty()) return false;
+    const std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size() ||
+        (value[offset] == '0' &&
+         (offset != 0 || offset + 1u < value.size()))) return false;
+    for (std::size_t i = offset; i < value.size(); ++i)
+        if (value[i] < '0' || value[i] > '9') return false;
+    return true;
+}
+
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+
 bool ParseLongLong(const std::string& value, long long& out)
 {
+    if (!CanonicalSignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const long long parsed = std::strtoll(value.c_str(), &end, 10);
@@ -20,10 +74,13 @@ bool ParseLongLong(const std::string& value, long long& out)
 
 bool ParseDouble(const std::string& value, double& out)
 {
-    char* end = nullptr;
-    errno = 0;
-    const double parsed = std::strtod(value.c_str(), &end);
-    if (errno != 0 || end == value.c_str() || *end != '\0') return false;
+    if (!CanonicalFloating(value)) return false;
+    std::istringstream input(value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double parsed = 0.0;
+    input >> parsed;
+    if (!input || !input.eof() || !std::isfinite(parsed)) return false;
     out = parsed;
     return true;
 }
@@ -162,6 +219,7 @@ bool HeptaCtlCommandParser::Parse(int argc, char** argv, HeptaCtlCommand& comman
     if (command.request.toolCallId.empty())
     {
         std::ostringstream id;
+        id.imbue(std::locale::classic());
         id << "heptactl-" << static_cast<unsigned long long>(std::time(nullptr)) << '-' << getpid();
         command.request.toolCallId = id.str();
     }

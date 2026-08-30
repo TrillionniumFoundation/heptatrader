@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -166,6 +167,11 @@ def require_number(
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ContractError(reason)
     number = float(value)
+    # Python's JSON decoder materializes huge exponents as +/-inf, and NaN can
+    # also arrive from in-process callers.  Comparisons against those values
+    # are all false, so range checks alone would accidentally admit them.
+    if not math.isfinite(number):
+        raise ContractError(reason)
     if positive and number <= 0.0:
         raise ContractError(reason)
     if minimum is not None and number < minimum:
