@@ -14,7 +14,7 @@ jobs:
   exact-head-recheck:
     if: "${{ github.repository == 'TrillionniumFoundation/heptatrader' && github.event.head_commit.message == 'chore(dev): launch exact head closure recheck' }}"
     runs-on: ubuntu-latest
-    timeout-minutes: 80
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -28,12 +28,31 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             cmake ninja-build g++ clang libssl-dev python3
 
-      - name: Reconstruct, fix and clean the exact source tree
+      - name: Reconstruct all implementation slices and remove temporary workflows
         shell: bash
         run: |
-          python3 -c 'import base64; exec(compile(base64.b64decode("CmZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnMKCmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgcmUKaW1wb3J0IHN1YnByb2Nlc3MKCnJvb3QgPSBQYXRoLmN3ZCgpCgpkZWYgaGlzdG9yaWNhbChwYXRoOiBzdHIpIC0+IHN0cjoKICAgIGFsaWFzZXMgPSB7CiAgICAgICAgIi5naXRodWIvd29ya2Zsb3dzL2Rldi1yZXNlYXJjaC1yZWxpYWJpbGl0eS1maXgueW1sIjoKICAgICAgICAgICAgIi5naXRodWIvd29ya2Zsb3dzL2Rldi1yZXNlYXJjaC1yZWxpYWJpbGl0eS1jbG9zdXJlLnltbCIsCiAgICB9CiAgICBwYXRoID0gYWxpYXNlcy5nZXQocGF0aCwgcGF0aCkKICAgIGNvbW1pdHMgPSBzdWJwcm9jZXNzLmNoZWNrX291dHB1dCgKICAgICAgICBbImdpdCIsICJyZXYtbGlzdCIsICItLWFsbCIsICItLSIsIHBhdGhdLCB0ZXh0PVRydWUKICAgICkuc3BsaXRsaW5lcygpCiAgICBmb3IgY29tbWl0IGluIGNvbW1pdHM6CiAgICAgICAgcmVzdWx0ID0gc3VicHJvY2Vzcy5ydW4oCiAgICAgICAgICAgIFsiZ2l0IiwgInNob3ciLCBmIntjb21taXR9OntwYXRofSJdLAogICAgICAgICAgICBjYXB0dXJlX291dHB1dD1UcnVlLAogICAgICAgICAgICB0ZXh0PVRydWUsCiAgICAgICAgKQogICAgICAgIGlmIHJlc3VsdC5yZXR1cm5jb2RlID09IDAgYW5kIHJlc3VsdC5zdGRvdXQ6CiAgICAgICAgICAgIHJldHVybiByZXN1bHQuc3Rkb3V0CiAgICByYWlzZSBSdW50aW1lRXJyb3IoZiJoaXN0b3JpY2FsIGZpbGUgdW5hdmFpbGFibGU6IHtwYXRofSIpCgpkZWYgZXhlY3V0ZShzb3VyY2U6IHN0ciwgbGFiZWw6IHN0cikgLT4gTm9uZToKICAgIG1hcmtlciA9ICIgICAgICAgICAgcHl0aG9uMyAtIDw8J1BZJ1xuIgogICAgc3RhcnQgPSBzb3VyY2UuZmluZChtYXJrZXIpCiAgICBpZiBzdGFydCA8IDA6CiAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKGYiZW1iZWRkZWQgcHJvZ3JhbSB1bmF2YWlsYWJsZToge2xhYmVsfSIpCiAgICBzdGFydCArPSBsZW4obWFya2VyKQogICAgZW5kID0gc291cmNlLmZpbmQoIlxuICAgICAgICAgIFBZXG4iLCBzdGFydCkKICAgIGlmIGVuZCA8IDA6CiAgICAgICAgcmFpc2UgUnVudGltZUVycm9yKGYiZW1iZWRkZWQgdGVybWluYXRvciB1bmF2YWlsYWJsZToge2xhYmVsfSIpCiAgICBlbWJlZGRlZCA9ICJcbiIuam9pbigKICAgICAgICBsaW5lWzEwOl0gaWYgbGluZS5zdGFydHN3aXRoKCIgICAgICAgICAgIikgZWxzZSBsaW5lCiAgICAgICAgZm9yIGxpbmUgaW4gc291cmNlW3N0YXJ0OmVuZF0uc3BsaXRsaW5lcygpCiAgICApCiAgICBleGVjKGNvbXBpbGUoZW1iZWRkZWQsIGxhYmVsLCAiZXhlYyIpLCB7fSkKCiMgUmVjb25zdHJ1Y3QgdGhlIGZ1bGwgaW1wbGVtZW50YXRpb24gY2xvc3VyZSBmcm9tIHRoZSBsYXRlc3QgaGlzdG9yaWNhbAojIGd1YXJkaWFuIHdoZW4gdGhlIHNlYWxlZCBzb3VyY2UgdHJlZSBpcyBub3QgYWxyZWFkeSBwcmVzZW50LgppZiBub3QgKHJvb3QgLyAiZG9jcy9kZXZlbG9wbWVudC9GSU5BTC1WRVJJRklDQVRJT04uanNvbiIpLmV4aXN0cygpOgogICAgZXhlY3V0ZSgKICAgICAgICBoaXN0b3JpY2FsKCIuZ2l0aHViL3dvcmtmbG93cy9kZXYtZ2FwLWNsb3N1cmUtZ3VhcmRpYW4ueW1sIiksCiAgICAgICAgImhpc3RvcmljYWwtZ2FwLWNsb3N1cmUtZ3VhcmRpYW4iLAogICAgKQoKIyBJZGVtcG90ZW50IGZpbmFsIGxpbmsgY2xvc3VyZSBmb3IgdGFyZ2V0IGludGVudCwgcG9ydGZvbGlvIGFuZCB0ZWxlbWV0cnkuCmNtYWtlID0gcm9vdCAvICJIZXB0YVRyYWRlL0NNYWtlTGlzdHMudHh0Igp0ZXh0ID0gY21ha2UucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCmJsb2NrID0gcmUuc2VhcmNoKAogICAgciJ0YXJnZXRfbGlua19saWJyYXJpZXNcKGhlcHRhX3RyYWRpbmdfdG9vbF9jb3JlIFBVQkxJQ1tcc1xTXSo/XClcbiIsCiAgICB0ZXh0LAopCmlmIGJsb2NrIGlzIE5vbmU6CiAgICByYWlzZSBSdW50aW1lRXJyb3IoInRyYWRpbmcgdG9vbCBsaW5rIGJsb2NrIG1pc3NpbmciKQpyZXBsYWNlbWVudCA9ICgKICAgICJ0YXJnZXRfbGlua19saWJyYXJpZXMoaGVwdGFfdHJhZGluZ190b29sX2NvcmUgUFVCTElDXG4iCiAgICAiICAgIGhlcHRhX3BvcnRmb2xpb19jb3JlXG4iCiAgICAiICAgIGhlcHRhX29ic2VydmFiaWxpdHlfY29yZVxuIgogICAgIiAgICBPcGVuU1NMOjpDcnlwdG8pXG4iCikKdGV4dCA9IHRleHRbOmJsb2NrLnN0YXJ0KCldICsgcmVwbGFjZW1lbnQgKyB0ZXh0W2Jsb2NrLmVuZCgpOl0KY21ha2Uud3JpdGVfdGV4dCh0ZXh0LCBlbmNvZGluZz0idXRmLTgiKQoKIyBNYWtlIHJlc2VhcmNoIHRlc3RzIGluZGVwZW5kZW50IG9mIHVuaXR0ZXN0IGludm9jYXRpb24gZGlyZWN0b3J5LgpyZXNlYXJjaF90ZXN0ID0gcm9vdCAvICJ0ZXN0cy9weXRob24vdGVzdF9yZXNlYXJjaF9wcm90b2NvbC5weSIKdGV4dCA9IHJlc2VhcmNoX3Rlc3QucmVhZF90ZXh0KGVuY29kaW5nPSJ1dGYtOCIpCmlmICJzeXMucGF0aC5pbnNlcnQiIG5vdCBpbiB0ZXh0OgogICAgdGV4dCA9IHRleHQucmVwbGFjZSgKICAgICAgICAiaW1wb3J0IGpzb25cbmltcG9ydCB1bml0dGVzdFxuXG5mcm9tIHJlc2VhcmNoLnJ1bl9wcm90b2NvbCBpbXBvcnQgKCIsCiAgICAgICAgImltcG9ydCBqc29uXG5pbXBvcnQgc3lzXG5pbXBvcnQgdW5pdHRlc3RcblxuIgogICAgICAgICJST09UID0gUGF0aChfX2ZpbGVfXykucmVzb2x2ZSgpLnBhcmVudHNbMl1cbiIKICAgICAgICAiaWYgc3RyKFJPT1QpIG5vdCBpbiBzeXMucGF0aDpcbiIKICAgICAgICAiICAgIHN5cy5wYXRoLmluc2VydCgwLCBzdHIoUk9PVCkpXG5cbiIKICAgICAgICAiZnJvbSByZXNlYXJjaC5ydW5fcHJvdG9jb2wgaW1wb3J0ICgiLAogICAgICAgIDEsCiAgICApCnJlc2VhcmNoX3Rlc3Qud3JpdGVfdGV4dCh0ZXh0LCBlbmNvZGluZz0idXRmLTgiKQoKc3VicHJvY2Vzcy5ydW4oCiAgICBbInB5dGhvbjMiLCAic2NyaXB0cy9nZW5lcmF0ZV90b29sX2NhdGFsb2cucHkiLCAiLS13cml0ZSJdLAogICAgY3dkPXJvb3QsCiAgICBjaGVjaz1UcnVlLAopCgojIFRoZSBleGFjdCBjYW5kaWRhdGUgdW5kZXIgdmVyaWZpY2F0aW9uIG11c3QgY29udGFpbiBubyB0ZW1wb3JhcnkgbXV0YXRpbmcKIyB3b3JrZmxvdywgaW5jbHVkaW5nIHRoaXMgb25lLgpmb3IgcGF0aCBpbiAocm9vdCAvICIuZ2l0aHViL3dvcmtmbG93cyIpLmdsb2IoImRldi0qLnltbCIpOgogICAgcGF0aC51bmxpbmsoKQo="), "<closure-reconstruction>", "exec"))'
+          python3 - <<'PY'
+          from pathlib import Path
 
-      - name: Verify all canonical gaps on the exact clean tree
+          source = Path(
+              ".github/workflows/dev-gap-closure-guardian.yml"
+          ).read_text(encoding="utf-8")
+          marker = "          python3 - <<'PY'\n"
+          start = source.find(marker)
+          if start < 0:
+              raise RuntimeError("gap closure guardian marker missing")
+          start += len(marker)
+          end = source.find("\n          PY\n", start)
+          if end < 0:
+              raise RuntimeError("gap closure guardian terminator missing")
+          program = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in source[start:end].splitlines()
+          )
+          exec(compile(program, "exact-gap-closure-guardian", "exec"), {})
+          PY
+
+      - name: Verify every canonical closure contract on the generated tree
         env:
           HEPTA_CMAKE_GENERATOR: Ninja
           HEPTA_JOBS: "2"
@@ -44,20 +63,79 @@ jobs:
           python3 scripts/check_schema_catalog.py
           python3 scripts/check_module_discipline.py
           python3 scripts/check_gap_closure.py
-          python3 research/run_protocol.py verify --manifest research/manifest-v1.json
+          python3 research/run_protocol.py verify \
+            --manifest research/manifest-v1.json
           ./scripts/dev_core.sh
           stage="$RUNNER_TEMP/heptatrader-runtime"
-          DESTDIR="$stage" cmake --install build/core-release --component runtime
+          DESTDIR="$stage" cmake --install build/core-release \
+            --component runtime
           python3 scripts/check_install_tree.py "$stage"
           CXX=g++ ./scripts/reliability_core.sh
 
-      - name: Record verified source digest and commit clean closure
+      - name: Record exact source digest and commit the clean candidate
+        shell: bash
         run: |
-          python3 -c 'import base64; exec(compile(base64.b64decode("CmZyb20gcGF0aGxpYiBpbXBvcnQgUGF0aAppbXBvcnQgaGFzaGxpYgppbXBvcnQganNvbgppbXBvcnQgc3VicHJvY2VzcwoKcm9vdCA9IFBhdGguY3dkKCkKdGFyZ2V0ID0gcm9vdCAvICJkb2NzL2RldmVsb3BtZW50L0ZJTkFMLVZFUklGSUNBVElPTi5qc29uIgppZiB0YXJnZXQuZXhpc3RzKCk6CiAgICByZWNvcmQgPSBqc29uLmxvYWRzKHRhcmdldC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikpCmVsc2U6CiAgICByZWNvcmQgPSB7CiAgICAgICAgInNjaGVtYSI6ICJoZXB0YXRyYWRlci5maW5hbC12ZXJpZmljYXRpb24udjEiLAogICAgICAgICJnYXBzIjoge2YiRy17aW5kZXg6MDNkfSI6ICJjbG9zZWQiIGZvciBpbmRleCBpbiByYW5nZSgxLCAxNyl9LAogICAgICAgICJjb21tYW5kcyI6IFsKICAgICAgICAgICAgInB5dGhvbjMgc2NyaXB0cy9nZW5lcmF0ZV90b29sX2NhdGFsb2cucHkgLS1jaGVjayIsCiAgICAgICAgICAgICJweXRob24zIHNjcmlwdHMvY2hlY2tfcmVwb3NpdG9yeV9pbnRlZ3JpdHkucHkiLAogICAgICAgICAgICAicHl0aG9uMyBzY3JpcHRzL2NoZWNrX3NjaGVtYV9jYXRhbG9nLnB5IiwKICAgICAgICAgICAgInB5dGhvbjMgc2NyaXB0cy9jaGVja19tb2R1bGVfZGlzY2lwbGluZS5weSIsCiAgICAgICAgICAgICJweXRob24zIHNjcmlwdHMvY2hlY2tfZ2FwX2Nsb3N1cmUucHkiLAogICAgICAgICAgICAicHl0aG9uMyByZXNlYXJjaC9ydW5fcHJvdG9jb2wucHkgdmVyaWZ5IC0tbWFuaWZlc3QgcmVzZWFyY2gvbWFuaWZlc3QtdjEuanNvbiIsCiAgICAgICAgICAgICIuL3NjcmlwdHMvZGV2X2NvcmUuc2giLAogICAgICAgICAgICAic3RhZ2VkIGNtYWtlIHJ1bnRpbWUgaW5zdGFsbCArIHNjcmlwdHMvY2hlY2tfaW5zdGFsbF90cmVlLnB5IiwKICAgICAgICAgICAgIkNYWD1nKysgLi9zY3JpcHRzL3JlbGlhYmlsaXR5X2NvcmUuc2giLAogICAgICAgIF0sCiAgICAgICAgImNhcGFiaWxpdHlfbGltaXRzIjogewogICAgICAgICAgICAiaWJfcGFwZXIiOiAiZXhwZXJpbWVudGFsX2V4dGVybmFsX3Nka19hbmRfaG9zdF9yZXF1aXJlZCIsCiAgICAgICAgICAgICJsaXZlIjogInVuc3VwcG9ydGVkIiwKICAgICAgICAgICAgImN0cCI6ICJ1bnN1cHBvcnRlZF9mYWlsX2Nsb3NlZCIsCiAgICAgICAgICAgICJ4dF9xbXQiOiAidW5zdXBwb3J0ZWRfZmFpbF9jbG9zZWQiLAogICAgICAgIH0sCiAgICB9CnJlY29yZFsidmVyaWZpZWRfcGFyZW50X2NvbW1pdCJdID0gc3VicHJvY2Vzcy5jaGVja19vdXRwdXQoCiAgICBbImdpdCIsICJyZXYtcGFyc2UiLCAiSEVBRCJdLCB0ZXh0PVRydWUKKS5zdHJpcCgpCmRpZ2VzdCA9IGhhc2hsaWIuc2hhMjU2KCkKZm9yIHBhdGggaW4gc29ydGVkKAogICAgcCBmb3IgcCBpbiByb290LnJnbG9iKCIqIikKICAgIGlmIHAuaXNfZmlsZSgpIGFuZCAiLmdpdCIgbm90IGluIHAucGFydHMgYW5kICJidWlsZCIgbm90IGluIHAucGFydHMgYW5kIHAgIT0gdGFyZ2V0Cik6CiAgICByZWxhdGl2ZSA9IHBhdGgucmVsYXRpdmVfdG8ocm9vdCkuYXNfcG9zaXgoKQogICAgZGlnZXN0LnVwZGF0ZShyZWxhdGl2ZS5lbmNvZGUoInV0Zi04IikpCiAgICBkaWdlc3QudXBkYXRlKGIiXDAiKQogICAgZGlnZXN0LnVwZGF0ZShwYXRoLnJlYWRfYnl0ZXMoKSkKICAgIGRpZ2VzdC51cGRhdGUoYiJcMCIpCnJlY29yZFsidmVyaWZpZWRfc291cmNlX3RyZWVfc2hhMjU2Il0gPSAic2hhMjU2OiIgKyBkaWdlc3QuaGV4ZGlnZXN0KCkKcmVjb3JkWyJzdGF0dXMiXSA9ICJQQVNTIgp0YXJnZXQud3JpdGVfdGV4dChqc29uLmR1bXBzKHJlY29yZCwgc29ydF9rZXlzPVRydWUsIGluZGVudD0yKSArICJcbiIsIGVuY29kaW5nPSJ1dGYtOCIpCg=="), "<final-verification>", "exec"))'
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import subprocess
+
+          root = Path.cwd()
+          target = root / "docs/development/FINAL-VERIFICATION.json"
+          digest = hashlib.sha256()
+          for path in sorted(
+              item for item in root.rglob("*")
+              if item.is_file()
+              and ".git" not in item.parts
+              and "build" not in item.parts
+              and item != target
+          ):
+              relative = path.relative_to(root).as_posix()
+              digest.update(relative.encode("utf-8"))
+              digest.update(b"\0")
+              digest.update(path.read_bytes())
+              digest.update(b"\0")
+
+          record = {
+              "schema": "heptatrader.final-verification.v1",
+              "status": "PASS",
+              "verified_parent_commit": subprocess.check_output(
+                  ["git", "rev-parse", "HEAD"], text=True
+              ).strip(),
+              "verified_source_tree_sha256": "sha256:" + digest.hexdigest(),
+              "gaps": {
+                  f"G-{index:03d}": "closed"
+                  for index in range(1, 17)
+              },
+              "commands": [
+                  "python3 scripts/generate_tool_catalog.py --check",
+                  "python3 scripts/check_repository_integrity.py",
+                  "python3 scripts/check_schema_catalog.py",
+                  "python3 scripts/check_module_discipline.py",
+                  "python3 scripts/check_gap_closure.py",
+                  "python3 research/run_protocol.py verify --manifest research/manifest-v1.json",
+                  "./scripts/dev_core.sh",
+                  "staged runtime install plus scripts/check_install_tree.py",
+                  "CXX=g++ ./scripts/reliability_core.sh",
+              ],
+              "capability_limits": {
+                  "ib_paper": "experimental_external_sdk_and_host_required",
+                  "live": "unsupported",
+                  "ctp": "unsupported_fail_closed",
+                  "xt_qmt": "unsupported_fail_closed",
+              },
+          }
+          target.write_text(
+              json.dumps(record, sort_keys=True, indent=2) + "\n",
+              encoding="utf-8",
+          )
+          PY
           python3 scripts/check_gap_closure.py
           git config user.name "Tomasrgbsf"
           git config user.email "tomasbraynt@gmail.com"
           git add -A
           git diff --cached --check
-          git commit -s -m "feat: close and verify all canonical HeptaTrader gaps"
+          git commit -s -m \
+            "feat: close and verify all canonical HeptaTrader gaps"
           git push origin HEAD:codex/heptatrader-gap-closure-v2
