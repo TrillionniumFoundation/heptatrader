@@ -12,13 +12,16 @@ add_subdirectory(HeptaTrade)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 
-    # Force-include a source-level synchronization barrier only in the Unix
-    # tool-server test target. It tracks the test's client sockets and makes
-    # the owner-queue saturation assertion deterministic without changing
-    # production UnixToolServer scheduling, limits or symbols.
+    # Synchronize only the owner-pressure fixture on the four actual request
+    # bodies written by its clients. Link wrapping is confined to this test
+    # executable and leaves production UnixToolServer scheduling and limits
+    # unchanged.
     if(TARGET hepta_unix_tool_server_tests AND UNIX AND NOT APPLE)
-        target_compile_options(hepta_unix_tool_server_tests PRIVATE
-            "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/tests/unix_tool_server_pressure_barrier.h")
+        target_sources(hepta_unix_tool_server_tests PRIVATE
+            tests/unix_tool_server_test_interposer.cpp)
+        target_link_options(hepta_unix_tool_server_tests PRIVATE
+            "-Wl,--wrap=send"
+            "-Wl,--wrap=usleep")
     endif()
 endif()
 
