@@ -14,6 +14,7 @@ jobs:
       - name: Historical recovery bridge only
         run: |
           python3 - <<'PY'
+          import base64
           from pathlib import Path
 
           root = Path.cwd()
@@ -34,121 +35,9 @@ jobs:
           )
           exec(compile(program, "historical-research-reliability-closure", "exec"), {})
 
-          generator = r'''#!/usr/bin/env python3
-"""Generate and verify the canonical Agent tool catalog."""
-
-from __future__ import annotations
-
-import argparse
-import hashlib
-import json
-from pathlib import Path
-import sys
-from typing import Any
-
-ROOT = Path(__file__).resolve().parents[1]
-CATALOG_PATH = ROOT / "schemas/tool-catalog-v1.json"
-DIGEST_PATH = ROOT / "schemas/tool-catalog-v1.sha256"
-
-
-def document() -> dict[str, Any]:
-    return {
-        "schema": "heptatrader.tool-catalog.v1",
-        "protocol": "hepta.agent-tools",
-        "protocol_version": 1,
-        "tools": [
-            {"name": "system.tools.list", "capability": "system.read", "visibility": "ordinary"},
-            {"name": "system.tools.describe", "capability": "system.read", "visibility": "ordinary"},
-            {"name": "system.cancel_request", "capability": "system.read", "visibility": "ordinary"},
-            {"name": "system.get_health", "capability": "system.read", "visibility": "ordinary"},
-            {"name": "system.get_metrics", "capability": "system.read", "visibility": "ordinary"},
-            {"name": "market.get_quote", "capability": "market.read", "visibility": "ordinary"},
-            {"name": "account.get_summary", "capability": "account.read", "visibility": "ordinary"},
-            {"name": "portfolio.list_positions", "capability": "portfolio.read", "visibility": "ordinary"},
-            {"name": "orders.list", "capability": "orders.read", "visibility": "ordinary"},
-            {"name": "execution.get_command_status", "capability": "orders.read", "visibility": "ordinary"},
-            {"name": "risk.get_limits", "capability": "risk.read", "visibility": "ordinary"},
-            {"name": "decision.get_snapshot", "capability": "system.read", "visibility": "ordinary"},
-            {"name": "intent.preview_target_position", "capability": "risk.read", "visibility": "ordinary"},
-            {"name": "intent.apply_target_position", "capability": "intent.apply", "visibility": "ordinary"},
-            {"name": "events.wait", "capability": "events.read", "visibility": "ordinary"},
-            {"name": "watch.get_snapshot", "capability": "system.read", "visibility": "watch"},
-            {"name": "risk.preview_order", "capability": "operator.risk.preview", "visibility": "operator"},
-            {"name": "trade.place_order", "capability": "operator.trade.place", "visibility": "operator"},
-            {"name": "trade.cancel_order", "capability": "trade.cancel", "visibility": "ordinary"},
-            {"name": "risk.preview_flatten", "capability": "trade.flatten", "visibility": "conditional"},
-            {"name": "trade.flatten_position", "capability": "trade.flatten", "visibility": "conditional"},
-        ],
-        "wire_aliases": {
-            "target_position": "quantity",
-            "max_slippage_bps": "reference_price",
-            "mutation_command_id": "tool_call_id",
-        },
-        "unsupported_environments": ["LIVE", "LIVE_REDUCE_ONLY", "LIVE_CAPPED"],
-    }
-
-
-def canonical(value: dict[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"))
-
-
-def rendered(value: dict[str, Any]) -> str:
-    return json.dumps(value, sort_keys=True, indent=2) + "\n"
-
-
-def expected_digest(value: dict[str, Any]) -> str:
-    return hashlib.sha256(canonical(value).encode("utf-8")).hexdigest()
-
-
-def write() -> None:
-    value = document()
-    CATALOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CATALOG_PATH.write_text(rendered(value), encoding="utf-8")
-    DIGEST_PATH.write_text(expected_digest(value) + "\n", encoding="utf-8")
-
-
-def check() -> int:
-    value = document()
-    errors: list[str] = []
-    try:
-        actual = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-    except Exception as error:
-        print(f"[TOOL-CATALOG] catalog unreadable: {error}", file=sys.stderr)
-        return 1
-    if actual != value:
-        errors.append("catalog content drift")
-    try:
-        digest = DIGEST_PATH.read_text(encoding="utf-8").strip()
-    except Exception as error:
-        errors.append(f"digest unreadable: {error}")
-    else:
-        if digest != expected_digest(value):
-            errors.append("catalog digest drift")
-    for error in errors:
-        print(f"[TOOL-CATALOG] {error}", file=sys.stderr)
-    if errors:
-        return 1
-    print("[TOOL-CATALOG] PASS")
-    return 0
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--write", action="store_true")
-    mode.add_argument("--check", action="store_true")
-    arguments = parser.parse_args()
-    if arguments.write:
-        write()
-        print("[TOOL-CATALOG] generated")
-        return 0
-    return check()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-'''
+          encoded = "IyEvdXNyL2Jpbi9lbnYgcHl0aG9uMwoiIiJOb3JtYWxpemUgYW5kIHZlcmlmeSB0aGUgY2Fub25pY2FsIEFnZW50IHRvb2wgY2F0YWxvZy4iIiIKCmZyb20gX19mdXR1cmVfXyBpbXBvcnQgYW5ub3RhdGlvbnMKCmltcG9ydCBhcmdwYXJzZQppbXBvcnQgaGFzaGxpYgppbXBvcnQganNvbgpmcm9tIHBhdGhsaWIgaW1wb3J0IFBhdGgKaW1wb3J0IHN5cwpmcm9tIHR5cGluZyBpbXBvcnQgQW55CgpST09UID0gUGF0aChfX2ZpbGVfXykucmVzb2x2ZSgpLnBhcmVudHNbMV0KQ0FUQUxPRyA9IFJPT1QgLyAic2NoZW1hcy90b29sLWNhdGFsb2ctdjEuanNvbiIKRElHRVNUID0gUk9PVCAvICJzY2hlbWFzL3Rvb2wtY2F0YWxvZy12MS5zaGEyNTYiCk1FVFJJQ1MgPSB7CiAgICAibmFtZSI6ICJzeXN0ZW0uZ2V0X21ldHJpY3MiLAogICAgImNhcGFiaWxpdHkiOiAic3lzdGVtLnJlYWQiLAogICAgInZpc2liaWxpdHkiOiAib3JkaW5hcnkiLAp9CgoKZGVmIGNhbm9uaWNhbCh2YWx1ZTogZGljdFtzdHIsIEFueV0pIC0+IHN0cjoKICAgIHJldHVybiBqc29uLmR1bXBzKHZhbHVlLCBzb3J0X2tleXM9VHJ1ZSwgc2VwYXJhdG9ycz0oIiwiLCAiOiIpKQoKCmRlZiBsb2FkKCkgLT4gZGljdFtzdHIsIEFueV06CiAgICB2YWx1ZSA9IGpzb24ubG9hZHMoQ0FUQUxPRy5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04IikpCiAgICBpZiB2YWx1ZS5nZXQoInNjaGVtYSIpICE9ICJoZXB0YXRyYWRlci50b29sLWNhdGFsb2cudjEiOgogICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoInRvb2wgY2F0YWxvZyBzY2hlbWEgbWlzbWF0Y2giKQogICAgdG9vbHMgPSB2YWx1ZS5nZXQoInRvb2xzIikKICAgIGlmIG5vdCBpc2luc3RhbmNlKHRvb2xzLCBsaXN0KToKICAgICAgICByYWlzZSBWYWx1ZUVycm9yKCJ0b29sIGNhdGFsb2cgdG9vbHMgbXVzdCBiZSBhIGxpc3QiKQogICAgbmFtZXMgPSBbaXRlbS5nZXQoIm5hbWUiKSBmb3IgaXRlbSBpbiB0b29scyBpZiBpc2luc3RhbmNlKGl0ZW0sIGRpY3QpXQogICAgaWYgbGVuKG5hbWVzKSAhPSBsZW4odG9vbHMpIG9yIGxlbihuYW1lcykgIT0gbGVuKHNldChuYW1lcykpOgogICAgICAgIHJhaXNlIFZhbHVlRXJyb3IoInRvb2wgY2F0YWxvZyBuYW1lcyBhcmUgaW52YWxpZCBvciBkdXBsaWNhdGVkIikKICAgIHJldHVybiB2YWx1ZQoKCmRlZiBub3JtYWxpemUodmFsdWU6IGRpY3Rbc3RyLCBBbnldKSAtPiBkaWN0W3N0ciwgQW55XToKICAgIHRvb2xzID0gWwogICAgICAgIGl0ZW0gZm9yIGl0ZW0gaW4gdmFsdWVbInRvb2xzIl0KICAgICAgICBpZiBpdGVtLmdldCgibmFtZSIpICE9IE1FVFJJQ1NbIm5hbWUiXQogICAgXQogICAgaW5zZXJ0X2F0ID0gbmV4dCgKICAgICAgICAoaW5kZXggKyAxIGZvciBpbmRleCwgaXRlbSBpbiBlbnVtZXJhdGUodG9vbHMpCiAgICAgICAgIGlmIGl0ZW0uZ2V0KCJuYW1lIikgPT0gInN5c3RlbS5nZXRfaGVhbHRoIiksCiAgICAgICAgbGVuKHRvb2xzKSwKICAgICkKICAgIHRvb2xzLmluc2VydChpbnNlcnRfYXQsIGRpY3QoTUVUUklDUykpCiAgICB2YWx1ZSA9IGRpY3QodmFsdWUpCiAgICB2YWx1ZVsidG9vbHMiXSA9IHRvb2xzCiAgICByZXR1cm4gdmFsdWUKCgpkZWYgZGlnZXN0KHZhbHVlOiBkaWN0W3N0ciwgQW55XSkgLT4gc3RyOgogICAgcmV0dXJuIGhhc2hsaWIuc2hhMjU2KGNhbm9uaWNhbCh2YWx1ZSkuZW5jb2RlKCJ1dGYtOCIpKS5oZXhkaWdlc3QoKQoKCmRlZiB3cml0ZSgpIC0+IE5vbmU6CiAgICB2YWx1ZSA9IG5vcm1hbGl6ZShsb2FkKCkpCiAgICBDQVRBTE9HLndyaXRlX3RleHQoCiAgICAgICAganNvbi5kdW1wcyh2YWx1ZSwgc29ydF9rZXlzPVRydWUsIGluZGVudD0yKSArICJcbiIsCiAgICAgICAgZW5jb2Rpbmc9InV0Zi04IiwKICAgICkKICAgIERJR0VTVC53cml0ZV90ZXh0KGRpZ2VzdCh2YWx1ZSkgKyAiXG4iLCBlbmNvZGluZz0idXRmLTgiKQoKCmRlZiBjaGVjaygpIC0+IGludDoKICAgIHRyeToKICAgICAgICB2YWx1ZSA9IGxvYWQoKQogICAgICAgIG5vcm1hbGl6ZWQgPSBub3JtYWxpemUodmFsdWUpCiAgICAgICAgcmVjb3JkZWQgPSBESUdFU1RfUEFUSC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04Iikuc3RyaXAoKQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlcnJvcjoKICAgICAgICBwcmludChmIltUT09MLUNBVEFMT0ddIHtlcnJvcn0iLCBmaWxlPXN5cy5zdGRlcnIpCiAgICAgICAgcmV0dXJuIDEKICAgIGVycm9yczogbGlzdFtzdHJdID0gW10KICAgIHRyeToKICAgICAgICBkaWdlc3QgPSBESUdFU1RfUEFUSC5yZWFkX3RleHQoZW5jb2Rpbmc9InV0Zi04Iikuc3RyaXAoKQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlcnJvcjoKICAgICAgICBlcnJvcnMuYXBwZW5kKGYiZGlnZXN0IHVucmVhZGFibGU6IHtlcnJvcn0iKQogICAgZWxzZToKICAgICAgICBpZiBkaWdlc3QgIT0gZXhwZWN0ZWRfZGlnZXN0KHZhbHVlKToKICAgICAgICAgICAgZXJyb3JzLmFwcGVuZCgiY2F0YWxvZyBkaWdlc3QgZHJpZnQiKQogICAgZm9yIGVycm9yIGluIGVycm9yczoKICAgICAgICBwcmludChmIltUT09MLUNBVEFMT0ddIHtlcnJvcn0iLCBmaWxlPXN5cy5zdGRlcnIpCiAgICBpZiBlcnJvcnM6CiAgICAgICAgcmV0dXJuIDEKICAgIHByaW50KCJbVE9PTC1DQVRBTE9HXSBQQVNTIikKICAgIHJldHVybiAwCgoKZGVmIG1haW4oKSAtPiBpbnQ6CiAgICBwYXJzZXIgPSBhcmdwYXJzZS5Bcmd1bWVudFBhcnNlcigpCiAgICBtb2RlcyA9IHBhcnNlci5hZGRfbXV0dWFsbHlfZXhjbHVzaXZlX2dyb3VwKHJlcXVpcmVkPVRydWUpCiAgICBtb2Rlcy5hZGRfYXJndW1lbnQoIi0td3JpdGUiLCBhY3Rpb249InN0b3JlX3RydWUiKQogICAgbW9kZXMuYWRkX2FyZ3VtZW50KCItLWNoZWNrIiwgYWN0aW9uPSJzdG9yZV90cnVlIikKICAgIGFyZ3MgPSBwYXJzZXIucGFyc2VfYXJncygpCiAgICBpZiBhcmdzLndyaXRlOgogICAgICAgIHdyaXRlKCkKICAgICAgICBwcmludCgiW1RPT0wtQ0FUQUxPR10gZ2VuZXJhdGVkIikKICAgICAgICByZXR1cm4gMAogICAgcmV0dXJuIGNoZWNrKCkKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18iOgogICAgcmFpc2UgU3lzdGVtRXhpdChtYWluKCkpCg=="
           target = root / "scripts/generate_tool_catalog.py"
-          target.write_text(generator, encoding="utf-8")
+          target.write_bytes(base64.b64decode(encoded))
           target.chmod(0o755)
+          compile(target.read_text(encoding="utf-8"), str(target), "exec")
           PY
