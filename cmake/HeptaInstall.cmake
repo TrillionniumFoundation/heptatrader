@@ -98,6 +98,10 @@ install(FILES
     THIRD_PARTY_NOTICES.md
     DESTINATION ${HEPTA_INSTALL_DOCDIR})
 install(FILES
+    ci/actions.lock.json
+    ci/hosted-toolchain.lock.json
+    DESTINATION ${HEPTA_INSTALL_DOCDIR}/ci)
+install(FILES
     systemd/hepta-tool-gateway.env.example
     systemd/hepta-tool-gateway-domain.env.example
     systemd/hepta-execution-simulator.env.example
@@ -114,15 +118,8 @@ if(HEPTA_ENABLE_IBAPI)
         DESTINATION ${HEPTA_INSTALL_DOCDIR}/examples)
 endif()
 
-set(CPACK_GENERATOR "TGZ")
-set(CPACK_PACKAGE_NAME "heptatrader")
-set(CPACK_PACKAGE_VENDOR "TrillionniumFoundation")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY
-    "Fail-closed Agent-native trading execution runtime")
-set(CPACK_PACKAGE_VERSION "${HEPTA_VERSION}")
-set(CPACK_PACKAGE_FILE_NAME
-    "heptatrader-${HEPTA_VERSION}-${CMAKE_SYSTEM_NAME}-${CMAKE_SYSTEM_PROCESSOR}")
-set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
-set(CPACK_SET_DESTDIR ON)
-set(CPACK_PACKAGING_INSTALL_PREFIX "/usr")
-include(CPack)
+# Release archives are created only by scripts/build_release_archive.py after
+# two independent install trees compare byte-for-byte. Deliberately do not add
+# CPack here: a second, non-reproducible package path would bypass the release
+# manifest, SBOM, toolchain observation, checksums, and protected publication
+# authority.
