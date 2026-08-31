@@ -11,8 +11,8 @@ function(hepta_register_core_test target)
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
     # The retained test programs use assert() for both verification and
-    # fixture setup.  Letting Release define NDEBUG would erase required side
-    # effects and turn the test itself into undefined behaviour.  Production
+    # fixture setup. Letting Release define NDEBUG would erase required side
+    # effects and turn the test itself into undefined behaviour. Production
     # targets retain their normal NDEBUG policy; only test translation units
     # explicitly undefine it in every configuration.
     if(MSVC)
@@ -25,6 +25,12 @@ function(hepta_register_core_test target)
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
     set(HEPTA_CORE_TEST_TARGETS "${HEPTA_CORE_TEST_TARGETS}" PARENT_SCOPE)
 endfunction()
+
+add_executable(hepta_assertions_enabled_tests
+    assertions_enabled_tests.cpp)
+hepta_register_core_test(hepta_assertions_enabled_tests)
+set_tests_properties(hepta_assertions_enabled_tests PROPERTIES
+    LABELS "core;test-harness")
 
 add_executable(hepta_pre_trade_risk_engine_tests
     pre_trade_risk_engine_tests.cpp
