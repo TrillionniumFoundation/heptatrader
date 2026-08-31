@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AllocationPlanV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","plan_id","allocator_epoch","capital_pool","account_book","proposal_set_digest","snapshot_digest","optimality","targets","created_at_ms","valid_until_ms","numeric_policy_version","plan_digest"],
+  "properties": {
+    "schema": {"const":"hepta.allocation-plan.v1"},
+    "plan_id": {"type":"string"},
+    "allocator_epoch": {"type":"integer","minimum":0},
+    "capital_pool": {"type":"string"},
+    "account_book": {"type":"string"},
+    "proposal_set_digest": {"type":"string","pattern":"^sha256:"},
+    "snapshot_digest": {"type":"string","pattern":"^sha256:"},
+    "optimality": {"type":"object"},
+    "targets": {"type":"array","maxItems":4096,"items":{"type":"object"}},
+    "accepted_proposals": {"type":"array"},
+    "rejected_proposals": {"type":"array"},
+    "constraint_slack": {"type":"object"},
+    "shadow_prices": {"type":"object"},
+    "created_at_ms": {"type":"integer","minimum":0},
+    "valid_until_ms": {"type":"integer","minimum":0},
+    "numeric_policy_version": {"const":"hepta.numeric.fixed-v1"},
+    "plan_digest": {"type":"string","pattern":"^sha256:"}
+  }
+}

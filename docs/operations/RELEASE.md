@@ -1,26 +1,15 @@
-# 发布流程
+# Release Process
 
-Status: current target contract
-Applies to: release candidate, artifacts and publication
-Verification: Lane C evidence, protected release environment and provenance
-Authority: release authority
+Status: current normative
+Applies to: public core artifacts and future qualified optional packages
+Verification: exact main candidate, reproducible build, install tree, SBOM, provenance and protected publish
+Authority: release process
 
-默认 release 是 **IB-disabled core package**。
+默认公开 release 是 IB-disabled core。它包含 Simulator/Gateway/CLI/MCP、canonical docs、schemas、research runner和service templates，不包含 Broker SDK/credential、CTP/XT payload或LIVE capability。
 
-前提：tag commit 等于当前受批准的 main/merge candidate；Lane C 全部成功；toolchain/action pin 可验证；version、capability registry、install graph 一致；无未处理 P0 authority/security regression；protected release environment 完成独立审批。
+## Two-phase authority
 
-**Build candidate（只读）**
+1. **Build candidate**：read-only token，在两个干净目录独立构建/安装，比较 staging-independent manifest、archive和SBOM，生成 checksums和toolchain observation。
+2. **Publish**：受保护 environment 验证明确批准的 exact SHA、candidate digest和前序 evidence后，才拥有最小 release/attestation 权限。
 
-1. 两个干净 build/staging 目录独立构建；
-2. 比较 install manifest、SBOM 和 deterministic archive；
-3. 生成 SHA256SUMS、toolchain observation 和 artifact identity；
-4. 上传仅与 exact SHA 绑定的候选 artifact。
-
-**Publish（受保护写权限）**
-
-1. 下载 exact candidate；
-2. 验证批准 SHA 和所有 digest；
-3. 生成 provenance/attestation；
-4. 最后创建 release。
-
-IB PAPER 只能作为单独、已资格认证的 optional artifact；PAPER 资格不继承到 LIVE。
+Tag 必须等于当前 `main` exact head；历史可达 commit、开发机旧 build、手工替换单个 binary均不允许。release archive 只含 install allowlist。Rollback 使用上一完整已验证 artifact/config snapshot，并保持 kill switch直到权威状态恢复。

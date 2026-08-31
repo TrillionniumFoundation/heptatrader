@@ -1,16 +1,24 @@
-# 运行时可观测性与 SLO
+# Runtime Observability and SLO
 
 Status: current normative
-Applies to: Gateway, decision, Execution, OMS, state, venue and management
-Verification: metric registry, bounded telemetry tests and performance gates
-Authority: observability authority
+Applies to: Gateway, strategy/data, Global Decision, Execution, OMS, risk and qualified venues
+Verification: metric registry, telemetry tests, performance budgets and incident drills
+Authority: runtime observability
 
-指标围绕交易状态转换，而不是围绕构建脚本。标签必须来自有限词表；account、token、credential、raw order ID、自由模型文本不得成为高基数标签。
+Observability 围绕状态迁移而非脚本完成度。metric registry 只允许有限 label；account/token/credential/session/order/prompt/free text 禁止进入 label。
 
-必需 counters：tool/session rejection、proposal/plan outcome、risk decision、execution command、journal failure、venue send、execution event、reconcile、state break、kill-switch transition、queue drop/coalesce。
+## Required transitions
 
-必需 gauges：active sessions/modules/orders、uncertain commands、snapshot/quote age、queue depth、journal/event backlog、connection/recovery state、gross/net exposure、remaining budget。
+- market event → authoritative/feature projection；
+- proposal receipt → canonical proposal set；
+- proposal set → SolverResult/AllocationPlan；
+- intent receipt → authoritative snapshot；
+- snapshot → risk decision；
+- accepted command → journal durable → venue send；
+- venue callback → OMS/state projection；
+- reconnect → reconcile complete；
+- lifecycle change → proposal expiry/quarantine complete。
 
-必需 latency：market event→projection、proposal→plan、snapshot→risk、accepted→journal durable、journal→send、callback→OMS、reconnect→reconcile、emergency request→dispatch。
+每条链记录 count、failure reason、queue depth、drop/backpressure 和 latency distribution。Execution correctness SLO 是硬约束：100% accepted mutation journal-before-send、duplicate command 同 outcome、state break 不泄漏到 new-risk、safe exit 不被普通队列饿死。
 
-telemetry 采用 per-thread/per-shard accumulator 和异步 bounded aggregation；采集失败不得阻塞安全路径，但必须暴露 drop/disabled 状态。
+P1：unjournaled send、journal failure、risk gate bypass、state divergence with gate open、kill switch/fence failure、uncertain exposure timeout。P2：broker disconnected without known exposure、backlog、repeated reject、deadline/latency regression。CI failure是开发阻断，不是生产 P1。

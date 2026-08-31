@@ -1,10 +1,10 @@
-# Dataset Registry 目标契约
+# Dataset Registry
 
 Status: current target contract
-Applies to: point-in-time research and future strategy inputs
-Verification: dataset registry schema and leakage tests
-Authority: dataset registry authority
+Applies to: research and future market-data/feature planes
+Verification: digest, origin, license, point-in-time and reader parity tests
+Authority: dataset identity
 
-每个 dataset version 必须声明 dataset ID/version、immutable URI/digest、source/license/provenance、instruments/calendar、`available_at` semantics、event-time/ingest-time、corrections policy、missing/duplicate/out-of-order statistics、partition/retention、access classification、owner 和 deprecation。
+每个 dataset entry 必须包含 stable ID/version、URI/object identity、content digest、source/origin、license/usage restriction、schema、instrument universe、timezone/calendar、event/ingest time semantics、revision policy、coverage、quality counters和reader version。
 
-`available_at` 而不是记录自身时间决定可否进入历史决策。任何修订数据必须产生新 version/digest，不得静默覆盖。
+Registry 不存储 credential。数据字节改变产生新 version/digest，不覆盖旧 identity。无法证明来源、许可或 point-in-time 语义的数据不能用于 promotion/qualification。

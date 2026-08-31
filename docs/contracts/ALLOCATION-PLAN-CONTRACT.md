@@ -1,31 +1,34 @@
 # AllocationPlan V1
 
 Status: current target contract
-Applies to: global decision output, portfolio compiler and Execution intake
-Verification: plan canonicalization, expiry, replay and risk-revalidation tests
+Applies to: Global Decision output, PortfolioCompiler, target intent and Execution intake
+Verification: schema, canonicalization, feasibility, expiry, replay and Execution-revalidation tests
 Authority: global-decision output contract
 
-`AllocationPlan` 是 Global Decision Plane 的 immutable 输出，不是 Broker command。
+`AllocationPlan` 是 immutable、bounded、可重放的全局策略分配结果，不是 Broker command，也不授予 mutation capability。
 
-必需内容：
+## Required identity
 
-```text
-plan_id
-capital_pool / account_book / allocator_epoch
-objective_version / solver_version / policy_version
-input proposal-set digest
-snapshot vector/generation/digest
-accepted and rejected proposals with reason codes
-per-strategy allocations
-net instrument targets
-constraints and remaining slack
-shadow prices
-objective decomposition
-optimality_status / bound / gap
-fallback mode
-created_at_ms / valid_until_ms
-numeric_policy_version
-plan_digest
-```
+Plan 绑定 plan ID、capital pool/account book、allocator epoch/fence、objective/solver/policy version、proposal-set digest、snapshot vector/generation/digest、numeric policy、created/valid-until、canonical payload digest 和签发 authority。
 
-只能由声明的 account/book authority 应用。plan 过期、allocator epoch/fence 改变、snapshot 改变或 digest 不匹配时拒绝。同一 plan 重复提交幂等；不同 plan 不得复用 permit。target/delta 必须经过 PortfolioCompiler、deterministic risk、preview permit、journal 和 Execution revalidation。空计划返回 typed no-op。
+## Decision body
+
+- accepted/rejected proposal 及 reason code；
+- per-strategy/per-module capital、risk、turnover 和 compute allocation；
+- net instrument target 与 horizon/urgency bounds；
+- hard constraint evaluation、remaining slack 和 active binding constraints；
+- shadow prices/dual values（适用时）；
+- expected utility、risk、cost、tail and resource objective decomposition；
+- SolverResult status、bound、gap、termination reason 和 fallback class。
+
+## Validation and application
+
+Plan 在进入执行前依次经过：schema/canonical digest → issuer/epoch/fence → expiry → proposal/snapshot binding → independent hard-constraint validator → PortfolioCompiler/quantization → deterministic risk → preview permit → durable command/journal → Execution revalidation。
+
+只能由声明的 account-book authority 应用。snapshot、policy、FX/quote generation 或 position 在计划后改变时，必须重新编译或重新优化；不得以客户端字段修补旧 plan。同一 plan 的相同 apply 幂等；不同 plan 不能复用 permit 或 command ID。空 target 集返回 typed no-op。
+
+## Partial execution
+
+Plan 不保证一次性成交。Execution 可以在不改变目标、风险和 cost bounds 的前提下拆单、路由、撤单和重规划；任何实质改变目标或约束都需要新 plan/intent。fills 和 residual position 反馈到下一 authoritative snapshot，不由策略自行估算。
+
+机器 schema 为 `schemas/allocation-plan-v1.json`。

@@ -1,0 +1,68 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.client.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "client-library",
+  "trust_domain": "unprivileged-client",
+  "authority": "CLI/native/MCP request encoding",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/client/",
+    "HeptaTrade/cli/",
+    "adapters/mcp/",
+    "plugins/heptatrader-agent-os/"
+  ],
+  "build_targets": [
+    "hepta_native_tool_client",
+    "heptactl",
+    "hepta_sessionctl"
+  ],
+  "provides": [
+    "client.mcp.v1",
+    "client.native.v1"
+  ],
+  "consumes": [
+    "hepta.tool-catalog.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime",
+    "hepta.venue.*",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "caller-owned",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "caller-timeout",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "not-authoritative",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "client-v1",
+  "owners": {
+    "dri": "@hepta/sdk",
+    "backup": "@hepta/gateway",
+    "reviewers": [
+      "@hepta/contracts"
+    ]
+  },
+  "verification": [
+    "native-client-contracts",
+    "mcp-contracts",
+    "tool-catalog-drift"
+  ]
+}

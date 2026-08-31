@@ -1,0 +1,14 @@
+{
+  "schema": "heptatrader.source-size-budget.v1",
+  "new_cpp_line_limit": 2500,
+  "new_python_line_limit": 1200,
+  "exceptions": {
+    "HeptaTrade/tool_host/session_supervisor_lease_store.cpp": {"baseline_lines":3128,"gap":"G-MOD-002"},
+    "HeptaTrade/tool_host/unix_session_supervisor_server.cpp": {"baseline_lines":3654,"gap":"G-MOD-002"},
+    "scripts/hepta_market_context_builder.py": {"baseline_lines":1499,"gap":"G-RES-001"},
+    "scripts/hepta_market_official_source_extractor.py": {"baseline_lines":1252,"gap":"G-RES-001"},
+    "scripts/hepta_shadow_market_history.py": {"baseline_lines":2771,"gap":"G-RES-001"},
+    "scripts/hepta_strategy_replay_evaluator.py": {"baseline_lines":1654,"gap":"G-RES-001"},
+    "research/run_protocol.py": {"baseline_lines":1790,"gap":"G-RES-001"}
+  }
+}

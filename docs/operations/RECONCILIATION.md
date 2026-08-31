@@ -1,16 +1,12 @@
-# 权威对账
+# Reconciliation and Uncertain Outcomes
 
 Status: current normative
-Applies to: startup, runtime and uncertain recovery
-Verification: reconcile fixtures and IB PAPER scenarios
-Authority: reconciliation authority
+Applies to: OMS, state authority, Execution and qualified venue adapters
+Verification: crash/replay, disconnect, duplicate/out-of-order, divergence and qualification scenarios
+Authority: authoritative recovery
 
-对账比较 Broker open orders/executions、Broker positions/cash/account、OMS journal/replay、local authoritative projections 和 command uncertain set。
+启动、重连、周期 shadow reconcile 和 uncertain command resolution 都比较 durable command/event projection 与 Broker-observed open orders、positions、cash/account and terminal states。
 
-```text
-block > terminal-latch/manual > warn > converged
-```
+动作优先级：terminal latch/block > manual isolation > warn > resolved. Open-order或position mismatch、unknown send outcome、epoch/fence disagreement必须关闭 new-risk gate。现金/PnL等字段能否降级取决于启用的 risk rule；未知值不能当零。
 
-open-order 或 position mismatch 阻断新风险；现金、FX 或 PnL 缺失按启用规则 fail closed。系统不得仅因本地缓存“看起来合理”而覆盖 Broker-observed truth。
-
-所有 reconcile run 输出 stable reason code、input generations、diff、action 和 completion watermark。
+uncertain retry 复用原 command ID 和 payload，先 query durable outcome/Broker correlation，不盲目发送新 order。duplicate/out-of-order callback 以 venue identity、sequence和lifecycle validator处理。无法证明收敛时保持终态 latch，operator 只能走明确 remediation/safe-exit 流程。

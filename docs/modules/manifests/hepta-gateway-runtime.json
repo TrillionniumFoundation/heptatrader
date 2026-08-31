@@ -1,0 +1,73 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.gateway.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "service",
+  "trust_domain": "agent-gateway",
+  "authority": "identity/session/capability/tool dispatch",
+  "ownership_mode": "shared-migration",
+  "source_roots": [
+    "HeptaTrade/tool_host/",
+    "HeptaTrade/tools/"
+  ],
+  "build_targets": [
+    "hepta_agent_os_core",
+    "hepta_tool_gatewayd"
+  ],
+  "provides": [
+    "gateway.session-boundary",
+    "gateway.tool-dispatch",
+    "hepta.identity-capability.v1",
+    "hepta.tool-catalog.v1"
+  ],
+  "consumes": [
+    "execution.client.v1",
+    "hepta.configuration-authority.v1",
+    "hepta.execution-authority.v1",
+    "hepta.execution-wire.v1",
+    "hepta.identity-capability.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.client.runtime",
+    "hepta.observability.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "durable-session-audit",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "owner-sharded-control",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-owner-queue",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "gateway-control-v1",
+  "owners": {
+    "dri": "@hepta/gateway",
+    "backup": "@hepta/security-runtime",
+    "reviewers": [
+      "@hepta/architecture"
+    ]
+  },
+  "verification": [
+    "gateway-boundary",
+    "session-boundary",
+    "backpressure-contracts"
+  ],
+  "migration_gap": "G-MOD-002"
+}

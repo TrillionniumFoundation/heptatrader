@@ -1,26 +1,26 @@
 # AuthoritativeSnapshot V2
 
-Status: current core contract; target expansion
-Applies to: state, Execution, risk, strategy and global decision
-Verification: snapshot consistency and stale/incomplete negative tests
-Authority: authoritative state contract
+Status: current core/target contract
+Applies to: Execution state authority, risk, intent, portfolio and Global Decision
+Verification: schema, generation, watermark, freshness, concurrent-update and replay tests
+Authority: authoritative decision-state contract
 
-Snapshot envelope：
+Snapshot 只能由 Execution-owned state authority 组装。Gateway、Agent、策略和 allocator 可以请求或引用，不能供应、覆盖或扩展权威字段。
 
-```text
-execution_domain
-execution_service_epoch
-fencing_generation
-state_generation
-collection_watermark
-event_watermark
-captured_at_ms
-fresh_until_ms
-component digests
-```
+## Envelope
 
-Typed payload 包括 health、quotes、FX、account、cash、PnL、positions、active/recent orders、risk limits/usage、liquidity 和 connection/reconcile state。
+包含 execution epoch、fencing generation、state generation、collection/event watermark、collection window、captured/fresh-until time、account/execution domain、component digests 和 aggregate payload digest。
 
-authoritative 成立必须满足 epoch/fence/generation capture 前后稳定、watermark 未被 invalidating event 改变、必需组件完整且来源明确、quote/FX 时序合法且未过期、payload bounded、数字 finite、component fingerprint 与 envelope 一致。
+## Payload
 
-capture 期间的 fill/cancel/correction/reconnect/restart 要么完整进入同一 generation，要么本次 snapshot 失败。任何 consumer 不得拼接多个 snapshot。
+至少包含 normalized quote/liquidity、account/cash/PnL/margin、positions、active/recent orders、risk limit/usage、venue/connection/reconcile/kill state。内部组件是 typed values；JSON 仅是验证后的边界序列化。
+
+## Atomicity
+
+fill、cancel、correction、reconnect 或 restart 在 capture 期间发生时，要么完整进入同一 generation，要么 capture 失败。调用者不得混合多个 snapshot。跨 shard 的 Global Decision 使用明确 SnapshotVector，并验证每个 component 的 temporal compatibility。
+
+## Admission
+
+quote positive/ordered/instrument-bound/fresh；required account/order/position/risk complete；时间和 watermark 单调；size bounded；digest match。任一失败返回 `DECISION_SNAPSHOT_*` 且 `authoritative` 不得为 true。
+
+机器 schema 为 `schemas/authoritative-snapshot-v2.json`。

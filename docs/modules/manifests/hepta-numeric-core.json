@@ -1,0 +1,54 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.numeric.core",
+  "version": "1.0.0",
+  "lifecycle": "planned",
+  "kind": "contract-library",
+  "trust_domain": "shared-trusted",
+  "authority": "fixed numeric boundary",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/numeric/"
+  ],
+  "build_targets": [
+    "hepta_numeric_core"
+  ],
+  "provides": [
+    "hepta.numeric.fixed-v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [],
+  "forbidden_dependencies": [
+    "*"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "pure-reentrant",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "caller-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "numeric-core-v1",
+  "owners": {
+    "dri": "@hepta/contracts",
+    "backup": "@hepta/risk",
+    "reviewers": [
+      "@hepta/architecture"
+    ]
+  },
+  "verification": [
+    "numeric-properties"
+  ]
+}

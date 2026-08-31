@@ -1,0 +1,102 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.execution.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "stateful-service",
+  "trust_domain": "execution-authority",
+  "authority": "only venue mutation/state/OMS/permit authority",
+  "ownership_mode": "shared-migration",
+  "source_roots": [
+    "HeptaTrade/execution/",
+    "HeptaTrade/intent/",
+    "HeptaTrade/state/",
+    "HeptaTrade/oms_"
+  ],
+  "build_targets": [
+    "hepta_execution_client",
+    "hepta_execution_server",
+    "hepta_execution_core",
+    "hepta_trading_tool_core",
+    "hepta_executiond",
+    "hepta_paper_terminal_latch_committer"
+  ],
+  "provides": [
+    "execution.client.v1",
+    "execution.permit.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.execution-authority.v1",
+    "hepta.oms-journal.v3",
+    "hepta.target-position-intent.v1",
+    "reconcile.decision.v1"
+  ],
+  "consumes": [
+    "decision-lease.v1",
+    "execution.permit.v1",
+    "hepta.allocation-plan.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.configuration-authority.v1",
+    "hepta.event-envelope.v1",
+    "hepta.execution-authority.v1",
+    "hepta.execution-wire.v1",
+    "hepta.numeric.fixed-v1",
+    "hepta.oms-journal.v3",
+    "hepta.reason-code.v1",
+    "hepta.risk-policy.v2",
+    "hepta.solver-result.v1",
+    "hepta.target-position-intent.v1",
+    "hepta.venue.v1",
+    "portfolio.net-target.v1",
+    "reconcile.decision.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.agent.support",
+    "hepta.risk.policy",
+    "hepta.observability.runtime",
+    "hepta.venue.simulator",
+    "hepta.venue.ib"
+  ],
+  "forbidden_dependencies": [
+    "hepta.gateway.runtime",
+    "hepta.management.control"
+  ],
+  "state": {
+    "model": "durable-authoritative",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "execution-domain-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "lossless-plus-emergency",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "execution-authority-v1",
+  "owners": {
+    "dri": "@hepta/execution-core",
+    "backup": "@hepta/execution-safety",
+    "reviewers": [
+      "@hepta/oms-recovery",
+      "@hepta/risk"
+    ]
+  },
+  "verification": [
+    "journal-durability",
+    "idempotency",
+    "snapshot-contracts",
+    "permit-lifecycle",
+    "reconciliation",
+    "simulator-e2e",
+    "crash-replay"
+  ],
+  "migration_gap": "G-MOD-002"
+}

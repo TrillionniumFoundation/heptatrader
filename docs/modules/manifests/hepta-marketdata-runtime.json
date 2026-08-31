@@ -1,0 +1,60 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.marketdata.runtime",
+  "version": "1.0.0",
+  "lifecycle": "planned",
+  "kind": "data-plane",
+  "trust_domain": "market-data",
+  "authority": "normalized point-in-time events",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/marketdata/"
+  ],
+  "build_targets": [
+    "hepta_marketdata_core"
+  ],
+  "provides": [
+    "market-event.v1"
+  ],
+  "consumes": [
+    "hepta.event-envelope.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.numeric.core"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime"
+  ],
+  "state": {
+    "model": "single-writer-shard",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "venue-instrument-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "coalescing-gap",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "stale-closes-gate",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "marketdata-v1",
+  "owners": {
+    "dri": "@hepta/data-platform",
+    "backup": "@hepta/venue-ib",
+    "reviewers": [
+      "@hepta/state"
+    ]
+  },
+  "verification": [
+    "marketdata-ordering",
+    "sequence-gap"
+  ]
+}

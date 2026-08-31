@@ -1,0 +1,58 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.documentation.control",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "governance-tooling",
+  "trust_domain": "development",
+  "authority": "registries/generated views",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "docs/",
+    "scripts/check_documentation_control_plane.py",
+    "scripts/generate_documentation_views.py"
+  ],
+  "build_targets": [],
+  "provides": [
+    "hepta.metric-registry.v1",
+    "hepta.module-manifest.v2",
+    "hepta.reason-code.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [],
+  "forbidden_dependencies": [
+    "runtime-capability"
+  ],
+  "state": {
+    "model": "git-versioned",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "deterministic-batch",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "validation",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "not-applicable",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "documentation-control-v1",
+  "owners": {
+    "dri": "@hepta/documentation",
+    "backup": "@hepta/architecture",
+    "reviewers": [
+      "@hepta/reliability"
+    ]
+  },
+  "verification": [
+    "docs-generated",
+    "docs-control",
+    "no-historical-docs"
+  ]
+}

@@ -1,27 +1,16 @@
-# IB PAPER 资格认证
+# IB PAPER Qualification
 
-Status: current target external contract; no qualification claim
-Applies to: optional IB PAPER artifact and controlled qualification environment
-Verification: protected external qualification lane and evidence verifier
-Authority: IB PAPER qualification authority
+Status: current external target contract
+Applies to: optional `hepta-ib-executiond` and controlled PAPER hosts
+Verification: protected self-hosted workflow and independent evidence verifier
+Authority: IB PAPER qualification
 
-build 成功不等于 PAPER qualified。有效资格认证必须绑定 exact source SHA、exact `hepta-ib-executiond` binary digest、exact config/IB API/harness digest、受控 host、真实 PAPER session、不可逆 account/host fingerprint、完整 scenario evidence 和 verification receipt。
+Build success、Simulator、mock、read-only smoke或手写 JSON不能产生 `qualified=true`。有效 qualification 绑定 exact source/tree、broker-owning binary SHA-256、config digest、pinned IB API、controlled harness、host/account fingerprints、real PAPER session和完整 scenario evidence。
 
-必需场景：
+## Required scenario families
 
-1. connect + authoritative snapshot；
-2. disconnect/reconnect + epoch change + reconcile；
-3. partial fill；
-4. duplicate/out-of-order status；
-5. real Broker reject；
-6. stale quote；
-7. uncertain outcome；
-8. cancel race；
-9. reconcile divergence；
-10. lease/fencing；
-11. kill switch；
-12. terminal recovery。
+authoritative startup snapshot、disconnect/reconnect、partial fill、duplicate/out-of-order status、broker reject、stale quote、uncertain outcome、cancel race、reconcile divergence、lease/fencing、kill switch和terminal restart/recovery。每个 scenario 同时提供 Broker-observed callbacks、OMS/journal/state证据和断言 token。
 
-证据目录必须私有、无 symlink/hardlink/special file、所有文件 digest/size/path 稳定、无未引用文件。mock、Simulator、手写 JSON、不同 commit 或 rebuilt binary 不能产生 `qualified=true`。
+Evidence root 禁止 symlink/hardlink/special/world-writable/unreferenced file；所有文件有 declared size/digest并在读取期间保持 inode/path稳定。raw account、username、credential或host secret不得出现。
 
-SDK、config、binary、harness 或环境身份变化会使资格失效。IB LIVE 永远不由 PAPER 资格继承。
+Qualification 只适用于该 exact identity。重新构建、改 config、SDK、harness、host或session都需要新 campaign。PAPER qualification 永不授予 LIVE。

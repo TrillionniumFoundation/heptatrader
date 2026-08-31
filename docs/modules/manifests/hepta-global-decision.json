@@ -1,0 +1,78 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.global.decision",
+  "version": "1.0.0",
+  "lifecycle": "planned",
+  "kind": "solver-service",
+  "trust_domain": "global-decision",
+  "authority": "proposal aggregation/global allocation",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/proposal/",
+    "HeptaTrade/allocation/"
+  ],
+  "build_targets": [
+    "hepta_proposal_aggregator",
+    "hepta_global_allocator"
+  ],
+  "provides": [
+    "hepta.allocation-plan.v1",
+    "hepta.global-optimization.v1",
+    "hepta.solver-result.v1",
+    "proposal-set.v1"
+  ],
+  "consumes": [
+    "capital-policy.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.module-lifecycle.v1",
+    "hepta.numeric.fixed-v1",
+    "hepta.strategy-proposal.v1",
+    "proposal-set.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.numeric.core",
+    "hepta.portfolio.compiler",
+    "hepta.risk.policy",
+    "hepta.management.control"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "hepta.execution.runtime",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "decision-log",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "capital-pool-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "deadline-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "no-plan",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "global-allocator-v1",
+  "owners": {
+    "dri": "@hepta/global-allocation",
+    "backup": "@hepta/risk",
+    "reviewers": [
+      "@hepta/research-validation",
+      "@hepta/execution-safety"
+    ]
+  },
+  "verification": [
+    "proposal-contracts",
+    "optimizer-determinism",
+    "constraint-properties",
+    "shadow-parity"
+  ]
+}

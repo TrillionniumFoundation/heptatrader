@@ -1,73 +1,42 @@
 # Hepta Documentation Control Plane V2
 
-Status: current
-Applies to: the complete active documentation graph
-Verification: `python3 scripts/check_documentation_control_plane.py`
+Status: current normative
+Applies to: the complete active development-document graph
+Verification: `python3 scripts/generate_documentation_views.py --check` and `python3 scripts/check_documentation_control_plane.py`
 Authority: single active documentation index
 
-本目录是 Hepta 唯一现行开发文档体系。历史版本由 Git 保存；`docs/legacy/` 和旧 proposal 正文不再保留。旧文件名仅作为无独立内容的 compatibility alias，所有规范事实只存在于下列 canonical documents 与 JSON registries。
+`docs/` 是 Hepta 唯一现行开发文档体系。旧开发文档、旧文件名跳转页、历史 proposal、截图、PDF 和手工 exact-head 状态不在当前工作树保留；历史只由 Git 提供。法律文件和第三方来源义务使用仓库根法律文件或机器 provenance 保存，不作为第二套开发文档。
 
-## 最高级治理
+## 阅读顺序
 
-- [系统宪章](governance/CONSTITUTION.md)
-- [文档权威规则](governance/DOCUMENT-AUTHORITY.md)
-- [决策权](governance/DECISION-RIGHTS.md)
-- [变更分级](governance/CHANGE-CLASSIFICATION.md)
-- [弃用策略](governance/DEPRECATION-POLICY.md)
+1. [系统宪章](governance/CONSTITUTION.md)
+2. [产品范围](product/PRODUCT-SCOPE.md)与[能力矩阵](product/CAPABILITY-MATRIX.md)
+3. [六平面架构](architecture/PLANE-ARCHITECTURE.md)、[信任边界](architecture/TRUST-BOUNDARIES.md)和[热路径边界](architecture/HOT-PATH-AND-CONTROL-PATH.md)
+4. [模块地图](modules/MODULE-MAP.md)与[ModuleManifest V2](modules/MODULE-MANIFEST-SPEC.md)
+5. [契约索引](contracts/CONTRACT-INDEX.md)
+6. [全局路线图](program/MASTER-ROADMAP.md)、[升级计划](program/DOCUMENTATION-UPGRADE-PLAN.md)和[追踪模型](program/TRACEABILITY-MODEL.md)
+7. [验证策略](verification/VERIFICATION-POLICY.md)
 
-## 产品与架构
+## 权威域
 
-- [产品范围](product/PRODUCT-SCOPE.md)
-- [能力成熟度](product/MATURITY-MODEL.md)
-- [能力矩阵](product/CAPABILITY-MATRIX.md)
-- [系统上下文](architecture/SYSTEM-CONTEXT.md)
-- [六平面架构](architecture/PLANE-ARCHITECTURE.md)
-- [信任边界](architecture/TRUST-BOUNDARIES.md)
-- [模块拓扑](architecture/MODULE-TOPOLOGY.md)
-- [依赖规则](architecture/DEPENDENCY-RULES.md)
-- [数据一致性](architecture/DATAFLOW-AND-CONSISTENCY.md)
-- [并发与分片](architecture/CONCURRENCY-AND-SHARDING.md)
-- [故障模型](architecture/FAILURE-MODEL.md)
-- [数值策略](architecture/NUMERIC-POLICY.md)
+- `governance/`：最高不变量、文档权威、安全与变更权。
+- `product/`：产品边界和能力声明上限。
+- `architecture/`：平面、数据流、模块、并发、部署和资源拓扑。
+- `contracts/`：跨模块版本化接口、失败和兼容语义。
+- `modules/`：模块、target、state、concurrency、ownership 和迁移债务。
+- `program/`：里程碑、gap、workstream、风险与团队协作。
+- `verification/`：测试、故障、性能、reason code、metric、evidence 和 qualification。
+- `operations/`：配置、启动、部署、发布、事故、对账、回滚和 PAPER 资格认证。
+- `research/`：point-in-time data、feature、回放、验证和 promotion 边界。
+- `development/`：日常开发、PR、契约修改、模块创建和调试。
 
-## 核心契约
+## 机器权威
 
-- [契约索引](contracts/CONTRACT-INDEX.md)
-- [StrategyProposal](contracts/STRATEGY-PROPOSAL-CONTRACT.md)
-- [全局优化](contracts/GLOBAL-OPTIMIZATION-CONTRACT.md)
-- [AllocationPlan](contracts/ALLOCATION-PLAN-CONTRACT.md)
-- [AuthoritativeSnapshot](contracts/AUTHORITATIVE-SNAPSHOT-CONTRACT.md)
-- [TargetPositionIntent](contracts/TARGET-POSITION-INTENT-CONTRACT.md)
-- [Risk Policy](contracts/RISK-POLICY-CONTRACT.md)
-- [OMS Journal](contracts/OMS-JOURNAL-CONTRACT.md)
-- [Execution Authority](contracts/EXECUTION-AUTHORITY-CONTRACT.md)
-- [Event Ordering](contracts/EVENT-ORDERING-CONTRACT.md)
-- [Module Lifecycle](contracts/MODULE-LIFECYCLE-CONTRACT.md)
+结构化事实来自 `document-registry-v2.json` 以及 product/modules/contracts/program/verification 下的 JSON registries。以下 Markdown 是确定性生成视图，禁止直接修改：
 
-## 模块、计划与验证
+- `product/CAPABILITY-MATRIX.md`
+- `contracts/CONTRACT-INDEX.md`
+- `modules/MODULE-MAP.md`
+- `program/MASTER-ROADMAP.md`
 
-- [ModuleManifest V2](modules/MODULE-MANIFEST-SPEC.md)
-- [模块地图](modules/MODULE-MAP.md)
-- [全局路线图](program/MASTER-ROADMAP.md)
-- [团队拓扑](program/TEAM-TOPOLOGY.md)
-- [项目风险](program/RISK-REGISTER.md)
-- [验证策略](verification/VERIFICATION-POLICY.md)
-- [证据模型](verification/EVIDENCE-MODEL.md)
-
-## 开发、运维与研究
-
-- [本地开发](development/LOCAL-DEVELOPMENT.md)
-- [PR 工作流](development/PULL-REQUEST-WORKFLOW.md)
-- [契约变更](development/CONTRACT-CHANGE-WORKFLOW.md)
-- [模块创建](development/MODULE-CREATION-GUIDE.md)
-- [调试](development/DEBUGGING-GUIDE.md)
-- [部署](operations/DEPLOYMENT.md)
-- [发布](operations/RELEASE.md)
-- [IB PAPER 资格认证](operations/IB-PAPER-QUALIFICATION.md)
-- [事故响应](operations/INCIDENT-RESPONSE.md)
-- [研究协议](research/RESEARCH-PROTOCOL.md)
-- [策略验证](research/STRATEGY-VALIDATION.md)
-
-## 机器权威源
-
-`document-registry-v2.json`、product/module/contract/program/verification 下的 JSON registries 是结构化权威源。Markdown 生成视图不得独立修改状态。
+任何未注册文件、旧别名、生成漂移、无 owner 模块、未知契约、失效依赖或历史文档残留都会阻断开发循环。

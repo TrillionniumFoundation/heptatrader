@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuthoritativeSnapshotV2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","execution_epoch","fencing_generation","state_generation","collection_watermark","event_watermark","captured_at_ms","fresh_until_ms","authoritative","payload_digest"],
+  "properties": {
+    "schema": {"const":"hepta.authoritative-snapshot.v2"},
+    "execution_epoch": {"type":"integer","minimum":0},
+    "fencing_generation": {"type":"integer","minimum":0},
+    "state_generation": {"type":"integer","minimum":0},
+    "collection_watermark": {"type":"integer","minimum":0},
+    "event_watermark": {"type":"integer","minimum":0},
+    "captured_at_ms": {"type":"integer","minimum":0},
+    "fresh_until_ms": {"type":"integer","minimum":0},
+    "authoritative": {"const":true},
+    "payload_digest": {"type":"string","pattern":"^sha256:"},
+    "health": {"type":"object"},
+    "quote": {"type":"object"},
+    "account": {"type":"object"},
+    "positions": {"type":"array"},
+    "orders": {"type":"array"},
+    "risk": {"type":"object"}
+  }
+}

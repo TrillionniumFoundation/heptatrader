@@ -1,0 +1,62 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.protocol.contracts",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "contract-library",
+  "trust_domain": "shared-trusted",
+  "authority": "wire/codec",
+  "ownership_mode": "shared-migration",
+  "source_roots": [
+    "HeptaTrade/execution/execution_service_protocol",
+    "HeptaTrade/execution/execution_event_feed",
+    "HeptaTrade/execution/unix_execution_service_transport",
+    "HeptaTrade/tool_host/typed_tool_",
+    "schemas/"
+  ],
+  "build_targets": [
+    "hepta_execution_contract",
+    "hepta_execution_transport"
+  ],
+  "provides": [
+    "hepta.event-envelope.v1",
+    "hepta.execution-wire.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [],
+  "forbidden_dependencies": [
+    "hepta.venue.*"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "pure-reentrant",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "caller-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "not-applicable",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "contract-library-v1",
+  "owners": {
+    "dri": "@hepta/contracts",
+    "backup": "@hepta/architecture",
+    "reviewers": [
+      "@hepta/execution-safety"
+    ]
+  },
+  "verification": [
+    "schema-catalog",
+    "protocol-contracts"
+  ],
+  "migration_gap": "G-MOD-002"
+}

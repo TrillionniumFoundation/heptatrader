@@ -1,23 +1,26 @@
-# 能力矩阵（V2 生成视图）
+# Hepta Capability Matrix
 
-Status: current generated view
-Applies to: `docs/product/capability-registry-v2.json`
-Verification: `python3 scripts/check_documentation_control_plane.py`
-Authority: generated human-readable capability view
+Status: generated current view
+Applies to: repository-wide capability claims
+Verification: `python3 scripts/generate_documentation_views.py --check`
+Authority: generated from capability-registry-v2.json
 
-本表是 registry 的可读快照；权威源为 `capability-registry-v2.json`，动态 CI/qualification 结果不手写在此。
+> 本文件由机器注册表确定性生成。请修改注册表，不要直接修改本文件。
 
-| Capability | Code/Build | Simulator | PAPER | LIVE | Release |
+| Capability | State | Simulator | PAPER | LIVE | Release |
 |---|---|---|---|---|---|
-| Typed Gateway and clients | implemented/default | active | experimental | forbidden | core |
-| Execution authority/OMS/recovery | implemented/default | active | experimental | forbidden | core |
-| Deterministic Simulator | implemented/default | active | n/a | n/a | core |
-| Target-position preview/apply | implemented-core | active | experimental | forbidden | core |
-| Portfolio compiler | implemented-core | library boundary | absent | forbidden | core |
-| Global multi-Agent allocator | planned/absent | planned shadow | absent | forbidden | excluded |
-| Module lifecycle control plane | planned/absent | planned | absent | forbidden | excluded |
-| Research/replay | experimental/tools | offline | no mutation | forbidden | core tools |
-| IB PAPER | experimental/optional | n/a | conditional | forbidden | qualified-only |
-| CTP | unsupported/excluded | n/a | forbidden | forbidden | excluded |
-| XT/MiniQMT | unsupported/excluded | n/a | forbidden | forbidden | excluded |
-| Any LIVE execution | absent | n/a | n/a | forbidden | excluded |
+| `hepta.data.feature-plane` — Shard-aware market-data and feature plane | **planned** | planned | absent | forbidden | excluded |
+| `hepta.execution.authority` — Execution authority, OMS, journal and recovery | **implemented** | active | experimental | forbidden | core |
+| `hepta.gateway.typed-local-tools` — Typed local Tool Gateway and clients | **implemented** | active | experimental | forbidden | core |
+| `hepta.global.multi-agent-allocation` — Global multi-Agent capital allocation | **planned** | planned-shadow | absent | forbidden | excluded |
+| `hepta.intent.target-position` — Generation-bound target-position preview/apply | **implemented** | active | experimental | forbidden | core |
+| `hepta.management.module-lifecycle` — Module registry, lifecycle and rollout control plane | **planned** | planned | absent | forbidden | excluded |
+| `hepta.portfolio.compiler` — Deterministic multi-strategy portfolio compiler | **implemented** | library-boundary | absent | forbidden | core |
+| `hepta.research.replay` — Capability-free deterministic research and replay | **experimental** | offline | no-mutation | forbidden | core-tools |
+| `hepta.simulator.deterministic` — Deterministic simulator | **implemented** | active | not-applicable | not-applicable | core |
+| `hepta.venue.ctp` — CTP venue execution | **unsupported** | not-applicable | forbidden | forbidden | excluded |
+| `hepta.venue.ib-paper` — Interactive Brokers PAPER execution | **conditional** | not-applicable | conditional | forbidden | optional-qualified-only |
+| `hepta.venue.live` — Any LIVE execution capability | **unsupported** | not-applicable | not-applicable | forbidden | excluded |
+| `hepta.venue.xt` — XT / MiniQMT venue execution | **unsupported** | not-applicable | forbidden | forbidden | excluded |
+
+状态是声明上限；实际可用性不得超过 exact-revision evidence 与 qualification。

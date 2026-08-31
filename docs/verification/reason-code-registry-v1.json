@@ -1,0 +1,14 @@
+{
+  "schema": "heptatrader.reason-code-registry.v1",
+  "policy": {"stable":"codes are append-only within a major contract version","free_form_authority":"forbidden","unknown_behavior":"fail closed at authority boundaries"},
+  "families": [
+    {"prefix":"DOC_","owner":"hepta.documentation.control","codes":["DOC_UNREGISTERED_FILE","DOC_GENERATED_VIEW_DRIFT","DOC_HISTORICAL_SURFACE_PRESENT","DOC_REGISTRY_REFERENCE_INVALID"]},
+    {"prefix":"MODULE_","owner":"hepta.documentation.control","codes":["MODULE_UNKNOWN_DEPENDENCY","MODULE_DEPENDENCY_CYCLE","MODULE_TARGET_OWNERSHIP_CONFLICT","MODULE_MANIFEST_INCOMPLETE"]},
+    {"prefix":"DECISION_SNAPSHOT_","owner":"hepta.execution.runtime","codes":["DECISION_SNAPSHOT_STALE","DECISION_SNAPSHOT_INCOMPLETE","DECISION_SNAPSHOT_GENERATION_CHANGED","DECISION_SNAPSHOT_FENCE_CHANGED"]},
+    {"prefix":"INTENT_","owner":"hepta.execution.runtime","codes":["INTENT_NO_CHANGE","INTENT_PLAN_READY","INTENT_PREVIEW_EXPIRED","INTENT_PREVIEW_CONSUMED","INTENT_PREVIEW_MISMATCH","INTENT_GENERATION_CHANGED","INTENT_RISK_REJECTED","INTENT_JOURNAL_FAILED"]},
+    {"prefix":"RISK_","owner":"hepta.risk.policy","codes":["RISK_INVALID_NUMERIC","RISK_STALE_QUOTE","RISK_INCOMPLETE_STATE","RISK_BUDGET_EXCEEDED","RISK_CROSS_ZERO_NOT_REDUCTION"]},
+    {"prefix":"OPT_","owner":"hepta.global.decision","codes":["OPT_OPTIMAL","OPT_WITHIN_TOLERANCE","OPT_BEST_KNOWN","OPT_FEASIBLE_FALLBACK","OPT_NO_FEASIBLE_PLAN","OPT_STALE_INPUT","OPT_NUMERIC_FAILURE"]},
+    {"prefix":"EXEC_","owner":"hepta.execution.runtime","codes":["EXEC_IDEMPOTENCY_CONFLICT","EXEC_JOURNAL_FAILED","EXEC_FENCE_MISMATCH","EXEC_OUTCOME_UNCERTAIN","EXEC_VENUE_UNSUPPORTED"]},
+    {"prefix":"RECON_","owner":"hepta.execution.runtime","codes":["RECON_ORDER_MISMATCH","RECON_POSITION_MISMATCH","RECON_UNCERTAIN_TIMEOUT","RECON_RESOLVED"]}
+  ]
+}

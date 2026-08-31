@@ -1,0 +1,19 @@
+{
+  "schema": "heptatrader.metric-registry.v1",
+  "policy": {
+    "bounded_labels_only": true,
+    "forbidden_labels": ["account","account_id","token","credential","session_id","order_id","strategy_prompt","free_text"],
+    "unknown_label_value": "redacted",
+    "series_cap": 2048
+  },
+  "metrics": [
+    {"name":"hepta_tool_calls_total","type":"counter","owner":"hepta.gateway.runtime","labels":["tool","status","reason_code"]},
+    {"name":"hepta_session_rejections_total","type":"counter","owner":"hepta.gateway.runtime","labels":["reason_code"]},
+    {"name":"hepta_risk_decisions_total","type":"counter","owner":"hepta.risk.policy","labels":["decision","reason_code"]},
+    {"name":"hepta_execution_commands_total","type":"counter","owner":"hepta.execution.runtime","labels":["status","reason_code"]},
+    {"name":"hepta_oms_journal_failures_total","type":"counter","owner":"hepta.execution.runtime","labels":["reason_code"]},
+    {"name":"hepta_reconcile_runs_total","type":"counter","owner":"hepta.execution.runtime","labels":["outcome","reason_code"]},
+    {"name":"hepta_snapshot_age_ms","type":"gauge","owner":"hepta.execution.runtime","labels":["environment","venue"]},
+    {"name":"hepta_transition_latency_ms","type":"histogram","owner":"hepta.observability.runtime","labels":["transition","environment","venue"]}
+  ]
+}

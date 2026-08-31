@@ -1,0 +1,61 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.feature.runtime",
+  "version": "1.0.0",
+  "lifecycle": "planned",
+  "kind": "data-plane",
+  "trust_domain": "feature",
+  "authority": "deterministic feature generations",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/features/"
+  ],
+  "build_targets": [
+    "hepta_feature_runtime"
+  ],
+  "provides": [
+    "feature-snapshot.v1"
+  ],
+  "consumes": [
+    "market-event.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.marketdata.runtime",
+    "hepta.numeric.core"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime",
+    "hepta.venue.*"
+  ],
+  "state": {
+    "model": "immutable-generation",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "instrument-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-coalescing",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "stale-reject",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "feature-v1",
+  "owners": {
+    "dri": "@hepta/data-platform",
+    "backup": "@hepta/research-validation",
+    "reviewers": [
+      "@hepta/architecture"
+    ]
+  },
+  "verification": [
+    "feature-determinism",
+    "feature-generation"
+  ]
+}

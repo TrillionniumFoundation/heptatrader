@@ -1,9 +1,6 @@
 {
-  "schema": "heptatrader.program-dependency-plan.v1",
+  "schema": "heptatrader.dependency-plan.v1",
   "critical_path": ["M0","M1","M2","M3","M4","M5","M6"],
-  "parallel_tracks": [
-    {"after":"M1","tracks":[["M2","M7-foundation"],["research-registry"],["release-governance"]]},
-    {"after":"M3","tracks":[["M4"],["IB-contract-parity"],["team-onboarding"]]}
-  ],
-  "merge_policy": "Only milestones with satisfied machine exit criteria may unblock dependents."
+  "parallel": ["M7 may start after M2"],
+  "rule": "No downstream capability claim may bypass an unmet predecessor exit."
 }

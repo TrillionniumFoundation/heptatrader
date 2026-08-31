@@ -1,23 +1,12 @@
-# 策略验证
+# Strategy Validation
 
 Status: current normative
-Applies to: all strategy modules before shadow/active lifecycle
-Verification: research and simulator validation gates
-Authority: strategy validation authority
+Applies to: research strategies, StrategyProposal producers and promotion reviews
+Verification: point-in-time, walk-forward, cost, capacity, stability and shadow-parity evidence
+Authority: strategy validation gates
 
-验证顺序：
+验证顺序：data integrity → leakage controls → deterministic replay → purged walk-forward/embargo → untouched final OOS → cost/slippage/impact/borrow/funding sensitivity → capacity/liquidity → regime/time/worst-slice stability → failure-path → refactor parity → shadow observation。
 
-1. point-in-time/no-lookahead；
-2. deterministic replay；
-3. purged walk-forward + embargo；
-4. final OOS；
-5. cost、delay、impact、borrow/funding sensitivity；
-6. capacity/liquidity；
-7. regime、time-of-day、worst-slice；
-8. parameter-search budget 和 selection bias；
-9. refactor golden parity；
-10. Simulator SHADOW；
-11. champion/challenger；
-12. 受控 active Simulator。
+指标至少包括 net return、drawdown、tail loss/CVaR、turnover、trade count、time in market、factor/concentration、cost share、capacity、parameter sensitivity和worst slice。单一 Sharpe/收益不能构成 promotion。
 
-盈利回测不等于 promotion。策略必须输出完整 StrategyProposal 经济信息，才能参与全局 allocator。
+Research artifact 只可进入 reviewed module version。SHADOW→ACTIVE Simulator需要module/contract/resource evidence；Simulator→IB PAPER需要runtime parity与外部 qualification；任何 LIVE promotion都不在本流程范围。自动 promotion 禁止。

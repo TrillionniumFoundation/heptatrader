@@ -1,0 +1,66 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.management.control",
+  "version": "1.0.0",
+  "lifecycle": "planned",
+  "kind": "control-plane",
+  "trust_domain": "management",
+  "authority": "module/config/resource lifecycle",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/management/"
+  ],
+  "build_targets": [
+    "hepta_managementd"
+  ],
+  "provides": [
+    "capital-policy.v1",
+    "hepta.configuration-authority.v1",
+    "hepta.module-lifecycle.v1"
+  ],
+  "consumes": [
+    "hepta.module-manifest.v2"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.observability.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "broker.credentials",
+    "hepta.execution.runtime"
+  ],
+  "state": {
+    "model": "versioned-control",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "control-domain-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-control",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "cannot-authorize",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "management-v1",
+  "owners": {
+    "dri": "@hepta/platform",
+    "backup": "@hepta/architecture",
+    "reviewers": [
+      "@hepta/security-runtime",
+      "@hepta/operations"
+    ]
+  },
+  "verification": [
+    "module-dag",
+    "lifecycle-faults",
+    "rollout-rollback"
+  ]
+}

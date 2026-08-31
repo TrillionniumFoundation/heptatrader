@@ -1,34 +1,39 @@
-# 并发、分片与背压
+# 并发、分片与 Backpressure
 
 Status: current target contract
-Applies to: hot path, control plane, queues, state writers and scaling
-Verification: deterministic scheduler fixtures and performance budgets
-Authority: concurrency authority
+Applies to: data plane, strategies, Global Decision, state, OMS, Gateway and Execution
+Verification: deterministic scheduler, ordering, overload, fairness and emergency-lane tests
+Authority: concurrency semantics
 
-## 原则
+## Ownership model
 
-- 逻辑集中、物理分片；
-- single-writer authoritative state；
-- immutable snapshot/RCU/double buffer 读路径；
-- 无跨模块共享可变对象；
-- 无跨模块锁；
-- 持锁时禁止 Broker、filesystem 和 network I/O；
-- correctness 测试禁止依赖 `sleep` 或 OS 调度概率。
+- execution domain、capital pool、market-data shard 和 module instance 均有唯一 active writer/leader；
+- readers 使用 immutable generation snapshot、RCU/double-buffer 或明确 actor message；
+- 跨模块共享 mutable pointer、全局 map 和无 owner mutex 禁止；
+- module internal lock 不跨 module call、network/Broker/filesystem I/O；
+- leader change 增加 epoch/fence，旧 writer 的输出被拒绝。
 
-```text
-Global Capital Allocator
-  -> capital pool / risk book
-    -> account execution domain
-      -> instrument/order actor
-```
+## Shard keys
 
-| 流量 | 顺序/持久性 | 背压 |
+| Domain | Primary shard | Ordering authority |
 |---|---|---|
-| market/feature update | per-shard monotonic；可重建 | latest-value/coalescing；暴露 sequence gap |
-| StrategyProposal | identity-bound；有 expiry | bounded queue；过期 typed reject |
-| AllocationPlan | epoch 内有序、幂等 | single-writer lossless；不得静默丢失 |
-| OMS command/event | durable ordered | journal-backed；不得丢失 |
-| telemetry | eventual bounded | per-thread/per-shard aggregate |
-| cancel/reduce/flatten | 高优先级 | 独立 emergency lane；禁止饥饿 |
+| Market data | venue + instrument | feed epoch + sequence |
+| Feature | instrument + feature set | input watermark + feature generation |
+| Strategy | module instance + account book | proposal sequence |
+| Global allocation | capital pool + account/risk book | allocator epoch + plan sequence |
+| State/OMS/Execution | execution domain | execution epoch + journal/event sequence |
 
-Tool Gateway 的 Unix IPC 适合控制调用；行情、feature 和 proposal 高频流量使用独立 shard-aware data plane。
+跨 shard 读取使用 snapshot vector，不假装存在全局瞬时同时点。vector 中任一 required component 过期或改变，风险增加决策拒绝。
+
+## Queue classes
+
+- market/feature：bounded latest-value/coalescing，丢弃旧值时记录 sequence gap；
+- proposal：bounded by count/bytes/expiry，过期直接淘汰并记录；
+- allocation plan：ordered/idempotent，不能静默丢失；
+- OMS command/event：durable lossless，容量不足关闭 new-risk gate；
+- telemetry：bounded lossy + dropped counter；
+- cancel/reduce/flatten：独立优先级队列和保留 worker/resource。
+
+## Testing
+
+安全不变量测试禁止依赖不可控 sleep 概率。使用 barrier、latch、virtual clock、fault injector 或可观察状态建立确定性 happens-before。测试必须覆盖 queue full、slow consumer、producer restart、duplicate/out-of-order、epoch change、starvation 和 shutdown drain。

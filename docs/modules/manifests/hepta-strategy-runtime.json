@@ -1,0 +1,63 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.strategy.runtime",
+  "version": "1.0.0",
+  "lifecycle": "planned",
+  "kind": "sandbox-runtime",
+  "trust_domain": "untrusted-strategy",
+  "authority": "StrategyProposal only",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/strategy_runtime/"
+  ],
+  "build_targets": [
+    "hepta_strategy_runtime"
+  ],
+  "provides": [
+    "hepta.strategy-proposal.v1"
+  ],
+  "consumes": [
+    "feature-snapshot.v1",
+    "hepta.module-lifecycle.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.numeric.core"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime",
+    "hepta.venue.*",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "module-isolated",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "instance-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "proposal-expiry",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "cannot-authorize",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "strategy-v1",
+  "owners": {
+    "dri": "@hepta/strategy-platform",
+    "backup": "@hepta/global-allocation",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "proposal-contracts",
+    "strategy-isolation"
+  ]
+}

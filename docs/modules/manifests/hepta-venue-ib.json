@@ -1,0 +1,64 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.venue.ib",
+  "version": "1.0.0",
+  "lifecycle": "experimental",
+  "kind": "venue-adapter",
+  "trust_domain": "execution-authority",
+  "authority": "IB PAPER transport/callback",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/adapter_ib/"
+  ],
+  "build_targets": [
+    "hepta_ibapi_client",
+    "hepta_ib_executiond"
+  ],
+  "provides": [
+    "hepta.venue.v1"
+  ],
+  "consumes": [
+    "hepta.event-envelope.v1",
+    "hepta.risk-policy.v2"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "hepta.gateway.runtime",
+    "hepta.global.decision"
+  ],
+  "state": {
+    "model": "broker-observed",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "single-projector",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "lossless-authoritative",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "ib-paper-v1",
+  "owners": {
+    "dri": "@hepta/venue-ib",
+    "backup": "@hepta/execution-core",
+    "reviewers": [
+      "@hepta/execution-safety",
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "ib-off-contracts",
+    "common-risk-parity",
+    "paper-qualification"
+  ]
+}

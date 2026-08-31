@@ -1,0 +1,44 @@
+name: documentation-control-plane
+
+on:
+  pull_request: {}
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: documentation-control-plane-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Assert exact revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Validate the canonical documentation graph
+        run: |
+          git diff --check
+          python3 -m py_compile \
+            scripts/generate_documentation_views.py \
+            scripts/check_documentation_control_plane.py \
+            scripts/check_repository_integrity.py \
+            scripts/check_module_discipline.py
+          python3 scripts/generate_documentation_views.py --check
+          python3 scripts/check_documentation_control_plane.py
+          python3 scripts/check_repository_integrity.py
+          python3 scripts/check_module_discipline.py
+          python3 -m unittest discover \
+            -s tests/python -p 'test_documentation_control_plane.py'

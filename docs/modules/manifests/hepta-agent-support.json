@@ -1,0 +1,60 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.agent.support",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "support-library",
+  "trust_domain": "trusted-local",
+  "authority": "decision lease client and event hub",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/agent/",
+    "HeptaTrade/events/"
+  ],
+  "build_targets": [
+    "hepta_agent_execution_support"
+  ],
+  "provides": [
+    "decision-lease.v1"
+  ],
+  "consumes": [
+    "hepta.event-envelope.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*"
+  ],
+  "state": {
+    "model": "bounded-local",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "owner-sharded",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-event-buffer",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "lease-expiry-reject",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "agent-support-v1",
+  "owners": {
+    "dri": "@hepta/agent-runtime",
+    "backup": "@hepta/execution-core",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "lease-fencing",
+    "event-ordering"
+  ]
+}

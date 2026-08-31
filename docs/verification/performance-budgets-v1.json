@@ -1,13 +1,12 @@
 {
   "schema": "heptatrader.performance-budgets.v1",
-  "policy": {"comparison":"same-fixture","baseline_change":"requires reviewed rationale and evidence","correctness_precedence":true},
+  "policy": {"comparison":"same fixture and toolchain","correctness_precedence":true,"baseline_change":"reviewed evidence required"},
   "budgets": [
-    {"id":"gateway-control","metric":"p99 request latency","regression_percent":20,"scope":"control plane only"},
-    {"id":"snapshot-capture","metric":"p99 capture latency","regression_percent":15,"scope":"generation-consistent fixture"},
-    {"id":"risk-decision","metric":"p99 decision latency","regression_percent":10,"scope":"deterministic policy"},
-    {"id":"portfolio-compile","metric":"p99 compile latency","regression_percent":10,"scope":"4096 proposals/targets"},
-    {"id":"journal-durable","metric":"p99 append latency","regression_percent":15,"scope":"same storage fixture"},
-    {"id":"emergency-lane","metric":"max scheduling delay","absolute_ms":50,"scope":"simulator fault fixture"},
-    {"id":"telemetry-overhead","metric":"CPU overhead","max_percent":2,"scope":"runtime fixture"}
+    {"id":"gateway-control-v1","metric":"p99 request latency","regression_percent":20},
+    {"id":"snapshot-v1","metric":"p99 capture latency","regression_percent":20},
+    {"id":"risk-policy-v1","metric":"p99 evaluation latency","regression_percent":10},
+    {"id":"portfolio-compiler-v1","metric":"p99 compile latency","regression_percent":10},
+    {"id":"execution-authority-v1","metric":"journal-durable-to-send p99","regression_percent":20},
+    {"id":"global-allocator-v1","metric":"deadline and optimality gap","regression_percent":0,"state":"planned"}
   ]
 }

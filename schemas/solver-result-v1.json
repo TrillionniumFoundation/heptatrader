@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SolverResultV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","status","objective_version","solver_version","input_digest","output_digest"],
+  "properties": {
+    "schema": {"const":"hepta.solver-result.v1"},
+    "status": {"enum":["OPTIMAL","OPTIMAL_WITHIN_TOLERANCE","BEST_KNOWN","FEASIBLE_FALLBACK","NO_FEASIBLE_PLAN","STALE_INPUT","NUMERIC_FAILURE"]},
+    "objective_version": {"type":"string"},
+    "solver_version": {"type":"string"},
+    "input_digest": {"type":"string","pattern":"^sha256:"},
+    "output_digest": {"type":"string","pattern":"^sha256:"},
+    "lower_bound": {"type":["number","null"]},
+    "upper_bound": {"type":["number","null"]},
+    "optimality_gap": {"type":["number","null"],"minimum":0},
+    "termination_reason": {"type":"string"},
+    "iterations": {"type":"integer","minimum":0}
+  }
+}

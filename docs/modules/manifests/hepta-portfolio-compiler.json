@@ -1,0 +1,66 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.portfolio.compiler",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "pure-policy",
+  "trust_domain": "portfolio-risk",
+  "authority": "deterministic netting/budget",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/portfolio/"
+  ],
+  "build_targets": [
+    "hepta_portfolio_core"
+  ],
+  "provides": [
+    "portfolio.net-target.v1"
+  ],
+  "consumes": [
+    "capital-policy.v1",
+    "hepta.allocation-plan.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.numeric.fixed-v1",
+    "hepta.strategy-proposal.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.numeric.core"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime",
+    "hepta.venue.*"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "pure-reentrant",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "caller-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "portfolio-compiler-v1",
+  "owners": {
+    "dri": "@hepta/portfolio",
+    "backup": "@hepta/risk",
+    "reviewers": [
+      "@hepta/architecture"
+    ]
+  },
+  "verification": [
+    "portfolio-properties",
+    "budget-overflow",
+    "canonical-ordering"
+  ]
+}

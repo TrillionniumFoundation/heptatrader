@@ -1,13 +1,12 @@
 {
   "schema": "heptatrader.workstream-registry.v1",
   "workstreams": [
-    {"id":"WS-DOC","owner":"@hepta/architecture","scope":"document authority, registries, generated views and cleanup","milestones":["M0","M1"]},
-    {"id":"WS-MOD","owner":"@hepta/platform","scope":"module manifests, targets, dependency DAG and ownership","milestones":["M2","M7"]},
-    {"id":"WS-DATA","owner":"@hepta/state","scope":"typed state, event envelope, numeric and concurrency foundation","milestones":["M3"]},
-    {"id":"WS-OPT","owner":"@hepta/global-allocation","scope":"proposal, optimizer, allocation plan and shadow prices","milestones":["M4","M5"]},
-    {"id":"WS-EXEC","owner":"@hepta/execution-core","scope":"Execution authority, OMS, permit, reconcile and emergency lane","milestones":["M2","M3","M5","M6"]},
-    {"id":"WS-REL","owner":"@hepta/reliability","scope":"tests, fault matrix, performance and evidence","milestones":["M1","M2","M3","M7"]},
-    {"id":"WS-IB","owner":"@hepta/venue-ib","scope":"IB PAPER parity, qualification and soak","milestones":["M6"]},
-    {"id":"WS-RES","owner":"@hepta/research-validation","scope":"dataset/feature/strategy validation and proposal economics","milestones":["M3","M4","M5"]}
+    {"id":"WS-DOC","title":"Documentation and truth","owner":"@hepta/documentation","milestones":["M0","M1"]},
+    {"id":"WS-MOD","title":"Module platform and team topology","owner":"@hepta/platform","milestones":["M2","M5","M7"]},
+    {"id":"WS-DATA","title":"Contracts, numeric, market data and concurrency","owner":"@hepta/data-platform","milestones":["M3"]},
+    {"id":"WS-OPT","title":"Global allocation and portfolio","owner":"@hepta/global-allocation","milestones":["M4","M5"]},
+    {"id":"WS-REL","title":"Reliability, evidence and delivery","owner":"@hepta/reliability","milestones":["M0","M1","M7"]},
+    {"id":"WS-IB","title":"IB PAPER qualification","owner":"@hepta/venue-ib","milestones":["M6"]},
+    {"id":"WS-RES","title":"Research and validation","owner":"@hepta/research-validation","milestones":["M3","M4"]}
   ]
 }

@@ -1,6 +1,6 @@
 [Unit]
 Description=HeptaTrader Agent Tool Gateway
-Documentation=file:@HEPTA_RUNTIME_DOC_DIR@/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Documentation=file:@HEPTA_RUNTIME_DOC_DIR@/README.md
 Requires=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
 After=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
 

@@ -1,17 +1,13 @@
 {
   "schema": "heptatrader.fault-matrix.v1",
   "faults": [
-    {"id":"F-JOURNAL-BEFORE","point":"before journal append","expected":"no venue send; typed failure"},
-    {"id":"F-JOURNAL-AFTER","point":"after durable append before send","expected":"durable accepted/uncertain; restart resolves without new command"},
-    {"id":"F-SEND-AFTER","point":"after send before response","expected":"uncertain + authoritative reconcile; no blind retry"},
-    {"id":"F-CALLBACK-DUP","point":"duplicate callback","expected":"idempotent projection"},
-    {"id":"F-CALLBACK-ORDER","point":"out-of-order callback","expected":"reject/buffer/reconcile to convergence"},
-    {"id":"F-SNAPSHOT-RACE","point":"fill/reconnect during snapshot","expected":"complete same generation or reject"},
-    {"id":"F-PROPOSAL-STALE","point":"expired proposal","expected":"excluded from optimizer"},
-    {"id":"F-SOLVER-TIMEOUT","point":"optimizer timeout","expected":"bounded feasible fallback or no-risk plan"},
-    {"id":"F-MODULE-CRASH","point":"strategy module crash","expected":"proposal expires; OMS/Execution unaffected"},
-    {"id":"F-BACKPRESSURE","point":"queue full","expected":"class-specific reject/coalesce; emergency lane preserved"},
-    {"id":"F-NUMERIC","point":"overflow/NaN/Inf","expected":"fail closed"},
-    {"id":"F-FENCE","point":"stale epoch/lease","expected":"no venue send"}
+    {"id":"journal-before-send-crash","owner":"hepta.execution.runtime","expected":"no unjournaled send"},
+    {"id":"duplicate-command","owner":"hepta.execution.runtime","expected":"durable replay"},
+    {"id":"generation-change","owner":"hepta.execution.runtime","expected":"reject new risk"},
+    {"id":"disconnect-reconnect","owner":"hepta.execution.runtime","expected":"risk gate closed until reconcile"},
+    {"id":"out-of-order-callback","owner":"hepta.execution.runtime","expected":"projection converges or terminal latch"},
+    {"id":"optimizer-timeout","owner":"hepta.global.decision","expected":"no new risk; typed fallback/no-plan"},
+    {"id":"module-crash","owner":"hepta.management.control","expected":"quarantine and proposal expiry"},
+    {"id":"emergency-lane-pressure","owner":"hepta.execution.runtime","expected":"cancel/reduce/flatten not starved"}
   ]
 }

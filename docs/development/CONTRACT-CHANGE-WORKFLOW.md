@@ -1,17 +1,12 @@
-# 契约变更流程
+# Contract Change Workflow
 
 Status: current normative
-Applies to: public schemas, APIs, events and state formats
-Verification: contract registry and compatibility tests
-Authority: contract change authority
+Applies to: schemas, public types, reason codes, event semantics and module APIs
+Verification: schema compatibility, golden vectors, provider/consumer tests and registry checks
+Authority: contract evolution process
 
-1. 创建 C2/A3 change record，列出 producer、consumer、state 和 rollout。
-2. 决定 additive minor 或 breaking major version。
-3. 更新 contract registry/schema、canonical examples 和 unknown-field policy。
-4. producer 支持新格式；必要时双读或版本路由。
-5. consumer 完成迁移和 negative tests。
-6. 对 persisted state/journal 提供 replay/migration fixture。
-7. 更新 capability/module/test registries。
-8. merge candidate 运行 compatibility、fuzz、replay 和 rollback。
+先确定 additive minor、breaking major还是implementation-only。更新canonical document/schema、contract registry、providers/consumers、generated index、capability/test mapping和migration/rollback。
 
-禁止在 C++ 与 Python 中分别手写无法机械验证的同名 schema。
+Additive optional字段需要明确default/unknown-field行为；删除、重命名、单位/时间/rounding/reason语义改变必须major。双版本迁移需限定窗口、translation authority和删除条件。跨语言binding用canonical bytes/golden vectors验证。
+
+未经consumer review不得合并breaking contract；不得以“内部字段”名义绕过其在journal、digest、risk或external evidence中的语义影响。

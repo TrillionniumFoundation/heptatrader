@@ -1,0 +1,60 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.observability.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "support-library",
+  "trust_domain": "shared-trusted",
+  "authority": "bounded telemetry",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/observability/"
+  ],
+  "build_targets": [
+    "hepta_observability_core"
+  ],
+  "provides": [
+    "telemetry.runtime.v1"
+  ],
+  "consumes": [
+    "hepta.metric-registry.v1",
+    "hepta.reason-code.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "bounded-process-local",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "per-thread-target",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "lossy-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "never-authorizes",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "telemetry-v1",
+  "owners": {
+    "dri": "@hepta/reliability",
+    "backup": "@hepta/platform",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "metric-contracts",
+    "telemetry-cardinality"
+  ]
+}

@@ -1,18 +1,30 @@
-# 模块生命周期契约 V1
+# Module Lifecycle V1
 
 Status: current target contract
-Applies to: Management Control Plane and all deployable modules
-Verification: lifecycle state-machine, rollout and rollback tests
-Authority: module lifecycle authority
+Applies to: Management Control Plane, strategy/feature modules and proposal aggregation
+Verification: state-machine, lease, health, quarantine, rollout and rollback tests
+Authority: module lifecycle semantics
+
+状态机：
 
 ```text
-registered -> validating -> warmup -> shadow -> active
-                     \-> rejected
-active -> degraded -> quarantined -> draining -> retired
+REGISTERED -> WARMING -> SHADOW -> ACTIVE -> DEGRADED
+                                      |          |
+                                      v          v
+                                  DRAINING <- QUARANTINED
+                                      |
+                                      v
+                                   RETIRED
 ```
 
-每个转换必须有 actor/authority、source/target state、module version/config/model digest、health/resource evidence、effective epoch、rollback target 和 stable reason code。
+每次 transition 绑定 module/instance/version、control generation、effective time、reason code、config/model/artifact digest、health evidence 和 actor identity。非法跳转、generation 回退或未验证 artifact 拒绝。
 
-`active` 策略模块只能发布有 lease 的 proposal。`degraded` 可以降低频率或缩小候选范围；`quarantined` proposal 立即失效；`draining` 不能增加新风险；`retired` 不再被发现。
+- WARMING 不产生可用 proposal；
+- SHADOW 输出不参与 active capital allocation；
+- ACTIVE 需要当前 contract、resource budget 和 deterministic validation；
+- DEGRADED 可降低频率/预算，但不得隐式扩大权限；
+- QUARANTINED 使 proposal 立即 expiry，不影响 Execution safe exit；
+- DRAINING 停止新 proposal 并等待有界状态迁移；
+- RETIRED 不再被调度，历史版本由 artifact/evidence 存档而非当前 docs。
 
-Management Control Plane 可以改变 lifecycle 和资源，不可以直接发送订单。
+自动 SHADOW→PAPER/LIVE promotion 禁止。Management 只能控制 module lifecycle，不能改变 Execution mutation authority。

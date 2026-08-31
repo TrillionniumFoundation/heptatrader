@@ -1,0 +1,54 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.venue.xt",
+  "version": "1.0.0",
+  "lifecycle": "unsupported",
+  "kind": "unsupported-adapter",
+  "trust_domain": "execution-authority",
+  "authority": "none",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/adapter_xt/"
+  ],
+  "build_targets": [],
+  "provides": [
+    "hepta.venue.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "broker.transport"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "none",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "none",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "always-reject",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "unsupported-v1",
+  "owners": {
+    "dri": "@hepta/venue-xt",
+    "backup": "@hepta/execution-core",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "unsupported-venue-negative"
+  ]
+}

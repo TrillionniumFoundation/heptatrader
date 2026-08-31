@@ -1,54 +1,47 @@
 # 文档权威与唯一真相规则
 
 Status: current normative
-Applies to: `docs/`, root README and documentation validators
-Verification: `python3 scripts/check_documentation_control_plane.py`
+Applies to: `docs/`, root README, registries, generators and validators
+Verification: `python3 scripts/generate_documentation_views.py --check` and `python3 scripts/check_documentation_control_plane.py`
 Authority: documentation-governance authority
 
-Hepta 文档控制平面由三类对象组成：
+Hepta 文档控制平面由三类对象组成：规范性文档、机器注册表和 exact-revision 生成证据。
 
-1. **Normative documents**：定义长期稳定的安全、架构、契约与治理语义。
-2. **Machine registries**：定义模块、能力、契约、里程碑、gap、测试和预算的结构化事实。
-3. **Generated evidence**：由 CI、release 或受控 qualification 在 exact revision 上生成的动态结果。
+## 权威顺序
 
-## 权威优先级
-
-行为规范发生冲突时：
+行为语义冲突时：
 
 ```text
 CONSTITUTION / accepted ADR
-  > versioned contract or schema
-  > ModuleManifest / module registry
+  > versioned schema and contract
+  > ModuleManifest and module registry
   > capability registry
-  > roadmap / gap / milestone registry
+  > program registries and generated views
   > explanatory prose
 ```
 
-完成状态发生冲突时：
+状态冲突时：
 
 ```text
-same-revision generated evidence
+exact-revision generated evidence
   > registry-derived state
-  > PR summary
-  > hand-written status prose
+  > generated Markdown view
+  > PR summary or discussion
 ```
 
-## 唯一正文规则
+## 唯一正文
 
-- 每个主题只能有一个 canonical document。
-- 旧路径可以保留 compatibility alias，但 alias 只能声明目标路径，不得复制规范正文、状态或命令。
-- `docs/legacy/`、历史认证叙事、旧 round/finalizer 文档和已废弃 proposal 不属于 active graph。
-- 版本历史由 Git 保存，不在 active tree 中复制归档。
-- 法律文件、第三方 notice 和 vendor provenance 不属于开发文档清理范围。
+- 每个主题只能存在一个 canonical document 或 registry entry。
+- Compatibility alias、redirect Markdown、复制正文、`docs/legacy/` 和 `docs/proposals/` 全部禁止。
+- 历史开发文档、图像和 PDF 只存在于 Git history，不放入 active tree 或 `legacy/`。
+- 生成视图只能由 `generate_documentation_views.py` 产生。
+- 所有 `docs/` 文件必须被 document registry 恰好注册一次。
+- 法律文本和 vendor provenance 不属于开发文档；前者位于仓库根，后者采用 JSON manifest/provenance。
 
 ## 元数据
 
-每个 Markdown 在前 12 行内必须包含：
+每个规范性或生成 Markdown 在前 12 行内必须包含 `Status:`、`Applies to:`、`Verification:` 和 `Authority:`。规范文档不得硬编码 mutable commit SHA、当前 workflow 结论或“全部 gap 已关闭”等动态结论。
 
-```text
-Status:
-Applies to:
-Verification:
-```
+## 修改规则
 
-规范文档还应声明 `Authority:`。动态 SHA、CI 结果和“全部 closed”不得硬编码在规范文档中。
+新增主题前先确认不存在已有 authority；修改 registry 后重生成视图；删除文档时同时删除所有 registry、install、service、CI 和代码引用。一次变更如果无法让生成器与 checker 在同一树通过，不得进入评审。

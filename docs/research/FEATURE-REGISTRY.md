@@ -1,10 +1,10 @@
-# Feature Registry 目标契约
+# Feature Registry
 
 Status: current target contract
-Applies to: feature definitions, offline replay and online parity
-Verification: feature schema, leakage and parity tests
-Authority: feature registry authority
+Applies to: deterministic research and future feature runtime
+Verification: implementation/input digest, lookback, generation, replay and leakage tests
+Authority: feature identity and availability
 
-Feature definition 必须绑定 feature ID/version、implementation/config/input dataset digests、lookback/horizon/warm-up、event-time/available-at semantics、missing/stale policy、normalization/numeric policy、offline/online parity tolerance、resource/latency budget、owner 和 deprecation。
+Feature entry 声明 ID/version、implementation/config digest、input contracts、lookback、availability lag、warm-up、missing policy、numeric type/scale、state model、shard key、resource budget和output schema。Feature output 绑定 input watermark与generation。
 
-Feature 不得读取未来数据、Broker credential 或运行时 mutation state。在线与离线实现不一致时，策略 artifact 不得 promotion。
+在线/离线实现必须通过 golden parity。未来数据、revision leakage、跨 instrument隐式共享或未声明状态使 feature不可用于proposal。Feature registry 不授予 strategy activation。

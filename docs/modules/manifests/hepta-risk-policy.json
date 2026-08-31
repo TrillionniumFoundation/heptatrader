@@ -1,0 +1,66 @@
+{
+  "schema": "heptatrader.module-manifest.v2",
+  "id": "hepta.risk.policy",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "pure-policy",
+  "trust_domain": "portfolio-risk",
+  "authority": "deterministic risk",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/risk/"
+  ],
+  "build_targets": [
+    "hepta_risk_core"
+  ],
+  "provides": [
+    "hepta.risk-policy.v2"
+  ],
+  "consumes": [
+    "hepta.authoritative-snapshot.v2",
+    "hepta.numeric.fixed-v1",
+    "hepta.reason-code.v1",
+    "portfolio.net-target.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.numeric.core",
+    "hepta.observability.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.gateway.runtime",
+    "hepta.venue.*"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "module-declared",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "pure-reentrant",
+    "shard_key": "module-declared",
+    "blocking_io": "declared-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "caller-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "risk-policy-v1",
+  "owners": {
+    "dri": "@hepta/risk",
+    "backup": "@hepta/execution-safety",
+    "reviewers": [
+      "@hepta/state"
+    ]
+  },
+  "verification": [
+    "risk-properties",
+    "strict-reduction",
+    "numeric-negative"
+  ]
+}

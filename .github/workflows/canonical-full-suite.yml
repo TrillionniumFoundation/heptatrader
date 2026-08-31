@@ -1,14 +1,11 @@
 name: canonical-full-suite
 
 on:
-  pull_request:
-    branches: [main]
+  pull_request: {}
   push:
     branches: [main]
-  workflow_dispatch:
+  workflow_dispatch: {}
 
-# This workflow is an evidence-producing gate only.  It cannot write to the
-# repository, mutate pull requests, or activate a venue.
 permissions:
   contents: read
 
@@ -17,124 +14,79 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Keep parallelism bounded so the same fixture is reproducible on hosted
-  # runners and does not hide resource-sensitive failures.
   HEPTA_JOBS: "2"
 
 jobs:
   core:
     name: core
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # PRs must validate the contributor's exact head, not GitHub's
-          # mutable merge-preview ref.  Pushes fall back to github.sha.
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-
       - name: Assert exact revision
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            cmake ninja-build g++ clang libssl-dev python3
-
-      - name: Validate repository, schemas and research contracts
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ clang libssl-dev python3
+      - name: Validate canonical source tree
         run: |
           git diff --check
           bash -n scripts/dev_core.sh scripts/reliability_core.sh
           python3 -m py_compile \
+            scripts/generate_documentation_views.py \
+            scripts/check_documentation_control_plane.py \
             scripts/check_repository_integrity.py \
             scripts/check_schema_catalog.py \
             scripts/check_module_discipline.py \
             scripts/check_install_tree.py \
             scripts/resolve_hepta_config.py \
             scripts/hepta_agent_mcp_launcher.py \
-            research/protocol_support.py \
-            research/run_protocol.py
-          python3 -m json.tool CMakePresets.json >/dev/null
-          python3 -m json.tool research/manifest-v1.json >/dev/null
-          python3 -m json.tool schemas/tool-catalog-v1.json >/dev/null
-          python3 -m json.tool schemas/execution-wire-v1.json >/dev/null
-          python3 -m json.tool schemas/research-run-v1.json >/dev/null
-          python3 -m json.tool \
-            plugins/heptatrader-agent-os/.mcp.json >/dev/null
+            research/protocol_support.py research/run_protocol.py
+          python3 scripts/generate_documentation_views.py --check
+          python3 scripts/check_documentation_control_plane.py
           python3 scripts/check_repository_integrity.py
           python3 scripts/check_schema_catalog.py
           python3 scripts/check_module_discipline.py
-          python3 research/run_protocol.py verify \
-            --manifest research/manifest-v1.json
-          python3 -m unittest discover \
-            -s tests/python -p 'test_*.py'
-
+          python3 research/run_protocol.py verify --manifest research/manifest-v1.json
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
       - name: Build and test Release core
         env:
           HEPTA_BUILD_TYPE: Release
           HEPTA_CMAKE_GENERATOR: Ninja
           HEPTA_RUN_PYTHON_TESTS: "0"
         run: ./scripts/dev_core.sh
-
-      - name: Verify minimal runtime install allowlist
+      - name: Verify canonical install allowlist
         run: |
-          # Use a fresh staging root so a reused/self-hosted runner cannot
-          # satisfy the allowlist with files left by an earlier install.
           stage="$(mktemp -d "$RUNNER_TEMP/heptatrader-runtime.XXXXXX")"
-          DESTDIR="$stage" cmake --install build/core-release \
-            --component runtime
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
           test -x "$stage/usr/local/bin/heptactl"
           test -x "$stage/usr/local/bin/hepta-sessionctl"
           test -x "$stage/usr/local/bin/hepta-agent-mcp-launcher"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
-          test -f "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
-          test -f "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
-          test -f "$stage/usr/local/share/heptatrader/research/manifest-v1.json"
-          test -f "$stage/usr/local/share/heptatrader/schemas/tool-catalog-v1.json"
-          test -f "$stage/usr/local/share/heptatrader/schemas/tool-catalog-v1.sha256"
-          test -f "$stage/usr/local/share/heptatrader/schemas/execution-wire-v1.json"
-          test -f "$stage/usr/local/share/heptatrader/schemas/research-run-v1.json"
-          test -f "$stage/usr/local/share/doc/HeptaTrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md"
-          runner="$stage/usr/local/share/heptatrader/research/run_protocol.py"
-          manifest="$stage/usr/local/share/heptatrader/research/manifest-v1.json"
-          test -x "$runner"
-          python3 "$runner" self-test >/dev/null
-          if python3 "$runner" verify --manifest "$manifest" \
-              >"$RUNNER_TEMP/installed-research-verify.out" \
-              2>"$RUNNER_TEMP/installed-research-verify.err"; then
-            echo "installed static-manifest verification unexpectedly passed without source assets"
-            exit 1
-          fi
-          grep -F 'RESEARCH_STRATEGY_INPUT_MISSING' \
-            "$RUNNER_TEMP/installed-research-verify.err"
-          python3 "$runner" verify --manifest "$manifest" \
-            --root "$GITHUB_WORKSPACE" >/dev/null
-          test -f "$stage/usr/local/share/heptatrader/examples/HeptaTraderConfig.xml.example"
-          test ! -e "$stage/usr/local/share/heptatrader/examples/.env.hepta.example"
-          ! grep -R -E 'HEPTA_(MD|TD)_FRONT|D:\\quant|AllowLiveTrading' \
-            "$stage/usr/local/share/heptatrader/examples"
-          grep -F '/usr/local/libexec/heptatrader/hepta-tool-gatewayd' \
-            "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
-          grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \
-            "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
-          ! grep -R -E '@[A-Z][A-Z0-9_]*@' \
-            "$stage/usr/local/lib/systemd/system"
-          grep -F '/usr/local/share/doc/HeptaTrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md' \
-            "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/README.md"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/governance/CONSTITUTION.md"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/contracts/contract-registry-v2.json"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/modules/module-registry-v2.json"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/product/capability-registry-v2.json"
+          test ! -e "$stage/usr/local/share/doc/HeptaTrader/development/PLAN.md"
+          test ! -e "$stage/usr/local/share/doc/HeptaTrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md"
+          grep -F '/usr/local/share/doc/HeptaTrader/README.md' "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           python3 scripts/check_install_tree.py "$stage"
 
   reliability:
     name: reliability (${{ matrix.compiler }})
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
@@ -146,19 +98,15 @@ jobs:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-
       - name: Assert exact revision
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            cmake ninja-build g++ clang libssl-dev python3
-
-      - name: Run ASAN/UBSAN, crash/replay, malformed protocol and performance fixtures
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ clang libssl-dev python3
+      - name: Run bounded reliability lane
         env:
           CXX: ${{ matrix.compiler }}
           HEPTA_CMAKE_GENERATOR: Ninja

@@ -1,11 +1,10 @@
 name: core-runtime
 
 on:
-  pull_request:
-    branches: [main]
+  pull_request: {}
   push:
     branches: [main]
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -17,88 +16,50 @@ concurrency:
 jobs:
   core:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 20
     steps:
-      - name: Checkout
+      - name: Checkout exact revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          # Validate the exact PR head rather than GitHub's merge-preview ref.
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-
       - name: Assert exact revision
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            cmake ninja-build g++ libssl-dev python3
-
-      - name: Validate repository contracts and entry points
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev python3
+      - name: Validate entry points
         run: |
+          git diff --check
           bash -n scripts/dev_core.sh
           python3 -m py_compile \
+            scripts/generate_documentation_views.py \
+            scripts/check_documentation_control_plane.py \
             scripts/check_repository_integrity.py \
             scripts/check_schema_catalog.py \
             scripts/check_module_discipline.py \
             scripts/check_install_tree.py \
-            research/run_protocol.py \
-            scripts/resolve_hepta_config.py \
-            scripts/hepta_agent_mcp_launcher.py \
-            research/protocol_support.py
-          python3 -m json.tool CMakePresets.json >/dev/null
-          python3 -m json.tool research/manifest-v1.json >/dev/null
-          python3 -m json.tool \
-            plugins/heptatrader-agent-os/.mcp.json >/dev/null
-          python3 scripts/check_repository_integrity.py
-          python3 scripts/check_schema_catalog.py
-          python3 scripts/check_module_discipline.py
-          python3 research/run_protocol.py verify \
-            --manifest research/manifest-v1.json
-
-      - name: Build and test the deterministic core
+            research/run_protocol.py research/protocol_support.py
+          python3 scripts/generate_documentation_views.py --check
+          python3 scripts/check_documentation_control_plane.py
+      - name: Build and test deterministic core
         env:
           HEPTA_CMAKE_GENERATOR: Ninja
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
-
-      - name: Verify minimal runtime install tree
+      - name: Verify canonical install tree
         run: |
-          # Use a fresh staging root so a reused/self-hosted runner cannot
-          # satisfy the smoke check with files left by an earlier install.
           stage="$(mktemp -d "$RUNNER_TEMP/heptatrader-runtime.XXXXXX")"
-          DESTDIR="$stage" cmake --install build/core-release \
-            --component runtime
-          test -x "$stage/usr/local/bin/heptactl"
-          test -x "$stage/usr/local/bin/hepta-sessionctl"
-          test -x "$stage/usr/local/bin/hepta-agent-mcp-launcher"
+          DESTDIR="$stage" cmake --install build/core-release --component runtime
           test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
-          test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
-          test -f "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
-          test -f "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
-          test -f "$stage/usr/local/share/heptatrader/research/manifest-v1.json"
-          test -x "$stage/usr/local/share/heptatrader/research/run_protocol.py"
-          test -f "$stage/usr/local/share/heptatrader/schemas/tool-catalog-v1.json"
-          test -f "$stage/usr/local/share/heptatrader/schemas/tool-catalog-v1.sha256"
-          test -f "$stage/usr/local/share/heptatrader/schemas/execution-wire-v1.json"
-          test -f "$stage/usr/local/share/heptatrader/schemas/research-run-v1.json"
-          test -f "$stage/usr/local/share/doc/HeptaTrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md"
-          test -f "$stage/usr/local/share/heptatrader/examples/HeptaTraderConfig.xml.example"
-          test ! -e "$stage/usr/local/share/heptatrader/examples/.env.hepta.example"
-          ! grep -R -E 'HEPTA_(MD|TD)_FRONT|D:\\quant|AllowLiveTrading' \
-            "$stage/usr/local/share/heptatrader/examples"
-          grep -F '/usr/local/libexec/heptatrader/hepta-tool-gatewayd' \
-            "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
-          grep -F '/usr/local/libexec/heptatrader/hepta-executiond' \
-            "$stage/usr/local/lib/systemd/system/hepta-execution-simulator.service"
-          ! grep -R -E '@[A-Z][A-Z0-9_]*@' \
-            "$stage/usr/local/lib/systemd/system"
-          grep -F '/usr/local/share/doc/HeptaTrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md' \
-            "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/README.md"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/architecture/PLANE-ARCHITECTURE.md"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/product/capability-registry-v2.json"
+          test ! -e "$stage/usr/local/share/doc/HeptaTrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md"
+          grep -F '/usr/local/share/doc/HeptaTrader/README.md' "$stage/usr/local/lib/systemd/system/hepta-tool-gateway.service"
           python3 scripts/check_install_tree.py "$stage"

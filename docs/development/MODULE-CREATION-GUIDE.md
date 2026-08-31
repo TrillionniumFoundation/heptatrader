@@ -1,17 +1,12 @@
-# 模块创建指南
+# Module Creation Guide
 
 Status: current normative
-Applies to: new modules and major extractions
-Verification: ModuleManifest V2, dependency and module tests
-Authority: module creation process
+Applies to: new current or target modules
+Verification: ModuleManifest schema, DAG, contract and test checks
+Authority: module onboarding workflow
 
-1. 明确 authority、state owner、failure domain 和 deployment。
-2. 注册 module ID、owners、provides/consumes、dependencies。
-3. 定义版本化 input/output contract。
-4. 创建唯一 CMake/Python package target。
-5. 添加 unit、negative、contract、performance 和 fault tests。
-6. 加入 capability 和 roadmap，仅在集成证据完成后升级状态。
-7. 配置 shadow/canary/rollback。
-8. 验证 active graph 无环、无跨模块 `.cpp`、无 `legacy/` 依赖。
+创建模块顺序：定义authority/failure domain → stable ID/version → provided/consumed contract → state writer/generation → concurrency/shard/backpressure → resource/SLO → owners/reviewers → source/target/deployment → negative/fault/performance tests → capability mapping。
 
-不应为了“一人一个目录”创建无独立 contract 或 failure domain 的伪模块。
+禁止先建目录再补边界。Pure policy不得依赖venue/session/credential；untrusted strategy不得依赖Execution；adapter只做transport/event normalization；Management不得持有Broker authority。
+
+新target必须唯一归属。临时shared source只能绑定开放migration gap并有删除条件。测试链接public target，不直接编译其他模块`.cpp`。

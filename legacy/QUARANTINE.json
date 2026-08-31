@@ -1,0 +1,11 @@
+{
+  "schema": "heptatrader.legacy-quarantine.v1",
+  "status": "inactive-source-only",
+  "active_dependency": false,
+  "build_entry": false,
+  "install_entry": false,
+  "documentation_allowed": false,
+  "history_location": "git",
+  "allowed_metadata_extensions": [".json"],
+  "vendor_provenance": "legacy/vendor/**/manifest-*.json"
+}

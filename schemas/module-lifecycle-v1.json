@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ModuleLifecycleV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","module_id","instance_id","version","state","generation","observed_at_ms"],
+  "properties": {
+    "schema": {"const":"hepta.module-lifecycle.v1"},
+    "module_id": {"type":"string"},
+    "instance_id": {"type":"string"},
+    "version": {"type":"string"},
+    "state": {"enum":["REGISTERED","WARMING","SHADOW","ACTIVE","DEGRADED","QUARANTINED","DRAINING","RETIRED"]},
+    "generation": {"type":"integer","minimum":0},
+    "observed_at_ms": {"type":"integer","minimum":0},
+    "reason_code": {"type":"string"},
+    "health_digest": {"type":"string"}
+  }
+}

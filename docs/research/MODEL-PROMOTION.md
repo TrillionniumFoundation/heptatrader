@@ -1,15 +1,10 @@
-# 模型与策略 Promotion
+# Model and Strategy Promotion
 
-Status: current target governance
-Applies to: research artifact to runtime module lifecycle
-Verification: lifecycle, validation and independent review evidence
-Authority: model promotion authority
+Status: current normative
+Applies to: research artifacts, strategy modules and runtime lifecycle
+Verification: validation evidence, module manifest, shadow/canary and independent approval
+Authority: promotion boundary
 
-```text
-research-valid -> simulator-shadow -> simulator-active
-  -> paper-proposal -> paper-qualified -> paper-active
-```
+Promotion 是新 module artifact/config/version 的显式治理变更，不是研究结果中的布尔字段。候选需绑定 source/model/data/config digest、validation summary、resource budget、contracts、failure behavior和rollback identity。
 
-不存在自动 PAPER/LIVE promotion。每一步绑定 model/config/data/code digest、validation summary、module version、capability state、rollback 和有效期。
-
-模型更新不会继承旧版本的 PAPER qualification；若改变 strategy economics、contract、resource behavior 或 failure mode，需要重新验证相应阶段。
+允许路径：research candidate → reviewed module → SHADOW → ACTIVE Simulator；之后可提出 IB PAPER qualification。每次 transition 需要独立 evidence和approval。模型不得携带session/permit/credential，Management不得自动提升到PAPER/LIVE。回退可由health/risk/evidence触发并使旧proposal立即过期。
