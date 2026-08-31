@@ -41,15 +41,46 @@ bool NearlyEqual(double left, double right)
     return std::fabs(left - right) <= scale * 1e-10;
 }
 
+bool SignedPositionReduction(const DeterministicRiskContext& context)
+{
+    const double signedQuantity = context.action == "BUY" ?
+        context.quantity : -context.quantity;
+    const double expectedProjected = context.netPosition + signedQuantity;
+    const double localScale = std::max(
+        1.0, std::max(std::fabs(context.netPosition),
+            std::max(std::fabs(context.projectedNetPosition),
+                     std::fabs(context.quantity))));
+    const double localTolerance = localScale * 1e-12;
+    if (std::fabs(context.projectedNetPosition - expectedProjected) >
+        localTolerance)
+        return false;
+
+    // The signed position of the affected instrument, rather than portfolio
+    // gross, is the authority for crossing-zero semantics.  Portfolio-scale
+    // floating tolerance must never turn +x -> -y (or -x -> +y) into a safe
+    // reduction merely because an unrelated book has very large exposure.
+    if (context.netPosition > 0.0)
+        return context.action == "SELL" &&
+            context.projectedNetPosition >= 0.0 &&
+            context.projectedNetPosition < context.netPosition;
+    if (context.netPosition < 0.0)
+        return context.action == "BUY" &&
+            context.projectedNetPosition <= 0.0 &&
+            context.projectedNetPosition > context.netPosition;
+    return false;
+}
+
 bool StrictGrossReduction(const DeterministicRiskContext& context)
 {
     if (!context.exposureReducing ||
+        !SignedPositionReduction(context) ||
         !(context.projectedGrossAbsolutePosition < context.grossAbsolutePosition))
         return false;
 
     // One normalized order changes one instrument. A true reduce-only order
-    // removes exactly its quantity from gross absolute exposure. If it crosses
-    // zero, gross falls by less than quantity and this equality does not hold.
+    // removes exactly its quantity from gross absolute exposure. The signed
+    // position proof above independently forbids crossing zero; this gross
+    // equality remains a portfolio-consistency check only.
     return NearlyEqual(
         context.projectedGrossAbsolutePosition + context.quantity,
         context.grossAbsolutePosition);
@@ -144,7 +175,7 @@ DeterministicRiskDecision DeterministicRiskPolicy::Evaluate(
     const bool strictReduction = StrictGrossReduction(context);
     if (context.exposureReducing && !strictReduction)
         return Reject("RISK_REDUCE_ONLY_CROSS_ZERO",
-                      "claimed reduction does not remove exactly the order quantity from gross exposure");
+                      "claimed reduction is not an exact same-side position reduction");
 
     // A proven strict reduction remains available when entry is disabled or a
     // kill switch is engaged. The proof cannot cross zero and all order-shape,
