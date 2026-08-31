@@ -4,49 +4,39 @@
 #ifdef usleep
 #undef usleep
 #endif
+#ifdef UnixToolServer
+#undef UnixToolServer
+#endif
+
+#include "../HeptaTrade/tool_host/unix_tool_server.h"
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <map>
-#include <mutex>
+#include <thread>
 
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 namespace
 {
-struct SocketIdentity
-{
-    dev_t device = 0;
-    ino_t inode = 0;
-};
-
 std::atomic<bool> gPressureHoldUsed(false);
-std::mutex gClientMutex;
-std::condition_variable gClientChanged;
-std::map<int, SocketIdentity> gConnectedClients;
+std::atomic<UnixToolServer*> gServer(nullptr);
 
-std::size_t LiveClientCountLocked()
+bool WaitUntil(const std::chrono::steady_clock::time_point& deadline,
+               const std::function<bool()>& predicate)
 {
-    for (std::map<int, SocketIdentity>::iterator it = gConnectedClients.begin();
-         it != gConnectedClients.end();)
+    while (std::chrono::steady_clock::now() < deadline)
     {
-        struct stat current;
-        if (::fstat(it->first, &current) != 0 ||
-            current.st_dev != it->second.device ||
-            current.st_ino != it->second.inode)
-        {
-            it = gConnectedClients.erase(it);
-        }
-        else
-        {
-            ++it;
-        }
+        if (predicate()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    return gConnectedClients.size();
+    return predicate();
 }
+}
+
+extern "C" void hepta_test_set_unix_tool_server(UnixToolServer* server)
+{
+    gServer.store(server, std::memory_order_release);
 }
 
 extern "C" int hepta_test_connect(
@@ -54,21 +44,7 @@ extern "C" int hepta_test_connect(
     const struct sockaddr* address,
     socklen_t addressLength)
 {
-    const int result = ::connect(socketDescriptor, address, addressLength);
-    if (result == 0)
-    {
-        struct stat identity;
-        if (::fstat(socketDescriptor, &identity) == 0)
-        {
-            std::lock_guard<std::mutex> lock(gClientMutex);
-            SocketIdentity observed;
-            observed.device = identity.st_dev;
-            observed.inode = identity.st_ino;
-            gConnectedClients[socketDescriptor] = observed;
-            gClientChanged.notify_all();
-        }
-    }
-    return result;
+    return ::connect(socketDescriptor, address, addressLength);
 }
 
 extern "C" int hepta_test_usleep(useconds_t microseconds)
@@ -76,34 +52,32 @@ extern "C" int hepta_test_usleep(useconds_t microseconds)
     if (microseconds == 150000 &&
         !gPressureHoldUsed.exchange(true, std::memory_order_acq_rel))
     {
-        std::unique_lock<std::mutex> lock(gClientMutex);
+        const std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::now() + std::chrono::seconds(5);
 
-        // Earlier test clients have already been joined and closed. Identity
-        // checks discard stale descriptor numbers even when the process has
-        // reused them for an accepted server socket or another file.
-        const std::chrono::steady_clock::time_point connectDeadline =
-            std::chrono::steady_clock::now() + std::chrono::seconds(2);
-        while (LiveClientCountLocked() < 4 &&
-               std::chrono::steady_clock::now() < connectDeadline)
-        {
-            gClientChanged.wait_until(lock, connectDeadline);
-        }
+        UnixToolServer* server = nullptr;
+        WaitUntil(deadline, [&]() {
+            server = gServer.load(std::memory_order_acquire);
+            return server != nullptr;
+        });
 
-        if (LiveClientCountLocked() >= 4)
+        if (server != nullptr)
         {
-            // This callback owns the sole active slot for the owner. Accepted
-            // requests therefore cannot close while it is held. The first
-            // observed client identity to disappear is the concrete witness
-            // that the fourth request received a backpressure response and its
-            // test thread closed the socket after recording that response.
-            const std::chrono::steady_clock::time_point rejectionDeadline =
-                std::chrono::steady_clock::now() + std::chrono::seconds(2);
-            while (LiveClientCountLocked() >= 4 &&
-                   std::chrono::steady_clock::now() < rejectionDeadline)
-            {
-                gClientChanged.wait_for(lock, std::chrono::milliseconds(10));
-            }
+            // The callback containing this sleep already owns the sole active
+            // slot for its owner.  Two pending requests fill the configured
+            // owner queue; the fourth request must then produce the observable
+            // owner-backpressure counter before the active callback is released.
+            WaitUntil(deadline, [&]() {
+                const UnixToolServerHealth health = server->GetHealth();
+                return health.activeRequests >= 1 &&
+                       health.pendingConnections >= 2 &&
+                       health.readyOwners >= 1;
+            });
+            WaitUntil(deadline, [&]() {
+                return server->GetHealth().ownerBackpressureRejections >= 1;
+            });
         }
+        return 0;
     }
 
     return ::usleep(microseconds);
