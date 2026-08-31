@@ -560,9 +560,9 @@ TradingToolResult TradingToolHost::DispatchRead(
 	const TradingToolSession& session,
 	const TradingToolCall& call)
 {
-	std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
 	bool recoveryOnly = false;
 	{
+		std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
 		std::lock_guard<std::mutex> lock(m_mutex);
 		const std::unordered_map<std::string,
 			TradingToolHostSessionBinding>::const_iterator current =
@@ -1121,7 +1121,6 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
         binding = found->second;
         authority = m_recoveryControlAuthority;
     }
-    const AgentExecutionContext& context = binding.session.executionContext;
     if (authority == nullptr || !binding.enabled || !binding.recoveryOnly ||
         binding.session.environment != "PAPER" ||
         durableRecord.templateId != "paper" ||
