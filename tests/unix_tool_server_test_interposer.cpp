@@ -17,6 +17,16 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+// The test target defines connect/usleep macros before the preincluded hook
+// header.  libc therefore exposes macro-renamed prototypes in that translation
+// unit; restore the real C ABI names after undefining the macros so the
+// interposer can delegate without recursion.
+extern "C" int connect(
+    int socketDescriptor,
+    const struct sockaddr* address,
+    socklen_t addressLength);
+extern "C" int usleep(useconds_t microseconds);
+
 namespace
 {
 std::atomic<bool> gPressureHoldUsed(false);
