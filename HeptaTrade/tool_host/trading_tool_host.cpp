@@ -1121,6 +1121,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
         binding = found->second;
         authority = m_recoveryControlAuthority;
     }
+    const AgentExecutionContext& context = binding.session.executionContext;
     if (authority == nullptr || !binding.enabled || !binding.recoveryOnly ||
         binding.session.environment != "PAPER" ||
         durableRecord.templateId != "paper" ||
