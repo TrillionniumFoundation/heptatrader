@@ -68,6 +68,44 @@ if(BUILD_TESTING)
                 hepta_unix_tool_server_owner_backpressure_tests)
         endif()
     endif()
+
+    # This end-to-end fixture proves that an incomplete or malformed
+    # authoritative position collection cannot be promoted into either a
+    # decision snapshot or a target-position preview permit.
+    add_executable(hepta_target_position_malformed_snapshot_tests
+        tests/target_position_malformed_snapshot_tests.cpp)
+    target_include_directories(
+        hepta_target_position_malformed_snapshot_tests PRIVATE
+        HeptaTrade HeptaTrade/adapter_ib)
+    target_link_libraries(
+        hepta_target_position_malformed_snapshot_tests PRIVATE
+        hepta_trading_tool_core)
+    set_target_properties(
+        hepta_target_position_malformed_snapshot_tests PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+    if(MSVC)
+        target_compile_options(
+            hepta_target_position_malformed_snapshot_tests PRIVATE
+            /UNDEBUG)
+    else()
+        target_compile_options(
+            hepta_target_position_malformed_snapshot_tests PRIVATE
+            -UNDEBUG)
+    endif()
+    add_test(
+        NAME hepta_target_position_malformed_snapshot_tests
+        COMMAND hepta_target_position_malformed_snapshot_tests)
+    set_tests_properties(
+        hepta_target_position_malformed_snapshot_tests PROPERTIES
+        LABELS "core"
+        TIMEOUT 30)
+    if(TARGET hepta_core_test_binaries)
+        add_dependencies(
+            hepta_core_test_binaries
+            hepta_target_position_malformed_snapshot_tests)
+    endif()
 endif()
 
 if(HEPTA_INSTALL_RUNTIME)
