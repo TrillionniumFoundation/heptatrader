@@ -8,18 +8,17 @@ on:
       - .github/workflows/gap-closure-patch.yml
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  patch-watch-boundary:
+  diagnose-watch-boundary:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: codex/heptatrader-documentation-control-plane-v2
-          fetch-depth: 0
-      - name: Apply bounded composite-overflow fixture
+      - name: Instrument WATCH overflow fixture
         shell: bash
         run: |
           set -euo pipefail
@@ -27,23 +26,17 @@ jobs:
           from pathlib import Path
           path = Path("tests/unix_tool_server_tests.cpp")
           text = path.read_text(encoding="utf-8")
-          old = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes(), 'x')"
-          new = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes() - 1024u, 'x')"
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f"expected one WATCH overflow fixture, found {count}")
-          path.write_text(text.replace(old, new), encoding="utf-8")
-          Path(".github/workflows/gap-closure-patch.yml").unlink()
+          old_size = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes(), 'x')"
+          new_size = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes() - 1024u, 'x')"
+          if text.count(old_size) != 1:
+              raise SystemExit(f"expected one WATCH size fixture, found {text.count(old_size)}")
+          text = text.replace(old_size, new_size)
+          old_assert = "    assert(delivered.envelope.reasonCode ==\n        \"WATCH_SNAPSHOT_RESPONSE_TOO_LARGE\");"
+          new_assert = "    std::cerr << \"WATCH_DIAGNOSTIC status=\" << delivered.envelope.status\n              << \" reason=\" << delivered.envelope.reasonCode\n              << \" detail=\" << delivered.envelope.detail\n              << \" payload_bytes=\" << delivered.envelope.payloadJson.size()\n              << \" response_bytes=\" << delivered.responseJson.size() << std::endl;\n" + old_assert
+          if text.count(old_assert) != 1:
+              raise SystemExit(f"expected one WATCH assertion, found {text.count(old_assert)}")
+          path.write_text(text.replace(old_assert, new_assert), encoding="utf-8")
           PY
-      - name: Validate deterministic core
+      - name: Build and run core
         shell: bash
         run: ./scripts/dev_core.sh
-      - name: Commit exact tested repair
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "Hepta Gap Closure Bot"
-          git config user.email "hepta-gap-closure-bot@users.noreply.github.com"
-          git add -A
-          git commit -m "test: exercise composite WATCH envelope overflow"
-          git push origin HEAD:codex/heptatrader-documentation-control-plane-v2
