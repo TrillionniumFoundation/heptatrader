@@ -17,7 +17,6 @@ bool IsKnownSessionEnvironment(const std::string& environment)
     // activation change, never by a caller-supplied environment string.
     return environment == "WATCH" || environment == "PAPER";
 }
-
 bool ValidateSessionShape(
     const TradingToolHostSessionBinding& binding,
     std::uint64_t nowMs,
@@ -101,7 +100,7 @@ bool TradingToolHost::ValidateSessionTradePolicy(
             binding.session.capabilities.end();
     const bool canFlatten =
         binding.session.capabilities.find("trade.flatten") !=
-        binding.session.capabilities.end();
+            binding.session.capabilities.end();
     const bool canInstrumentMutation = canPlace || canFlatten;
     const bool canTrade = canInstrumentMutation ||
         binding.session.capabilities.find("trade.cancel") !=
@@ -309,7 +308,7 @@ bool TradingToolHost::UpdateSessionLeaseImpl(
     TradingToolSession previousTargetOwner;
     bool rotated = false;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::iterator current =
             m_sessions.find(currentToken);
@@ -370,6 +369,7 @@ bool TradingToolHost::UpdateSessionLeaseImpl(
             reason = "SESSION_TOKEN_EXISTS";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, ownerKey);
 
         // A lease/token rotation is a new bearer epoch.  Invalidate any
         // target permit minted under the previous epoch before exposing the
@@ -414,7 +414,7 @@ bool TradingToolHost::RevokeSessionUnderDispatchLock(
     TradingToolSessionRevokedObserver observer;
     std::string ownerKey;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::iterator session =
             m_sessions.find(token);
@@ -448,9 +448,10 @@ bool TradingToolHost::RevokeSessionUnderDispatchLock(
             reason = "SESSION_LEASE_GENERATION_MISMATCH";
             return false;
         }
+        ownerKey = sessionOwnerKey;
+        WaitForOwnerReadsLocked(lock, ownerKey);
         session->second.enabled = false;
         revoked = session->second;
-        ownerKey = SessionOwnerKey(revoked);
         m_pendingOwnerFences.insert(ownerKey);
         observer = m_sessionRevokedObserver;
     }
@@ -516,7 +517,8 @@ bool TradingToolHost::FenceRestoredSession(
     const std::string ownerKey = SessionOwnerKey(pending);
     TradingToolSessionRevokedObserver observer;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
+        WaitForOwnerReadsLocked(lock, ownerKey);
         m_pendingOwnerFences.insert(ownerKey);
         observer = m_sessionRevokedObserver;
     }
