@@ -1,67 +1,7 @@
-# Runtime configuration
+# Configuration Compatibility Entry
 
-Status: current configuration implementation contract; external PAPER host settings remain separately validated
-Applies to: `scripts/resolve_hepta_config.py`, `systemd/*.env.example`, runtime config parsers
-Verification: `canonical-full-suite` on the exact revision; target-host checks are separate
+Status: current compatibility alias
+Applies to: legacy links only
+Verification: `python3 scripts/check_documentation_control_plane.py`
 
-## Supported profiles
-
-Only two profiles are accepted:
-
-```text
-sim
-paper
-```
-
-`live` is unsupported and must be rejected by CLI, environment and XML/config parsing. A broker account string never selects a profile. PAPER requires an explicit reviewed configuration and separate authorization credential.
-
-## Single source rule
-
-Configuration source precedence is explicit:
-
-```text
---config
-HEPTA_CONFIG_PATH
-HEPTA_TRADER_CONFIG_PATH   (deprecated compatibility alias)
-```
-
-If multiple sources are present they must resolve to the same file. Relative paths resolve from `--project-root`; no user workspace, build directory or legacy `Tools/` scan is allowed.
-
-## Profile lock
-
-Resolution order:
-
-1. `--profile`;
-2. `HEPTA_PROFILE`;
-3. explicit profile in the selected config;
-4. otherwise `sim`.
-
-Any disagreement fails closed. Broker mode/account fields do not infer `paper` or `live`.
-
-## PAPER restrictions
-
-For `paper`:
-
-- config path is explicit and non-template;
-- account, host, port, client ID and hard limits are validated by the PAPER profile;
-- broker credential and activation material are injected by deployment authority, not stored in repository config;
-- missing or conflicting authorization, quote, state or kill-switch inputs prevent risk increase.
-
-## Fingerprint
-
-The resolver emits canonical path, profile, SHA-256 and source provenance. A fingerprint identifies input bytes; it does not grant mutation capability.
-
-## Examples
-
-Active examples are purpose-specific:
-
-```text
-systemd/hepta-execution-simulator.env.example
-systemd/hepta-tool-gateway.env.example
-systemd/hepta-agent-trust-domain.json.example
-```
-
-IB PAPER host examples are supplied only by an explicit, separately reviewed
-deployment; the checked-in `runtime` component installs no broker credentials or
-PAPER activation material. Historical CTP/XT/Windows examples belong under
-`legacy/` and are never part of the minimal runtime install.
+Authority: none. The canonical document is [deployment and configuration authority](operations/DEPLOYMENT.md). This alias contains no independent normative content, status or command.

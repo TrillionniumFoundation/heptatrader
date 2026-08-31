@@ -1,0 +1,15 @@
+{
+  "schema": "heptatrader.qualification-policy.v1",
+  "rules": [
+    "qualification is environment- and artifact-specific",
+    "mock or simulator evidence cannot qualify a real venue",
+    "source SHA, binary digest, config digest, harness digest and environment identity are mandatory",
+    "rebuild, config change, SDK change or expired evidence invalidates qualification",
+    "LIVE requires a separate O4 policy and is not inherited from PAPER"
+  ],
+  "environments": {
+    "simulator": {"external":false,"required_lane":"C-merge-candidate"},
+    "ib-paper": {"external":true,"required_lane":"D-external-qualification"},
+    "live": {"external":true,"state":"forbidden"}
+  }
+}

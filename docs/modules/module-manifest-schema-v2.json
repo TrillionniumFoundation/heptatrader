@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heptatrader.module-manifest.v2",
+  "title": "Hepta Module Manifest V2",
+  "type": "object",
+  "required": [
+    "id",
+    "kind",
+    "trust_domain",
+    "source_roots",
+    "build_targets",
+    "provides",
+    "consumes",
+    "allowed_dependencies",
+    "forbidden_dependencies",
+    "state",
+    "concurrency",
+    "deployment",
+    "owners",
+    "maturity"
+  ],
+  "properties": {
+    "id": {"type": "string", "pattern": "^hepta\\.[a-z0-9.*-]+$"},
+    "kind": {"type": "string"},
+    "trust_domain": {"type": "string"},
+    "source_roots": {"type": "array", "items": {"type": "string"}},
+    "build_targets": {"type": "array", "items": {"type": "string"}},
+    "provides": {"type": "array", "items": {"type": "string"}},
+    "consumes": {"type": "array", "items": {"type": "string"}},
+    "allowed_dependencies": {"type": "array", "items": {"type": "string"}},
+    "forbidden_dependencies": {"type": "array", "items": {"type": "string"}},
+    "state": {"type": "string"},
+    "concurrency": {"type": "string"},
+    "deployment": {"type": "string"},
+    "owners": {
+      "type": "object",
+      "required": ["dri", "backup", "reviewers"],
+      "properties": {
+        "dri": {"type": "string"},
+        "backup": {"type": "string"},
+        "reviewers": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "maturity": {"type": "string"}
+  },
+  "additionalProperties": true
+}

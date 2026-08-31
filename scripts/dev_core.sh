@@ -6,9 +6,9 @@ BUILD_TYPE="${HEPTA_BUILD_TYPE:-Release}"
 GENERATOR="${HEPTA_CMAKE_GENERATOR:-}"
 
 # Keep the development driver from writing an arbitrary path supplied by a
-# caller (for example `/`, the source tree itself or a home directory).  CI
+# caller (for example `/`, the source tree itself or a home directory). CI
 # uses the repository build subtree; an explicitly scoped runner-temp child is
-# useful for parallel diagnostics.  Resolve relative overrides from the
+# useful for parallel diagnostics. Resolve relative overrides from the
 # repository root so the same command has the same target regardless of the
 # caller's working directory.
 if [[ ! "${BUILD_TYPE}" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]]; then
@@ -32,10 +32,6 @@ if [[ "${RUNNER_TEMP_ROOT}" != /* ]]; then
   RUNNER_TEMP_ROOT="${ROOT_DIR}/${RUNNER_TEMP_ROOT}"
 fi
 RUNNER_TEMP_DIR="$(realpath -m -- "${RUNNER_TEMP_ROOT}")"
-# If the checkout itself happens to live below RUNNER_TEMP (common in local
-# ephemeral workspaces), the broad temp prefix must not make source siblings
-# valid build targets.  Only the dedicated repository/build subtree is allowed
-# within ROOT_DIR.
 case "${BUILD_DIR}" in
   "${ROOT_DIR}"/*)
     case "${BUILD_DIR}" in
@@ -105,6 +101,7 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
 fi
 
 python3 "${ROOT_DIR}/scripts/check_repository_integrity.py"
+python3 "${ROOT_DIR}/scripts/check_documentation_control_plane.py"
 python3 "${ROOT_DIR}/scripts/check_schema_catalog.py"
 python3 "${ROOT_DIR}/scripts/check_module_discipline.py"
 python3 "${ROOT_DIR}/research/run_protocol.py" verify \

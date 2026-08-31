@@ -1,0 +1,13 @@
+{
+  "schema": "heptatrader.milestone-registry.v1",
+  "milestones": [
+    {"id":"M0","title":"Canonical Truth Consolidation","depends_on":[],"exit":["single document authority","no historical active docs","registries and aliases validated"],"state":"in-progress"},
+    {"id":"M1","title":"Documentation Control Plane","depends_on":["M0"],"exit":["all canonical docs registered","all capabilities/modules/contracts traceable","generated views reproducible"],"state":"in-progress"},
+    {"id":"M2","title":"Modular Runtime Foundation","depends_on":["M1"],"exit":["one target per module","acyclic declared dependency graph","no cross-module cpp compilation","minimal test closure computable"],"state":"planned"},
+    {"id":"M3","title":"Typed Data and Concurrency Foundation","depends_on":["M2"],"exit":["typed internal state","fixed numeric policy","deterministic scheduler fixtures","shard/backpressure contracts"],"state":"planned"},
+    {"id":"M4","title":"Global Decision Plane Shadow","depends_on":["M3"],"exit":["StrategyProposal and AllocationPlan implemented","deterministic optimizer shadow loop","no constraint violation","Execution revalidation retained"],"state":"planned"},
+    {"id":"M5","title":"Active Multi-Agent Simulator","depends_on":["M4"],"exit":["module lifecycle","capital allocation","fault isolation","deterministic active replay parity"],"state":"planned"},
+    {"id":"M6","title":"IB PAPER Parity and Qualification","depends_on":["M5"],"exit":["same contracts on IB PAPER","external qualification","soak and rollback","no unresolved uncertain exposure"],"state":"planned"},
+    {"id":"M7","title":"Team-Scale Continuous Development","depends_on":["M2"],"exit":["team CODEOWNERS","bus factor >= 2","merge queue","contract compatibility and module SLO dashboards"],"state":"planned"}
+  ]
+}

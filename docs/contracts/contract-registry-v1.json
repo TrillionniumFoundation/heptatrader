@@ -1,0 +1,101 @@
+{
+  "schema": "heptatrader.contract-registry.v1",
+  "contracts": [
+    {
+      "id": "hepta.module-manifest.v2",
+      "document": "modules/MODULE-MANIFEST-SPEC.md",
+      "schema": "modules/module-manifest-schema-v2.json",
+      "stability": "target"
+    },
+    {
+      "id": "hepta.authoritative-snapshot.v2",
+      "document": "contracts/AUTHORITATIVE-SNAPSHOT-CONTRACT.md",
+      "schema": null,
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.target-position-intent.v1",
+      "document": "contracts/TARGET-POSITION-INTENT-CONTRACT.md",
+      "schema": null,
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.strategy-proposal.v1",
+      "document": "contracts/STRATEGY-PROPOSAL-CONTRACT.md",
+      "schema": null,
+      "stability": "target"
+    },
+    {
+      "id": "hepta.global-optimization.v1",
+      "document": "contracts/GLOBAL-OPTIMIZATION-CONTRACT.md",
+      "schema": null,
+      "stability": "target"
+    },
+    {
+      "id": "hepta.allocation-plan.v1",
+      "document": "contracts/ALLOCATION-PLAN-CONTRACT.md",
+      "schema": null,
+      "stability": "target"
+    },
+    {
+      "id": "hepta.execution-authority.v1",
+      "document": "contracts/EXECUTION-AUTHORITY-CONTRACT.md",
+      "schema": "../schemas/execution-wire-v1.json",
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.event-envelope.v1",
+      "document": "contracts/EVENT-ORDERING-CONTRACT.md",
+      "schema": null,
+      "stability": "target"
+    },
+    {
+      "id": "hepta.module-lifecycle.v1",
+      "document": "contracts/MODULE-LIFECYCLE-CONTRACT.md",
+      "schema": null,
+      "stability": "target"
+    },
+    {
+      "id": "hepta.tool-catalog.v1",
+      "document": "contracts/CONTRACT-INDEX.md",
+      "schema": "../schemas/tool-catalog-v1.json",
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.research-run.v1",
+      "document": "research/RESEARCH-PROTOCOL.md",
+      "schema": "../schemas/research-run-v1.json",
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.venue.v1",
+      "document": "contracts/EXECUTION-AUTHORITY-CONTRACT.md",
+      "schema": null,
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.ib-paper-qualification.v1",
+      "document": "operations/IB-PAPER-QUALIFICATION.md",
+      "schema": null,
+      "stability": "target-external"
+    },
+    {
+      "id": "hepta.risk-policy.v2",
+      "document": "contracts/RISK-POLICY-CONTRACT.md",
+      "schema": null,
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.oms-journal.v3",
+      "document": "contracts/OMS-JOURNAL-CONTRACT.md",
+      "schema": null,
+      "stability": "current-core"
+    },
+    {
+      "id": "hepta.execution-wire.v1",
+      "document": "contracts/CONTRACT-INDEX.md",
+      "schema": "../schemas/execution-wire-v1.json",
+      "stability": "current-core"
+    }
+  ]
+}

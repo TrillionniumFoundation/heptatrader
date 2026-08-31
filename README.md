@@ -2,92 +2,60 @@
 
 Status: current
 Applies to: repository entry point and capability overview
-Verification: `canonical-full-suite` on the exact revision
+Verification: `./scripts/dev_core.sh` and exact-revision CI
+Authority: repository entry point
 
-HeptaTrader is a **model-agnostic deterministic trading control and execution runtime for AI agents**, with an experimental reproducible quantitative-research plane. Codex is the first supported Agent client through MCP; it never owns broker credentials, portfolio truth, final risk decisions, OMS state or venue sessions.
+HeptaTrader 是面向 AI Agent 的模型无关、确定性交易控制与执行运行时，并包含能力隔离的可复现研究平面。模型、策略和 MCP 是可替换客户端；Execution Authority 始终拥有 Broker session、OMS、最终风险、权威状态、对账与安全退出。
 
-> HeptaTrader is not an “LLM directly calls a broker API” framework. Models are replaceable clients; the trusted runtime is deterministic.
+## 当前能力边界
 
-## Capability truth
+- Deterministic Simulator、typed Gateway、native/MCP client、session/capability enforcement、OMS journal、idempotency/recovery、authoritative snapshot、target-position intent 和 deterministic risk 属于当前 core。
+- PortfolioCompiler 属于 Simulator/core 的可信纯策略边界；生产 multi-Agent allocator 仍是计划能力。
+- IB PAPER 仍是 external qualification 前的 experimental/conditional 能力。
+- CTP、XT/MiniQMT 和所有 LIVE mutation 都不支持并 fail closed。
 
-| Capability | State |
-|---|---|
-| Typed local Tool Gateway, native client and MCP bridge | Implemented |
-| Session/capability enforcement and bounded framing | Implemented |
-| OMS journal, stable command IDs, replay/recovery contracts | Implemented |
-| Deterministic simulator | Implemented for contract and failure-path tests |
-| Shared deterministic risk core and deterministic portfolio compiler | Implemented for the Simulator/core contract path; venue/host certification remains separate |
-| Generation-consistent decision snapshot and target-position intent | Implemented for the Simulator/core contract path; IB PAPER integration remains experimental |
-| IB PAPER | Experimental; external SDK/host required |
-| Research/replay | Experimental; compact deterministic protocol is implemented; SHADOW only |
-| CTP and XT/QMT transport | Unsupported / fail-closed |
-| LIVE mutation | Unsupported |
+权威能力源为 [`docs/product/capability-registry-v2.json`](docs/product/capability-registry-v2.json)。完整开发入口为 [`docs/README.md`](docs/README.md)，单一全局路线图为 [`docs/program/MASTER-ROADMAP.md`](docs/program/MASTER-ROADMAP.md)。
 
-The authoritative matrix is [`docs/CAPABILITY-MATRIX.md`](docs/CAPABILITY-MATRIX.md). The single gap registry is [`docs/development/PLAN.md`](docs/development/PLAN.md).
-
-## Authority boundary
+## 六平面
 
 ```text
-Codex / Agent / operator
-        |
-        | bounded MCP/native tools
-        v
-Tool Gateway
-        |
-        | authenticated typed Unix protocol
-        v
-Execution Service
-        |-- authoritative state / portfolio / deterministic risk
-        |-- OMS journal / idempotency / reconciliation
-        v
-Simulator or explicitly supported PAPER adapter
+Research/Replay
+Market Data/Feature
+Agent/Strategy
+Global Decision
+Execution Authority
+Management Control
 ```
 
-Non-negotiable invariants:
+数据与 mutation 方向：
 
-1. only Execution Service performs venue mutation;
-2. every new mutation is durable before send;
-3. retries use the same command ID and normalized payload;
-4. unknown identity, state, quote, generation, persistence or reconciliation fails closed;
-5. safe cancel/reduce-only/flatten paths remain available when provable;
-6. research artifacts never grant runtime capability.
+```text
+data -> strategy proposal -> global allocation -> target intent
+     -> deterministic risk -> permit -> durable journal -> venue
+```
 
-## Development loop
+只有 Execution Authority 可以产生 venue mutation。
+
+## 开发入口
 
 ```bash
 ./scripts/dev_core.sh
 ```
 
-This runs repository-truth checks, Release core build, core CTest and Python contract tests. The matching GitHub Actions workflow is read-only and never approves or merges its own PR.
+该命令执行 repository truth、documentation control plane、schema/module checks、research verification、Release core build、core CTest 和 Python tests。
 
-## Minimal simulator install
-
-```bash
-cmake --preset core-release
-cmake --build --preset core-release --target hepta_runtime_binaries
-cmake --install build/core-release --component runtime
-```
-
-## Repository map
+## 仓库地图
 
 ```text
-HeptaTrade/       active C++ Gateway, Execution, OMS, risk, state and simulator/PAPER runtime
-adapters/mcp/     MCP adapter
-plugins/          Agent client metadata only
-schemas/          canonical protocol/schema catalog and drift checks
-strategies/       versioned strategy definitions
-research/         compact research run contract
-scripts/          bounded development and runtime utilities
-systemd/          active service/socket templates and examples
-tests/            unit, contract, integration and failure-path tests
-docs/             current contracts, proposals and deprecated documentation
-legacy/           inactive historical source; active targets may not depend on it
+HeptaTrade/       active C++ runtime and module extraction source
+adapters/mcp/     unprivileged MCP adapter
+schemas/          current machine schemas
+research/         capability-free research runner
+scripts/          development and validation tooling
+systemd/          active deployment templates
+tests/            unit/contract/integration/fault tests
+docs/             only current V2 documentation and machine registries
+legacy/           quarantined inactive source; no active dependency
 ```
 
-The fast pull-request feedback is provided by `core-runtime`; final source
-parents also run the permanent read-only `canonical-full-suite` workflow. The
-latter adds the Release install smoke and the ASAN/UBSAN, crash/replay,
-malformed-protocol and performance fixtures. Neither workflow can mutate the
-repository or activate a venue.
-
-Start with [`docs/PRODUCT-SCOPE.md`](docs/PRODUCT-SCOPE.md), [`docs/README.md`](docs/README.md) and the canonical plan.
+历史开发文档不保留在 active tree；版本历史由 Git 提供。法律文件、第三方 notice 和 vendor provenance 继续保留。

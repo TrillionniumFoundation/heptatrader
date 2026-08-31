@@ -1,0 +1,10 @@
+{
+  "schema": "heptatrader.test-matrix.v2",
+  "lanes": [
+    {"id":"A-module-fast","trigger":"local/changed module","required":["docs-registry","module-registry","changed-unit","contract-compatibility","small-deterministic-fixture"]},
+    {"id":"B-pr-core","trigger":"pull request","required":["repository-contracts","GCC-Debug","GCC-Release","Clang-Debug","Clang-Release","core-contracts","simulator-e2e","install-allowlist","changed-performance"]},
+    {"id":"C-merge-candidate","trigger":"merge group/canonical candidate","required":["ASAN-UBSAN","crash-replay","protocol-fuzz","malformed-input","long-deterministic-replay","full-module-dag","global-performance","reproducible-package","SBOM","supply-chain"]},
+    {"id":"D-external-qualification","trigger":"manual protected environment","required":["exact-source","exact-artifact","exact-config","real-environment","fault-scenarios","soak","rollback"]}
+  ],
+  "principle": "A historical green run never substitutes for the exact merge candidate."
+}

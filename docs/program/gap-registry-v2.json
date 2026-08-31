@@ -1,0 +1,23 @@
+{
+  "schema": "heptatrader.gap-registry.v2",
+  "allowed_states": ["planned","in-progress","blocked","closed"],
+  "closure_rule": "implementation + negative tests + canonical docs + same-revision evidence",
+  "gaps": [
+    {"id":"G-DOC-001","priority":"P0","title":"Multiple document authorities and stale status prose","workstream":"WS-DOC","milestone":"M0","state":"in-progress","evidence":["documentation-control-plane"]},
+    {"id":"G-DOC-002","priority":"P0","title":"Historical docs remain in active tree","workstream":"WS-DOC","milestone":"M0","state":"in-progress","evidence":["no-historical-docs"]},
+    {"id":"G-MOD-001","priority":"P0","title":"Ownership is path-based rather than target/dependency based","workstream":"WS-MOD","milestone":"M2","state":"planned","evidence":["module-registry","dependency-dag"]},
+    {"id":"G-MOD-002","priority":"P0","title":"Composite Gateway and IB runtime modules remain too broad","workstream":"WS-MOD","milestone":"M2","state":"planned","evidence":["target-extraction","parity-tests"]},
+    {"id":"G-CON-001","priority":"P0","title":"Duplicated C++/Python/MCP contract sources","workstream":"WS-DATA","milestone":"M3","state":"planned","evidence":["generated-bindings","schema-drift"]},
+    {"id":"G-NUM-001","priority":"P0","title":"Mixed fixed-point and floating representations at trusted boundaries","workstream":"WS-DATA","milestone":"M3","state":"planned","evidence":["numeric-policy","numeric-properties"]},
+    {"id":"G-CONC-001","priority":"P0","title":"Hot-path sharding and backpressure are not globally specified","workstream":"WS-DATA","milestone":"M3","state":"planned","evidence":["queue-contracts","deterministic-scheduler"]},
+    {"id":"G-OPT-001","priority":"P0","title":"No production StrategyProposal contract","workstream":"WS-OPT","milestone":"M4","state":"planned","evidence":["proposal-schema","proposal-negative-tests"]},
+    {"id":"G-OPT-002","priority":"P0","title":"No global allocator or optimality semantics","workstream":"WS-OPT","milestone":"M4","state":"planned","evidence":["optimizer-determinism","constraint-properties"]},
+    {"id":"G-OPT-003","priority":"P0","title":"No AllocationPlan runtime integration","workstream":"WS-OPT","milestone":"M4","state":"planned","evidence":["shadow-e2e","execution-revalidation"]},
+    {"id":"G-LIFE-001","priority":"P1","title":"No module lifecycle/health/quarantine authority","workstream":"WS-MOD","milestone":"M5","state":"planned","evidence":["lifecycle-state-machine","rollout-rollback"]},
+    {"id":"G-REL-001","priority":"P0","title":"Current exact-head checks are not green","workstream":"WS-REL","milestone":"M0","state":"blocked","evidence":["same-revision-core","same-revision-full"]},
+    {"id":"G-REL-002","priority":"P1","title":"No merge-candidate module-aware verification closure","workstream":"WS-REL","milestone":"M7","state":"planned","evidence":["merge-queue","test-impact"]},
+    {"id":"G-IB-001","priority":"P0","title":"IB PAPER lacks exact-artifact external qualification","workstream":"WS-IB","milestone":"M6","state":"planned","evidence":["ib-paper-qualification"]},
+    {"id":"G-TEAM-001","priority":"P1","title":"Critical ownership has single-person review concentration","workstream":"WS-MOD","milestone":"M7","state":"planned","evidence":["team-codeowners","bus-factor"]},
+    {"id":"G-RES-001","priority":"P1","title":"Dataset and feature registries are not implemented","workstream":"WS-RES","milestone":"M3","state":"planned","evidence":["dataset-registry","feature-registry"]}
+  ]
+}

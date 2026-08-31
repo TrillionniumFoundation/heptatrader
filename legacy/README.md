@@ -1,13 +1,15 @@
-# Legacy source surface
+# Legacy Source Quarantine
 
-Status: deprecated source index
-Applies to: `legacy/`
-Verification: same-revision CI
+Status: current boundary marker
+Applies to: `legacy/` inactive source only
+Verification: `python3 scripts/check_repository_integrity.py`
+Authority: legacy quarantine boundary
 
-This directory preserves the pre-Agent-runtime monolith, historical strategy framework, simulator, vendor-facing interface tree, old Visual Studio projects/configuration and retired direct-order strategy helpers.
+`legacy/` 仅保存尚未删除的历史源码和受法律/供应链要求保留的 vendor provenance。它不是开发文档、构建入口、runtime dependency、capability 或部署路径。
 
-It is intentionally outside the active build, runtime install and documentation capability graph. New execution, risk, Agent, strategy-intent or venue work must not add a dependency from active code into this directory.
+- active target 不得 include、link、execute 或 install `legacy/`；
+- 不在本目录维护历史开发计划、运行手册、截图说明或产品介绍；
+- 新功能不得进入本目录；
+- 删除或迁移遵循 [`../docs/governance/DEPRECATION-POLICY.md`](../docs/governance/DEPRECATION-POLICY.md)。
 
-`legacy/monolith/HeptaTrade/` contains files that formerly sat beside the current runtime but were not compiled by the active CMake graph: the old demo trader, direct multi-strategy implementation, JSONL bridge, watchdog, monolith configuration/instrument tables and the superseded pre-trade risk engine.
-
-Legacy code is reference-only or an input to an explicitly isolated migration. It has no current capability status, no PAPER/LIVE authority and no coverage claim from the default core gate.
+历史内容由 Git history 提供，不在 active tree 中复制。

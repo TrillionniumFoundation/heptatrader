@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "heptatrader.evidence-index.v1",
+  "type": "object",
+  "required": ["schema","git_sha","generated_at","modules","contracts","capabilities","tests","performance","artifacts","qualifications","derived_milestones"],
+  "properties": {
+    "schema": {"const":"heptatrader.evidence-index.v1"},
+    "git_sha": {"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "merge_candidate_sha": {"type":["string","null"],"pattern":"^[0-9a-f]{40}$"},
+    "generated_at": {"type":"string"},
+    "modules": {"type":"object"},
+    "contracts": {"type":"object"},
+    "capabilities": {"type":"object"},
+    "tests": {"type":"object"},
+    "performance": {"type":"object"},
+    "artifacts": {"type":"object"},
+    "qualifications": {"type":"object"},
+    "derived_milestones": {"type":"object"}
+  },
+  "additionalProperties": false
+}
