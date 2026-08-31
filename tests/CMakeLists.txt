@@ -102,6 +102,11 @@ target_link_libraries(hepta_unix_session_supervisor_server_tests
 add_dependencies(hepta_unix_session_supervisor_server_tests hepta_sessionctl)
 target_compile_definitions(hepta_unix_session_supervisor_server_tests PRIVATE
     HEPTA_SESSIONCTL_TEST_BINARY="$<TARGET_FILE:hepta_sessionctl>")
+# The retained legacy test translation unit uses std::sort but historically
+# obtained <algorithm> through a transitive include. Make the dependency
+# explicit at the target boundary without editing the 160 KiB fixture file.
+target_precompile_headers(hepta_unix_session_supervisor_server_tests PRIVATE
+    <algorithm>)
 hepta_register_core_test(hepta_unix_session_supervisor_server_tests)
 set_tests_properties(hepta_unix_session_supervisor_server_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
