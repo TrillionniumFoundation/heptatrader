@@ -7,10 +7,15 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import re
 import stat
 import sys
 import uuid
+
+FULL_SHA256 = re.compile(r"^[0-9a-fA-F]{40}$")
+MAX_SOURCE_DATE_EPOCH = 253402300799  # 9999-12-31T23:59:59Z
 
 
 def digest_file(path: Path) -> str:
@@ -26,24 +31,55 @@ def spdx_file_id(relative: str) -> str:
     return f"SPDXRef-File-{token}"
 
 
+def parse_source_date_epoch(value: str | None) -> int:
+    raw = value if value is not None else os.environ.get("SOURCE_DATE_EPOCH", "0")
+    if not raw or not raw.isascii() or not raw.isdigit():
+        raise ValueError("SOURCE_DATE_EPOCH must be a non-negative decimal integer")
+    epoch = int(raw, 10)
+    if epoch > MAX_SOURCE_DATE_EPOCH:
+        raise ValueError("SOURCE_DATE_EPOCH is outside the supported UTC range")
+    return epoch
+
+
+def source_timestamp(epoch: int) -> str:
+    return (
+        datetime.fromtimestamp(epoch, timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--version-file", type=Path, required=True)
     parser.add_argument("--git-sha", required=True)
+    parser.add_argument("--source-date-epoch")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
-    root = args.root.resolve()
+    root = Path(os.path.abspath(os.fspath(args.root)))
     version = args.version_file.read_text(encoding="utf-8").strip()
-    if not root.is_dir() or not version:
+    git_sha = args.git_sha.strip().lower()
+    try:
+        epoch = parse_source_date_epoch(args.source_date_epoch)
+    except ValueError as error:
+        print(f"invalid SBOM timestamp: {error}", file=sys.stderr)
+        return 2
+    if (
+        not root.is_dir()
+        or root.is_symlink()
+        or not version
+        or FULL_SHA256.fullmatch(git_sha) is None
+    ):
         print("invalid SBOM input", file=sys.stderr)
         return 2
 
     files = []
     relationships = []
     package_id = "SPDXRef-Package-HeptaTrader"
-    for path in sorted(root.rglob("*")):
+    for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
         metadata = path.lstat()
         if stat.S_ISLNK(metadata.st_mode):
             print(f"refusing symlink in SBOM input: {path}", file=sys.stderr)
@@ -71,7 +107,7 @@ def main() -> int:
             }
         )
 
-    namespace_seed = f"heptatrader:{version}:{args.git_sha}:" + ",".join(
+    namespace_seed = f"heptatrader:{version}:{git_sha}:" + ",".join(
         item["fileName"] + item["checksums"][0]["checksumValue"] for item in files
     )
     namespace = uuid.uuid5(uuid.NAMESPACE_URL, namespace_seed)
@@ -82,10 +118,8 @@ def main() -> int:
         "name": f"heptatrader-{version}",
         "documentNamespace": f"https://spdx.org/spdxdocs/heptatrader-{namespace}",
         "creationInfo": {
-            "created": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace(
-                "+00:00", "Z"
-            ),
-            "creators": ["Tool: heptatrader-generate-sbom/1"],
+            "created": source_timestamp(epoch),
+            "creators": ["Tool: heptatrader-generate-sbom/2"],
         },
         "packages": [
             {
@@ -101,7 +135,7 @@ def main() -> int:
                     {
                         "referenceCategory": "OTHER",
                         "referenceType": "gitCommit",
-                        "referenceLocator": args.git_sha,
+                        "referenceLocator": git_sha,
                     }
                 ],
             }
@@ -116,9 +150,10 @@ def main() -> int:
         "relationships": relationships,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+    temporary = args.output.with_name(args.output.name + ".tmp")
+    temporary.write_text(encoded, encoding="utf-8")
+    os.replace(temporary, args.output)
     print(f"SBOM generated: {args.output} ({len(files)} files)")
     return 0
 
