@@ -7,7 +7,7 @@ import argparse
 import hashlib
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
@@ -65,6 +65,18 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def canonical_logical_root(value: str) -> str:
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        raise ValueError("logical root must be a canonical absolute POSIX path")
+    parsed = PurePosixPath(value)
+    if any(part in (".", "..") for part in parsed.parts):
+        raise ValueError("logical root cannot contain dot components")
+    canonical = parsed.as_posix()
+    if canonical != value.rstrip("/") and not (canonical == "/" and value == "/"):
+        raise ValueError("logical root must not contain duplicate or trailing separators")
+    return canonical
 
 
 def map_usr_path(root: Path, absolute: str) -> Path:
@@ -126,7 +138,7 @@ def validate_unit_references(root: Path, errors: list[str]) -> None:
     units = root / "lib/systemd/system"
     if not units.is_dir():
         return
-    for unit in units.glob("*.service"):
+    for unit in sorted(units.glob("*.service"), key=lambda item: item.name):
         text = unit.read_text(encoding="utf-8")
         for absolute in ABSOLUTE_RUNTIME_PATH.findall(text):
             candidate = map_usr_path(root, absolute)
@@ -143,14 +155,20 @@ def validate_unit_references(root: Path, errors: list[str]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--logical-root", default="/usr")
     parser.add_argument("--ib-enabled", action="store_true")
     parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
 
     # abspath normalizes the lexical path without following a possibly hostile
-    # final symlink.  resolve() would hide precisely the root replacement this
+    # final symlink. resolve() would hide precisely the root replacement this
     # verifier is required to detect.
     root = Path(os.path.abspath(os.fspath(args.root)))
+    try:
+        logical_root = canonical_logical_root(args.logical_root)
+    except ValueError as error:
+        print(f"ERROR: invalid logical root: {error}", file=sys.stderr)
+        return 2
     errors: list[str] = []
     root_valid = validate_directory(root, "install root", errors)
 
@@ -166,7 +184,9 @@ def main() -> int:
         for item in files:
             validate_file(root / item, False, errors)
 
-        for path in root.rglob("*"):
+        for path in sorted(
+            root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+        ):
             validate_tree_entry(path, errors)
 
         validate_unit_references(root, errors)
@@ -176,24 +196,48 @@ def main() -> int:
             print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    entries = []
-    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+    file_entries = []
+    directory_entries = [
+        {
+            "path": logical_root,
+            "mode": f"{stat.S_IMODE(root.lstat().st_mode):04o}",
+        }
+    ]
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
         metadata = path.lstat()
-        entries.append(
-            {
-                "path": path.relative_to(root).as_posix(),
-                "sha256": sha256(path),
-                "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
-                "size": metadata.st_size,
-            }
-        )
-    payload = {"schema_version": 1, "root": str(root), "files": entries}
+        relative = path.relative_to(root).as_posix()
+        logical_path = str(PurePosixPath(logical_root) / relative)
+        if stat.S_ISDIR(metadata.st_mode):
+            directory_entries.append(
+                {
+                    "path": logical_path,
+                    "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+                }
+            )
+        elif stat.S_ISREG(metadata.st_mode):
+            file_entries.append(
+                {
+                    "path": logical_path,
+                    "sha256": sha256(path),
+                    "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+                    "size": metadata.st_size,
+                }
+            )
+    payload = {
+        "schema_version": 2,
+        "logical_root": logical_root,
+        "directories": directory_entries,
+        "files": file_entries,
+    }
     if args.manifest:
         args.manifest.parent.mkdir(parents=True, exist_ok=True)
-        args.manifest.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
-    print(f"install tree PASS: {len(entries)} files")
+        encoded = json.dumps(payload, indent=2, sort_keys=True) + "\n"
+        temporary = args.manifest.with_name(args.manifest.name + ".tmp")
+        temporary.write_text(encoded, encoding="utf-8")
+        os.replace(temporary, args.manifest)
+    print(f"install tree PASS: {len(file_entries)} files")
     return 0
 
 
