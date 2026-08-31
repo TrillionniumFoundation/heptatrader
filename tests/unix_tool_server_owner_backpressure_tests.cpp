@@ -1,5 +1,5 @@
 #include "../HeptaTrade/execution/execution_coordinator.h"
-#include "../HeptaTrade/tool_host/trading_tool_registry.h"
+#include "../HeptaTrade/tools/trading_tool_registry.h"
 #include "../HeptaTrade/tool_host/trading_tool_host.h"
 #include "../HeptaTrade/tool_host/unix_tool_client.h"
 #include "../HeptaTrade/tool_host/unix_tool_server.h"
