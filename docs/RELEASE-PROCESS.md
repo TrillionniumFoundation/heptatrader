@@ -8,10 +8,11 @@
 
 1. 候选提交必须是 `main` 的精确当前 head，而不只是可从 `main` 到达的历史提交。
 2. 同一提交的 `CI` push run 必须全部成功，并至少包含：`repository-contracts`、GCC/Clang 的 Debug/Release 四个 core job、`asan-ubsan` 和 `package`。
-3. `VERSION` 为合法 semantic version，且 `Interface/include/heptaVersion.h` 与其一致。
-4. `docs/CAPABILITY-MATRIX.md` 与实际构建范围一致，不存在未处理的 P0/P1 安全回归。
-5. GitHub 环境 `heptatrader-release` 必须由平台管理员启用 required reviewers；环境变量 `HEPTA_RELEASE_APPROVED_SHA` 必须被设置为本次明确批准的 40 位候选提交 SHA。
-6. 对 IB PAPER 的任何声明都必须附带同一 commit 和制品哈希的受控资格认证证据；否则维持 Conditional。
+3. hosted runner 必须与 `ci/hosted-toolchain.lock.json` 完全一致；所有 action 必须与 `ci/actions.lock.json` 中的精确 commit SHA 一致。
+4. `VERSION` 为合法 semantic version，且 `Interface/include/heptaVersion.h` 与其一致。
+5. `docs/CAPABILITY-MATRIX.md` 与实际构建范围一致，不存在未处理的 P0/P1 安全回归。
+6. GitHub 环境 `heptatrader-release` 必须由平台管理员启用 required reviewers；环境变量 `HEPTA_RELEASE_APPROVED_SHA` 必须被设置为本次明确批准的 40 位候选提交 SHA。
+7. 对 IB PAPER 的任何声明都必须附带同一 commit 和制品哈希的受控资格认证证据；否则维持 Conditional。
 
 仓库文件不能替代 GitHub 平台侧的环境保护。若环境未配置、批准 SHA 为空或不匹配，publish job 必须失败。
 
@@ -26,18 +27,23 @@
 1. 校验 tag 与 `VERSION` 完全一致；
 2. 拉取 `origin/main`，要求 tag commit 与其精确相等；
 3. 通过 `scripts/verify_release_ci.py` 查询同一提交的完整成功 CI job 集；
-4. 运行仓库契约和 Python 测试；
-5. 重新配置、构建并运行 Release CTest；
-6. 安装到隔离 staging root，验证 root、全部目录、文件 mode、symlink、special file 和 systemd 引用；
-7. 生成安装 hash manifest、SPDX 2.3 SBOM、TGZ package 与 `SHA256SUMS`；
-8. 仅上传不可变候选 artifact，不拥有 release 发布权限。
+4. 通过 `scripts/verify_ci_toolchain.py` 校验并记录精确 runner/toolchain；
+5. 运行仓库契约和 Python 测试；
+6. 在第一个空 build 目录配置、构建并运行 Release CTest；
+7. 在第二个空 build 目录独立配置和构建同一 release；
+8. 分别安装到不同 staging root，验证 root、全部目录、文件 mode、symlink、special file 和 systemd 引用；
+9. 为两个 staging tree 分别生成 staging-independent manifest、绑定 `SOURCE_DATE_EPOCH` 的 SPDX 2.3 SBOM 和 deterministic `tar.gz`；
+10. 对三类对象逐字节比较，任何差异都拒绝候选；
+11. 生成 `SHA256SUMS` 并仅上传与候选 SHA 绑定的 artifact，不拥有 release 发布权限。
+
+唯一 release archive 入口是 `scripts/build_release_archive.py`。仓库故意不提供 CPack 或其他旁路打包入口。
 
 ### 2. Publish
 
 该阶段依赖 build candidate 成功，并进入受保护的 `heptatrader-release` 环境。它拥有最小化的 contents/attestation 写权限，并执行：
 
-1. 下载与 `GITHUB_SHA` 精确绑定的候选 artifact；
-2. 要求 `HEPTA_RELEASE_APPROVED_SHA == GITHUB_SHA`；
+1. 下载与精确候选 SHA 绑定的 artifact；
+2. 要求 `HEPTA_RELEASE_APPROVED_SHA` 等于该候选 SHA；
 3. 重新校验 `SHA256SUMS`；
 4. 对制品生成 GitHub build provenance；
 5. 最后才创建 GitHub Release。
@@ -46,7 +52,7 @@ release 不复用开发机上的旧 build 或安装目录，也不能由任意�
 
 ## Verification by consumers
 
-解包前校验 `SHA256SUMS` 和 provenance。解包后在目标 root 再运行 `verify_install_tree.py`。部署者必须自行创建受控 OS identity、credentials、env 文件和 network policy，并执行 `RUNBOOK-STARTUP.md`。
+解包前校验 `SHA256SUMS`、toolchain observation 和 provenance。解包后在目标 root 再运行 `verify_install_tree.py`。manifest、SBOM 与制品文档树同时包含 action/toolchain lock 证据。部署者必须自行创建受控 OS identity、credentials、env 文件和 network policy，并执行 `RUNBOOK-STARTUP.md`。
 
 ## Rollback
 
