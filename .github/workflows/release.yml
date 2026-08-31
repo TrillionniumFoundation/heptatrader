@@ -12,9 +12,12 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Verify tag and repository contracts
         run: |
           test "${GITHUB_REF_NAME#v}" = "$(tr -d '\r\n' < VERSION)"
@@ -49,7 +52,7 @@ jobs:
           cpack --config build/CPackConfig.cmake -B dist
           (cd dist && sha256sum * > SHA256SUMS)
       - name: Attest release artifacts
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: 'dist/*'
       - name: Publish GitHub release
