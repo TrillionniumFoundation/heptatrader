@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 jobs:
-  repair-result-size-preflight:
+  apply-tested-repair:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout exact branch
@@ -19,110 +19,11 @@ jobs:
         with:
           ref: codex/heptatrader-documentation-control-plane-v2
           fetch-depth: 0
-      - name: Repair exact aggregate-envelope preflight
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          wire = Path("HeptaTrade/tools/trading_tool_wire_contract.h")
-          text = wire.read_text(encoding="utf-8")
-          if "#include <limits>" not in text:
-              marker = "#include <locale>\n"
-              if text.count(marker) != 1:
-                  raise SystemExit("unexpected include layout")
-              text = text.replace(marker, marker + "#include <limits>\n")
-
-          old_size = '''    static std::size_t EncodedResultEnvelopeSize(const TradingToolResult& result)
-    {
-        return EncodeResultEnvelopeBody(result).size();
-    }
-'''
-          new_size = '''    static std::size_t EncodedResultEnvelopeSize(const TradingToolResult& result)
-    {
-        // Measure the caller's raw candidate, not the fail-closed serialized
-        // fallback.  EncodeResultEnvelopeBody deliberately replaces an
-        // invalid payload with null; using that sanitized body here would
-        // undercount an oversized compound response and defer rejection until
-        // the socket layer, losing the compound tool's canonical reason code.
-        const std::string prefix = EncodeResultEnvelopePrefix(result);
-        const std::size_t payloadSize =
-            result.payloadJson.empty() ? 4u : result.payloadJson.size();
-        const std::size_t maximum =
-            std::numeric_limits<std::size_t>::max();
-        if (prefix.size() > maximum - 1u ||
-            payloadSize > maximum - prefix.size() - 1u)
-            return maximum;
-        return prefix.size() + payloadSize + 1u;
-    }
-'''
-          if text.count(old_size) != 1:
-              raise SystemExit(f"unexpected size-preflight definition: {text.count(old_size)}")
-          text = text.replace(old_size, new_size)
-
-          body_pattern = re.compile(
-              r'    static std::string EncodeResultEnvelopeBody\(const TradingToolResult& result\)\n'
-              r'    \{\n.*?\n    \}\n\n'
-              r'    static std::string EscapeJson',
-              re.DOTALL,
-          )
-          body_replacement = '''    static std::string EncodeResultEnvelopePrefix(
-        const TradingToolResult& result)
-    {
-        std::ostringstream out;
-        // Result envelopes are serialized onto the native/MCP boundary.
-        // Keep numeric formatting independent of the process-global locale;
-        // a comma-decimal locale must never produce non-JSON wire text.
-        out.imbue(std::locale::classic());
-        out << "{\\\"status\\\":\\\"" << StatusName(result.status)
-            << "\\\",\\\"tool\\\":\\\"" << EscapeJson(result.toolName)
-            << "\\\",\\\"reason_code\\\":\\\"" << EscapeJson(result.reasonCode)
-            << "\\\",\\\"detail\\\":\\\"" << EscapeJson(result.detail)
-            << "\\\",\\\"order_id\\\":" << result.orderId
-            << ",\\\"payload\\\":";
-        return out.str();
-    }
-
-    static std::string EncodeResultEnvelopeBody(const TradingToolResult& result)
-    {
-        std::string encoded = EncodeResultEnvelopePrefix(result);
-        // A payload is the one envelope field that intentionally remains raw
-        // JSON. Validate it before appending so a callback cannot close the
-        // payload object and inject sibling fields (or place malformed UTF-8
-        // directly on the frame). There is no failure return channel on this
-        // serializer, so invalid payloads fail closed as JSON null; the Unix
-        // server additionally rejects the original result and emits its
-        // canonical RESULT_ENVELOPE_INVALID/UNCERTAIN response.
-        const bool payloadSafe = !result.payloadJson.empty() &&
-            IsSafePayloadJson(result.payloadJson);
-        encoded += payloadSafe ? result.payloadJson : "null";
-        encoded.push_back('}');
-        return encoded;
-    }
-
-    static std::string EscapeJson'''
-          text, replaced = body_pattern.subn(body_replacement, text)
-          if replaced != 1:
-              raise SystemExit(f"unexpected envelope-body definition: {replaced}")
-          wire.write_text(text, encoding="utf-8")
-
-          test = Path("tests/unix_tool_server_tests.cpp")
-          test_text = test.read_text(encoding="utf-8")
-          old_fixture = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes(), 'x')"
-          new_fixture = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes() - 1024u, 'x')"
-          if test_text.count(old_fixture) != 1:
-              raise SystemExit(f"unexpected WATCH fixture: {test_text.count(old_fixture)}")
-          test.write_text(test_text.replace(old_fixture, new_fixture), encoding="utf-8")
-
-          Path(".github/workflows/gap-closure-patch.yml").unlink()
-          PY
+      - name: Apply one-shot source patch
+        run: python3 scripts/gap_closure_patch.py
       - name: Validate deterministic core
-        shell: bash
         run: ./scripts/dev_core.sh
       - name: Commit exact tested repair
-        shell: bash
         run: |
           set -euo pipefail
           git config user.name "Hepta Gap Closure Bot"
