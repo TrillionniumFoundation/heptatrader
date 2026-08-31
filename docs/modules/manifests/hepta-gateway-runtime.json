@@ -31,6 +31,8 @@
   "allowed_dependencies": [
     "hepta.protocol.contracts",
     "hepta.client.runtime",
+    "hepta.agent.support",
+    "hepta.execution.runtime",
     "hepta.observability.runtime"
   ],
   "forbidden_dependencies": [

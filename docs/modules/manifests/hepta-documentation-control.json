@@ -1,16 +1,21 @@
 {
   "schema": "heptatrader.module-manifest.v2",
   "id": "hepta.documentation.control",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "lifecycle": "current",
   "kind": "governance-tooling",
   "trust_domain": "development",
-  "authority": "registries/generated views",
+  "authority": "registries/generated views/module and build graph validators",
   "ownership_mode": "exclusive",
   "source_roots": [
     "docs/",
+    "scripts/check_cmake_module_graph.py",
     "scripts/check_documentation_control_plane.py",
-    "scripts/generate_documentation_views.py"
+    "scripts/check_module_discipline.py",
+    "scripts/generate_documentation_views.py",
+    "scripts/hepta_document_checks.py",
+    "scripts/hepta_module_boundaries.py",
+    "scripts/hepta_registry_checks.py"
   ],
   "build_targets": [],
   "provides": [
@@ -53,6 +58,7 @@
   "verification": [
     "docs-generated",
     "docs-control",
+    "module-registry",
     "no-historical-docs"
   ]
 }

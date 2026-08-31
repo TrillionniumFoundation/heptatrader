@@ -16,7 +16,7 @@ concurrency:
 jobs:
   core:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -31,17 +31,22 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev python3
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev python3 python3-jsonschema
       - name: Validate entry points
         run: |
           git diff --check
           bash -n scripts/dev_core.sh
           python3 -m py_compile \
             scripts/generate_documentation_views.py \
+            scripts/hepta_module_boundaries.py \
+            scripts/hepta_document_checks.py \
+            scripts/hepta_registry_checks.py \
             scripts/check_documentation_control_plane.py \
             scripts/check_repository_integrity.py \
             scripts/check_schema_catalog.py \
             scripts/check_module_discipline.py \
+            scripts/check_cmake_module_graph.py \
             scripts/check_install_tree.py \
             research/run_protocol.py research/protocol_support.py
           python3 scripts/generate_documentation_views.py --check

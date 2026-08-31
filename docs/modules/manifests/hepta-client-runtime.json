@@ -6,7 +6,7 @@
   "kind": "client-library",
   "trust_domain": "unprivileged-client",
   "authority": "CLI/native/MCP request encoding",
-  "ownership_mode": "exclusive",
+  "ownership_mode": "shared-migration",
   "source_roots": [
     "HeptaTrade/client/",
     "HeptaTrade/cli/",
@@ -64,5 +64,6 @@
     "native-client-contracts",
     "mcp-contracts",
     "tool-catalog-drift"
-  ]
+  ],
+  "migration_gap": "G-MOD-002"
 }

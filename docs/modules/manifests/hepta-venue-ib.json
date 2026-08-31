@@ -11,8 +11,7 @@
     "HeptaTrade/adapter_ib/"
   ],
   "build_targets": [
-    "hepta_ibapi_client",
-    "hepta_ib_executiond"
+    "hepta_ibapi_client"
   ],
   "provides": [
     "hepta.venue.v1"

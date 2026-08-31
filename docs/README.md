@@ -5,38 +5,40 @@ Applies to: the complete active development-document graph
 Verification: `python3 scripts/generate_documentation_views.py --check` and `python3 scripts/check_documentation_control_plane.py`
 Authority: single active documentation index
 
-`docs/` 是 Hepta 唯一现行开发文档体系。旧开发文档、旧文件名跳转页、历史 proposal、截图、PDF 和手工 exact-head 状态不在当前工作树保留；历史只由 Git 提供。法律文件和第三方来源义务使用仓库根法律文件或机器 provenance 保存，不作为第二套开发文档。
+`docs/` is the only current Hepta development-document authority. Historical versions are available through Git history only. Compatibility aliases, old PLAN/status files, archived proposals, screenshots, PDFs, explanatory legacy text and dormant build-system entrypoints are forbidden in the current tree.
 
-## 阅读顺序
+Repository and package README files are entrypoints only. They must be registered by `document-registry-v2.json`, link to one canonical `docs/` target and may not create an independent product, architecture, capability or roadmap claim.
 
-1. [系统宪章](governance/CONSTITUTION.md)
-2. [产品范围](product/PRODUCT-SCOPE.md)与[能力矩阵](product/CAPABILITY-MATRIX.md)
-3. [六平面架构](architecture/PLANE-ARCHITECTURE.md)、[信任边界](architecture/TRUST-BOUNDARIES.md)和[热路径边界](architecture/HOT-PATH-AND-CONTROL-PATH.md)
-4. [模块地图](modules/MODULE-MAP.md)与[ModuleManifest V2](modules/MODULE-MANIFEST-SPEC.md)
-5. [契约索引](contracts/CONTRACT-INDEX.md)
-6. [全局路线图](program/MASTER-ROADMAP.md)、[升级计划](program/DOCUMENTATION-UPGRADE-PLAN.md)和[追踪模型](program/TRACEABILITY-MODEL.md)
-7. [验证策略](verification/VERIFICATION-POLICY.md)
+## Reading order
 
-## 权威域
+1. [System constitution](governance/CONSTITUTION.md)
+2. [Product scope](product/PRODUCT-SCOPE.md) and [capability matrix](product/CAPABILITY-MATRIX.md)
+3. [Six-plane architecture](architecture/PLANE-ARCHITECTURE.md), [trust boundaries](architecture/TRUST-BOUNDARIES.md), [hot/control paths](architecture/HOT-PATH-AND-CONTROL-PATH.md), and [build/source ownership](architecture/BUILD-GRAPH-AND-SOURCE-OWNERSHIP.md)
+4. [Module map](modules/MODULE-MAP.md), [ModuleManifest V2](modules/MODULE-MANIFEST-SPEC.md), and `modules/source-ownership-registry-v1.json`
+5. [Contract index](contracts/CONTRACT-INDEX.md)
+6. [Global roadmap](program/MASTER-ROADMAP.md), [upgrade plan](program/DOCUMENTATION-UPGRADE-PLAN.md), and [traceability model](program/TRACEABILITY-MODEL.md)
+7. [Verification policy](verification/VERIFICATION-POLICY.md)
 
-- `governance/`：最高不变量、文档权威、安全与变更权。
-- `product/`：产品边界和能力声明上限。
-- `architecture/`：平面、数据流、模块、并发、部署和资源拓扑。
-- `contracts/`：跨模块版本化接口、失败和兼容语义。
-- `modules/`：模块、target、state、concurrency、ownership 和迁移债务。
-- `program/`：里程碑、gap、workstream、风险与团队协作。
-- `verification/`：测试、故障、性能、reason code、metric、evidence 和 qualification。
-- `operations/`：配置、启动、部署、发布、事故、对账、回滚和 PAPER 资格认证。
-- `research/`：point-in-time data、feature、回放、验证和 promotion 边界。
-- `development/`：日常开发、PR、契约修改、模块创建和调试。
+## Authority domains
 
-## 机器权威
+- `governance/`: immutable safety, document authority and decision rights.
+- `product/`: product boundary and capability ceilings.
+- `architecture/`: planes, dataflow, concurrency, deployment, resources and physical ownership.
+- `contracts/`: versioned inter-module interfaces and failure semantics.
+- `modules/`: manifests, target/source ownership, resource budgets and extraction debt.
+- `program/`: milestones, gaps, workstreams, risk and team topology.
+- `verification/`: tests, faults, performance, reason codes, metrics, evidence and qualification.
+- `operations/`: configuration, startup, deployment, release, incident, reconciliation and rollback.
+- `research/`: point-in-time data, features, replay, validation and promotion boundaries.
+- `development/`: local development, PR, contract-change, module-creation and debugging workflows.
 
-结构化事实来自 `document-registry-v2.json` 以及 product/modules/contracts/program/verification 下的 JSON registries。以下 Markdown 是确定性生成视图，禁止直接修改：
+## Machine authority
+
+Structural truth comes from `document-registry-v2.json` and the product, contract, module, program and verification registries. The following Markdown files are deterministic generated views and must not be edited directly:
 
 - `product/CAPABILITY-MATRIX.md`
 - `contracts/CONTRACT-INDEX.md`
 - `modules/MODULE-MAP.md`
 - `program/MASTER-ROADMAP.md`
 
-任何未注册文件、旧别名、生成漂移、无 owner 模块、未知契约、失效依赖或历史文档残留都会阻断开发循环。
+Any unregistered document, entrypoint-only violation, generated drift, invalid ModuleManifest schema, unsafe source path, ambiguous physical owner, unregistered target/source compilation, unknown contract, stale dependency or historical documentation/build entry blocks the development loop.

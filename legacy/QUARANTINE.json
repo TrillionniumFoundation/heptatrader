@@ -7,5 +7,7 @@
   "documentation_allowed": false,
   "history_location": "git",
   "allowed_metadata_extensions": [".json"],
+  "forbidden_document_extensions": [".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+  "forbidden_build_entries": ["CMakeLists.txt", "*.cmake", "*.sln", "*.vcxproj", "*.vcxproj.filters"],
   "vendor_provenance": "legacy/vendor/**/manifest-*.json"
 }

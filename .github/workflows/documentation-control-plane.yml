@@ -16,7 +16,7 @@ concurrency:
 jobs:
   docs:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout exact revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -28,14 +28,22 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Validate the canonical documentation graph
+      - name: Install schema validator
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends python3-jsonschema
+      - name: Validate canonical documentation and static module boundaries
         run: |
           git diff --check
           python3 -m py_compile \
             scripts/generate_documentation_views.py \
+            scripts/hepta_module_boundaries.py \
+            scripts/hepta_document_checks.py \
+            scripts/hepta_registry_checks.py \
             scripts/check_documentation_control_plane.py \
             scripts/check_repository_integrity.py \
-            scripts/check_module_discipline.py
+            scripts/check_module_discipline.py \
+            scripts/check_cmake_module_graph.py
           python3 scripts/generate_documentation_views.py --check
           python3 scripts/check_documentation_control_plane.py
           python3 scripts/check_repository_integrity.py

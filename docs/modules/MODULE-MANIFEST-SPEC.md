@@ -1,23 +1,60 @@
-# ModuleManifest V2 规范
+# ModuleManifest V2 Specification
 
 Status: current normative
-Applies to: all current, experimental, planned and unsupported modules
-Verification: module schema, registry, CMake target and dependency checks
-Authority: module manifest authority
+Applies to: all current, experimental, planned, unsupported and deprecated modules
+Verification: Draft 2020-12 validation, source ownership validation and configured CMake File API graph validation
+Authority: module manifest contract
 
-模块边界由 authority、state、failure domain、contract、concurrency、target 和 deployment 决定，而不是由团队组织图或目录大小决定。
+A module is an authority, state, failure and concurrency boundary—not merely a directory. Every module manifest is validated against `module-manifest-schema-v2.json` before semantic checks run.
 
-每个模块必须声明：
+## Required identity and lifecycle
 
-- stable ID、semantic version、lifecycle、kind、trust domain 和 authority；
-- `exclusive` 或临时 `shared-migration` ownership；后者必须绑定开放 gap；
-- source roots、build targets、provided/consumed contracts；
-- allowed/forbidden dependencies；
-- state model、persistence 和唯一 writer；
-- concurrency、shard key、blocking-I/O 和 cross-module-lock policy；
-- backpressure/overflow、risk-increase failure 和 safe-exit behavior；
-- resource budget、DRI、backup、reviewers 和 verification IDs。
+Each manifest declares:
 
-完成模块化的条件是 manifest 与实际 source/target/link/runtime graph 一致。目录存在、类名存在或单测通过均不等于 capability 已集成。
+```text
+schema = heptatrader.module-manifest.v2
+stable module id
+semantic version
+lifecycle
+kind and trust domain
+authority statement
+exclusive or shared-migration ownership
+```
 
-`shared-migration` 仅描述当前组合 target 的技术债；M2 出口要求这些共享面拆成单一 target ownership。模块不能通过 shared utility、header-only 或 test source 注入绕过依赖声明。
+`shared-migration` requires an open `migration_gap`. An exclusive module must not carry a migration gap. Unknown fields, malformed nested objects, duplicate arrays, unsafe paths and invalid lifecycle/ownership values are rejected by the schema.
+
+## Required engineering contracts
+
+Every manifest declares:
+
+```text
+source roots and CMake targets
+provided and consumed contract IDs
+allowed and forbidden module dependencies
+state model / persistence / writer
+concurrency / shard / blocking-I/O / cross-module-lock policy
+backpressure and overflow behavior
+risk-increase and safe-exit failure behavior
+resource budget
+DRI / backup / cross-domain reviewers
+verification check IDs
+```
+
+All contract, module and verification IDs must resolve to canonical registries. Current and experimental CMake targets must exist in the configured or explicitly optional profile.
+
+## Physical source ownership
+
+Manifest claims are not the physical ownership authority. The exact owner of every active C/C++ file is defined in `source-ownership-registry-v1.json`. Multiple manifest claims are permitted only through a bounded exception whose participant set exactly matches the observed owners and whose physical owner, gap, milestone and exit condition are explicit.
+
+The configured CMake graph is read through the File API. A source compiled by a target owned by another module requires an exact `(target, source)` migration exception. Tests that directly compile production sources are governed by the same rule. No wildcard exception or “any owner marked shared” shortcut is allowed.
+
+## Completion rule
+
+A module boundary is complete only when:
+
+1. the manifest passes the formal schema;
+2. all source files have one physical owner;
+3. the configured target/source/dependency graph matches the registries;
+4. no unregistered cross-module compilation remains;
+5. all migration exceptions linked to the module are removed or remain attached to one open gap;
+6. module-local and system verification pass on the same revision.

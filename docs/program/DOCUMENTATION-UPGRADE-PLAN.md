@@ -1,28 +1,43 @@
 # Documentation Control Plane Continuous Upgrade Plan
 
 Status: current normative plan
-Applies to: documentation, registries, generators, validators, CI and install tree
-Verification: M0/M1 gaps and exact-revision gates
+Applies to: documentation, registries, schemas, generators, validators, CI, build graph and install tree
+Verification: M0/M1/M2 gaps and exact-revision gates
 Authority: documentation-upgrade implementation sequence
 
 ## Objective
 
-当前树只保留一套最新开发文档；规范事实单一、结构事实机器可读、动态完成状态由 evidence 派生，任何历史路径或复制正文不能污染后续开发。
+The current tree keeps one discoverable development-document authority. Normative facts are singular, structural facts are machine-readable, generated views are reproducible, and completion state is derived from exact-revision evidence. Git history—not checked-in aliases, archived prose or dormant build entrypoints—is the historical record.
 
-## Sequence
+## Current audit closure sequence
 
-1. **Physical cleanup**：删除 alias、legacy docs/media、old status、old registry 和所有 install/service/CI 引用。
-2. **Authority closure**：document registry 恰好覆盖 `docs/`；法律与 vendor provenance 与开发文档分离。
-3. **Generated views**：Capability Matrix、Contract Index、Module Map、Roadmap 只能从 registry 生成。
-4. **Traceability**：capability → module → contract → verification → milestone/gap 全链路可验证。
-5. **Runtime alignment**：module registry 区分真实 current target、planned target 和 shared-migration debt。
-6. **Exact-revision evidence**：stacked PR、merge candidate、release、qualification 分层验证，不用 prose 宣告完成。
+1. **Physical historical cleanup**  
+   Remove compatibility aliases, old PLAN/status files, legacy Markdown/text/media, and dormant CMake/Visual Studio entrypoints that can be indexed or opened as an alternative project.
+2. **Repository-wide document inventory**  
+   Register every Markdown surface outside `docs/` as an entrypoint-only document linked to one canonical target. No package README may create independent architecture, capability or roadmap authority.
+3. **Formal manifest validation**  
+   Apply the checked-in Draft 2020-12 ModuleManifest schema to every manifest. Reject unknown fields, wrong versions/types, unsafe paths, duplicate arrays and invalid migration states before semantic validation.
+4. **Physical source ownership**  
+   Map every active C/C++ file to exactly one physical owner. Permit overlap only for an exact participant set attached to one open gap, one physical owner and one exit milestone.
+5. **Configured build-graph binding**  
+   Query the CMake File API after configure and validate actual target ownership, compiled sources, direct production-source test inclusion and inter-module dependencies. Static target-name regexes are not sufficient evidence.
+6. **Contract and capability traceability**  
+   Resolve capability → module → contract/schema → source/target owner → verification → gap/workstream/milestone → exact evidence. Generated matrices display registry facts but never create completion state.
+7. **Exact-revision evidence**  
+   Run read-only documentation, core and canonical-full workflows on the unchanged head and merge candidate. External PAPER qualification remains a separate protected lane and never grants LIVE.
 
-## Exit
+## Exit contract
 
-- `docs/` 顶层仅有 `README.md` 和 document registry；
-- `legacy/` 不含 Markdown、文本说明、PDF 或图片；
-- old aliases、old PLAN、manual exact-head files 为零；
-- generator `--check`、documentation checker、repository checker、module checker、install checker和全部 core CI 同一 SHA 通过；
-- 所有清理后的引用不存在；
-- M0/M1 状态只能由 evidence 关闭。
+The documentation-control-plane milestone can close only when all of the following hold on one unchanged revision:
+
+- `docs/` contains one registered current graph and no alias, old PLAN or manual exact-head file;
+- all Markdown outside `docs/` is explicitly registered as entrypoint-only and links to a canonical `docs/` target;
+- `legacy/` contains no development prose, media or build-system entrypoint;
+- every ModuleManifest passes Draft 2020-12 validation;
+- every active C/C++ file has exactly one physical owner or one exact same-gap overlap exception;
+- the configured CMake target/source/dependency graph matches module ownership;
+- every direct production-source compilation is an exact, open-gap migration exception;
+- generated views, documentation, repository, module, CMake graph, install, test and reliability gates pass on the same head;
+- M0/M1/M2 state is closed only by evidence, never by editing prose or a status field.
+
+Execution remains the sole venue-mutation authority throughout this work. CTP, XT/MiniQMT and LIVE remain unsupported/fail-closed; IB PAPER remains conditional on external exact-artifact qualification.

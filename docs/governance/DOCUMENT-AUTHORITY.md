@@ -1,47 +1,52 @@
-# 文档权威与唯一真相规则
+# Document Authority and Single-Truth Rules
 
 Status: current normative
-Applies to: `docs/`, root README, registries, generators and validators
+Applies to: `docs/`, repository/package README entrypoints, registries, generators, validators and evidence
 Verification: `python3 scripts/generate_documentation_views.py --check` and `python3 scripts/check_documentation_control_plane.py`
 Authority: documentation-governance authority
 
-Hepta 文档控制平面由三类对象组成：规范性文档、机器注册表和 exact-revision 生成证据。
+The Hepta documentation control plane contains three authoritative object classes: normative documents, machine registries and exact-revision evidence. Human-readable generated views are derived projections, not a fourth source of truth.
 
-## 权威顺序
+## Authority order
 
-行为语义冲突时：
+For behavioral semantics:
 
 ```text
 CONSTITUTION / accepted ADR
   > versioned schema and contract
-  > ModuleManifest and module registry
+  > ModuleManifest, physical source ownership and configured build graph
   > capability registry
   > program registries and generated views
   > explanatory prose
 ```
 
-状态冲突时：
+For current completion state:
 
 ```text
-exact-revision generated evidence
+exact-revision or protected external evidence
   > registry-derived state
   > generated Markdown view
-  > PR summary or discussion
+  > PR summary, issue or discussion
 ```
 
-## 唯一正文
+## One canonical body
 
-- 每个主题只能存在一个 canonical document 或 registry entry。
-- Compatibility alias、redirect Markdown、复制正文、`docs/legacy/` 和 `docs/proposals/` 全部禁止。
-- 历史开发文档、图像和 PDF 只存在于 Git history，不放入 active tree 或 `legacy/`。
-- 生成视图只能由 `generate_documentation_views.py` 产生。
-- 所有 `docs/` 文件必须被 document registry 恰好注册一次。
-- 法律文本和 vendor provenance 不属于开发文档；前者位于仓库根，后者采用 JSON manifest/provenance。
+- Every topic has one canonical document or registry entry.
+- Compatibility aliases, redirect Markdown, copied bodies, `docs/legacy/` and `docs/proposals/` are forbidden.
+- Historical development prose, images, PDFs and dormant project/build entrypoints live only in Git history, not in `docs/` or `legacy/`.
+- All files under `docs/` are registered exactly once.
+- All Markdown outside `docs/` is registered as `entrypoint-only`, declares no independent authority and links to one canonical `docs/` target.
+- Generated views are written only by `generate_documentation_views.py`.
+- Legal texts and vendor provenance are not development documents. Legal files remain at repository root; provenance uses machine-readable JSON.
 
-## 元数据
+## Metadata and dynamic state
 
-每个规范性或生成 Markdown 在前 12 行内必须包含 `Status:`、`Applies to:`、`Verification:` 和 `Authority:`。规范文档不得硬编码 mutable commit SHA、当前 workflow 结论或“全部 gap 已关闭”等动态结论。
+Every normative or generated Markdown file contains `Status:`, `Applies to:`, `Verification:` and `Authority:` within its first 14 lines. Normative documents cannot hard-code a mutable commit SHA, workflow result or “all gaps closed” assertion. Repository entrypoints must declare `Authority: entrypoint only`.
 
-## 修改规则
+## Structural truth
 
-新增主题前先确认不存在已有 authority；修改 registry 后重生成视图；删除文档时同时删除所有 registry、install、service、CI 和代码引用。一次变更如果无法让生成器与 checker 在同一树通过，不得进入评审。
+A module statement is valid only when the formal manifest schema, physical source owner, configured CMake target/source/dependency graph and registry cross-references agree. Directory names and static target-name searches are not sufficient evidence.
+
+## Change rule
+
+Before adding a topic, confirm no canonical authority already exists. A registry change must regenerate every affected view. Removing or renaming a document requires removal of every registry, package, install, service, CI and code reference in the same change. A change that cannot make generators and validators pass in one tree cannot enter review.

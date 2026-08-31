@@ -8,6 +8,7 @@
   "authority": "only venue mutation/state/OMS/permit authority",
   "ownership_mode": "shared-migration",
   "source_roots": [
+    "HeptaTrade/cli/hepta_paper_terminal_latch_committer.cpp",
     "HeptaTrade/execution/",
     "HeptaTrade/intent/",
     "HeptaTrade/state/",
@@ -19,6 +20,7 @@
     "hepta_execution_core",
     "hepta_trading_tool_core",
     "hepta_executiond",
+    "hepta_ib_executiond",
     "hepta_paper_terminal_latch_committer"
   ],
   "provides": [
