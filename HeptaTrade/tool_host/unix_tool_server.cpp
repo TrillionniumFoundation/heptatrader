@@ -674,6 +674,7 @@ void UnixToolServer::QueueRequest(
         TradingToolResult result;
         result.status = pending.mutation ?
             TradingToolCallStatus::Uncertain : TradingToolCallStatus::Rejected;
+        result.toolName = request.call.name;
         result.reasonCode = pending.mutation ?
             "SERVER_STOPPED_AFTER_DURABLE_INTENT" :
             "SERVER_STOPPED_BEFORE_DISPATCH";
@@ -690,6 +691,7 @@ void UnixToolServer::QueueRequest(
         ++m_ownerBackpressureRejections;
         TradingToolResult result;
         result.status = TradingToolCallStatus::Rejected;
+        result.toolName = request.call.name;
         result.reasonCode = "OWNER_QUEUE_BACKPRESSURE";
         result.detail = "owner pending request limit reached";
         if (observer && peerMatches) observer(pending.binding, result.reasonCode);
