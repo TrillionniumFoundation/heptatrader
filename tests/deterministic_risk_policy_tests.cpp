@@ -202,6 +202,42 @@ void TestFreshnessAndSnapshotGates()
 
 void TestOptionalPortfolioBudgets()
 {
+    {
+        DeterministicRiskLimits limits = Limits();
+        limits.maxNetPosition = 5.0;
+        DeterministicRiskContext context = Context();
+        context.projectedNetPosition = 6.0;
+        ExpectReject(limits, context, "RISK_NET_POSITION_LIMIT");
+    }
+
+    {
+        DeterministicRiskLimits limits = Limits();
+        limits.maxStrategyGrossPosition = 6.0;
+        DeterministicRiskContext context = Context();
+        context.strategyGrossPosition = 5.0;
+        context.projectedStrategyGrossPosition = 7.0;
+        ExpectReject(limits, context, "RISK_STRATEGY_GROSS_LIMIT");
+    }
+
+    {
+        DeterministicRiskLimits limits = Limits();
+        limits.maxDailyLoss = 100.0;
+        DeterministicRiskContext context = Context();
+        context.dailyPnl = -100.0;
+        ExpectReject(limits, context, "RISK_DAILY_LOSS_LIMIT");
+    }
+
+    {
+        DeterministicRiskLimits limits = Limits();
+        limits.maxDrawdown = 50.0;
+        DeterministicRiskContext context = Context();
+        context.drawdown = 50.0;
+        ExpectReject(limits, context, "RISK_DRAWDOWN_LIMIT");
+    }
+}
+
+void TestMultipleViolationPriorityIsStable()
+{
     DeterministicRiskLimits limits = Limits();
     limits.maxNetPosition = 5.0;
     limits.maxStrategyGrossPosition = 6.0;
@@ -209,21 +245,16 @@ void TestOptionalPortfolioBudgets()
     limits.maxDrawdown = 50.0;
 
     DeterministicRiskContext context = Context();
-    context.projectedNetPosition = 6.0;
-    ExpectReject(limits, context, "RISK_NET_POSITION_LIMIT");
-
-    context = Context();
+    context.projectedNetPosition = 7.0;
     context.strategyGrossPosition = 5.0;
     context.projectedStrategyGrossPosition = 7.0;
-    ExpectReject(limits, context, "RISK_STRATEGY_GROSS_LIMIT");
-
-    context = Context();
     context.dailyPnl = -100.0;
-    ExpectReject(limits, context, "RISK_DAILY_LOSS_LIMIT");
-
-    context = Context();
     context.drawdown = 50.0;
-    ExpectReject(limits, context, "RISK_DRAWDOWN_LIMIT");
+
+    // The policy publishes one stable primary reason in evaluation order.
+    // Additional violations may be exposed later as diagnostics, but cannot
+    // change the canonical first reason without a versioned contract change.
+    ExpectReject(limits, context, "RISK_NET_POSITION_LIMIT");
 }
 
 void TestPriceDeviation()
@@ -268,6 +299,7 @@ int main()
     TestFlattenOnly();
     TestFreshnessAndSnapshotGates();
     TestOptionalPortfolioBudgets();
+    TestMultipleViolationPriorityIsStable();
     TestPriceDeviation();
     TestInvalidNumbersFailClosed();
     return 0;
