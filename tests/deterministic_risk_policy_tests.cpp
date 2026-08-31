@@ -31,6 +31,8 @@ DeterministicRiskContext Context()
     context.referencePrice = 100.0;
     context.grossAbsolutePosition = 5.0;
     context.projectedGrossAbsolutePosition = 7.0;
+    context.netPosition = 5.0;
+    context.projectedNetPosition = 7.0;
     return context;
 }
 
@@ -41,6 +43,8 @@ DeterministicRiskContext StrictReduction()
     context.quantity = 2.0;
     context.grossAbsolutePosition = 5.0;
     context.projectedGrossAbsolutePosition = 3.0;
+    context.netPosition = 5.0;
+    context.projectedNetPosition = 3.0;
     context.exposureReducing = true;
     return context;
 }
@@ -115,6 +119,8 @@ void TestProjectedGrossLimitAndReductionEscape()
     context.quantity = 3.0;
     context.grossAbsolutePosition = 25.0;
     context.projectedGrossAbsolutePosition = 22.0;
+    context.netPosition = 5.0;
+    context.projectedNetPosition = 2.0;
     const DeterministicRiskDecision reduction =
         DeterministicRiskPolicy::Evaluate(Limits(), context);
     assert(reduction.allow);
@@ -124,17 +130,56 @@ void TestReduceOnlyCannotCrossZero()
 {
     DeterministicRiskContext context = StrictReduction();
     // Current exposure can be +10 and a SELL 15 would project gross from 10 to
-    // 5 while crossing into a new -5 position. The gross reduction is only 5,
-    // not the submitted quantity 15, so the independent proof rejects it.
+    // 5 while crossing into a new -5 position. The signed position projection
+    // must reject it independently of any portfolio-gross tolerance.
     context.quantity = 15.0;
     context.grossAbsolutePosition = 10.0;
     context.projectedGrossAbsolutePosition = 5.0;
+    context.netPosition = 10.0;
+    context.projectedNetPosition = -5.0;
     ExpectReject(Limits(), context, "RISK_ORDER_QUANTITY_LIMIT");
 
     DeterministicRiskLimits wider = Limits();
     wider.maxOrderQuantity = 20.0;
     wider.maxOrderNotional = 5000.0;
     ExpectReject(wider, context, "RISK_REDUCE_ONLY_CROSS_ZERO");
+}
+
+void TestPortfolioScaleCannotHideCrossZero()
+{
+    DeterministicRiskLimits limits = Limits();
+    limits.maxOrderQuantity = 20.0;
+    limits.maxOrderNotional = 5000.0;
+    limits.maxGrossPosition = 2.0e12;
+
+    DeterministicRiskContext context = StrictReduction();
+    context.quantity = 15.0;
+    context.netPosition = 10.0;
+    context.projectedNetPosition = -5.0;
+    context.grossAbsolutePosition = 1.0e12;
+    context.projectedGrossAbsolutePosition = context.grossAbsolutePosition - 5.0;
+
+    // The former portfolio-scaled equality tolerance considered the ten-unit
+    // gross mismatch negligible at this book size. Signed local projection is
+    // now authoritative, so a crossing order cannot use the kill-switch exit
+    // lane regardless of unrelated portfolio exposure.
+    limits.globalKillSwitch = true;
+    ExpectReject(limits, context, "RISK_REDUCE_ONLY_CROSS_ZERO");
+}
+
+void TestReductionProjectionMustMatchOrder()
+{
+    DeterministicRiskContext context = StrictReduction();
+    context.projectedNetPosition = 2.5;
+    ExpectReject(Limits(), context, "RISK_REDUCE_ONLY_CROSS_ZERO");
+
+    context = StrictReduction();
+    context.action = "BUY";
+    context.netPosition = 5.0;
+    context.projectedNetPosition = 7.0;
+    context.grossAbsolutePosition = 5.0;
+    context.projectedGrossAbsolutePosition = 3.0;
+    ExpectReject(Limits(), context, "RISK_REDUCE_ONLY_CROSS_ZERO");
 }
 
 void TestFlattenOnly()
@@ -218,6 +263,8 @@ int main()
     TestRateAndActiveOrderLimits();
     TestProjectedGrossLimitAndReductionEscape();
     TestReduceOnlyCannotCrossZero();
+    TestPortfolioScaleCannotHideCrossZero();
+    TestReductionProjectionMustMatchOrder();
     TestFlattenOnly();
     TestFreshnessAndSnapshotGates();
     TestOptionalPortfolioBudgets();
