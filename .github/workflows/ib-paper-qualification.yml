@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       mutation_mode:
-        description: Run the separately controlled PAPER mutation campaign
+        description: Explicitly approve the bounded real PAPER mutation campaign
         required: true
         type: boolean
         default: false
@@ -25,12 +25,25 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Require explicit bounded mutation approval
+        env:
+          MUTATION_MODE: ${{ inputs.mutation_mode }}
+        run: |
+          set -euo pipefail
+          if [[ "$MUTATION_MODE" != "true" ]]; then
+            echo "IB PAPER qualification requires mutation_mode=true and protected environment approval" >&2
+            exit 78
+          fi
       - name: Validate controlled runner inputs
         run: |
+          set -euo pipefail
           test -n "${IBAPI_ROOT:-}"
           test -d "$IBAPI_ROOT"
+          test ! -L "$IBAPI_ROOT"
           test -n "${HEPTA_IB_PAPER_QUALIFIER:-}"
+          test -f "$HEPTA_IB_PAPER_QUALIFIER"
           test -x "$HEPTA_IB_PAPER_QUALIFIER"
+          test ! -L "$HEPTA_IB_PAPER_QUALIFIER"
       - name: Configure broker-enabled build
         run: >-
           cmake -S . -B build -G Ninja
@@ -51,16 +64,33 @@ jobs:
         run: ctest --test-dir build --output-on-failure --parallel 1 -L core
       - name: Validate IB-enabled install tree
         run: |
+          set -euo pipefail
           rm -rf "$RUNNER_TEMP/heptatrader-ib-stage"
           cmake --install build --prefix "$RUNNER_TEMP/heptatrader-ib-stage/usr"
           python3 scripts/verify_install_tree.py \
             --root "$RUNNER_TEMP/heptatrader-ib-stage/usr" \
+            --logical-root /usr \
             --ib-enabled \
             --manifest "$RUNNER_TEMP/heptatrader-ib-stage/install-manifest.json"
-      - name: Run controlled PAPER qualification harness
+      - name: Run and independently verify controlled PAPER qualification
         env:
-          HEPTA_QUALIFICATION_MUTATIONS: ${{ inputs.mutation_mode && '1' || '0' }}
-        run: ./scripts/run_ib_paper_qualification.sh build "$RUNNER_TEMP/heptatrader-ib-evidence"
+          HEPTA_QUALIFICATION_MUTATIONS: '1'
+        run: >-
+          ./scripts/run_ib_paper_qualification.sh
+          build
+          "$RUNNER_TEMP/heptatrader-ib-evidence"
+      - name: Re-verify committed qualification artifact
+        run: |
+          set -euo pipefail
+          GIT_SHA="$(git rev-parse HEAD)"
+          BINARY="$(find build -type f -name hepta-ib-executiond -perm -u+x -print -quit)"
+          test -n "$BINARY"
+          python3 scripts/verify_ib_paper_qualification.py \
+            --result "$RUNNER_TEMP/heptatrader-ib-evidence/qualification-result.json" \
+            --evidence-root "$RUNNER_TEMP/heptatrader-ib-evidence" \
+            --expected-git-sha "$GIT_SHA" \
+            --expected-binary "$BINARY" \
+            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
