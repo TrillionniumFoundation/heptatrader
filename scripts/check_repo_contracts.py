@@ -20,6 +20,9 @@ REQUIRED_PATHS = (
     ".github/workflows/nightly-sanitizers.yml",
     ".github/workflows/ib-paper-qualification.yml",
     ".github/workflows/release.yml",
+    "cmake/HeptaInstall.cmake",
+    "cmake/HeptaProjectOptions.cmake",
+    "cmake/HeptaTargetHardening.cmake",
     "docs/CAPABILITY-MATRIX.md",
     "docs/RELEASE-PROCESS.md",
     "docs/RUNBOOK-STARTUP.md",
@@ -50,9 +53,28 @@ FORBIDDEN_WORKSPACE_PATTERNS = (
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".cmake", ".txt", ".yml", ".yaml", ".json"}
 PORTABILITY_ROOTS = (".github", "cmake", "docs", "scripts", "systemd", "plugins")
+# The negative look-behind includes '/' so an installed path such as
+# lib/systemd/system/foo.service is not mistaken for a repository path rooted
+# at systemd/. Backslashes are normalized before matching.
 REPOSITORY_PATH_REFERENCE = re.compile(
-    r"(?<![A-Za-z0-9_.-])((?:scripts|docs|systemd|strategies)[\\/][A-Za-z0-9_./\\-]+\.(?:py|sh|ps1|md|service|socket|timer|example|json|xml))"
+    r"(?<![-A-Za-z0-9_./])((?:scripts|docs|systemd|strategies)/[-A-Za-z0-9_./]+\.(?:py|sh|ps1|md|service|socket|timer|example|json|xml))"
 )
+
+# Runtime names can differ from CMake target names through OUTPUT_NAME or
+# install(PROGRAMS ... RENAME ...). Each entry must have at least one token in
+# the canonical install graph.
+EXECUTABLE_INSTALL_TOKENS = {
+    "hepta-tool-gatewayd": ("hepta_tool_gatewayd",),
+    "hepta-executiond": ("hepta_executiond",),
+    "hepta-ib-executiond": ("hepta_ib_executiond",),
+    "hepta-broker-egress-policy": ("hepta_broker_egress_policy.py",),
+    "hepta-observability": ("hepta_observability.py",),
+}
+
+DYNAMIC_ENV_EXAMPLES = {
+    "trust-domains/%i.env": "systemd/hepta-tool-gateway-domain.env.example",
+    "trust-domains/%i.execution.env": "systemd/hepta-execution-simulator.env.example",
+}
 
 
 def relative(path: Path) -> str:
@@ -141,12 +163,24 @@ def check_portability(errors: list[str]) -> None:
                 errors.append(
                     f"developer-specific absolute path in {relative(path)}: {match.group(0)!r}")
                 break
-        for raw in REPOSITORY_PATH_REFERENCE.findall(text):
-            normalized = raw.replace("\\", "/")
-            target = ROOT / normalized
+        normalized_text = text.replace("\\", "/")
+        for raw in REPOSITORY_PATH_REFERENCE.findall(normalized_text):
+            target = ROOT / raw
             if not target.is_file():
                 errors.append(
                     f"stale repository path in {relative(path)}: {raw}")
+
+
+def install_declares(executable: str, install_manifest: str) -> bool:
+    tokens = EXECUTABLE_INSTALL_TOKENS.get(executable)
+    return tokens is not None and any(token in install_manifest for token in tokens)
+
+
+def environment_example(environment_file: str) -> Path:
+    dynamic = DYNAMIC_ENV_EXAMPLES.get(environment_file)
+    if dynamic:
+        return ROOT / dynamic
+    return ROOT / "systemd" / f"{environment_file}.example"
 
 
 def check_systemd_contracts(errors: list[str]) -> None:
@@ -163,19 +197,25 @@ def check_systemd_contracts(errors: list[str]) -> None:
             if not doc.is_file():
                 errors.append(
                     f"{relative(unit)} references missing documentation {relative(doc)}")
+
         for match in re.finditer(
-            r"^(?:ExecStart|ExecStop)=.*?/usr/libexec/([A-Za-z0-9._-]+)",
+            r"^(?:ExecStart|ExecStop|LoadCredential)=.*?/usr/libexec/([A-Za-z0-9._-]+)",
             text,
             re.MULTILINE,
         ):
             executable = match.group(1)
-            if executable not in install_manifest:
+            if executable not in EXECUTABLE_INSTALL_TOKENS:
+                errors.append(
+                    f"{relative(unit)} references an unknown packaged executable: {executable}")
+            elif not install_declares(executable, install_manifest):
                 errors.append(
                     f"{relative(unit)} executable is not declared by install graph: {executable}")
+
         for match in re.finditer(
             r"^EnvironmentFile=-?/etc/heptatrader/([^\s]+)$", text, re.MULTILINE
         ):
-            example = ROOT / "systemd" / f"{match.group(1)}.example"
+            environment_file = match.group(1)
+            example = environment_example(environment_file)
             if not example.is_file():
                 errors.append(
                     f"{relative(unit)} has no checked-in environment example: {relative(example)}")
