@@ -6,26 +6,42 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
+  actions: read
+  checks: read
+
+concurrency:
+  group: heptatrader-release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
+  build-candidate:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          fetch-depth: 1
           persist-credentials: false
-      - name: Verify tag and repository contracts
+      - name: Bind tag to qualified current main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           test "${GITHUB_REF_NAME#v}" = "$(tr -d '\r\n' < VERSION)"
+          git fetch --no-tags --depth=1 origin main:refs/remotes/origin/main
+          MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
+          python3 scripts/verify_release_ci.py \
+            --repository "$GITHUB_REPOSITORY" \
+            --sha "$GITHUB_SHA" \
+            --main-sha "$MAIN_SHA"
+      - name: Verify repository contracts
+        run: |
           python3 scripts/check_repo_contracts.py
           python3 -m unittest discover -s tests/python -p 'test_*.py' -v
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
-      - name: Build and test release
+      - name: Build and test release candidate
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
@@ -39,6 +55,7 @@ jobs:
           ctest --test-dir build --output-on-failure --parallel 2 -L core
       - name: Stage, verify, package, and generate SBOM
         run: |
+          set -euo pipefail
           cmake --install build --prefix "$RUNNER_TEMP/stage/usr"
           mkdir -p dist
           python3 scripts/verify_install_tree.py \
@@ -51,6 +68,36 @@ jobs:
             --output dist/heptatrader.spdx.json
           cpack --config build/CPackConfig.cmake -B dist
           (cd dist && sha256sum * > SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: heptatrader-release
+    permissions:
+      contents: write
+      actions: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-candidate-${{ github.sha }}
+          path: dist
+      - name: Verify protected approval and candidate integrity
+        env:
+          APPROVED_SHA: ${{ vars.HEPTA_RELEASE_APPROVED_SHA }}
+        run: |
+          set -euo pipefail
+          [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$APPROVED_SHA" = "$GITHUB_SHA"
+          (cd dist && sha256sum -c SHA256SUMS)
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
@@ -58,4 +105,8 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes
+        run: >-
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY"
+          --verify-tag
+          --generate-notes
