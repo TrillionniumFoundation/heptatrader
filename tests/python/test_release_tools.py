@@ -7,10 +7,12 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+SOURCE_EPOCH = "1700000000"
 
 
 def load_script_module(name: str, relative_path: str):
@@ -62,18 +64,63 @@ def create_minimal_install_tree(root: Path) -> None:
         directory.chmod(0o755)
 
 
-def run_install_verifier(root: Path) -> subprocess.CompletedProcess[str]:
+def run_install_verifier(
+    root: Path, manifest: Path | None = None
+) -> subprocess.CompletedProcess[str]:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/verify_install_tree.py"),
+        "--root",
+        str(root),
+        "--logical-root",
+        "/usr",
+    ]
+    if manifest is not None:
+        command.extend(["--manifest", str(manifest)])
     return subprocess.run(
-        [
-            sys.executable,
-            str(ROOT / "scripts/verify_install_tree.py"),
-            "--root",
-            str(root),
-        ],
+        command,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
+    )
+
+
+def run_sbom(root: Path, version: Path, output: Path) -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/generate_sbom.py"),
+            "--root",
+            str(root),
+            "--version-file",
+            str(version),
+            "--git-sha",
+            "a" * 40,
+            "--source-date-epoch",
+            SOURCE_EPOCH,
+            "--output",
+            str(output),
+        ],
+        check=True,
+    )
+
+
+def run_archive(root: Path, output: Path) -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/build_release_archive.py"),
+            "--root",
+            str(root),
+            "--prefix",
+            "usr",
+            "--source-date-epoch",
+            SOURCE_EPOCH,
+            "--output",
+            str(output),
+        ],
+        check=True,
     )
 
 
@@ -102,7 +149,7 @@ def successful_ci_fixture(verifier, sha: str, run_id: int = 17):
 
 
 class ReleaseToolTests(unittest.TestCase):
-    def test_sbom_contains_every_regular_file(self) -> None:
+    def test_sbom_is_deterministic_and_contains_every_regular_file(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
             install = workspace / "usr"
@@ -112,24 +159,15 @@ class ReleaseToolTests(unittest.TestCase):
             binary.chmod(0o755)
             version = workspace / "VERSION"
             version.write_text("0.1.0-beta.1\n", encoding="utf-8")
-            output = workspace / "sbom.spdx.json"
-            subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts/generate_sbom.py"),
-                    "--root",
-                    str(install),
-                    "--version-file",
-                    str(version),
-                    "--git-sha",
-                    "a" * 40,
-                    "--output",
-                    str(output),
-                ],
-                check=True,
-            )
-            payload = json.loads(output.read_text(encoding="utf-8"))
+            first = workspace / "first.spdx.json"
+            second = workspace / "second.spdx.json"
+            run_sbom(install, version, first)
+            run_sbom(install, version, second)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+
+            payload = json.loads(first.read_text(encoding="utf-8"))
             self.assertEqual(payload["spdxVersion"], "SPDX-2.3")
+            self.assertEqual(payload["creationInfo"]["created"], "2023-11-14T22:13:20Z")
             self.assertEqual(payload["packages"][0]["versionInfo"], "0.1.0-beta.1")
             self.assertEqual([item["fileName"] for item in payload["files"]], ["./bin/heptactl"])
 
@@ -140,6 +178,53 @@ class ReleaseToolTests(unittest.TestCase):
             create_minimal_install_tree(root)
             result = run_install_verifier(root)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "install mode tests require POSIX permissions")
+    def test_install_manifest_is_independent_of_staging_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            first_root = workspace / "first-stage/usr"
+            second_root = workspace / "different-stage/usr"
+            create_minimal_install_tree(first_root)
+            create_minimal_install_tree(second_root)
+            first_manifest = workspace / "first.json"
+            second_manifest = workspace / "second.json"
+            first = run_install_verifier(first_root, first_manifest)
+            second = run_install_verifier(second_root, second_manifest)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            self.assertEqual(second.returncode, 0, second.stderr)
+            self.assertEqual(first_manifest.read_bytes(), second_manifest.read_bytes())
+            payload = json.loads(first_manifest.read_text(encoding="utf-8"))
+            self.assertEqual(payload["logical_root"], "/usr")
+            self.assertTrue(
+                all(item["path"].startswith("/usr/") for item in payload["files"])
+            )
+
+    @unittest.skipUnless(os.name == "posix", "archive tests require POSIX permissions")
+    def test_release_archive_is_byte_reproducible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            install = workspace / "stage/usr"
+            create_minimal_install_tree(install)
+            first = workspace / "first.tar.gz"
+            second = workspace / "second.tar.gz"
+            run_archive(install, first)
+            run_archive(install, second)
+            self.assertEqual(first.read_bytes(), second.read_bytes())
+
+            with tarfile.open(first, "r:gz") as archive:
+                members = archive.getmembers()
+            names = [member.name for member in members]
+            self.assertEqual(names, sorted(names))
+            self.assertEqual(names[0], "usr")
+            for member in members:
+                self.assertEqual(member.uid, 0)
+                self.assertEqual(member.gid, 0)
+                self.assertEqual(member.uname, "root")
+                self.assertEqual(member.gname, "root")
+                self.assertEqual(member.mtime, int(SOURCE_EPOCH))
+                self.assertFalse(member.issym())
+                self.assertFalse(member.islnk())
 
     @unittest.skipUnless(os.name == "posix", "install mode tests require POSIX permissions")
     def test_install_verifier_rejects_writable_root(self) -> None:
