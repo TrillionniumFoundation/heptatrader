@@ -36,7 +36,12 @@ CORE_FILES = (
     "share/doc/heptatrader/VERSION",
     "share/doc/heptatrader/LICENSE",
     "share/doc/heptatrader/CAPABILITY-MATRIX.md",
+    "share/doc/heptatrader/IB-PAPER-QUALIFICATION.md",
+    "share/doc/heptatrader/RELEASE-PROCESS.md",
     "share/doc/heptatrader/RUNBOOK-STARTUP.md",
+    "share/doc/heptatrader/SUPPLY-CHAIN.md",
+    "share/doc/heptatrader/ci/actions.lock.json",
+    "share/doc/heptatrader/ci/hosted-toolchain.lock.json",
 )
 IB_EXECUTABLES = (
     "libexec/hepta-ib-executiond",
