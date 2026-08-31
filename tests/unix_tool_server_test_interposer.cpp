@@ -1,3 +1,13 @@
+#ifdef connect
+#undef connect
+#endif
+#ifdef close
+#undef close
+#endif
+#ifdef usleep
+#undef usleep
+#endif
+
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
@@ -14,42 +24,35 @@ std::set<int> gConnectedClients;
 bool gPressureHoldUsed = false;
 }
 
-extern "C" int __real_connect(
-    int socket,
-    const struct sockaddr* address,
-    socklen_t addressLength);
-extern "C" int __real_close(int descriptor);
-extern "C" int __real_usleep(useconds_t microseconds);
-
-extern "C" int __wrap_connect(
-    int socket,
+extern "C" int hepta_test_connect(
+    int socketDescriptor,
     const struct sockaddr* address,
     socklen_t addressLength)
 {
-    const int result = __real_connect(socket, address, addressLength);
+    const int result = ::connect(socketDescriptor, address, addressLength);
     if (result == 0)
     {
         std::lock_guard<std::mutex> lock(gPressureMutex);
-        gConnectedClients.insert(socket);
+        gConnectedClients.insert(socketDescriptor);
         gPressureCondition.notify_all();
     }
     return result;
 }
 
-extern "C" int __wrap_close(int descriptor)
+extern "C" int hepta_test_close(int descriptor)
 {
     {
         std::lock_guard<std::mutex> lock(gPressureMutex);
         if (gConnectedClients.erase(descriptor) != 0)
             gPressureCondition.notify_all();
     }
-    return __real_close(descriptor);
+    return ::close(descriptor);
 }
 
-extern "C" int __wrap_usleep(useconds_t microseconds)
+extern "C" int hepta_test_usleep(useconds_t microseconds)
 {
     if (microseconds != 150000)
-        return __real_usleep(microseconds);
+        return ::usleep(microseconds);
 
     {
         std::unique_lock<std::mutex> lock(gPressureMutex);
@@ -57,19 +60,16 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
         {
             gPressureHoldUsed = true;
 
-            // At this point the first same-owner request is executing. While
-            // it is held, the remaining clients can connect, send and enter
-            // the two-entry owner queue. The fourth request must be rejected.
+            // The first same-owner request is executing.  Hold its only owner
+            // slot until all four pressure clients are connected, then until
+            // one client receives and closes a backpressure response.  An
+            // accepted request cannot close while this callback is held.
             const bool allClientsConnected = gPressureCondition.wait_for(
                 lock,
                 std::chrono::seconds(2),
                 []() { return gConnectedClients.size() >= 4; });
-
             if (allClientsConnected)
             {
-                // An accepted request cannot close while this callback owns
-                // the sole per-owner execution slot. A client disappearing
-                // here is therefore the observable backpressure response.
                 gPressureCondition.wait_for(
                     lock,
                     std::chrono::seconds(2),
@@ -78,5 +78,5 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
         }
     }
 
-    return __real_usleep(microseconds);
+    return ::usleep(microseconds);
 }
