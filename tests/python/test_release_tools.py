@@ -12,28 +12,32 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def load_repo_contracts_module():
-    path = ROOT / "scripts/check_repo_contracts.py"
-    specification = importlib.util.spec_from_file_location(
-        "hepta_check_repo_contracts", path
-    )
+def load_script_module(name: str, relative_path: str):
+    path = ROOT / relative_path
+    specification = importlib.util.spec_from_file_location(name, path)
     if specification is None or specification.loader is None:
         raise RuntimeError(f"unable to load {path}")
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
+
+
+def load_repo_contracts_module():
+    return load_script_module(
+        "hepta_check_repo_contracts", "scripts/check_repo_contracts.py"
+    )
 
 
 def load_install_verifier_module():
-    path = ROOT / "scripts/verify_install_tree.py"
-    specification = importlib.util.spec_from_file_location(
-        "hepta_verify_install_tree", path
+    return load_script_module(
+        "hepta_verify_install_tree", "scripts/verify_install_tree.py"
     )
-    if specification is None or specification.loader is None:
-        raise RuntimeError(f"unable to load {path}")
-    module = importlib.util.module_from_spec(specification)
-    specification.loader.exec_module(module)
-    return module
+
+
+def load_release_ci_verifier_module():
+    return load_script_module(
+        "hepta_verify_release_ci", "scripts/verify_release_ci.py"
+    )
 
 
 def create_minimal_install_tree(root: Path) -> None:
@@ -70,6 +74,30 @@ def run_install_verifier(root: Path) -> subprocess.CompletedProcess[str]:
         stderr=subprocess.PIPE,
         check=False,
     )
+
+
+def successful_ci_fixture(verifier, sha: str, run_id: int = 17):
+    runs = {
+        "workflow_runs": [
+            {
+                "id": run_id,
+                "head_sha": sha,
+                "head_branch": "main",
+                "event": "push",
+                "status": "completed",
+                "conclusion": "success",
+            }
+        ]
+    }
+    jobs = {
+        run_id: {
+            "jobs": [
+                {"name": name, "status": "completed", "conclusion": "success"}
+                for name in sorted(verifier.REQUIRED_JOBS)
+            ]
+        }
+    }
+    return runs, jobs
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -174,6 +202,22 @@ class ReleaseToolTests(unittest.TestCase):
             contracts.action_use_is_immutable("docker://example.invalid/image:latest")
         )
         self.assertFalse(contracts.action_use_is_immutable("owner/action"))
+
+    def test_release_candidate_requires_exact_main_and_complete_ci(self) -> None:
+        verifier = load_release_ci_verifier_module()
+        sha = "a" * 40
+        runs, jobs = successful_ci_fixture(verifier, sha)
+        self.assertEqual(verifier.validate_candidate(sha, sha, runs, jobs), [])
+
+        missing_jobs = json.loads(json.dumps(jobs))
+        missing_jobs[17]["jobs"] = [
+            job for job in missing_jobs[17]["jobs"] if job["name"] != "package"
+        ]
+        errors = verifier.validate_candidate(sha, sha, runs, missing_jobs)
+        self.assertTrue(any("package" in error for error in errors))
+
+        errors = verifier.validate_candidate(sha, "b" * 40, runs, jobs)
+        self.assertTrue(any("exact current main" in error for error in errors))
 
 
 if __name__ == "__main__":
