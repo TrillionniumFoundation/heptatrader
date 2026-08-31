@@ -12,17 +12,15 @@ add_subdirectory(HeptaTrade)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 
-    # Synchronize the owner-pressure fixture through symbols compiled directly
-    # into the test target.  Compile-time renaming avoids linker --wrap/LTO
-    # ambiguity and leaves every production object and runtime symbol intact.
+    # Hold only the first owner-pressure callback inside this test target. The
+    # compile-time usleep alias is immune to mixed LTO/static-library linker
+    # behavior and leaves all production objects and runtime symbols intact.
     if(TARGET hepta_unix_tool_server_tests AND UNIX AND NOT APPLE)
         set_property(TARGET hepta_unix_tool_server_tests
             PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
         target_sources(hepta_unix_tool_server_tests PRIVATE
             tests/unix_tool_server_test_interposer.cpp)
         target_compile_definitions(hepta_unix_tool_server_tests PRIVATE
-            connect=hepta_test_connect
-            close=hepta_test_close
             usleep=hepta_test_usleep)
     endif()
 endif()
