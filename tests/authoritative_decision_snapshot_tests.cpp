@@ -61,6 +61,18 @@ bool Build(const AuthoritativeDecisionSnapshotPayloads& payloads,
         1000, 1010, 7, payloads, snapshot, output, code, detail);
 }
 
+void ExpectInvalidPositions(const std::string& positionsJson)
+{
+    AuthoritativeDecisionSnapshotPayloads payloads = Payloads();
+    payloads.positions = positionsJson;
+    TargetPositionDecisionSnapshot snapshot;
+    std::string output;
+    std::string code;
+    assert(!Build(payloads, snapshot, output, code));
+    assert(code == "DECISION_SNAPSHOT_POSITION_INVALID");
+    assert(output.empty());
+}
+
 void TestBuildsCompoundSnapshot()
 {
     TargetPositionDecisionSnapshot snapshot;
@@ -181,16 +193,45 @@ void TestRejectsIncompleteAndStaleComponents()
 
 void TestRejectsDuplicatePosition()
 {
-    AuthoritativeDecisionSnapshotPayloads payloads = Payloads();
-    payloads.positions =
+    ExpectInvalidPositions(
         "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
         "\"positions\":[{\"instrument\":\"EUR.USD\",\"quantity\":1},"
-        "{\"instrument\":\"EUR.USD\",\"quantity\":2}]}";
-    TargetPositionDecisionSnapshot snapshot;
-    std::string output;
-    std::string code;
-    assert(!Build(payloads, snapshot, output, code));
-    assert(code == "DECISION_SNAPSHOT_POSITION_INVALID");
+        "{\"instrument\":\"EUR.USD\",\"quantity\":2}]}");
+}
+
+void TestRejectsMalformedPositionCollection()
+{
+    // Only a present top-level array is allowed to assert an authoritative
+    // zero. A missing or wrong-shaped collection is unknown state, not flat.
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true}");
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
+        "\"positions\":{}}");
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
+        "\"positions\":[null]}");
+
+    // Every record is authoritative input. An irrelevant malformed entry may
+    // not be ignored while a valid target record is promoted into a permit.
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
+        "\"positions\":[{\"instrument\":\"USD.JPY\"},"
+        "{\"instrument\":\"EUR.USD\",\"quantity\":2.5}]}");
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
+        "\"positions\":[{\"instrument\":\"EUR.USD\","
+        "\"quantity\":\"2.5\"}]}");
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
+        "\"positions\":[{\"instrument\":\"EUR.USD\",\"quantity\":-0.0}]}");
+
+    // The authoritative list is aggregate-by-instrument, so duplicate
+    // unrelated records are also inconsistent with the collection contract.
+    ExpectInvalidPositions(
+        "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
+        "\"positions\":[{\"instrument\":\"USD.JPY\",\"quantity\":1},"
+        "{\"instrument\":\"USD.JPY\",\"quantity\":2}]}");
 }
 
 void TestRejectsOwnerMetadataMismatch()
@@ -377,6 +418,7 @@ int main()
     TestRejectsGatewayNotReadyHealth();
     TestRejectsIncompleteAndStaleComponents();
     TestRejectsDuplicatePosition();
+    TestRejectsMalformedPositionCollection();
     TestRejectsOwnerMetadataMismatch();
     TestRejectsStateGenerationDrift();
     TestUnsignedKeepsLargeIntegerPrecision();
