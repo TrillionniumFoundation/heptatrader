@@ -100,7 +100,11 @@ hepta_register_core_test(hepta_trading_tool_host_tests)
 
 add_executable(hepta_unix_tool_server_tests
     unix_tool_server_tests.cpp
+    unix_tool_server_test_interposer.cpp
     ../HeptaTrade/tool_host/unix_tool_client.cpp)
+target_compile_definitions(hepta_unix_tool_server_tests PRIVATE
+    connect=hepta_test_connect
+    usleep=hepta_test_usleep)
 target_link_libraries(hepta_unix_tool_server_tests
     hepta_agent_os_core hepta_execution_core hepta_native_tool_client)
 hepta_register_core_test(hepta_unix_tool_server_tests)
@@ -216,7 +220,6 @@ add_executable(hepta_unsupported_venue_adapter_tests
     ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
 hepta_register_core_test(hepta_unsupported_venue_adapter_tests)
 
-
 add_executable(hepta_execution_preview_permit_tests
     execution_preview_permit_tests.cpp)
 target_link_libraries(hepta_execution_preview_permit_tests
@@ -240,7 +243,6 @@ add_executable(hepta_portfolio_compiler_tests
 target_link_libraries(hepta_portfolio_compiler_tests
     hepta_portfolio_core)
 hepta_register_core_test(hepta_portfolio_compiler_tests)
-
 
 add_executable(hepta_oms_crash_replay_tests
     oms_crash_replay_tests.cpp
