@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -8,6 +9,18 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def load_repo_contracts_module():
+    path = ROOT / "scripts/check_repo_contracts.py"
+    specification = importlib.util.spec_from_file_location(
+        "hepta_check_repo_contracts", path
+    )
+    if specification is None or specification.loader is None:
+        raise RuntimeError(f"unable to load {path}")
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -63,6 +76,25 @@ class ReleaseToolTests(unittest.TestCase):
             )
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("symlink", result.stderr)
+
+    def test_workflow_actions_require_immutable_revisions(self) -> None:
+        contracts = load_repo_contracts_module()
+        self.assertTrue(
+            contracts.action_use_is_immutable(
+                "actions/checkout@" + "a" * 40
+            )
+        )
+        self.assertTrue(
+            contracts.action_use_is_immutable(
+                "docker://example.invalid/image@sha256:" + "b" * 64
+            )
+        )
+        self.assertTrue(contracts.action_use_is_immutable("./.github/actions/local"))
+        self.assertFalse(contracts.action_use_is_immutable("actions/checkout@v4"))
+        self.assertFalse(
+            contracts.action_use_is_immutable("docker://example.invalid/image:latest")
+        )
+        self.assertFalse(contracts.action_use_is_immutable("owner/action"))
 
 
 if __name__ == "__main__":
