@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdint>
 #include <locale>
+#include <limits>
 #include <set>
 #include <sstream>
 #include <string>
@@ -440,7 +441,20 @@ public:
     // successful response.
     static std::size_t EncodedResultEnvelopeSize(const TradingToolResult& result)
     {
-        return EncodeResultEnvelopeBody(result).size();
+        // Measure the caller's raw candidate, not the fail-closed serialized
+        // fallback. EncodeResultEnvelopeBody deliberately replaces an
+        // invalid payload with null; using that sanitized body here would
+        // undercount an oversized compound response and defer rejection until
+        // the socket layer, losing the compound tool's canonical reason code.
+        const std::string prefix = EncodeResultEnvelopePrefix(result);
+        const std::size_t payloadSize =
+            result.payloadJson.empty() ? 4u : result.payloadJson.size();
+        const std::size_t maximum =
+            std::numeric_limits<std::size_t>::max();
+        if (prefix.size() > maximum - 1u ||
+            payloadSize > maximum - prefix.size() - 1u)
+            return maximum;
+        return prefix.size() + payloadSize + 1u;
     }
 
     static bool IsSafePayloadJson(const std::string& payloadJson)
@@ -775,32 +789,34 @@ public:
     }
 
 private:
-    static std::string EncodeResultEnvelopeBody(const TradingToolResult& result)
+    static std::string EncodeResultEnvelopePrefix(
+        const TradingToolResult& result)
     {
         std::ostringstream out;
         // Result envelopes are serialized onto the native/MCP boundary.
-        // Keep numeric formatting independent of the process-global locale;
-        // a comma-decimal locale must never produce non-JSON wire text.
+        // Keep numeric formatting independent of the process-global locale.
         out.imbue(std::locale::classic());
         out << "{\"status\":\"" << StatusName(result.status)
             << "\",\"tool\":\"" << EscapeJson(result.toolName)
             << "\",\"reason_code\":\"" << EscapeJson(result.reasonCode)
             << "\",\"detail\":\"" << EscapeJson(result.detail)
-            << "\",\"order_id\":" << result.orderId << ",\"payload\":";
-        // A payload is the one envelope field that intentionally remains raw
-        // JSON.  Validate it before appending so a callback cannot close the
-        // payload object and inject sibling fields (or place malformed UTF-8
-        // directly on the frame).  There is no failure return channel on this
-        // serializer, so invalid payloads fail closed as JSON null; the Unix
-        // server additionally rejects the original result and emits its
-        // canonical RESULT_ENVELOPE_INVALID/UNCERTAIN response.
+            << "\",\"order_id\":" << result.orderId
+            << ",\"payload\":";
+        return out.str();
+    }
+
+    static std::string EncodeResultEnvelopeBody(
+        const TradingToolResult& result)
+    {
+        std::string encoded = EncodeResultEnvelopePrefix(result);
+        // Validate raw payload JSON before appending. Invalid payloads
+        // fail closed as null; the Unix server rejects the original
+        // result with a canonical INVALID/UNCERTAIN envelope.
         const bool payloadSafe = !result.payloadJson.empty() &&
             IsSafePayloadJson(result.payloadJson);
-        if (!payloadSafe)
-            out << "null";
-        else out << result.payloadJson;
-        out << "}";
-        return out.str();
+        encoded += payloadSafe ? result.payloadJson : "null";
+        encoded.push_back('}');
+        return encoded;
     }
 
     static std::string EscapeJson(const std::string& value)

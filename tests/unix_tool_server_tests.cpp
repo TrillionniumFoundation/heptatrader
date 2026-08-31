@@ -851,7 +851,7 @@ void TestWatchSnapshotAuditCardinalityAndBoundedDelivery()
 
     ordersPayloadOverride = "{\"padding\":\"" +
         std::string(
-            TradingToolWireLimits::MaximumResultEnvelopeBytes(), 'x') +
+            TradingToolWireLimits::MaximumResultEnvelopeBytes() - 1024u, 'x') +
         "\"}";
     snapshot.toolCallId = "watch-snapshot-over-limit";
     delivered = NativeToolClientResult();
