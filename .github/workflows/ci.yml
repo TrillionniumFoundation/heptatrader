@@ -93,44 +93,78 @@ jobs:
 
   package:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 40
     needs: [repository-contracts, core, asan-ubsan]
+    env:
+      CC: gcc
+      CXX: g++
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
-      - name: Configure release
-        run: >-
-          cmake -S . -B build -G Ninja
-          -DCMAKE_BUILD_TYPE=Release
-          -DBUILD_TESTING=ON
-          -DHEPTA_ENABLE_IBAPI=OFF
-          -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF
-          -DHEPTA_BUILD_LEGACY_MONOLITH=OFF
-          -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
-          -DHEPTA_ENABLE_HARDENING=ON
-      - name: Build runtime
-        run: cmake --build build --parallel 2
-      - name: Stage and validate install tree
+      - name: Establish deterministic build epoch
+        run: echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
+      - name: Configure two clean release builds
         run: |
-          cmake --install build --prefix "$RUNNER_TEMP/stage/usr"
-          python3 scripts/verify_install_tree.py \
-            --root "$RUNNER_TEMP/stage/usr" \
-            --manifest "$RUNNER_TEMP/stage/install-manifest.json"
-          python3 scripts/generate_sbom.py \
-            --root "$RUNNER_TEMP/stage/usr" \
-            --version-file VERSION \
-            --git-sha "$GITHUB_SHA" \
-            --output "$RUNNER_TEMP/stage/heptatrader.spdx.json"
-      - name: Build package
+          set -euo pipefail
+          for build in build-a build-b; do
+            cmake -S . -B "$build" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DBUILD_TESTING=OFF \
+              -DHEPTA_ENABLE_IBAPI=OFF \
+              -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+              -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+              -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF \
+              -DHEPTA_ENABLE_HARDENING=ON
+          done
+      - name: Build both release trees
         run: |
+          cmake --build build-a --parallel 2
+          cmake --build build-b --parallel 2
+      - name: Stage and verify both install trees
+        run: |
+          set -euo pipefail
+          VERSION_VALUE="$(tr -d '\r\n' < VERSION)"
+          for suffix in a b; do
+            stage="$RUNNER_TEMP/stage-$suffix/usr"
+            evidence="$RUNNER_TEMP/evidence-$suffix"
+            mkdir -p "$evidence"
+            cmake --install "build-$suffix" --prefix "$stage"
+            python3 scripts/verify_install_tree.py \
+              --root "$stage" \
+              --logical-root /usr \
+              --manifest "$evidence/install-manifest.json"
+            python3 scripts/generate_sbom.py \
+              --root "$stage" \
+              --version-file VERSION \
+              --git-sha "$GITHUB_SHA" \
+              --source-date-epoch "$SOURCE_DATE_EPOCH" \
+              --output "$evidence/heptatrader.spdx.json"
+            python3 scripts/build_release_archive.py \
+              --root "$stage" \
+              --prefix usr \
+              --source-date-epoch "$SOURCE_DATE_EPOCH" \
+              --output "$evidence/heptatrader-${VERSION_VALUE}.tar.gz"
+          done
+      - name: Prove byte-for-byte reproducibility
+        run: |
+          set -euo pipefail
+          VERSION_VALUE="$(tr -d '\r\n' < VERSION)"
+          cmp "$RUNNER_TEMP/evidence-a/install-manifest.json" \
+              "$RUNNER_TEMP/evidence-b/install-manifest.json"
+          cmp "$RUNNER_TEMP/evidence-a/heptatrader.spdx.json" \
+              "$RUNNER_TEMP/evidence-b/heptatrader.spdx.json"
+          cmp "$RUNNER_TEMP/evidence-a/heptatrader-${VERSION_VALUE}.tar.gz" \
+              "$RUNNER_TEMP/evidence-b/heptatrader-${VERSION_VALUE}.tar.gz"
+      - name: Seal canonical package evidence
+        run: |
+          set -euo pipefail
           mkdir -p dist
-          cpack --config build/CPackConfig.cmake -B dist
-          cp "$RUNNER_TEMP/stage/install-manifest.json" dist/
-          cp "$RUNNER_TEMP/stage/heptatrader.spdx.json" dist/
-          (cd dist && sha256sum * > SHA256SUMS)
+          cp "$RUNNER_TEMP/evidence-a/"* dist/
+          (cd dist && LC_ALL=C sha256sum * > SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: heptatrader-${{ github.sha }}
