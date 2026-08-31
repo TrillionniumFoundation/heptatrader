@@ -17,12 +17,25 @@ concurrency:
 jobs:
   build-candidate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
+    outputs:
+      candidate_sha: ${{ steps.identity.outputs.sha }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
           persist-credentials: false
+      - name: Establish candidate identity and deterministic epoch
+        id: identity
+        run: |
+          set -euo pipefail
+          CANDIDATE_SHA="$(git rev-parse HEAD)"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]
+          echo "sha=$CANDIDATE_SHA" >> "$GITHUB_OUTPUT"
+          echo "CANDIDATE_SHA=$CANDIDATE_SHA" >> "$GITHUB_ENV"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_ENV"
       - name: Bind tag to qualified current main
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -33,7 +46,7 @@ jobs:
           MAIN_SHA="$(git rev-parse refs/remotes/origin/main)"
           python3 scripts/verify_release_ci.py \
             --repository "$GITHUB_REPOSITORY" \
-            --sha "$GITHUB_SHA" \
+            --sha "$CANDIDATE_SHA" \
             --main-sha "$MAIN_SHA"
       - name: Verify repository contracts
         run: |
@@ -41,9 +54,10 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_*.py' -v
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
-      - name: Build and test release candidate
+      - name: Build and test first release tree
         run: |
-          cmake -S . -B build -G Ninja \
+          set -euo pipefail
+          cmake -S . -B build-a -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON \
             -DHEPTA_ENABLE_IBAPI=OFF \
@@ -51,26 +65,62 @@ jobs:
             -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
             -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF \
             -DHEPTA_ENABLE_HARDENING=ON
-          cmake --build build --parallel 2
-          ctest --test-dir build --output-on-failure --parallel 2 -L core
-      - name: Stage, verify, package, and generate SBOM
+          cmake --build build-a --parallel 2
+          ctest --test-dir build-a --output-on-failure --parallel 2 -L core
+      - name: Build independent second release tree
         run: |
           set -euo pipefail
-          cmake --install build --prefix "$RUNNER_TEMP/stage/usr"
+          cmake -S . -B build-b -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF \
+            -DHEPTA_ENABLE_HARDENING=ON
+          cmake --build build-b --parallel 2
+      - name: Stage and verify both release trees
+        run: |
+          set -euo pipefail
+          VERSION_VALUE="$(tr -d '\r\n' < VERSION)"
+          for suffix in a b; do
+            stage="$RUNNER_TEMP/stage-$suffix/usr"
+            evidence="$RUNNER_TEMP/evidence-$suffix"
+            mkdir -p "$evidence"
+            cmake --install "build-$suffix" --prefix "$stage"
+            python3 scripts/verify_install_tree.py \
+              --root "$stage" \
+              --logical-root /usr \
+              --manifest "$evidence/install-manifest.json"
+            python3 scripts/generate_sbom.py \
+              --root "$stage" \
+              --version-file VERSION \
+              --git-sha "$CANDIDATE_SHA" \
+              --source-date-epoch "$SOURCE_DATE_EPOCH" \
+              --output "$evidence/heptatrader.spdx.json"
+            python3 scripts/build_release_archive.py \
+              --root "$stage" \
+              --prefix usr \
+              --source-date-epoch "$SOURCE_DATE_EPOCH" \
+              --output "$evidence/heptatrader-${VERSION_VALUE}.tar.gz"
+          done
+      - name: Prove and seal byte-for-byte reproducibility
+        run: |
+          set -euo pipefail
+          VERSION_VALUE="$(tr -d '\r\n' < VERSION)"
+          cmp "$RUNNER_TEMP/evidence-a/install-manifest.json" \
+              "$RUNNER_TEMP/evidence-b/install-manifest.json"
+          cmp "$RUNNER_TEMP/evidence-a/heptatrader.spdx.json" \
+              "$RUNNER_TEMP/evidence-b/heptatrader.spdx.json"
+          cmp "$RUNNER_TEMP/evidence-a/heptatrader-${VERSION_VALUE}.tar.gz" \
+              "$RUNNER_TEMP/evidence-b/heptatrader-${VERSION_VALUE}.tar.gz"
           mkdir -p dist
-          python3 scripts/verify_install_tree.py \
-            --root "$RUNNER_TEMP/stage/usr" \
-            --manifest dist/install-manifest.json
-          python3 scripts/generate_sbom.py \
-            --root "$RUNNER_TEMP/stage/usr" \
-            --version-file VERSION \
-            --git-sha "$GITHUB_SHA" \
-            --output dist/heptatrader.spdx.json
-          cpack --config build/CPackConfig.cmake -B dist
-          (cd dist && sha256sum * > SHA256SUMS)
+          cp "$RUNNER_TEMP/evidence-a/"* dist/
+          (cd dist && LC_ALL=C sha256sum * > SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-candidate-${{ github.sha }}
+          name: release-candidate-${{ steps.identity.outputs.sha }}
           path: dist/
           if-no-files-found: error
           retention-days: 7
@@ -88,15 +138,17 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: release-candidate-${{ github.sha }}
+          name: release-candidate-${{ needs.build-candidate.outputs.candidate_sha }}
           path: dist
       - name: Verify protected approval and candidate integrity
         env:
           APPROVED_SHA: ${{ vars.HEPTA_RELEASE_APPROVED_SHA }}
+          CANDIDATE_SHA: ${{ needs.build-candidate.outputs.candidate_sha }}
         run: |
           set -euo pipefail
           [[ "$APPROVED_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$APPROVED_SHA" = "$GITHUB_SHA"
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$APPROVED_SHA" = "$CANDIDATE_SHA"
           (cd dist && sha256sum -c SHA256SUMS)
       - name: Attest release artifacts
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
