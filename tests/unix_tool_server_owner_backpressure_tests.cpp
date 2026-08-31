@@ -1,6 +1,7 @@
 #include "../HeptaTrade/execution/execution_coordinator.h"
 #include "../HeptaTrade/tools/trading_tool_registry.h"
 #include "../HeptaTrade/tool_host/trading_tool_host.h"
+#include "../HeptaTrade/tool_host/typed_tool_protocol.h"
 #include "../HeptaTrade/tool_host/unix_tool_client.h"
 #include "../HeptaTrade/tool_host/unix_tool_server.h"
 
@@ -200,9 +201,17 @@ void TestDeterministicOwnerBackpressureAndCrossOwnerProgress()
         request(primary, "owner-pressure-rejected"),
         rejectedResponse);
 
-    const bool rejectionObserved = rejectedCallOk && WaitUntil([&]() {
-        return server.GetHealth().ownerBackpressureRejections == 1;
-    }, 2000);
+    TypedToolResultEnvelope rejectedEnvelope;
+    std::string rejectedDecodeReason;
+    const bool rejectedResponseDecoded = rejectedCallOk &&
+        TypedToolProtocol::DecodeResultEnvelope(
+            rejectedResponse, rejectedEnvelope, rejectedDecodeReason);
+    const bool rejectionObserved = rejectedResponseDecoded &&
+        rejectedEnvelope.status == "rejected" &&
+        rejectedEnvelope.reasonCode == "OWNER_QUEUE_BACKPRESSURE" &&
+        WaitUntil([&]() {
+            return server.GetHealth().ownerBackpressureRejections == 1;
+        }, 2000);
 
     std::string unrelatedResponse;
     const bool unrelatedCallOk = rejectionObserved && Call(
@@ -228,9 +237,10 @@ void TestDeterministicOwnerBackpressureAndCrossOwnerProgress()
     assert(activeEntered);
     assert(queueIsProvablyFull);
     assert(rejectedCallOk);
+    assert(rejectedResponseDecoded);
     assert(rejectionObserved);
-    assert(rejectedResponse.find("OWNER_QUEUE_BACKPRESSURE") !=
-        std::string::npos);
+    assert(rejectedEnvelope.status == "rejected");
+    assert(rejectedEnvelope.reasonCode == "OWNER_QUEUE_BACKPRESSURE");
     assert(unrelatedCallOk);
     assert(unrelatedResponse.find("\"agent\":\"owner-pressure-agent-b\"") !=
         std::string::npos);
