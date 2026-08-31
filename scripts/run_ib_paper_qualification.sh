@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 usage() {
   echo "usage: $0 <build-dir> <evidence-dir>" >&2
@@ -9,7 +10,7 @@ usage() {
 [[ $# -eq 2 ]] || usage
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-BUILD_DIR="$(realpath -e -- "$1")"
+BUILD_INPUT="$1"
 EVIDENCE_DIR="$(realpath -m -- "$2")"
 QUALIFIER_INPUT="${HEPTA_IB_PAPER_QUALIFIER:-}"
 MUTATIONS="${HEPTA_QUALIFICATION_MUTATIONS:-0}"
@@ -22,13 +23,22 @@ if [[ -z "$QUALIFIER_INPUT" ]]; then
   echo "HEPTA_IB_PAPER_QUALIFIER must name a controlled executable harness" >&2
   exit 78
 fi
-QUALIFIER="$(realpath -e -- "$QUALIFIER_INPUT")"
-if [[ ! -f "$QUALIFIER" || ! -x "$QUALIFIER" || -L "$QUALIFIER" ]]; then
-  echo "qualification harness must be an executable non-symlink regular file" >&2
+if [[ -L "$QUALIFIER_INPUT" ]]; then
+  echo "qualification harness must not be a symlink" >&2
   exit 78
 fi
-if [[ ! -d "$BUILD_DIR" || -L "$BUILD_DIR" ]]; then
-  echo "build directory must be a non-symlink directory" >&2
+if [[ -L "$BUILD_INPUT" ]]; then
+  echo "build directory must not be a symlink" >&2
+  exit 66
+fi
+QUALIFIER="$(realpath -e -- "$QUALIFIER_INPUT")"
+BUILD_DIR="$(realpath -e -- "$BUILD_INPUT")"
+if [[ ! -f "$QUALIFIER" || ! -x "$QUALIFIER" ]]; then
+  echo "qualification harness must be an executable regular file" >&2
+  exit 78
+fi
+if [[ ! -d "$BUILD_DIR" ]]; then
+  echo "build directory must be a directory" >&2
   exit 66
 fi
 
