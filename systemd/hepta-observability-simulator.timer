@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh HeptaTrader Simulator OMS metrics
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Unit=hepta-observability-simulator.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target

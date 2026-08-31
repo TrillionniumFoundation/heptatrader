@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh HeptaTrader IB PAPER OMS metrics
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+AccuracySec=1s
+Unit=hepta-observability-ib-paper.service
+Persistent=false
+
+[Install]
+WantedBy=timers.target
