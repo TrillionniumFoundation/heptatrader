@@ -5,6 +5,7 @@
 #include "trading_tool_session_catalog.h"
 
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -225,6 +226,10 @@ private:
     void MoveSessionRateBudgetsLocked(
         const std::string& currentToken,
         const std::string& replacementToken);
+    void WaitForOwnerReadsLocked(
+        std::unique_lock<std::mutex>& lock,
+        const std::string& ownerKey);
+    void FinishReadDispatch(const std::string& ownerKey);
     bool BeginWatchTransaction(
         const std::vector<TradingToolHostSessionBinding>& expectedBindings,
         std::string& watchTransactionId,
@@ -344,14 +349,15 @@ private:
 
 private:
     TradingToolRegistry& m_registry;
-    // Linearizes every final dispatch gate with WATCH reservation,
-    // session revoke/fence and lease rotation. A call holds this lock from its
-    // last binding validation through the registry/authority call; control
-    // operations take it before changing the binding. Therefore a dispatch is
-    // wholly ordered before the control operation, or observes its
-    // disabled/pending binding and never reaches the registered handler.
+    // Mutations retain this lock through their authority call. Reads retain it
+    // only through final admission, then register an owner-scoped in-flight
+    // count. A control transition holds this lock and waits only for that
+    // owner's admitted reads, preserving revoke/rotation linearization without
+    // serializing unrelated owners' read callbacks.
     mutable std::mutex m_mutationDispatchMutex;
     mutable std::mutex m_mutex;
+    std::condition_variable m_ownerReadsDrained;
+    std::unordered_map<std::string, std::size_t> m_activeReadsByOwner;
     std::unordered_map<std::string, TradingToolHostSessionBinding> m_sessions;
     std::unordered_map<std::string, std::uint64_t> m_rateWindowStartMs;
     std::unordered_map<std::string, std::uint32_t> m_tradeCallsInWindow;
