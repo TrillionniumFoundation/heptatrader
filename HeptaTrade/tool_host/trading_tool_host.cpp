@@ -240,6 +240,34 @@ void TradingToolHost::PruneMutationReplaysLocked(
     }
 }
 
+void TradingToolHost::WaitForOwnerReadsLocked(
+    std::unique_lock<std::mutex>& lock,
+    const std::string& ownerKey)
+{
+    m_ownerReadsDrained.wait(lock, [this, &ownerKey]() {
+        const std::unordered_map<std::string, std::size_t>::const_iterator
+            active = m_activeReadsByOwner.find(ownerKey);
+        return active == m_activeReadsByOwner.end() || active->second == 0;
+    });
+}
+
+void TradingToolHost::FinishReadDispatch(const std::string& ownerKey)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const std::unordered_map<std::string, std::size_t>::iterator active =
+            m_activeReadsByOwner.find(ownerKey);
+        if (active != m_activeReadsByOwner.end())
+        {
+            if (active->second <= 1)
+                m_activeReadsByOwner.erase(active);
+            else
+                --active->second;
+        }
+    }
+    m_ownerReadsDrained.notify_all();
+}
+
 void TradingToolHost::RevokeSession(const std::string& token)
 {
     std::string reason;
@@ -561,6 +589,7 @@ TradingToolResult TradingToolHost::DispatchRead(
 	const TradingToolCall& call)
 {
 	bool recoveryOnly = false;
+    std::string ownerKey;
 	{
 		std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
 		std::lock_guard<std::mutex> lock(m_mutex);
@@ -585,23 +614,31 @@ TradingToolResult TradingToolHost::DispatchRead(
 			return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 				"SESSION_EXPIRED", "Agent session expired before read dispatch");
 		recoveryOnly = current->second.recoveryOnly;
+        ownerKey = SessionOwnerKey(current->second);
+        ++m_activeReadsByOwner[ownerKey];
 	}
+    TradingToolResult result;
     if (recoveryOnly && IsRecoveryBlockedEntryPreview(call.name))
-        return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+        result = Reject(call.name, TradingToolCallStatus::PermissionDenied,
             "SESSION_RECOVERY_ONLY",
             "root custodian disabled new entry while command recovery is pending");
-    try
+    else
     {
-        return m_registry.Invoke(session, call);
+        try
+        {
+            result = m_registry.Invoke(session, call);
+        }
+        catch (const std::exception&)
+        {
+            result = ReadDispatchExceptionResult(call.name);
+        }
+        catch (...)
+        {
+            result = ReadDispatchExceptionResult(call.name);
+        }
     }
-    catch (const std::exception&)
-    {
-        return ReadDispatchExceptionResult(call.name);
-    }
-    catch (...)
-    {
-        return ReadDispatchExceptionResult(call.name);
-    }
+    FinishReadDispatch(ownerKey);
+    return result;
 }
 
 TradingToolResult TradingToolHost::DispatchMutation(
@@ -1108,7 +1145,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
     TradingToolHostSessionBinding binding;
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
             m_sessions.find(token);
@@ -1118,6 +1155,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
             reason = "SESSION_LEASE_GENERATION_MISMATCH";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
         binding = found->second;
         authority = m_recoveryControlAuthority;
     }
@@ -1197,12 +1235,13 @@ bool TradingToolHost::FenceRecoveryOnlyOwner(
     bool localExists = false;
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
             m_sessions.find(token);
         if (found != m_sessions.end())
         {
+            WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
             binding = found->second;
             localExists = true;
         }
@@ -1304,7 +1343,7 @@ bool TradingToolHost::AuditFinalizedRecoveryOwner(
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         authority = m_recoveryControlAuthority;
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
@@ -1314,6 +1353,7 @@ bool TradingToolHost::AuditFinalizedRecoveryOwner(
             reason = "SESSION_FINALIZATION_TOMBSTONE_REQUIRED";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
         const AgentExecutionContext& context =
             found->second.session.executionContext;
         if (found->second.enabled || !found->second.recoveryOnly ||
@@ -1388,7 +1428,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     TradingToolHostSessionBinding binding;
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
             m_sessions.find(currentToken);
@@ -1398,6 +1438,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
             reason = "SESSION_LEASE_GENERATION_MISMATCH";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
         binding = found->second;
         authority = m_recoveryControlAuthority;
     }
