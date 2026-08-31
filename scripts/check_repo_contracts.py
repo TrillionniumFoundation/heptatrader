@@ -29,6 +29,7 @@ REQUIRED_PATHS = (
     "docs/PROD-GO-LIVE-CHECKLIST.md",
     "docs/SUPPLY-CHAIN.md",
     "scripts/verify_install_tree.py",
+    "scripts/verify_release_ci.py",
     "scripts/generate_sbom.py",
     "scripts/hepta_observability.py",
     "scripts/validate_sim_data.py",
@@ -203,6 +204,39 @@ def check_workflow_action_pins(errors: list[str]) -> None:
                 )
 
 
+def check_release_authority_contract(errors: list[str]) -> None:
+    path = ROOT / ".github/workflows/release.yml"
+    if not path.is_file():
+        return
+    text = read_text(path)
+    required_tokens = (
+        "scripts/verify_release_ci.py",
+        "environment: heptatrader-release",
+        "HEPTA_RELEASE_APPROVED_SHA",
+        "needs: build-candidate",
+        "actions/download-artifact@",
+        "actions/attest-build-provenance@",
+        "gh release create",
+    )
+    for token in required_tokens:
+        if token not in text:
+            errors.append(f"release workflow lacks required authority boundary: {token}")
+
+    publish = text.find("\n  publish:")
+    environment = text.find("environment: heptatrader-release")
+    approval = text.find("HEPTA_RELEASE_APPROVED_SHA")
+    release = text.find("gh release create")
+    attestation = text.find("actions/attest-build-provenance@")
+    if publish < 0 or not (publish < environment < approval < attestation < release):
+        errors.append(
+            "release publication must occur only after protected environment approval"
+        )
+    if publish >= 0 and re.search(
+        r"^\s+contents:\s*write\s*$", text[:publish], re.MULTILINE
+    ):
+        errors.append("release candidate build holds contents:write before publication")
+
+
 def install_declares(executable: str, install_manifest: str) -> bool:
     tokens = EXECUTABLE_INSTALL_TOKENS.get(executable)
     return tokens is not None and any(token in install_manifest for token in tokens)
@@ -293,6 +327,7 @@ def main() -> int:
     check_documentation(errors)
     check_portability(errors)
     check_workflow_action_pins(errors)
+    check_release_authority_contract(errors)
     check_systemd_contracts(errors)
     check_unsupported_venues(errors)
     check_source_size_budget(errors)
