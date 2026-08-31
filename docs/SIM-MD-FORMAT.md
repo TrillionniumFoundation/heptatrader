@@ -1,15 +1,14 @@
-# HeptaSimulator 仿真行情标准格式（V1）
+# Simulator market-data format v1
 
-## 1. 文件编码
-- UTF-8（无 BOM）
-- 换行：LF 或 CRLF 均可
+Simulator input must be immutable, hashable and portable. Dataset paths are supplied by the caller or test fixture; repository documentation never fixes a personal drive or home directory.
 
-## 2. CSV 列定义（推荐）
-建议列名（顺序固定）：
+## CSV columns
 
-1. `TradingDay`（YYYYMMDD）
-2. `UpdateTime`（HH:MM:SS）
-3. `UpdateMillisec`（0-999）
+Recommended fixed order:
+
+1. `TradingDay` (`YYYYMMDD`)
+2. `UpdateTime` (`HH:MM:SS`)
+3. `UpdateMillisec` (`0`–`999`)
 4. `InstrumentID`
 5. `LastPrice`
 6. `Volume`
@@ -20,25 +19,20 @@
 11. `AskPrice1`
 12. `AskVolume1`
 
-> 最低可用集合：`TradingDay,UpdateTime,InstrumentID,LastPrice,Volume`
+Minimum accepted research set is `TradingDay,UpdateTime,InstrumentID,LastPrice,Volume`; qualification fixtures should include bid/ask and monotonic timestamps.
 
-## 3. 约束
-- `TradingDay` 必须是 8 位数字
-- `UpdateTime` 必须是 `HH:MM:SS`
-- `LastPrice`/`Volume` 必须可解析为数字
-- 同一文件建议按时间升序
+## Validation
 
-## 4. 索引文件（HisMarketDataIndex.xml）
-示例：
-```xml
-<?xml version="1.0" ?>
-<HisMDFiles>
-  <MDFile DateIndexId="1" FilePath="D:\\quant\\dat\\rb.csv" />
-</HisMDFiles>
+- UTF-8 without BOM; one header row; bounded line length.
+- Dates/times parse strictly and remain nondecreasing per instrument.
+- All numeric values are finite; prices are positive where required; volumes are nonnegative.
+- Duplicate timestamp semantics are explicit and deterministic.
+- Dataset, index, instrument catalog and config each receive a SHA-256 digest in replay evidence.
+
+Validate a dataset with:
+
+```bash
+python3 scripts/validate_sim_data.py --input /path/to/market-data.csv
 ```
 
-## 5. 推荐目录
-- `D:\quant\dat\`
-  - `HisMarketDataIndex.xml`
-  - `Instrument.xml`
-  - `rb.csv` / `if.csv` / `jd.csv` ...
+`HisMarketDataIndex.xml` may use paths relative to a caller-provided dataset root. Absolute developer paths are forbidden in checked-in fixtures and docs.

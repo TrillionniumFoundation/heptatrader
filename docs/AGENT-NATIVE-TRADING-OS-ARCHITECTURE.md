@@ -1,115 +1,78 @@
-# HeptaTrader AI-Native Trading Runtime Architecture
+# HeptaTrader Agent-native trading runtime architecture
 
-Status: current runtime contract.
+Status: current runtime contract for `0.1.0-beta.1`.
 
-本文只描述当前代码中的交易运行时。发布包、round、P1、认证、evidence closure、动态 PAPER campaign 和宿主证明不属于本架构。
-
-## 1. 数据与调用路径
+## Trust and data path
 
 ```text
-Agent / Codex / OpenClaw
+Agent / Codex / external client
         |
-        | MCP / heptactl / native client
+        | MCP / heptactl / native typed protocol
         v
 Tool Gateway
-        |
-        | typed authenticated Unix protocol
+        | peer UID + token + session + capability + schema
         v
 Execution Service
-        |
-        | deterministic venue contract
+        | risk + durable journal + command id + fencing + reconcile
         v
-Simulator / IB / CTP / XT adapter
+Deterministic Simulator / qualified IB PAPER
 ```
 
-Agent 可以提交查询和有界交易意图，但不拥有 broker session、订单状态机、最终风险判断、持久化执行状态或对账真相。
+Agent 可以产生 forecast、target exposure 或有界 TradeIntent，但不拥有 Broker session、订单 ID、最终风控、订单状态机、authoritative position、持久化真相或 kill switch。
 
-## 2. 组件职责
+## Components
 
 ### Agent entry
 
-- `adapters/mcp/hepta_mcp_server.py`
-- `HeptaTrade/cli/heptactl*`
-- `HeptaTrade/client/native_tool_client*`
-
-入口只做工具发现、请求编码和结果解析，不得出现第二条 broker path。
+`adapters/mcp/hepta_mcp_server.py`、`heptactl` 和 native client 只负责发现、编码、调用与解析。MCP bridge 校验固定 UID、私有 token、协议版本和 schema hash。它不能把未知字段或未经校验的 mutation 直接转发给 Broker。
 
 ### Tool Gateway
 
-- `HeptaTrade/tool_host/`
-- `HeptaTrade/tools/`
-
-Gateway 校验 peer identity、session、capability、schema 和参数，并把 mutation 转发给 Execution Service。它不链接 broker adapter，不持有 broker credential。
+`HeptaTrade/tool_host/` 和 `HeptaTrade/tools/` 校验 peer identity、session、capability、effect、schema 和 request bounds。Gateway 只使用 Execution client contract；构建后的禁止符号门禁确保其不链接 Broker adapter、OMS writer 或 privileged Execution implementation。
 
 ### Execution Service
 
-- `HeptaTrade/execution/`
-- `HeptaTrade/oms_journal*`
-- `HeptaTrade/state/`
-- `HeptaTrade/risk/`
+`HeptaTrade/execution/`、`risk/`、`state/`、`reconcile/` 与 `oms_journal*` 形成唯一交易 authority，负责：
 
-Execution Service 是唯一订单 authority，负责 journal-before-send、command-id 幂等、fencing、确定性风控、订单生命周期、authoritative snapshot、reconciliation 和 uncertain recovery。
+- deterministic pre-trade risk；
+- journal-before-send 与 command-id 幂等；
+- owner/lease/service epoch fencing；
+- order/cancel/flatten 生命周期；
+- Broker callback 投影；
+- authoritative snapshot 与 reconciliation；
+- outcome-uncertain 恢复和 terminal latch。
 
-### Venue adapters
+### Venue boundary
 
-- `HeptaTrade/simulator/`
-- `HeptaTrade/adapter_ib/`
-- `HeptaTrade/adapter_ctp/`
-- `HeptaTrade/adapter_xt/`
+- Simulator 是默认实现，支持核心开发与故障测试。
+- IB PAPER 仅在 `HEPTA_ENABLE_IBAPI=ON` 构建，并需要受控资格认证。
+- CTP 与 XT/QMT 在公开树中没有完整授权 transport，所有 outbound 调用 fail closed。
+- IB LIVE 未实现为已认证 capability。
 
-adapter 只翻译 venue 协议和事件，不决定策略、资本分配或风险政策。
-
-## 3. 固定运行模式
-
-### Simulator
-
-`hepta-executiond` 使用确定性 simulator venue，适合本地开发、回放和故障测试。
-
-### IB PAPER
-
-`hepta-ib-executiond` 是固定的 broker-owning PAPER authority。它通过独立 OS identity、文件系统 kill switch、broker network policy、credential、journal 和 reconciliation 运行。
-
-仓库不再提供动态 PAPER domain、campaign open/close、renew、repair、attestation 或 finalizer 编排。session 由 operator 使用 `hepta-sessionctl` 显式 provision/revoke；部署侧负责安全创建 token 文件。
-
-### LIVE
-
-LIVE 不是默认或已认证能力。任何未来 LIVE 路径必须复用同一 Execution authority、risk、journal、fencing 和 reconciliation，不得从 Agent 或 legacy monolith 旁路进入。
-
-## 4. 不可破坏的 invariant
-
-1. 只有 Execution Service 可以向 venue 发送订单。
-2. Agent/Gateway 不持有 broker credential，也不能直接连接 broker API。
-3. mutation 在外部发送前进入 durable journal。
-4. uncertain retry 复用原 command ID。
-5. 过期 session、owner 或 lease 不能继续增加风险。
-6. 持仓和活动订单以 venue/Execution 投影为准。
-7. 协议、身份、quote、配置、持久化或 kill switch 不确定时 fail closed。
-8. 合法的 cancel、reduce-only 和 flatten 退出路径保持可用。
-
-## 5. 一次 mutation
+## Mutation invariant
 
 ```text
-Agent intent
-  -> peer/session/capability check
-  -> schema and normalized intent
-  -> quote freshness + deterministic pre-trade risk
-  -> execution permit + command ID
+intent
+  -> peer/session/capability/schema validation
+  -> normalized typed request
+  -> quote/position/config freshness
+  -> deterministic risk and execution permit
   -> durable journal
   -> venue send
-  -> execution event projection
+  -> callback projection
   -> authoritative reconciliation
 ```
 
-## 6. 策略边界
+任何阶段不确定都不能被解释为成功。网络 timeout、进程重启或响应丢失后，不允许生成新的幂等键重发相同 mutation。
 
-策略和 AI 层应输出 forecast、target exposure 或有界 TradeIntent。最终手数、组合净额、订单类型、拆单、撤单和 venue routing 属于确定性 portfolio/risk/execution 层。
+## OS boundary
 
-legacy monolith 默认关闭；新功能不得继续扩展直接下单式策略 API。
+- 每个不互信 Agent 使用独立 UID、socket、token 和 trust-domain 配置。
+- Gateway 与 Execution 使用不同 UID；Broker-owning IB daemon 使用专用 UID。
+- systemd units 默认 `NoNewPrivileges`、严格文件系统保护、最小地址族和空 capability set。
+- Broker egress policy 只允许指定 execution UID 访问 loopback PAPER 端口。
+- credential 通过 systemd credentials 注入，不进入 env 文件。
 
-## 7. 开发循环
+## Verification boundary
 
-```bash
-./scripts/dev_core.sh
-```
-
-该入口只保护会造成交易错误或权限越界的核心 invariant。仓库没有强制 CI、发布证据、安装认证或 round gate。
+普通 PR 必须通过核心 CI、sanitizer、安装树和 package 门禁。IB PAPER 资格认证是独立的手工 workflow，只能在带 vendor SDK、PAPER Gateway、隔离账户和外部审核 harness 的受控 runner 上执行。没有该证据时，代码可构建不等于 Broker 运行已认证。

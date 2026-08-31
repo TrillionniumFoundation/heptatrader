@@ -1,25 +1,22 @@
-# Runtime and research scripts
+# Runtime, validation, and research scripts
 
-`scripts/` 只保留直接服务于核心 OS 的小型入口。
+## Canonical development and release checks
 
-## 开发
-
-- `dev_core.sh`：配置、构建并运行核心测试。
-- `resolve_hepta_config.py`：解析运行配置。
-- `validate_sim_data.py`：校验 simulator 数据。
-- `verify_oms_journal_replay.py`：校验 OMS journal replay。
+- `dev_core.sh`：仓库契约、Python tests、核心构建/CTest、安装树和 SBOM。
+- `check_repo_contracts.py`：文档、版本、systemd/install、unsupported venue 和 source-size 门禁。
+- `verify_install_tree.py`：验证 staged install 的必需文件、mode、symlink 与引用并生成 hash manifest。
+- `generate_sbom.py`：生成 SPDX 2.3 JSON SBOM。
+- `run_ib_paper_qualification.sh`：只把受控参数交给仓库外审核 harness，不包含凭据或 Broker 自动化。
 
 ## Agent runtime
 
-- `hepta_agent_mcp_launcher.py`：固定身份和环境下启动 MCP bridge。
+- `hepta_agent_mcp_launcher.py`：固定身份、trust domain 和净化环境下启动 MCP bridge。
 - `hepta_agent_trust_domain.py`：严格读取 trust-domain 配置。
-- `hepta_broker_egress_policy.py`：加载固定 UID/端口的最小 nftables 边界。
+- `hepta_broker_egress_policy.py`：为固定 execution UID/loopback PAPER 端口应用最小网络边界。
+- `hepta_observability.py`：只读 OMS journal metrics/alerts collector。
 
 ## Research and strategy
 
-- `hepta_market_*`、`hepta_official_source_capture.py`：市场上下文与数据规范化。
-- `hepta_strategy_*`：策略契约、shadow runner 和 replay evaluation。
-- `hepta_eurusd_confirmed_momentum_strategy.py`：当前 EURUSD 策略实现。
-- `validate_hepta_strategy_decision_receipt.py`：验证有界 shadow 决策 receipt。
+`hepta_market_*`、`hepta_official_source_capture.py`、`hepta_strategy_*` 与 EURUSD shadow 策略服务于可复现研究。它们不拥有 execution capability。研究输出进入 TradeIntent 前必须经过 schema、数据新鲜度和 replay validation。
 
-本目录不再包含发布打包、质量门禁、P1/round、动态 PAPER campaign、repair/renew/supervisor、attestation、terminal witness、Windows 一键上线或硬编码用户工作区脚本。
+目录中没有 credential、动态 PAPER campaign、自动 disarm、LIVE 上线或宿主调优脚本。此类能力不得通过新增便捷脚本绕过 systemd、Gateway、Execution 与资格认证边界。

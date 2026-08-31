@@ -1,46 +1,34 @@
-# RUNBOOK - INCIDENT
+# Incident runbook
 
-适用范围：连接失败、下单异常、门禁失败等生产前/准生产事件。
+适用于连接、订单、journal、风控、身份、安装或资格认证异常。
 
-## 1. 事故分级
+## Immediate containment
 
-- **SEV-1 / P1**：无法连接、下单连续拒绝、状态不一致。
-- **SEV-2 / P2**：行情缺失、错误数异常上升。
-- **SEV-3 / P3**：偶发错误且可自愈。
+1. engage kill switch 或保持只读，停止新增风险；
+2. 不删除、不截断、不手工编辑 OMS journal；
+3. 保存 alerts、metrics、journal、systemd logs、安装 manifest、SBOM、provenance、配置 hash、service/connection epoch；
+4. 记录 UTC 时间线、账户、venue、影响订单和当前 authoritative state。
 
-## 2. 通用处置顺序
+## Classification
 
-1. **先止损**：暂停策略下单/切换只读。
-2. **再取证**：固定证据目录（`runtime-logs/*`）。
-3. **后恢复**：按分类修复并验证。
+- **P1/SEV-1**：状态不一致、outcome uncertain、journal malformed/poisoned、重复 event ID、权限边界失败、连续 Broker 拒单或无法安全退出。
+- **P2/SEV-2**：行情/回调停滞、延迟或错误率显著恶化，但 authoritative state 已知且风险受控。
+- **P3/SEV-3**：无交易影响、可确定恢复的单次异常。
 
-## 3. 场景化步骤
+## Diagnosis
 
-### A) 无法建立 IB 会话（NO_NEXT_VALID_ID）
+```bash
+systemctl --no-pager --full status <affected-unit>
+journalctl -u <affected-unit> --since -30min
+cat /var/lib/<service-state>/heptatrader-alerts.json
+```
 
-1. 检查 TWS/Gateway 是否在线与端口配置。
-2. 运行：
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\scripts\test-ib-ports.ps1
-   ```
-3. 重新执行回归轮次并汇总日志。
-4. 若仍失败，升级 SEV-1 并禁止进入 go-live。
+- 连接异常：核对 loopback endpoint、Gateway 状态、egress policy、connection epoch；不要改成公网地址。
+- 201/reject：核对账户权限、instrument identity、side/quantity/price、reference quote 和 stable risk code。
+- outcome uncertain：查询 authoritative open orders、fills 和 positions；禁止使用新 command ID 重发。
+- journal/路径异常：停止相关 daemon，保留 inode/metadata 证据并从上一个已验证状态恢复。
+- CI/package 异常：不得手工跳过门禁发布。
 
-### B) 下单拒绝（error code 201/相关）
+## Recovery
 
-1. 检查账户权限、合约参数、风控阈值。
-2. 复核 `check_ib_order_whitelist.py` 输出。
-3. 在 paper 账户复现并确认问题闭环后再恢复。
-
-### C) CI Gate 失败
-
-1. 查看 `runtime-logs/ci-gate-*/ci_gate_summary.txt`。
-2. 按失败项修复（Whitelist / Regression / Release Check）。
-3. 必须重跑至 `EXIT_CODE=0`。
-
-## 4. 复盘输出（必填）
-
-- 事件编号、时间线、影响范围
-- 根因（直接/系统性）
-- 修复动作与回归证据
-- 预防措施（脚本/文档/流程）
+只有 authoritative reconciliation 完成、根因已修、相同故障回归通过、安装/配置重新验证且 owner 批准后，才可以 disarm。先恢复 read-only，再恢复 bounded PAPER mutations。复盘必须包含根因、影响、证据、修复 commit、测试与防复发门禁。

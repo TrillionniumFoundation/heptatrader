@@ -1,55 +1,20 @@
-﻿# XTQMT as First-class Venue (parallel to CTP / IB)
+# XT/QMT venue plan
 
-Status: Stage-1 scaffold committed.
+Status: unsupported event-normalization scaffold; outbound operations fail closed.
 
-## What is done now
+## Current state
 
-1. Added new adapter folder and scaffold class:
-   - `HeptaTrade/adapter_xt/xt_gateway_adapter.h`
-   - `HeptaTrade/adapter_xt/xt_gateway_adapter.cpp`
+`HeptaTrade/adapter_xt/` 保留未来 transport 所需的事件类型与 callback normalization API。公开构建没有 vendor SDK binding。`Init`、`Connect`、账户/持仓/行情请求、下单和撤单均不得返回真实成功；稳定原因码为 `XT_TRANSPORT_UNAVAILABLE`。即使测试注入 connected callback，也不能开启 outbound send。
 
-2. Added build entry:
-   - `HeptaTrade/HeptaTrader.vcxproj` now includes `adapter_xt/xt_gateway_adapter.cpp`
+## Required implementation sequence
 
-3. Added config example fields:
-   - `HeptaTrade/HeptaTraderConfig.xml.example`
-   - new `<XTServer ... />`, `<XTRisk ... />`, and `<Runtime Venue="AUTO" />`
+1. 定义独立 transport process、IPC contract 和 vendor version/hash policy；
+2. 解析配置但保持 `readOnly=true` 默认值；
+3. 接入账户、持仓、订单、成交和连接 epoch 的 authoritative snapshot；
+4. 把 callback 映射到 OMS v4，并实现 service-owned correlation；
+5. 复用 Execution risk、journal-before-send、command ID、lease fencing 和 reconciliation；
+6. 增加 mock contract、fault injection、restart recovery 和 Windows/Python ABI 测试；
+7. 在受控 PAPER 环境先 read-only、后 bounded mutation；
+8. 只有证据闭合后才能更新 capability matrix。
 
-## Design target
-
-Unify venue runtime as:
-- `CTP`
-- `IB`
-- `XT`
-
-and keep one OMS/risk/reconcile pipeline.
-
-## Next implementation steps (Stage-2)
-
-1. Main runtime routing
-   - Extend `NormalizeVenue`/selector in `HeptaDemoStrategyTrader.cpp` to accept `XT`.
-   - Add XT startup branch (`Init/Connect/ReqAccountSummary/ReqPositions`).
-
-2. Config loading
-   - Parse `<XTServer>` and `<XTRisk>` into `HeptaXTConfig`.
-   - Keep env override style aligned with CTP/IB (`HEPTA_ALLOW_XT_ORDERS`, etc.).
-
-3. Event normalization
-   - Map xtquant callback events to OMS events:
-     - `venue_connect`
-     - `order_intent/place_sent/status/cancel/reject`
-     - account/position snapshots for reconcile.
-
-4. Risk gating
-   - Reuse pre-trade risk semantics before XT place/cancel.
-   - Global kill switch + flatten-only must behave same as IB/CTP.
-
-5. Smoke tests
-   - `HEPTA_VENUE=XT` startup smoke
-   - XT order loop smoke (paper/sim)
-   - OMS schema validation on XT path.
-
-## Notes
-
-Current XT adapter is a scaffold (stub events), intended to lock API shape and build integration first.
-It does NOT place real XT orders yet.
+不允许使用本地 synthetic ack/status 代替真实 Broker callback，也不允许把 Simulator 行为命名为 `XT`。

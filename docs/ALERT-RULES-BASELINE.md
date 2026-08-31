@@ -1,45 +1,18 @@
-# Alert Rules Baseline (W11 / 阶段F)
+# Alert rules baseline
 
-## 1. 严重级别
+## P1
 
-- **P1（立即处理）**：可能导致无法交易、风险失控、状态不一致。
-- **P2（尽快处理）**：交易能力下降或出现异常趋势。
-- **P3（观察）**：暂不影响交易，仅需跟踪。
+- `OMS_JOURNAL_MALFORMED`：journal 含非法或超大记录。停止新增风险，保留文件并验证 durability/replay。
+- `OMS_DUPLICATE_EVENT_ID`：事件 ID 重复。检查 producer、重启恢复和幂等边界。
+- `OMS_OUTCOME_UNCERTAIN`：存在 place/flatten/cancel/projection 不确定结果。先 authoritative reconciliation，禁止盲目重发。
+- `IB_ORDER_REJECTED_201`：IB 错误 201。暂停新增订单并核查账户权限、合约、价格、数量和风控。
+- `OMS_NO_EVENTS`：在显式 `--require-events` 模式下没有有效事件。
+- collector 执行失败：文件 identity、owner、mode、I/O 或输出路径不安全。
 
-## 2. 最小告警规则
+## P2
 
-### P1
-1. `ci_gate_overall != PASS`
-   - 动作：阻断合并/发布；查看 `ci_gate_summary.json`。
-2. `ib_next_valid_id_count == 0`
-   - 动作：判定 IB 会话未建立；执行 `RUNBOOK-INCIDENT` 的“连接失败”流程。
-3. `ib_error_code_201 > 0`（示例：下单拒绝）
-   - 动作：暂停策略下单，核查合约与权限。
+建议部署侧基于 metrics 增加：事件长时间停滞、active orders 超过预期、某 risk code 激增、Broker reconnect 频率异常和 journal sync latency 上升。阈值必须按运行模式与交易时段配置，不能对离线 Simulator 使用实时交易阈值。
 
-### P2
-1. `ib_tick_price_count == 0`（在应有行情订阅前提下）
-2. `ib_error_total` 在单轮回归明显上升（与近 7 日均值比较）
+## Response
 
-### P3
-1. 单个非关键错误码偶发（可恢复）
-
-## 3. 告警输出格式（本仓库最小实现）
-
-`summarize_ib_logs.ps1` 会生成 `alerts.json`：
-
-```json
-[
-  {
-    "severity": "P1",
-    "rule": "NO_NEXT_VALID_ID",
-    "message": "No nextValidId detected",
-    "value": 0
-  }
-]
-```
-
-## 4. 升级路径
-
-- V1：本地 JSON 告警 + 人工查看
-- V2：接入 CI Job Summary/通知
-- V3：接入 Prometheus + Alertmanager + 值班轮值
+P1 首先 engage kill switch 或保持只读；保存 journal、alerts、metrics、service logs、build provenance 和当前配置 hash；再按 `RUNBOOK-INCIDENT.md` 分类处理。只有 authoritative state 已确认、根因闭合、回归通过后才恢复新增风险。

@@ -1,36 +1,23 @@
-# Hepta 策略验证路线（固定回放 -> 一致性 -> 小规模仿真实盘）
+# Strategy validation plan
 
-## Phase A: 固定数据回放（可复现）
-1. 固定输入数据目录：`D:\quant\dat\replay-set-001`
-2. 固定索引：`HisMarketDataIndex.xml`
-3. 固定配置：`HeptaSimulatorConfig.xml`（只读）
-4. 每次回放输出：
-   - `runtime-logs/simulator-*.out.log`
-   - 账户权益轨迹
-   - 成交/委托统计
+策略验证必须使用可移植参数，不在文档或代码中固定开发者磁盘路径。
 
-验收：同一数据+同一参数重复运行，核心指标差异 < 1e-6（或逐笔一致）。
+## Phase A: deterministic replay
 
-## Phase B: 回测一致性
-对比三组结果：
-- A1: 当前基线版本
-- A2: 重构后版本
-- A3: 参数微调版本
+通过环境变量或命令行指定版本化 replay dataset、index 和只读 simulator config。记录 dataset hash、config hash、commit、compiler、seed、交易日历和输出目录。同一输入重复运行时，订单事件应逐条一致；浮点汇总指标只在事先定义的容差内比较。
 
-关键指标：
-- 总收益、最大回撤、夏普、胜率、成交次数、滑点成本
+## Phase B: semantic equivalence
 
-验收：A1/A2 在同参数下差异可解释；任何偏差必须有日志证据。
+比较基线、重构和参数实验：总收益、最大回撤、风险暴露、成交数、滑点、拒单、turnover 与每笔订单因果链。任何差异必须能追溯到明确代码、参数或数据变化，不能只比较最终 PnL。
 
-## Phase C: 小规模仿真实盘
-1. 仅 1-2 个品种，低频低风险
-2. 开启全量日志与错误码落盘
-3. 先观察 3-5 个交易日
+## Phase C: shadow
 
-验收：
-- 无异常退出
-- 连接稳定
-- 交易/风控日志闭环可追踪
+策略只生成决策 receipt 和预期 TradeIntent，不获得 execution capability。验证数据新鲜度、时区、交易时段、重复输入、重启状态和 missing-data fail-closed。
 
-## 失败回滚
-- 任何阶段异常，回滚到上一个稳定配置+稳定二进制。
+## Phase D: bounded Simulator
+
+通过 Agent OS 的真实 Gateway/Execution/OMS 路径运行，而不是直接调用 legacy strategy-to-broker API。执行断线、延迟、重复 callback、部分成交、cancel race、journal failure 和 reconciliation 故障注入。
+
+## Phase E: controlled PAPER
+
+仅针对 capability matrix 中的 Conditional venue，在受控 runner 上先 read-only，再经人工批准运行 bounded mutations。证据必须绑定 commit、SDK、账户、限制、时间范围和完整 journal。任何 P1 或无法解释偏差都回到前一阶段。

@@ -1,78 +1,22 @@
-﻿# IB System Low-Latency Operational Checklist
+# IB host latency and reliability checklist
 
-Objective: make host-side low-latency tuning repeatable, auditable, and release-gated for IB Gateway + Hepta strategy colocation.
+低延迟优化不能优先于正确性、隔离和可恢复性。仓库不再提供修改 Windows power plan、NIC 或进程优先级的一键脚本；此类宿主变更由独立运维基线管理，并在隔离 PAPER 环境测量后批准。
 
-## 1) Dry-run audit (default, no mutation)
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/optimize_ib_host_latency.ps1
-# equivalent explicit form:
-# powershell -ExecutionPolicy Bypass -File scripts/optimize_ib_host_latency.ps1 -Mode DryRun
-```
-Output: `runtime-logs/host_latency_tuning_report.json`
+## Required measurements
 
-## 2) Apply tuning (explicit opt-in)
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/optimize_ib_host_latency.ps1 -Mode Apply -AffinityMaskHex 0x0000000F
-# or keep compatibility:
-# powershell -ExecutionPolicy Bypass -File scripts/optimize_ib_host_latency.ps1 -Apply -AffinityMaskHex 0x0000000F
-```
-Applied actions:
-- Power plan -> High performance (when available)
-- NIC: attempt to disable Interrupt Moderation / EEE / Green Ethernet / Flow Control where supported
-- Process affinity + High priority for `ibgateway` and `HeptaDemoStrategyTrader`
+- Gateway 与 Execution 的时钟同步和 callback latency；
+- quote age、request-to-send、send-to-ack、ack-to-fill、reconcile duration；
+- reconnect 次数、1100/1101/1102、201 和 outcome-uncertain；
+- CPU saturation、scheduler delay、page faults、disk sync latency 和 journal queue depth；
+- 同一 commit/config/dataset 的 p50/p95/p99 与最坏值。
 
-## 3) Power/turbo/core-park governance guidance
-Dry-run output now records processor power settings from current scheme:
-- Processor min/max state (AC/DC)
-- Core parking min/max cores (AC/DC)
+## Safe tuning order
 
-Recommended execution-host baseline (validate thermals first):
-- AC `ProcessorMin=100`, `ProcessorMax=100`
-- AC `CoreParkingMin=100`, `CoreParkingMax=100`
-- Keep turbo enabled unless benchmarked evidence shows lower jitter when disabling
+1. 保证 IB Gateway 仅监听 loopback PAPER 端口，并验证 nftables egress policy；
+2. 固定 CPU/内存/磁盘资源和时间同步；
+3. 采集未调优基线；
+4. 一次只修改一个 host setting；
+5. 运行 deterministic replay、fault injection 和受控 PAPER read-only；
+6. 只有 tail latency 改善且错误率/温度/稳定性无回退时保留变更。
 
-Repeatable checks:
-```powershell
-powercfg -GetActiveScheme
-powercfg /Q SCHEME_CURRENT SUB_PROCESSOR
-```
-
-## 4) IB Gateway + strategy colocation checks
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/check_ib_colocation.ps1 -IbHost 127.0.0.1 -Port 4002
-```
-Output: `runtime-logs/ib_colocation_check.json`
-
-Pass intent:
-- IB host is loopback (`127.0.0.1`/`localhost`)
-- `ibgateway` process exists locally
-- `HeptaDemoStrategyTrader` process exists locally
-
-## 5) Verification commands (repeatable)
-```powershell
-powercfg -GetActiveScheme
-powercfg /Q SCHEME_CURRENT SUB_PROCESSOR
-Get-Process -Name ibgateway,HeptaDemoStrategyTrader | Select Name,Id,PriorityClass,ProcessorAffinity
-Get-NetAdapter | ? Status -eq Up | Select Name,Status,LinkSpeed
-powershell -ExecutionPolicy Bypass -File scripts/check_ib_colocation.ps1 -IbHost 127.0.0.1 -Port 4002
-```
-
-## 6) Regression after host tuning
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/run_ib_regression_10m.ps1 -DurationMinutes 1 -RunMode trading
-```
-
-## 7) Release checklist integration
-Release gate includes:
-- `SYSTEM_LOW_LATENCY` (dry-run baseline + NIC/power/process + colocation record)
-- `IB_COLOCATION` (standalone colocation pass/fail)
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/release_check.ps1 -Profile paper -IbHost 127.0.0.1 -Port 4002
-```
-
-Pass criteria:
-- `runtime-logs/host_latency_tuning_report.json` generated
-- `runtime-logs/ib_colocation_check.json` generated
-- Active NIC discovered
-- No blocking failures in release gates
+不要使用 realtime priority、关闭安全机制或放宽 systemd sandbox 来换取延迟。任何调优不得改变 order state machine、risk、journal durability、socket identity 或 reconciliation 语义。结果必须进入受控 qualification evidence，而不是提交开发机专属命令。
