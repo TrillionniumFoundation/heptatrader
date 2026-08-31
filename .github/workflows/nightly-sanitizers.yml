@@ -14,11 +14,14 @@ concurrency:
 
 jobs:
   tsan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     env:
       TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=7
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
       - name: Configure
