@@ -4,14 +4,16 @@
 
 1. 构建只消费固定 commit 和显式依赖；运行时不得自动下载 Broker SDK。
 2. 默认公开 package 不包含第三方 vendor SDK、credential、账户配置或 market data。
-3. 每个 release 生成安装 hash manifest、SPDX SBOM、SHA256SUMS 和可验证 build provenance。
+3. 每个 release 生成安装 hash manifest、SPDX SBOM、SHA256SUMS、工具链观测记录和可验证 build provenance。
 4. 缺失来源、版本、license 或 redistribution authorization 时 fail closed：不打包、不发布、不以 stub 伪装支持。
 5. 所有外部 GitHub Actions 必须固定到完整 commit SHA；容器 action 必须固定到 `sha256` digest。本地 action 可以使用仓库相对路径。
+6. hosted build 在 checkout 后不得运行滚动 APT 安装或升级；必须与版本化工具链锁完全一致。
 
 ## Dependency boundaries
 
-- OpenSSL 通过系统包提供，CI 安装 development headers；发布者负责记录目标系统动态依赖。
-- IB API 由受控 runner 从已授权本地路径提供，`IBAPI_ROOT` 不得指向网络下载或可变工作区。
+- OpenSSL、编译器、CMake、Ninja、Python 和 Git 来自固定 GitHub runner 镜像；`scripts/verify_ci_toolchain.py` 在构建前校验镜像 ID、镜像版本及各工具精确版本。镜像更新时 CI 会 fail closed，必须审查后更新 `ci/hosted-toolchain.lock.json`。
+- 外部 GitHub Action 的审查名称、显示版本和 commit SHA 记录在 `ci/actions.lock.json`；workflow 中的每个 `uses:` 必须与该 allowlist 精确一致。
+- IB API 由受控 self-hosted runner 从已授权本地路径提供，`IBAPI_ROOT` 不得指向网络下载或可变工作区。
 - CTP overlay 使用 content-addressed manifest，但因来源和分发授权未闭合而排除发布。
 - XT/QMT SDK 不进入仓库或 package。
 - legacy TinyXML/oneTBB-compatible source 在任何源代码分发前必须补齐原始 license 与 provenance。
@@ -20,7 +22,17 @@
 
 `CODEOWNERS` 标记 risk、execution、Broker adapter、systemd、workflow 和 CMake 等安全关键路径。GitHub ruleset 必须要求 pull request、owner review、全部 CI required checks、已解决 review thread、禁止 force push 和禁止删除 `main`。仓库内文件不能代替平台侧 ruleset；两者都需要。
 
-外部 action pin、文档路径、systemd/install graph、发布权限边界和 source-size no-growth budget 由 `scripts/check_repo_contracts.py` 在每次 CI 中验证。
+外部 action allowlist、hosted toolchain lock、文档路径、systemd/install graph、发布权限边界、唯一打包路径和 source-size no-growth budget 由 `scripts/check_repo_contracts.py` 在每次 CI 中验证。`tests/python/test_workflow_locks.py` 再提供独立负向回归，防止浮动 action、未登记 action、滚动 APT 或锁文件结构漂移。
+
+## Reproducible package boundary
+
+CI 与 release 都从两个空 build 目录独立构建同一提交，并分别安装到不同 staging root。以下对象必须逐字节相同：
+
+- staging-independent install manifest；
+- 绑定 `SOURCE_DATE_EPOCH` 的 SPDX 2.3 SBOM；
+- 固定排序、mtime、uid/gid、用户名/组名和权限的 deterministic `tar.gz`。
+
+唯一允许的 release archive 入口是 `scripts/build_release_archive.py`。CMake/CPack 不再定义第二条 package 路径，防止绕过目录权限验证、manifest、SBOM、工具链观测和 protected publication authority。工具链锁文件本身安装到制品文档树并进入 SBOM/hash manifest。
 
 ## Release authority
 
@@ -28,7 +40,7 @@ release workflow 只响应 `v*` tag，但 tag 本身不授予发布权。候选�
 
 1. tag commit 等于当前 `main` head；
 2. 同一 SHA 的 main push `CI` run 包含完整成功的 GCC/Clang Debug/Release、ASan/UBSan、repository-contracts 和 package job；
-3. 只读 build-candidate job 完成 staging、manifest、SBOM、package 与 checksum；
+3. 只读 build-candidate job 完成双构建、staging、manifest、SBOM、archive、toolchain observation 与 checksum；
 4. 独立 publish job 进入受保护的 `heptatrader-release` 环境；
 5. 环境变量 `HEPTA_RELEASE_APPROVED_SHA` 与候选 SHA 精确相等；
 6. 下载后的候选重新通过 `SHA256SUMS`，之后才可 attestation 和发布。
@@ -37,4 +49,4 @@ release workflow 只响应 `v*` tag，但 tag 本身不授予发布权。候选�
 
 ## Incident response
 
-发现依赖被替换、hash 不匹配、来源不明或 credential 泄漏时：停止发布和相关服务；保留制品、SBOM、manifest、workflow logs 与 journal；撤销 credential；恢复到上一已验证制品；完成根因和影响范围审计后再恢复。
+发现依赖被替换、hash 不匹配、来源不明、runner lock 漂移或 credential 泄漏时：停止发布和相关服务；保留制品、SBOM、manifest、toolchain observation、workflow logs 与 journal；撤销 credential；恢复到上一已验证制品；完成根因和影响范围审计后再恢复。
