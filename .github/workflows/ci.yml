@@ -15,16 +15,20 @@ concurrency:
 
 jobs:
   repository-contracts:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Repository contracts
         run: python3 scripts/check_repo_contracts.py
       - name: Python safety tests
         run: python3 -m unittest discover -s tests/python -p 'test_*.py' -v
 
   core:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +38,9 @@ jobs:
       CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
       CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
       - name: Configure
@@ -59,12 +65,15 @@ jobs:
         run: ctest --test-dir build --output-on-failure --parallel 2 -L core
 
   asan-ubsan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       ASAN_OPTIONS: detect_leaks=1:halt_on_error=1:strict_string_checks=1
       UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
       - name: Configure sanitizers
@@ -83,10 +92,13 @@ jobs:
         run: ctest --test-dir build --output-on-failure --parallel 1 -L core
 
   package:
-    runs-on: ubuntu-latest
-    needs: [repository-contracts, core]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [repository-contracts, core, asan-ubsan]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
       - name: Configure release
@@ -119,7 +131,7 @@ jobs:
           cp "$RUNNER_TEMP/stage/install-manifest.json" dist/
           cp "$RUNNER_TEMP/stage/heptatrader.spdx.json" dist/
           (cd dist && sha256sum * > SHA256SUMS)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: heptatrader-${{ github.sha }}
           path: dist/
