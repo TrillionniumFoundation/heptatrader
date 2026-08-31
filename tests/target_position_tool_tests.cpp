@@ -441,6 +441,13 @@ void TestTargetPreviewRequiresCanonicalAuthorityBinding()
             "\"expires_at_ms\":" + std::to_string(expires) + "}";
         return true;
     };
+    // This is another fresh registry/collection.  Reset the fixture's cached
+    // quote witness so this case reaches the authority-response validation
+    // boundary rather than failing earlier on a stale quote timestamp.
+    fixture.session.executionContext.toolCallId = "binding-check-2";
+    fixture.quoteStamped = false;
+    fixture.quoteObservedAtMs = 0;
+    fixture.quoteState.clear();
     TradingToolRegistry nonCanonicalRegistry(
         fixture.execution, fixture.callbacks);
     result = nonCanonicalRegistry.Invoke(fixture.session, preview);

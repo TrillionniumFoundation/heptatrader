@@ -1,9 +1,7 @@
-#include <array>
 #include <chrono>
 #include <condition_variable>
-#include <cstddef>
 #include <mutex>
-#include <string>
+#include <set>
 
 #include <sys/socket.h>
 #include <unistd.h>
@@ -12,49 +10,40 @@ namespace
 {
 std::mutex gPressureMutex;
 std::condition_variable gPressureCondition;
-std::array<bool, 4> gPressureFrames = {{false, false, false, false}};
-std::size_t gPressureFrameCount = 0;
+std::set<int> gConnectedClients;
 bool gPressureHoldUsed = false;
-std::string gSendTail;
-
-void RecordPressureFrame(const void* buffer, std::size_t size)
-{
-    const char* bytes = static_cast<const char*>(buffer);
-    std::lock_guard<std::mutex> lock(gPressureMutex);
-    gSendTail.append(bytes, size);
-    bool changed = false;
-    for (std::size_t index = 0; index < gPressureFrames.size(); ++index)
-    {
-        const std::string needle = "pressure-" + std::to_string(index);
-        if (!gPressureFrames[index] &&
-            gSendTail.find(needle) != std::string::npos)
-        {
-            gPressureFrames[index] = true;
-            ++gPressureFrameCount;
-            changed = true;
-        }
-    }
-    if (gSendTail.size() > 256)
-        gSendTail.erase(0, gSendTail.size() - 256);
-    if (changed) gPressureCondition.notify_all();
-}
 }
 
-extern "C" ssize_t __real_send(int socket,
-                                 const void* buffer,
-                                 std::size_t length,
-                                 int flags);
+extern "C" int __real_connect(
+    int socket,
+    const struct sockaddr* address,
+    socklen_t addressLength);
+extern "C" int __real_close(int descriptor);
 extern "C" int __real_usleep(useconds_t microseconds);
 
-extern "C" ssize_t __wrap_send(int socket,
-                                 const void* buffer,
-                                 std::size_t length,
-                                 int flags)
+extern "C" int __wrap_connect(
+    int socket,
+    const struct sockaddr* address,
+    socklen_t addressLength)
 {
-    const ssize_t result = __real_send(socket, buffer, length, flags);
-    if (result > 0)
-        RecordPressureFrame(buffer, static_cast<std::size_t>(result));
+    const int result = __real_connect(socket, address, addressLength);
+    if (result == 0)
+    {
+        std::lock_guard<std::mutex> lock(gPressureMutex);
+        gConnectedClients.insert(socket);
+        gPressureCondition.notify_all();
+    }
     return result;
+}
+
+extern "C" int __wrap_close(int descriptor)
+{
+    {
+        std::lock_guard<std::mutex> lock(gPressureMutex);
+        if (gConnectedClients.erase(descriptor) != 0)
+            gPressureCondition.notify_all();
+    }
+    return __real_close(descriptor);
 }
 
 extern "C" int __wrap_usleep(useconds_t microseconds)
@@ -62,27 +51,32 @@ extern "C" int __wrap_usleep(useconds_t microseconds)
     if (microseconds != 150000)
         return __real_usleep(microseconds);
 
-    bool hold = false;
     {
         std::unique_lock<std::mutex> lock(gPressureMutex);
         if (!gPressureHoldUsed)
         {
-            const bool allFramesWritten = gPressureCondition.wait_for(
+            gPressureHoldUsed = true;
+
+            // At this point the first same-owner request is executing. While
+            // it is held, the remaining clients can connect, send and enter
+            // the two-entry owner queue. The fourth request must be rejected.
+            const bool allClientsConnected = gPressureCondition.wait_for(
                 lock,
                 std::chrono::seconds(2),
-                []() { return gPressureFrameCount == gPressureFrames.size(); });
-            if (allFramesWritten && !gPressureHoldUsed)
+                []() { return gConnectedClients.size() >= 4; });
+
+            if (allClientsConnected)
             {
-                gPressureHoldUsed = true;
-                hold = true;
+                // An accepted request cannot close while this callback owns
+                // the sole per-owner execution slot. A client disappearing
+                // here is therefore the observable backpressure response.
+                gPressureCondition.wait_for(
+                    lock,
+                    std::chrono::seconds(2),
+                    []() { return gConnectedClients.size() < 4; });
             }
         }
     }
 
-    // Once all four request bodies are in their socket buffers, hold the first
-    // same-owner callback long enough for the two ingress workers to fill the
-    // configured two-entry owner queue and reject the fourth request. If the
-    // frame barrier is not reached, retain the original delay so the existing
-    // assertion exposes the regression.
-    return __real_usleep(hold ? 1000000 : microseconds);
+    return __real_usleep(microseconds);
 }

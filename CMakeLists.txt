@@ -12,19 +12,15 @@ add_subdirectory(HeptaTrade)
 if(BUILD_TESTING)
     add_subdirectory(tests)
 
-    # Synchronize only the owner-pressure fixture on the four actual request
-    # bodies written by its clients. Compile the framing translation unit
-    # directly into this target with IPO disabled so the test-only send/usleep
-    # wrappers observe the real wire path. Production UnixToolServer code,
-    # scheduling and limits remain unchanged.
+    # Synchronize the owner-pressure fixture on the test process's active
+    # client sockets. Link wrapping is confined to this executable and leaves
+    # production UnixToolServer scheduling, queue limits and framing unchanged.
     if(TARGET hepta_unix_tool_server_tests AND UNIX AND NOT APPLE)
-        set_property(TARGET hepta_unix_tool_server_tests
-            PROPERTY INTERPROCEDURAL_OPTIMIZATION FALSE)
         target_sources(hepta_unix_tool_server_tests PRIVATE
-            tests/unix_tool_server_test_interposer.cpp
-            HeptaTrade/tool_host/typed_tool_framing.cpp)
+            tests/unix_tool_server_test_interposer.cpp)
         target_link_options(hepta_unix_tool_server_tests PRIVATE
-            "-Wl,--wrap=send"
+            "-Wl,--wrap=connect"
+            "-Wl,--wrap=close"
             "-Wl,--wrap=usleep")
     endif()
 endif()
