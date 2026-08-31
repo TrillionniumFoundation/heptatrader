@@ -1,0 +1,68 @@
+name: IB PAPER Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      mutation_mode:
+        description: Run the separately controlled PAPER mutation campaign
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-ib-paper-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
+    environment: ib-paper
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate controlled runner inputs
+        run: |
+          test -n "${IBAPI_ROOT:-}"
+          test -d "$IBAPI_ROOT"
+          test -n "${HEPTA_IB_PAPER_QUALIFIER:-}"
+          test -x "$HEPTA_IB_PAPER_QUALIFIER"
+      - name: Configure broker-enabled build
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DHEPTA_ENABLE_IBAPI=ON
+          -DIBAPI_ROOT="$IBAPI_ROOT"
+          -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF
+          -DHEPTA_BUILD_LEGACY_MONOLITH=OFF
+          -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          -DHEPTA_ENABLE_HARDENING=ON
+      - name: Build broker authority and core tests
+        run: >-
+          cmake --build build --parallel 2 --target
+          hepta_ib_executiond
+          hepta_core_test_binaries
+      - name: Run deterministic tests
+        run: ctest --test-dir build --output-on-failure --parallel 1 -L core
+      - name: Validate IB-enabled install tree
+        run: |
+          rm -rf "$RUNNER_TEMP/heptatrader-ib-stage"
+          cmake --install build --prefix "$RUNNER_TEMP/heptatrader-ib-stage/usr"
+          python3 scripts/verify_install_tree.py \
+            --root "$RUNNER_TEMP/heptatrader-ib-stage/usr" \
+            --ib-enabled \
+            --manifest "$RUNNER_TEMP/heptatrader-ib-stage/install-manifest.json"
+      - name: Run controlled PAPER qualification harness
+        env:
+          HEPTA_QUALIFICATION_MUTATIONS: ${{ inputs.mutation_mode && '1' || '0' }}
+        run: ./scripts/run_ib_paper_qualification.sh build "$RUNNER_TEMP/heptatrader-ib-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ib-paper-qualification-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-ib-evidence/
+          if-no-files-found: error
+          retention-days: 90

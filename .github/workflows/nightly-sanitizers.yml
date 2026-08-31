@@ -1,0 +1,37 @@
+name: Nightly ThreadSanitizer
+
+on:
+  schedule:
+    - cron: '27 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-nightly-tsan
+  cancel-in-progress: true
+
+jobs:
+  tsan:
+    runs-on: ubuntu-latest
+    env:
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=7
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DBUILD_TESTING=ON
+          -DHEPTA_ENABLE_IBAPI=OFF
+          -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF
+          -DHEPTA_BUILD_LEGACY_MONOLITH=OFF
+          -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          -DHEPTA_ENABLE_TSAN=ON
+      - name: Build
+        run: cmake --build build --parallel 2 --target hepta_core_test_binaries
+      - name: Test serially under ThreadSanitizer
+        run: ctest --test-dir build --output-on-failure --parallel 1 -L core

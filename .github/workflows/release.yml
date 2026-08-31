@@ -1,0 +1,58 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag and repository contracts
+        run: |
+          test "${GITHUB_REF_NAME#v}" = "$(tr -d '\r\n' < VERSION)"
+          python3 scripts/check_repo_contracts.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py' -v
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev
+      - name: Build and test release
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF \
+            -DHEPTA_ENABLE_HARDENING=ON
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure --parallel 2 -L core
+      - name: Stage, verify, package, and generate SBOM
+        run: |
+          cmake --install build --prefix "$RUNNER_TEMP/stage/usr"
+          mkdir -p dist
+          python3 scripts/verify_install_tree.py \
+            --root "$RUNNER_TEMP/stage/usr" \
+            --manifest dist/install-manifest.json
+          python3 scripts/generate_sbom.py \
+            --root "$RUNNER_TEMP/stage/usr" \
+            --version-file VERSION \
+            --git-sha "$GITHUB_SHA" \
+            --output dist/heptatrader.spdx.json
+          cpack --config build/CPackConfig.cmake -B dist
+          (cd dist && sha256sum * > SHA256SUMS)
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: 'dist/*'
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --generate-notes

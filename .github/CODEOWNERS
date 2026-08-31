@@ -1,0 +1,10 @@
+# Security- and execution-critical surfaces require an explicit owner review
+# once repository ruleset/branch protection is enabled.
+* @ProfHepta
+/HeptaTrade/risk/ @ProfHepta
+/HeptaTrade/execution/ @ProfHepta
+/HeptaTrade/tool_host/ @ProfHepta
+/HeptaTrade/adapter_ib/ @ProfHepta
+/systemd/ @ProfHepta
+/.github/workflows/ @ProfHepta
+/cmake/ @ProfHepta
