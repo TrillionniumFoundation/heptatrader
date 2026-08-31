@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <locale>
 #include <limits>
+#include <set>
 #include <sstream>
 #include <vector>
 
@@ -312,38 +313,51 @@ bool ValidateOptionalOwnerScope(const BoundedJsonValue& object,
     return true;
 }
 
-void FindInstrumentPositions(const BoundedJsonValue& value,
-                   const std::string& instrument,
-                   std::vector<double>& quantities,
-                   bool& invalidCanonicalNumber)
+bool ParseInstrumentPositions(const BoundedJsonValue& object,
+                              const std::string& instrument,
+                              std::vector<double>& quantities,
+                              std::string& detail)
 {
-    if (value.IsObject())
+    quantities.clear();
+    const BoundedJsonValue* records = object.Find("positions");
+    if (records == nullptr || !records->IsArray())
     {
-        const BoundedJsonValue* instrumentField = value.Find("instrument");
-        const BoundedJsonValue* quantityField = value.Find("quantity");
+        detail = "positions must be a top-level array";
+        return false;
+    }
+
+    std::set<std::string> seenInstruments;
+    for (std::vector<BoundedJsonValue>::const_iterator it =
+             records->Array().begin(); it != records->Array().end(); ++it)
+    {
+        if (!it->IsObject())
+        {
+            detail = "each position record must be an object";
+            return false;
+        }
         std::string candidate;
         double quantity = 0.0;
-        if (instrumentField != nullptr && quantityField != nullptr &&
-  instrumentField->String(candidate) && candidate == instrument &&
-  quantityField->Number(quantity) && std::isfinite(quantity))
+        if (!RequiredString(*it, "instrument", candidate) ||
+            !RequiredNumber(*it, "quantity", quantity))
         {
-            if (quantity == 0.0 && std::signbit(quantity))
-                invalidCanonicalNumber = true;
-            else
-                quantities.push_back(quantity);
+            detail = "each position record requires canonical instrument and quantity";
+            return false;
         }
-        for (std::map<std::string, BoundedJsonValue>::const_iterator it =
-       value.Object().begin(); it != value.Object().end(); ++it)
-  FindInstrumentPositions(it->second, instrument, quantities,
-                          invalidCanonicalNumber);
+        std::string identityDetail;
+        if (!ValidIdentityText(candidate, "position.instrument", identityDetail))
+        {
+            detail = identityDetail;
+            return false;
+        }
+        if (!seenInstruments.insert(candidate).second)
+        {
+            detail = "instrument position is duplicated";
+            return false;
+        }
+        if (candidate == instrument) quantities.push_back(quantity);
     }
-    else if (value.IsArray())
-    {
-        for (std::vector<BoundedJsonValue>::const_iterator it =
-       value.Array().begin(); it != value.Array().end(); ++it)
-  FindInstrumentPositions(*it, instrument, quantities,
-                          invalidCanonicalNumber);
-    }
+    detail.clear();
+    return true;
 }
 }
 
@@ -478,16 +492,11 @@ bool AuthoritativeDecisionSnapshotCodec::Build(
             reasonCode, detail);
 
     std::vector<double> matchingPositions;
-    bool invalidPositionNumber = false;
-    FindInstrumentPositions(positions, instrument, matchingPositions,
-                            invalidPositionNumber);
-    if (invalidPositionNumber)
-        return Reject("DECISION_SNAPSHOT_POSITION_INVALID",
-            "instrument position uses a non-canonical signed zero",
+    std::string positionDetail;
+    if (!ParseInstrumentPositions(positions, instrument, matchingPositions,
+                                  positionDetail))
+        return Reject("DECISION_SNAPSHOT_POSITION_INVALID", positionDetail,
             reasonCode, detail);
-    if (matchingPositions.size() > 1)
-        return Reject("DECISION_SNAPSHOT_POSITION_INVALID",
-            "instrument position is duplicated", reasonCode, detail);
     const double currentPosition = matchingPositions.empty() ?
         0.0 : matchingPositions.front();
 
