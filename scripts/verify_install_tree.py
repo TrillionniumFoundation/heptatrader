@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import stat
@@ -72,6 +73,22 @@ def map_usr_path(root: Path, absolute: str) -> Path:
     return root / absolute[len("/usr/") :]
 
 
+def validate_directory(path: Path, label: str, errors: list[str]) -> bool:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        errors.append(f"missing {label}: {path}")
+        return False
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        errors.append(f"{label} is not a non-symlink directory: {path}")
+        return False
+    mode = stat.S_IMODE(metadata.st_mode)
+    if mode & 0o022:
+        errors.append(f"{label} is group/world writable: {path} mode={mode:04o}")
+        return False
+    return True
+
+
 def validate_file(path: Path, executable: bool, errors: list[str]) -> None:
     try:
         metadata = path.lstat()
@@ -83,9 +100,26 @@ def validate_file(path: Path, executable: bool, errors: list[str]) -> None:
         return
     mode = stat.S_IMODE(metadata.st_mode)
     if mode & 0o022:
-        errors.append(f"install artifact is group/world writable: {path} mode={mode:o}")
+        errors.append(f"install artifact is group/world writable: {path} mode={mode:04o}")
     if executable and mode & 0o111 == 0:
-        errors.append(f"install executable lacks execute bits: {path} mode={mode:o}")
+        errors.append(f"install executable lacks execute bits: {path} mode={mode:04o}")
+
+
+def validate_tree_entry(path: Path, errors: list[str]) -> None:
+    metadata = path.lstat()
+    mode = stat.S_IMODE(metadata.st_mode)
+    if stat.S_ISLNK(metadata.st_mode):
+        errors.append(f"symlink is forbidden in release install tree: {path}")
+    elif stat.S_ISDIR(metadata.st_mode):
+        if mode & 0o022:
+            errors.append(
+                f"replaceable release directory: {path} mode={mode:04o}"
+            )
+    elif stat.S_ISREG(metadata.st_mode):
+        if mode & 0o022:
+            errors.append(f"writable release artifact: {path} mode={mode:04o}")
+    else:
+        errors.append(f"unsupported special file in release install tree: {path}")
 
 
 def validate_unit_references(root: Path, errors: list[str]) -> None:
@@ -112,27 +146,30 @@ def main() -> int:
     parser.add_argument("--ib-enabled", action="store_true")
     parser.add_argument("--manifest", type=Path)
     args = parser.parse_args()
-    root = args.root.resolve()
 
+    # abspath normalizes the lexical path without following a possibly hostile
+    # final symlink.  resolve() would hide precisely the root replacement this
+    # verifier is required to detect.
+    root = Path(os.path.abspath(os.fspath(args.root)))
     errors: list[str] = []
+    root_valid = validate_directory(root, "install root", errors)
+
     executables = list(CORE_EXECUTABLES)
     files = list(CORE_FILES)
     if args.ib_enabled:
         executables.extend(IB_EXECUTABLES)
         files.extend(IB_FILES)
 
-    for item in executables:
-        validate_file(root / item, True, errors)
-    for item in files:
-        validate_file(root / item, False, errors)
+    if root_valid:
+        for item in executables:
+            validate_file(root / item, True, errors)
+        for item in files:
+            validate_file(root / item, False, errors)
 
-    for path in root.rglob("*"):
-        if path.is_symlink():
-            errors.append(f"symlink is forbidden in release install tree: {path}")
-        elif path.is_file() and stat.S_IMODE(path.stat().st_mode) & 0o022:
-            errors.append(f"writable release artifact: {path}")
+        for path in root.rglob("*"):
+            validate_tree_entry(path, errors)
 
-    validate_unit_references(root, errors)
+        validate_unit_references(root, errors)
 
     if errors:
         for error in errors:
@@ -141,12 +178,13 @@ def main() -> int:
 
     entries = []
     for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        metadata = path.lstat()
         entries.append(
             {
                 "path": path.relative_to(root).as_posix(),
                 "sha256": sha256(path),
-                "mode": f"{stat.S_IMODE(path.stat().st_mode):04o}",
-                "size": path.stat().st_size,
+                "mode": f"{stat.S_IMODE(metadata.st_mode):04o}",
+                "size": metadata.st_size,
             }
         )
     payload = {"schema_version": 1, "root": str(root), "files": entries}
