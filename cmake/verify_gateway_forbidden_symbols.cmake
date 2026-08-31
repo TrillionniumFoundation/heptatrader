@@ -18,6 +18,9 @@ if(NOT HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "ON"
         "HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET must be exactly ON or OFF")
 endif()
 
+# Keep the complete defined-symbol surface for the privileged implementation
+# deny-list. Local/compiler-generated symbols can still reveal that a forbidden
+# Execution implementation was linked into the Agent-facing Gateway.
 execute_process(
     COMMAND "${HEPTA_NM_EXECUTABLE}" -C --defined-only
             "${HEPTA_GATEWAY_BINARY}"
@@ -30,28 +33,43 @@ if(NOT HEPTA_NM_RESULT EQUAL 0)
         "${HEPTA_NM_ERROR}")
 endif()
 
-# A bounded total symbol surface catches accidental whole-library linkage even
-# when a newly introduced privileged type has not yet acquired an explicit
-# deny-list pattern.  This is deliberately a small no-growth budget above the
-# reviewed Release binary. Debug and sanitizer instrumentation expands the
-# compiler-generated symbol surface, so those configurations always run the
-# privileged deny-list below but do not use the Release quantitative budget.
-set(HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS 1200)
+# Quantitative budgets must be comparable across GCC and Clang. Their local
+# symbols differ substantially even for the same reviewed source graph, so the
+# no-growth budget is applied to externally visible defined symbols while the
+# deny-list above/below still scans every defined symbol.
+execute_process(
+    COMMAND "${HEPTA_NM_EXECUTABLE}" -C --defined-only --extern-only
+            "${HEPTA_GATEWAY_BINARY}"
+    RESULT_VARIABLE HEPTA_EXTERNAL_NM_RESULT
+    OUTPUT_VARIABLE HEPTA_GATEWAY_EXTERNAL_SYMBOLS
+    ERROR_VARIABLE HEPTA_EXTERNAL_NM_ERROR)
+if(NOT HEPTA_EXTERNAL_NM_RESULT EQUAL 0)
+    message(FATAL_ERROR
+        "Unable to inspect Gateway external symbols with "
+        "${HEPTA_NM_EXECUTABLE}: ${HEPTA_EXTERNAL_NM_ERROR}")
+endif()
+
+set(HEPTA_GATEWAY_MAX_EXTERNAL_DEFINED_SYMBOLS 1200)
 string(REGEX MATCHALL "[^\r\n]+" HEPTA_GATEWAY_SYMBOL_LINES
     "${HEPTA_GATEWAY_SYMBOLS}")
 list(LENGTH HEPTA_GATEWAY_SYMBOL_LINES HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT)
+string(REGEX MATCHALL "[^\r\n]+" HEPTA_GATEWAY_EXTERNAL_SYMBOL_LINES
+    "${HEPTA_GATEWAY_EXTERNAL_SYMBOLS}")
+list(LENGTH HEPTA_GATEWAY_EXTERNAL_SYMBOL_LINES
+    HEPTA_GATEWAY_EXTERNAL_DEFINED_SYMBOL_COUNT)
 if(HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "ON"
-        AND HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT GREATER
-            HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS)
+        AND HEPTA_GATEWAY_EXTERNAL_DEFINED_SYMBOL_COUNT GREATER
+            HEPTA_GATEWAY_MAX_EXTERNAL_DEFINED_SYMBOLS)
     message(FATAL_ERROR
-        "Agent-facing Gateway defined-symbol budget exceeded: "
-        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT} > "
-        "${HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS}")
+        "Agent-facing Gateway external defined-symbol budget exceeded: "
+        "${HEPTA_GATEWAY_EXTERNAL_DEFINED_SYMBOL_COUNT} > "
+        "${HEPTA_GATEWAY_MAX_EXTERNAL_DEFINED_SYMBOLS}; "
+        "all_defined=${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT}")
 endif()
 
 # These types belong to the privileged Execution Service implementation.  The
 # Agent-facing Gateway may contain only execution contracts and client-side
-# transports.  Keep the list explicit so a future target-link change fails at
+# transports. Keep the list explicit so a future target-link change fails at
 # build time instead of silently widening the Gateway TCB.
 set(HEPTA_GATEWAY_FORBIDDEN_SYMBOL_PATTERNS
     "UnixExecutionServiceServer::"
@@ -94,11 +112,14 @@ endif()
 
 if(HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "ON")
     set(HEPTA_GATEWAY_SYMBOL_BUDGET_STATUS
-        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT}/${HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS} enforced")
+        "${HEPTA_GATEWAY_EXTERNAL_DEFINED_SYMBOL_COUNT}/"
+        "${HEPTA_GATEWAY_MAX_EXTERNAL_DEFINED_SYMBOLS} external enforced")
 else()
     set(HEPTA_GATEWAY_SYMBOL_BUDGET_STATUS
-        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT} observed; Release-only quantitative budget not enforced")
+        "${HEPTA_GATEWAY_EXTERNAL_DEFINED_SYMBOL_COUNT} external observed; "
+        "Release-only quantitative budget not enforced")
 endif()
 message(STATUS
     "Gateway privileged-symbol boundary PASS: ${HEPTA_GATEWAY_BINARY}; "
-    "defined_symbols=${HEPTA_GATEWAY_SYMBOL_BUDGET_STATUS}")
+    "defined_symbols=${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT}; "
+    "budget=${HEPTA_GATEWAY_SYMBOL_BUDGET_STATUS}")
