@@ -200,6 +200,8 @@ bool IsValidUtf8Text(const std::string& value)
     return true;
 }
 
+// Definitions follow the field decoder below; declarations here let the
+// shared field-set validator enforce numeric grammar for encoder output too.
 bool CanonicalSignedInteger(const std::string& value);
 bool CanonicalFloating(const std::string& value);
 
@@ -367,11 +369,17 @@ std::string Number(T value)
 {
     if (value == 0) return "0";
     std::ostringstream out;
+    // Keep the typed wire grammar locale-independent even when an embedding
+    // process has installed a non-C global locale.
     out.imbue(std::locale::classic());
     out << std::setprecision(17) << value;
     return out.str();
 }
 
+// Typed-tool numeric fields are serialized by Number() and therefore have a
+// canonical ASCII spelling.  strto* accepts leading whitespace, '+', and
+// integer leading zeroes; reject those aliases before conversion so a peer
+// cannot rely on locale or conversion quirks at the gateway boundary.
 bool CanonicalSignedInteger(const std::string& value)
 {
     if (value.empty()) return false;
@@ -422,6 +430,9 @@ bool CanonicalFloating(const std::string& value)
         if (offset == exponentStart) return false;
     }
     if (offset != value.size()) return false;
+    // Avoid two wire spellings for the same signed-zero value.  Negative
+    // finite numbers remain valid; only a mantissa made entirely of zeroes
+    // (optionally with a decimal point) is rejected.
     if (negative)
     {
         bool allZero = true;
@@ -465,6 +476,11 @@ bool ParseLongLong(const std::string& value, long long& out)
     return true;
 }
 
+// Cursor and queue-deadline fields are unsigned protocol quantities.  Do not
+// parse them through signed long long (which silently excludes the upper half
+// of uint64_t) or through strtoull (whose accepted grammar is locale/libc
+// dependent).  The wire spelling is decimal, with only the single digit zero
+// permitted as a leading-zero form.
 bool CanonicalUnsignedInteger(const std::string& value)
 {
     if (value.empty()) return false;
@@ -740,6 +756,8 @@ bool TypedToolProtocol::EncodeRequest(const TradingToolHostRequest& request, std
     if (!request.call.ibContract.exchange.empty()) fields[Exchange] = request.call.ibContract.exchange;
     if (!request.call.ibOrder.action.empty()) fields[Side] = request.call.ibOrder.action;
     if (!request.call.ibOrder.orderType.empty()) fields[OrderType] = request.call.ibOrder.orderType;
+    // Zero is a valid signed target position (a no-op), so intent calls must
+    // serialize quantity even when it is numerically zero.
     if (request.call.name == "intent.preview_target_position" ||
         request.call.name == "intent.apply_target_position" ||
         request.call.ibOrder.totalQuantity != 0.0)
