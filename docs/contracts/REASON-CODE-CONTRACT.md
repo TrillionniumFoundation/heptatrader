@@ -14,4 +14,6 @@ Authority: stable machine reason-code authority
 - credential、account、token、prompt、路径和任意用户输入不得拼入 code；
 - 每个新增 code 必须映射测试、严重级别、默认动作和文档。
 
+复合响应必须在安全编码或 payload 降级之前，对调用方提供的原始候选 envelope 进行精确有界预检。已知的复合工具越界必须保留该工具的稳定专用 code；只有无法由生产者分类的编码或字段契约破坏才可降级为通用 `RESULT_ENVELOPE_INVALID`／`RESULT_ENVELOPE_UNCERTAIN`。审计记录与客户端收到的结果必须来自同一个规范化对象。
+
 机器权威是 `verification/reason-code-registry-v1.json`。
