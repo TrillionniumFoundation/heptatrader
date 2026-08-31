@@ -24,15 +24,19 @@ REQUIRED_PATHS = (
     "cmake/HeptaProjectOptions.cmake",
     "cmake/HeptaTargetHardening.cmake",
     "docs/CAPABILITY-MATRIX.md",
+    "docs/IB-PAPER-QUALIFICATION.md",
     "docs/RELEASE-PROCESS.md",
     "docs/RUNBOOK-STARTUP.md",
     "docs/PROD-GO-LIVE-CHECKLIST.md",
     "docs/SUPPLY-CHAIN.md",
+    "scripts/build_release_archive.py",
     "scripts/verify_install_tree.py",
     "scripts/verify_release_ci.py",
+    "scripts/verify_ib_paper_qualification.py",
     "scripts/generate_sbom.py",
     "scripts/hepta_observability.py",
     "scripts/validate_sim_data.py",
+    "tests/assertions_enabled_tests.cpp",
 )
 
 SOURCE_SIZE_LIMIT = 100_000
@@ -217,6 +221,11 @@ def check_release_authority_contract(errors: list[str]) -> None:
         "actions/download-artifact@",
         "actions/attest-build-provenance@",
         "gh release create",
+        "SOURCE_DATE_EPOCH",
+        "build-a",
+        "build-b",
+        "scripts/build_release_archive.py",
+        "Prove and seal byte-for-byte reproducibility",
     )
     for token in required_tokens:
         if token not in text:
@@ -235,6 +244,65 @@ def check_release_authority_contract(errors: list[str]) -> None:
         r"^\s+contents:\s*write\s*$", text[:publish], re.MULTILINE
     ):
         errors.append("release candidate build holds contents:write before publication")
+    if text.count("cmp \"") < 3:
+        errors.append("release workflow does not compare all deterministic evidence outputs")
+
+
+def check_ci_reproducibility_contract(errors: list[str]) -> None:
+    path = ROOT / ".github/workflows/ci.yml"
+    if not path.is_file():
+        return
+    text = read_text(path)
+    required_tokens = (
+        "SOURCE_DATE_EPOCH",
+        "build-a",
+        "build-b",
+        "scripts/build_release_archive.py",
+        "Prove byte-for-byte reproducibility",
+        "install-manifest.json",
+        "heptatrader.spdx.json",
+    )
+    for token in required_tokens:
+        if token not in text:
+            errors.append(f"CI lacks reproducible-package boundary: {token}")
+    if text.count("cmp \"") < 3:
+        errors.append("CI does not compare manifest, SBOM, and archive byte-for-byte")
+
+
+def check_ib_qualification_contract(errors: list[str]) -> None:
+    workflow_path = ROOT / ".github/workflows/ib-paper-qualification.yml"
+    wrapper_path = ROOT / "scripts/run_ib_paper_qualification.sh"
+    if not workflow_path.is_file() or not wrapper_path.is_file():
+        return
+    workflow = read_text(workflow_path)
+    wrapper = read_text(wrapper_path)
+    workflow_tokens = (
+        "environment: ib-paper",
+        "mutation_mode",
+        "MUTATION_MODE",
+        "HEPTA_QUALIFICATION_MUTATIONS: '1'",
+        "scripts/verify_ib_paper_qualification.py",
+        "Re-verify committed qualification artifact",
+        "persist-credentials: false",
+    )
+    for token in workflow_tokens:
+        if token not in workflow:
+            errors.append(f"IB PAPER workflow lacks required qualification boundary: {token}")
+    if "inputs.mutation_mode && '1' || '0'" in workflow:
+        errors.append("IB PAPER qualification must not expose a green read-only fallback")
+
+    wrapper_tokens = (
+        'HEPTA_QUALIFICATION_MUTATIONS:-0',
+        '"$MUTATIONS" != "1"',
+        "qualification-result.json",
+        "qualification-verification.json",
+        "verify_ib_paper_qualification.py",
+        "--mode bounded-mutations",
+        "mv -T",
+    )
+    for token in wrapper_tokens:
+        if token not in wrapper:
+            errors.append(f"IB PAPER wrapper lacks required qualification boundary: {token}")
 
 
 def install_declares(executable: str, install_manifest: str) -> bool:
@@ -328,6 +396,8 @@ def main() -> int:
     check_portability(errors)
     check_workflow_action_pins(errors)
     check_release_authority_contract(errors)
+    check_ci_reproducibility_contract(errors)
+    check_ib_qualification_contract(errors)
     check_systemd_contracts(errors)
     check_unsupported_venues(errors)
     check_source_size_budget(errors)
