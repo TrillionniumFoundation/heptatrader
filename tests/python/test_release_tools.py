@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -21,6 +22,54 @@ def load_repo_contracts_module():
     module = importlib.util.module_from_spec(specification)
     specification.loader.exec_module(module)
     return module
+
+
+def load_install_verifier_module():
+    path = ROOT / "scripts/verify_install_tree.py"
+    specification = importlib.util.spec_from_file_location(
+        "hepta_verify_install_tree", path
+    )
+    if specification is None or specification.loader is None:
+        raise RuntimeError(f"unable to load {path}")
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def create_minimal_install_tree(root: Path) -> None:
+    verifier = load_install_verifier_module()
+    root.mkdir(parents=True, mode=0o755)
+    root.chmod(0o755)
+    for item in verifier.CORE_EXECUTABLES:
+        path = root / item
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"test-executable\n")
+        path.chmod(0o755)
+    for item in verifier.CORE_FILES:
+        path = root / item
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("test-file\n", encoding="utf-8")
+        path.chmod(0o644)
+    for directory in sorted(
+        (path for path in root.rglob("*") if path.is_dir()),
+        key=lambda value: len(value.parts),
+    ):
+        directory.chmod(0o755)
+
+
+def run_install_verifier(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts/verify_install_tree.py"),
+            "--root",
+            str(root),
+        ],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
 
 
 class ReleaseToolTests(unittest.TestCase):
@@ -55,25 +104,55 @@ class ReleaseToolTests(unittest.TestCase):
             self.assertEqual(payload["packages"][0]["versionInfo"], "0.1.0-beta.1")
             self.assertEqual([item["fileName"] for item in payload["files"]], ["./bin/heptactl"])
 
+    @unittest.skipUnless(os.name == "posix", "install mode tests require POSIX permissions")
+    def test_install_verifier_accepts_private_minimal_tree(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "usr"
+            create_minimal_install_tree(root)
+            result = run_install_verifier(root)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "install mode tests require POSIX permissions")
+    def test_install_verifier_rejects_writable_root(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "usr"
+            create_minimal_install_tree(root)
+            root.chmod(0o777)
+            result = run_install_verifier(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("install root is group/world writable", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "install mode tests require POSIX permissions")
+    def test_install_verifier_rejects_replaceable_executable_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "usr"
+            create_minimal_install_tree(root)
+            (root / "libexec").chmod(0o777)
+            result = run_install_verifier(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("replaceable release directory", result.stderr)
+            self.assertIn("libexec", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "install mode tests require POSIX permissions")
+    def test_install_verifier_rejects_writable_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "usr"
+            create_minimal_install_tree(root)
+            executable = root / "libexec/hepta-executiond"
+            executable.chmod(0o777)
+            result = run_install_verifier(root)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("group/world writable", result.stderr)
+            self.assertIn("hepta-executiond", result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "symlink tests require POSIX semantics")
     def test_install_verifier_rejects_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "bin").mkdir(parents=True)
-            target = root / "bin/target"
-            target.write_text("x", encoding="utf-8")
-            (root / "bin/link").symlink_to(target)
-            result = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts/verify_install_tree.py"),
-                    "--root",
-                    str(root),
-                ],
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-            )
+            root = Path(directory) / "usr"
+            create_minimal_install_tree(root)
+            target = root / "share/doc/heptatrader/VERSION"
+            (root / "share/replaceable-link").symlink_to(target)
+            result = run_install_verifier(root)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("symlink", result.stderr)
 
