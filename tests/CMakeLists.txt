@@ -16,6 +16,21 @@ function(hepta_register_core_test target)
     set(HEPTA_CORE_TEST_TARGETS "${HEPTA_CORE_TEST_TARGETS}" PARENT_SCOPE)
 endfunction()
 
+add_executable(hepta_pre_trade_risk_engine_tests
+    pre_trade_risk_engine_tests.cpp
+    ../HeptaTrade/risk/pre_trade_risk_engine.cpp)
+hepta_register_core_test(hepta_pre_trade_risk_engine_tests)
+set_tests_properties(hepta_pre_trade_risk_engine_tests PROPERTIES
+    LABELS "core;risk")
+
+add_executable(hepta_unsupported_venue_adapter_tests
+    unsupported_venue_adapter_tests.cpp
+    ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
+    ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
+hepta_register_core_test(hepta_unsupported_venue_adapter_tests)
+set_tests_properties(hepta_unsupported_venue_adapter_tests PROPERTIES
+    LABELS "core;venue-safety")
+
 add_executable(hepta_trading_contract_tests
     trading_contract_tests.cpp)
 hepta_register_core_test(hepta_trading_contract_tests)

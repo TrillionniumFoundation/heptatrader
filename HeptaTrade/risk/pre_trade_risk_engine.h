@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string>
-#include <ctime>
 
 struct PreTradeRiskConfig {
     bool enableOrderSubmission = false;
@@ -34,19 +33,21 @@ struct PreTradeRiskContext {
     bool positionKnown = false;
     double netPosition = 0.0;
 
-    // adapter extension points (for CTP etc.)
+    // Adapter extension points. These fields are informational only; the
+    // deterministic risk decision must never depend on unvalidated free text.
     std::string adapterTag;
 };
 
 struct PreTradeRiskDecision {
     bool allow = false;
-    std::string reasonCode; // unified RISK_XXX
+    std::string reasonCode; // Stable RISK_* machine-readable code.
     std::string detail;
 };
 
 class PreTradeRiskEngine {
 public:
-    static PreTradeRiskDecision Evaluate(const PreTradeRiskConfig& cfg, const PreTradeRiskContext& ctx);
+    static PreTradeRiskDecision Evaluate(const PreTradeRiskConfig& cfg,
+                                         const PreTradeRiskContext& ctx);
 
 private:
     static bool IsFlatteningOrder(const PreTradeRiskContext& ctx);
