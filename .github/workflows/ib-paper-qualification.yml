@@ -22,7 +22,9 @@ jobs:
     environment: ib-paper
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - name: Validate controlled runner inputs
         run: |
           test -n "${IBAPI_ROOT:-}"
@@ -59,7 +61,7 @@ jobs:
         env:
           HEPTA_QUALIFICATION_MUTATIONS: ${{ inputs.mutation_mode && '1' || '0' }}
         run: ./scripts/run_ib_paper_qualification.sh build "$RUNNER_TEMP/heptatrader-ib-evidence"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: ib-paper-qualification-${{ github.sha }}
