@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import re
 import sys
+from typing import Any
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +22,8 @@ REQUIRED_PATHS = (
     ".github/workflows/nightly-sanitizers.yml",
     ".github/workflows/ib-paper-qualification.yml",
     ".github/workflows/release.yml",
+    "ci/actions.lock.json",
+    "ci/hosted-toolchain.lock.json",
     "cmake/HeptaInstall.cmake",
     "cmake/HeptaProjectOptions.cmake",
     "cmake/HeptaTargetHardening.cmake",
@@ -30,6 +34,7 @@ REQUIRED_PATHS = (
     "docs/PROD-GO-LIVE-CHECKLIST.md",
     "docs/SUPPLY-CHAIN.md",
     "scripts/build_release_archive.py",
+    "scripts/verify_ci_toolchain.py",
     "scripts/verify_install_tree.py",
     "scripts/verify_release_ci.py",
     "scripts/verify_ib_paper_qualification.py",
@@ -37,6 +42,9 @@ REQUIRED_PATHS = (
     "scripts/hepta_observability.py",
     "scripts/validate_sim_data.py",
     "tests/assertions_enabled_tests.cpp",
+    "tests/python/test_ib_paper_qualification.py",
+    "tests/python/test_release_tools.py",
+    "tests/python/test_workflow_locks.py",
 )
 
 SOURCE_SIZE_LIMIT = 100_000
@@ -56,8 +64,10 @@ FORBIDDEN_WORKSPACE_PATTERNS = (
     re.compile(r"/home/(?!hepta(?:/|$))[A-Za-z0-9._-]+/"),
 )
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+ACTION_VERSION = re.compile(r"^v[0-9]+(?:\.[0-9]+){0,2}(?:[-+._0-9A-Za-z]*)$")
+TOOL_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+)+(?:[-+~.0-9A-Za-z:]*)$")
 TEXT_SUFFIXES = {".md", ".py", ".sh", ".cmake", ".txt", ".yml", ".yaml", ".json"}
-PORTABILITY_ROOTS = (".github", "cmake", "docs", "scripts", "systemd", "plugins")
+PORTABILITY_ROOTS = (".github", "ci", "cmake", "docs", "scripts", "systemd", "plugins")
 # The negative look-behind includes '/' so an installed path such as
 # lib/systemd/system/foo.service is not mistaken for a repository path rooted
 # at systemd/. Backslashes are normalized before matching.
@@ -86,6 +96,28 @@ DYNAMIC_ENV_EXAMPLES = {
     "trust-domains/%i.execution.env": "systemd/hepta-execution-simulator.env.example",
 }
 
+HOSTED_WORKFLOWS = (
+    ".github/workflows/ci.yml",
+    ".github/workflows/release.yml",
+    ".github/workflows/nightly-sanitizers.yml",
+)
+HOSTED_TOOL_KEYS = frozenset(
+    {
+        "cmake",
+        "ninja",
+        "python",
+        "git",
+        "openssl",
+        "libssl_dev_package",
+        "gcc",
+        "clang",
+    }
+)
+
+
+class ContractJsonError(ValueError):
+    pass
+
 
 def relative(path: Path) -> str:
     return path.relative_to(ROOT).as_posix()
@@ -93,6 +125,22 @@ def relative(path: Path) -> str:
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8-sig")
+
+
+def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ContractJsonError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def read_contract_json(path: Path) -> Any:
+    try:
+        return json.loads(read_text(path), object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, ContractJsonError) as error:
+        raise ContractJsonError(f"invalid {relative(path)}: {error}") from error
 
 
 def check_required_paths(errors: list[str]) -> None:
@@ -144,11 +192,13 @@ def check_documentation(errors: list[str]) -> None:
                 resolved.relative_to(ROOT.resolve())
             except ValueError:
                 errors.append(
-                    f"markdown link escapes repository in {relative(path)}: {raw_target}")
+                    f"markdown link escapes repository in {relative(path)}: {raw_target}"
+                )
                 continue
             if not resolved.exists():
                 errors.append(
-                    f"broken markdown link in {relative(path)}: {raw_target}")
+                    f"broken markdown link in {relative(path)}: {raw_target}"
+                )
 
 
 def iter_portability_files() -> list[Path]:
@@ -158,7 +208,8 @@ def iter_portability_files() -> list[Path]:
         if not root.exists():
             continue
         files.extend(
-            path for path in root.rglob("*")
+            path
+            for path in root.rglob("*")
             if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES
         )
     return files
@@ -171,14 +222,16 @@ def check_portability(errors: list[str]) -> None:
             match = pattern.search(text)
             if match:
                 errors.append(
-                    f"developer-specific absolute path in {relative(path)}: {match.group(0)!r}")
+                    f"developer-specific absolute path in {relative(path)}: {match.group(0)!r}"
+                )
                 break
         normalized_text = text.replace("\\", "/")
         for raw in REPOSITORY_PATH_REFERENCE.findall(normalized_text):
             target = ROOT / raw
             if not target.is_file():
                 errors.append(
-                    f"stale repository path in {relative(path)}: {raw}")
+                    f"stale repository path in {relative(path)}: {raw}"
+                )
 
 
 def action_use_is_immutable(specification: str) -> bool:
@@ -192,13 +245,64 @@ def action_use_is_immutable(specification: str) -> bool:
     return bool(action) and FULL_COMMIT_SHA.fullmatch(revision) is not None
 
 
+def load_action_lock(errors: list[str]) -> dict[str, str]:
+    path = ROOT / "ci/actions.lock.json"
+    if not path.is_file():
+        return {}
+    try:
+        payload = read_contract_json(path)
+    except ContractJsonError as error:
+        errors.append(str(error))
+        return {}
+    if not isinstance(payload, dict) or frozenset(payload) != frozenset(
+        {"schema", "actions"}
+    ):
+        errors.append("ci/actions.lock.json has unexpected top-level keys")
+        return {}
+    if payload["schema"] != "heptatrader.github-actions-lock.v1":
+        errors.append("ci/actions.lock.json has an unsupported schema")
+    actions = payload["actions"]
+    if not isinstance(actions, list):
+        errors.append("ci/actions.lock.json actions must be an array")
+        return {}
+    result: dict[str, str] = {}
+    order: list[str] = []
+    for index, item in enumerate(actions):
+        if not isinstance(item, dict) or frozenset(item) != frozenset(
+            {"uses", "version", "revision"}
+        ):
+            errors.append(f"ci/actions.lock.json action {index} has invalid keys")
+            continue
+        action = item["uses"]
+        version = item["version"]
+        revision = item["revision"]
+        if not isinstance(action, str) or not action or action.count("/") != 1:
+            errors.append(f"ci/actions.lock.json action {index} has invalid uses")
+            continue
+        if not isinstance(version, str) or ACTION_VERSION.fullmatch(version) is None:
+            errors.append(f"ci/actions.lock.json action {action} has invalid version")
+        if not isinstance(revision, str) or FULL_COMMIT_SHA.fullmatch(revision) is None:
+            errors.append(f"ci/actions.lock.json action {action} has invalid revision")
+            continue
+        if action in result:
+            errors.append(f"ci/actions.lock.json contains duplicate action: {action}")
+            continue
+        result[action] = revision.lower()
+        order.append(action)
+    if order != sorted(order):
+        errors.append("ci/actions.lock.json actions must be sorted by uses")
+    return result
+
+
 def check_workflow_action_pins(errors: list[str]) -> None:
+    allowed = load_action_lock(errors)
     workflow_root = ROOT / ".github/workflows"
     if not workflow_root.is_dir():
         return
     workflows = sorted(workflow_root.glob("*.yml")) + sorted(
         workflow_root.glob("*.yaml")
     )
+    observed: set[str] = set()
     for path in workflows:
         for specification in WORKFLOW_ACTION_USE.findall(read_text(path)):
             if not action_use_is_immutable(specification):
@@ -206,6 +310,77 @@ def check_workflow_action_pins(errors: list[str]) -> None:
                     "workflow action is not pinned to an immutable digest in "
                     f"{relative(path)}: {specification}"
                 )
+                continue
+            if specification.startswith("./"):
+                continue
+            if specification.startswith("docker://"):
+                errors.append(
+                    f"container action lacks a reviewed allowlist entry in {relative(path)}: {specification}"
+                )
+                continue
+            action, revision = specification.rsplit("@", 1)
+            expected = allowed.get(action)
+            if expected is None:
+                errors.append(
+                    f"workflow uses an action absent from ci/actions.lock.json in {relative(path)}: {action}"
+                )
+            elif revision.lower() != expected:
+                errors.append(
+                    f"workflow action revision differs from ci/actions.lock.json in {relative(path)}: {specification}"
+                )
+            observed.add(action)
+    unused = sorted(set(allowed) - observed)
+    if unused:
+        errors.append(f"ci/actions.lock.json contains unused actions: {unused}")
+
+
+def check_hosted_toolchain_contract(errors: list[str]) -> None:
+    lock_path = ROOT / "ci/hosted-toolchain.lock.json"
+    if lock_path.is_file():
+        try:
+            payload = read_contract_json(lock_path)
+        except ContractJsonError as error:
+            errors.append(str(error))
+            payload = None
+        if payload is not None:
+            if not isinstance(payload, dict) or frozenset(payload) != frozenset(
+                {"schema", "runner", "tools"}
+            ):
+                errors.append("ci/hosted-toolchain.lock.json has unexpected top-level keys")
+            else:
+                if payload["schema"] != "heptatrader.hosted-toolchain-lock.v1":
+                    errors.append("ci/hosted-toolchain.lock.json has an unsupported schema")
+                runner = payload["runner"]
+                tools = payload["tools"]
+                if not isinstance(runner, dict) or frozenset(runner) != frozenset(
+                    {"image_os", "image_version", "os_version_id"}
+                ):
+                    errors.append("ci/hosted-toolchain.lock.json runner keys are invalid")
+                if not isinstance(tools, dict) or frozenset(tools) != HOSTED_TOOL_KEYS:
+                    errors.append("ci/hosted-toolchain.lock.json tool keys are invalid")
+                elif any(
+                    not isinstance(value, str)
+                    or TOOL_VERSION.fullmatch(value) is None
+                    for value in tools.values()
+                ):
+                    errors.append("ci/hosted-toolchain.lock.json contains an invalid tool version")
+
+    for item in HOSTED_WORKFLOWS:
+        path = ROOT / item
+        if not path.is_file():
+            continue
+        text = read_text(path)
+        lowered = text.lower()
+        if "apt-get" in lowered or re.search(
+            r"\bapt\s+(?:update|install|upgrade)\b", lowered
+        ):
+            errors.append(f"hosted workflow performs an unpinned APT mutation: {item}")
+        if "scripts/verify_ci_toolchain.py" not in text:
+            errors.append(f"hosted workflow does not verify the toolchain lock: {item}")
+    for item in (".github/workflows/ci.yml", ".github/workflows/release.yml"):
+        path = ROOT / item
+        if path.is_file() and "toolchain-observation.json" not in read_text(path):
+            errors.append(f"release-producing workflow omits toolchain observation: {item}")
 
 
 def check_release_authority_contract(errors: list[str]) -> None:
@@ -269,6 +444,27 @@ def check_ci_reproducibility_contract(errors: list[str]) -> None:
         errors.append("CI does not compare manifest, SBOM, and archive byte-for-byte")
 
 
+def check_single_packaging_path(errors: list[str]) -> None:
+    files = (
+        ROOT / "CMakeLists.txt",
+        ROOT / "cmake/HeptaInstall.cmake",
+        ROOT / ".github/workflows/ci.yml",
+        ROOT / ".github/workflows/release.yml",
+    )
+    for path in files:
+        if not path.is_file():
+            continue
+        text = read_text(path)
+        if re.search(r"\b(?:include\s*\(\s*CPack|cpack\b|CPACK_[A-Za-z0-9_]+)", text, re.IGNORECASE):
+            errors.append(f"alternate CPack release path is forbidden: {relative(path)}")
+    install = ROOT / "cmake/HeptaInstall.cmake"
+    if install.is_file():
+        text = read_text(install)
+        for token in ("ci/actions.lock.json", "ci/hosted-toolchain.lock.json"):
+            if token not in text:
+                errors.append(f"install graph omits supply-chain lock evidence: {token}")
+
+
 def check_ib_qualification_contract(errors: list[str]) -> None:
     workflow_path = ROOT / ".github/workflows/ib-paper-qualification.yml"
     wrapper_path = ROOT / "scripts/run_ib_paper_qualification.sh"
@@ -292,7 +488,8 @@ def check_ib_qualification_contract(errors: list[str]) -> None:
         errors.append("IB PAPER qualification must not expose a green read-only fallback")
 
     wrapper_tokens = (
-        'HEPTA_QUALIFICATION_MUTATIONS:-0',
+        "umask 077",
+        "HEPTA_QUALIFICATION_MUTATIONS:-0",
         '"$MUTATIONS" != "1"',
         "qualification-result.json",
         "qualification-verification.json",
@@ -330,7 +527,8 @@ def check_systemd_contracts(errors: list[str]) -> None:
             doc = ROOT / "docs" / match.group(1)
             if not doc.is_file():
                 errors.append(
-                    f"{relative(unit)} references missing documentation {relative(doc)}")
+                    f"{relative(unit)} references missing documentation {relative(doc)}"
+                )
 
         for match in re.finditer(
             r"^(?:ExecStart|ExecStop|LoadCredential)=.*?/usr/libexec/([A-Za-z0-9._-]+)",
@@ -340,10 +538,12 @@ def check_systemd_contracts(errors: list[str]) -> None:
             executable = match.group(1)
             if executable not in EXECUTABLE_INSTALL_TOKENS:
                 errors.append(
-                    f"{relative(unit)} references an unknown packaged executable: {executable}")
+                    f"{relative(unit)} references an unknown packaged executable: {executable}"
+                )
             elif not install_declares(executable, install_manifest):
                 errors.append(
-                    f"{relative(unit)} executable is not declared by install graph: {executable}")
+                    f"{relative(unit)} executable is not declared by install graph: {executable}"
+                )
 
         for match in re.finditer(
             r"^EnvironmentFile=-?/etc/heptatrader/([^\s]+)$", text, re.MULTILINE
@@ -352,7 +552,8 @@ def check_systemd_contracts(errors: list[str]) -> None:
             example = environment_example(environment_file)
             if not example.is_file():
                 errors.append(
-                    f"{relative(unit)} has no checked-in environment example: {relative(example)}")
+                    f"{relative(unit)} has no checked-in environment example: {relative(example)}"
+                )
 
 
 def check_unsupported_venues(errors: list[str]) -> None:
@@ -365,7 +566,11 @@ def check_unsupported_venues(errors: list[str]) -> None:
             errors.append("CTP scaffold reports a successful connection")
     if xt.is_file():
         text = read_text(xt)
-        for forbidden in ("accepted_scaffold", "place_order_scaffold", "cancel_sent_scaffold"):
+        for forbidden in (
+            "accepted_scaffold",
+            "place_order_scaffold",
+            "cancel_sent_scaffold",
+        ):
             if forbidden in text:
                 errors.append(f"XT scaffold emits a synthetic broker success: {forbidden}")
         if "XT_TRANSPORT_UNAVAILABLE" not in text:
@@ -395,8 +600,10 @@ def main() -> int:
     check_documentation(errors)
     check_portability(errors)
     check_workflow_action_pins(errors)
+    check_hosted_toolchain_contract(errors)
     check_release_authority_contract(errors)
     check_ci_reproducibility_contract(errors)
+    check_single_packaging_path(errors)
     check_ib_qualification_contract(errors)
     check_systemd_contracts(errors)
     check_unsupported_venues(errors)
