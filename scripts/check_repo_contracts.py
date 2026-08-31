@@ -59,6 +59,11 @@ PORTABILITY_ROOTS = (".github", "cmake", "docs", "scripts", "systemd", "plugins"
 REPOSITORY_PATH_REFERENCE = re.compile(
     r"(?<![-A-Za-z0-9_./])((?:scripts|docs|systemd|strategies)/[-A-Za-z0-9_./]+\.(?:py|sh|ps1|md|service|socket|timer|example|json|xml))"
 )
+WORKFLOW_ACTION_USE = re.compile(
+    r"^\s*(?:-\s*)?uses:\s*([^\s#]+)", re.MULTILINE
+)
+FULL_COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
+CONTAINER_DIGEST = re.compile(r"^docker://[^@\s]+@sha256:[0-9a-fA-F]{64}$")
 
 # Runtime names can differ from CMake target names through OUTPUT_NAME or
 # install(PROGRAMS ... RENAME ...). Each entry must have at least one token in
@@ -171,6 +176,33 @@ def check_portability(errors: list[str]) -> None:
                     f"stale repository path in {relative(path)}: {raw}")
 
 
+def action_use_is_immutable(specification: str) -> bool:
+    if specification.startswith("./"):
+        return True
+    if specification.startswith("docker://"):
+        return CONTAINER_DIGEST.fullmatch(specification) is not None
+    if "@" not in specification:
+        return False
+    action, revision = specification.rsplit("@", 1)
+    return bool(action) and FULL_COMMIT_SHA.fullmatch(revision) is not None
+
+
+def check_workflow_action_pins(errors: list[str]) -> None:
+    workflow_root = ROOT / ".github/workflows"
+    if not workflow_root.is_dir():
+        return
+    workflows = sorted(workflow_root.glob("*.yml")) + sorted(
+        workflow_root.glob("*.yaml")
+    )
+    for path in workflows:
+        for specification in WORKFLOW_ACTION_USE.findall(read_text(path)):
+            if not action_use_is_immutable(specification):
+                errors.append(
+                    "workflow action is not pinned to an immutable digest in "
+                    f"{relative(path)}: {specification}"
+                )
+
+
 def install_declares(executable: str, install_manifest: str) -> bool:
     tokens = EXECUTABLE_INSTALL_TOKENS.get(executable)
     return tokens is not None and any(token in install_manifest for token in tokens)
@@ -260,6 +292,7 @@ def main() -> int:
     check_version(errors)
     check_documentation(errors)
     check_portability(errors)
+    check_workflow_action_pins(errors)
     check_systemd_contracts(errors)
     check_unsupported_venues(errors)
     check_source_size_budget(errors)
