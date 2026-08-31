@@ -10,6 +10,16 @@ function(hepta_register_core_test target)
         CXX_STANDARD 11
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
+    # The retained test programs use assert() for both verification and
+    # fixture setup.  Letting Release define NDEBUG would erase required side
+    # effects and turn the test itself into undefined behaviour.  Production
+    # targets retain their normal NDEBUG policy; only test translation units
+    # explicitly undefine it in every configuration.
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES LABELS "core")
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
