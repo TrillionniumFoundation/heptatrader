@@ -1,0 +1,50 @@
+name: gap-closure-patch
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-documentation-control-plane-v2
+    paths:
+      - .github/workflows/gap-closure-patch.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch-watch-boundary:
+    if: github.event.head_commit.message == 'chore: bootstrap bounded WATCH patch'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - name: Apply bounded composite-overflow fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/unix_tool_server_tests.cpp')
+          text = path.read_text(encoding='utf-8')
+          old = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes(), 'x')"
+          new = "std::string(\n            TradingToolWireLimits::MaximumResultEnvelopeBytes() - 1024u, 'x')"
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one WATCH overflow fixture, found {text.count(old)}')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          Path('.github/workflows/gap-closure-patch.yml').unlink()
+          PY
+      - name: Validate deterministic core
+        shell: bash
+        run: ./scripts/dev_core.sh
+      - name: Commit exact tested repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Hepta Gap Closure Bot'
+          git config user.email 'hepta-gap-closure-bot@users.noreply.github.com'
+          git add tests/unix_tool_server_tests.cpp .github/workflows/gap-closure-patch.yml
+          git commit -m 'test: exercise composite WATCH envelope overflow'
+          git push origin HEAD:${{ github.ref_name }}
