@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import os
@@ -209,7 +210,7 @@ class ReleaseToolTests(unittest.TestCase):
         runs, jobs = successful_ci_fixture(verifier, sha)
         self.assertEqual(verifier.validate_candidate(sha, sha, runs, jobs), [])
 
-        missing_jobs = json.loads(json.dumps(jobs))
+        missing_jobs = copy.deepcopy(jobs)
         missing_jobs[17]["jobs"] = [
             job for job in missing_jobs[17]["jobs"] if job["name"] != "package"
         ]
