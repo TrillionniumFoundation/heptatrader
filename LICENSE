@@ -1,0 +1,26 @@
+HeptaTrader Source Review License Notice
+Copyright (c) 2026 TrillionniumFoundation. All rights reserved.
+
+The source code, documentation, data files, build definitions, and other
+materials in this repository are made publicly visible for inspection and
+collaboration review only. No copyright, patent, trademark, redistribution,
+commercial-use, production-use, sublicensing, or derivative-work license is
+granted by publication of the repository.
+
+You may not copy, redistribute, publish, deploy, sell, sublicense, or create
+derivative works from these materials without a separate written license from
+the applicable rights holder, except to the limited extent that mandatory law
+permits an act that cannot be contractually restricted.
+
+Third-party materials remain governed by their own licenses and rights. This
+notice does not grant rights to any broker SDK, market-data feed, exchange
+interface, vendor binary, or third-party library. See THIRD_PARTY_NOTICES.md.
+
+THE MATERIALS ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE,
+NONINFRINGEMENT, RELIABILITY, TRADING PERFORMANCE, OR FITNESS FOR LIVE TRADING.
+IN NO EVENT SHALL THE RIGHTS HOLDERS BE LIABLE FOR TRADING LOSSES, LOST PROFITS,
+DATA LOSS, BUSINESS INTERRUPTION, OR ANY OTHER CLAIM ARISING FROM THE MATERIALS.
+
+For licensing inquiries, contact the repository owner through the official
+TrillionniumFoundation GitHub organization.
