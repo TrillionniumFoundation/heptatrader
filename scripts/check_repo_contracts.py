@@ -28,6 +28,7 @@ REQUIRED_PATHS = (
     "scripts/verify_install_tree.py",
     "scripts/generate_sbom.py",
     "scripts/hepta_observability.py",
+    "scripts/validate_sim_data.py",
 )
 
 SOURCE_SIZE_LIMIT = 100_000
@@ -47,6 +48,11 @@ FORBIDDEN_WORKSPACE_PATTERNS = (
     re.compile(r"/home/(?!hepta(?:/|$))[A-Za-z0-9._-]+/"),
 )
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$")
+TEXT_SUFFIXES = {".md", ".py", ".sh", ".cmake", ".txt", ".yml", ".yaml", ".json"}
+PORTABILITY_ROOTS = (".github", "cmake", "docs", "scripts", "systemd", "plugins")
+REPOSITORY_PATH_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_.-])((?:scripts|docs|systemd|strategies)[\\/][A-Za-z0-9_./\\-]+\.(?:py|sh|ps1|md|service|socket|timer|example|json|xml))"
+)
 
 
 def relative(path: Path) -> str:
@@ -94,12 +100,6 @@ def check_documentation(errors: list[str]) -> None:
 
     for path in iter_documentation_files():
         text = read_text(path)
-        for pattern in FORBIDDEN_WORKSPACE_PATTERNS:
-            match = pattern.search(text)
-            if match:
-                errors.append(
-                    f"developer-specific absolute path in {relative(path)}: {match.group(0)!r}")
-
         for raw_target in MARKDOWN_LINK.findall(text):
             target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
             if not target or target.startswith(("#", "http://", "https://", "mailto:")):
@@ -117,6 +117,36 @@ def check_documentation(errors: list[str]) -> None:
             if not resolved.exists():
                 errors.append(
                     f"broken markdown link in {relative(path)}: {raw_target}")
+
+
+def iter_portability_files() -> list[Path]:
+    files = [ROOT / "README.md", ROOT / "SECURITY-HARDENING.md", ROOT / "CMakeLists.txt"]
+    for name in PORTABILITY_ROOTS:
+        root = ROOT / name
+        if not root.exists():
+            continue
+        files.extend(
+            path for path in root.rglob("*")
+            if path.is_file() and path.suffix.lower() in TEXT_SUFFIXES
+        )
+    return files
+
+
+def check_portability(errors: list[str]) -> None:
+    for path in iter_portability_files():
+        text = read_text(path)
+        for pattern in FORBIDDEN_WORKSPACE_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                errors.append(
+                    f"developer-specific absolute path in {relative(path)}: {match.group(0)!r}")
+                break
+        for raw in REPOSITORY_PATH_REFERENCE.findall(text):
+            normalized = raw.replace("\\", "/")
+            target = ROOT / normalized
+            if not target.is_file():
+                errors.append(
+                    f"stale repository path in {relative(path)}: {raw}")
 
 
 def check_systemd_contracts(errors: list[str]) -> None:
@@ -189,6 +219,7 @@ def main() -> int:
     check_required_paths(errors)
     check_version(errors)
     check_documentation(errors)
+    check_portability(errors)
     check_systemd_contracts(errors)
     check_unsupported_venues(errors)
     check_source_size_budget(errors)
