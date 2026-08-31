@@ -231,7 +231,7 @@ class IbPaperQualificationTests(unittest.TestCase):
             fixture.write_result()
             result = fixture.verify()
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("relative POSIX", result.stderr)
+            self.assertIn("unsafe components", result.stderr)
 
         with tempfile.TemporaryDirectory() as directory:
             fixture = QualificationFixture(Path(directory))
