@@ -1,0 +1,108 @@
+name: post-publish-review-request
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/post-publish-review-request.yml
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: heptatrader-post-publish-review-request
+  cancel-in-progress: true
+
+jobs:
+  request:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wait for published canonical closure head
+        id: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          for attempt in $(seq 1 300); do
+            sha="$(gh api "repos/$REPO/branches/$branch" --jq '.commit.sha')"
+            git fetch origin "$sha"
+            if git cat-file -e "$sha:docs/program/gap-registry-v2.json" 2>/dev/null && \
+               git show "$sha:docs/program/gap-registry-v2.json" | grep -Fq 'G-OPT-007' && \
+               git show "$sha:HeptaTrade/allocation/global_allocator.h" | grep -Fq 'GlobalDecisionReceipt'; then
+              echo "sha=$sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "canonical P1/internal closure head was not published" >&2
+          exit 1
+      - name: Wait for exact-head and merge-candidate workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.candidate.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required='["canonical-full-suite","core-runtime","documentation-control-plane","merge-candidate"]'
+          for attempt in $(seq 1 360); do
+            runs="$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100")"
+            state="$(jq -c --argjson required "$required" '
+              [.workflow_runs[] | select(.name as $n | $required | index($n))]
+              | group_by(.name)
+              | map(sort_by(.run_number) | last)
+              | {count:length,
+                 pending:[.[] | select(.status != "completed") | .name],
+                 failed:[.[] | select(.status == "completed" and .conclusion != "success") | {name,conclusion,url:.html_url}],
+                 success:[.[] | select(.status == "completed" and .conclusion == "success") | .name]}
+            ' <<<"$runs")"
+            count="$(jq -r '.count' <<<"$state")"
+            failed="$(jq -r '.failed | length' <<<"$state")"
+            pending="$(jq -r '.pending | length' <<<"$state")"
+            if [[ "$failed" -ne 0 ]]; then
+              jq . <<<"$state" >&2
+              exit 1
+            fi
+            if [[ "$count" -eq 4 && "$pending" -eq 0 ]]; then
+              test "$(jq -r '.success | length' <<<"$state")" -eq 4
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "exact candidate workflows did not complete in time" >&2
+          exit 1
+      - name: Request fresh independent review and record immutable comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.candidate.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$REPO/pulls/7/requested_reviewers" \
+            --input - <<'JSON'
+          {"reviewers":["ProfHepta"]}
+          JSON
+          marker="<!-- internal-closure-review-request:$HEAD_SHA -->"
+          if ! gh api "repos/$REPO/issues/7/comments?per_page=100" \
+              --jq '.[].body' | grep -Fq "$marker"; then
+            gh api --method POST "repos/$REPO/issues/7/comments" \
+              -f body="$marker
+
+          The exact PR head passed canonical-full-suite, core-runtime, documentation-control-plane and merge-candidate. The seven independent-review P1 authority defects and the remaining internal partial/planned verification items are now represented by closed machine gaps and executable evidence on this same revision. A fresh independent review is requested; prior-head approval or change requests are not treated as current evidence."
+          fi
