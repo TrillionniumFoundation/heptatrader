@@ -31,9 +31,11 @@ configured target
 
 A production target that compiles an unowned source, a source from another module without an exact exception, or an undeclared module dependency fails the build. Optional IB targets are validated in the IB PAPER profile and external qualification; their names must still exist in the checked-in CMake source.
 
-## 3. Test-only direct compilation debt
+## 3. Single-compilation and test-linking rule
 
-Tests should link production targets. Existing tests that compile a production `.cpp` directly are enumerated as exact `(target, source)` exceptions under `G-MOD-002`. The static checker rejects additions, deletions or path aliases that are not reflected in the registry; the configured graph checker requires every core exception to be observed. Closing `G-MOD-002` requires this exception list to be empty.
+Every active production source is compiled by exactly one module-owned production target. Runtime executables and tests consume that implementation only by linking the owning target; direct test compilation of a production `.cpp` is forbidden. OMS, state, intent, typed protocol, session control, event relay, simulator and venue adapter code therefore have explicit module targets rather than source-list duplication.
+
+`source_overlap_exceptions` and `compilation_exceptions` are currently empty. Any future extraction debt must first introduce an open gap, an exact bounded scope, a declared physical owner and an exit milestone; the configured graph and static discipline checks reject an unregistered exception or a stale exception that is no longer observed.
 
 ## 4. Path safety
 
