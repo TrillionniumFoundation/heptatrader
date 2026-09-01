@@ -1,17 +1,14 @@
 #include "../HeptaTrade/execution/allocation_plan_revalidator.h"
-
 #include <cassert>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace
 {
-std::string Digest(char value)
-{
-    return std::string("sha256:") + std::string(64, value);
-}
+std::string Digest(char value) { return std::string("sha256:") + std::string(64, value); }
 
-AllocationPlan Plan()
+GlobalAllocationResult Allocation()
 {
     StrategyProposal proposal;
     proposal.proposalId = "proposal-alpha";
@@ -29,114 +26,110 @@ AllocationPlan Plan()
     candidate.utility = 10;
     candidate.targets.push_back({"EUR.USD", 8000000});
     proposal.candidates.push_back(candidate);
-    std::vector<StrategyProposal> proposals(1, proposal);
-    std::vector<std::string> expected(1, "hepta.strategy.alpha");
     ProposalSetBuildResult set = ProposalSetBuilder::Build(
-        proposals, expected, 1500);
+        std::vector<StrategyProposal>(1, proposal),
+        std::vector<std::string>(1, "hepta.strategy.alpha"), 1500, 1800);
     assert(set.accepted);
     GlobalAllocationPolicy allocation;
+    allocation.policyRevision = "policy-v1";
     allocation.maximumGrossTarget = 10000000;
     allocation.maximumInstruments = 4;
     allocation.maximumExactCombinations = 100;
     allocation.instrumentAbsoluteLimits["EUR.USD"] = 10000000;
-    GlobalAllocationResult result = GlobalAllocator::Allocate(
-        set.proposalSet, allocation, 1, 1500, 1800);
-    assert(result.accepted);
-    return result.plan;
+    GlobalAllocationResult result = GlobalAllocator::Allocate(set.proposalSet, allocation, 1, 1500);
+    assert(result.accepted && result.receipt.IsValid());
+    return result;
 }
 
 AuthoritativePortfolioInput Authoritative()
 {
-    AuthoritativePortfolioInput input;
-    input.complete = true;
-    input.generation = 7;
-    input.currentPositions["EUR.USD"] = 2000000;
-    return input;
+    AuthoritativePortfolioInput input; input.complete = true; input.generation = 7;
+    input.currentPositions["EUR.USD"] = 2000000; return input;
 }
 
 PortfolioCapitalPolicy ExecutionPolicy(DecisionMicrounits gross)
 {
-    PortfolioCapitalPolicy policy;
-    policy.maximumGrossTarget = gross;
-    policy.maximumStrategies = 1;
-    policy.maximumInstruments = 4;
-    StrategyCapitalBudget budget;
-    budget.strategyId = "global-allocation";
-    budget.maximumGrossTarget = gross;
-    policy.strategyBudgets[budget.strategyId] = budget;
+    PortfolioCapitalPolicy policy; policy.maximumGrossTarget = gross;
+    policy.maximumStrategies = 1; policy.maximumInstruments = 4;
+    StrategyCapitalBudget budget; budget.strategyId = "global-allocation";
+    budget.maximumGrossTarget = gross; policy.strategyBudgets[budget.strategyId] = budget;
     return policy;
 }
 
-void TestShadowRevalidation()
+AllocationExecutionContext Context(const GlobalAllocationResult& allocation)
 {
-    AllocationPlan plan = Plan();
-    AllocationPlanRevalidationResult result =
-        AllocationPlanRevalidator::ValidateShadow(
-            plan, Digest('a'), 1600, Authoritative(),
-            ExecutionPolicy(10000000));
-    assert(result.accepted);
-    assert(result.reasonCode == "ALLOCATION_PLAN_REVALIDATED_SHADOW");
-    assert(result.compiled.accepted);
-    assert(result.compiled.deltas.size() == 1);
-    assert(result.compiled.deltas[0].delta == 6000000);
+    AllocationExecutionContext context;
+    context.allocatorEpoch = allocation.plan.allocatorEpoch;
+    context.capitalPool = allocation.plan.capitalPool;
+    context.accountBook = allocation.plan.accountBook;
+    context.policyRevision = allocation.plan.policyRevision;
+    context.proposalSetDigest = allocation.plan.proposalSetDigest;
+    context.authoritativeSnapshotDigest = allocation.plan.snapshotDigest;
+    context.authoritativeSnapshotValidUntilMs = allocation.plan.snapshotValidUntilMs;
+    return context;
 }
 
-void TestPlanIntegrityAndFreshness()
+void TestSealedShadowRevalidation()
 {
-    AllocationPlan plan = Plan();
-    plan.targets[0].targetPosition = 9000000;
-    assert(AllocationPlanRevalidator::ValidateShadow(
-        plan, Digest('a'), 1600, Authoritative(),
-        ExecutionPolicy(10000000)).reasonCode ==
-        "ALLOCATION_PLAN_INTEGRITY_INVALID");
+    static_assert(!std::is_constructible<GlobalDecisionReceipt, AllocationPlan>::value,
+                  "Execution receipt must not be publicly forgeable");
+    GlobalAllocationResult allocation = Allocation();
+    AllocationPlanRevalidationResult result = AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, Context(allocation), 1600, Authoritative(), ExecutionPolicy(10000000));
+    assert(result.accepted && result.compiled.deltas[0].delta == 6000000);
 
-    plan = Plan();
+    GlobalDecisionReceipt forged;
     assert(AllocationPlanRevalidator::ValidateShadow(
-        plan, Digest('a'), 1900, Authoritative(),
-        ExecutionPolicy(10000000)).reasonCode ==
+        forged, Context(allocation), 1600, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
+        "ALLOCATION_PLAN_PROVENANCE_INVALID");
+}
+
+void TestContextAndLifetimeBinding()
+{
+    GlobalAllocationResult allocation = Allocation();
+    AllocationExecutionContext context = Context(allocation);
+    context.allocatorEpoch++;
+    assert(AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, context, 1600, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
+        "ALLOCATION_EXECUTION_CONTEXT_MISMATCH");
+    context = Context(allocation); context.policyRevision = "policy-v2";
+    assert(AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, context, 1600, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
+        "ALLOCATION_EXECUTION_CONTEXT_MISMATCH");
+    context = Context(allocation); context.accountBook = "other-book";
+    assert(AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, context, 1600, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
+        "ALLOCATION_EXECUTION_CONTEXT_MISMATCH");
+    context = Context(allocation); context.authoritativeSnapshotDigest = Digest('b');
+    assert(AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, context, 1600, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
+        "ALLOCATION_PLAN_SNAPSHOT_MISMATCH");
+    context = Context(allocation); context.authoritativeSnapshotValidUntilMs = 1700;
+    assert(AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, context, 1600, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
         "ALLOCATION_PLAN_NOT_CURRENT");
     assert(AllocationPlanRevalidator::ValidateShadow(
-        plan, Digest('b'), 1600, Authoritative(),
-        ExecutionPolicy(10000000)).reasonCode ==
-        "ALLOCATION_PLAN_SNAPSHOT_MISMATCH");
-
-    plan = Plan();
-    plan.solver.status = "optimal";
-    plan.solver.exact = false;
-    plan.solver.digest = GlobalAllocator::SolverDigest(plan.solver);
-    plan.planDigest = GlobalAllocator::PlanDigest(plan);
-    assert(AllocationPlanRevalidator::ValidateShadow(
-        plan, Digest('a'), 1600, Authoritative(),
-        ExecutionPolicy(10000000)).reasonCode ==
-        "ALLOCATION_SOLVER_EVIDENCE_INVALID");
+        allocation.receipt, Context(allocation), 1800, Authoritative(), ExecutionPolicy(10000000)).reasonCode ==
+        "ALLOCATION_PLAN_NOT_CURRENT");
 }
 
 void TestExecutionBudgetAndSnapshotRejection()
 {
-    AllocationPlan plan = Plan();
-    AllocationPlanRevalidationResult budget =
-        AllocationPlanRevalidator::ValidateShadow(
-            plan, Digest('a'), 1600, Authoritative(),
-            ExecutionPolicy(5000000));
-    assert(!budget.accepted);
-    assert(budget.reasonCode ==
-           "ALLOCATION_EXECUTION_REVALIDATION_REJECTED");
-    assert(budget.compiled.reasonCode ==
-           "PORTFOLIO_STRATEGY_BUDGET_EXCEEDED");
-
-    AuthoritativePortfolioInput incomplete = Authoritative();
-    incomplete.complete = false;
+    GlobalAllocationResult allocation = Allocation();
+    AllocationPlanRevalidationResult budget = AllocationPlanRevalidator::ValidateShadow(
+        allocation.receipt, Context(allocation), 1600, Authoritative(), ExecutionPolicy(5000000));
+    assert(!budget.accepted && budget.compiled.reasonCode == "PORTFOLIO_STRATEGY_BUDGET_EXCEEDED");
+    AuthoritativePortfolioInput incomplete = Authoritative(); incomplete.complete = false;
     assert(AllocationPlanRevalidator::ValidateShadow(
-        plan, Digest('a'), 1600, incomplete,
-        ExecutionPolicy(10000000)).reasonCode ==
+        allocation.receipt, Context(allocation), 1600, incomplete, ExecutionPolicy(10000000)).reasonCode ==
         "ALLOCATION_AUTHORITATIVE_SNAPSHOT_INCOMPLETE");
 }
 }
 
 int main()
 {
-    TestShadowRevalidation();
-    TestPlanIntegrityAndFreshness();
+    TestSealedShadowRevalidation();
+    TestContextAndLifetimeBinding();
     TestExecutionBudgetAndSnapshotRejection();
     return 0;
 }

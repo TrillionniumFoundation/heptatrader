@@ -3,6 +3,8 @@
 #include <cassert>
 #include <string>
 #include <vector>
+#include <chrono>
+#include <cstdint>
 
 namespace
 {
@@ -53,7 +55,7 @@ ProposalSet Set()
     expected.push_back("hepta.strategy.alpha");
     expected.push_back("hepta.strategy.beta");
     ProposalSetBuildResult result = ProposalSetBuilder::Build(
-        proposals, expected, 1500);
+        proposals, expected, 1500, 1800);
     assert(result.accepted);
     return result.proposalSet;
 }
@@ -61,6 +63,7 @@ ProposalSet Set()
 GlobalAllocationPolicy Policy(std::uint64_t combinations)
 {
     GlobalAllocationPolicy policy;
+    policy.policyRevision = "policy-v1";
     policy.maximumGrossTarget = 10000000;
     policy.maximumInstruments = 4;
     policy.maximumExactCombinations = combinations;
@@ -71,8 +74,11 @@ GlobalAllocationPolicy Policy(std::uint64_t combinations)
 void TestExactOptimalEvidence()
 {
     GlobalAllocationResult result = GlobalAllocator::Allocate(
-        Set(), Policy(100), 1, 1500, 1800);
+        Set(), Policy(100), 1, 1500);
     assert(result.accepted);
+    assert(result.receipt.IsValid());
+    assert(result.receipt.Plan().planDigest == result.plan.planDigest);
+    assert(result.plan.validUntilMs == 1800);
     assert(result.reasonCode == "ALLOCATION_OPTIMAL");
     assert(result.plan.solver.status == "optimal");
     assert(result.plan.solver.exact);
@@ -89,7 +95,7 @@ void TestExactOptimalEvidence()
     assert(GlobalAllocator::PlanDigest(result.plan) == result.plan.planDigest);
 
     GlobalAllocationResult repeated = GlobalAllocator::Allocate(
-        Set(), Policy(100), 1, 1500, 1800);
+        Set(), Policy(100), 1, 1500);
     assert(repeated.accepted);
     assert(repeated.plan.planDigest == result.plan.planDigest);
 }
@@ -97,7 +103,7 @@ void TestExactOptimalEvidence()
 void TestBoundedHeuristicIsTruthful()
 {
     GlobalAllocationResult result = GlobalAllocator::Allocate(
-        Set(), Policy(2), 1, 1500, 1800);
+        Set(), Policy(2), 1, 1500);
     assert(result.accepted);
     assert(result.reasonCode == "ALLOCATION_FEASIBLE_NOT_PROVEN");
     assert(result.plan.solver.status == "feasible_not_proven");
@@ -115,13 +121,13 @@ void TestConstraintAndPolicyFailures()
 {
     GlobalAllocationPolicy invalid = Policy(100);
     invalid.maximumGrossTarget = 0;
-    assert(GlobalAllocator::Allocate(Set(), invalid, 1, 1500, 1800).reasonCode ==
+    assert(GlobalAllocator::Allocate(Set(), invalid, 1, 1500).reasonCode ==
            "ALLOCATION_POLICY_INVALID");
 
     GlobalAllocationPolicy constrained = Policy(100);
     constrained.instrumentAbsoluteLimits["EUR.USD"] = 3000000;
     GlobalAllocationResult result = GlobalAllocator::Allocate(
-        Set(), constrained, 1, 1500, 1800);
+        Set(), constrained, 1, 1500);
     assert(result.accepted);
     assert(result.plan.targets.empty());
     assert(result.plan.solver.objective == 0);
@@ -129,11 +135,79 @@ void TestConstraintAndPolicyFailures()
 
     ProposalSet tampered = Set();
     tampered.proposals[0].proposalId = "tampered";
-    assert(GlobalAllocator::Allocate(tampered, Policy(100), 1, 1500, 1800)
+    assert(GlobalAllocator::Allocate(tampered, Policy(100), 1, 1500)
                .reasonCode == "ALLOCATION_PROPOSAL_SET_INVALID");
-    assert(GlobalAllocator::Allocate(Set(), Policy(100), 0, 1500, 1800)
+    assert(GlobalAllocator::Allocate(Set(), Policy(100), 0, 1500)
+               .reasonCode == "ALLOCATION_TIME_ENVELOPE_INVALID");
+    ProposalSet expired = Set();
+    expired.validUntilMs = 1500;
+    expired.digest = ProposalSetBuilder::Digest(expired);
+    assert(GlobalAllocator::Allocate(expired, Policy(100), 1, 1500)
                .reasonCode == "ALLOCATION_TIME_ENVELOPE_INVALID");
 }
+
+void TestBoundedPerformanceEnvelope()
+{
+    std::vector<StrategyProposal> proposals;
+    std::vector<std::string> expected;
+    GlobalAllocationPolicy policy;
+    policy.policyRevision = "performance-policy-v1";
+    policy.maximumGrossTarget = 20000000;
+    policy.maximumInstruments = 16;
+    policy.maximumExactCombinations = 1000000;
+    for (std::size_t index = 0; index < 6; ++index)
+    {
+        StrategyProposal proposal;
+        proposal.proposalId = "performance-proposal-" + std::to_string(index);
+        proposal.moduleId = "hepta.strategy.perf" + std::to_string(index);
+        proposal.moduleVersion = "1.0.0";
+        proposal.sequence = 1;
+        proposal.capitalPool = "pool-performance";
+        proposal.accountBook = "book-performance";
+        proposal.snapshotDigest = Digest('a');
+        proposal.validFromMs = 1400;
+        proposal.expiresAtMs = 2300;
+        proposal.horizonMs = 700;
+        StrategyProposalCandidate candidate;
+        candidate.candidateId = "performance-candidate-" +
+            std::to_string(index);
+        candidate.utility = static_cast<DecisionMicrounits>(100 + index);
+        candidate.targets.push_back({
+            "PERF." + std::to_string(index), 1000000
+        });
+        proposal.candidates.push_back(candidate);
+        expected.push_back(proposal.moduleId);
+        policy.instrumentAbsoluteLimits[
+            "PERF." + std::to_string(index)] = 1000000;
+        proposals.push_back(proposal);
+    }
+    const ProposalSetBuildResult proposalSet = ProposalSetBuilder::Build(
+        proposals, expected, 1500, 2400);
+    assert(proposalSet.accepted);
+
+    std::string solverDigest;
+    const std::chrono::steady_clock::time_point started =
+        std::chrono::steady_clock::now();
+    for (std::uint64_t epoch = 1; epoch <= 20; ++epoch)
+    {
+        const GlobalAllocationResult result = GlobalAllocator::Allocate(
+            proposalSet.proposalSet, policy, epoch, 1500);
+        assert(result.accepted);
+        assert(result.receipt.IsValid());
+        assert(result.plan.solver.exact);
+        assert(result.plan.solver.status == "optimal");
+        assert(result.plan.solver.absoluteGap == 0);
+        assert(result.plan.solver.combinationsExplored > 0);
+        assert(result.plan.solver.combinationsExplored <= 1000000);
+        if (solverDigest.empty()) solverDigest = result.plan.solver.digest;
+        else assert(result.plan.solver.digest == solverDigest);
+    }
+    const std::uint64_t elapsedMs = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count());
+    assert(elapsedMs <= 30000);
+}
+
 }
 
 int main()
@@ -141,5 +215,6 @@ int main()
     TestExactOptimalEvidence();
     TestBoundedHeuristicIsTruthful();
     TestConstraintAndPolicyFailures();
+    TestBoundedPerformanceEnvelope();
     return 0;
 }

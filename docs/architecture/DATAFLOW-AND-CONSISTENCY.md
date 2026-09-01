@@ -41,3 +41,9 @@ venue callback/broker snapshot
 ## Recovery
 
 重启从 durable journal 和 authoritative venue snapshot 恢复。未知 send outcome 进入 `uncertain`，复用原 command ID，通过 query/reconcile 解决，不产生新 order。duplicate/out-of-order/correction event 按 event identity 和 venue lifecycle 合并；无法收敛时关闭 new-risk gate并 terminal latch。
+
+## Snapshot integrity and coherent vector cuts
+
+Before feature or decision consumption, a market-data snapshot is reconstructed as its canonical event, every bounded fixed and timing field is validated, the event digest is recomputed, and any mismatch is rejected.
+
+A multi-instrument vector is one coherent store cut. The reader sorts the target shard set, acquires every target shard lock in canonical order, reads and validates all components while those locks remain held, and only then computes the vector digest. Writers cannot advance one component between vector reads. Duplicate keys, missing components, sequence gaps, stale values, clock regression and digest failure are fail-closed.

@@ -136,8 +136,10 @@ bool ShardedMarketDataStore::ValidateEvent(
         reason = "MARKET_TIME_ENVELOPE_INVALID";
         return false;
     }
-    if (event.ask < event.bid || event.bidSize.Raw() < 0 ||
-        event.askSize.Raw() < 0)
+    if (!event.bid.IsValid() || !event.ask.IsValid() ||
+        !event.last.IsValid() || !event.bidSize.IsValid() ||
+        !event.askSize.IsValid() || event.ask < event.bid ||
+        event.bidSize.Raw() < 0 || event.askSize.Raw() < 0)
     {
         reason = "MARKET_QUOTE_INVALID";
         return false;
@@ -170,6 +172,49 @@ std::string ShardedMarketDataStore::EventDigest(const MarketDataEvent& event)
     AppendRaw(canonical, "bid_size", event.bidSize);
     AppendRaw(canonical, "ask_size", event.askSize);
     return Sha256(canonical);
+}
+
+bool ShardedMarketDataStore::ValidateSnapshot(
+    const MarketDataSnapshot& snapshot, std::string& reason)
+{
+    if (!snapshot.found || snapshot.generation == 0 ||
+        !CanonicalDigest(snapshot.digest))
+    {
+        reason = "MARKET_SNAPSHOT_INCOMPLETE";
+        return false;
+    }
+    MarketDataEvent event;
+    event.eventId = snapshot.eventId;
+    event.producer = snapshot.producer;
+    event.venue = snapshot.key.venue;
+    event.instrument = snapshot.key.instrument;
+    event.sourceDigest = snapshot.sourceDigest;
+    event.producerEpoch = snapshot.producerEpoch;
+    event.sequence = snapshot.sequence;
+    event.observedAtMs = snapshot.observedAtMs;
+    event.capturedAtMs = snapshot.capturedAtMs;
+    event.freshUntilMs = snapshot.freshUntilMs;
+    event.bid = snapshot.bid;
+    event.ask = snapshot.ask;
+    event.last = snapshot.last;
+    event.bidSize = snapshot.bidSize;
+    event.askSize = snapshot.askSize;
+    if (!ValidateEvent(event, reason)) return false;
+    const std::string expected = EventDigest(event);
+    if (expected.empty() || expected != snapshot.digest)
+    {
+        reason = "MARKET_SNAPSHOT_DIGEST_MISMATCH";
+        return false;
+    }
+    reason.clear();
+    return true;
+}
+
+void ShardedMarketDataStore::SetReadVectorLocksAcquiredHookForTesting(
+    const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> lock(m_vectorHookMutex);
+    m_vectorLocksAcquiredHook = hook;
 }
 
 bool ShardedMarketDataStore::ReserveKey()
@@ -347,6 +392,7 @@ bool ShardedMarketDataStore::GetRiskReady(
         reason = "MARKET_SNAPSHOT_MISSING";
         return false;
     }
+    if (!ValidateSnapshot(out, reason)) return false;
     if (out.sequenceGap)
     {
         reason = "MARKET_SEQUENCE_GAP";
@@ -388,13 +434,65 @@ bool ShardedMarketDataStore::ReadVector(
             return false;
         }
     }
+
+    std::vector<std::size_t> shardIds;
+    shardIds.reserve(ordered.size());
+    for (std::size_t i = 0; i < ordered.size(); ++i)
+        shardIds.push_back(ShardFor(ordered[i]));
+    std::sort(shardIds.begin(), shardIds.end());
+    shardIds.erase(std::unique(shardIds.begin(), shardIds.end()),
+                   shardIds.end());
+
+    // Lock the complete target shard set in canonical order. No writer can
+    // advance one component while the vector is being assembled, so the
+    // resulting digest identifies one coherent store cut.
+    std::vector<std::unique_lock<std::mutex> > locks;
+    locks.reserve(shardIds.size());
+    for (std::size_t i = 0; i < shardIds.size(); ++i)
+        locks.push_back(std::unique_lock<std::mutex>(
+            m_shards[shardIds[i]].mutex));
+
+    std::function<void()> hook;
+    {
+        std::lock_guard<std::mutex> hookLock(m_vectorHookMutex);
+        hook = m_vectorLocksAcquiredHook;
+    }
+    if (hook) hook();
+
     out.components.reserve(ordered.size());
     for (std::size_t i = 0; i < ordered.size(); ++i)
     {
-        MarketDataSnapshot snapshot;
-        if (!GetRiskReady(ordered[i], nowMs, snapshot, reason))
+        const Shard& shard = m_shards[ShardFor(ordered[i])];
+        const std::map<MarketDataKey, Entry>::const_iterator found =
+            shard.entries.find(ordered[i]);
+        if (found == shard.entries.end())
         {
             out = MarketDataSnapshotVector();
+            reason = "MARKET_SNAPSHOT_MISSING";
+            return false;
+        }
+        MarketDataSnapshot snapshot = Snapshot(found->second);
+        if (!ValidateSnapshot(snapshot, reason))
+        {
+            out = MarketDataSnapshotVector();
+            return false;
+        }
+        if (snapshot.sequenceGap)
+        {
+            out = MarketDataSnapshotVector();
+            reason = "MARKET_SEQUENCE_GAP";
+            return false;
+        }
+        if (nowMs < snapshot.capturedAtMs)
+        {
+            out = MarketDataSnapshotVector();
+            reason = "MARKET_CLOCK_REGRESSION";
+            return false;
+        }
+        if (nowMs > snapshot.freshUntilMs)
+        {
+            out = MarketDataSnapshotVector();
+            reason = "MARKET_SNAPSHOT_STALE";
             return false;
         }
         out.components.push_back(snapshot);

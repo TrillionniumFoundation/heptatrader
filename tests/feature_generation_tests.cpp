@@ -95,7 +95,11 @@ void TestInputFailures()
     MarketDataSnapshot odd = stale;
     odd.ask = Fixed("1.100001");
     assert(features.Compute(odd, 1200).reasonCode ==
-           "FEATURE_NUMERIC_SCALE_MISMATCH");
+           "FEATURE_INPUT_INVALID");
+    MarketDataSnapshot forged = stale;
+    forged.digest = std::string("sha256:") + std::string(64, 'f');
+    assert(features.Compute(forged, 1200).reasonCode ==
+           "FEATURE_INPUT_INVALID");
     assert(features.Compute(stale, 1200, "unknown").reasonCode ==
            "FEATURE_SET_UNSUPPORTED");
 }

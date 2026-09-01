@@ -38,3 +38,9 @@ Authority: verification authority
 同一不变 revision 上必须完成其声明的 source-head jobs；进入合并队列后还必须对 exact merge candidate 完成 Lane C。任何新提交都会使旧 review 与旧 check 失效。外部 PAPER qualification 是独立 Lane D，不由 core CI 推导。
 
 证据遵循 `evidence-index-schema-v1.json`；Git 中不维护手工 `EXACT-HEAD-*` 文件。
+
+## Internal closure floor
+
+Every non-external verification check is implemented and backed by executable evidence on the exact candidate. Event ordering covers duplicate/idempotent, out-of-order, producer-epoch and sequence-gap behavior. Reconciliation covers divergence, outcome-uncertain and recovery convergence. Strategy isolation proves SHADOW and QUARANTINED modules cannot contribute to active allocation. Global allocation has a deterministic exact-combination ceiling and broad anti-hang deadline fixture in addition to same-toolchain regression gates.
+
+`external` is reserved for protected, broker-observed or platform-observed qualification and cannot be converted to implemented by simulator evidence.

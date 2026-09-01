@@ -194,8 +194,31 @@ bool HeptaFixedDecimal::ParseCanonical(
     }
     Rep raw = 0;
     if (!ParseExactRaw(text, raw, reason)) return false;
-    out = HeptaFixedDecimal(raw);
+    out = HeptaFixedDecimal(raw, true);
     return true;
+}
+
+bool HeptaFixedDecimal::FromRawExact(
+    Rep raw,
+    HeptaFixedDecimal& out,
+    std::string& reason) noexcept
+{
+    out = HeptaFixedDecimal();
+    if (raw < -kMaximumRaw || raw > kMaximumRaw)
+    {
+        reason = "NUMERIC_RANGE_EXCEEDED";
+        return false;
+    }
+    out = HeptaFixedDecimal(raw == 0 ? 0 : raw, true);
+    reason.clear();
+    return true;
+}
+
+bool HeptaFixedDecimal::IsExactlyRepresentable(double value) noexcept
+{
+    HeptaFixedDecimal out;
+    std::string reason;
+    return FromDoubleExact(value, out, reason);
 }
 
 bool HeptaFixedDecimal::FromDoubleExact(
@@ -238,7 +261,31 @@ bool HeptaFixedDecimal::FromDoubleExact(
         reason = "NUMERIC_SCALE_MISMATCH";
         return false;
     }
-    out = HeptaFixedDecimal(raw == 0 ? 0 : raw);
+    out = HeptaFixedDecimal(raw == 0 ? 0 : raw, true);
+    reason.clear();
+    return true;
+}
+
+bool HeptaFixedDecimal::ToDoubleExact(
+    double& out, std::string& reason) const noexcept
+{
+    out = 0.0;
+    if (!IsValid())
+    {
+        reason = "NUMERIC_RANGE_EXCEEDED";
+        return false;
+    }
+    const double candidate = static_cast<double>(m_raw) /
+        static_cast<double>(kScale);
+    HeptaFixedDecimal recovered;
+    std::string recoveredReason;
+    if (!FromDoubleExact(candidate, recovered, recoveredReason) ||
+        recovered.m_raw != m_raw)
+    {
+        reason = "NUMERIC_DOUBLE_PROJECTION_LOSS";
+        return false;
+    }
+    out = candidate;
     reason.clear();
     return true;
 }
@@ -251,7 +298,7 @@ bool HeptaFixedDecimal::CheckedAdd(
     if ((right.m_raw > 0 && left.m_raw > kMaximumRaw - right.m_raw) ||
         (right.m_raw < 0 && left.m_raw < -kMaximumRaw - right.m_raw))
         return false;
-    out = HeptaFixedDecimal(left.m_raw + right.m_raw);
+    out = HeptaFixedDecimal(left.m_raw + right.m_raw, true);
     return true;
 }
 
@@ -263,7 +310,7 @@ bool HeptaFixedDecimal::CheckedSubtract(
     if ((right.m_raw < 0 && left.m_raw > kMaximumRaw + right.m_raw) ||
         (right.m_raw > 0 && left.m_raw < -kMaximumRaw + right.m_raw))
         return false;
-    out = HeptaFixedDecimal(left.m_raw - right.m_raw);
+    out = HeptaFixedDecimal(left.m_raw - right.m_raw, true);
     return true;
 }
 

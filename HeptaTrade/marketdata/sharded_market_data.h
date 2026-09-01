@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -106,6 +107,10 @@ public:
 
     static std::size_t ShardFor(const MarketDataKey& key) noexcept;
     static std::string EventDigest(const MarketDataEvent& event);
+    static bool ValidateSnapshot(const MarketDataSnapshot& snapshot,
+                                 std::string& reason);
+    void SetReadVectorLocksAcquiredHookForTesting(
+        const std::function<void()>& hook);
 
 private:
     struct Entry
@@ -131,4 +136,6 @@ private:
     std::array<Shard, kShardCount> m_shards;
     std::atomic<std::size_t> m_size;
     const std::size_t m_maximumKeys;
+    mutable std::mutex m_vectorHookMutex;
+    std::function<void()> m_vectorLocksAcquiredHook;
 };
