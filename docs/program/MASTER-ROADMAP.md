@@ -16,6 +16,6 @@ Authority: generated from milestone and gap registries
 | `M4` | Global Decision Shadow | **closed** | M3 | 0 | StrategyProposal to AllocationPlan shadow E2E; deterministic solver record; Execution revalidation |
 | `M5` | Active Multi-Agent Simulator | **closed** | M4 | 0 | module lifecycle; fault isolation; active capital allocation |
 | `M6` | IB PAPER Parity and Qualification | **planned** | M5 | 1 | exact-artifact qualification; fault scenarios; soak and rollback |
-| `M7` | Team-Scale Continuous Development | **in-progress** | M2 | 2 | team ownership; merge queue; module SLO and impact closure |
+| `M7` | Team-Scale Continuous Development | **in-progress** | M2 | 1 | team ownership; merge queue; module SLO and impact closure |
 
 实时完成状态必须由 exact-revision evidence 派生；本视图不替代 CI 或外部 qualification。
