@@ -34,6 +34,7 @@ The documentation-control-plane milestone can close only when all of the followi
 - all Markdown outside `docs/` is explicitly registered as entrypoint-only and links to a canonical `docs/` target;
 - `legacy/` contains no development prose, media or build-system entrypoint;
 - every ModuleManifest passes Draft 2020-12 validation;
+- every registered module has exactly one generated technical guide whose required engineering topics, ownership, contracts, resource budget and verification IDs resolve to canonical authorities;
 - every active C/C++ file has exactly one physical owner or one exact same-gap overlap exception;
 - the configured CMake target/source/dependency graph matches module ownership;
 - every direct production-source compilation is an exact, open-gap migration exception;

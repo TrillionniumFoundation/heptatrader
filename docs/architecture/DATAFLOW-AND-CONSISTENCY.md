@@ -47,3 +47,9 @@ venue callback/broker snapshot
 Before feature or decision consumption, a market-data snapshot is reconstructed as its canonical event, every bounded fixed and timing field is validated, the event digest is recomputed, and any mismatch is rejected.
 
 A multi-instrument vector is one coherent store cut. The reader sorts the target shard set, acquires every target shard lock in canonical order, reads and validates all components while those locks remain held, and only then computes the vector digest. Writers cannot advance one component between vector reads. Duplicate keys, missing components, sequence gaps, stale values, clock regression and digest failure are fail-closed.
+
+## Same-process market authority and currentness
+
+Risk-ready Market Data authority is not a freely transferable snapshot wrapper. A receipt is construction-restricted and bound to one exact `ShardedMarketDataStore` handle, process-local issuer identity, issuer lifecycle, source key/epoch/sequence/generation/digest and issuance time. The authoritative store owns the clock used for issuance and use-time freshness checks; caller-provided time is diagnostic only.
+
+Feature is constructed against one exact Market Data authority. Before every authoritative Feature write, the issuer revalidates the receipt against its current entry. Before every risk-ready Feature read, the source lineage is revalidated again. Cross-store transfer, reconstructed-store substitution, issuer destruction, generation advance, gap-after-issuance, clock regression, expiry and replay into a fresh Feature store fail closed. A future cross-process deployment requires a separately authenticated issuer/audience/nonce/expiry envelope; the same-process receipt is never serialized as proof.

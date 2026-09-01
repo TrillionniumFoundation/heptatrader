@@ -39,7 +39,7 @@
       "title": "Every registered module must have a complete, generated and machine-verified technical development guide",
       "workstream": "WS-DOC",
       "milestone": "M1",
-      "state": "in-progress",
+      "state": "closed",
       "evidence": [
         "docs-generated",
         "docs-control",

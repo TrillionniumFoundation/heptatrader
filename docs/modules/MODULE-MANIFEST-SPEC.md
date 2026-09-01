@@ -38,6 +38,7 @@ risk-increase and safe-exit failure behavior
 resource budget
 DRI / backup / cross-domain reviewers
 verification check IDs
+technical-guide path and complete coverage-topic set
 ```
 
 All contract, module and verification IDs must resolve to canonical registries. Current and experimental CMake targets must exist in the configured or explicitly optional profile.
@@ -57,4 +58,6 @@ A module boundary is complete only when:
 3. the configured target/source/dependency graph matches the registries;
 4. no unregistered cross-module compilation remains;
 5. all migration exceptions linked to the module are removed or remain attached to one open gap;
-6. module-local and system verification pass on the same revision.
+6. the module has one unique generated technical guide covering every required engineering topic;
+7. documentation profiles, manifests, generated guides and canonical registries are byte-consistent;
+8. module-local, documentation and system verification pass on the same unchanged revision.

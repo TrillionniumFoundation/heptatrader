@@ -269,8 +269,8 @@
       ]
     },
     {
-      "id": "hepta.module-manifest.v2",
-      "version": "2",
+      "id": "hepta.module-manifest.v3",
+      "version": "3",
       "stability": "target",
       "document": "modules/MODULE-MANIFEST-SPEC.md",
       "schema_path": "docs/modules/module-manifest-schema-v3.json",

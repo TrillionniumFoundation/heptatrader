@@ -213,7 +213,7 @@
         "hepta.management.control"
       ],
       "contracts": [
-        "hepta.module-manifest.v2",
+        "hepta.module-manifest.v3",
         "hepta.module-lifecycle.v1",
         "hepta.configuration-authority.v1"
       ],

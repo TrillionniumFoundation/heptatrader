@@ -51,7 +51,7 @@ Physical ownership is verified against [`source-ownership-registry-v1.json`](../
 
 ## Contracts and Public Interfaces
 
-- **Provides:** `hepta.metric-registry.v1`, `hepta.module-manifest.v2`, `hepta.reason-code.v1`
+- **Provides:** `hepta.metric-registry.v1`, `hepta.module-manifest.v3`, `hepta.reason-code.v1`
 - **Consumes:** none
 
 Contract definitions, providers, consumers and compatibility state are resolved through the [canonical contract index](../../contracts/CONTRACT-INDEX.md). Inputs are validated before state admission; schema validity alone is not proof of issuer authority.

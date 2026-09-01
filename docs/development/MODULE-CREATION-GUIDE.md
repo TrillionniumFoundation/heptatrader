@@ -16,6 +16,7 @@ authority and failure domain
 -> numeric and resource budgets
 -> DRI, backup and cross-domain reviewers
 -> physical source owner and CMake target owner
+-> module-specific technical documentation profile and guide
 -> negative/fault/performance tests
 -> capability and milestone mapping
 ```
@@ -28,6 +29,7 @@ A module change must update, as applicable:
 
 - one manifest under `docs/modules/manifests/`;
 - `module-registry-v2.json`;
+- one unique entry in `module-documentation-profiles-v1.json` and its generated technical guide;
 - `source-ownership-registry-v1.json` for every new active C/C++ path;
 - the canonical contract registry and schema;
 - the verification, capability, gap and milestone registries;

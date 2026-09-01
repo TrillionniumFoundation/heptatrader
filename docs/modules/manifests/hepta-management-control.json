@@ -19,7 +19,7 @@
     "hepta.module-lifecycle.v1"
   ],
   "consumes": [
-    "hepta.module-manifest.v2"
+    "hepta.module-manifest.v3"
   ],
   "allowed_dependencies": [
     "hepta.protocol.contracts",

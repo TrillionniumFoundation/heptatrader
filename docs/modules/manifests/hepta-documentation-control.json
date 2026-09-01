@@ -20,7 +20,7 @@
   "build_targets": [],
   "provides": [
     "hepta.metric-registry.v1",
-    "hepta.module-manifest.v2",
+    "hepta.module-manifest.v3",
     "hepta.reason-code.v1"
   ],
   "consumes": [],
