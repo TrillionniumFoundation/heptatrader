@@ -1,0 +1,18 @@
+{
+  "schema": "heptatrader.dataset-registry.v1",
+  "datasets": [
+    {
+      "id": "sim-eurusd-sequence-v1",
+      "path": "research/fixtures/eurusd_sequence_v1.csv",
+      "format": "csv",
+      "sha256": "463cd54c44d4a4d69239b3de513aafff78da98fe2540a272cd31b19680493537",
+      "point_in_time": true,
+      "observed_at_column": "observed_at_ms",
+      "available_at_column": "available_at_ms",
+      "epoch_column": "producer_epoch",
+      "sequence_column": "sequence",
+      "numeric_policy": "hepta.numeric.fixed-v1",
+      "row_count": 3
+    }
+  ]
+}
