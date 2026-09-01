@@ -1,6 +1,10 @@
 #include "../HeptaTrade/marketdata/sharded_market_data.h"
 
+#include <atomic>
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -139,6 +143,83 @@ void TestCapacityAndVector()
     assert(reason == "MARKET_VECTOR_DUPLICATE_KEY");
 }
 
+void TestVectorIsOneCoherentCut()
+{
+    ShardedMarketDataStore store(8);
+    MarketDataEvent first = Event(1, 1);
+    MarketDataEvent second = Event(1, 1);
+    second.instrument = "VECTOR.B";
+    while (ShardedMarketDataStore::ShardFor(
+               {second.venue, second.instrument}) ==
+           ShardedMarketDataStore::ShardFor(
+               {first.venue, first.instrument}))
+        second.instrument.push_back('X');
+    second.eventId = "vector-second";
+    assert(store.Apply(first).accepted);
+    assert(store.Apply(second).accepted);
+
+    std::mutex gateMutex;
+    std::condition_variable gate;
+    bool locked = false;
+    bool release = false;
+    store.SetReadVectorLocksAcquiredHookForTesting([&]() {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        locked = true;
+        gate.notify_all();
+        gate.wait(lock, [&]() { return release; });
+    });
+
+    MarketDataSnapshotVector vector;
+    std::string reason;
+    std::thread reader([&]() {
+        assert(store.ReadVector(
+            {{first.venue, first.instrument},
+             {second.venue, second.instrument}},
+            1200, vector, reason));
+    });
+    {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        gate.wait(lock, [&]() { return locked; });
+    }
+
+    std::atomic<bool> writerFinished(false);
+    std::thread writer([&]() {
+        MarketDataEvent update = first;
+        update.eventId = "event-1-2";
+        update.sequence = 2;
+        update.observedAtMs = 1002;
+        update.capturedAtMs = 1102;
+        update.freshUntilMs = 5002;
+        assert(store.Apply(update).accepted);
+        writerFinished.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!writerFinished.load());
+    {
+        std::lock_guard<std::mutex> lock(gateMutex);
+        release = true;
+    }
+    gate.notify_all();
+    reader.join();
+    writer.join();
+    store.SetReadVectorLocksAcquiredHookForTesting(std::function<void()>());
+
+    assert(vector.components.size() == 2);
+    for (std::size_t i = 0; i < vector.components.size(); ++i)
+        assert(vector.components[i].sequence == 1);
+
+    MarketDataSnapshotVector after;
+    assert(store.ReadVector(
+        {{first.venue, first.instrument},
+         {second.venue, second.instrument}},
+        1200, after, reason));
+    bool sawUpdated = false;
+    for (std::size_t i = 0; i < after.components.size(); ++i)
+        if (after.components[i].key.instrument == first.instrument)
+            sawUpdated = after.components[i].sequence == 2;
+    assert(sawUpdated);
+}
+
 void TestIndependentShardProgress()
 {
     ShardedMarketDataStore store(64);
@@ -162,6 +243,7 @@ int main()
     TestOrderingAndEpochs();
     TestFreshnessAndValidation();
     TestCapacityAndVector();
+    TestVectorIsOneCoherentCut();
     TestIndependentShardProgress();
     return 0;
 }

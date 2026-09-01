@@ -548,8 +548,7 @@ bool ParseDouble(const std::string& value, double& out)
     std::string reason;
     if (!HeptaFixedDecimal::ParseCanonical(value, fixed, reason))
         return false;
-    out = fixed.ToDouble();
-    return true;
+    return fixed.ToDoubleExact(out, reason);
 }
 
 typedef std::map<unsigned int, std::string> DecodedFields;

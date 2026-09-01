@@ -113,6 +113,12 @@ FeatureWriteResult ShardedFeatureStore::Compute(
         result.reasonCode = "FEATURE_INPUT_INCOMPLETE";
         return result;
     }
+    std::string marketReason;
+    if (!ShardedMarketDataStore::ValidateSnapshot(input, marketReason))
+    {
+        result.reasonCode = "FEATURE_INPUT_INVALID";
+        return result;
+    }
     if (input.sequenceGap)
     {
         result.reasonCode = "FEATURE_INPUT_SEQUENCE_GAP";
@@ -202,7 +208,14 @@ FeatureWriteResult ShardedFeatureStore::Compute(
         ? 1u : found->second.featureGeneration + 1u;
     snapshot.observedAtMs = input.observedAtMs;
     snapshot.freshUntilMs = input.freshUntilMs;
-    snapshot.mid = HeptaFixedDecimal(bidAskSum.Raw() / 2);
+    std::string numericReason;
+    if (!HeptaFixedDecimal::FromRawExact(
+            bidAskSum.Raw() / 2, snapshot.mid, numericReason))
+    {
+        if (found == shard.entries.end()) --m_size;
+        result.reasonCode = "FEATURE_NUMERIC_OVERFLOW";
+        return result;
+    }
     snapshot.spread = spread;
     snapshot.digest = SnapshotDigest(snapshot);
     if (snapshot.digest.empty())
