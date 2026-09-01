@@ -90,6 +90,8 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   fi
 fi
 
+bash -n "${ROOT_DIR}/scripts/run_ib_paper_qualification.sh"
+python3 -m py_compile "${ROOT_DIR}/scripts/verify_ib_paper_qualification.py"
 python3 "${ROOT_DIR}/scripts/generate_contract_bindings.py" --check
 python3 "${ROOT_DIR}/scripts/generate_documentation_views.py" --check
 python3 "${ROOT_DIR}/scripts/check_documentation_control_plane.py"

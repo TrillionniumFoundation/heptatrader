@@ -80,7 +80,7 @@
     {
       "id": "M6",
       "title": "IB PAPER Parity and Qualification",
-      "state": "planned",
+      "state": "in-progress",
       "depends_on": [
         "M5"
       ],
