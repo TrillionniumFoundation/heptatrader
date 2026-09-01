@@ -277,6 +277,21 @@
       ]
     },
     {
+      "id": "G-AUTH-MD-001",
+      "priority": "P1",
+      "title": "Market Data receipts are transferable, caller-time replayable and not bound to current issuer state",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "market-authority-capability",
+        "marketdata-ordering",
+        "sequence-gap",
+        "feature-generation",
+        "docs-control"
+      ]
+    },
+    {
       "id": "G-OPT-004",
       "priority": "P1",
       "title": "ProposalSet lifetime is not intersected with proposal horizons and snapshot expiry",

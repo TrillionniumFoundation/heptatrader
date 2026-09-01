@@ -104,7 +104,9 @@ add_library(hepta_numeric_core STATIC
 hepta_runtime_target(hepta_numeric_core)
 
 add_library(hepta_marketdata_core STATIC
-    marketdata/sharded_market_data.cpp)
+    marketdata/sharded_market_data.cpp
+    marketdata/marketdata_capability.cpp
+    marketdata/marketdata_authority.cpp)
 hepta_runtime_target(hepta_marketdata_core)
 target_link_libraries(hepta_marketdata_core PUBLIC
     hepta_numeric_core

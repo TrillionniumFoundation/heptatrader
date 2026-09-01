@@ -1,37 +1,17 @@
-#include "sharded_market_data.h"
+#include "marketdata_authority_internal.h"
 
 #include <algorithm>
 #include <iomanip>
 #include <limits>
 #include <openssl/evp.h>
 #include <sstream>
+#include <utility>
+
+using hepta_marketdata_internal::BoundedPrintable;
+using hepta_marketdata_internal::CanonicalDigest;
 
 namespace
 {
-bool BoundedPrintable(const std::string& value, std::size_t maximum)
-{
-    if (value.empty() || value.size() > maximum) return false;
-    for (std::size_t i = 0; i < value.size(); ++i)
-    {
-        const unsigned char c = static_cast<unsigned char>(value[i]);
-        if (c < 0x21 || c > 0x7e) return false;
-    }
-    return true;
-}
-
-bool CanonicalDigest(const std::string& value)
-{
-    if (value.size() != 71u || value.compare(0, 7, "sha256:") != 0)
-        return false;
-    for (std::size_t i = 7; i < value.size(); ++i)
-    {
-        const char c = value[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
-            return false;
-    }
-    return true;
-}
-
 void AppendField(std::string& out, const char* name, const std::string& value)
 {
     out.append(name);
@@ -83,11 +63,6 @@ std::string VectorDigest(const std::vector<MarketDataSnapshot>& snapshots)
     }
     return Sha256(canonical);
 }
-}
-
-ShardedMarketDataStore::ShardedMarketDataStore(std::size_t maximumKeys)
-    : m_size(0), m_maximumKeys(maximumKeys)
-{
 }
 
 std::size_t ShardedMarketDataStore::ShardFor(const MarketDataKey& key) noexcept
@@ -412,19 +387,6 @@ bool ShardedMarketDataStore::GetRiskReady(
     return true;
 }
 
-bool ShardedMarketDataStore::GetRiskReady(
-    const MarketDataKey& key,
-    std::uint64_t nowMs,
-    MarketDataSnapshotReceipt& out,
-    std::string& reason) const
-{
-    out = MarketDataSnapshotReceipt();
-    MarketDataSnapshot snapshot;
-    if (!GetRiskReady(key, nowMs, snapshot, reason)) return false;
-    out = MarketDataSnapshotReceipt(snapshot);
-    reason.clear();
-    return true;
-}
 
 bool ShardedMarketDataStore::ReadVector(
     const std::vector<MarketDataKey>& keys,

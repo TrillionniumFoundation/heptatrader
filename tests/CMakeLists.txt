@@ -253,6 +253,17 @@ target_link_libraries(hepta_feature_generation_tests
     hepta_feature_runtime)
 hepta_register_core_test(hepta_feature_generation_tests)
 
+# Market Data authority is a risk-sensitive concurrency boundary. Keep the
+# tests in the fast core lane and also compile/run them under every sanitizer
+# reliability matrix so issuer lifecycle, shard synchronization and hostile
+# receipt paths cannot regress outside ordinary CTest.
+set_tests_properties(
+    hepta_sharded_market_data_tests
+    hepta_feature_generation_tests
+    PROPERTIES LABELS "core;reliability")
+list(APPEND HEPTA_RELIABILITY_TEST_TARGETS
+    hepta_sharded_market_data_tests
+    hepta_feature_generation_tests)
 
 add_executable(hepta_strategy_proposal_tests
     strategy_proposal_tests.cpp)

@@ -1,7 +1,28 @@
 #include "../HeptaTrade/features/feature_generation.h"
 
+#include <atomic>
 #include <cassert>
+#include <cstdint>
+#include <memory>
 #include <string>
+#include <type_traits>
+#include <utility>
+
+static_assert(
+    !std::is_copy_constructible<MarketDataSnapshotReceipt>::value,
+    "market-data receipts must be move-only");
+static_assert(
+    !std::is_copy_assignable<MarketDataSnapshotReceipt>::value,
+    "market-data receipts must not be copy-assigned");
+static_assert(
+    std::is_move_constructible<MarketDataSnapshotReceipt>::value,
+    "market-data receipts must remain transferable by move");
+static_assert(
+    !std::is_copy_constructible<MarketDataConsumerBinding>::value,
+    "consumer bindings must be move-only");
+static_assert(
+    !std::is_copy_assignable<MarketDataConsumerBinding>::value,
+    "consumer bindings must not be copy-assigned");
 
 namespace
 {
@@ -18,7 +39,7 @@ MarketDataEvent Event(std::uint64_t epoch, std::uint64_t sequence)
     MarketDataEvent event;
     event.eventId = "feature-event-" + std::to_string(epoch) + "-" +
         std::to_string(sequence);
-    event.producer = "feature-feed";
+    event.producer = epoch == 1 ? "feature-feed" : "feature-feed-next";
     event.venue = "SIM";
     event.instrument = "EUR.USD";
     event.sourceDigest = std::string("sha256:") + std::string(64, 'b');
@@ -35,132 +56,275 @@ MarketDataEvent Event(std::uint64_t epoch, std::uint64_t sequence)
     return event;
 }
 
+struct Fixture
+{
+    explicit Fixture(std::size_t featureCapacity = 4096,
+                     const std::string& audience = "feature-primary")
+        : now(new std::atomic<std::uint64_t>(1200)),
+          market(4096, [clock = now]() { return clock->load(); }),
+          features(market.BindConsumer(audience), featureCapacity)
+    {
+        assert(features.MarketAuthority().IsValid());
+    }
+
+    std::shared_ptr<std::atomic<std::uint64_t> > now;
+    ShardedMarketDataStore market;
+    ShardedFeatureStore features;
+};
+
 MarketDataSnapshotReceipt Receipt(
     ShardedMarketDataStore& market,
-    const MarketDataEvent& event,
-    std::uint64_t issuedAtMs = 1200)
+    const MarketDataConsumerBinding& consumer,
+    const MarketDataEvent& event)
 {
     assert(market.Apply(event).accepted);
     MarketDataSnapshotReceipt receipt;
     std::string reason;
     assert(market.GetRiskReady(
-        {event.venue, event.instrument}, issuedAtMs, receipt, reason));
+        consumer, {event.venue, event.instrument}, receipt, reason));
+    assert(reason.empty());
     assert(receipt.IsValid());
+    assert(receipt.IssuedAtMs() != 0);
+    assert(receipt.Nonce() != 0);
     return receipt;
 }
 
 void TestDeterministicGeneration()
 {
-    ShardedMarketDataStore market;
-    ShardedFeatureStore features;
-    MarketDataSnapshotReceipt first = Receipt(market, Event(1, 1));
-    FeatureWriteResult result = features.Compute(first, 1200);
+    Fixture fixture;
+    MarketDataSnapshotReceipt first = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 1));
+    FeatureWriteResult result = fixture.features.Compute(first);
     assert(result.accepted && !result.duplicate);
     assert(result.featureGeneration == 1);
 
     FeatureSnapshot output;
-    assert(features.Get({"SIM", "EUR.USD"}, "mid-spread-v1", output));
+    assert(fixture.features.Get(
+        {"SIM", "EUR.USD"}, "mid-spread-v1", output));
     assert(output.mid == Fixed("1.15"));
     assert(output.spread == Fixed("0.1"));
     assert(output.inputDigest == first.Snapshot().digest);
     assert(output.digest == result.digest);
 
-    FeatureWriteResult duplicate = features.Compute(first, 1200);
+    FeatureWriteResult duplicate = fixture.features.Compute(first);
     assert(duplicate.accepted && duplicate.duplicate);
     assert(duplicate.featureGeneration == 1);
     assert(duplicate.digest == result.digest);
 
-    MarketDataSnapshotReceipt second = Receipt(market, Event(1, 2));
-    FeatureWriteResult next = features.Compute(second, 1200);
+    MarketDataSnapshotReceipt second = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 2));
+    FeatureWriteResult next = fixture.features.Compute(second);
     assert(next.accepted && !next.duplicate);
     assert(next.featureGeneration == 2);
     assert(next.digest != result.digest);
 }
 
-void TestAuthorityAndInputFailures()
+void TestCompatibilityAndInputFailures()
 {
-    ShardedFeatureStore features;
+    ShardedFeatureStore unbound;
     MarketDataSnapshotReceipt missing;
-    assert(features.Compute(missing, 1200).reasonCode ==
+    assert(unbound.Compute(missing).reasonCode ==
            "FEATURE_INPUT_RECEIPT_INVALID");
 
     MarketDataSnapshot rawMissing;
-    assert(features.Compute(rawMissing, 1200).reasonCode ==
+    assert(unbound.Compute(rawMissing, 1200).reasonCode ==
            "FEATURE_INPUT_RECEIPT_REQUIRED");
 
-    ShardedMarketDataStore market;
-    MarketDataSnapshotReceipt current = Receipt(market, Event(1, 1));
-    assert(features.Compute(current, 6000).reasonCode ==
-           "FEATURE_INPUT_STALE");
-    assert(features.Compute(current, 1000).reasonCode ==
-           "FEATURE_INPUT_CLOCK_REGRESSION");
-    assert(features.Compute(current, 1200, "unknown").reasonCode ==
+    Fixture fixture;
+    MarketDataSnapshotReceipt current = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 1));
+    assert(fixture.features.Compute(current, 1200).reasonCode ==
+           "FEATURE_CALLER_TIME_FORBIDDEN");
+    assert(fixture.features.Compute(current, "unknown").reasonCode ==
            "FEATURE_SET_UNSUPPORTED");
 
-    MarketDataWriteResult gapWrite = market.Apply(Event(1, 3));
-    assert(gapWrite.accepted && gapWrite.sequenceGap);
-    MarketDataSnapshotReceipt gapReceipt;
-    std::string reason;
-    assert(!market.GetRiskReady(
-        {"SIM", "EUR.USD"}, 1200, gapReceipt, reason));
-    assert(reason == "MARKET_SEQUENCE_GAP");
-    assert(!gapReceipt.IsValid());
-
-    // A raw diagnostic copy can be edited and can even remain structurally
-    // valid because derived store state is not an authority envelope. Feature
-    // must therefore reject the raw value regardless of its visible fields.
-    MarketDataSnapshot forged;
-    assert(market.Get({"SIM", "EUR.USD"}, forged));
-    assert(forged.sequenceGap);
-    forged.sequenceGap = false;
+    MarketDataSnapshot forged = current.Snapshot();
     forged.generation += 100;
-    assert(ShardedMarketDataStore::ValidateSnapshot(forged, reason));
-    assert(features.Compute(forged, 1200).reasonCode ==
+    assert(fixture.features.Compute(forged, 1200).reasonCode ==
            "FEATURE_INPUT_RECEIPT_REQUIRED");
 
-    ShardedMarketDataStore oddMarket;
+    Fixture oddFixture;
     MarketDataEvent oddEvent = Event(1, 1);
     oddEvent.ask = Fixed("1.100001");
     oddEvent.last = Fixed("1.100001");
-    MarketDataSnapshotReceipt odd = Receipt(oddMarket, oddEvent);
-    assert(features.Compute(odd, 1200).reasonCode ==
+    MarketDataSnapshotReceipt odd = Receipt(
+        oddFixture.market, oddFixture.features.MarketAuthority(), oddEvent);
+    assert(oddFixture.features.Compute(odd).reasonCode ==
            "FEATURE_NUMERIC_SCALE_MISMATCH");
 }
 
-void TestRegressionAndCapacity()
+void TestMoveOnlyReceiptAndAudienceScope()
 {
-    ShardedMarketDataStore market;
-    ShardedFeatureStore features(1);
-    MarketDataSnapshotReceipt first = Receipt(market, Event(1, 1));
-    assert(features.Compute(first, 1200).accepted);
-    MarketDataSnapshotReceipt second = Receipt(market, Event(1, 2));
-    assert(features.Compute(second, 1200).accepted);
-    assert(features.Compute(first, 1200).reasonCode ==
-           "FEATURE_INPUT_REGRESSION");
+    Fixture firstFixture(4096, "feature-a");
+    MarketDataSnapshotReceipt original = Receipt(
+        firstFixture.market, firstFixture.features.MarketAuthority(),
+        Event(1, 1));
+    MarketDataSnapshotReceipt moved(std::move(original));
+    assert(!original.IsValid());
+    assert(moved.IsValid());
+    assert(firstFixture.features.Compute(original).reasonCode ==
+           "FEATURE_INPUT_RECEIPT_INVALID");
+    assert(firstFixture.features.Compute(moved).accepted);
+
+    MarketDataConsumerBinding secondBinding =
+        firstFixture.market.BindConsumer("feature-b");
+    ShardedFeatureStore secondFeature(std::move(secondBinding));
+    assert(secondFeature.Compute(moved).reasonCode ==
+           "FEATURE_INPUT_AUDIENCE_MISMATCH");
+
+    MarketDataSnapshotReceipt forSecond = Receipt(
+        firstFixture.market, secondFeature.MarketAuthority(), Event(1, 2));
+    assert(firstFixture.features.Compute(forSecond).reasonCode ==
+           "FEATURE_INPUT_AUDIENCE_MISMATCH");
+    assert(secondFeature.Compute(forSecond).accepted);
+}
+
+void TestCrossStoreAndReconstructedStoreRejection()
+{
+    Fixture canonical(4096, "canonical-feature");
+    Fixture attacker(4096, "attacker-feature");
+
+    MarketDataEvent attackerEvent = Event(1, 1);
+    attackerEvent.bid = Fixed("9.0");
+    attackerEvent.ask = Fixed("9.2");
+    attackerEvent.last = Fixed("9.1");
+    MarketDataSnapshotReceipt attackerReceipt = Receipt(
+        attacker.market, attacker.features.MarketAuthority(), attackerEvent);
+    assert(canonical.features.Compute(attackerReceipt).reasonCode ==
+           "FEATURE_INPUT_ISSUER_MISMATCH");
+
+    MarketDataSnapshotReceipt canonicalReceipt = Receipt(
+        canonical.market, canonical.features.MarketAuthority(), Event(1, 1));
+    assert(attacker.features.Compute(canonicalReceipt).reasonCode ==
+           "FEATURE_INPUT_ISSUER_MISMATCH");
+
+    // A newly reconstructed store has a different process-local issuer even
+    // when its visible state and audience text are identical.
+    std::shared_ptr<std::atomic<std::uint64_t> > now(
+        new std::atomic<std::uint64_t>(1200));
+    ShardedMarketDataStore reconstructed(
+        4096, [clock = now]() { return clock->load(); });
+    ShardedFeatureStore reconstructedFeature(
+        reconstructed.BindConsumer("canonical-feature"));
+    MarketDataSnapshotReceipt reconstructedReceipt = Receipt(
+        reconstructed, reconstructedFeature.MarketAuthority(), Event(1, 1));
+    assert(canonical.features.Compute(reconstructedReceipt).reasonCode ==
+           "FEATURE_INPUT_ISSUER_MISMATCH");
+}
+
+void TestCurrentStateGapAndGenerationFences()
+{
+    Fixture fixture;
+    MarketDataSnapshotReceipt first = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 1));
+
+    assert(fixture.market.Apply(Event(1, 2)).accepted);
+    assert(fixture.features.Compute(first).reasonCode ==
+           "FEATURE_INPUT_SUPERSEDED");
+
+    MarketDataSnapshotReceipt second;
+    std::string reason;
+    assert(fixture.market.GetRiskReady(
+        fixture.features.MarketAuthority(), {"SIM", "EUR.USD"},
+        second, reason));
+    MarketDataWriteResult gap = fixture.market.Apply(Event(1, 4));
+    assert(gap.accepted && gap.sequenceGap);
+    assert(fixture.features.Compute(second).reasonCode ==
+           "FEATURE_INPUT_SEQUENCE_GAP");
+}
+
+void TestTrustedClockExpiryAndRollback()
+{
+    Fixture expiry;
+    MarketDataSnapshotReceipt receipt = Receipt(
+        expiry.market, expiry.features.MarketAuthority(), Event(1, 1));
+    expiry.now->store(6000);
+    assert(expiry.features.Compute(receipt).reasonCode ==
+           "FEATURE_INPUT_STALE");
+    assert(expiry.features.Compute(receipt, 1200).reasonCode ==
+           "FEATURE_CALLER_TIME_FORBIDDEN");
+
+    Fixture rollback;
+    MarketDataSnapshotReceipt rollbackReceipt = Receipt(
+        rollback.market, rollback.features.MarketAuthority(), Event(1, 1));
+    rollback.now->store(1199);
+    assert(rollback.features.Compute(rollbackReceipt).reasonCode ==
+           "FEATURE_INPUT_CLOCK_REGRESSION");
+}
+
+void TestIssuerDestructionAndLifecycleFence()
+{
+    std::shared_ptr<std::atomic<std::uint64_t> > now(
+        new std::atomic<std::uint64_t>(1200));
+    std::unique_ptr<ShardedMarketDataStore> market(
+        new ShardedMarketDataStore(
+            4096, [clock = now]() { return clock->load(); }));
+    ShardedFeatureStore feature(market->BindConsumer("feature-destroy"));
+    MarketDataSnapshotReceipt receipt = Receipt(
+        *market, feature.MarketAuthority(), Event(1, 1));
+    market.reset();
+    assert(!receipt.IsValid());
+    assert(feature.Compute(receipt).reasonCode ==
+           "FEATURE_INPUT_ISSUER_DESTROYED");
+
+    Fixture fenced;
+    MarketDataSnapshotReceipt old = Receipt(
+        fenced.market, fenced.features.MarketAuthority(), Event(1, 1));
+    std::string reason;
+    assert(fenced.market.FenceAuthority(reason));
+    assert(!fenced.features.MarketAuthority().IsValid());
+    assert(!old.IsValid());
+    assert(fenced.features.Compute(old).reasonCode ==
+           "FEATURE_INPUT_AUTHORITY_FENCED");
+
+    ShardedFeatureStore next(
+        fenced.market.BindConsumer("feature-after-fence"));
+    MarketDataSnapshotReceipt current;
+    assert(fenced.market.GetRiskReady(
+        next.MarketAuthority(), {"SIM", "EUR.USD"}, current, reason));
+    assert(next.Compute(current).accepted);
+}
+
+void TestRegressionCapacityAndRiskReadyRevalidation()
+{
+    Fixture fixture(1);
+    MarketDataSnapshotReceipt first = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 1));
+    assert(fixture.features.Compute(first).accepted);
+
+    FeatureSnapshot output;
+    std::string reason;
+    assert(fixture.features.GetRiskReady(
+        {"SIM", "EUR.USD"}, "mid-spread-v1", output, reason));
+    assert(fixture.features.GetRiskReady(
+        {"SIM", "EUR.USD"}, "mid-spread-v1", 1200, output, reason) == false);
+    assert(reason == "FEATURE_CALLER_TIME_FORBIDDEN");
+
+    MarketDataSnapshotReceipt second = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 2));
+    assert(!fixture.features.GetRiskReady(
+        {"SIM", "EUR.USD"}, "mid-spread-v1", output, reason));
+    assert(reason == "FEATURE_INPUT_SUPERSEDED");
+    assert(fixture.features.Compute(second).accepted);
+
+    // The older receipt cannot be accepted after the Feature lineage advances.
+    assert(fixture.features.Compute(first).reasonCode ==
+           "FEATURE_INPUT_SUPERSEDED");
 
     MarketDataEvent another = Event(1, 1);
     another.instrument = "USD.JPY";
     another.eventId = "feature-event-usdjpy";
-    MarketDataSnapshotReceipt other = Receipt(market, another);
-    assert(features.Compute(other, 1200).reasonCode ==
+    MarketDataSnapshotReceipt other = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), another);
+    assert(fixture.features.Compute(other).reasonCode ==
            "FEATURE_CAPACITY_EXHAUSTED");
-}
 
-void TestRiskReady()
-{
-    ShardedMarketDataStore market;
-    ShardedFeatureStore features;
-    MarketDataSnapshotReceipt input = Receipt(market, Event(1, 1));
-    assert(features.Compute(input, 1200).accepted);
-    FeatureSnapshot output;
-    std::string reason;
-    assert(features.GetRiskReady(
-        {"SIM", "EUR.USD"}, "mid-spread-v1", 1200, output, reason));
-    assert(!features.GetRiskReady(
-        {"SIM", "EUR.USD"}, "mid-spread-v1", 6000, output, reason));
-    assert(reason == "FEATURE_SNAPSHOT_STALE");
-    assert(!features.GetRiskReady(
-        {"SIM", "GBP.USD"}, "mid-spread-v1", 1200, output, reason));
+    fixture.now->store(6000);
+    assert(!fixture.features.GetRiskReady(
+        {"SIM", "EUR.USD"}, "mid-spread-v1", output, reason));
+    assert(reason == "FEATURE_INPUT_STALE");
+    assert(!fixture.features.GetRiskReady(
+        {"SIM", "GBP.USD"}, "mid-spread-v1", output, reason));
     assert(reason == "FEATURE_SNAPSHOT_MISSING");
 }
 }
@@ -168,8 +332,12 @@ void TestRiskReady()
 int main()
 {
     TestDeterministicGeneration();
-    TestAuthorityAndInputFailures();
-    TestRegressionAndCapacity();
-    TestRiskReady();
+    TestCompatibilityAndInputFailures();
+    TestMoveOnlyReceiptAndAudienceScope();
+    TestCrossStoreAndReconstructedStoreRejection();
+    TestCurrentStateGapAndGenerationFences();
+    TestTrustedClockExpiryAndRollback();
+    TestIssuerDestructionAndLifecycleFence();
+    TestRegressionCapacityAndRiskReadyRevalidation();
     return 0;
 }

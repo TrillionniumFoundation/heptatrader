@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 import unittest
 
@@ -43,6 +44,48 @@ class InternalVerificationEvidenceTests(unittest.TestCase):
             if check.get("state") != "implemented":
                 self.assertEqual(check.get("state"), "external")
                 self.assertEqual(check.get("lane"), "D-external-qualification")
+
+    def test_market_authority_reason_codes_are_registered(self) -> None:
+        registry = json.loads(
+            read("docs/verification/reason-code-registry-v1.json")
+        )
+        registered = {
+            code
+            for family in registry["families"]
+            if family["prefix"] in {
+                "FEATURE_", "MARKET_AUTHORITY_", "MARKET_RECEIPT_"
+            }
+            for code in family["codes"]
+        }
+        corpus = "\n".join(
+            read(relative)
+            for relative in (
+                "HeptaTrade/marketdata/sharded_market_data.cpp",
+                "HeptaTrade/marketdata/marketdata_capability.cpp",
+                "HeptaTrade/marketdata/marketdata_authority.cpp",
+                "HeptaTrade/features/feature_generation.cpp",
+            )
+        )
+        observed = set(
+            re.findall(
+                r'"((?:FEATURE|MARKET_AUTHORITY|MARKET_RECEIPT)_[A-Z0-9_]+)"',
+                corpus,
+            )
+        )
+        self.assertTrue(observed)
+        self.assertEqual(set(), observed - registered)
+
+    def test_market_authority_gap_has_executable_evidence(self) -> None:
+        gap_registry = json.loads(read("docs/program/gap-registry-v2.json"))
+        test_matrix = json.loads(read("docs/verification/test-matrix-v2.json"))
+        gaps = {item["id"]: item for item in gap_registry["gaps"]}
+        checks = {item["id"]: item for item in test_matrix["checks"]}
+        gap = gaps["G-AUTH-MD-001"]
+        self.assertEqual("closed", gap["state"])
+        self.assertIn("market-authority-capability", gap["evidence"])
+        check = checks["market-authority-capability"]
+        self.assertEqual("implemented", check["state"])
+        self.assertEqual("B-pr-core", check["lane"])
 
     def test_only_real_platform_and_paper_gaps_remain(self) -> None:
         registry = json.loads(read("docs/program/gap-registry-v2.json"))

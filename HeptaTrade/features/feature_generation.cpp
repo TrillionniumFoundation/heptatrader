@@ -4,6 +4,7 @@
 #include <limits>
 #include <openssl/evp.h>
 #include <sstream>
+#include <utility>
 
 namespace
 {
@@ -37,7 +38,16 @@ std::string Sha256(const std::string& value)
 }
 
 ShardedFeatureStore::ShardedFeatureStore(std::size_t maximumKeys)
-    : m_size(0), m_maximumKeys(maximumKeys)
+    : m_size(0), m_maximumKeys(maximumKeys), m_marketAuthority()
+{
+}
+
+ShardedFeatureStore::ShardedFeatureStore(
+    MarketDataConsumerBinding&& marketAuthority,
+    std::size_t maximumKeys)
+    : m_size(0),
+      m_maximumKeys(maximumKeys),
+      m_marketAuthority(std::move(marketAuthority))
 {
 }
 
@@ -96,6 +106,37 @@ std::string ShardedFeatureStore::SnapshotDigest(
     return Sha256(canonical);
 }
 
+std::string ShardedFeatureStore::AuthorityFailure(
+    const std::string& marketReason)
+{
+    if (marketReason == "MARKET_RECEIPT_INVALID")
+        return "FEATURE_INPUT_RECEIPT_INVALID";
+    if (marketReason == "MARKET_SEQUENCE_GAP")
+        return "FEATURE_INPUT_SEQUENCE_GAP";
+    if (marketReason == "MARKET_SNAPSHOT_STALE")
+        return "FEATURE_INPUT_STALE";
+    if (marketReason == "MARKET_AUTHORITY_CLOCK_REGRESSION")
+        return "FEATURE_INPUT_CLOCK_REGRESSION";
+    if (marketReason == "MARKET_RECEIPT_SUPERSEDED")
+        return "FEATURE_INPUT_SUPERSEDED";
+    if (marketReason == "MARKET_AUTHORITY_BINDING_INVALID")
+        return "FEATURE_MARKET_AUTHORITY_REQUIRED";
+    if (marketReason == "MARKET_AUTHORITY_DESTROYED")
+        return "FEATURE_INPUT_ISSUER_DESTROYED";
+    if (marketReason == "MARKET_RECEIPT_AUDIENCE_MISMATCH")
+        return "FEATURE_INPUT_AUDIENCE_MISMATCH";
+    if (marketReason == "MARKET_RECEIPT_EPOCH_MISMATCH" ||
+        marketReason == "MARKET_AUTHORITY_EPOCH_MISMATCH")
+        return "FEATURE_INPUT_AUTHORITY_FENCED";
+    if (marketReason == "MARKET_RECEIPT_ISSUER_MISMATCH" ||
+        marketReason == "MARKET_AUTHORITY_ISSUER_MISMATCH")
+        return "FEATURE_INPUT_ISSUER_MISMATCH";
+    if (marketReason == "MARKET_AUTHORITY_CLOCK_INVALID" ||
+        marketReason == "MARKET_AUTHORITY_CLOCK_FAILED")
+        return "FEATURE_INPUT_CLOCK_INVALID";
+    return "FEATURE_INPUT_AUTHORITY_INVALID";
+}
+
 FeatureWriteResult ShardedFeatureStore::Compute(
     const MarketDataSnapshot&,
     std::uint64_t,
@@ -107,8 +148,17 @@ FeatureWriteResult ShardedFeatureStore::Compute(
 }
 
 FeatureWriteResult ShardedFeatureStore::Compute(
+    const MarketDataSnapshotReceipt&,
+    std::uint64_t,
+    const std::string&)
+{
+    FeatureWriteResult result;
+    result.reasonCode = "FEATURE_CALLER_TIME_FORBIDDEN";
+    return result;
+}
+
+FeatureWriteResult ShardedFeatureStore::Compute(
     const MarketDataSnapshotReceipt& receipt,
-    std::uint64_t nowMs,
     const std::string& featureSetId)
 {
     FeatureWriteResult result;
@@ -117,39 +167,25 @@ FeatureWriteResult ShardedFeatureStore::Compute(
         result.reasonCode = "FEATURE_SET_UNSUPPORTED";
         return result;
     }
-    if (!receipt.IsValid())
+    MarketDataSnapshot input;
+    std::string marketReason;
+    if (!m_marketAuthority.Resolve(receipt, input, marketReason))
     {
-        result.reasonCode = "FEATURE_INPUT_RECEIPT_INVALID";
+        result.reasonCode = AuthorityFailure(marketReason);
         return result;
     }
-    const MarketDataSnapshot& input = receipt.Snapshot();
     if (!input.found || input.digest.empty() || input.producerEpoch == 0 ||
         input.sequence == 0 || input.generation == 0)
     {
         result.reasonCode = "FEATURE_INPUT_INCOMPLETE";
         return result;
     }
-    std::string marketReason;
     if (!ShardedMarketDataStore::ValidateSnapshot(input, marketReason))
     {
         result.reasonCode = "FEATURE_INPUT_INVALID";
         return result;
     }
-    if (input.sequenceGap)
-    {
-        result.reasonCode = "FEATURE_INPUT_SEQUENCE_GAP";
-        return result;
-    }
-    if (nowMs < input.capturedAtMs)
-    {
-        result.reasonCode = "FEATURE_INPUT_CLOCK_REGRESSION";
-        return result;
-    }
-    if (nowMs > input.freshUntilMs)
-    {
-        result.reasonCode = "FEATURE_INPUT_STALE";
-        return result;
-    }
+
     HeptaFixedDecimal bidAskSum;
     HeptaFixedDecimal spread;
     if (!HeptaFixedDecimal::CheckedAdd(input.bid, input.ask, bidAskSum) ||
@@ -278,25 +314,46 @@ bool ShardedFeatureStore::Get(
 bool ShardedFeatureStore::GetRiskReady(
     const MarketDataKey& market,
     const std::string& featureSetId,
-    std::uint64_t nowMs,
     FeatureSnapshot& out,
     std::string& reason) const
 {
+    out = FeatureSnapshot();
     if (!Get(market, featureSetId, out))
     {
         reason = "FEATURE_SNAPSHOT_MISSING";
         return false;
     }
-    if (nowMs < out.observedAtMs)
+    if (!out.found || out.featureGeneration == 0 ||
+        out.inputEpoch == 0 || out.inputSequence == 0 ||
+        out.inputGeneration == 0 || out.digest.empty() ||
+        SnapshotDigest(out) != out.digest)
     {
-        reason = "FEATURE_CLOCK_REGRESSION";
+        out = FeatureSnapshot();
+        reason = "FEATURE_SNAPSHOT_INVALID";
         return false;
     }
-    if (nowMs > out.freshUntilMs)
+    MarketDataSnapshot current;
+    std::string marketReason;
+    if (!m_marketAuthority.ResolveLineage(
+            out.key, out.inputEpoch, out.inputSequence,
+            out.inputGeneration, out.inputDigest, current, marketReason))
     {
-        reason = "FEATURE_SNAPSHOT_STALE";
+        out = FeatureSnapshot();
+        reason = AuthorityFailure(marketReason);
         return false;
     }
     reason.clear();
     return true;
+}
+
+bool ShardedFeatureStore::GetRiskReady(
+    const MarketDataKey&,
+    const std::string&,
+    std::uint64_t,
+    FeatureSnapshot& out,
+    std::string& reason) const
+{
+    out = FeatureSnapshot();
+    reason = "FEATURE_CALLER_TIME_FORBIDDEN";
+    return false;
 }

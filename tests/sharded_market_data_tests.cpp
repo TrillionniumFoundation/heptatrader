@@ -4,16 +4,27 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 static_assert(
     !std::is_constructible<MarketDataSnapshotReceipt,
                            MarketDataSnapshot>::value,
     "raw market-data snapshots must not construct authority receipts");
+static_assert(
+    !std::is_copy_constructible<MarketDataSnapshotReceipt>::value,
+    "authority receipts must be move-only");
+static_assert(
+    !std::is_copy_assignable<MarketDataSnapshotReceipt>::value,
+    "authority receipts must not be copied");
+static_assert(
+    !std::is_copy_constructible<MarketDataConsumerBinding>::value,
+    "consumer bindings must be move-only");
 
 namespace
 {
@@ -95,17 +106,24 @@ void TestOrderingAndEpochs()
 
 void TestReceiptAuthority()
 {
-    ShardedMarketDataStore store;
+    std::shared_ptr<std::atomic<std::uint64_t> > now(
+        new std::atomic<std::uint64_t>(1200));
+    ShardedMarketDataStore store(
+        4096, [clock = now]() { return clock->load(); });
+    MarketDataConsumerBinding consumer = store.BindConsumer("feature-test");
+    assert(consumer.IsValid());
+
     MarketDataSnapshotReceipt receipt;
     assert(!receipt.IsValid());
-
     assert(store.Apply(Event(1, 1)).accepted);
     std::string reason;
     assert(store.GetRiskReady(
-        {"SIM", "EUR.USD"}, 1200, receipt, reason));
+        consumer, {"SIM", "EUR.USD"}, receipt, reason));
     assert(receipt.IsValid());
     assert(receipt.Snapshot().generation == 1);
     assert(!receipt.Snapshot().sequenceGap);
+    assert(receipt.IssuedAtMs() == 1200);
+    assert(receipt.Nonce() != 0);
 
     MarketDataSnapshot diagnostic = receipt.Snapshot();
     diagnostic.generation += 100;
@@ -113,11 +131,22 @@ void TestReceiptAuthority()
     assert(receipt.Snapshot().generation == 1);
     assert(!receipt.Snapshot().sequenceGap);
 
+    MarketDataSnapshotReceipt moved(std::move(receipt));
+    assert(!receipt.IsValid());
+    assert(moved.IsValid());
+
+    // Caller-selected time cannot issue a risk-ready capability.
+    MarketDataSnapshotReceipt callerTimed;
+    assert(!store.GetRiskReady(
+        {"SIM", "EUR.USD"}, 1200, callerTimed, reason));
+    assert(reason == "MARKET_AUTHORITY_CONSUMER_BINDING_REQUIRED");
+    assert(!callerTimed.IsValid());
+
     MarketDataWriteResult gap = store.Apply(Event(1, 3));
     assert(gap.accepted && gap.sequenceGap);
-    MarketDataSnapshotReceipt blocked = receipt;
+    MarketDataSnapshotReceipt blocked;
     assert(!store.GetRiskReady(
-        {"SIM", "EUR.USD"}, 1200, blocked, reason));
+        consumer, {"SIM", "EUR.USD"}, blocked, reason));
     assert(reason == "MARKET_SEQUENCE_GAP");
     assert(!blocked.IsValid());
 
@@ -132,43 +161,82 @@ void TestReceiptAuthority()
     reset.producer = "feed-b";
     assert(store.Apply(reset).accepted);
     assert(store.GetRiskReady(
-        {"SIM", "EUR.USD"}, 1200, blocked, reason));
+        consumer, {"SIM", "EUR.USD"}, blocked, reason));
     assert(blocked.IsValid());
     assert(blocked.Snapshot().producerEpoch == 2);
     assert(blocked.Snapshot().generation == 3);
+
+    assert(store.FenceAuthority(reason));
+    assert(!consumer.IsValid());
+    assert(!blocked.IsValid());
+    MarketDataSnapshotReceipt fenced;
+    assert(!store.GetRiskReady(
+        consumer, {"SIM", "EUR.USD"}, fenced, reason));
+    assert(reason == "MARKET_AUTHORITY_EPOCH_MISMATCH");
+
+    MarketDataConsumerBinding next = store.BindConsumer("feature-next");
+    assert(next.IsValid());
+    assert(store.GetRiskReady(
+        next, {"SIM", "EUR.USD"}, fenced, reason));
+    assert(fenced.IsValid());
 }
 
 void TestFreshnessAndValidation()
 {
-    ShardedMarketDataStore store;
+    ShardedMarketDataStore diagnosticStore;
     MarketDataEvent event = Event(1, 1);
-    assert(store.Apply(event).accepted);
+    assert(diagnosticStore.Apply(event).accepted);
     MarketDataSnapshot snapshot;
     std::string reason;
-    assert(!store.GetRiskReady({"SIM", "EUR.USD"}, 1000, snapshot, reason));
+    assert(!diagnosticStore.GetRiskReady(
+        {"SIM", "EUR.USD"}, 1000, snapshot, reason));
     assert(reason == "MARKET_CLOCK_REGRESSION");
-    assert(!store.GetRiskReady({"SIM", "EUR.USD"}, 6000, snapshot, reason));
+    assert(!diagnosticStore.GetRiskReady(
+        {"SIM", "EUR.USD"}, 6000, snapshot, reason));
     assert(reason == "MARKET_SNAPSHOT_STALE");
 
+    std::shared_ptr<std::atomic<std::uint64_t> > now(
+        new std::atomic<std::uint64_t>(1000));
+    ShardedMarketDataStore authority(
+        4096, [clock = now]() { return clock->load(); });
+    assert(authority.Apply(Event(1, 1)).accepted);
+    MarketDataConsumerBinding consumer = authority.BindConsumer("feature-time");
     MarketDataSnapshotReceipt receipt;
-    assert(!store.GetRiskReady(
-        {"SIM", "EUR.USD"}, 1000, receipt, reason));
+    assert(!authority.GetRiskReady(
+        consumer, {"SIM", "EUR.USD"}, receipt, reason));
     assert(!receipt.IsValid());
-    assert(reason == "MARKET_CLOCK_REGRESSION");
-    assert(!store.GetRiskReady(
-        {"SIM", "EUR.USD"}, 6000, receipt, reason));
-    assert(!receipt.IsValid());
+    assert(reason == "MARKET_AUTHORITY_CLOCK_REGRESSION");
+
+    now->store(1200);
+    assert(authority.GetRiskReady(
+        consumer, {"SIM", "EUR.USD"}, receipt, reason));
+    assert(receipt.IsValid());
+    now->store(6000);
+    MarketDataSnapshotReceipt stale;
+    assert(!authority.GetRiskReady(
+        consumer, {"SIM", "EUR.USD"}, stale, reason));
+    assert(!stale.IsValid());
     assert(reason == "MARKET_SNAPSHOT_STALE");
+
+    // Once trusted time advances it may not be rolled back by a caller/test
+    // clock without closing the authority gate.
+    now->store(5999);
+    assert(!authority.GetRiskReady(
+        consumer, {"SIM", "EUR.USD"}, stale, reason));
+    assert(reason == "MARKET_AUTHORITY_CLOCK_REGRESSION");
 
     event = Event(1, 2);
     event.sourceDigest = "bad";
-    assert(store.Apply(event).reasonCode == "MARKET_SOURCE_DIGEST_INVALID");
+    assert(diagnosticStore.Apply(event).reasonCode ==
+           "MARKET_SOURCE_DIGEST_INVALID");
     event = Event(1, 2);
     event.capturedAtMs = event.observedAtMs - 1;
-    assert(store.Apply(event).reasonCode == "MARKET_TIME_ENVELOPE_INVALID");
+    assert(diagnosticStore.Apply(event).reasonCode ==
+           "MARKET_TIME_ENVELOPE_INVALID");
     event = Event(1, 2);
     event.ask = Fixed("1.0");
-    assert(store.Apply(event).reasonCode == "MARKET_QUOTE_INVALID");
+    assert(diagnosticStore.Apply(event).reasonCode ==
+           "MARKET_QUOTE_INVALID");
 }
 
 void TestCapacityAndVector()
