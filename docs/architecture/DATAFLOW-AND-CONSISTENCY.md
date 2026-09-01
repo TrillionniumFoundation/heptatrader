@@ -42,7 +42,7 @@ venue callback/broker snapshot
 1. 检查 found、epoch、sequence、generation、时间字段与 fixed numeric invariant；
 2. 重建对应 `MarketDataEvent`；
 3. 重新执行 bid/ask、size、identity 和时间验证；
-4. 重算 canonical event digest，并与 snapshot digest 精确比较。
+4. 重算 canonical event digest，再把该 digest、store generation 与 sequence-gap 状态绑定成 snapshot-level digest，并精确比较。
 
 伪造 digest、digest 后字段修改、反向 quote、越界 raw、sequence gap、stale 或 clock regression 全部 fail closed。
 

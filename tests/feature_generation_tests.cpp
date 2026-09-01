@@ -100,6 +100,14 @@ void TestInputFailures()
     forged.digest = std::string("sha256:") + std::string(64, 'f');
     assert(features.Compute(forged, 1200).reasonCode ==
            "FEATURE_INPUT_INVALID");
+    forged = stale;
+    ++forged.generation;
+    assert(features.Compute(forged, 1200).reasonCode ==
+           "FEATURE_INPUT_INVALID");
+    forged = stale;
+    forged.sequenceGap = !forged.sequenceGap;
+    assert(features.Compute(forged, 1200).reasonCode ==
+           "FEATURE_INPUT_INVALID");
     assert(features.Compute(stale, 1200, "unknown").reasonCode ==
            "FEATURE_SET_UNSUPPORTED");
 }

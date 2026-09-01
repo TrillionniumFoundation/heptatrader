@@ -91,9 +91,28 @@ void TestFreshnessAndValidation()
 {
     ShardedMarketDataStore store;
     MarketDataEvent event = Event(1, 1);
-    assert(store.Apply(event).accepted);
+    const MarketDataWriteResult written = store.Apply(event);
+    assert(written.accepted);
     MarketDataSnapshot snapshot;
     std::string reason;
+    assert(store.Get({"SIM", "EUR.USD"}, snapshot));
+    assert(written.digest == snapshot.digest);
+    assert(snapshot.digest != ShardedMarketDataStore::EventDigest(event));
+    assert(ShardedMarketDataStore::ValidateSnapshot(snapshot, reason));
+
+    MarketDataSnapshot forged = snapshot;
+    ++forged.generation;
+    assert(!ShardedMarketDataStore::ValidateSnapshot(forged, reason));
+    assert(reason == "MARKET_SNAPSHOT_DIGEST_MISMATCH");
+    forged = snapshot;
+    forged.sequenceGap = !forged.sequenceGap;
+    assert(!ShardedMarketDataStore::ValidateSnapshot(forged, reason));
+    assert(reason == "MARKET_SNAPSHOT_DIGEST_MISMATCH");
+    forged = snapshot;
+    forged.eventId = "field-after-digest-mutation";
+    assert(!ShardedMarketDataStore::ValidateSnapshot(forged, reason));
+    assert(reason == "MARKET_SNAPSHOT_DIGEST_MISMATCH");
+
     assert(!store.GetRiskReady({"SIM", "EUR.USD"}, 1000, snapshot, reason));
     assert(reason == "MARKET_CLOCK_REGRESSION");
     assert(!store.GetRiskReady({"SIM", "EUR.USD"}, 6000, snapshot, reason));

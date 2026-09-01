@@ -65,6 +65,20 @@ std::string Sha256(const std::string& value)
     return out.str();
 }
 
+std::string SnapshotDigest(const std::string& eventDigest,
+                           std::uint64_t generation,
+                           bool sequenceGap)
+{
+    if (!CanonicalDigest(eventDigest) || generation == 0)
+        return std::string();
+    std::string canonical;
+    AppendField(canonical, "schema", "hepta.market-snapshot.v1");
+    AppendField(canonical, "event_digest", eventDigest);
+    AppendField(canonical, "generation", std::to_string(generation));
+    AppendField(canonical, "sequence_gap", sequenceGap ? "1" : "0");
+    return Sha256(canonical);
+}
+
 std::string VectorDigest(const std::vector<MarketDataSnapshot>& snapshots)
 {
     std::string canonical;
@@ -79,6 +93,8 @@ std::string VectorDigest(const std::vector<MarketDataSnapshot>& snapshots)
                     std::to_string(snapshots[i].sequence));
         AppendField(canonical, "generation",
                     std::to_string(snapshots[i].generation));
+        AppendField(canonical, "sequence_gap",
+                    snapshots[i].sequenceGap ? "1" : "0");
         AppendField(canonical, "digest", snapshots[i].digest);
     }
     return Sha256(canonical);
@@ -200,8 +216,10 @@ bool ShardedMarketDataStore::ValidateSnapshot(
     event.bidSize = snapshot.bidSize;
     event.askSize = snapshot.askSize;
     if (!ValidateEvent(event, reason)) return false;
-    const std::string expected = EventDigest(event);
-    if (expected.empty() || expected != snapshot.digest)
+    const std::string eventDigest = EventDigest(event);
+    const std::string expected = SnapshotDigest(
+        eventDigest, snapshot.generation, snapshot.sequenceGap);
+    if (eventDigest.empty() || expected.empty() || expected != snapshot.digest)
     {
         reason = "MARKET_SNAPSHOT_DIGEST_MISMATCH";
         return false;
@@ -237,8 +255,8 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
         result.reasonCode = reason;
         return result;
     }
-    const std::string digest = EventDigest(event);
-    if (digest.empty())
+    const std::string eventDigest = EventDigest(event);
+    if (eventDigest.empty())
     {
         result.reasonCode = "MARKET_DIGEST_FAILED";
         return result;
@@ -258,7 +276,15 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
         entry.event = event;
         entry.generation = 1;
         entry.sequenceGap = event.sequence != 1;
-        entry.digest = digest;
+        entry.eventDigest = eventDigest;
+        entry.digest = SnapshotDigest(
+            entry.eventDigest, entry.generation, entry.sequenceGap);
+        if (entry.digest.empty())
+        {
+            --m_size;
+            result.reasonCode = "MARKET_DIGEST_FAILED";
+            return result;
+        }
         try
         {
             found = shard.entries.insert(std::make_pair(key, entry)).first;
@@ -302,7 +328,7 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
             result.generation = current.generation;
             result.sequenceGap = current.sequenceGap;
             result.digest = current.digest;
-            if (digest == current.digest)
+            if (eventDigest == current.eventDigest)
             {
                 result.accepted = true;
                 result.duplicate = true;
@@ -329,14 +355,23 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
         result.reasonCode = "MARKET_GENERATION_EXHAUSTED";
         return result;
     }
+    const std::uint64_t nextGeneration = current.generation + 1u;
+    const std::string snapshotDigest = SnapshotDigest(
+        eventDigest, nextGeneration, sequenceGap);
+    if (snapshotDigest.empty())
+    {
+        result.reasonCode = "MARKET_DIGEST_FAILED";
+        return result;
+    }
     current.event = event;
-    ++current.generation;
+    current.generation = nextGeneration;
     current.sequenceGap = sequenceGap;
-    current.digest = digest;
+    current.eventDigest = eventDigest;
+    current.digest = snapshotDigest;
     result.accepted = true;
     result.sequenceGap = sequenceGap;
     result.generation = current.generation;
-    result.digest = digest;
+    result.digest = snapshotDigest;
     result.reasonCode = sequenceGap
         ? "MARKET_SEQUENCE_GAP_RECORDED" : "MARKET_ACCEPTED";
     return result;
