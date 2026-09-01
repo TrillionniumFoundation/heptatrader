@@ -1,0 +1,4 @@
+venue,instrument,producer_epoch,sequence,observed_at_ms,available_at_ms,bid_raw,ask_raw
+SIM,EUR.USD,1,1,1000,1010,1100000,1200000
+SIM,EUR.USD,1,2,2000,2010,1110000,1210000
+SIM,EUR.USD,2,1,3000,3010,1120000,1220000
