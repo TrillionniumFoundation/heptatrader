@@ -1,5 +1,5 @@
 name: m7-integration
-# revision: direct-workflow-bootstrap-v2
+# revision: isolated-bootstrap-v3
 
 on:
   push:
@@ -46,7 +46,15 @@ jobs:
           set -euo pipefail
           git diff --exit-code
           git diff --cached --exit-code
+          bootstrap="$RUNNER_TEMP/m7-integration.yml"
+          mv .github/workflows/m7-integration.yml "$bootstrap"
+          restore_bootstrap() {
+            mv "$bootstrap" .github/workflows/m7-integration.yml
+          }
+          trap restore_bootstrap EXIT
           ./scripts/dev_core.sh
+          restore_bootstrap
+          trap - EXIT
           test -z "$(git status --porcelain)"
       - name: Publish exact tested revision
         run: git push origin HEAD:codex/heptatrader-documentation-control-plane-v2
