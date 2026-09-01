@@ -90,6 +90,7 @@ if [[ ! -f "${BUILD_DIR}/CMakeCache.txt" ]]; then
   fi
 fi
 
+python3 "${ROOT_DIR}/scripts/generate_contract_bindings.py" --check
 python3 "${ROOT_DIR}/scripts/generate_documentation_views.py" --check
 python3 "${ROOT_DIR}/scripts/check_documentation_control_plane.py"
 python3 "${ROOT_DIR}/scripts/check_repository_integrity.py"

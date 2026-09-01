@@ -920,6 +920,33 @@ def validate(root: Path | None = None) -> list[str]:
         errors.append("tool catalog protocol mismatch")
     if catalog.get("protocol_version") != 1:
         errors.append("tool catalog protocol version mismatch")
+    numeric_policy = catalog.get("numeric_policy")
+    if numeric_policy != {
+        "id": "hepta.numeric.fixed-v1",
+        "scale": 1_000_000,
+        "maximum_raw": 9_000_000_000_000_000,
+    }:
+        errors.append("tool catalog numeric policy mismatch")
+    fields = catalog.get("fields")
+    if not isinstance(fields, list) or len(fields) != 26:
+        errors.append("tool catalog field map is incomplete")
+    else:
+        actual_fields = {
+            item.get("name"): item.get("id")
+            for item in fields if isinstance(item, dict)
+        }
+        if actual_fields != CANONICAL_FIELD_IDS:
+            errors.append("tool catalog field map drift")
+        actual_symbols = {
+            item.get("symbol"): (item.get("id"), item.get("name"))
+            for item in fields if isinstance(item, dict)
+        }
+        if actual_symbols != CPP_FIELD_SYMBOLS:
+            errors.append("tool catalog C++ field symbol drift")
+    if catalog.get("target_intent_aliases") != TARGET_INTENT_TO_WIRE:
+        errors.append("tool catalog target alias drift")
+    if frozenset(catalog.get("target_intent_tools", [])) != TARGET_INTENT_TOOLS:
+        errors.append("tool catalog target tool scope drift")
     unsupported = catalog.get("unsupported_environments")
     if not isinstance(unsupported, list) or \
             frozenset(unsupported) != CANONICAL_UNSUPPORTED_ENVIRONMENTS or \

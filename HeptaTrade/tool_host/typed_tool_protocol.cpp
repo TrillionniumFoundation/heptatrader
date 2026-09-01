@@ -1,5 +1,6 @@
 #include "typed_tool_protocol.h"
 #include "../tools/trading_tool_wire_contract.h"
+#include "../numeric/fixed_decimal.h"
 
 #include <cerrno>
 #include <cctype>
@@ -14,15 +15,35 @@
 
 namespace {
 
+// HEPTA-GENERATED-WIRE-CATALOG-BEGIN
 enum FieldId
 {
-    SessionToken = 1, ToolCallId = 2, ToolName = 3, Instrument = 4, OrderId = 5,
-    Symbol = 6, Currency = 7, SecType = 8, Exchange = 9, Side = 10,
-    OrderType = 11, Quantity = 12, LimitPrice = 13, ReferencePrice = 14,
-    ExpiresAtMs = 15, WaitTimeoutMs = 16, AfterEventSequence = 17, TimeInForce = 18,
-    QueueDeadlineAtMs = 19, CancelToolCallId = 20, TargetToolName = 21,
-    ProtocolMinVersion = 22, ProtocolMaxVersion = 23, ExpectedSchemaHash = 24,
-    PreviewPermit = 25, TargetCommandId = 26
+    SessionToken = 1,
+    ToolCallId = 2,
+    ToolName = 3,
+    Instrument = 4,
+    OrderId = 5,
+    Symbol = 6,
+    Currency = 7,
+    SecType = 8,
+    Exchange = 9,
+    Side = 10,
+    OrderType = 11,
+    Quantity = 12,
+    LimitPrice = 13,
+    ReferencePrice = 14,
+    ExpiresAtMs = 15,
+    WaitTimeoutMs = 16,
+    AfterEventSequence = 17,
+    TimeInForce = 18,
+    QueueDeadlineAtMs = 19,
+    CancelToolCallId = 20,
+    TargetToolName = 21,
+    ProtocolMinVersion = 22,
+    ProtocolMaxVersion = 23,
+    ExpectedSchemaHash = 24,
+    PreviewPermit = 25,
+    TargetCommandId = 26
 };
 
 const char* FieldName(unsigned int id)
@@ -58,6 +79,10 @@ const char* FieldName(unsigned int id)
     }
     return "unknown";
 }
+
+const long long kWireNumericScale = 1000000LL;
+const char* const kWireNumericPolicy = "hepta.numeric.fixed-v1";
+// HEPTA-GENERATED-WIRE-CATALOG-END
 bool IsEnvelopeField(unsigned int id)
 {
     return id == SessionToken || id == ToolCallId || id == ToolName ||
@@ -364,6 +389,15 @@ private:
     bool m_committed;
 };
 
+std::string Number(double value)
+{
+    HeptaFixedDecimal fixed;
+    std::string reason;
+    if (!HeptaFixedDecimal::FromDoubleExact(value, fixed, reason))
+        return "invalid";
+    return fixed.ToCanonicalString();
+}
+
 template <typename T>
 std::string Number(T value)
 {
@@ -510,28 +544,11 @@ bool ParseUint64(const std::string& value, std::uint64_t& out)
 bool ParseDouble(const std::string& value, double& out)
 {
     if (!CanonicalFloating(value)) return false;
-    std::istringstream input(value);
-    input.imbue(std::locale::classic());
-    double parsed = 0.0;
-    input >> parsed;
-    if (!input || !input.eof() || !std::isfinite(parsed)) return false;
-    if (parsed == 0.0)
-    {
-        const bool negative = !value.empty() && value[0] == '-';
-        bool mantissaZero = true;
-        for (std::size_t i = negative ? 1u : 0u; i < value.size(); ++i)
-        {
-            if (value[i] == 'e' || value[i] == 'E') break;
-            if (value[i] == '.') continue;
-            if (value[i] != '0')
-            {
-                mantissaZero = false;
-                break;
-            }
-        }
-        if (negative || !mantissaZero) return false;
-    }
-    out = parsed;
+    HeptaFixedDecimal fixed;
+    std::string reason;
+    if (!HeptaFixedDecimal::ParseCanonical(value, fixed, reason))
+        return false;
+    out = fixed.ToDouble();
     return true;
 }
 

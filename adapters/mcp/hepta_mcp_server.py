@@ -12,8 +12,49 @@ import sys
 import uuid
 
 
+# HEPTA-GENERATED-WIRE-CATALOG-BEGIN
 PROTOCOL_NAME = "hepta.agent-tools"
 PROTOCOL_VERSION = 1
+NUMERIC_POLICY = "hepta.numeric.fixed-v1"
+NUMERIC_SCALE = 1000000
+NUMERIC_MAXIMUM_RAW = 9000000000000000
+FIELD_IDS = {
+    "session_token": 1,
+    "tool_call_id": 2,
+    "tool_name": 3,
+    "instrument": 4,
+    "order_id": 5,
+    "symbol": 6,
+    "currency": 7,
+    "sec_type": 8,
+    "exchange": 9,
+    "side": 10,
+    "order_type": 11,
+    "quantity": 12,
+    "limit_price": 13,
+    "reference_price": 14,
+    "expires_at_ms": 15,
+    "timeout_ms": 16,
+    "after_sequence": 17,
+    "tif": 18,
+    "queue_deadline_at_ms": 19,
+    "cancel_tool_call_id": 20,
+    "target_tool_name": 21,
+    "protocol_min_version": 22,
+    "protocol_max_version": 23,
+    "expected_schema_hash": 24,
+    "preview_permit": 25,
+    "command_id": 26,
+}
+TARGET_INTENT_TO_WIRE = {
+    "max_slippage_bps": "reference_price",
+    "target_position": "quantity",
+}
+TARGET_INTENT_TOOLS = frozenset({
+    "intent.apply_target_position",
+    "intent.preview_target_position",
+})
+# HEPTA-GENERATED-WIRE-CATALOG-END
 DISCOVERY_SCHEMA_VERSION = 2
 MAX_MESSAGE_BYTES = 1_048_576
 MAX_REQUEST_BYTES = 65_536
@@ -75,50 +116,6 @@ DESCRIPTOR_FIELDS = {
     "name", "description", "required_capability", "effect", "timeout_ms",
     "schema_hash", "input_schema", "result_schema",
 }
-FIELD_IDS = {
-    "session_token": 1,
-    "tool_call_id": 2,
-    "tool_name": 3,
-    "instrument": 4,
-    "order_id": 5,
-    "symbol": 6,
-    "currency": 7,
-    "sec_type": 8,
-    "exchange": 9,
-    "side": 10,
-    "order_type": 11,
-    "quantity": 12,
-    "limit_price": 13,
-    "reference_price": 14,
-    "expires_at_ms": 15,
-    "timeout_ms": 16,
-    "after_sequence": 17,
-    "tif": 18,
-    "queue_deadline_at_ms": 19,
-    "cancel_tool_call_id": 20,
-    "target_tool_name": 21,
-    "protocol_min_version": 22,
-    "protocol_max_version": 23,
-    "expected_schema_hash": 24,
-    "preview_permit": 25,
-    "command_id": 26,
-}
-
-# The public Agent contract uses domain names for target-position intents,
-# while the compact typed wire reuses the existing quantity/reference_price
-# field ids.  Keep this translation explicit and scoped to the two intent
-# tools; accepting these aliases on a raw order would make it possible for a
-# caller to accidentally cross the authority boundary with a different
-# meaning for the same number.
-TARGET_INTENT_TO_WIRE = {
-    "target_position": "quantity",
-    "max_slippage_bps": "reference_price",
-}
-TARGET_INTENT_TOOLS = frozenset({
-    "intent.preview_target_position",
-    "intent.apply_target_position",
-})
-
 CLIENT_COMMAND_ID_SCHEMA = {
     "type": "string",
     "description": (
@@ -213,6 +210,28 @@ def enforce_expected_uid(value):
         raise RuntimeError("MCP bridge effective UID does not match hepta-agent")
 
 
+
+def _fixed_decimal_text(value):
+    if not math.isfinite(value):
+        raise ValueError("tool arguments must contain finite numbers")
+    if value == 0.0 and math.copysign(1.0, value) < 0.0:
+        raise ValueError("tool arguments must use canonical zero")
+    scaled = value * NUMERIC_SCALE
+    nearest = round(scaled)
+    if abs(scaled - nearest) > 0.000001:
+        raise ValueError(
+            "tool numeric argument does not match fixed numeric policy"
+        )
+    if abs(nearest) > NUMERIC_MAXIMUM_RAW:
+        raise ValueError("tool numeric argument exceeds fixed numeric range")
+    negative = nearest < 0
+    magnitude = abs(nearest)
+    whole, fraction = divmod(magnitude, NUMERIC_SCALE)
+    text = str(whole)
+    if fraction:
+        text += "." + str(fraction).rjust(6, "0").rstrip("0")
+    return "-" + text if negative else text
+
 def scalar_text(value):
     if isinstance(value, bool):
         return "true" if value else "false"
@@ -225,11 +244,7 @@ def scalar_text(value):
     if isinstance(value, int) and not isinstance(value, bool):
         return str(value)
     if isinstance(value, float):
-        if not math.isfinite(value):
-            raise ValueError("tool arguments must contain finite numbers")
-        if value == 0.0 and math.copysign(1.0, value) < 0.0:
-            raise ValueError("tool arguments must use canonical zero")
-        return str(value)
+        return _fixed_decimal_text(value)
     raise ValueError("tool arguments must be scalar values")
 
 

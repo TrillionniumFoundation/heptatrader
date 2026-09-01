@@ -42,6 +42,7 @@
     "hepta.agent.support",
     "hepta.client.runtime",
     "hepta.execution.runtime",
+    "hepta.numeric.core",
     "hepta.observability.runtime",
     "hepta.protocol.contracts",
     "hepta.session.runtime"

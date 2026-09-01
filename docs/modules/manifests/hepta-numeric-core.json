@@ -2,7 +2,7 @@
   "schema": "heptatrader.module-manifest.v2",
   "id": "hepta.numeric.core",
   "version": "1.0.0",
-  "lifecycle": "planned",
+  "lifecycle": "current",
   "kind": "contract-library",
   "trust_domain": "shared-trusted",
   "authority": "fixed numeric boundary",
@@ -49,6 +49,7 @@
     ]
   },
   "verification": [
+    "numeric-negative",
     "numeric-properties"
   ]
 }

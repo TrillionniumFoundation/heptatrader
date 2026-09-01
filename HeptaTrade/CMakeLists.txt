@@ -99,6 +99,10 @@ add_library(hepta_portfolio_core STATIC
     portfolio/portfolio_compiler.cpp)
 hepta_runtime_target(hepta_portfolio_core)
 
+add_library(hepta_numeric_core STATIC
+    numeric/fixed_decimal.cpp)
+hepta_runtime_target(hepta_numeric_core)
+
 add_library(hepta_risk_core STATIC
     risk/deterministic_risk_policy.cpp)
 hepta_runtime_target(hepta_risk_core)
@@ -133,6 +137,7 @@ add_library(hepta_tool_protocol STATIC
     tool_host/typed_tool_protocol.cpp
     tool_host/typed_tool_result_codec.cpp)
 hepta_runtime_target(hepta_tool_protocol)
+target_link_libraries(hepta_tool_protocol PUBLIC hepta_numeric_core)
 
 add_library(hepta_execution_event_relay_core STATIC
     tool_host/execution_event_relay.cpp)

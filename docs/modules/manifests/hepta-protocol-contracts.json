@@ -27,7 +27,9 @@
     "hepta.execution-wire.v1"
   ],
   "consumes": [],
-  "allowed_dependencies": [],
+  "allowed_dependencies": [
+    "hepta.numeric.core"
+  ],
   "forbidden_dependencies": [
     "hepta.venue.*"
   ],

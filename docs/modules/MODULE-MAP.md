@@ -18,7 +18,7 @@ Authority: generated from module-registry-v2.json
 | `hepta.global.decision` | planned | proposal aggregation/global allocation | `global-decision` | `hepta_proposal_aggregator`, `hepta_global_allocator` | exclusive | @hepta/global-allocation / @hepta/risk |
 | `hepta.management.control` | planned | module/config/resource lifecycle | `management` | `hepta_managementd` | exclusive | @hepta/platform / @hepta/architecture |
 | `hepta.marketdata.runtime` | planned | normalized point-in-time events | `market-data` | `hepta_marketdata_core` | exclusive | @hepta/data-platform / @hepta/venue-ib |
-| `hepta.numeric.core` | planned | fixed numeric boundary | `shared-trusted` | `hepta_numeric_core` | exclusive | @hepta/contracts / @hepta/risk |
+| `hepta.numeric.core` | current | fixed numeric boundary | `shared-trusted` | `hepta_numeric_core` | exclusive | @hepta/contracts / @hepta/risk |
 | `hepta.observability.runtime` | current | bounded telemetry | `shared-trusted` | `hepta_observability_core` | exclusive | @hepta/reliability / @hepta/platform |
 | `hepta.portfolio.compiler` | current | deterministic netting/budget | `portfolio-risk` | `hepta_portfolio_core` | exclusive | @hepta/portfolio / @hepta/risk |
 | `hepta.protocol.contracts` | current | wire/codec | `shared-trusted` | `hepta_execution_contract`, `hepta_execution_transport`, `hepta_tool_protocol` | exclusive | @hepta/contracts / @hepta/architecture |

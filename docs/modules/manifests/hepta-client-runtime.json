@@ -29,6 +29,7 @@
     "hepta.tool-catalog.v1"
   ],
   "allowed_dependencies": [
+    "hepta.numeric.core",
     "hepta.protocol.contracts",
     "hepta.session.runtime"
   ],

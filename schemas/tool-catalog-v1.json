@@ -113,5 +113,150 @@
     "max_slippage_bps": "reference_price",
     "mutation_command_id": "tool_call_id",
     "target_position": "quantity"
-  }
+  },
+  "fields": [
+    {
+      "id": 1,
+      "name": "session_token",
+      "symbol": "SessionToken"
+    },
+    {
+      "id": 2,
+      "name": "tool_call_id",
+      "symbol": "ToolCallId"
+    },
+    {
+      "id": 3,
+      "name": "tool_name",
+      "symbol": "ToolName"
+    },
+    {
+      "id": 4,
+      "name": "instrument",
+      "symbol": "Instrument"
+    },
+    {
+      "id": 5,
+      "name": "order_id",
+      "symbol": "OrderId"
+    },
+    {
+      "id": 6,
+      "name": "symbol",
+      "symbol": "Symbol"
+    },
+    {
+      "id": 7,
+      "name": "currency",
+      "symbol": "Currency"
+    },
+    {
+      "id": 8,
+      "name": "sec_type",
+      "symbol": "SecType"
+    },
+    {
+      "id": 9,
+      "name": "exchange",
+      "symbol": "Exchange"
+    },
+    {
+      "id": 10,
+      "name": "side",
+      "symbol": "Side"
+    },
+    {
+      "id": 11,
+      "name": "order_type",
+      "symbol": "OrderType"
+    },
+    {
+      "id": 12,
+      "name": "quantity",
+      "symbol": "Quantity"
+    },
+    {
+      "id": 13,
+      "name": "limit_price",
+      "symbol": "LimitPrice"
+    },
+    {
+      "id": 14,
+      "name": "reference_price",
+      "symbol": "ReferencePrice"
+    },
+    {
+      "id": 15,
+      "name": "expires_at_ms",
+      "symbol": "ExpiresAtMs"
+    },
+    {
+      "id": 16,
+      "name": "timeout_ms",
+      "symbol": "WaitTimeoutMs"
+    },
+    {
+      "id": 17,
+      "name": "after_sequence",
+      "symbol": "AfterEventSequence"
+    },
+    {
+      "id": 18,
+      "name": "tif",
+      "symbol": "TimeInForce"
+    },
+    {
+      "id": 19,
+      "name": "queue_deadline_at_ms",
+      "symbol": "QueueDeadlineAtMs"
+    },
+    {
+      "id": 20,
+      "name": "cancel_tool_call_id",
+      "symbol": "CancelToolCallId"
+    },
+    {
+      "id": 21,
+      "name": "target_tool_name",
+      "symbol": "TargetToolName"
+    },
+    {
+      "id": 22,
+      "name": "protocol_min_version",
+      "symbol": "ProtocolMinVersion"
+    },
+    {
+      "id": 23,
+      "name": "protocol_max_version",
+      "symbol": "ProtocolMaxVersion"
+    },
+    {
+      "id": 24,
+      "name": "expected_schema_hash",
+      "symbol": "ExpectedSchemaHash"
+    },
+    {
+      "id": 25,
+      "name": "preview_permit",
+      "symbol": "PreviewPermit"
+    },
+    {
+      "id": 26,
+      "name": "command_id",
+      "symbol": "TargetCommandId"
+    }
+  ],
+  "numeric_policy": {
+    "id": "hepta.numeric.fixed-v1",
+    "scale": 1000000,
+    "maximum_raw": 9000000000000000
+  },
+  "target_intent_aliases": {
+    "max_slippage_bps": "reference_price",
+    "target_position": "quantity"
+  },
+  "target_intent_tools": [
+    "intent.apply_target_position",
+    "intent.preview_target_position"
+  ]
 }

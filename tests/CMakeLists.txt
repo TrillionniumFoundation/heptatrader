@@ -235,6 +235,12 @@ target_link_libraries(hepta_portfolio_compiler_tests
     hepta_portfolio_core)
 hepta_register_core_test(hepta_portfolio_compiler_tests)
 
+add_executable(hepta_fixed_decimal_tests
+    fixed_decimal_tests.cpp)
+target_link_libraries(hepta_fixed_decimal_tests
+    hepta_numeric_core)
+hepta_register_core_test(hepta_fixed_decimal_tests)
+
 add_executable(hepta_oms_crash_replay_tests
     oms_crash_replay_tests.cpp)
 target_link_libraries(hepta_oms_crash_replay_tests
