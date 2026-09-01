@@ -1,0 +1,35 @@
+name: gap-closure-sync-m4
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-m4-work
+    paths:
+      - .github/workflows/gap-closure-sync-m4.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync-m4:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout M4 branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-m4-work
+          fetch-depth: 0
+      - name: Merge canonical PR head
+        run: |
+          set -euo pipefail
+          git config user.name "Hepta Gap Closure Bot"
+          git config user.email "hepta-gap-closure-bot@users.noreply.github.com"
+          git fetch origin codex/heptatrader-documentation-control-plane-v2
+          git merge --no-ff --no-edit origin/codex/heptatrader-documentation-control-plane-v2
+          rm .github/workflows/gap-closure-sync-m4.yml
+          git add -A
+          git commit --amend --no-edit
+      - name: Validate synchronized revision
+        run: ./scripts/dev_core.sh
+      - name: Push synchronized M4
+        run: git push origin HEAD:codex/heptatrader-m4-work
