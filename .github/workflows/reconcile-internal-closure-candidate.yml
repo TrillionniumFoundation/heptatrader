@@ -1,0 +1,128 @@
+name: reconcile-internal-closure-candidate
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/reconcile-internal-closure-candidate.yml
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: heptatrader-reconcile-internal-closure
+  cancel-in-progress: true
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Wait for tested v3 candidate or completed canonical closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical=codex/heptatrader-documentation-control-plane-v2
+          candidate=codex/heptatrader-internal-closure-candidate-v3
+          for attempt in $(seq 1 600); do
+            git fetch origin "$canonical" >/dev/null 2>&1
+            if git show "origin/$canonical:docs/program/gap-registry-v2.json" 2>/dev/null | grep -Fq G-OPT-007; then
+              exit 0
+            fi
+            if git ls-remote --exit-code --heads origin "$candidate" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "neither canonical closure nor tested v3 candidate appeared" >&2
+          exit 1
+      - name: Reconcile only when canonical does not already contain closure
+        id: reconcile
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical=codex/heptatrader-documentation-control-plane-v2
+          candidate=codex/heptatrader-internal-closure-candidate-v3
+          git fetch origin "$canonical"
+          if git show "origin/$canonical:docs/program/gap-registry-v2.json" | grep -Fq G-OPT-007; then
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch origin "$candidate"
+          base_sha="$(git rev-parse "origin/$canonical")"
+          worktree="$RUNNER_TEMP/heptatrader-internal-reconcile"
+          git worktree add --detach "$worktree" "$base_sha"
+          cd "$worktree"
+          git config user.name "Hepta Internal Reconcile Bot"
+          git config user.email "hepta-internal-reconcile-bot@users.noreply.github.com"
+          git merge --squash "origin/$candidate"
+          git commit -m "fix: reconcile exact internal P1 closure"
+          test -z "$(git status --porcelain)"
+          grep -Fq G-OPT-007 docs/program/gap-registry-v2.json
+          grep -Fq ToDoubleExact HeptaTrade/numeric/fixed_decimal.h
+          grep -Fq GlobalDecisionReceipt HeptaTrade/allocation/global_allocator.h
+          echo 'required=true' >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "worktree=$worktree" >> "$GITHUB_OUTPUT"
+      - name: Revalidate reconciled core
+        if: steps.reconcile.outputs.required == 'true'
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.reconcile.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          HEPTA_BUILD_DIR="$RUNNER_TEMP/heptatrader-internal-reconcile-core" \
+          HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+            ./scripts/dev_core.sh
+      - name: Revalidate reconciled GCC sanitizer
+        if: steps.reconcile.outputs.required == 'true'
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.reconcile.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          CXX=g++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-internal-reconcile-gcc" \
+            ./scripts/reliability_core.sh
+      - name: Revalidate reconciled Clang sanitizer
+        if: steps.reconcile.outputs.required == 'true'
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.reconcile.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          CXX=clang++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-internal-reconcile-clang" \
+            ./scripts/reliability_core.sh
+      - name: Publish reconciled exact revision
+        if: steps.reconcile.outputs.required == 'true'
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.reconcile.outputs.worktree }}
+          BASE_SHA: ${{ steps.reconcile.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          git push \
+            --force-with-lease="refs/heads/codex/heptatrader-documentation-control-plane-v2:$BASE_SHA" \
+            origin "HEAD:refs/heads/codex/heptatrader-documentation-control-plane-v2"
+      - name: Record reconciliation failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --method POST "repos/$REPO/issues/7/comments" \
+            -f body="<!-- internal-closure-reconcile-failure:$GITHUB_RUN_ID -->
+
+          Internal closure reconciliation stopped fail-closed. The canonical branch was not overwritten. Inspect $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID." || true
