@@ -5,6 +5,7 @@
 #include <limits>
 #include <openssl/evp.h>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 using hepta_marketdata_internal::BoundedPrintable;
@@ -224,19 +225,30 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
     std::map<MarketDataKey, Entry>::iterator found = shard.entries.find(key);
     if (found == shard.entries.end())
     {
-        if (!ReserveKey())
-        {
-            result.reasonCode = "MARKET_CAPACITY_EXHAUSTED";
-            return result;
-        }
+        // Construct the complete replacement before reserving capacity so an
+        // allocation failure cannot leak the global key count or leave a
+        // partially initialized map entry.
         Entry entry;
         entry.event = event;
         entry.generation = 1;
         entry.sequenceGap = event.sequence != 1;
         entry.digest = digest;
+        const bool sequenceGap = entry.sequenceGap;
+        if (!ReserveKey())
+        {
+            result.reasonCode = "MARKET_CAPACITY_EXHAUSTED";
+            return result;
+        }
         try
         {
-            found = shard.entries.insert(std::make_pair(key, entry)).first;
+            const std::pair<std::map<MarketDataKey, Entry>::iterator, bool>
+                inserted = shard.entries.emplace(key, std::move(entry));
+            if (!inserted.second)
+            {
+                --m_size;
+                result.reasonCode = "MARKET_SEQUENCE_CONFLICT";
+                return result;
+            }
         }
         catch (...)
         {
@@ -245,10 +257,10 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
             return result;
         }
         result.accepted = true;
-        result.sequenceGap = entry.sequenceGap;
-        result.generation = entry.generation;
-        result.digest = entry.digest;
-        result.reasonCode = entry.sequenceGap
+        result.sequenceGap = sequenceGap;
+        result.generation = 1;
+        result.digest = digest;
+        result.reasonCode = sequenceGap
             ? "MARKET_SEQUENCE_GAP_RECORDED" : "MARKET_ACCEPTED";
         return result;
     }
@@ -304,13 +316,19 @@ MarketDataWriteResult ShardedMarketDataStore::Apply(
         result.reasonCode = "MARKET_GENERATION_EXHAUSTED";
         return result;
     }
-    current.event = event;
-    ++current.generation;
-    current.sequenceGap = sequenceGap;
-    current.digest = digest;
+    Entry replacement;
+    replacement.event = event;
+    replacement.generation = current.generation + 1u;
+    replacement.sequenceGap = sequenceGap;
+    replacement.digest = digest;
+    const std::uint64_t committedGeneration = replacement.generation;
+    static_assert(
+        std::is_nothrow_move_assignable<Entry>::value,
+        "MarketData entry replacement must preserve strong state");
+    current = std::move(replacement);
     result.accepted = true;
     result.sequenceGap = sequenceGap;
-    result.generation = current.generation;
+    result.generation = committedGeneration;
     result.digest = digest;
     result.reasonCode = sequenceGap
         ? "MARKET_SEQUENCE_GAP_RECORDED" : "MARKET_ACCEPTED";

@@ -12,11 +12,29 @@ namespace
 {
 std::atomic<std::uint64_t> g_nextIssuerId(1);
 
-std::uint64_t SystemNowMs()
+std::uint64_t WallNowMs()
 {
     using namespace std::chrono;
-    return static_cast<std::uint64_t>(duration_cast<milliseconds>(
-        system_clock::now().time_since_epoch()).count());
+    const milliseconds::rep value = duration_cast<milliseconds>(
+        system_clock::now().time_since_epoch()).count();
+    if (value <= 0) return 0;
+    return static_cast<std::uint64_t>(value);
+}
+
+ShardedMarketDataStore::Clock DefaultClock()
+{
+    using namespace std::chrono;
+    const std::uint64_t wallBase = WallNowMs();
+    const steady_clock::time_point steadyBase = steady_clock::now();
+    return [wallBase, steadyBase]() -> std::uint64_t {
+        const milliseconds::rep elapsed = duration_cast<milliseconds>(
+            steady_clock::now() - steadyBase).count();
+        if (wallBase == 0 || elapsed < 0) return 0;
+        const std::uint64_t delta = static_cast<std::uint64_t>(elapsed);
+        if (delta > std::numeric_limits<std::uint64_t>::max() - wallBase)
+            return 0;
+        return wallBase + delta;
+    };
 }
 
 std::uint64_t NextIssuerId()
@@ -34,7 +52,7 @@ std::uint64_t NextIssuerId()
 }
 
 ShardedMarketDataStore::ShardedMarketDataStore(std::size_t maximumKeys)
-    : ShardedMarketDataStore(maximumKeys, Clock(SystemNowMs))
+    : ShardedMarketDataStore(maximumKeys, DefaultClock())
 {
 }
 
@@ -97,9 +115,10 @@ bool ShardedMarketDataStore::GetRiskReady(
     std::lock_guard<std::mutex> lock(m_authority->mutex);
     if (!ValidateBindingLocked(m_authority, consumer, reason)) return false;
     std::uint64_t nowMs = 0;
-    if (!ObserveTrustedNowLocked(m_authority, nowMs, reason)) return false;
     MarketDataSnapshot snapshot;
-    if (!CurrentSnapshotLocked(key, nowMs, snapshot, reason)) return false;
+    if (!CurrentSnapshotLocked(
+            m_authority, key, nowMs, snapshot, reason))
+        return false;
     if (m_authority->nextReceiptNonce == 0 ||
         m_authority->nextReceiptNonce ==
             std::numeric_limits<std::uint64_t>::max())
@@ -150,6 +169,8 @@ bool ShardedMarketDataStore::FenceAuthority(std::string& reason) noexcept
             return false;
         }
         ++m_authority->lifecycleEpoch;
+        m_authority->lastTrustedNowMs = 0;
+        m_authority->clockFaulted = false;
         reason.clear();
         return true;
     }
@@ -204,6 +225,11 @@ bool ShardedMarketDataStore::ObserveTrustedNowLocked(
         reason = "MARKET_AUTHORITY_CLOCK_INVALID";
         return false;
     }
+    if (authority->clockFaulted)
+    {
+        reason = "MARKET_AUTHORITY_CLOCK_REGRESSION";
+        return false;
+    }
     try
     {
         nowMs = authority->clock();
@@ -221,6 +247,7 @@ bool ShardedMarketDataStore::ObserveTrustedNowLocked(
     if (authority->lastTrustedNowMs != 0 &&
         nowMs < authority->lastTrustedNowMs)
     {
+        authority->clockFaulted = true;
         reason = "MARKET_AUTHORITY_CLOCK_REGRESSION";
         return false;
     }
@@ -229,23 +256,13 @@ bool ShardedMarketDataStore::ObserveTrustedNowLocked(
     return true;
 }
 
-bool ShardedMarketDataStore::CurrentSnapshotLocked(
-    const MarketDataKey& key,
+bool ShardedMarketDataStore::ValidateCurrentEntryLocked(
+    const Entry& entry,
     std::uint64_t nowMs,
     MarketDataSnapshot& out,
     std::string& reason) const
 {
-    out = MarketDataSnapshot();
-    const Shard& shard = m_shards[ShardFor(key)];
-    std::lock_guard<std::mutex> lock(shard.mutex);
-    const std::map<MarketDataKey, Entry>::const_iterator found =
-        shard.entries.find(key);
-    if (found == shard.entries.end())
-    {
-        reason = "MARKET_SNAPSHOT_MISSING";
-        return false;
-    }
-    out = Snapshot(found->second);
+    out = Snapshot(entry);
     if (!ValidateSnapshot(out, reason)) return false;
     if (out.sequenceGap)
     {
@@ -266,6 +283,32 @@ bool ShardedMarketDataStore::CurrentSnapshotLocked(
     return true;
 }
 
+bool ShardedMarketDataStore::CurrentSnapshotLocked(
+    const std::shared_ptr<MarketDataAuthorityState>& authority,
+    const MarketDataKey& key,
+    std::uint64_t& nowMs,
+    MarketDataSnapshot& out,
+    std::string& reason) const
+{
+    out = MarketDataSnapshot();
+    const Shard& shard = m_shards[ShardFor(key)];
+    std::lock_guard<std::mutex> lock(shard.mutex);
+
+    // Sample authority time only after source admission. A request that waits
+    // behind a writer or coherent-vector read cannot use a pre-wait timestamp
+    // to issue or consume a receipt that expired while queued.
+    if (!ObserveTrustedNowLocked(authority, nowMs, reason)) return false;
+
+    const std::map<MarketDataKey, Entry>::const_iterator found =
+        shard.entries.find(key);
+    if (found == shard.entries.end())
+    {
+        reason = "MARKET_SNAPSHOT_MISSING";
+        return false;
+    }
+    return ValidateCurrentEntryLocked(found->second, nowMs, out, reason);
+}
+
 bool ShardedMarketDataStore::ResolveReceiptLocked(
     const std::shared_ptr<MarketDataAuthorityState>& authority,
     const MarketDataConsumerBinding& consumer,
@@ -274,7 +317,24 @@ bool ShardedMarketDataStore::ResolveReceiptLocked(
     std::string& reason) const
 {
     out = MarketDataSnapshot();
-    if (!ValidateBindingLocked(authority, consumer, reason)) return false;
+    return UseReceiptLocked(
+        authority, consumer, receipt,
+        [&out](const MarketDataSnapshot& current) { out = current; },
+        reason);
+}
+
+bool ShardedMarketDataStore::UseReceiptLocked(
+    const std::shared_ptr<MarketDataAuthorityState>& authority,
+    const MarketDataConsumerBinding& consumer,
+    const MarketDataSnapshotReceipt& receipt,
+    const std::function<void(const MarketDataSnapshot&)>& use,
+    std::string& reason) const
+{
+    if (!use || !ValidateBindingLocked(authority, consumer, reason))
+    {
+        if (reason.empty()) reason = "MARKET_AUTHORITY_BINDING_INVALID";
+        return false;
+    }
     if (!receipt.m_valid)
     {
         reason = "MARKET_RECEIPT_INVALID";
@@ -320,15 +380,27 @@ bool ShardedMarketDataStore::ResolveReceiptLocked(
         reason = "MARKET_RECEIPT_SNAPSHOT_INVALID";
         return false;
     }
+
+    const Shard& shard = m_shards[ShardFor(receipt.m_key)];
+    std::lock_guard<std::mutex> sourceLock(shard.mutex);
     std::uint64_t nowMs = 0;
     if (!ObserveTrustedNowLocked(authority, nowMs, reason)) return false;
     if (nowMs < receipt.m_issuedAtMs)
     {
+        authority->clockFaulted = true;
         reason = "MARKET_AUTHORITY_CLOCK_REGRESSION";
         return false;
     }
+
+    const std::map<MarketDataKey, Entry>::const_iterator found =
+        shard.entries.find(receipt.m_key);
+    if (found == shard.entries.end())
+    {
+        reason = "MARKET_SNAPSHOT_MISSING";
+        return false;
+    }
     MarketDataSnapshot current;
-    if (!CurrentSnapshotLocked(receipt.m_key, nowMs, current, reason))
+    if (!ValidateCurrentEntryLocked(found->second, nowMs, current, reason))
         return false;
     if (current.producerEpoch != receipt.m_producerEpoch ||
         current.sequence != receipt.m_sequence ||
@@ -338,7 +410,12 @@ bool ShardedMarketDataStore::ResolveReceiptLocked(
         reason = "MARKET_RECEIPT_SUPERSEDED";
         return false;
     }
-    out = current;
+
+    // The source shard and lifecycle authority remain locked while the private
+    // Feature consumer commits its derived state. This is the linearization
+    // point: the source cannot advance between current-state validation and the
+    // Feature write that reports acceptance.
+    use(current);
     reason.clear();
     return true;
 }
@@ -363,9 +440,9 @@ bool ShardedMarketDataStore::ResolveLineageLocked(
         return false;
     }
     std::uint64_t nowMs = 0;
-    if (!ObserveTrustedNowLocked(authority, nowMs, reason)) return false;
     MarketDataSnapshot current;
-    if (!CurrentSnapshotLocked(key, nowMs, current, reason)) return false;
+    if (!CurrentSnapshotLocked(authority, key, nowMs, current, reason))
+        return false;
     if (current.producerEpoch != producerEpoch ||
         current.sequence != sequence ||
         current.generation != generation || current.digest != digest)

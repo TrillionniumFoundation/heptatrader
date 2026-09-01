@@ -20,6 +20,7 @@ struct MarketDataAuthorityState
     std::uint64_t lastTrustedNowMs = 0;
     std::uint64_t nextConsumerId = 1;
     std::uint64_t nextReceiptNonce = 1;
+    bool clockFaulted = false;
     bool alive = true;
 };
 

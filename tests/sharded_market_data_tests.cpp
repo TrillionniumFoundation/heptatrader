@@ -349,6 +349,67 @@ void TestVectorIsOneCoherentCut()
     assert(sawUpdated);
 }
 
+void TestAuthoritySamplesTimeAfterSourceAdmission()
+{
+    std::shared_ptr<std::atomic<std::uint64_t> > now(
+        new std::atomic<std::uint64_t>(1200));
+    ShardedMarketDataStore store(
+        8, [clock = now]() { return clock->load(); });
+    const MarketDataKey key = {"SIM", "EUR.USD"};
+    assert(store.Apply(Event(1, 1)).accepted);
+    MarketDataConsumerBinding consumer =
+        store.BindConsumer("queued-authority-consumer");
+    assert(consumer.IsValid());
+
+    std::mutex gateMutex;
+    std::condition_variable gate;
+    bool sourceLocked = false;
+    bool releaseSource = false;
+    store.SetReadVectorLocksAcquiredHookForTesting([&]() {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        sourceLocked = true;
+        gate.notify_all();
+        gate.wait(lock, [&]() { return releaseSource; });
+    });
+
+    MarketDataSnapshotVector diagnostic;
+    std::string vectorReason;
+    std::thread holder([&]() {
+        assert(store.ReadVector({key}, 1200, diagnostic, vectorReason));
+    });
+    {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        gate.wait(lock, [&]() { return sourceLocked; });
+    }
+
+    MarketDataSnapshotReceipt receipt;
+    std::string issueReason;
+    bool issued = false;
+    std::atomic<bool> issuerFinished(false);
+    std::thread issuer([&]() {
+        issued = store.GetRiskReady(consumer, key, receipt, issueReason);
+        issuerFinished.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!issuerFinished.load());
+
+    // The request entered while fresh, but expires while queued behind the
+    // source lock. Authority time must be sampled after source admission.
+    now->store(6000);
+    {
+        std::lock_guard<std::mutex> lock(gateMutex);
+        releaseSource = true;
+    }
+    gate.notify_all();
+    holder.join();
+    issuer.join();
+    store.SetReadVectorLocksAcquiredHookForTesting(std::function<void()>());
+
+    assert(!issued);
+    assert(!receipt.IsValid());
+    assert(issueReason == "MARKET_SNAPSHOT_STALE");
+}
+
 void TestIndependentShardProgress()
 {
     ShardedMarketDataStore store(64);
@@ -374,6 +435,7 @@ int main()
     TestFreshnessAndValidation();
     TestCapacityAndVector();
     TestVectorIsOneCoherentCut();
+    TestAuthoritySamplesTimeAfterSourceAdmission();
     TestIndependentShardProgress();
     return 0;
 }

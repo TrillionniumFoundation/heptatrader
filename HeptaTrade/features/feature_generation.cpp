@@ -4,6 +4,7 @@
 #include <limits>
 #include <openssl/evp.h>
 #include <sstream>
+#include <type_traits>
 #include <utility>
 
 namespace
@@ -106,6 +107,13 @@ std::string ShardedFeatureStore::SnapshotDigest(
     return Sha256(canonical);
 }
 
+void ShardedFeatureStore::SetAuthorityValidatedHookForTesting(
+    const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> lock(m_authorityHookMutex);
+    m_authorityValidatedHook = hook;
+}
+
 std::string ShardedFeatureStore::AuthorityFailure(
     const std::string& marketReason)
 {
@@ -167,129 +175,165 @@ FeatureWriteResult ShardedFeatureStore::Compute(
         result.reasonCode = "FEATURE_SET_UNSUPPORTED";
         return result;
     }
-    MarketDataSnapshot input;
+
     std::string marketReason;
-    if (!m_marketAuthority.Resolve(receipt, input, marketReason))
-    {
-        result.reasonCode = AuthorityFailure(marketReason);
-        return result;
-    }
-    if (!input.found || input.digest.empty() || input.producerEpoch == 0 ||
-        input.sequence == 0 || input.generation == 0)
-    {
-        result.reasonCode = "FEATURE_INPUT_INCOMPLETE";
-        return result;
-    }
-    if (!ShardedMarketDataStore::ValidateSnapshot(input, marketReason))
-    {
-        result.reasonCode = "FEATURE_INPUT_INVALID";
-        return result;
-    }
-
-    HeptaFixedDecimal bidAskSum;
-    HeptaFixedDecimal spread;
-    if (!HeptaFixedDecimal::CheckedAdd(input.bid, input.ask, bidAskSum) ||
-        !HeptaFixedDecimal::CheckedSubtract(input.ask, input.bid, spread))
-    {
-        result.reasonCode = "FEATURE_NUMERIC_OVERFLOW";
-        return result;
-    }
-    if ((bidAskSum.Raw() % 2) != 0)
-    {
-        result.reasonCode = "FEATURE_NUMERIC_SCALE_MISMATCH";
-        return result;
-    }
-
-    FeatureKey key;
-    key.market = input.key;
-    key.featureSetId = featureSetId;
-    Shard& shard = m_shards[ShardFor(key)];
-    std::lock_guard<std::mutex> lock(shard.mutex);
-    std::map<FeatureKey, FeatureSnapshot>::iterator found =
-        shard.entries.find(key);
-    if (found != shard.entries.end())
-    {
-        const FeatureSnapshot& current = found->second;
-        if (input.producerEpoch < current.inputEpoch ||
-            (input.producerEpoch == current.inputEpoch &&
-             input.sequence < current.inputSequence) ||
-            (input.producerEpoch == current.inputEpoch &&
-             input.generation < current.inputGeneration))
-        {
-            result.reasonCode = "FEATURE_INPUT_REGRESSION";
-            return result;
-        }
-        if (input.producerEpoch == current.inputEpoch &&
-            input.sequence == current.inputSequence)
-        {
-            result.featureGeneration = current.featureGeneration;
-            result.digest = current.digest;
-            if (input.generation == current.inputGeneration &&
-                input.digest == current.inputDigest)
+    const bool sourceCurrent = m_marketAuthority.WithCurrentReceipt(
+        receipt,
+        [this, &result, &featureSetId](const MarketDataSnapshot& input) {
+            if (!input.found || input.digest.empty() ||
+                input.producerEpoch == 0 || input.sequence == 0 ||
+                input.generation == 0)
             {
-                result.accepted = true;
-                result.duplicate = true;
-                result.reasonCode = "FEATURE_DUPLICATE";
+                result.reasonCode = "FEATURE_INPUT_INCOMPLETE";
+                return;
+            }
+            std::string inputReason;
+            if (!ShardedMarketDataStore::ValidateSnapshot(input, inputReason))
+            {
+                result.reasonCode = "FEATURE_INPUT_INVALID";
+                return;
+            }
+
+            std::function<void()> hook;
+            {
+                std::lock_guard<std::mutex> hookLock(m_authorityHookMutex);
+                hook = m_authorityValidatedHook;
+            }
+            if (hook) hook();
+
+            HeptaFixedDecimal bidAskSum;
+            HeptaFixedDecimal spread;
+            if (!HeptaFixedDecimal::CheckedAdd(
+                    input.bid, input.ask, bidAskSum) ||
+                !HeptaFixedDecimal::CheckedSubtract(
+                    input.ask, input.bid, spread))
+            {
+                result.reasonCode = "FEATURE_NUMERIC_OVERFLOW";
+                return;
+            }
+            if ((bidAskSum.Raw() % 2) != 0)
+            {
+                result.reasonCode = "FEATURE_NUMERIC_SCALE_MISMATCH";
+                return;
+            }
+
+            FeatureKey key;
+            key.market = input.key;
+            key.featureSetId = featureSetId;
+            Shard& shard = m_shards[ShardFor(key)];
+            std::lock_guard<std::mutex> featureLock(shard.mutex);
+            std::map<FeatureKey, FeatureSnapshot>::iterator found =
+                shard.entries.find(key);
+            const bool isNew = found == shard.entries.end();
+            if (!isNew)
+            {
+                const FeatureSnapshot& current = found->second;
+                if (input.producerEpoch < current.inputEpoch ||
+                    (input.producerEpoch == current.inputEpoch &&
+                     input.sequence < current.inputSequence) ||
+                    (input.producerEpoch == current.inputEpoch &&
+                     input.generation < current.inputGeneration))
+                {
+                    result.reasonCode = "FEATURE_INPUT_REGRESSION";
+                    return;
+                }
+                if (input.producerEpoch == current.inputEpoch &&
+                    input.sequence == current.inputSequence)
+                {
+                    result.featureGeneration = current.featureGeneration;
+                    result.digest = current.digest;
+                    if (input.generation == current.inputGeneration &&
+                        input.digest == current.inputDigest)
+                    {
+                        result.accepted = true;
+                        result.duplicate = true;
+                        result.reasonCode = "FEATURE_DUPLICATE";
+                    }
+                    else
+                        result.reasonCode = "FEATURE_INPUT_CONFLICT";
+                    return;
+                }
+                if (current.featureGeneration ==
+                    std::numeric_limits<std::uint64_t>::max())
+                {
+                    result.reasonCode = "FEATURE_GENERATION_EXHAUSTED";
+                    return;
+                }
+            }
+
+            FeatureSnapshot snapshot;
+            snapshot.found = true;
+            snapshot.key = input.key;
+            snapshot.featureSetId = featureSetId;
+            snapshot.inputDigest = input.digest;
+            snapshot.inputEpoch = input.producerEpoch;
+            snapshot.inputSequence = input.sequence;
+            snapshot.inputGeneration = input.generation;
+            snapshot.featureGeneration = isNew
+                ? 1u : found->second.featureGeneration + 1u;
+            snapshot.observedAtMs = input.observedAtMs;
+            snapshot.freshUntilMs = input.freshUntilMs;
+            std::string numericReason;
+            if (!HeptaFixedDecimal::FromRawExact(
+                    bidAskSum.Raw() / 2, snapshot.mid, numericReason))
+            {
+                result.reasonCode = "FEATURE_NUMERIC_OVERFLOW";
+                return;
+            }
+            snapshot.spread = spread;
+            snapshot.digest = SnapshotDigest(snapshot);
+            if (snapshot.digest.empty())
+            {
+                result.reasonCode = "FEATURE_DIGEST_FAILED";
+                return;
+            }
+            const std::string committedDigest = snapshot.digest;
+            const std::uint64_t committedGeneration =
+                snapshot.featureGeneration;
+
+            if (isNew)
+            {
+                if (!ReserveKey())
+                {
+                    result.reasonCode = "FEATURE_CAPACITY_EXHAUSTED";
+                    return;
+                }
+                try
+                {
+                    const std::pair<
+                        std::map<FeatureKey, FeatureSnapshot>::iterator, bool>
+                        inserted = shard.entries.emplace(
+                            std::move(key), std::move(snapshot));
+                    if (!inserted.second)
+                    {
+                        --m_size;
+                        result.reasonCode = "FEATURE_INPUT_CONFLICT";
+                        return;
+                    }
+                }
+                catch (...)
+                {
+                    --m_size;
+                    result.reasonCode = "FEATURE_STORAGE_FAILED";
+                    return;
+                }
             }
             else
-                result.reasonCode = "FEATURE_INPUT_CONFLICT";
-            return result;
-        }
-        if (current.featureGeneration ==
-            std::numeric_limits<std::uint64_t>::max())
-        {
-            result.reasonCode = "FEATURE_GENERATION_EXHAUSTED";
-            return result;
-        }
-    }
-    else if (!ReserveKey())
-    {
-        result.reasonCode = "FEATURE_CAPACITY_EXHAUSTED";
-        return result;
-    }
+            {
+                static_assert(
+                    std::is_nothrow_move_assignable<FeatureSnapshot>::value,
+                    "FeatureSnapshot replacement must preserve strong state");
+                found->second = std::move(snapshot);
+            }
 
-    FeatureSnapshot snapshot;
-    snapshot.found = true;
-    snapshot.key = input.key;
-    snapshot.featureSetId = featureSetId;
-    snapshot.inputDigest = input.digest;
-    snapshot.inputEpoch = input.producerEpoch;
-    snapshot.inputSequence = input.sequence;
-    snapshot.inputGeneration = input.generation;
-    snapshot.featureGeneration = found == shard.entries.end()
-        ? 1u : found->second.featureGeneration + 1u;
-    snapshot.observedAtMs = input.observedAtMs;
-    snapshot.freshUntilMs = input.freshUntilMs;
-    std::string numericReason;
-    if (!HeptaFixedDecimal::FromRawExact(
-            bidAskSum.Raw() / 2, snapshot.mid, numericReason))
-    {
-        if (found == shard.entries.end()) --m_size;
-        result.reasonCode = "FEATURE_NUMERIC_OVERFLOW";
-        return result;
-    }
-    snapshot.spread = spread;
-    snapshot.digest = SnapshotDigest(snapshot);
-    if (snapshot.digest.empty())
-    {
-        if (found == shard.entries.end()) --m_size;
-        result.reasonCode = "FEATURE_DIGEST_FAILED";
-        return result;
-    }
-    try
-    {
-        shard.entries[key] = snapshot;
-    }
-    catch (...)
-    {
-        if (found == shard.entries.end()) --m_size;
-        result.reasonCode = "FEATURE_STORAGE_FAILED";
-        return result;
-    }
-    result.accepted = true;
-    result.featureGeneration = snapshot.featureGeneration;
-    result.reasonCode = "FEATURE_ACCEPTED";
-    result.digest = snapshot.digest;
+            result.accepted = true;
+            result.featureGeneration = committedGeneration;
+            result.reasonCode = "FEATURE_ACCEPTED";
+            result.digest = committedDigest;
+        },
+        marketReason);
+    if (!sourceCurrent)
+        result.reasonCode = AuthorityFailure(marketReason);
     return result;
 }
 

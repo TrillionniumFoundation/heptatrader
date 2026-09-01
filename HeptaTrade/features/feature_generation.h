@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -98,6 +99,12 @@ public:
 
     static std::string SnapshotDigest(const FeatureSnapshot& snapshot);
 
+    // Deterministic barrier used only by concurrency tests. The hook runs after
+    // the source receipt has been revalidated while the source shard remains
+    // locked and before the derived Feature state is committed.
+    void SetAuthorityValidatedHookForTesting(
+        const std::function<void()>& hook);
+
 private:
     struct FeatureKey
     {
@@ -126,4 +133,6 @@ private:
     std::atomic<std::size_t> m_size;
     const std::size_t m_maximumKeys;
     MarketDataConsumerBinding m_marketAuthority;
+    mutable std::mutex m_authorityHookMutex;
+    std::function<void()> m_authorityValidatedHook;
 };

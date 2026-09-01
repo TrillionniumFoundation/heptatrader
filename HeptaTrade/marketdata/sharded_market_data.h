@@ -118,6 +118,10 @@ private:
     bool Resolve(const MarketDataSnapshotReceipt& receipt,
                  MarketDataSnapshot& out,
                  std::string& reason) const;
+    bool WithCurrentReceipt(
+        const MarketDataSnapshotReceipt& receipt,
+        const std::function<void(const MarketDataSnapshot&)>& consumer,
+        std::string& reason) const;
     bool ResolveLineage(const MarketDataKey& key,
                         std::uint64_t producerEpoch,
                         std::uint64_t sequence,
@@ -288,15 +292,27 @@ private:
         const std::shared_ptr<MarketDataAuthorityState>& authority,
         std::uint64_t& nowMs,
         std::string& reason) const;
-    bool CurrentSnapshotLocked(const MarketDataKey& key,
-                               std::uint64_t nowMs,
-                               MarketDataSnapshot& out,
-                               std::string& reason) const;
+    bool ValidateCurrentEntryLocked(const Entry& entry,
+                                    std::uint64_t nowMs,
+                                    MarketDataSnapshot& out,
+                                    std::string& reason) const;
+    bool CurrentSnapshotLocked(
+        const std::shared_ptr<MarketDataAuthorityState>& authority,
+        const MarketDataKey& key,
+        std::uint64_t& nowMs,
+        MarketDataSnapshot& out,
+        std::string& reason) const;
     bool ResolveReceiptLocked(
         const std::shared_ptr<MarketDataAuthorityState>& authority,
         const MarketDataConsumerBinding& consumer,
         const MarketDataSnapshotReceipt& receipt,
         MarketDataSnapshot& out,
+        std::string& reason) const;
+    bool UseReceiptLocked(
+        const std::shared_ptr<MarketDataAuthorityState>& authority,
+        const MarketDataConsumerBinding& consumer,
+        const MarketDataSnapshotReceipt& receipt,
+        const std::function<void(const MarketDataSnapshot&)>& use,
         std::string& reason) const;
     bool ResolveLineageLocked(
         const std::shared_ptr<MarketDataAuthorityState>& authority,

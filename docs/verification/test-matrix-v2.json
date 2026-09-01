@@ -333,7 +333,7 @@
       "id": "market-authority-capability",
       "lane": "B-pr-core",
       "state": "implemented",
-      "evidence": "move-only store/lifecycle/audience-bound receipts, trusted-clock/current-lineage hostile CTests, and GCC/Clang ASAN/UBSAN reliability execution"
+      "evidence": "move-only store/lifecycle/audience-bound receipts, source-admission trusted-time sampling, lifecycle-latched rollback, source-lock-linearized Feature commits, current-lineage hostile CTests, and GCC/Clang ASAN/UBSAN reliability execution"
     },
     {
       "id": "feature-determinism",

@@ -2,6 +2,10 @@
 
 #include <atomic>
 #include <cassert>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -250,6 +254,76 @@ void TestTrustedClockExpiryAndRollback()
     rollback.now->store(1199);
     assert(rollback.features.Compute(rollbackReceipt).reasonCode ==
            "FEATURE_INPUT_CLOCK_REGRESSION");
+
+    // A rollback faults the complete authority epoch. Restoring the numeric
+    // clock value cannot silently reopen it; an explicit lifecycle fence and a
+    // fresh audience binding are required.
+    rollback.now->store(1200);
+    assert(rollback.features.Compute(rollbackReceipt).reasonCode ==
+           "FEATURE_INPUT_CLOCK_REGRESSION");
+    std::string reason;
+    assert(rollback.market.FenceAuthority(reason));
+    ShardedFeatureStore recovered(
+        rollback.market.BindConsumer("feature-clock-recovered"));
+    MarketDataSnapshotReceipt recoveredReceipt;
+    assert(rollback.market.GetRiskReady(
+        recovered.MarketAuthority(), {"SIM", "EUR.USD"},
+        recoveredReceipt, reason));
+    assert(recovered.Compute(recoveredReceipt).accepted);
+}
+
+void TestFeatureCommitLinearizesAgainstSourceAdvance()
+{
+    Fixture fixture;
+    MarketDataSnapshotReceipt receipt = Receipt(
+        fixture.market, fixture.features.MarketAuthority(), Event(1, 1));
+
+    std::mutex gateMutex;
+    std::condition_variable gate;
+    bool validated = false;
+    bool releaseCommit = false;
+    fixture.features.SetAuthorityValidatedHookForTesting([&]() {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        validated = true;
+        gate.notify_all();
+        gate.wait(lock, [&]() { return releaseCommit; });
+    });
+
+    FeatureWriteResult featureResult;
+    std::thread compute([&]() {
+        featureResult = fixture.features.Compute(receipt);
+    });
+    {
+        std::unique_lock<std::mutex> lock(gateMutex);
+        gate.wait(lock, [&]() { return validated; });
+    }
+
+    std::atomic<bool> writerFinished(false);
+    MarketDataWriteResult writeResult;
+    std::thread writer([&]() {
+        writeResult = fixture.market.Apply(Event(1, 2));
+        writerFinished.store(true);
+    });
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    assert(!writerFinished.load());
+
+    {
+        std::lock_guard<std::mutex> lock(gateMutex);
+        releaseCommit = true;
+    }
+    gate.notify_all();
+    compute.join();
+    writer.join();
+    fixture.features.SetAuthorityValidatedHookForTesting(
+        std::function<void()>());
+
+    assert(featureResult.accepted);
+    assert(writeResult.accepted);
+    FeatureSnapshot output;
+    std::string reason;
+    assert(!fixture.features.GetRiskReady(
+        {"SIM", "EUR.USD"}, "mid-spread-v1", output, reason));
+    assert(reason == "FEATURE_INPUT_SUPERSEDED");
 }
 
 void TestIssuerDestructionAndLifecycleFence()
@@ -337,6 +411,7 @@ int main()
     TestCrossStoreAndReconstructedStoreRejection();
     TestCurrentStateGapAndGenerationFences();
     TestTrustedClockExpiryAndRollback();
+    TestFeatureCommitLinearizesAgainstSourceAdvance();
     TestIssuerDestructionAndLifecycleFence();
     TestRegressionCapacityAndRiskReadyRevalidation();
     return 0;

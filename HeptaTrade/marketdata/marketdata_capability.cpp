@@ -109,6 +109,39 @@ bool MarketDataConsumerBinding::Resolve(
         authority, *this, receipt, out, reason);
 }
 
+bool MarketDataConsumerBinding::WithCurrentReceipt(
+    const MarketDataSnapshotReceipt& receipt,
+    const std::function<void(const MarketDataSnapshot&)>& consumer,
+    std::string& reason) const
+{
+    if (!receipt.m_valid)
+    {
+        reason = "MARKET_RECEIPT_INVALID";
+        return false;
+    }
+    if (!consumer || !m_valid || m_issuerId == 0 ||
+        m_lifecycleEpoch == 0 || m_consumerId == 0 || m_audience.empty())
+    {
+        reason = "MARKET_AUTHORITY_BINDING_INVALID";
+        return false;
+    }
+    const std::shared_ptr<MarketDataAuthorityState> authority =
+        m_authority.lock();
+    if (!authority)
+    {
+        reason = "MARKET_AUTHORITY_DESTROYED";
+        return false;
+    }
+    std::lock_guard<std::mutex> lock(authority->mutex);
+    if (!authority->alive || authority->store == nullptr)
+    {
+        reason = "MARKET_AUTHORITY_DESTROYED";
+        return false;
+    }
+    return authority->store->UseReceiptLocked(
+        authority, *this, receipt, consumer, reason);
+}
+
 bool MarketDataConsumerBinding::ResolveLineage(
     const MarketDataKey& key,
     std::uint64_t producerEpoch,
