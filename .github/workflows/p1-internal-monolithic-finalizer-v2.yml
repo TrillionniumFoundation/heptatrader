@@ -1,0 +1,177 @@
+name: p1-internal-monolithic-finalizer-v2
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/p1-internal-monolithic-finalizer-v2.yml
+      - scripts/internal_closure_finalizer.py
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: heptatrader-p1-internal-monolithic-finalizer
+  cancel-in-progress: true
+
+jobs:
+  close-internal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Validate closure generator
+        run: python3 -m py_compile scripts/internal_closure_finalizer.py
+      - name: Build one history-clean internal closure candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical=codex/heptatrader-documentation-control-plane-v2
+          data=codex/heptatrader-review-p1-work
+          allocation=codex/heptatrader-review-p1-allocation-work
+          git fetch origin "$canonical" "$data" "$allocation"
+          base_sha="$(git rev-parse "origin/$canonical")"
+          worktree="$RUNNER_TEMP/heptatrader-p1-monolithic-v2"
+          git worktree add --detach "$worktree" "$base_sha"
+          cd "$worktree"
+          git config user.name "Hepta Internal Closure Bot"
+          git config user.email "hepta-internal-closure-bot@users.noreply.github.com"
+
+          data_paths=(
+            HeptaTrade/numeric/fixed_decimal.h
+            HeptaTrade/numeric/fixed_decimal.cpp
+            HeptaTrade/tool_host/typed_tool_protocol.cpp
+            HeptaTrade/marketdata/sharded_market_data.h
+            HeptaTrade/marketdata/sharded_market_data.cpp
+            HeptaTrade/features/feature_generation.cpp
+            tests/fixed_decimal_tests.cpp
+            tests/sharded_market_data_tests.cpp
+            tests/feature_generation_tests.cpp
+          )
+          if git show "origin/$data:HeptaTrade/numeric/fixed_decimal.h" | grep -Fq ToDoubleExact; then
+            git checkout "origin/$data" -- "${data_paths[@]}"
+          elif git cat-file -e "origin/$data:scripts/p1_data_patch.py" 2>/dev/null; then
+            git show "origin/$data:scripts/p1_data_patch.py" > scripts/.p1_data_patch.py
+            python3 scripts/.p1_data_patch.py
+            rm -f scripts/.p1_data_patch.py
+          else
+            echo "data repair implementation is unavailable" >&2
+            exit 1
+          fi
+
+          allocation_paths=(
+            HeptaTrade/proposal/proposal_set.h
+            HeptaTrade/proposal/proposal_set.cpp
+            HeptaTrade/allocation/global_allocator.h
+            HeptaTrade/allocation/global_allocator.cpp
+            HeptaTrade/execution/allocation_plan_revalidator.h
+            HeptaTrade/execution/allocation_plan_revalidator.cpp
+            HeptaTrade/simulator/multi_agent_allocation.cpp
+            tests/global_allocator_tests.cpp
+            tests/allocation_plan_revalidator_tests.cpp
+            tests/strategy_proposal_tests.cpp
+            tests/multi_agent_allocation_tests.cpp
+          )
+          if git show "origin/$allocation:HeptaTrade/allocation/global_allocator.h" | grep -Fq GlobalDecisionReceipt; then
+            git checkout "origin/$allocation" -- "${allocation_paths[@]}"
+          elif git cat-file -e "origin/$allocation:scripts/p1_allocation_patch.py" 2>/dev/null; then
+            git show "origin/$allocation:scripts/p1_allocation_patch.py" > scripts/.p1_allocation_patch.py
+            python3 scripts/.p1_allocation_patch.py
+            rm -f scripts/.p1_allocation_patch.py
+            if git cat-file -e "origin/$allocation:scripts/p1_allocation_repair.py" 2>/dev/null; then
+              git show "origin/$allocation:scripts/p1_allocation_repair.py" > scripts/.p1_allocation_repair.py
+              python3 scripts/.p1_allocation_repair.py
+              rm -f scripts/.p1_allocation_repair.py
+            fi
+          else
+            echo "allocation repair implementation is unavailable" >&2
+            exit 1
+          fi
+
+          python3 "$GITHUB_WORKSPACE/scripts/internal_closure_finalizer.py" \
+            --root "$worktree"
+          python3 "$worktree/scripts/generate_documentation_views.py" --write
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m "fix: close all internally executable P1 gaps"
+          fi
+          test -z "$(git status --porcelain)"
+          grep -Fq ToDoubleExact HeptaTrade/numeric/fixed_decimal.h
+          grep -Fq ValidateSnapshot HeptaTrade/marketdata/sharded_market_data.cpp
+          grep -Fq GlobalDecisionReceipt HeptaTrade/allocation/global_allocator.h
+          grep -Fq AllocationExecutionContext HeptaTrade/execution/allocation_plan_revalidator.h
+          grep -Fq G-OPT-007 docs/program/gap-registry-v2.json
+          python3 -m py_compile tests/python/test_internal_verification_evidence.py
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "worktree=$worktree" >> "$GITHUB_OUTPUT"
+      - name: Validate exact core candidate
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          HEPTA_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-monolithic-v2-core" \
+          HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+            ./scripts/dev_core.sh
+          test -z "$(git status --porcelain)"
+      - name: Validate exact GCC sanitizer candidate
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          CXX=g++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-monolithic-v2-gcc" \
+            ./scripts/reliability_core.sh
+          test -z "$(git status --porcelain)"
+      - name: Validate exact Clang sanitizer candidate
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          CXX=clang++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-monolithic-v2-clang" \
+            ./scripts/reliability_core.sh
+          test -z "$(git status --porcelain)"
+      - name: Publish exact tested candidate and fast-forward canonical
+        shell: bash
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+          BASE_SHA: ${{ steps.candidate.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          cd "$WORKTREE"
+          head_sha="$(git rev-parse HEAD)"
+          git push --force origin "$head_sha:refs/heads/codex/heptatrader-internal-closure-candidate-v3"
+          git fetch origin codex/heptatrader-documentation-control-plane-v2
+          current="$(git rev-parse origin/codex/heptatrader-documentation-control-plane-v2)"
+          if [[ "$current" != "$BASE_SHA" ]]; then
+            echo "canonical head moved from $BASE_SHA to $current; candidate preserved without overwrite" >&2
+            exit 75
+          fi
+          git push \
+            --force-with-lease="refs/heads/codex/heptatrader-documentation-control-plane-v2:$BASE_SHA" \
+            origin "$head_sha:refs/heads/codex/heptatrader-documentation-control-plane-v2"
+      - name: Record failed finalizer location
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh api --method POST "repos/$REPO/issues/7/comments" \
+            -f body="<!-- p1-monolithic-finalizer-v2-failure:$GITHUB_RUN_ID -->
+
+          The fail-closed internal finalizer v2 stopped. No failed candidate was published to the canonical PR branch. Inspect $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID for the exact failing gate." || true
