@@ -19,6 +19,8 @@ jobs:
         with:
           ref: codex/heptatrader-documentation-control-plane-v2
           fetch-depth: 0
+      - name: Repair patch parser
+        run: python3 scripts/fix_m2_patch_parser.py
       - name: Apply M2 single-compilation patch
         run: python3 scripts/m2_dedupe_patch.py
       - name: Validate deterministic core
