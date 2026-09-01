@@ -1,0 +1,37 @@
+name: export-source-snapshot
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-final-gap-work
+    paths:
+      - .github/workflows/export-source-snapshot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact branch revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-final-gap-work
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert and archive exact source tree
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git diff --exit-code
+          git diff --cached --exit-code
+          tar --exclude=.git --exclude=build --exclude='*.tar.gz' \
+            -czf "$RUNNER_TEMP/heptatrader-source-${{ github.sha }}.tar.gz" .
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-source-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-source-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
