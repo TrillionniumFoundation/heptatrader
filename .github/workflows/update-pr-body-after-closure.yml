@@ -1,0 +1,93 @@
+name: update-pr-body-after-closure
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/update-pr-body-after-closure.yml
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: heptatrader-update-pr-body-after-closure
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Wait for canonical internal closure
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          for attempt in $(seq 1 600); do
+            sha="$(gh api "repos/$REPO/branches/$branch" --jq '.commit.sha')"
+            git fetch origin "$sha"
+            if git show "$sha:docs/program/gap-registry-v2.json" 2>/dev/null | grep -Fq 'G-OPT-007'; then
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - name: Publish stable current PR description
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          body="$(cat <<'EOF'
+          ## Objective
+
+          Integrate the canonical Hepta modular runtime and Documentation Control Plane V2 as one independently reviewable candidate against `main`. Git history is the history archive; historical prose, compatibility aliases, manual closure receipts, product media and dormant build entrypoints remain absent from the active tree.
+
+          ## Closed repository and runtime scope
+
+          - deterministic canonical document, contract, capability, module, workstream, milestone, gap and verification registries;
+          - exclusive physical C/C++ ownership and configured CMake File API dependency enforcement;
+          - single-source typed bindings and exact fixed-microunit authority;
+          - checked raw construction and fail-closed binary64 compatibility projection;
+          - canonical market-snapshot digest revalidation and coherent multi-shard vector cuts;
+          - bounded ProposalSet lifetime intersected with proposal horizons and authoritative snapshot expiry;
+          - deterministic global allocation with truthful solver evidence;
+          - allocator-issued, non-forgeable decision receipt and Execution-side epoch/book/policy/proposal/snapshot revalidation;
+          - lifecycle generation fencing, health, quarantine, rollback and active multi-Agent simulation;
+          - event ordering, reconciliation, strategy isolation and global-allocation performance evidence promoted from partial/planned only with executable same-revision tests;
+          - exact source-head, synthetic two-parent merge-candidate and merge-group verification with module/reverse-dependency impact closure.
+
+          ## Remaining external gates
+
+          ### `G-TEAM-001`
+
+          Real organization teams, team-distributed CODEOWNERS, required fresh CODEOWNER approval, protected `main`, merge queue and no-bypass repository rules must be configured and API-verified. The individual `@ProfHepta` bootstrap is independent review coverage, not team-scale closure.
+
+          ### `G-IB-001`
+
+          The strict exact-artifact IB PAPER workflow, evidence verifier and negative tests are present. Closure still requires a protected real PAPER environment, pinned IB API, dedicated self-hosted runner, independent approval and broker-observed evidence for every required fault/recovery scenario. Simulator or manually authored evidence is rejected.
+
+          ## Forbidden claims and merge policy
+
+          - no LIVE mutation or production qualification;
+          - CTP and XT/MiniQMT remain fail-closed;
+          - no credentials outside the protected execution environment;
+          - no self-approval, self-merge or administrator bypass;
+          - no historical CI result substitutes for the current source head or current merge candidate.
+
+          The PR remains Draft while either external P0/P1 gap is open, a current-revision required gate is missing/failing, or fresh independent review is absent. Any source-head or base movement invalidates prior review and CI evidence.
+          EOF
+          )"
+          gh api --method PATCH "repos/$REPO/pulls/7" -f body="$body" >/dev/null
