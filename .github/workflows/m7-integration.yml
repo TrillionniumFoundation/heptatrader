@@ -1,4 +1,5 @@
 name: m7-integration
+# revision: direct-workflow-bootstrap-v2
 
 on:
   push:
@@ -31,7 +32,7 @@ jobs:
           git config user.email "hepta-m7-integration-bot@users.noreply.github.com"
           python3 -m py_compile scripts/m7_integration_patch.py
           python3 scripts/m7_integration_patch.py
-          rm -f scripts/m7_integration_patch.py .github/workflows/m7-integration.yml
+          rm -f scripts/m7_integration_patch.py
           python3 scripts/generate_documentation_views.py --write
           git add -A
           git commit -m "feat: enforce module-aware merge-candidate verification"
