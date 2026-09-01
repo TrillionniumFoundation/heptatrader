@@ -39,6 +39,27 @@ jobs:
           documents.sort(key=lambda item: item['path'])
           path.write_text(json.dumps(value, separators=(',', ':')) + '\n')
           PY
+      - name: Make migration-schema fixture independent of live debt
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('tests/python/test_documentation_control_plane.py')
+          text = path.read_text()
+          old = '''    def test_module_schema_enforces_migration_conditionals(self) -> None:
+        manifest = self._manifest()
+        manifest.pop("migration_gap")
+        self.assertTrue(self._schema_errors(manifest))
+'''
+          new = '''    def test_module_schema_enforces_migration_conditionals(self) -> None:
+        manifest = self._manifest()
+        manifest["ownership_mode"] = "shared-migration"
+        manifest["migration_gap"] = "G-MOD-002"
+        manifest.pop("migration_gap")
+        self.assertTrue(self._schema_errors(manifest))
+'''
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new))
+          PY
       - name: Validate deterministic core
         run: ./scripts/dev_core.sh
       - name: Assert exception-free ownership
