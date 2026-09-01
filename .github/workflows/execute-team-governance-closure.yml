@@ -102,6 +102,7 @@ jobs:
           done < "$RUNNER_TEMP/hepta-required-teams.txt"
           printf '%s\n' "$worktree" > "$RUNNER_TEMP/hepta-governance-worktree"
       - name: Generate team-distributed CODEOWNERS and closure registries
+        id: closure
         shell: bash
         env:
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
@@ -274,3 +275,5 @@ jobs:
 
           Every logical ModuleManifest owner resolved to a real organization team with at least two members, a maintainer and repository write authority. CODEOWNERS contains no individual fallback. The active main ruleset has no bypass actors and requires fresh CODEOWNER approval, signed linear history, exact status checks and merge queue."
           gh api --method PATCH "repos/$REPO/issues/8" -f state=closed >/dev/null
+
+# Manual repository-actor trigger: 2026-09-01
