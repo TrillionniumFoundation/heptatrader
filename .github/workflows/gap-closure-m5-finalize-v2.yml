@@ -1,0 +1,70 @@
+name: gap-closure-m5-finalize-v2
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-m5-work
+    paths:
+      - .github/workflows/gap-closure-m5-finalize-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-m5-finalize-v2
+  cancel-in-progress: true
+
+jobs:
+  finalize-m5:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout M5 branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-m5-work
+          fetch-depth: 0
+
+      - name: Build exact M4 and M5 closure candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Hepta Gap Closure Bot"
+          git config user.email "hepta-gap-closure-bot@users.noreply.github.com"
+          git fetch origin codex/heptatrader-documentation-control-plane-v2
+          git merge --no-ff --no-edit origin/codex/heptatrader-documentation-control-plane-v2
+
+          if test -f scripts/m5_repair_patch.py; then
+            python3 scripts/m5_repair_patch.py
+          elif test -f scripts/m5_patch.py; then
+            python3 scripts/m5_patch.py
+          fi
+          python3 scripts/m5_finalize_patch.py
+
+          rm -f \
+            .github/workflows/gap-closure-m5.yml \
+            .github/workflows/gap-closure-m5-repair.yml \
+            .github/workflows/gap-closure-m5-finalize.yml \
+            .github/workflows/gap-closure-m5-finalize-v2.yml \
+            scripts/m5_patch.py \
+            scripts/m5_repair_patch.py \
+            scripts/m5_finalize_patch.py
+
+          python3 scripts/generate_documentation_views.py --write
+          git add -A
+          git commit -m "feat: close M4 and M5 with acyclic simulation runtime"
+          test -z "$(git status --porcelain)"
+
+      - name: Validate exact closure revision
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git diff --cached --exit-code
+          ./scripts/dev_core.sh
+          test -z "$(git status --porcelain)"
+
+      - name: Publish exact tested revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          git push origin HEAD:codex/heptatrader-m5-work
+          git push origin HEAD:codex/heptatrader-documentation-control-plane-v2
