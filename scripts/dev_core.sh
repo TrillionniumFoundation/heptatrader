@@ -50,7 +50,7 @@ if [[ "${BUILD_DIR}" == "/" ||
       "${BUILD_DIR}" == "${ROOT_DIR}" ||
       "${BUILD_DIR}" == "${ROOT_BUILD_DIR}" ||
       "${BUILD_DIR}" == "${RUNNER_TEMP_DIR}" ]]; then
-  printf 'refusing to use a broad development build directory: %s\n' \
+  printf 'refusing to use a broad HEPTA_BUILD_DIR: %s\n' \
     "${BUILD_DIR}" >&2
   exit 2
 fi
