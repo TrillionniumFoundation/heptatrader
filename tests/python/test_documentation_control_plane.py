@@ -85,6 +85,8 @@ class DocumentationControlPlaneTests(unittest.TestCase):
 
     def test_module_schema_enforces_migration_conditionals(self) -> None:
         manifest = self._manifest()
+        manifest["ownership_mode"] = "shared-migration"
+        manifest["migration_gap"] = "G-MOD-002"
         manifest.pop("migration_gap")
         self.assertTrue(self._schema_errors(manifest))
 

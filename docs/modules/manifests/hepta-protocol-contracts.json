@@ -6,12 +6,15 @@
   "kind": "contract-library",
   "trust_domain": "shared-trusted",
   "authority": "wire/codec",
-  "ownership_mode": "shared-migration",
+  "ownership_mode": "exclusive",
   "source_roots": [
+    "HeptaTrade/execution/execution_event_feed.cpp",
+    "HeptaTrade/execution/execution_event_feed.h",
+    "HeptaTrade/execution/execution_event_feed_contract.h",
+    "HeptaTrade/execution/execution_event_feed_transport",
     "HeptaTrade/execution/execution_service_protocol",
-    "HeptaTrade/execution/execution_event_feed",
-    "HeptaTrade/execution/unix_execution_service_transport",
-    "HeptaTrade/tool_host/typed_tool_",
+    "HeptaTrade/execution/unix_execution_service_transport.cpp",
+    "HeptaTrade/tool_host/typed_",
     "schemas/"
   ],
   "build_targets": [
@@ -58,6 +61,5 @@
   "verification": [
     "schema-catalog",
     "protocol-contracts"
-  ],
-  "migration_gap": "G-MOD-002"
+  ]
 }

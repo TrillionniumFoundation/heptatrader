@@ -189,6 +189,14 @@ target_link_libraries(hepta_trading_tool_core PUBLIC
     hepta_state_core
     OpenSSL::Crypto)
 
+add_library(hepta_session_core STATIC
+    tool_host/session_supervisor_lease_store.cpp
+    tool_host/session_supervisor_protocol.cpp)
+hepta_runtime_target(hepta_session_core)
+target_link_libraries(hepta_session_core PUBLIC
+    Threads::Threads
+    OpenSSL::Crypto)
+
 add_library(hepta_agent_os_core STATIC
     tool_host/tool_gateway_runtime_composition.cpp
     tool_host/tool_gateway_session_policy.cpp
@@ -197,8 +205,6 @@ add_library(hepta_agent_os_core STATIC
     tool_host/execution_gateway_runtime_composition.cpp
     tool_host/execution_gateway_runtime_config.cpp
     tool_host/session_supervisor_audit_journal.cpp
-    tool_host/session_supervisor_lease_store.cpp
-    tool_host/session_supervisor_protocol.cpp
     tool_host/tool_decision_audit.cpp
     ${HEPTA_TOOL_HOST_CORE_SOURCES}
     tool_host/trading_tool_session_lifecycle.cpp
@@ -217,7 +223,8 @@ target_link_libraries(hepta_agent_os_core PUBLIC
     hepta_execution_client
     hepta_agent_execution_support
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto
+    hepta_session_core)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(hepta_agent_os_core PRIVATE
@@ -252,14 +259,13 @@ add_executable(hepta_sessionctl
     cli/hepta_sessionctl.cpp
     cli/hepta_sessionctl_command.cpp
     cli/hepta_sessionctl_terminal_cleanup.cpp
-    tool_host/session_supervisor_lease_store.cpp
-    tool_host/unix_session_supervisor_client.cpp
-    tool_host/session_supervisor_protocol.cpp)
+    tool_host/unix_session_supervisor_client.cpp)
 hepta_runtime_target(hepta_sessionctl)
 set_target_properties(hepta_sessionctl PROPERTIES OUTPUT_NAME hepta-sessionctl)
 target_link_libraries(hepta_sessionctl PRIVATE
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto
+    hepta_session_core)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(hepta_paper_terminal_latch_committer

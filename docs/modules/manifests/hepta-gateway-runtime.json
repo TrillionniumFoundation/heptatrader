@@ -6,9 +6,17 @@
   "kind": "service",
   "trust_domain": "agent-gateway",
   "authority": "identity/session/capability/tool dispatch",
-  "ownership_mode": "shared-migration",
+  "ownership_mode": "exclusive",
   "source_roots": [
-    "HeptaTrade/tool_host/",
+    "HeptaTrade/tool_host/agent_",
+    "HeptaTrade/tool_host/execution_",
+    "HeptaTrade/tool_host/hepta_tool_gatewayd.cpp",
+    "HeptaTrade/tool_host/session_supervisor_audit_",
+    "HeptaTrade/tool_host/tool_",
+    "HeptaTrade/tool_host/trading_",
+    "HeptaTrade/tool_host/unix_session_supervisor_server",
+    "HeptaTrade/tool_host/unix_socket_path_identity.h",
+    "HeptaTrade/tool_host/unix_tool_server",
     "HeptaTrade/tools/"
   ],
   "build_targets": [
@@ -31,11 +39,12 @@
     "hepta.identity-capability.v1"
   ],
   "allowed_dependencies": [
-    "hepta.protocol.contracts",
-    "hepta.client.runtime",
     "hepta.agent.support",
+    "hepta.client.runtime",
     "hepta.execution.runtime",
-    "hepta.observability.runtime"
+    "hepta.observability.runtime",
+    "hepta.protocol.contracts",
+    "hepta.session.runtime"
   ],
   "forbidden_dependencies": [
     "hepta.venue.*",
@@ -72,6 +81,5 @@
     "gateway-boundary",
     "session-boundary",
     "backpressure-contracts"
-  ],
-  "migration_gap": "G-MOD-002"
+  ]
 }

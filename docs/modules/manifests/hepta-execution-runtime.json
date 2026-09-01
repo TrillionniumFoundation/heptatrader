@@ -6,13 +6,31 @@
   "kind": "stateful-service",
   "trust_domain": "execution-authority",
   "authority": "only venue mutation/state/OMS/permit authority",
-  "ownership_mode": "shared-migration",
+  "ownership_mode": "exclusive",
   "source_roots": [
     "HeptaTrade/cli/hepta_paper_terminal_latch_committer.cpp",
-    "HeptaTrade/execution/",
+    "HeptaTrade/execution/execution_authoritative_",
+    "HeptaTrade/execution/execution_authority.h",
+    "HeptaTrade/execution/execution_coordinator",
+    "HeptaTrade/execution/execution_decision_",
+    "HeptaTrade/execution/execution_event_feed_client",
+    "HeptaTrade/execution/execution_event_feed_server",
+    "HeptaTrade/execution/execution_gateway_context_binding.h",
+    "HeptaTrade/execution/execution_place_order_dispatch.cpp",
+    "HeptaTrade/execution/execution_service_runtime_",
+    "HeptaTrade/execution/hepta_",
+    "HeptaTrade/execution/ib_",
+    "HeptaTrade/execution/paper_",
+    "HeptaTrade/execution/trading_contract.h",
+    "HeptaTrade/execution/unix_execution_service.cpp",
+    "HeptaTrade/execution/unix_execution_service.h",
+    "HeptaTrade/execution/unix_execution_service_client",
+    "HeptaTrade/execution/unix_execution_service_flatten",
+    "HeptaTrade/execution/unix_execution_service_internal.h",
+    "HeptaTrade/execution/unix_execution_service_server.h",
     "HeptaTrade/intent/",
-    "HeptaTrade/state/",
-    "HeptaTrade/oms_"
+    "HeptaTrade/oms_",
+    "HeptaTrade/state/"
   ],
   "build_targets": [
     "hepta_execution_client",
@@ -101,6 +119,5 @@
     "reconciliation",
     "simulator-e2e",
     "crash-replay"
-  ],
-  "migration_gap": "G-MOD-002"
+  ]
 }

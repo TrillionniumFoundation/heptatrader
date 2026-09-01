@@ -6,10 +6,13 @@
   "kind": "client-library",
   "trust_domain": "unprivileged-client",
   "authority": "CLI/native/MCP request encoding",
-  "ownership_mode": "shared-migration",
+  "ownership_mode": "exclusive",
   "source_roots": [
+    "HeptaTrade/cli/hepta_sessionctl",
+    "HeptaTrade/cli/heptactl",
     "HeptaTrade/client/",
-    "HeptaTrade/cli/",
+    "HeptaTrade/tool_host/unix_session_supervisor_client",
+    "HeptaTrade/tool_host/unix_tool_client",
     "adapters/mcp/",
     "plugins/heptatrader-agent-os/"
   ],
@@ -26,7 +29,8 @@
     "hepta.tool-catalog.v1"
   ],
   "allowed_dependencies": [
-    "hepta.protocol.contracts"
+    "hepta.protocol.contracts",
+    "hepta.session.runtime"
   ],
   "forbidden_dependencies": [
     "hepta.execution.runtime",
@@ -64,6 +68,5 @@
     "native-client-contracts",
     "mcp-contracts",
     "tool-catalog-drift"
-  ],
-  "migration_gap": "G-MOD-002"
+  ]
 }
