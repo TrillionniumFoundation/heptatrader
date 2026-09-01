@@ -1,0 +1,33 @@
+name: gap-closure-m5
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-m5-work
+    paths:
+      - .github/workflows/gap-closure-m5.yml
+
+permissions:
+  contents: write
+
+jobs:
+  lifecycle-and-multi-agent:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout M5 staging branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-m5-work
+          fetch-depth: 0
+      - name: Apply M5 integration
+        run: python3 scripts/m5_patch.py
+      - name: Validate deterministic core
+        run: ./scripts/dev_core.sh
+      - name: Commit exact tested implementation
+        run: |
+          set -euo pipefail
+          git config user.name "Hepta Gap Closure Bot"
+          git config user.email "hepta-gap-closure-bot@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add module lifecycle and active multi-agent simulator"
+          git push origin HEAD:codex/heptatrader-m5-work
