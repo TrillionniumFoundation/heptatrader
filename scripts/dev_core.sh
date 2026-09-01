@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Canonical core verification validates every build path before any refresh.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 BUILD_TYPE="${HEPTA_BUILD_TYPE:-Release}"
 GENERATOR="${HEPTA_CMAKE_GENERATOR:-}"
