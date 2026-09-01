@@ -1,0 +1,276 @@
+name: execute-team-governance-closure
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/execute-team-governance-closure.yml
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: heptatrader-team-governance-closure
+  cancel-in-progress: false
+
+jobs:
+  enforce-and-close:
+    runs-on: ubuntu-24.04
+    environment: repository-governance
+    timeout-minutes: 90
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require protected administrator token
+        shell: bash
+        env:
+          ADMIN_TOKEN: ${{ secrets.HEPTA_GITHUB_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_TOKEN"
+      - name: Lock canonical internal closure revision
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GITHUB_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          for attempt in $(seq 1 360); do
+            sha="$(gh api "repos/$REPO/branches/$branch" --jq '.commit.sha')"
+            git fetch origin "$sha"
+            if git show "$sha:docs/program/gap-registry-v2.json" 2>/dev/null | grep -Fq 'G-OPT-007'; then
+              echo "sha=$sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+      - name: Verify real organization team topology
+        id: topology
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GITHUB_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+          ORG: TrillionniumFoundation
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          worktree="$RUNNER_TEMP/heptatrader-team-governance-${GITHUB_RUN_ID}"
+          git worktree add --detach "$worktree" "$SOURCE_SHA"
+          cd "$worktree"
+          python3 - <<'PY' > "$RUNNER_TEMP/hepta-required-teams.txt"
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          registry = json.loads((root / 'docs/modules/module-registry-v2.json').read_text())
+          teams = set()
+          for relative in registry['manifest_paths']:
+              manifest = json.loads((root / 'docs' / relative).read_text())
+              owners = manifest['owners']
+              values = [owners['dri'], owners['backup'], *owners['reviewers']]
+              for value in values:
+                  if not value.startswith('@hepta/'):
+                      raise SystemExit(f'non-canonical logical team: {value}')
+                  teams.add(value.split('/', 1)[1])
+          for slug in sorted(teams):
+              print(slug)
+          PY
+
+          while IFS= read -r slug; do
+            team="$(gh api "orgs/$ORG/teams/$slug")"
+            privacy="$(jq -r '.privacy' <<<"$team")"
+            [[ "$privacy" == closed || "$privacy" == secret ]]
+            members="$(gh api --paginate "orgs/$ORG/teams/$slug/members?per_page=100" --jq '.[].login' | sort -u)"
+            test "$(grep -c . <<<"$members")" -ge 2
+            maintainers=0
+            while IFS= read -r login; do
+              role="$(gh api "orgs/$ORG/teams/$slug/memberships/$login" --jq '.role')"
+              [[ "$role" == maintainer ]] && maintainers=$((maintainers + 1))
+            done <<<"$members"
+            test "$maintainers" -ge 1
+            permission="$(gh api "orgs/$ORG/teams/$slug/repos/$REPO" --jq '.permissions | if .admin then "admin" elif .maintain then "maintain" elif .push then "push" else "insufficient" end')"
+            [[ "$permission" == admin || "$permission" == maintain || "$permission" == push ]]
+          done < "$RUNNER_TEMP/hepta-required-teams.txt"
+          printf '%s\n' "$worktree" > "$RUNNER_TEMP/hepta-governance-worktree"
+      - name: Generate team-distributed CODEOWNERS and closure registries
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/hepta-governance-worktree")"
+          cd "$worktree"
+          git config user.name "Hepta Repository Governance Bot"
+          git config user.email "hepta-repository-governance-bot@users.noreply.github.com"
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          org = 'TrillionniumFoundation'
+          registry = json.loads((root / 'docs/modules/module-registry-v2.json').read_text())
+          lines = [
+              '# Generated from canonical ModuleManifest ownership.',
+              '# Repository rules require fresh CODEOWNER approval; no individual fallback.',
+              f'* @{org}/architecture @{org}/reliability',
+              '',
+              f'/.github/ @{org}/architecture @{org}/reliability @{org}/security-runtime',
+              f'/cmake/ @{org}/architecture @{org}/developer-experience',
+              f'/docs/governance/ @{org}/architecture @{org}/contracts',
+              f'/docs/program/ @{org}/program @{org}/reliability',
+              f'/docs/verification/ @{org}/reliability @{org}/architecture',
+          ]
+          for relative in registry['manifest_paths']:
+              manifest = json.loads((root / 'docs' / relative).read_text())
+              if manifest.get('lifecycle') not in {'current','experimental','unsupported'}:
+                  continue
+              owners = manifest['owners']
+              dri = '@' + org + '/' + owners['dri'].split('/', 1)[1]
+              reviewer = '@' + org + '/' + owners['reviewers'][0].split('/', 1)[1]
+              for source_root in manifest.get('source_roots', []):
+                  pattern = '/' + source_root
+                  if source_root.endswith('/'):
+                      pattern += '*'
+                  elif not Path(source_root).suffix:
+                      pattern += '*'
+                  lines.append(f'{pattern} {dri} {reviewer}')
+          (root / '.github/CODEOWNERS').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+          gap_path = root / 'docs/program/gap-registry-v2.json'
+          gaps = json.loads(gap_path.read_text(encoding='utf-8'))
+          for gap in gaps['gaps']:
+              if gap.get('id') == 'G-TEAM-001':
+                  gap['state'] = 'closed'
+                  if 'github-governance' not in gap['evidence']:
+                      gap['evidence'].append('github-governance')
+                  break
+          else:
+              raise SystemExit('G-TEAM-001 missing')
+          gap_path.write_text(json.dumps(gaps, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+
+          matrix_path = root / 'docs/verification/test-matrix-v2.json'
+          matrix = json.loads(matrix_path.read_text(encoding='utf-8'))
+          if not any(item.get('id') == 'github-governance' for item in matrix['checks']):
+              matrix['checks'].append({
+                  'id': 'github-governance',
+                  'lane': 'D-external-qualification',
+                  'state': 'external',
+                  'evidence': 'protected API verification of real teams, CODEOWNERS, ruleset and merge queue',
+              })
+          matrix_path.write_text(json.dumps(matrix, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+
+          milestone_path = root / 'docs/program/milestone-registry-v1.json'
+          milestones = json.loads(milestone_path.read_text(encoding='utf-8'))
+          for milestone in milestones['milestones']:
+              if milestone.get('id') == 'M7':
+                  milestone['state'] = 'closed'
+                  break
+          milestone_path.write_text(json.dumps(milestones, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          python3 scripts/generate_documentation_views.py --write
+          python3 scripts/check_documentation_control_plane.py
+          python3 scripts/check_repository_integrity.py
+          git add -A
+          git commit -m "governance: enforce team-distributed protected integration"
+          test -z "$(git status --porcelain)"
+          echo "closure_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Install or replace no-bypass main ruleset
+        id: ruleset
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GITHUB_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          name='Hepta protected main integration'
+          existing="$(gh api "repos/$REPO/rulesets" --jq ".[] | select(.name == \"$name\") | .id" | head -n1)"
+          payload="$RUNNER_TEMP/hepta-main-ruleset.json"
+          cat > "$payload" <<'JSON'
+          {
+            "name":"Hepta protected main integration",
+            "target":"branch",
+            "enforcement":"active",
+            "bypass_actors":[],
+            "conditions":{"ref_name":{"include":["refs/heads/main"],"exclude":[]}},
+            "rules":[
+              {"type":"deletion"},
+              {"type":"non_fast_forward"},
+              {"type":"required_linear_history"},
+              {"type":"required_signatures"},
+              {"type":"pull_request","parameters":{"allowed_merge_methods":["squash","rebase"],"dismiss_stale_reviews_on_push":true,"require_code_owner_review":true,"require_last_push_approval":true,"required_approving_review_count":1,"required_review_thread_resolution":true}},
+              {"type":"required_status_checks","parameters":{"do_not_enforce_on_create":false,"strict_required_status_checks_policy":true,"required_status_checks":[
+                {"context":"core-runtime / core"},
+                {"context":"canonical-full-suite / core"},
+                {"context":"canonical-full-suite / reliability (g++)"},
+                {"context":"canonical-full-suite / reliability (clang++)"},
+                {"context":"documentation-control-plane / docs"},
+                {"context":"merge-candidate / exact-pr-merge-candidate"}
+              ]}},
+              {"type":"merge_queue","parameters":{"check_response_timeout_minutes":60,"grouping_strategy":"ALLGREEN","max_entries_to_build":5,"max_entries_to_merge":5,"merge_method":"SQUASH","min_entries_to_merge":1,"min_entries_to_merge_wait_minutes":0}}
+            ]
+          }
+          JSON
+          if [[ -n "$existing" ]]; then
+            gh api --method PUT "repos/$REPO/rulesets/$existing" --input "$payload" >/dev/null
+            echo "id=$existing" >> "$GITHUB_OUTPUT"
+          else
+            created="$(gh api --method POST "repos/$REPO/rulesets" --input "$payload")"
+            echo "id=$(jq -r '.id' <<<"$created")" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Verify live ruleset has no bypass and required controls
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GITHUB_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+          RULESET_ID: ${{ steps.ruleset.outputs.id }}
+        run: |
+          set -euo pipefail
+          ruleset="$(gh api "repos/$REPO/rulesets/$RULESET_ID")"
+          test "$(jq -r '.enforcement' <<<"$ruleset")" = active
+          test "$(jq -r '.bypass_actors | length' <<<"$ruleset")" -eq 0
+          for type in deletion non_fast_forward required_linear_history required_signatures pull_request required_status_checks merge_queue; do
+            jq -e --arg type "$type" '.rules[] | select(.type == $type)' <<<"$ruleset" >/dev/null
+          done
+          jq -e '.rules[] | select(.type == "pull_request") | .parameters.require_code_owner_review == true and .parameters.dismiss_stale_reviews_on_push == true and .parameters.require_last_push_approval == true' <<<"$ruleset" >/dev/null
+      - name: Publish governance closure to unchanged canonical branch
+        id: publish
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/hepta-governance-worktree")"
+          cd "$worktree"
+          branch=codex/heptatrader-documentation-control-plane-v2
+          git push \
+            --force-with-lease="refs/heads/$branch:$SOURCE_SHA" \
+            origin "HEAD:refs/heads/$branch"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Record platform evidence and close issue
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GITHUB_ADMIN_TOKEN }}
+          REPO: ${{ github.repository }}
+          CLOSURE_SHA: ${{ steps.publish.outputs.sha }}
+          RULESET_ID: ${{ steps.ruleset.outputs.id }}
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$REPO/issues/8/comments" \
+            -f body="Team-distributed governance closure succeeded.
+
+          Closure revision: $CLOSURE_SHA
+          Ruleset ID: $RULESET_ID
+          Workflow run: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID
+
+          Every logical ModuleManifest owner resolved to a real organization team with at least two members, a maintainer and repository write authority. CODEOWNERS contains no individual fallback. The active main ruleset has no bypass actors and requires fresh CODEOWNER approval, signed linear history, exact status checks and merge queue."
+          gh api --method PATCH "repos/$REPO/issues/8" -f state=closed >/dev/null
