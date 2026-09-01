@@ -21,6 +21,20 @@ jobs:
           fetch-depth: 0
       - name: Apply M3-A integration
         run: python3 scripts/m3a_patch.py
+      - name: Declare transitive numeric consumers
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          for name in ('hepta-gateway-runtime.json', 'hepta-client-runtime.json'):
+              path = Path('docs/modules/manifests') / name
+              value = json.loads(path.read_text())
+              dependencies = value.setdefault('allowed_dependencies', [])
+              if 'hepta.numeric.core' not in dependencies:
+                  dependencies.append('hepta.numeric.core')
+                  dependencies.sort()
+              path.write_text(json.dumps(value, indent=2) + '\n')
+          PY
       - name: Validate deterministic core
         run: ./scripts/dev_core.sh
       - name: Commit exact tested implementation
