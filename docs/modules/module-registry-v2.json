@@ -11,7 +11,7 @@
     "shared_migration_requires_complete_participant_set": true,
     "source_size_budget": "docs/modules/source-size-budget-v1.json"
   },
-  "manifest_schema": "modules/module-manifest-schema-v2.json",
+  "manifest_schema": "modules/module-manifest-schema-v3.json",
   "manifest_paths": [
     "modules/manifests/hepta-agent-support.json",
     "modules/manifests/hepta-client-runtime.json",

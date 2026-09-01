@@ -15,7 +15,7 @@
     {
       "id": "M1",
       "title": "Documentation Control Plane",
-      "state": "closed",
+      "state": "in-progress",
       "depends_on": [
         "M0"
       ],

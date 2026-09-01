@@ -45,7 +45,7 @@ class DocumentationControlPlaneTests(unittest.TestCase):
 
     def _schema_errors(self, manifest: dict) -> list[str]:
         schema = json.loads(
-            (ROOT / "docs/modules/module-manifest-schema-v2.json").read_text()
+            (ROOT / "docs/modules/module-manifest-schema-v3.json").read_text()
         )
         errors: list[str] = []
         control.validate_module_manifest(manifest, schema, "fixture", errors)

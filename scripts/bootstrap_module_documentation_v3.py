@@ -8,7 +8,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
-OLD_SCHEMA_PATH = DOCS / "modules/module-manifest-schema-v2.json"
+OLD_SCHEMA_PATH = DOCS / "modules/module-manifest-schema-v3.json"
 NEW_SCHEMA_PATH = DOCS / "modules/module-manifest-schema-v3.json"
 PROFILE_PATH = DOCS / "modules/module-documentation-profiles-v1.json"
 REGISTRY_PATH = DOCS / "modules/module-registry-v2.json"
@@ -17,7 +17,7 @@ TEST_MATRIX_PATH = DOCS / "verification/test-matrix-v2.json"
 GAP_REGISTRY_PATH = DOCS / "program/gap-registry-v2.json"
 MILESTONE_REGISTRY_PATH = DOCS / "program/milestone-registry-v1.json"
 
-OLD_SCHEMA_ID = "heptatrader.module-manifest.v2"
+OLD_SCHEMA_ID = "heptatrader.module-manifest.v3"
 NEW_SCHEMA_ID = "heptatrader.module-manifest.v3"
 CHECK_ID = "module-documentation-coverage"
 
@@ -36,9 +36,9 @@ def write(path: Path, value: Any) -> None:
 
 def replace_current_references() -> None:
     replacements = (
-        ("module-manifest-schema-v2.json", "module-manifest-schema-v3.json"),
+        ("module-manifest-schema-v3.json", "module-manifest-schema-v3.json"),
         (OLD_SCHEMA_ID, NEW_SCHEMA_ID),
-        ("ModuleManifest V2", "ModuleManifest V3"),
+        ("ModuleManifest V3", "ModuleManifest V3"),
     )
     allowed = {".py", ".md", ".json", ".yml", ".yaml"}
     for path in ROOT.rglob("*"):
@@ -114,7 +114,7 @@ def migrate_manifests(required_topics: list[str]) -> list[dict[str, Any]]:
 def migrate_document_registry(manifests: list[dict[str, Any]]) -> None:
     registry = load(DOCUMENT_REGISTRY_PATH)
     remove_paths = {
-        "modules/module-manifest-schema-v2.json",
+        "modules/module-manifest-schema-v3.json",
         "modules/module-manifest-schema-v3.json",
         "modules/module-documentation-profiles-v1.json",
     }

@@ -35,7 +35,7 @@ from hepta_module_boundaries import (
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 DOCUMENT_REGISTRY = DOCS / "document-registry-v2.json"
-MODULE_SCHEMA = DOCS / "modules/module-manifest-schema-v2.json"
+MODULE_SCHEMA = DOCS / "modules/module-manifest-schema-v3.json"
 META = ("Status:", "Applies to:", "Verification:", "Authority:")
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 SHA_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")

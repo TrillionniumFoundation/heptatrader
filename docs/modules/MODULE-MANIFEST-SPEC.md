@@ -1,18 +1,18 @@
-# ModuleManifest V2 Specification
+# ModuleManifest V3 Specification
 
 Status: current normative
 Applies to: all current, experimental, planned, unsupported and deprecated modules
 Verification: Draft 2020-12 validation, source ownership validation and configured CMake File API graph validation
 Authority: module manifest contract
 
-A module is an authority, state, failure and concurrency boundary—not merely a directory. Every module manifest is validated against `module-manifest-schema-v2.json` before semantic checks run.
+A module is an authority, state, failure and concurrency boundary—not merely a directory. Every module manifest is validated against `module-manifest-schema-v3.json` before semantic checks run.
 
 ## Required identity and lifecycle
 
 Each manifest declares:
 
 ```text
-schema = heptatrader.module-manifest.v2
+schema = heptatrader.module-manifest.v3
 stable module id
 semantic version
 lifecycle

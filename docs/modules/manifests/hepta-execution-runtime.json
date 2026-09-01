@@ -1,5 +1,5 @@
 {
-  "schema": "heptatrader.module-manifest.v2",
+  "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.execution.runtime",
   "version": "1.0.0",
   "lifecycle": "current",
@@ -125,6 +125,25 @@
     "reconciliation",
     "simulator-e2e",
     "crash-replay",
-    "shadow-parity"
-  ]
+    "shadow-parity",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-execution-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
 }

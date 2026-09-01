@@ -1,5 +1,5 @@
 {
-  "schema": "heptatrader.module-manifest.v2",
+  "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.venue.ib",
   "version": "1.0.0",
   "lifecycle": "experimental",
@@ -61,6 +61,25 @@
   "verification": [
     "ib-off-contracts",
     "common-risk-parity",
-    "paper-qualification"
-  ]
+    "paper-qualification",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-venue-ib.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
 }

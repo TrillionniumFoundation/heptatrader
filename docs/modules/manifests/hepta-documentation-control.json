@@ -1,5 +1,5 @@
 {
-  "schema": "heptatrader.module-manifest.v2",
+  "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.documentation.control",
   "version": "1.1.0",
   "lifecycle": "current",
@@ -59,6 +59,25 @@
     "docs-generated",
     "docs-control",
     "module-registry",
-    "no-historical-docs"
-  ]
+    "no-historical-docs",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-documentation-control.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
 }

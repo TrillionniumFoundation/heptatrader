@@ -53,7 +53,7 @@ GLOBAL_FILES = {
     "CMakeLists.txt",
     "README.md",
     "docs/document-registry-v2.json",
-    "docs/modules/module-manifest-schema-v2.json",
+    "docs/modules/module-manifest-schema-v3.json",
     "docs/modules/module-registry-v2.json",
     "docs/modules/source-ownership-registry-v1.json",
 }

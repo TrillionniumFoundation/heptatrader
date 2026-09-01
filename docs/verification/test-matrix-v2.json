@@ -1,1 +1,430 @@
-{"schema":"heptatrader.test-matrix.v2","lanes":[{"id":"A-module-fast","trigger":"local and changed module","purpose":"fast structural and contract feedback"},{"id":"B-pr-core","trigger":"every pull request including stacked bases","purpose":"deterministic core and install closure"},{"id":"C-merge-candidate","trigger":"canonical merge candidate","purpose":"reliability, replay, package and performance closure"},{"id":"D-external-qualification","trigger":"manual protected environment","purpose":"exact-artifact real-environment qualification"}],"checks":[{"id":"docs-generated","lane":"A-module-fast","state":"implemented","evidence":"python3 scripts/generate_documentation_views.py --check"},{"id":"docs-control","lane":"A-module-fast","state":"implemented","evidence":"python3 scripts/check_documentation_control_plane.py"},{"id":"no-historical-docs","lane":"A-module-fast","state":"implemented","evidence":"documentation checker legacy/alias/build-entry assertions"},{"id":"module-manifest-schema","lane":"A-module-fast","state":"implemented","evidence":"Draft 2020-12 validation for every ModuleManifest"},{"id":"physical-source-ownership","lane":"A-module-fast","state":"implemented","evidence":"exact physical owner and same-gap overlap validation"},{"id":"configured-cmake-graph","lane":"B-pr-core","state":"implemented","evidence":"CMake File API target/source/dependency validation"},{"id":"repository-contracts","lane":"B-pr-core","state":"implemented","evidence":"python3 scripts/check_repository_integrity.py"},{"id":"module-registry","lane":"A-module-fast","state":"implemented","evidence":"python3 scripts/check_module_discipline.py"},{"id":"schema-catalog","lane":"B-pr-core","state":"implemented","evidence":"python3 scripts/check_schema_catalog.py"},{"id":"protocol-contracts","lane":"B-pr-core","state":"implemented","evidence":"core protocol CTest"},{"id":"gateway-boundary","lane":"B-pr-core","state":"implemented","evidence":"Gateway forbidden-symbol and capability tests"},{"id":"backpressure-contracts","lane":"B-pr-core","state":"implemented","evidence":"UnixToolServer deterministic pressure tests"},{"id":"session-boundary","lane":"B-pr-core","state":"implemented","evidence":"session supervisor boundary tests"},{"id":"lease-fencing","lane":"B-pr-core","state":"implemented","evidence":"decision lease and fencing tests"},{"id":"execution-client-contracts","lane":"B-pr-core","state":"implemented","evidence":"execution service client tests"},{"id":"native-client-contracts","lane":"B-pr-core","state":"implemented","evidence":"native tool client tests"},{"id":"tool-catalog-drift","lane":"B-pr-core","state":"implemented","evidence":"generated C++/Python/MCP binding parity and schema catalog checker"},{"id":"mcp-contracts","lane":"B-pr-core","state":"implemented","evidence":"MCP Python tests"},{"id":"portfolio-properties","lane":"B-pr-core","state":"implemented","evidence":"portfolio compiler CTest"},{"id":"budget-overflow","lane":"B-pr-core","state":"implemented","evidence":"portfolio arithmetic overflow tests"},{"id":"canonical-ordering","lane":"B-pr-core","state":"implemented","evidence":"portfolio canonical-order tests"},{"id":"risk-properties","lane":"B-pr-core","state":"implemented","evidence":"deterministic risk policy tests"},{"id":"strict-reduction","lane":"B-pr-core","state":"implemented","evidence":"strict no-cross-zero reduction tests"},{"id":"numeric-negative","lane":"B-pr-core","state":"implemented","evidence":"NaN/Inf/overflow negative tests"},{"id":"metric-contracts","lane":"B-pr-core","state":"implemented","evidence":"runtime telemetry tests"},{"id":"telemetry-cardinality","lane":"B-pr-core","state":"implemented","evidence":"bounded label/cardinality tests"},{"id":"journal-durability","lane":"B-pr-core","state":"implemented","evidence":"OMS durability tests"},{"id":"idempotency","lane":"B-pr-core","state":"implemented","evidence":"execution coordinator idempotency tests"},{"id":"crash-replay","lane":"C-merge-candidate","state":"implemented","evidence":"reliability crash/replay lane"},{"id":"snapshot-contracts","lane":"B-pr-core","state":"implemented","evidence":"authoritative decision snapshot tests"},{"id":"event-ordering","lane":"C-merge-candidate","state":"implemented","evidence":"duplicate/idempotent, out-of-order, producer-epoch and sequence-gap behavioral CTests"},{"id":"permit-lifecycle","lane":"B-pr-core","state":"implemented","evidence":"execution preview permit tests"},{"id":"negative-paths","lane":"B-pr-core","state":"implemented","evidence":"stale/missing/generation mismatch tests"},{"id":"reconciliation","lane":"C-merge-candidate","state":"implemented","evidence":"authoritative divergence, outcome-uncertain and recovery convergence CTests"},{"id":"uncertain-command","lane":"C-merge-candidate","state":"implemented","evidence":"uncertain recovery tests"},{"id":"disconnect-reconnect","lane":"D-external-qualification","state":"external","evidence":"IB PAPER scenario"},{"id":"simulator-e2e","lane":"B-pr-core","state":"implemented","evidence":"agent simulator E2E"},{"id":"deterministic-replay","lane":"C-merge-candidate","state":"implemented","evidence":"long replay fixture"},{"id":"fault-matrix","lane":"C-merge-candidate","state":"implemented","evidence":"fault matrix runner"},{"id":"ib-off-contracts","lane":"B-pr-core","state":"implemented","evidence":"IB-off lifecycle tests"},{"id":"common-risk-parity","lane":"D-external-qualification","state":"external","evidence":"IB PAPER qualification"},{"id":"paper-qualification","lane":"D-external-qualification","state":"external","evidence":"protected real PAPER qualification"},{"id":"unsupported-venue-negative","lane":"B-pr-core","state":"implemented","evidence":"CTP/XT fail-closed tests"},{"id":"research-self-test","lane":"B-pr-core","state":"implemented","evidence":"research protocol self-test"},{"id":"point-in-time","lane":"B-pr-core","state":"implemented","evidence":"machine dataset registry digest and availability-time tests"},{"id":"cost-model","lane":"B-pr-core","state":"implemented","evidence":"research cost model tests"},{"id":"digest-parity","lane":"B-pr-core","state":"implemented","evidence":"research deterministic digest tests"},{"id":"numeric-properties","lane":"B-pr-core","state":"implemented","evidence":"checked raw construction, exact fixed arithmetic and fail-closed binary64 round-trip projection CTests"},{"id":"marketdata-ordering","lane":"C-merge-candidate","state":"implemented","evidence":"sharded epoch/sequence ordering plus canonical-lock coherent vector-cut CTest"},{"id":"sequence-gap","lane":"C-merge-candidate","state":"implemented","evidence":"gap persistence, epoch reset and stale-reader CTest"},{"id":"feature-determinism","lane":"C-merge-candidate","state":"implemented","evidence":"fixed-point feature digest replay CTest"},{"id":"feature-generation","lane":"C-merge-candidate","state":"implemented","evidence":"generation fencing, canonical snapshot digest revalidation, duplicate and regression CTest"},{"id":"proposal-contracts","lane":"B-pr-core","state":"implemented","evidence":"StrategyProposal seal, canonical digest and malformed input CTest"},{"id":"strategy-isolation","lane":"C-merge-candidate","state":"implemented","evidence":"active/shadow selection and quarantine fault-isolation multi-Agent CTest"},{"id":"proposal-completeness","lane":"C-merge-candidate","state":"implemented","evidence":"expected-module completeness plus proposal/horizon/snapshot lifetime intersection CTest"},{"id":"optimizer-determinism","lane":"C-merge-candidate","state":"implemented","evidence":"exact enumeration, deterministic tie-break and digest CTest"},{"id":"constraint-properties","lane":"C-merge-candidate","state":"implemented","evidence":"gross/instrument feasibility and bounded upper-gap CTest"},{"id":"shadow-parity","lane":"C-merge-candidate","state":"implemented","evidence":"allocator-issued receipt and context-bound PortfolioCompiler Execution revalidation CTest"},{"id":"module-dag","lane":"A-module-fast","state":"implemented","evidence":"module registry DAG validation"},{"id":"lifecycle-faults","lane":"C-merge-candidate","state":"implemented","evidence":"generation fence, stale health and quarantine isolation CTests"},{"id":"rollout-rollback","lane":"C-merge-candidate","state":"implemented","evidence":"staged upgrade, shadow divergence and previous-active rollback CTests"},{"id":"install-allowlist","lane":"B-pr-core","state":"implemented","evidence":"runtime install tree check"},{"id":"sanitizers","lane":"C-merge-candidate","state":"implemented","evidence":"ASAN/UBSAN reliability lane"},{"id":"performance-budgets","lane":"C-merge-candidate","state":"implemented","evidence":"same-fixture performance gate plus bounded exact global-allocation complexity/deadline CTest"},{"id":"live-absence","lane":"B-pr-core","state":"implemented","evidence":"configuration/capability/install absence checks"},{"id":"merge-candidate-impact","lane":"C-merge-candidate","state":"implemented","evidence":"synthetic merge parent binding, physical owner and reverse dependency impact evidence"}],"principle":"Historical green evidence never substitutes for the exact revision or exact merge candidate."}
+{
+  "schema": "heptatrader.test-matrix.v2",
+  "lanes": [
+    {
+      "id": "A-module-fast",
+      "trigger": "local and changed module",
+      "purpose": "fast structural and contract feedback"
+    },
+    {
+      "id": "B-pr-core",
+      "trigger": "every pull request including stacked bases",
+      "purpose": "deterministic core and install closure"
+    },
+    {
+      "id": "C-merge-candidate",
+      "trigger": "canonical merge candidate",
+      "purpose": "reliability, replay, package and performance closure"
+    },
+    {
+      "id": "D-external-qualification",
+      "trigger": "manual protected environment",
+      "purpose": "exact-artifact real-environment qualification"
+    }
+  ],
+  "checks": [
+    {
+      "id": "docs-generated",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "python3 scripts/generate_documentation_views.py --check"
+    },
+    {
+      "id": "docs-control",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "python3 scripts/check_documentation_control_plane.py"
+    },
+    {
+      "id": "no-historical-docs",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "documentation checker legacy/alias/build-entry assertions"
+    },
+    {
+      "id": "module-manifest-schema",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "Draft 2020-12 validation for every ModuleManifest"
+    },
+    {
+      "id": "module-documentation-coverage",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "ModuleManifest V3 documentation contract, deterministic 22-guide generation, registry cross-reference checks and negative schema tests"
+    },
+    {
+      "id": "physical-source-ownership",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "exact physical owner and same-gap overlap validation"
+    },
+    {
+      "id": "configured-cmake-graph",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "CMake File API target/source/dependency validation"
+    },
+    {
+      "id": "repository-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "python3 scripts/check_repository_integrity.py"
+    },
+    {
+      "id": "module-registry",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "python3 scripts/check_module_discipline.py"
+    },
+    {
+      "id": "schema-catalog",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "python3 scripts/check_schema_catalog.py"
+    },
+    {
+      "id": "protocol-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "core protocol CTest"
+    },
+    {
+      "id": "gateway-boundary",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "Gateway forbidden-symbol and capability tests"
+    },
+    {
+      "id": "backpressure-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "UnixToolServer deterministic pressure tests"
+    },
+    {
+      "id": "session-boundary",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "session supervisor boundary tests"
+    },
+    {
+      "id": "lease-fencing",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "decision lease and fencing tests"
+    },
+    {
+      "id": "execution-client-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "execution service client tests"
+    },
+    {
+      "id": "native-client-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "native tool client tests"
+    },
+    {
+      "id": "tool-catalog-drift",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "generated C++/Python/MCP binding parity and schema catalog checker"
+    },
+    {
+      "id": "mcp-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "MCP Python tests"
+    },
+    {
+      "id": "portfolio-properties",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "portfolio compiler CTest"
+    },
+    {
+      "id": "budget-overflow",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "portfolio arithmetic overflow tests"
+    },
+    {
+      "id": "canonical-ordering",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "portfolio canonical-order tests"
+    },
+    {
+      "id": "risk-properties",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "deterministic risk policy tests"
+    },
+    {
+      "id": "strict-reduction",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "strict no-cross-zero reduction tests"
+    },
+    {
+      "id": "numeric-negative",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "NaN/Inf/overflow negative tests"
+    },
+    {
+      "id": "metric-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "runtime telemetry tests"
+    },
+    {
+      "id": "telemetry-cardinality",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "bounded label/cardinality tests"
+    },
+    {
+      "id": "journal-durability",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "OMS durability tests"
+    },
+    {
+      "id": "idempotency",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "execution coordinator idempotency tests"
+    },
+    {
+      "id": "crash-replay",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "reliability crash/replay lane"
+    },
+    {
+      "id": "snapshot-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "authoritative decision snapshot tests"
+    },
+    {
+      "id": "event-ordering",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "duplicate/idempotent, out-of-order, producer-epoch and sequence-gap behavioral CTests"
+    },
+    {
+      "id": "permit-lifecycle",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "execution preview permit tests"
+    },
+    {
+      "id": "negative-paths",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "stale/missing/generation mismatch tests"
+    },
+    {
+      "id": "reconciliation",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "authoritative divergence, outcome-uncertain and recovery convergence CTests"
+    },
+    {
+      "id": "uncertain-command",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "uncertain recovery tests"
+    },
+    {
+      "id": "disconnect-reconnect",
+      "lane": "D-external-qualification",
+      "state": "external",
+      "evidence": "IB PAPER scenario"
+    },
+    {
+      "id": "simulator-e2e",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "agent simulator E2E"
+    },
+    {
+      "id": "deterministic-replay",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "long replay fixture"
+    },
+    {
+      "id": "fault-matrix",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "fault matrix runner"
+    },
+    {
+      "id": "ib-off-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "IB-off lifecycle tests"
+    },
+    {
+      "id": "common-risk-parity",
+      "lane": "D-external-qualification",
+      "state": "external",
+      "evidence": "IB PAPER qualification"
+    },
+    {
+      "id": "paper-qualification",
+      "lane": "D-external-qualification",
+      "state": "external",
+      "evidence": "protected real PAPER qualification"
+    },
+    {
+      "id": "unsupported-venue-negative",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "CTP/XT fail-closed tests"
+    },
+    {
+      "id": "research-self-test",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "research protocol self-test"
+    },
+    {
+      "id": "point-in-time",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "machine dataset registry digest and availability-time tests"
+    },
+    {
+      "id": "cost-model",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "research cost model tests"
+    },
+    {
+      "id": "digest-parity",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "research deterministic digest tests"
+    },
+    {
+      "id": "numeric-properties",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "checked raw construction, exact fixed arithmetic and fail-closed binary64 round-trip projection CTests"
+    },
+    {
+      "id": "marketdata-ordering",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "sharded epoch/sequence ordering plus canonical-lock coherent vector-cut CTest"
+    },
+    {
+      "id": "sequence-gap",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "gap persistence, epoch reset and stale-reader CTest"
+    },
+    {
+      "id": "feature-determinism",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "fixed-point feature digest replay CTest"
+    },
+    {
+      "id": "feature-generation",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "generation fencing, canonical snapshot digest revalidation, duplicate and regression CTest"
+    },
+    {
+      "id": "proposal-contracts",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "StrategyProposal seal, canonical digest and malformed input CTest"
+    },
+    {
+      "id": "strategy-isolation",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "active/shadow selection and quarantine fault-isolation multi-Agent CTest"
+    },
+    {
+      "id": "proposal-completeness",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "expected-module completeness plus proposal/horizon/snapshot lifetime intersection CTest"
+    },
+    {
+      "id": "optimizer-determinism",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "exact enumeration, deterministic tie-break and digest CTest"
+    },
+    {
+      "id": "constraint-properties",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "gross/instrument feasibility and bounded upper-gap CTest"
+    },
+    {
+      "id": "shadow-parity",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "allocator-issued receipt and context-bound PortfolioCompiler Execution revalidation CTest"
+    },
+    {
+      "id": "module-dag",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "module registry DAG validation"
+    },
+    {
+      "id": "lifecycle-faults",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "generation fence, stale health and quarantine isolation CTests"
+    },
+    {
+      "id": "rollout-rollback",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "staged upgrade, shadow divergence and previous-active rollback CTests"
+    },
+    {
+      "id": "install-allowlist",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "runtime install tree check"
+    },
+    {
+      "id": "sanitizers",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "ASAN/UBSAN reliability lane"
+    },
+    {
+      "id": "performance-budgets",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "same-fixture performance gate plus bounded exact global-allocation complexity/deadline CTest"
+    },
+    {
+      "id": "live-absence",
+      "lane": "B-pr-core",
+      "state": "implemented",
+      "evidence": "configuration/capability/install absence checks"
+    },
+    {
+      "id": "merge-candidate-impact",
+      "lane": "C-merge-candidate",
+      "state": "implemented",
+      "evidence": "synthetic merge parent binding, physical owner and reverse dependency impact evidence"
+    }
+  ],
+  "principle": "Historical green evidence never substitutes for the exact revision or exact merge candidate."
+}

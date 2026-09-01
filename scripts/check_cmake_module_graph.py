@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind the configured CMake target/source/dependency graph to ModuleManifest V2."""
+"""Bind the configured CMake target/source/dependency graph to ModuleManifest V3."""
 from __future__ import annotations
 
 import argparse

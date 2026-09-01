@@ -273,7 +273,7 @@
       "version": "2",
       "stability": "target",
       "document": "modules/MODULE-MANIFEST-SPEC.md",
-      "schema_path": "docs/modules/module-manifest-schema-v2.json",
+      "schema_path": "docs/modules/module-manifest-schema-v3.json",
       "providers": [
         "hepta.documentation.control"
       ],

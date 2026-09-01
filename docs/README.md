@@ -14,7 +14,7 @@ Repository and package README files are entrypoints only. They must be registere
 1. [System constitution](governance/CONSTITUTION.md)
 2. [Product scope](product/PRODUCT-SCOPE.md) and [capability matrix](product/CAPABILITY-MATRIX.md)
 3. [Six-plane architecture](architecture/PLANE-ARCHITECTURE.md), [trust boundaries](architecture/TRUST-BOUNDARIES.md), [hot/control paths](architecture/HOT-PATH-AND-CONTROL-PATH.md), and [build/source ownership](architecture/BUILD-GRAPH-AND-SOURCE-OWNERSHIP.md)
-4. [Module map](modules/MODULE-MAP.md), [ModuleManifest V2](modules/MODULE-MANIFEST-SPEC.md), and `modules/source-ownership-registry-v1.json`
+4. [Module map](modules/MODULE-MAP.md), [ModuleManifest V3](modules/MODULE-MANIFEST-SPEC.md), and `modules/source-ownership-registry-v1.json`
 5. [Contract index](contracts/CONTRACT-INDEX.md)
 6. [Global roadmap](program/MASTER-ROADMAP.md), [upgrade plan](program/DOCUMENTATION-UPGRADE-PLAN.md), and [traceability model](program/TRACEABILITY-MODEL.md)
 7. [Verification policy](verification/VERIFICATION-POLICY.md)
