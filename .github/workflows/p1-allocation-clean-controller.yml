@@ -1,0 +1,98 @@
+name: p1-allocation-clean-controller
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/p1-allocation-clean-controller.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-p1-allocation-clean-controller
+  cancel-in-progress: true
+
+jobs:
+  clean:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Rebuild clean allocation candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical=codex/heptatrader-documentation-control-plane-v2
+          source=codex/heptatrader-review-p1-allocation-work
+          git fetch origin "$canonical" "$source"
+          worktree="$RUNNER_TEMP/heptatrader-p1-allocation-clean"
+          git worktree add --detach "$worktree" "origin/$canonical"
+          cd "$worktree"
+          git config user.name "Hepta P1 Allocation Clean Bot"
+          git config user.email "hepta-p1-allocation-clean-bot@users.noreply.github.com"
+          git merge --squash "origin/$source"
+
+          if test -f scripts/p1_allocation_patch.py; then
+            python3 scripts/p1_allocation_patch.py
+          fi
+          if test -f scripts/p1_allocation_repair.py; then
+            python3 scripts/p1_allocation_repair.py
+          fi
+
+          rm -f \
+            scripts/p1_allocation_patch.py \
+            scripts/p1_allocation_repair.py \
+            .github/workflows/p1-allocation-closure.yml \
+            .github/workflows/p1-allocation-repair.yml
+          git add -A
+          git commit -m "fix: seal allocation provenance and execution context"
+
+          git diff --exit-code "origin/$canonical" -- .github/workflows
+          test ! -e scripts/p1_allocation_patch.py
+          test ! -e scripts/p1_allocation_repair.py
+          grep -Fq 'GlobalDecisionReceipt' HeptaTrade/allocation/global_allocator.h
+          grep -Fq 'AllocationExecutionContext' HeptaTrade/execution/allocation_plan_revalidator.h
+          grep -Fq 'snapshotValidUntilMs' HeptaTrade/proposal/proposal_set.h
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "$worktree" > "$RUNNER_TEMP/p1-allocation-worktree"
+      - name: Validate exact allocation core
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-allocation-worktree")"
+          cd "$worktree"
+          HEPTA_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-allocation-core" \
+          HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+            ./scripts/dev_core.sh
+          test -z "$(git status --porcelain)"
+      - name: Validate exact allocation GCC sanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-allocation-worktree")"
+          cd "$worktree"
+          CXX=g++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-allocation-gcc" \
+            ./scripts/reliability_core.sh
+      - name: Validate exact allocation Clang sanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-allocation-worktree")"
+          cd "$worktree"
+          CXX=clang++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-allocation-clang" \
+            ./scripts/reliability_core.sh
+      - name: Publish clean tested allocation candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-allocation-worktree")"
+          cd "$worktree"
+          git push --force origin HEAD:codex/heptatrader-review-p1-allocation-clean
