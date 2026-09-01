@@ -1,0 +1,64 @@
+name: snapshot-digest-patch
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-review-p1-integration
+    paths:
+      - .github/workflows/snapshot-digest-patch.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-snapshot-digest-patch
+  cancel-in-progress: true
+
+jobs:
+  close:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout exact integration branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-review-p1-integration
+          fetch-depth: 0
+      - name: Apply snapshot-level digest repair
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/snapshot_digest_patch.py
+          python3 scripts/snapshot_digest_patch.py
+          git config user.name "Hepta Snapshot Integrity Bot"
+          git config user.email "hepta-snapshot-integrity-bot@users.noreply.github.com"
+          git add \
+            HeptaTrade/marketdata/sharded_market_data.cpp \
+            tests/sharded_market_data_tests.cpp \
+            tests/feature_generation_tests.cpp \
+            docs/architecture/DATAFLOW-AND-CONSISTENCY.md \
+            docs/research/POINT-IN-TIME-DATA-CONTRACT.md
+          git commit -m "fix: seal market snapshot generation and gap metadata"
+          test -z "$(git status --porcelain)"
+      - name: Validate exact repaired candidate
+        env:
+          HEPTA_BUILD_DIR: ${{ runner.temp }}/snapshot-digest-core
+          HEPTA_CMAKE_GENERATOR: Ninja
+          HEPTA_JOBS: "2"
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git diff --cached --exit-code
+          workflow="$RUNNER_TEMP/snapshot-digest-patch.yml"
+          patch="$RUNNER_TEMP/snapshot_digest_patch.py"
+          mv .github/workflows/snapshot-digest-patch.yml "$workflow"
+          mv scripts/snapshot_digest_patch.py "$patch"
+          restore_staging() {
+            mv "$workflow" .github/workflows/snapshot-digest-patch.yml
+            mv "$patch" scripts/snapshot_digest_patch.py
+          }
+          trap restore_staging EXIT
+          ./scripts/dev_core.sh
+          restore_staging
+          trap - EXIT
+          test -z "$(git status --porcelain)"
+      - name: Publish exact tested source revision
+        run: git push origin HEAD:codex/heptatrader-review-p1-integration
