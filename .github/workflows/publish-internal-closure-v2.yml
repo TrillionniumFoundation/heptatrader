@@ -1,0 +1,54 @@
+name: publish-internal-closure-v2
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/publish-internal-closure-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-publish-internal-closure
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Wait for exact tested internal closure candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-internal-closure-candidate
+          for attempt in $(seq 1 600); do
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "internal closure candidate was not published" >&2
+          exit 1
+      - name: Verify final tree and fast-forward canonical PR branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical=codex/heptatrader-documentation-control-plane-v2
+          candidate=codex/heptatrader-internal-closure-candidate
+          git fetch origin "$canonical" "$candidate"
+          git merge-base --is-ancestor "origin/$canonical" "origin/$candidate"
+          git show "origin/$candidate:docs/program/gap-registry-v2.json" | grep -Fq 'G-OPT-007'
+          git show "origin/$candidate:HeptaTrade/numeric/fixed_decimal.h" | grep -Fq 'ToDoubleExact'
+          git show "origin/$candidate:HeptaTrade/allocation/global_allocator.h" | grep -Fq 'GlobalDecisionReceipt'
+          expected="$(git rev-parse "origin/$canonical")"
+          git push \
+            --force-with-lease="refs/heads/$canonical:$expected" \
+            origin "origin/$candidate:refs/heads/$canonical"
