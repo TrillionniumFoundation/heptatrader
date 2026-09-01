@@ -11,6 +11,20 @@
 
 namespace
 {
+bool CanonicalId(const std::string& value, std::size_t maximum)
+{
+    if (value.empty() || value.size() > maximum) return false;
+    for (std::size_t i = 0; i < value.size(); ++i)
+    {
+        const unsigned char c = static_cast<unsigned char>(value[i]);
+        const bool alphaNumeric = (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+        if (!(alphaNumeric || c == '-' || c == '_' || c == '.' || c == ':'))
+            return false;
+    }
+    return true;
+}
+
 bool CheckedAdd(
     DecisionMicrounits left,
     DecisionMicrounits right,
@@ -62,7 +76,8 @@ std::string Sha256(const std::string& value)
 
 bool ValidPolicy(const GlobalAllocationPolicy& policy)
 {
-    if (policy.maximumGrossTarget <= 0 ||
+    if (!CanonicalId(policy.policyRevision, 128u) ||
+        policy.maximumGrossTarget <= 0 ||
         policy.maximumGrossTarget > HeptaFixedDecimal::kMaximumRaw ||
         policy.maximumInstruments == 0 || policy.maximumInstruments > 4096u ||
         policy.maximumExactCombinations == 0 ||
@@ -173,8 +188,15 @@ std::string GlobalAllocator::PlanDigest(const AllocationPlan& plan)
                 std::to_string(plan.allocatorEpoch));
     AppendField(canonical, "capital_pool", plan.capitalPool);
     AppendField(canonical, "account_book", plan.accountBook);
+    AppendField(canonical, "policy_revision", plan.policyRevision);
     AppendField(canonical, "proposal_set_digest", plan.proposalSetDigest);
     AppendField(canonical, "snapshot_digest", plan.snapshotDigest);
+    AppendField(canonical, "proposal_captured_at_ms",
+                std::to_string(plan.proposalCapturedAtMs));
+    AppendField(canonical, "proposal_valid_until_ms",
+                std::to_string(plan.proposalValidUntilMs));
+    AppendField(canonical, "snapshot_valid_until_ms",
+                std::to_string(plan.snapshotValidUntilMs));
     AppendField(canonical, "solver_digest", plan.solver.digest);
     for (std::size_t i = 0; i < plan.targets.size(); ++i)
     {
@@ -198,16 +220,19 @@ GlobalAllocationResult GlobalAllocator::Allocate(
     const ProposalSet& proposalSet,
     const GlobalAllocationPolicy& policy,
     std::uint64_t allocatorEpoch,
-    std::uint64_t createdAtMs,
-    std::uint64_t validUntilMs)
+    std::uint64_t createdAtMs)
 {
     if (!ValidPolicy(policy)) return Reject("ALLOCATION_POLICY_INVALID");
-    if (allocatorEpoch == 0 || createdAtMs == 0 ||
-        validUntilMs <= createdAtMs)
+    if (allocatorEpoch == 0 || createdAtMs == 0)
         return Reject("ALLOCATION_TIME_ENVELOPE_INVALID");
     if (proposalSet.proposals.empty() || proposalSet.digest.empty() ||
         ProposalSetBuilder::Digest(proposalSet) != proposalSet.digest)
         return Reject("ALLOCATION_PROPOSAL_SET_INVALID");
+    if (proposalSet.capturedAtMs == 0 || proposalSet.validUntilMs <= createdAtMs ||
+        createdAtMs < proposalSet.capturedAtMs ||
+        createdAtMs < proposalSet.validFromMs ||
+        proposalSet.validUntilMs > proposalSet.snapshotValidUntilMs)
+        return Reject("ALLOCATION_TIME_ENVELOPE_INVALID");
 
     bool exact = true;
     std::uint64_t combinations = 1;
@@ -331,10 +356,14 @@ GlobalAllocationResult GlobalAllocator::Allocate(
     plan.allocatorEpoch = allocatorEpoch;
     plan.capitalPool = proposalSet.capitalPool;
     plan.accountBook = proposalSet.accountBook;
+    plan.policyRevision = policy.policyRevision;
     plan.proposalSetDigest = proposalSet.digest;
     plan.snapshotDigest = proposalSet.snapshotDigest;
+    plan.proposalCapturedAtMs = proposalSet.capturedAtMs;
+    plan.proposalValidUntilMs = proposalSet.validUntilMs;
+    plan.snapshotValidUntilMs = proposalSet.snapshotValidUntilMs;
     plan.createdAtMs = createdAtMs;
-    plan.validUntilMs = validUntilMs;
+    plan.validUntilMs = proposalSet.validUntilMs;
     for (std::map<std::string, DecisionMicrounits>::const_iterator it =
              bestTargets.begin(); it != bestTargets.end(); ++it)
     {
@@ -384,5 +413,6 @@ GlobalAllocationResult GlobalAllocator::Allocate(
     result.reasonCode = exact
         ? "ALLOCATION_OPTIMAL" : "ALLOCATION_FEASIBLE_NOT_PROVEN";
     result.plan = plan;
+    result.receipt = GlobalDecisionReceipt(plan);
     return result;
 }

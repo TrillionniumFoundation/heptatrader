@@ -6,6 +6,17 @@
 #include <cstdint>
 #include <string>
 
+struct AllocationExecutionContext
+{
+    std::uint64_t allocatorEpoch = 0;
+    std::string capitalPool;
+    std::string accountBook;
+    std::string policyRevision;
+    std::string proposalSetDigest;
+    std::string authoritativeSnapshotDigest;
+    std::uint64_t authoritativeSnapshotValidUntilMs = 0;
+};
+
 struct AllocationPlanRevalidationResult
 {
     bool accepted = false;
@@ -18,8 +29,8 @@ class AllocationPlanRevalidator
 public:
     static const char* Version();
     static AllocationPlanRevalidationResult ValidateShadow(
-        const AllocationPlan& plan,
-        const std::string& authoritativeSnapshotDigest,
+        const GlobalDecisionReceipt& receipt,
+        const AllocationExecutionContext& context,
         std::uint64_t nowMs,
         const AuthoritativePortfolioInput& authoritative,
         const PortfolioCapitalPolicy& policy);

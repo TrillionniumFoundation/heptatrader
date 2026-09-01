@@ -80,6 +80,7 @@ StrategyProposal Proposal(const std::string& module,
 GlobalAllocationPolicy AllocationPolicy()
 {
     GlobalAllocationPolicy policy;
+    policy.policyRevision = "policy-v1";
     policy.maximumGrossTarget = 10000000;
     policy.maximumInstruments = 4;
     policy.maximumExactCombinations = 100;

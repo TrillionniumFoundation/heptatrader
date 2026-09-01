@@ -55,7 +55,7 @@ MultiAgentSimulationResult MultiAgentAllocationSimulator::RunCycle(
         result.ignoredModules.end());
 
     const ProposalSetBuildResult proposalSet = ProposalSetBuilder::Build(
-        selected, expected, nowMs);
+        selected, expected, nowMs, planValidUntilMs);
     if (!proposalSet.accepted)
     {
         result.reasonCode = proposalSet.reasonCode;
@@ -64,8 +64,7 @@ MultiAgentSimulationResult MultiAgentAllocationSimulator::RunCycle(
     }
     result.proposalSet = proposalSet.proposalSet;
     const GlobalAllocationResult allocation = GlobalAllocator::Allocate(
-        result.proposalSet, allocationPolicy, allocatorEpoch,
-        nowMs, planValidUntilMs);
+        result.proposalSet, allocationPolicy, allocatorEpoch, nowMs);
     if (!allocation.accepted)
     {
         result.reasonCode = allocation.reasonCode;
@@ -73,9 +72,16 @@ MultiAgentSimulationResult MultiAgentAllocationSimulator::RunCycle(
         return result;
     }
     result.plan = allocation.plan;
+    AllocationExecutionContext context;
+    context.allocatorEpoch = allocatorEpoch;
+    context.capitalPool = result.plan.capitalPool;
+    context.accountBook = result.plan.accountBook;
+    context.policyRevision = allocationPolicy.policyRevision;
+    context.proposalSetDigest = result.proposalSet.digest;
+    context.authoritativeSnapshotDigest = authoritativeSnapshotDigest;
+    context.authoritativeSnapshotValidUntilMs = planValidUntilMs;
     result.revalidation = AllocationPlanRevalidator::ValidateShadow(
-        result.plan, authoritativeSnapshotDigest, nowMs,
-        authoritative, executionPolicy);
+        allocation.receipt, context, nowMs, authoritative, executionPolicy);
     if (!result.revalidation.accepted)
     {
         result.reasonCode = result.revalidation.reasonCode;

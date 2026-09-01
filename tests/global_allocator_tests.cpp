@@ -53,7 +53,7 @@ ProposalSet Set()
     expected.push_back("hepta.strategy.alpha");
     expected.push_back("hepta.strategy.beta");
     ProposalSetBuildResult result = ProposalSetBuilder::Build(
-        proposals, expected, 1500);
+        proposals, expected, 1500, 1800);
     assert(result.accepted);
     return result.proposalSet;
 }
@@ -61,6 +61,7 @@ ProposalSet Set()
 GlobalAllocationPolicy Policy(std::uint64_t combinations)
 {
     GlobalAllocationPolicy policy;
+    policy.policyRevision = "policy-v1";
     policy.maximumGrossTarget = 10000000;
     policy.maximumInstruments = 4;
     policy.maximumExactCombinations = combinations;
@@ -71,8 +72,11 @@ GlobalAllocationPolicy Policy(std::uint64_t combinations)
 void TestExactOptimalEvidence()
 {
     GlobalAllocationResult result = GlobalAllocator::Allocate(
-        Set(), Policy(100), 1, 1500, 1800);
+        Set(), Policy(100), 1, 1500);
     assert(result.accepted);
+    assert(result.receipt.IsValid());
+    assert(result.receipt.Plan().planDigest == result.plan.planDigest);
+    assert(result.plan.validUntilMs == 1800);
     assert(result.reasonCode == "ALLOCATION_OPTIMAL");
     assert(result.plan.solver.status == "optimal");
     assert(result.plan.solver.exact);
@@ -89,7 +93,7 @@ void TestExactOptimalEvidence()
     assert(GlobalAllocator::PlanDigest(result.plan) == result.plan.planDigest);
 
     GlobalAllocationResult repeated = GlobalAllocator::Allocate(
-        Set(), Policy(100), 1, 1500, 1800);
+        Set(), Policy(100), 1, 1500);
     assert(repeated.accepted);
     assert(repeated.plan.planDigest == result.plan.planDigest);
 }
@@ -97,7 +101,7 @@ void TestExactOptimalEvidence()
 void TestBoundedHeuristicIsTruthful()
 {
     GlobalAllocationResult result = GlobalAllocator::Allocate(
-        Set(), Policy(2), 1, 1500, 1800);
+        Set(), Policy(2), 1, 1500);
     assert(result.accepted);
     assert(result.reasonCode == "ALLOCATION_FEASIBLE_NOT_PROVEN");
     assert(result.plan.solver.status == "feasible_not_proven");
@@ -115,13 +119,13 @@ void TestConstraintAndPolicyFailures()
 {
     GlobalAllocationPolicy invalid = Policy(100);
     invalid.maximumGrossTarget = 0;
-    assert(GlobalAllocator::Allocate(Set(), invalid, 1, 1500, 1800).reasonCode ==
+    assert(GlobalAllocator::Allocate(Set(), invalid, 1, 1500).reasonCode ==
            "ALLOCATION_POLICY_INVALID");
 
     GlobalAllocationPolicy constrained = Policy(100);
     constrained.instrumentAbsoluteLimits["EUR.USD"] = 3000000;
     GlobalAllocationResult result = GlobalAllocator::Allocate(
-        Set(), constrained, 1, 1500, 1800);
+        Set(), constrained, 1, 1500);
     assert(result.accepted);
     assert(result.plan.targets.empty());
     assert(result.plan.solver.objective == 0);
@@ -129,9 +133,14 @@ void TestConstraintAndPolicyFailures()
 
     ProposalSet tampered = Set();
     tampered.proposals[0].proposalId = "tampered";
-    assert(GlobalAllocator::Allocate(tampered, Policy(100), 1, 1500, 1800)
+    assert(GlobalAllocator::Allocate(tampered, Policy(100), 1, 1500)
                .reasonCode == "ALLOCATION_PROPOSAL_SET_INVALID");
-    assert(GlobalAllocator::Allocate(Set(), Policy(100), 0, 1500, 1800)
+    assert(GlobalAllocator::Allocate(Set(), Policy(100), 0, 1500)
+               .reasonCode == "ALLOCATION_TIME_ENVELOPE_INVALID");
+    ProposalSet expired = Set();
+    expired.validUntilMs = 1500;
+    expired.digest = ProposalSetBuilder::Digest(expired);
+    assert(GlobalAllocator::Allocate(expired, Policy(100), 1, 1500)
                .reasonCode == "ALLOCATION_TIME_ENVELOPE_INVALID");
 }
 }

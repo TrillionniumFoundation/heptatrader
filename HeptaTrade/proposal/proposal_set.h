@@ -12,6 +12,9 @@ struct ProposalSet
     std::string accountBook;
     std::string snapshotDigest;
     std::uint64_t capturedAtMs = 0;
+    std::uint64_t validFromMs = 0;
+    std::uint64_t validUntilMs = 0;
+    std::uint64_t snapshotValidUntilMs = 0;
     std::vector<StrategyProposal> proposals;
     std::string digest;
 };
@@ -30,6 +33,7 @@ public:
     static ProposalSetBuildResult Build(
         const std::vector<StrategyProposal>& proposals,
         const std::vector<std::string>& expectedModules,
-        std::uint64_t nowMs);
+        std::uint64_t nowMs,
+        std::uint64_t snapshotValidUntilMs);
     static std::string Digest(const ProposalSet& proposalSet);
 };
