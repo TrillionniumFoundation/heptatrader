@@ -9,6 +9,7 @@
   "ownership_mode": "exclusive",
   "source_roots": [
     "HeptaTrade/cli/hepta_paper_terminal_latch_committer.cpp",
+    "HeptaTrade/execution/allocation_plan_revalidator",
     "HeptaTrade/execution/execution_authoritative_",
     "HeptaTrade/execution/execution_authority.h",
     "HeptaTrade/execution/execution_coordinator",
@@ -41,7 +42,8 @@
     "hepta_paper_terminal_latch_committer",
     "hepta_oms_core",
     "hepta_state_core",
-    "hepta_intent_core"
+    "hepta_intent_core",
+    "hepta_allocation_revalidator"
   ],
   "provides": [
     "execution.client.v1",
@@ -72,12 +74,16 @@
     "reconcile.decision.v1"
   ],
   "allowed_dependencies": [
-    "hepta.protocol.contracts",
     "hepta.agent.support",
-    "hepta.risk.policy",
+    "hepta.global.decision",
+    "hepta.numeric.core",
     "hepta.observability.runtime",
-    "hepta.venue.simulator",
-    "hepta.venue.ib"
+    "hepta.portfolio.compiler",
+    "hepta.protocol.contracts",
+    "hepta.risk.policy",
+    "hepta.strategy.runtime",
+    "hepta.venue.ib",
+    "hepta.venue.simulator"
   ],
   "forbidden_dependencies": [
     "hepta.gateway.runtime",
@@ -118,6 +124,7 @@
     "permit-lifecycle",
     "reconciliation",
     "simulator-e2e",
-    "crash-replay"
+    "crash-replay",
+    "shadow-parity"
   ]
 }

@@ -126,6 +126,37 @@ hepta_runtime_target(hepta_risk_core)
 target_link_libraries(hepta_risk_core PUBLIC hepta_observability_core)
 
 
+add_library(hepta_strategy_runtime STATIC
+    strategy_runtime/strategy_proposal.cpp)
+hepta_runtime_target(hepta_strategy_runtime)
+target_link_libraries(hepta_strategy_runtime PUBLIC
+    hepta_numeric_core
+    OpenSSL::Crypto)
+
+add_library(hepta_proposal_aggregator STATIC
+    proposal/proposal_set.cpp)
+hepta_runtime_target(hepta_proposal_aggregator)
+target_link_libraries(hepta_proposal_aggregator PUBLIC
+    hepta_strategy_runtime
+    OpenSSL::Crypto)
+
+add_library(hepta_global_allocator STATIC
+    allocation/global_allocator.cpp)
+hepta_runtime_target(hepta_global_allocator)
+target_link_libraries(hepta_global_allocator PUBLIC
+    hepta_proposal_aggregator
+    hepta_numeric_core
+    OpenSSL::Crypto)
+
+add_library(hepta_allocation_revalidator STATIC
+    execution/allocation_plan_revalidator.cpp)
+hepta_runtime_target(hepta_allocation_revalidator)
+target_link_libraries(hepta_allocation_revalidator PUBLIC
+    hepta_global_allocator
+    hepta_portfolio_core
+    hepta_numeric_core)
+
+
 add_library(hepta_oms_core STATIC
     oms_journal.cpp
     oms_recover.cpp)

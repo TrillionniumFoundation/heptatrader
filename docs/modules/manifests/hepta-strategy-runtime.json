@@ -2,7 +2,7 @@
   "schema": "heptatrader.module-manifest.v2",
   "id": "hepta.strategy.runtime",
   "version": "1.0.0",
-  "lifecycle": "planned",
+  "lifecycle": "current",
   "kind": "sandbox-runtime",
   "trust_domain": "untrusted-strategy",
   "authority": "StrategyProposal only",

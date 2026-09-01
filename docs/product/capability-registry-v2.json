@@ -165,12 +165,12 @@
     {
       "id": "hepta.global.multi-agent-allocation",
       "title": "Global multi-Agent capital allocation",
-      "declared_state": "planned",
-      "design": "target-contract",
-      "implementation": "planned",
-      "build": "absent",
+      "declared_state": "experimental",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
       "integration": {
-        "simulator": "planned-shadow",
+        "simulator": "active-shadow",
         "paper": "absent",
         "live": "forbidden"
       },
@@ -191,7 +191,7 @@
         "shadow-parity"
       ],
       "qualification": "paper-required",
-      "release": "excluded",
+      "release": "core",
       "milestone": "M4"
     },
     {

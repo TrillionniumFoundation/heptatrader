@@ -125,7 +125,7 @@ std::string ChoiceKey(
     for (std::size_t i = 0; i < choices.size(); ++i)
     {
         AppendField(key, "module", proposalSet.proposals[i].moduleId);
-        AppendField(key, "candidate", choices[i] < 0 ? "~" :
+        AppendField(key, "candidate", choices[i] < 0 ? "!" :
             proposalSet.proposals[i].candidates[
                 static_cast<std::size_t>(choices[i])].candidateId);
     }

@@ -12,7 +12,7 @@ Authority: generated from capability-registry-v2.json
 | `hepta.data.feature-plane` — Shard-aware market-data and feature plane | **experimental** | active-library | absent | forbidden | core |
 | `hepta.execution.authority` — Execution authority, OMS, journal and recovery | **implemented** | active | experimental | forbidden | core |
 | `hepta.gateway.typed-local-tools` — Typed local Tool Gateway and clients | **implemented** | active | experimental | forbidden | core |
-| `hepta.global.multi-agent-allocation` — Global multi-Agent capital allocation | **planned** | planned-shadow | absent | forbidden | excluded |
+| `hepta.global.multi-agent-allocation` — Global multi-Agent capital allocation | **experimental** | active-shadow | absent | forbidden | core |
 | `hepta.intent.target-position` — Generation-bound target-position preview/apply | **implemented** | active | experimental | forbidden | core |
 | `hepta.management.module-lifecycle` — Module registry, lifecycle and rollout control plane | **planned** | planned | absent | forbidden | excluded |
 | `hepta.portfolio.compiler` — Deterministic multi-strategy portfolio compiler | **implemented** | library-boundary | absent | forbidden | core |

@@ -3,18 +3,87 @@
   "title": "SolverResultV1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema","status","objective_version","solver_version","input_digest","output_digest"],
+  "required": [
+    "schema",
+    "status",
+    "objective_raw",
+    "primal_bound_raw",
+    "upper_bound_raw",
+    "absolute_gap_raw",
+    "combinations_explored",
+    "exact",
+    "digest"
+  ],
   "properties": {
-    "schema": {"const":"hepta.solver-result.v1"},
-    "status": {"enum":["OPTIMAL","OPTIMAL_WITHIN_TOLERANCE","BEST_KNOWN","FEASIBLE_FALLBACK","NO_FEASIBLE_PLAN","STALE_INPUT","NUMERIC_FAILURE"]},
-    "objective_version": {"type":"string"},
-    "solver_version": {"type":"string"},
-    "input_digest": {"type":"string","pattern":"^sha256:"},
-    "output_digest": {"type":"string","pattern":"^sha256:"},
-    "lower_bound": {"type":["number","null"]},
-    "upper_bound": {"type":["number","null"]},
-    "optimality_gap": {"type":["number","null"],"minimum":0},
-    "termination_reason": {"type":"string"},
-    "iterations": {"type":"integer","minimum":0}
-  }
+    "schema": {
+      "const": "hepta.solver-result.v1"
+    },
+    "status": {
+      "enum": [
+        "optimal",
+        "feasible_not_proven"
+      ]
+    },
+    "objective_raw": {
+      "type": "integer"
+    },
+    "primal_bound_raw": {
+      "type": "integer"
+    },
+    "upper_bound_raw": {
+      "type": "integer"
+    },
+    "absolute_gap_raw": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "combinations_explored": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "exact": {
+      "type": "boolean"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "exact": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "optimal"
+          },
+          "absolute_gap_raw": {
+            "const": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "exact": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "status": {
+            "const": "feasible_not_proven"
+          }
+        }
+      }
+    }
+  ]
 }

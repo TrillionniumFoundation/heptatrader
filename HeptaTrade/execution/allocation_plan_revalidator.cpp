@@ -15,13 +15,29 @@ AllocationPlanRevalidationResult Reject(const char* code)
     return result;
 }
 
+bool CheckedSubtract(
+    DecisionMicrounits left,
+    DecisionMicrounits right,
+    DecisionMicrounits& out)
+{
+    if ((right < 0 && left >
+            std::numeric_limits<DecisionMicrounits>::max() + right) ||
+        (right > 0 && left <
+            std::numeric_limits<DecisionMicrounits>::min() + right))
+        return false;
+    out = left - right;
+    return true;
+}
+
 bool SolverEvidenceValid(const AllocationSolverResult& solver)
 {
+    DecisionMicrounits expectedGap = 0;
     if (solver.digest.empty() ||
         GlobalAllocator::SolverDigest(solver) != solver.digest ||
         solver.primalBound != solver.objective ||
         solver.upperBound < solver.objective ||
-        solver.absoluteGap != solver.upperBound - solver.objective)
+        !CheckedSubtract(solver.upperBound, solver.objective, expectedGap) ||
+        solver.absoluteGap != expectedGap)
         return false;
     if (solver.exact)
         return solver.status == "optimal" && solver.absoluteGap == 0 &&

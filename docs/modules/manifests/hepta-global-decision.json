@@ -2,7 +2,7 @@
   "schema": "heptatrader.module-manifest.v2",
   "id": "hepta.global.decision",
   "version": "1.0.0",
-  "lifecycle": "planned",
+  "lifecycle": "current",
   "kind": "solver-service",
   "trust_domain": "global-decision",
   "authority": "proposal aggregation/global allocation",
@@ -30,11 +30,12 @@
     "proposal-set.v1"
   ],
   "allowed_dependencies": [
-    "hepta.protocol.contracts",
+    "hepta.management.control",
     "hepta.numeric.core",
     "hepta.portfolio.compiler",
+    "hepta.protocol.contracts",
     "hepta.risk.policy",
-    "hepta.management.control"
+    "hepta.strategy.runtime"
   ],
   "forbidden_dependencies": [
     "hepta.venue.*",

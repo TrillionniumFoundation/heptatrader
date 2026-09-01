@@ -253,6 +253,25 @@ target_link_libraries(hepta_feature_generation_tests
     hepta_feature_runtime)
 hepta_register_core_test(hepta_feature_generation_tests)
 
+
+add_executable(hepta_strategy_proposal_tests
+    strategy_proposal_tests.cpp)
+target_link_libraries(hepta_strategy_proposal_tests
+    hepta_proposal_aggregator)
+hepta_register_core_test(hepta_strategy_proposal_tests)
+
+add_executable(hepta_global_allocator_tests
+    global_allocator_tests.cpp)
+target_link_libraries(hepta_global_allocator_tests
+    hepta_global_allocator)
+hepta_register_core_test(hepta_global_allocator_tests)
+
+add_executable(hepta_allocation_plan_revalidator_tests
+    allocation_plan_revalidator_tests.cpp)
+target_link_libraries(hepta_allocation_plan_revalidator_tests
+    hepta_allocation_revalidator)
+hepta_register_core_test(hepta_allocation_plan_revalidator_tests)
+
 add_executable(hepta_oms_crash_replay_tests
     oms_crash_replay_tests.cpp)
 target_link_libraries(hepta_oms_crash_replay_tests
