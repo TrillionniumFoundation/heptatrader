@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - name: Apply M4 integration
         run: python3 scripts/m4_patch.py
-      - name: Register exact Execution source claim
+      - name: Register exact Execution source and dependency claims
         run: |
           python3 - <<'PY'
           import json
@@ -33,6 +33,10 @@ jobs:
           if root not in roots:
               roots.append(root)
               roots.sort()
+          dependencies = value.setdefault('allowed_dependencies', [])
+          if 'hepta.strategy.runtime' not in dependencies:
+              dependencies.append('hepta.strategy.runtime')
+              dependencies.sort()
           path.write_text(json.dumps(value, indent=2) + '\n')
           PY
       - name: Validate deterministic core
