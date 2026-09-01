@@ -118,6 +118,7 @@ private:
         MarketDataEvent event;
         std::uint64_t generation = 0;
         bool sequenceGap = false;
+        std::string eventDigest;
         std::string digest;
     };
 
