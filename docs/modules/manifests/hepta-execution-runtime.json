@@ -18,10 +18,12 @@
     "hepta_execution_client",
     "hepta_execution_server",
     "hepta_execution_core",
-    "hepta_trading_tool_core",
     "hepta_executiond",
     "hepta_ib_executiond",
-    "hepta_paper_terminal_latch_committer"
+    "hepta_paper_terminal_latch_committer",
+    "hepta_oms_core",
+    "hepta_state_core",
+    "hepta_intent_core"
   ],
   "provides": [
     "execution.client.v1",

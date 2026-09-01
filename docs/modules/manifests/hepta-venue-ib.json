@@ -11,7 +11,8 @@
     "HeptaTrade/adapter_ib/"
   ],
   "build_targets": [
-    "hepta_ibapi_client"
+    "hepta_ibapi_client",
+    "hepta_ib_adapter_core"
   ],
   "provides": [
     "hepta.venue.v1"
@@ -21,7 +22,9 @@
     "hepta.risk-policy.v2"
   ],
   "allowed_dependencies": [
-    "hepta.protocol.contracts"
+    "hepta.protocol.contracts",
+    "hepta.risk.policy",
+    "hepta.observability.runtime"
   ],
   "forbidden_dependencies": [
     "hepta.gateway.runtime",

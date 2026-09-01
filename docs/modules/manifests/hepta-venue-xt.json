@@ -10,7 +10,9 @@
   "source_roots": [
     "HeptaTrade/adapter_xt/"
   ],
-  "build_targets": [],
+  "build_targets": [
+    "hepta_venue_xt"
+  ],
   "provides": [
     "hepta.venue.v1"
   ],

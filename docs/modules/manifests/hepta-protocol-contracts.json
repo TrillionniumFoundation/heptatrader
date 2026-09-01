@@ -16,7 +16,8 @@
   ],
   "build_targets": [
     "hepta_execution_contract",
-    "hepta_execution_transport"
+    "hepta_execution_transport",
+    "hepta_tool_protocol"
   ],
   "provides": [
     "hepta.event-envelope.v1",

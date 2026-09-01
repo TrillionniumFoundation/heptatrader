@@ -13,7 +13,9 @@
   ],
   "build_targets": [
     "hepta_agent_os_core",
-    "hepta_tool_gatewayd"
+    "hepta_tool_gatewayd",
+    "hepta_trading_tool_core",
+    "hepta_execution_event_relay_core"
   ],
   "provides": [
     "gateway.session-boundary",

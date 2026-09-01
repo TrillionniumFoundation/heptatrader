@@ -86,7 +86,8 @@ target_link_libraries(hepta_execution_server PUBLIC
 
 add_library(hepta_agent_execution_support STATIC
     agent/decision_lease_manager.cpp
-    events/execution_event_hub.cpp)
+    events/execution_event_hub.cpp
+    events/owner_scoped_health_publisher.cpp)
 hepta_runtime_target(hepta_agent_execution_support)
 target_link_libraries(hepta_agent_execution_support PUBLIC Threads::Threads)
 
@@ -103,30 +104,90 @@ add_library(hepta_risk_core STATIC
 hepta_runtime_target(hepta_risk_core)
 target_link_libraries(hepta_risk_core PUBLIC hepta_observability_core)
 
+
+add_library(hepta_oms_core STATIC
+    oms_journal.cpp
+    oms_recover.cpp)
+hepta_runtime_target(hepta_oms_core)
+target_link_libraries(hepta_oms_core PUBLIC
+    hepta_observability_core
+    Threads::Threads)
+
+add_library(hepta_state_core STATIC
+    state/authoritative_trading_snapshot_store.cpp
+    state/snapshot_refresh_coordinator.cpp
+    state/ib_contract_identity.cpp
+    state/ib_authoritative_quote_subscription_set.cpp)
+hepta_runtime_target(hepta_state_core)
+target_link_libraries(hepta_state_core PUBLIC Threads::Threads)
+
+add_library(hepta_intent_core STATIC
+    intent/bounded_json.cpp
+    intent/target_position_intent.cpp
+    intent/authoritative_decision_snapshot.cpp)
+hepta_runtime_target(hepta_intent_core)
+target_link_libraries(hepta_intent_core PUBLIC OpenSSL::Crypto)
+
+add_library(hepta_tool_protocol STATIC
+    tool_host/typed_tool_framing.cpp
+    tool_host/typed_tool_protocol.cpp
+    tool_host/typed_tool_result_codec.cpp)
+hepta_runtime_target(hepta_tool_protocol)
+
+add_library(hepta_execution_event_relay_core STATIC
+    tool_host/execution_event_relay.cpp)
+hepta_runtime_target(hepta_execution_event_relay_core)
+target_link_libraries(hepta_execution_event_relay_core PUBLIC
+    hepta_execution_contract
+    hepta_agent_execution_support)
+
+add_library(hepta_simulator_venue STATIC
+    simulator/deterministic_execution_venue.cpp)
+hepta_runtime_target(hepta_simulator_venue)
+
+add_library(hepta_venue_ctp STATIC
+    adapter_ctp/ctp_gateway_adapter.cpp)
+hepta_runtime_target(hepta_venue_ctp)
+
+add_library(hepta_venue_xt STATIC
+    adapter_xt/xt_gateway_adapter.cpp)
+hepta_runtime_target(hepta_venue_xt)
+
+add_library(hepta_ib_adapter_core STATIC
+    adapter_ib/ib_api_wrapper.cpp
+    adapter_ib/ib_decimal_compat.cpp
+    ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
+    adapter_ib/ib_order_lifecycle.cpp
+    adapter_ib/ib_venue_correlation.cpp)
+hepta_runtime_target(hepta_ib_adapter_core)
+target_link_libraries(hepta_ib_adapter_core PUBLIC
+    hepta_risk_core
+    hepta_observability_core
+    Threads::Threads)
 add_library(hepta_execution_core STATIC
     ${HEPTA_EXECUTION_COORDINATOR_SOURCES}
     execution/paper_terminal_mutation_manifest.cpp
     execution/execution_place_order_dispatch.cpp
     execution/execution_authoritative_flatten.cpp
     execution/execution_authoritative_flatten_dispatch.cpp
-    oms_journal.cpp)
+    execution/ib_paper_kill_switch.cpp)
 hepta_runtime_target(hepta_execution_core)
 target_link_libraries(hepta_execution_core PUBLIC
     hepta_execution_server
     hepta_execution_client
     hepta_agent_execution_support
     hepta_risk_core
+    hepta_oms_core
     Threads::Threads
     OpenSSL::Crypto)
 
 add_library(hepta_trading_tool_core STATIC
-    state/ib_contract_identity.cpp
-    intent/bounded_json.cpp
-    intent/target_position_intent.cpp
-    intent/authoritative_decision_snapshot.cpp
     tools/trading_tool_registry.cpp)
 hepta_runtime_target(hepta_trading_tool_core)
-target_link_libraries(hepta_trading_tool_core PUBLIC OpenSSL::Crypto)
+target_link_libraries(hepta_trading_tool_core PUBLIC
+    hepta_intent_core
+    hepta_state_core
+    OpenSSL::Crypto)
 
 add_library(hepta_agent_os_core STATIC
     tool_host/tool_gateway_runtime_composition.cpp
@@ -135,7 +196,6 @@ add_library(hepta_agent_os_core STATIC
     tool_host/agent_os_runtime_config.cpp
     tool_host/execution_gateway_runtime_composition.cpp
     tool_host/execution_gateway_runtime_config.cpp
-    tool_host/execution_event_relay.cpp
     tool_host/session_supervisor_audit_journal.cpp
     tool_host/session_supervisor_lease_store.cpp
     tool_host/session_supervisor_protocol.cpp
@@ -146,14 +206,13 @@ add_library(hepta_agent_os_core STATIC
     tool_host/trading_tool_session_catalog.cpp
     tool_host/trading_tool_session_control_plane.cpp
     tool_host/trading_tool_watch_transaction.cpp
-    tool_host/typed_tool_framing.cpp
-    tool_host/typed_tool_protocol.cpp
-    tool_host/typed_tool_result_codec.cpp
     tool_host/unix_session_supervisor_server.cpp
     tool_host/unix_tool_server.cpp)
 hepta_runtime_target(hepta_agent_os_core)
 target_link_libraries(hepta_agent_os_core PUBLIC
     hepta_observability_core
+    hepta_tool_protocol
+    hepta_execution_event_relay_core
     hepta_trading_tool_core
     hepta_execution_client
     hepta_agent_execution_support
@@ -177,11 +236,10 @@ endif()
 add_library(hepta_native_tool_client STATIC
     client/native_tool_discovery_contract.cpp
     client/native_tool_client.cpp
-    tool_host/unix_tool_client.cpp
-    tool_host/typed_tool_framing.cpp
-    tool_host/typed_tool_protocol.cpp
-    tool_host/typed_tool_result_codec.cpp)
+    tool_host/unix_tool_client.cpp)
 hepta_runtime_target(hepta_native_tool_client)
+target_link_libraries(hepta_native_tool_client PUBLIC
+    hepta_tool_protocol)
 
 add_executable(heptactl
     cli/heptactl.cpp
@@ -244,13 +302,14 @@ endif()
 add_executable(hepta_executiond
     execution/hepta_executiond.cpp
     execution/execution_service_runtime_config.cpp
-    execution/execution_service_runtime_composition.cpp
-    simulator/deterministic_execution_venue.cpp)
+    execution/execution_service_runtime_composition.cpp)
 hepta_runtime_target(hepta_executiond)
 set_target_properties(hepta_executiond PROPERTIES
     OUTPUT_NAME hepta-executiond
     SKIP_BUILD_RPATH TRUE)
-target_link_libraries(hepta_executiond PRIVATE hepta_execution_core)
+target_link_libraries(hepta_executiond PRIVATE
+    hepta_execution_core
+    hepta_simulator_venue)
 
 if(HEPTA_ENABLE_IBAPI)
     if(IBAPI_ROOT STREQUAL "")
@@ -301,6 +360,10 @@ if(HEPTA_ENABLE_IBAPI)
     target_include_directories(hepta_ibapi_client PUBLIC "${IBAPI_ROOT}")
     target_compile_definitions(hepta_ibapi_client PUBLIC HEPTA_ENABLE_IBAPI=1)
 
+    target_compile_definitions(hepta_ib_adapter_core PUBLIC HEPTA_ENABLE_IBAPI=1)
+    target_include_directories(hepta_ib_adapter_core PRIVATE "${IBAPI_ROOT}")
+    target_link_libraries(hepta_ib_adapter_core PUBLIC hepta_ibapi_client)
+
     add_executable(hepta_ib_executiond
         execution/hepta_ib_executiond.cpp
         execution/ib_paper_execution_runtime_config.cpp
@@ -317,25 +380,17 @@ if(HEPTA_ENABLE_IBAPI)
         execution/ib_paper_execution_runtime_terminal.cpp
         execution/ib_paper_execution_runtime_flatten.cpp
         execution/ib_paper_execution_hook_authority.cpp
-        execution/ib_paper_kill_switch.cpp
         execution/ib_paper_execution_profile.cpp
         execution/ib_paper_authoritative_flatten.cpp
         execution/ib_paper_execution_flatten_guard.cpp
-        execution/ib_paper_flatten_plan_binding.cpp
-        adapter_ib/ib_api_wrapper.cpp
-        adapter_ib/ib_decimal_compat.cpp
-        ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
-        adapter_ib/ib_order_lifecycle.cpp
-        adapter_ib/ib_venue_correlation.cpp
-        state/authoritative_trading_snapshot_store.cpp
-        state/ib_authoritative_quote_subscription_set.cpp
-        state/ib_contract_identity.cpp)
+        execution/ib_paper_flatten_plan_binding.cpp)
     hepta_runtime_target(hepta_ib_executiond)
     target_compile_definitions(hepta_ib_executiond PRIVATE HEPTA_ENABLE_IBAPI=1)
     target_include_directories(hepta_ib_executiond PRIVATE "${IBAPI_ROOT}")
     target_link_libraries(hepta_ib_executiond PRIVATE
         hepta_execution_core
-        hepta_risk_core
+        hepta_state_core
+        hepta_ib_adapter_core
         hepta_ibapi_client)
     set_target_properties(hepta_ib_executiond PROPERTIES
         OUTPUT_NAME hepta-ib-executiond

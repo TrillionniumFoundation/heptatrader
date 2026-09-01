@@ -10,7 +10,9 @@
   "source_roots": [
     "HeptaTrade/simulator/"
   ],
-  "build_targets": [],
+  "build_targets": [
+    "hepta_simulator_venue"
+  ],
   "provides": [
     "hepta.venue.v1"
   ],

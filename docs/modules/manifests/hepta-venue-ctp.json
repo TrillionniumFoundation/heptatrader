@@ -10,7 +10,9 @@
   "source_roots": [
     "HeptaTrade/adapter_ctp/"
   ],
-  "build_targets": [],
+  "build_targets": [
+    "hepta_venue_ctp"
+  ],
   "provides": [
     "hepta.venue.v1"
   ],

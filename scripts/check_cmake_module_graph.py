@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from hepta_module_boundaries import (
+    ACTIVE_LIFECYCLES,
     SOURCE_OWNERSHIP_REL,
     canonical_relative_path,
     dependency_allowed,
@@ -86,7 +87,7 @@ def _source_path(root: Path, target: dict[str, Any], raw: str) -> Path | None:
 def _target_owners(modules: dict[str, dict[str, Any]], errors: list[str]) -> dict[str, str]:
     owners: dict[str, list[str]] = defaultdict(list)
     for module_id, manifest in modules.items():
-        if manifest.get("lifecycle") not in {"current", "experimental"}:
+        if manifest.get("lifecycle") not in ACTIVE_LIFECYCLES:
             continue
         targets = manifest.get("build_targets", [])
         if not isinstance(targets, list):
