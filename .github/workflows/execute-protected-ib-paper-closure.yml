@@ -226,3 +226,5 @@ jobs:
 
           The verifier accepted real PAPER broker identity, rejected simulation/test-double authority, bound source/binary/harness digests and validated every canonical fault/recovery scenario."
           gh api --method PATCH "repos/$REPO/issues/9" -f state=closed >/dev/null
+
+# Manual repository-actor trigger: 2026-09-01
