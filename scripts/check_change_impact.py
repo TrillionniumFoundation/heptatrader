@@ -21,7 +21,6 @@ from typing import Any, Iterable
 
 from hepta_module_boundaries import (
     ACTIVE_LIFECYCLES,
-    active_source_files,
     load_json,
     load_modules,
     load_source_ownership,
@@ -76,6 +75,24 @@ def _git(*arguments: str, root: Path = ROOT) -> str:
     return completed.stdout.strip()
 
 
+def _git_bytes(*arguments: str, root: Path = ROOT) -> bytes:
+    """Run git without a text codec so NUL-framed paths remain unambiguous."""
+
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        if not detail:
+            detail = completed.stdout.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"git {' '.join(arguments)} failed: {detail}")
+    return completed.stdout
+
+
 def _canonical_path(raw: str) -> str:
     if not raw or "\x00" in raw or "\\" in raw:
         raise ValueError(f"invalid changed path: {raw!r}")
@@ -85,12 +102,39 @@ def _canonical_path(raw: str) -> str:
     return path.as_posix()
 
 
+def _decode_nul_paths(data: bytes) -> list[str]:
+    """Decode `git -z` output without quotePath or line-delimiter ambiguity."""
+
+    if data and not data.endswith(b"\x00"):
+        raise ValueError("git changed-path output is not NUL terminated")
+    paths: list[str] = []
+    for raw in data.split(b"\x00"):
+        if not raw:
+            continue
+        try:
+            decoded = raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError as error:
+            raise ValueError("changed path is not valid UTF-8") from error
+        paths.append(_canonical_path(decoded))
+    return paths
+
+
 def changed_paths(base: str, head: str, root: Path = ROOT) -> list[str]:
-    output = _git(
-        "diff", "--name-only", "--diff-filter=ACMRD", f"{base}...{head}",
+    # `core.quotePath=true` turns a valid non-ASCII filename into a quoted C
+    # escape such as `"...\\350..."`. Newlines in filenames make line-based
+    # output ambiguous as well. Disable quoting and request NUL framing, then
+    # decode each pathname independently and fail closed on non-UTF-8 bytes.
+    output = _git_bytes(
+        "-c",
+        "core.quotePath=false",
+        "diff",
+        "--name-only",
+        "--diff-filter=ACMRD",
+        "-z",
+        f"{base}...{head}",
         root=root,
     )
-    paths = sorted({_canonical_path(line) for line in output.splitlines() if line})
+    paths = sorted(set(_decode_nul_paths(output)))
     if not paths:
         raise ValueError("merge candidate contains no changed paths")
     return paths
@@ -337,6 +381,9 @@ def self_test() -> None:
     assert _canonical_path("HeptaTrade/execution/example.cpp") == (
         "HeptaTrade/execution/example.cpp"
     )
+    assert _decode_nul_paths(
+        "Tools/Centos/说明.txt\x00odd\nname.txt\x00".encode("utf-8")
+    ) == ["Tools/Centos/说明.txt", "odd\nname.txt"]
     for invalid in ("../escape", "/absolute", "a\\b", ""):
         try:
             _canonical_path(invalid)
@@ -344,6 +391,13 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError(f"unsafe path accepted: {invalid!r}")
+    for invalid_bytes in (b"unterminated", b"bad-utf8-\xff\x00"):
+        try:
+            _decode_nul_paths(invalid_bytes)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("invalid git path framing was accepted")
     print("[CHANGE-IMPACT] SELF-TEST PASS")
 
 
