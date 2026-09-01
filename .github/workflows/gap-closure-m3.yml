@@ -35,7 +35,7 @@ jobs:
                   dependencies.sort()
               path.write_text(json.dumps(value, indent=2) + '\n')
           PY
-      - name: Validate deterministic core
+      - name: Validate exact decimal and deterministic core
         run: ./scripts/dev_core.sh
       - name: Commit exact tested implementation
         run: |
