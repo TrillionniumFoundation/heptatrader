@@ -18,7 +18,7 @@ ModuleArtifactIdentity Identity(const std::string& module, char digest)
     identity.version = "1.0.0";
     identity.artifactDigest = Digest(digest);
     identity.configDigest = Digest('c');
-    identity.modelDigest = Digest('m');
+    identity.modelDigest = Digest('d');
     return identity;
 }
 
@@ -27,7 +27,7 @@ ModuleHealthEvidence Health(std::uint64_t observedAtMs)
     ModuleHealthEvidence health;
     health.healthy = true;
     health.observedAtMs = observedAtMs;
-    health.evidenceDigest = Digest('h');
+    health.evidenceDigest = Digest('e');
     return health;
 }
 
@@ -65,7 +65,7 @@ StrategyProposal Proposal(const std::string& module,
     proposal.sequence = 1;
     proposal.capitalPool = "pool-a";
     proposal.accountBook = "book-a";
-    proposal.snapshotDigest = Digest('s');
+    proposal.snapshotDigest = Digest('1');
     proposal.validFromMs = 1400;
     proposal.expiresAtMs = 2000;
     proposal.horizonMs = 500;
@@ -115,11 +115,12 @@ void TestActiveCycleAndIgnoredShadow()
     Activate(lifecycle, "hepta.strategy.alpha", 'a');
     Activate(lifecycle, "hepta.strategy.beta", 'b');
     ModuleLifecycleResult gamma = lifecycle.Register(
-        Identity("hepta.strategy.gamma", 'g'), 1000);
+        Identity("hepta.strategy.gamma", 'f'), 1000);
     assert(gamma.accepted);
     gamma = lifecycle.Transition(
         gamma.snapshot.identity.moduleId, gamma.snapshot.generation,
         ModuleLifecycleState::Warming, ModuleHealthEvidence(), 1100);
+    assert(gamma.accepted);
     gamma = lifecycle.Transition(
         gamma.snapshot.identity.moduleId, gamma.snapshot.generation,
         ModuleLifecycleState::Shadow, Health(1150), 1200);
@@ -135,7 +136,7 @@ void TestActiveCycleAndIgnoredShadow()
     MultiAgentSimulationResult cycle =
         MultiAgentAllocationSimulator::RunCycle(
             lifecycle, proposals, AllocationPolicy(), 1, 1500, 1800,
-            Digest('s'), Authoritative(), ExecutionPolicy());
+            Digest('1'), Authoritative(), ExecutionPolicy());
     assert(cycle.accepted);
     assert(cycle.reasonCode == "SIMULATOR_MULTI_AGENT_CYCLE_ACCEPTED");
     assert(cycle.ignoredModules.size() == 1);
@@ -164,7 +165,7 @@ void TestQuarantineFaultIsolation()
     MultiAgentSimulationResult cycle =
         MultiAgentAllocationSimulator::RunCycle(
             lifecycle, proposals, AllocationPolicy(), 2, 1500, 1800,
-            Digest('s'), Authoritative(), ExecutionPolicy());
+            Digest('1'), Authoritative(), ExecutionPolicy());
     assert(cycle.accepted);
     assert(cycle.plan.targets[0].targetPosition == 4000000);
     assert(cycle.ignoredModules.size() == 1);
@@ -182,7 +183,7 @@ void TestMissingActiveProposalAndSnapshotFailure()
     MultiAgentSimulationResult missing =
         MultiAgentAllocationSimulator::RunCycle(
             lifecycle, proposals, AllocationPolicy(), 1, 1500, 1800,
-            Digest('s'), Authoritative(), ExecutionPolicy());
+            Digest('1'), Authoritative(), ExecutionPolicy());
     assert(!missing.accepted);
     assert(missing.reasonCode == "PROPOSAL_SET_INCOMPLETE");
 
@@ -191,7 +192,7 @@ void TestMissingActiveProposalAndSnapshotFailure()
     MultiAgentSimulationResult mismatch =
         MultiAgentAllocationSimulator::RunCycle(
             one, proposals, AllocationPolicy(), 1, 1500, 1800,
-            Digest('x'), Authoritative(), ExecutionPolicy());
+            Digest('2'), Authoritative(), ExecutionPolicy());
     assert(!mismatch.accepted);
     assert(mismatch.reasonCode == "ALLOCATION_PLAN_SNAPSHOT_MISMATCH");
 }
@@ -203,7 +204,7 @@ void TestNoActiveModules()
     MultiAgentSimulationResult result =
         MultiAgentAllocationSimulator::RunCycle(
             lifecycle, proposals, AllocationPolicy(), 1, 1500, 1800,
-            Digest('s'), Authoritative(), ExecutionPolicy());
+            Digest('1'), Authoritative(), ExecutionPolicy());
     assert(result.reasonCode == "SIMULATOR_NO_ACTIVE_STRATEGIES");
 }
 }
