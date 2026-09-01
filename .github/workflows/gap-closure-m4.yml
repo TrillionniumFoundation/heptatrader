@@ -21,6 +21,20 @@ jobs:
           fetch-depth: 0
       - name: Apply M4 integration
         run: python3 scripts/m4_patch.py
+      - name: Register exact Execution source claim
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('docs/modules/manifests/hepta-execution-runtime.json')
+          value = json.loads(path.read_text())
+          root = 'HeptaTrade/execution/allocation_plan_revalidator'
+          roots = value.setdefault('source_roots', [])
+          if root not in roots:
+              roots.append(root)
+              roots.sort()
+          path.write_text(json.dumps(value, indent=2) + '\n')
+          PY
       - name: Validate deterministic core
         run: ./scripts/dev_core.sh
       - name: Commit exact tested implementation
