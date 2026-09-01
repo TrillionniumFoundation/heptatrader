@@ -1,0 +1,46 @@
+name: cancel-obsolete-controller-runs
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/cancel-obsolete-controller-runs.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel only superseded queued or running controllers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          CURRENT_RUN_ID: ${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          obsolete='[
+            "p1-integration-controller",
+            "p1-allocation-clean-controller",
+            "p1-combined-clean-controller",
+            "p1-finalization-controller",
+            "internal-verification-finalizer",
+            "internal-verification-finalizer-v2",
+            "internal-verification-fallback",
+            "publish-internal-closure",
+            "publish-internal-closure-v2",
+            "post-publish-review-request"
+          ]'
+          gh api --paginate \
+            "repos/$REPO/actions/runs?branch=codex/heptatrader-p1-integration-controller&per_page=100" \
+            --jq '.workflow_runs[] | [.id,.name,.status] | @tsv' |
+          while IFS=$'\t' read -r id name status; do
+            [[ "$id" == "$CURRENT_RUN_ID" ]] && continue
+            jq -e --arg name "$name" '. | index($name)' <<<"$obsolete" >/dev/null || continue
+            [[ "$status" == queued || "$status" == in_progress || "$status" == waiting || "$status" == requested ]] || continue
+            gh api --method POST "repos/$REPO/actions/runs/$id/cancel" >/dev/null || true
+          done
