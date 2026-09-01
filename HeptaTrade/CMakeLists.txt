@@ -103,6 +103,23 @@ add_library(hepta_numeric_core STATIC
     numeric/fixed_decimal.cpp)
 hepta_runtime_target(hepta_numeric_core)
 
+add_library(hepta_marketdata_core STATIC
+    marketdata/sharded_market_data.cpp)
+hepta_runtime_target(hepta_marketdata_core)
+target_link_libraries(hepta_marketdata_core PUBLIC
+    hepta_numeric_core
+    Threads::Threads
+    OpenSSL::Crypto)
+
+add_library(hepta_feature_runtime STATIC
+    features/feature_generation.cpp)
+hepta_runtime_target(hepta_feature_runtime)
+target_link_libraries(hepta_feature_runtime PUBLIC
+    hepta_marketdata_core
+    hepta_numeric_core
+    Threads::Threads
+    OpenSSL::Crypto)
+
 add_library(hepta_risk_core STATIC
     risk/deterministic_risk_policy.cpp)
 hepta_runtime_target(hepta_risk_core)

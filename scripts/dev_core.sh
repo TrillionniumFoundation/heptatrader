@@ -95,6 +95,7 @@ python3 "${ROOT_DIR}/scripts/generate_documentation_views.py" --check
 python3 "${ROOT_DIR}/scripts/check_documentation_control_plane.py"
 python3 "${ROOT_DIR}/scripts/check_repository_integrity.py"
 python3 "${ROOT_DIR}/scripts/check_schema_catalog.py"
+python3 "${ROOT_DIR}/scripts/check_research_registries.py"
 python3 "${ROOT_DIR}/scripts/check_module_discipline.py"
 python3 "${ROOT_DIR}/research/run_protocol.py" verify \
   --manifest "${ROOT_DIR}/research/manifest-v1.json"

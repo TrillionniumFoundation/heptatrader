@@ -13,11 +13,11 @@ Authority: generated from module-registry-v2.json
 | `hepta.client.runtime` | current | CLI/native/MCP request encoding | `unprivileged-client` | `hepta_native_tool_client`, `heptactl`, `hepta_sessionctl` | exclusive | @hepta/sdk / @hepta/gateway |
 | `hepta.documentation.control` | current | registries/generated views/module and build graph validators | `development` | — | exclusive | @hepta/documentation / @hepta/architecture |
 | `hepta.execution.runtime` | current | only venue mutation/state/OMS/permit authority | `execution-authority` | `hepta_execution_client`, `hepta_execution_server`, `hepta_execution_core`, `hepta_executiond`, `hepta_ib_executiond`, `hepta_paper_terminal_latch_committer`, `hepta_oms_core`, `hepta_state_core`, `hepta_intent_core` | exclusive | @hepta/execution-core / @hepta/execution-safety |
-| `hepta.feature.runtime` | planned | deterministic feature generations | `feature` | `hepta_feature_runtime` | exclusive | @hepta/data-platform / @hepta/research-validation |
+| `hepta.feature.runtime` | current | deterministic feature generations | `feature` | `hepta_feature_runtime` | exclusive | @hepta/data-platform / @hepta/research-validation |
 | `hepta.gateway.runtime` | current | identity/session/capability/tool dispatch | `agent-gateway` | `hepta_agent_os_core`, `hepta_tool_gatewayd`, `hepta_trading_tool_core`, `hepta_execution_event_relay_core` | exclusive | @hepta/gateway / @hepta/security-runtime |
 | `hepta.global.decision` | planned | proposal aggregation/global allocation | `global-decision` | `hepta_proposal_aggregator`, `hepta_global_allocator` | exclusive | @hepta/global-allocation / @hepta/risk |
 | `hepta.management.control` | planned | module/config/resource lifecycle | `management` | `hepta_managementd` | exclusive | @hepta/platform / @hepta/architecture |
-| `hepta.marketdata.runtime` | planned | normalized point-in-time events | `market-data` | `hepta_marketdata_core` | exclusive | @hepta/data-platform / @hepta/venue-ib |
+| `hepta.marketdata.runtime` | current | normalized point-in-time events | `market-data` | `hepta_marketdata_core` | exclusive | @hepta/data-platform / @hepta/venue-ib |
 | `hepta.numeric.core` | current | fixed numeric boundary | `shared-trusted` | `hepta_numeric_core` | exclusive | @hepta/contracts / @hepta/risk |
 | `hepta.observability.runtime` | current | bounded telemetry | `shared-trusted` | `hepta_observability_core` | exclusive | @hepta/reliability / @hepta/platform |
 | `hepta.portfolio.compiler` | current | deterministic netting/budget | `portfolio-risk` | `hepta_portfolio_core` | exclusive | @hepta/portfolio / @hepta/risk |

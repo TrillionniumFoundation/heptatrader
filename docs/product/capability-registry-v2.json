@@ -21,10 +21,27 @@
       "design": "approved",
       "implementation": "implemented",
       "build": "default",
-      "integration": {"simulator":"active","paper":"experimental","live":"forbidden"},
-      "modules": ["hepta.gateway.runtime","hepta.protocol.contracts","hepta.client.runtime"],
-      "contracts": ["hepta.tool-catalog.v1","hepta.execution-wire.v1","hepta.identity-capability.v1"],
-      "verification": ["repository-contracts","protocol-contracts","gateway-boundary","session-boundary"],
+      "integration": {
+        "simulator": "active",
+        "paper": "experimental",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.gateway.runtime",
+        "hepta.protocol.contracts",
+        "hepta.client.runtime"
+      ],
+      "contracts": [
+        "hepta.tool-catalog.v1",
+        "hepta.execution-wire.v1",
+        "hepta.identity-capability.v1"
+      ],
+      "verification": [
+        "repository-contracts",
+        "protocol-contracts",
+        "gateway-boundary",
+        "session-boundary"
+      ],
       "qualification": "not-required",
       "release": "core",
       "milestone": "M1"
@@ -36,10 +53,26 @@
       "design": "approved",
       "implementation": "implemented",
       "build": "default",
-      "integration": {"simulator":"active","paper":"experimental","live":"forbidden"},
-      "modules": ["hepta.execution.runtime"],
-      "contracts": ["hepta.execution-authority.v1","hepta.authoritative-snapshot.v2","hepta.oms-journal.v3","hepta.risk-policy.v2"],
-      "verification": ["journal-durability","idempotency","crash-replay","reconciliation"],
+      "integration": {
+        "simulator": "active",
+        "paper": "experimental",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.execution.runtime"
+      ],
+      "contracts": [
+        "hepta.execution-authority.v1",
+        "hepta.authoritative-snapshot.v2",
+        "hepta.oms-journal.v3",
+        "hepta.risk-policy.v2"
+      ],
+      "verification": [
+        "journal-durability",
+        "idempotency",
+        "crash-replay",
+        "reconciliation"
+      ],
       "qualification": "paper-required",
       "release": "core",
       "milestone": "M1"
@@ -51,10 +84,23 @@
       "design": "approved",
       "implementation": "implemented",
       "build": "default",
-      "integration": {"simulator":"active","paper":"not-applicable","live":"not-applicable"},
-      "modules": ["hepta.venue.simulator"],
-      "contracts": ["hepta.venue.v1","hepta.event-envelope.v1"],
-      "verification": ["simulator-e2e","deterministic-replay","fault-matrix"],
+      "integration": {
+        "simulator": "active",
+        "paper": "not-applicable",
+        "live": "not-applicable"
+      },
+      "modules": [
+        "hepta.venue.simulator"
+      ],
+      "contracts": [
+        "hepta.venue.v1",
+        "hepta.event-envelope.v1"
+      ],
+      "verification": [
+        "simulator-e2e",
+        "deterministic-replay",
+        "fault-matrix"
+      ],
       "qualification": "not-required",
       "release": "core",
       "milestone": "M1"
@@ -66,10 +112,23 @@
       "design": "approved",
       "implementation": "implemented-core",
       "build": "default",
-      "integration": {"simulator":"active","paper":"experimental","live":"forbidden"},
-      "modules": ["hepta.execution.runtime"],
-      "contracts": ["hepta.target-position-intent.v1","hepta.authoritative-snapshot.v2"],
-      "verification": ["snapshot-contracts","permit-lifecycle","negative-paths"],
+      "integration": {
+        "simulator": "active",
+        "paper": "experimental",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.execution.runtime"
+      ],
+      "contracts": [
+        "hepta.target-position-intent.v1",
+        "hepta.authoritative-snapshot.v2"
+      ],
+      "verification": [
+        "snapshot-contracts",
+        "permit-lifecycle",
+        "negative-paths"
+      ],
       "qualification": "paper-required",
       "release": "core",
       "milestone": "M1"
@@ -81,10 +140,24 @@
       "design": "approved",
       "implementation": "implemented-core",
       "build": "default",
-      "integration": {"simulator":"library-boundary","paper":"absent","live":"forbidden"},
-      "modules": ["hepta.portfolio.compiler","hepta.risk.policy"],
-      "contracts": ["hepta.strategy-proposal.v1","hepta.allocation-plan.v1"],
-      "verification": ["portfolio-properties","budget-overflow","canonical-ordering"],
+      "integration": {
+        "simulator": "library-boundary",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.portfolio.compiler",
+        "hepta.risk.policy"
+      ],
+      "contracts": [
+        "hepta.strategy-proposal.v1",
+        "hepta.allocation-plan.v1"
+      ],
+      "verification": [
+        "portfolio-properties",
+        "budget-overflow",
+        "canonical-ordering"
+      ],
       "qualification": "paper-required",
       "release": "core",
       "milestone": "M1"
@@ -96,10 +169,27 @@
       "design": "target-contract",
       "implementation": "planned",
       "build": "absent",
-      "integration": {"simulator":"planned-shadow","paper":"absent","live":"forbidden"},
-      "modules": ["hepta.global.decision","hepta.strategy.runtime"],
-      "contracts": ["hepta.strategy-proposal.v1","hepta.global-optimization.v1","hepta.solver-result.v1","hepta.allocation-plan.v1"],
-      "verification": ["proposal-contracts","optimizer-determinism","constraint-properties","shadow-parity"],
+      "integration": {
+        "simulator": "planned-shadow",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.global.decision",
+        "hepta.strategy.runtime"
+      ],
+      "contracts": [
+        "hepta.strategy-proposal.v1",
+        "hepta.global-optimization.v1",
+        "hepta.solver-result.v1",
+        "hepta.allocation-plan.v1"
+      ],
+      "verification": [
+        "proposal-contracts",
+        "optimizer-determinism",
+        "constraint-properties",
+        "shadow-parity"
+      ],
       "qualification": "paper-required",
       "release": "excluded",
       "milestone": "M4"
@@ -111,10 +201,24 @@
       "design": "target-contract",
       "implementation": "planned",
       "build": "absent",
-      "integration": {"simulator":"planned","paper":"absent","live":"forbidden"},
-      "modules": ["hepta.management.control"],
-      "contracts": ["hepta.module-manifest.v2","hepta.module-lifecycle.v1","hepta.configuration-authority.v1"],
-      "verification": ["module-dag","lifecycle-faults","rollout-rollback"],
+      "integration": {
+        "simulator": "planned",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.management.control"
+      ],
+      "contracts": [
+        "hepta.module-manifest.v2",
+        "hepta.module-lifecycle.v1",
+        "hepta.configuration-authority.v1"
+      ],
+      "verification": [
+        "module-dag",
+        "lifecycle-faults",
+        "rollout-rollback"
+      ],
       "qualification": "environment-required",
       "release": "excluded",
       "milestone": "M5"
@@ -122,16 +226,30 @@
     {
       "id": "hepta.data.feature-plane",
       "title": "Shard-aware market-data and feature plane",
-      "declared_state": "planned",
-      "design": "target-contract",
-      "implementation": "planned",
-      "build": "absent",
-      "integration": {"simulator":"planned","paper":"absent","live":"forbidden"},
-      "modules": ["hepta.marketdata.runtime","hepta.feature.runtime"],
-      "contracts": ["hepta.event-envelope.v1"],
-      "verification": ["marketdata-ordering","sequence-gap","feature-determinism","feature-generation"],
+      "declared_state": "experimental",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
+      "integration": {
+        "simulator": "active-library",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.marketdata.runtime",
+        "hepta.feature.runtime"
+      ],
+      "contracts": [
+        "hepta.event-envelope.v1"
+      ],
+      "verification": [
+        "marketdata-ordering",
+        "sequence-gap",
+        "feature-determinism",
+        "feature-generation"
+      ],
       "qualification": "environment-required",
-      "release": "excluded",
+      "release": "core",
       "milestone": "M3"
     },
     {
@@ -141,10 +259,23 @@
       "design": "approved",
       "implementation": "experimental",
       "build": "runtime-tools",
-      "integration": {"simulator":"offline","paper":"no-mutation","live":"forbidden"},
-      "modules": ["hepta.research.protocol"],
-      "contracts": ["hepta.research-run.v1"],
-      "verification": ["research-self-test","point-in-time","cost-model","digest-parity"],
+      "integration": {
+        "simulator": "offline",
+        "paper": "no-mutation",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.research.protocol"
+      ],
+      "contracts": [
+        "hepta.research-run.v1"
+      ],
+      "verification": [
+        "research-self-test",
+        "point-in-time",
+        "cost-model",
+        "digest-parity"
+      ],
       "qualification": "not-required",
       "release": "core-tools",
       "milestone": "M1"
@@ -156,10 +287,24 @@
       "design": "approved-conditional",
       "implementation": "experimental",
       "build": "optional",
-      "integration": {"simulator":"not-applicable","paper":"conditional","live":"forbidden"},
-      "modules": ["hepta.venue.ib","hepta.execution.runtime"],
-      "contracts": ["hepta.venue.v1","hepta.ib-paper-qualification.v1"],
-      "verification": ["ib-off-contracts","common-risk-parity","paper-qualification"],
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "conditional",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.venue.ib",
+        "hepta.execution.runtime"
+      ],
+      "contracts": [
+        "hepta.venue.v1",
+        "hepta.ib-paper-qualification.v1"
+      ],
+      "verification": [
+        "ib-off-contracts",
+        "common-risk-parity",
+        "paper-qualification"
+      ],
       "qualification": "mandatory-external",
       "release": "optional-qualified-only",
       "milestone": "M6"
@@ -171,10 +316,20 @@
       "design": "not-approved",
       "implementation": "unsupported-scaffold",
       "build": "excluded",
-      "integration": {"simulator":"not-applicable","paper":"forbidden","live":"forbidden"},
-      "modules": ["hepta.venue.ctp"],
-      "contracts": ["hepta.venue.v1"],
-      "verification": ["unsupported-venue-negative"],
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "forbidden",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.venue.ctp"
+      ],
+      "contracts": [
+        "hepta.venue.v1"
+      ],
+      "verification": [
+        "unsupported-venue-negative"
+      ],
       "qualification": "none",
       "release": "excluded",
       "milestone": "M7"
@@ -186,10 +341,20 @@
       "design": "not-approved",
       "implementation": "unsupported-scaffold",
       "build": "excluded",
-      "integration": {"simulator":"not-applicable","paper":"forbidden","live":"forbidden"},
-      "modules": ["hepta.venue.xt"],
-      "contracts": ["hepta.venue.v1"],
-      "verification": ["unsupported-venue-negative"],
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "forbidden",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.venue.xt"
+      ],
+      "contracts": [
+        "hepta.venue.v1"
+      ],
+      "verification": [
+        "unsupported-venue-negative"
+      ],
       "qualification": "none",
       "release": "excluded",
       "milestone": "M7"
@@ -201,10 +366,16 @@
       "design": "not-approved",
       "implementation": "unsupported",
       "build": "absent",
-      "integration": {"simulator":"not-applicable","paper":"not-applicable","live":"forbidden"},
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "not-applicable",
+        "live": "forbidden"
+      },
       "modules": [],
       "contracts": [],
-      "verification": ["live-absence"],
+      "verification": [
+        "live-absence"
+      ],
       "qualification": "separate-o4-required",
       "release": "excluded",
       "milestone": "M7"

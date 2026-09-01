@@ -2,7 +2,7 @@
   "schema": "heptatrader.module-manifest.v2",
   "id": "hepta.feature.runtime",
   "version": "1.0.0",
-  "lifecycle": "planned",
+  "lifecycle": "current",
   "kind": "data-plane",
   "trust_domain": "feature",
   "authority": "deterministic feature generations",

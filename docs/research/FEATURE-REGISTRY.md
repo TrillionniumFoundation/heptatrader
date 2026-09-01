@@ -1,10 +1,10 @@
 # Feature Registry
 
-Status: current target contract
-Applies to: deterministic research and future feature runtime
-Verification: implementation/input digest, lookback, generation, replay and leakage tests
-Authority: feature identity and availability
+Status: current normative
+Applies to: deterministic research and feature runtime
+Verification: `python3 scripts/check_research_registries.py` and feature CTest
+Authority: `feature-registry-v1.json`
 
-Feature entry 声明 ID/version、implementation/config digest、input contracts、lookback、availability lag、warm-up、missing policy、numeric type/scale、state model、shard key、resource budget和output schema。Feature output 绑定 input watermark与generation。
+当前 `mid-spread-v1` 使用 `hepta.numeric.fixed-v1`，输出绑定 market input epoch、sequence、generation、watermark 与 digest。缺失、过期、sequence gap、输入回退或 odd-microunit midpoint 全部 fail closed；同输入重放返回相同 digest。
 
-在线/离线实现必须通过 golden parity。未来数据、revision leakage、跨 instrument隐式共享或未声明状态使 feature不可用于proposal。Feature registry 不授予 strategy activation。
+Feature registry 声明实现、输入数据集、输出定义和安全要求；它不授予策略或交易 mutation capability。

@@ -241,6 +241,18 @@ target_link_libraries(hepta_fixed_decimal_tests
     hepta_numeric_core)
 hepta_register_core_test(hepta_fixed_decimal_tests)
 
+add_executable(hepta_sharded_market_data_tests
+    sharded_market_data_tests.cpp)
+target_link_libraries(hepta_sharded_market_data_tests
+    hepta_marketdata_core)
+hepta_register_core_test(hepta_sharded_market_data_tests)
+
+add_executable(hepta_feature_generation_tests
+    feature_generation_tests.cpp)
+target_link_libraries(hepta_feature_generation_tests
+    hepta_feature_runtime)
+hepta_register_core_test(hepta_feature_generation_tests)
+
 add_executable(hepta_oms_crash_replay_tests
     oms_crash_replay_tests.cpp)
 target_link_libraries(hepta_oms_crash_replay_tests
