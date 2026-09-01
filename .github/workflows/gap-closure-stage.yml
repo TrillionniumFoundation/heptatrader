@@ -21,6 +21,24 @@ jobs:
           fetch-depth: 0
       - name: Apply ownership closure
         run: python3 scripts/m2_close_patch.py
+      - name: Register the new session manifest document
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          path = Path('docs/document-registry-v2.json')
+          value = json.loads(path.read_text())
+          entry = {
+              'path': 'modules/manifests/hepta-session-runtime.json',
+              'class': 'machine-registry',
+              'owner': '@hepta/platform',
+          }
+          documents = value['documents']
+          assert not any(item['path'] == entry['path'] for item in documents)
+          documents.append(entry)
+          documents.sort(key=lambda item: item['path'])
+          path.write_text(json.dumps(value, separators=(',', ':')) + '\n')
+          PY
       - name: Validate deterministic core
         run: ./scripts/dev_core.sh
       - name: Assert exception-free ownership
