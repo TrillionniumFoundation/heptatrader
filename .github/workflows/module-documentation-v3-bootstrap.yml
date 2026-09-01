@@ -1,0 +1,41 @@
+name: module-documentation-v3-bootstrap
+
+on:
+  push:
+    branches:
+      - codex/full-gap-closure-20260901
+
+permissions:
+  contents: write
+
+concurrency:
+  group: module-documentation-v3-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact closure head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Materialize ModuleManifest V3 and module technical guides
+        run: |
+          python3 scripts/bootstrap_module_documentation_v3.py
+          python3 scripts/generate_documentation_views.py --write
+      - name: Commit deterministic migration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs scripts tests
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No migration delta"
+            exit 0
+          fi
+          git commit -m "docs: materialize ModuleManifest V3 technical guides"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

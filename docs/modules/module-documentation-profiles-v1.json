@@ -1,0 +1,1032 @@
+{
+  "schema": "heptatrader.module-documentation-profiles.v1",
+  "required_topics": [
+    "purpose-scope",
+    "responsibilities-boundaries",
+    "trust-authority",
+    "source-build",
+    "contracts-interfaces",
+    "state-data",
+    "concurrency-ordering-backpressure",
+    "failure-recovery",
+    "configuration-compatibility",
+    "observability-resources",
+    "security",
+    "verification-testing",
+    "operations-rollout-gaps"
+  ],
+  "profiles": [
+    {
+      "module_id": "hepta.agent.support",
+      "title": "Agent Support Runtime",
+      "purpose": "Provides bounded support services used by agent processes, including event distribution, lease-aware coordination helpers and non-authoritative runtime utilities.",
+      "responsibilities": [
+        "Expose support primitives through typed interfaces without granting execution or broker authority.",
+        "Maintain bounded queues and lifecycle-aware support state for agent consumers.",
+        "Translate support-layer failures into explicit, fail-closed outcomes."
+      ],
+      "non_responsibilities": [
+        "Does not choose trades, allocate capital or mutate venue state.",
+        "Does not own broker credentials or authoritative portfolio state.",
+        "Does not weaken session fencing or bypass module contracts."
+      ],
+      "state_notes": [
+        "Support state is subordinate to the owning session and must be disposable or reconstructible.",
+        "Any cached event or lease view is advisory unless its source contract explicitly grants authority."
+      ],
+      "ordering_and_backpressure": [
+        "Preserve event identity and ordering metadata when relaying messages.",
+        "Bound queue growth; overflow must surface through the manifest-declared typed failure rather than silent loss."
+      ],
+      "recovery": [
+        "Restart from authoritative upstream state and reacquire leases before serving dependent agents.",
+        "Reject stale epochs and invalidate cached support state after fencing changes."
+      ],
+      "configuration": [
+        "Accept only configuration resolved by the canonical configuration authority.",
+        "Configuration changes must not expand authority without a manifest and contract revision."
+      ],
+      "observability": [
+        "Report queue depth, dropped/coalesced events, lease state and restart counts.",
+        "Keep dimensions bounded by registered agent/session identifiers."
+      ],
+      "security": [
+        "Treat agent inputs as untrusted and validate size, identity and capability before dispatch.",
+        "Never expose credentials or Execution-only endpoints through support helpers."
+      ],
+      "operations": [
+        "Roll out behind bounded agent populations and verify lease/fencing metrics before expansion.",
+        "On anomaly, stop serving new work and preserve diagnostics without retaining authority."
+      ],
+      "known_gaps": [
+        "No module-local release blocker is declared; product qualification and team-governance gates still apply."
+      ]
+    },
+    {
+      "module_id": "hepta.client.runtime",
+      "title": "Client Runtime",
+      "purpose": "Implements supported client entrypoints and protocol adapters for operators, native callers and agent-facing interfaces while preserving server-side authority checks.",
+      "responsibilities": [
+        "Encode requests against versioned public contracts.",
+        "Normalize client errors and reason codes without hiding server denials.",
+        "Maintain compatibility boundaries for CLI, native and MCP-style entrypoints."
+      ],
+      "non_responsibilities": [
+        "Does not authorize actions locally or infer missing capabilities.",
+        "Does not persist authoritative trading state.",
+        "Does not directly access venue transports or broker credentials."
+      ],
+      "state_notes": [
+        "Client state is ephemeral request/session context; authoritative state remains server-side.",
+        "Retries must retain idempotency identity and must not synthesize success."
+      ],
+      "ordering_and_backpressure": [
+        "Preserve request IDs and response ordering within the declared transport semantics.",
+        "Apply bounded client-side buffering and expose timeout/backpressure failures explicitly."
+      ],
+      "recovery": [
+        "Reconnect through the canonical session handshake and re-resolve capabilities.",
+        "After ambiguous transport failure, query authoritative status instead of replaying mutations blindly."
+      ],
+      "configuration": [
+        "Version negotiation, endpoints and timeouts come from canonical configuration.",
+        "Unsupported protocol or schema versions fail closed with an explicit compatibility error."
+      ],
+      "observability": [
+        "Emit request latency, transport failures, retries and reason-code counts without sensitive payloads.",
+        "Correlate logs with bounded request/session IDs."
+      ],
+      "security": [
+        "Validate server identity where transport supports it and never cache long-lived secrets in logs or generated files.",
+        "Treat all local convenience APIs as non-authoritative facades."
+      ],
+      "operations": [
+        "Canary new client versions against compatibility suites before broad distribution.",
+        "Rollback is client package rollback; server authority remains unchanged."
+      ],
+      "known_gaps": [
+        "Physical client variants remain subject to the capability registry; an entrypoint is not proof of environment qualification."
+      ]
+    },
+    {
+      "module_id": "hepta.documentation.control",
+      "title": "Documentation Control Plane",
+      "purpose": "Maintains the canonical documentation, registry, generated-view and repository-integrity control plane.",
+      "responsibilities": [
+        "Enforce one registered source of truth for active documentation.",
+        "Validate cross-registry references, generated views, module ownership and repository entrypoints.",
+        "Reject historical aliases, stale generated views and unregistered documents."
+      ],
+      "non_responsibilities": [
+        "Does not claim runtime or venue qualification.",
+        "Does not replace code tests or external evidence.",
+        "Does not close gaps without their registered evidence."
+      ],
+      "state_notes": [
+        "Canonical state is the checked-in set of registries, normative documents and deterministic generators.",
+        "Generated views carry no independent authority beyond their source registries."
+      ],
+      "ordering_and_backpressure": [
+        "Validation is deterministic over one exact repository revision.",
+        "Failures accumulate as bounded diagnostics; partial validation success cannot override any error."
+      ],
+      "recovery": [
+        "Correct the authoritative registry or source document, regenerate views and rerun exact-head checks.",
+        "Never repair drift by adding compatibility aliases."
+      ],
+      "configuration": [
+        "Policies are checked in and reviewed as code; environment-specific relaxation is forbidden.",
+        "Tool dependencies and schema versions are pinned by CI and repository contracts."
+      ],
+      "observability": [
+        "CI exposes validation failures, generator drift and exact revision identity.",
+        "Diagnostics identify the offending path, registry object or relationship."
+      ],
+      "security": [
+        "Reject links escaping the repository and unsafe manifest paths.",
+        "Keep workflow permissions read-only except explicitly isolated administrative bootstrap operations."
+      ],
+      "operations": [
+        "Every document change passes documentation and canonical gates on the same head.",
+        "Schema migrations must update validators, generators, tests and all registered documents atomically."
+      ],
+      "known_gaps": [
+        "This module cannot supply independent human approval or external venue evidence."
+      ]
+    },
+    {
+      "module_id": "hepta.execution.runtime",
+      "title": "Execution Runtime",
+      "purpose": "Owns the sole mutation authority for venue-facing order intent, order lifecycle, OMS journaling and reconciliation.",
+      "responsibilities": [
+        "Validate decision receipts, risk policy, session capability and freshness before mutation.",
+        "Serialize order lifecycle transitions and persist/replay the authoritative OMS journal.",
+        "Handle uncertain outcomes through reconciliation rather than optimistic retry."
+      ],
+      "non_responsibilities": [
+        "Does not generate strategies or allocate global capital.",
+        "Does not accept raw untrusted proposals as executable authority.",
+        "Does not treat transport acknowledgement as final venue truth."
+      ],
+      "state_notes": [
+        "Order, intent, idempotency and reconciliation state are authoritative within the Execution boundary.",
+        "Every mutation is bound to decision, policy, session and venue identity."
+      ],
+      "ordering_and_backpressure": [
+        "Apply deterministic per-order or per-account serialization and preserve venue sequence semantics.",
+        "Admission queues are bounded; overflow and stale work fail closed before venue mutation."
+      ],
+      "recovery": [
+        "Replay the durable journal, reconcile with the venue and fence superseded sessions before resuming.",
+        "Ambiguous outcomes enter explicit uncertain/reconciling states; never duplicate blindly."
+      ],
+      "configuration": [
+        "Venue endpoints, account bindings, risk limits and enablement come from signed or canonical configuration.",
+        "LIVE is unsupported unless the capability registry and qualification policy explicitly change."
+      ],
+      "observability": [
+        "Record state transitions, idempotency hits, rejection reasons, reconciliation lag and venue health.",
+        "Protect account and credential material from logs and metrics."
+      ],
+      "security": [
+        "Broker credentials remain inside the Execution/venue trust boundary.",
+        "Require typed same-process capabilities or authenticated cross-process envelopes; ordinary serialized structs are insufficient."
+      ],
+      "operations": [
+        "Start only after configuration, journal and venue reconciliation gates pass.",
+        "Kill switch, rollback and credential revocation take precedence over throughput."
+      ],
+      "known_gaps": [
+        "IB PAPER remains externally blocked until real SDK, account, session and scenario evidence are verified."
+      ]
+    },
+    {
+      "module_id": "hepta.feature.runtime",
+      "title": "Feature Runtime",
+      "purpose": "Transforms authoritative point-in-time market snapshots into deterministic, versioned feature snapshots for downstream decision logic.",
+      "responsibilities": [
+        "Compute registered feature sets using fixed-point and point-in-time inputs.",
+        "Bind outputs to input digest, epoch, sequence and generation lineage.",
+        "Reject stale, gapped, malformed or unauthorized market-data inputs."
+      ],
+      "non_responsibilities": [
+        "Does not ingest raw venue feeds or repair sequence gaps.",
+        "Does not place orders or grant strategy authority.",
+        "Does not accept mutable diagnostic snapshots as proof of Market Data authority."
+      ],
+      "state_notes": [
+        "Feature state is keyed by market identity and feature-set version with monotonic generation.",
+        "Outputs are derived and reproducible; source lineage is retained in every snapshot."
+      ],
+      "ordering_and_backpressure": [
+        "Process only store-issued risk-ready receipts and reject input regression/conflict.",
+        "Use bounded per-key storage and typed capacity/overflow failures."
+      ],
+      "recovery": [
+        "Recompute from current authoritative snapshots after restart or cache loss.",
+        "Invalidate outputs when source lineage, feature version or freshness changes."
+      ],
+      "configuration": [
+        "Feature-set IDs and numeric policies are versioned contracts.",
+        "Unknown feature versions fail closed rather than falling back silently."
+      ],
+      "observability": [
+        "Report compute latency, stale/gap rejections, numeric failures, cache generation and capacity.",
+        "Avoid unbounded instrument labels beyond registered identities."
+      ],
+      "security": [
+        "Treat Feature as a pure derivation boundary without credentials or execution dependencies.",
+        "Construction-restricted receipts are same-process capabilities, not network authentication."
+      ],
+      "operations": [
+        "Canary new feature versions in replay/simulator before promotion.",
+        "Rollback selects the prior registered feature-set version and invalidates incompatible cached outputs."
+      ],
+      "known_gaps": [
+        "Cross-process Market Data to Feature deployment would require an authenticated authority envelope not supplied by the same-process receipt."
+      ]
+    },
+    {
+      "module_id": "hepta.gateway.runtime",
+      "title": "Gateway Runtime",
+      "purpose": "Provides the bounded server-side ingress, capability dispatch and protocol routing boundary for client and agent requests.",
+      "responsibilities": [
+        "Authenticate or validate session identity before capability dispatch.",
+        "Route requests only to registered handlers and preserve typed reason codes.",
+        "Enforce request size, concurrency, timeout and queue limits."
+      ],
+      "non_responsibilities": [
+        "Does not decide strategy or risk policy.",
+        "Does not possess venue mutation authority except by forwarding to Execution under validated capability.",
+        "Does not convert malformed requests into permissive defaults."
+      ],
+      "state_notes": [
+        "Gateway state contains bounded connections, sessions and in-flight requests; domain authority remains in downstream modules.",
+        "Capability caches are invalidated on session epoch or policy revision changes."
+      ],
+      "ordering_and_backpressure": [
+        "Preserve per-request identity and declared streaming order.",
+        "Use bounded admission and fair scheduling; overload produces explicit rejection rather than hidden queue growth."
+      ],
+      "recovery": [
+        "Close or fence stale connections, re-establish session state and retry only idempotent operations.",
+        "After downstream ambiguity, return an uncertain result and require authoritative status lookup."
+      ],
+      "configuration": [
+        "Listeners, protocol versions, request budgets and downstream endpoints are canonical configuration.",
+        "Unknown routes and disabled capabilities fail closed."
+      ],
+      "observability": [
+        "Expose connection counts, admission latency, queue depth, handler failures and reason codes.",
+        "Redact credentials, tokens and sensitive payload fields."
+      ],
+      "security": [
+        "Treat all network/client input as untrusted.",
+        "Separate authentication, authorization and downstream domain validation; passing one does not imply the others."
+      ],
+      "operations": [
+        "Deploy with readiness gates for session and downstream dependencies.",
+        "Drain connections before rollback and preserve in-flight mutation correlation IDs."
+      ],
+      "known_gaps": [
+        "Future physical process splits require authenticated envelopes for authorities currently represented by same-process types."
+      ]
+    },
+    {
+      "module_id": "hepta.global.decision",
+      "title": "Global Decision Runtime",
+      "purpose": "Performs deterministic global allocation across bounded strategy proposals and issues the sole decision capability consumed by Execution.",
+      "responsibilities": [
+        "Validate proposal identity, lifetime, policy and snapshot context.",
+        "Solve or approximate the registered allocation objective under portfolio/risk constraints.",
+        "Produce deterministic AllocationPlan provenance and a construction-restricted decision receipt."
+      ],
+      "non_responsibilities": [
+        "Does not place venue orders or hold broker credentials.",
+        "Does not trust strategy-provided capital allocations.",
+        "Does not claim optimality when the solver status or bound does not prove it."
+      ],
+      "state_notes": [
+        "Decision state is immutable per proposal set and policy/snapshot context.",
+        "Plans retain accepted, rejected, objective, bound, gap and lifecycle provenance."
+      ],
+      "ordering_and_backpressure": [
+        "Canonicalize proposal order before solving and make duplicate/conflict handling deterministic.",
+        "Bound candidate count and solve time; timeout yields an explicit heuristic/failed status, never fabricated exactness."
+      ],
+      "recovery": [
+        "Recompute from the same immutable inputs for replay; expired contexts require a new decision.",
+        "Do not reuse receipts across policy, session, snapshot or lifetime changes."
+      ],
+      "configuration": [
+        "Objective weights, cutoffs and constraints are policy-revisioned inputs.",
+        "Configuration cannot expand execution authority and must be included in provenance."
+      ],
+      "observability": [
+        "Record solver status, objective, bound, gap, candidate counts, rejection reasons and latency.",
+        "Avoid logging strategy secrets beyond registered identifiers and aggregate metrics."
+      ],
+      "security": [
+        "Only Global Decision can construct the same-process decision receipt.",
+        "A future cross-process path must add issuer authentication, audience, nonce, expiry and replay protection."
+      ],
+      "operations": [
+        "Promote solver changes through replay and simulator parity before active use.",
+        "Fallback is explicit deterministic heuristic or fail-closed denial according to policy."
+      ],
+      "known_gaps": [
+        "External process separation still requires an authenticated decision envelope; IB PAPER qualification remains independent."
+      ]
+    },
+    {
+      "module_id": "hepta.management.control",
+      "title": "Management Control Plane",
+      "purpose": "Coordinates governed lifecycle, rollout, configuration and operational control without obtaining broker mutation authority.",
+      "responsibilities": [
+        "Apply declared lifecycle transitions and rollout policies.",
+        "Distribute canonical configuration revisions and operational commands.",
+        "Coordinate disable, drain, rollback and incident controls across modules."
+      ],
+      "non_responsibilities": [
+        "Does not submit venue orders or override Execution risk gates.",
+        "Does not generate strategy proposals or rewrite authoritative journals.",
+        "Does not turn an experimental capability into a qualified one by configuration alone."
+      ],
+      "state_notes": [
+        "Management state is desired-state and rollout metadata; runtime modules retain their domain state.",
+        "Every control change is revisioned and auditable."
+      ],
+      "ordering_and_backpressure": [
+        "Serialize conflicting lifecycle/configuration updates and reject stale revisions.",
+        "Bound fan-out queues and surface partial delivery for reconciliation."
+      ],
+      "recovery": [
+        "Reconcile desired state with observed module state after restart.",
+        "On uncertain rollout, freeze expansion and drive components to the last safe revision."
+      ],
+      "configuration": [
+        "Management consumes the canonical configuration authority and may narrow, not silently broaden, capability.",
+        "Emergency controls are explicit and auditable."
+      ],
+      "observability": [
+        "Track rollout phase, revision adoption, rejected transitions, drain progress and rollback status.",
+        "Keep operator identity and reason code in audit events."
+      ],
+      "security": [
+        "Separate operational control roles from execution credentials.",
+        "All privileged commands require authenticated capability and immutable audit identity."
+      ],
+      "operations": [
+        "Use staged rollout with health gates and automatic stop conditions.",
+        "Incident rollback favors risk reduction and may leave capabilities disabled pending review."
+      ],
+      "known_gaps": [
+        "Actual team separation and independent approval remain external governance requirements."
+      ]
+    },
+    {
+      "module_id": "hepta.marketdata.runtime",
+      "title": "Market Data Runtime",
+      "purpose": "Normalizes point-in-time market events, enforces producer ordering and issues authoritative same-process risk-ready snapshot receipts.",
+      "responsibilities": [
+        "Validate event identity, time envelope, quote invariants and fixed-point values.",
+        "Enforce producer epoch/sequence, detect gaps and maintain monotonic per-key generation.",
+        "Provide coherent snapshot reads and issue receipts only after integrity, continuity and freshness checks."
+      ],
+      "non_responsibilities": [
+        "Does not fabricate missing ticks or hide sequence gaps.",
+        "Does not compute strategy decisions or place orders.",
+        "Does not treat mutable diagnostic snapshots as authority."
+      ],
+      "state_notes": [
+        "Per venue/instrument entries retain the latest normalized event, generation, sequence-gap state and digest.",
+        "Raw snapshots are diagnostic/replay values; receipts are construction-restricted same-process capabilities."
+      ],
+      "ordering_and_backpressure": [
+        "Single-writer shard ordering is enforced by producer epoch and sequence.",
+        "Capacity is bounded; vector reads lock target shards in canonical order for a coherent cut."
+      ],
+      "recovery": [
+        "Rebuild state from a trusted feed/replay source and require a clean epoch start before risk-ready service.",
+        "Gap state remains closed to risk consumers until an explicit new epoch resets continuity."
+      ],
+      "configuration": [
+        "Feed identities, freshness windows, calendars and capacity are canonical configuration or upstream contract data.",
+        "Unsupported time/identity formats fail closed."
+      ],
+      "observability": [
+        "Report event rates, stale/invalid/gap outcomes, generation, shard contention, capacity and vector-read latency.",
+        "Keep instrument cardinality bounded by admitted market keys."
+      ],
+      "security": [
+        "Validate all feed input and separate normalization from execution authority.",
+        "Same-process receipts must not be serialized as network proof."
+      ],
+      "operations": [
+        "Bring feeds online before dependent Feature/Decision readiness and verify clean sequence continuity.",
+        "On feed anomaly, close the risk-ready gate and preserve diagnostics for replay."
+      ],
+      "known_gaps": [
+        "Cross-process snapshot authority requires an authenticated envelope if the current in-process deployment boundary changes."
+      ]
+    },
+    {
+      "module_id": "hepta.numeric.core",
+      "title": "Numeric Core",
+      "purpose": "Defines deterministic fixed-point numeric types, checked arithmetic and venue-conversion boundaries used by risk-sensitive code.",
+      "responsibilities": [
+        "Provide canonical parsing, formatting and checked raw construction.",
+        "Detect overflow, scale mismatch and lossy floating-point conversion.",
+        "Supply deterministic arithmetic primitives shared by contracts and solvers."
+      ],
+      "non_responsibilities": [
+        "Does not select business rounding policy implicitly.",
+        "Does not accept NaN, infinity or unchecked binary-floating values on risk paths.",
+        "Does not emulate vendor decimal ABIs without verified equivalence."
+      ],
+      "state_notes": [
+        "Numeric values are immutable value types with explicit validity and scale.",
+        "No module-local persistent state is required."
+      ],
+      "ordering_and_backpressure": [
+        "Operations are synchronous and deterministic; there is no internal queue.",
+        "Callers handle typed arithmetic failure before state mutation."
+      ],
+      "recovery": [
+        "Numeric failure is not retried with a less precise representation.",
+        "Correct the input, scale or policy and recompute from authoritative state."
+      ],
+      "configuration": [
+        "Scale, range and rounding are versioned policies, not runtime guesses.",
+        "Venue conversions require explicit adapter rules and golden vectors."
+      ],
+      "observability": [
+        "Count overflow, parse, scale and lossy-conversion failures at call boundaries.",
+        "Do not emit sensitive full payloads solely for numeric diagnostics."
+      ],
+      "security": [
+        "Reject malformed representations that could bypass limits or comparisons.",
+        "Keep all risk calculations on checked deterministic paths."
+      ],
+      "operations": [
+        "Any numeric policy change requires full replay, cross-compiler and schema compatibility testing.",
+        "Rollback restores the prior versioned numeric policy and invalidates incompatible artifacts."
+      ],
+      "known_gaps": [
+        "IB Decimal interoperability is not qualified until the official SDK/DFP ABI and golden vectors are verified."
+      ]
+    },
+    {
+      "module_id": "hepta.observability.runtime",
+      "title": "Observability Runtime",
+      "purpose": "Collects bounded metrics, logs and traces needed to operate and verify the system without becoming a trading authority.",
+      "responsibilities": [
+        "Expose registered metrics and reason-code dimensions.",
+        "Preserve correlation across sessions, decisions, orders and reconciliations.",
+        "Apply bounded buffering, sampling and redaction."
+      ],
+      "non_responsibilities": [
+        "Does not mutate domain state or authorize retries.",
+        "Does not retain secrets or unrestricted payload copies.",
+        "Does not let telemetry failure block required risk reduction."
+      ],
+      "state_notes": [
+        "Telemetry buffers and aggregation state are non-authoritative and may be dropped according to policy.",
+        "Audit records designated by other contracts remain owned by their authoritative module."
+      ],
+      "ordering_and_backpressure": [
+        "Preserve timestamp/correlation semantics where possible without claiming total order.",
+        "Use bounded queues; overload degrades telemetry according to policy, never domain correctness."
+      ],
+      "recovery": [
+        "Resume export from bounded buffers where supported and report loss counters.",
+        "Do not replay telemetry as domain commands."
+      ],
+      "configuration": [
+        "Sampling, exporters, cardinality and retention are canonical operational configuration.",
+        "Sensitive fields remain redacted regardless of exporter settings."
+      ],
+      "observability": [
+        "Self-observe exporter health, queue depth, drops, cardinality, latency and storage failures.",
+        "Registry IDs are the allowed stable dimensions."
+      ],
+      "security": [
+        "Enforce redaction and least-privilege exporter credentials.",
+        "Telemetry endpoints cannot expose broker credentials or raw secret-bearing configuration."
+      ],
+      "operations": [
+        "Validate dashboards/alerts with fault injection and capacity tests.",
+        "During incident, preserve critical audit signals while shedding noncritical telemetry."
+      ],
+      "known_gaps": [
+        "Production retention and external backend qualification are deployment-specific evidence, not repository claims."
+      ]
+    },
+    {
+      "module_id": "hepta.portfolio.compiler",
+      "title": "Portfolio Compiler",
+      "purpose": "Compiles approved allocation output into deterministic target-position intents while enforcing portfolio-level normalization and netting rules.",
+      "responsibilities": [
+        "Translate AllocationPlan targets into versioned target-position intents.",
+        "Apply deterministic netting, lot/scale and portfolio identity rules.",
+        "Retain decision and policy provenance through compilation."
+      ],
+      "non_responsibilities": [
+        "Does not choose the global allocation objective.",
+        "Does not submit venue orders or bypass Execution revalidation.",
+        "Does not infer missing instrument metadata permissively."
+      ],
+      "state_notes": [
+        "Compilation is a deterministic transformation; outputs are immutable intents bound to the input plan.",
+        "Any caches are derived and invalidated by plan, policy or instrument-metadata revision."
+      ],
+      "ordering_and_backpressure": [
+        "Canonicalize instruments and accounts before netting.",
+        "Bound target count and reject duplicates, conflicts or capacity overflow explicitly."
+      ],
+      "recovery": [
+        "Recompile from the same plan and metadata for replay.",
+        "Expired or superseded plans require a new authoritative input, not repair in place."
+      ],
+      "configuration": [
+        "Lot size, instrument mapping and portfolio rules are versioned metadata/configuration.",
+        "Unsupported venue/instrument combinations fail closed."
+      ],
+      "observability": [
+        "Record target counts, netting reductions, rejected mappings, numeric failures and compilation latency.",
+        "Correlate every intent to plan and policy identity."
+      ],
+      "security": [
+        "Accept only the registered decision/plan contract from the allowed dependency boundary.",
+        "Compilation cannot grant additional quantity, account or venue authority."
+      ],
+      "operations": [
+        "Promote compiler changes through golden portfolio vectors and simulator execution parity.",
+        "Rollback restores prior mapping/rule versions and recompiles pending non-mutated work."
+      ],
+      "known_gaps": [
+        "Venue-specific execution qualification remains outside the compiler boundary."
+      ]
+    },
+    {
+      "module_id": "hepta.protocol.contracts",
+      "title": "Protocol Contracts",
+      "purpose": "Owns versioned schemas, canonical serialization rules and compatibility boundaries for inter-module messages.",
+      "responsibilities": [
+        "Define closed-world schemas and required identity/lifetime/provenance fields.",
+        "Generate or validate bindings and schema catalogs deterministically.",
+        "Classify compatible versus breaking contract changes."
+      ],
+      "non_responsibilities": [
+        "Does not implement domain authority merely by defining a message.",
+        "Does not allow unknown fields or silent defaulting on authoritative paths.",
+        "Does not substitute schema validity for authenticated authority."
+      ],
+      "state_notes": [
+        "Contracts are immutable per version; new incompatible semantics require a new version.",
+        "Schema catalogs and generated bindings are deterministic derived artifacts."
+      ],
+      "ordering_and_backpressure": [
+        "Ordering fields are explicit contract data; the module itself has no runtime queue.",
+        "Consumers must validate before admitting data to their own state machines."
+      ],
+      "recovery": [
+        "Fix source schema/contract documents, regenerate artifacts and rerun compatibility tests.",
+        "Never patch a released meaning in place without the governed compatibility process."
+      ],
+      "configuration": [
+        "Schema selection follows explicit negotiated or configured version.",
+        "Unsupported versions fail closed."
+      ],
+      "observability": [
+        "Expose validation/compatibility failure counts at consuming boundaries.",
+        "Diagnostics identify schema path without logging sensitive payloads."
+      ],
+      "security": [
+        "Use closed-world validation, bounded sizes and canonical encodings.",
+        "Authentication, issuer and audience semantics must be specified separately from structural schema."
+      ],
+      "operations": [
+        "Contract changes require provider/consumer updates, negative tests and migration notes in one revision.",
+        "Rollback restores the prior compatible contract set; mixed versions require explicit support."
+      ],
+      "known_gaps": [
+        "Cross-process authority envelopes must add cryptographic/authentication semantics beyond ordinary schemas."
+      ]
+    },
+    {
+      "module_id": "hepta.research.protocol",
+      "title": "Research Protocol Runtime",
+      "purpose": "Runs deterministic research and replay protocols under bounded resources without granting production trading authority.",
+      "responsibilities": [
+        "Validate datasets, protocol manifests and point-in-time constraints.",
+        "Execute reproducible research/replay commands with captured provenance.",
+        "Produce evidence suitable for review without promoting models automatically."
+      ],
+      "non_responsibilities": [
+        "Does not access broker credentials or submit orders.",
+        "Does not label a result production-qualified without promotion gates.",
+        "Does not read future data into point-in-time experiments."
+      ],
+      "state_notes": [
+        "Runs are immutable evidence bundles keyed by protocol, dataset and code identity.",
+        "Temporary workspace state is disposable; registries remain canonical."
+      ],
+      "ordering_and_backpressure": [
+        "Protocol steps follow declared deterministic order and bounded parallelism.",
+        "Resource overflow terminates or rejects the run with explicit evidence."
+      ],
+      "recovery": [
+        "Resume only where the protocol defines checkpoint semantics; otherwise rerun from immutable inputs.",
+        "Corrupt or incomplete evidence cannot be promoted."
+      ],
+      "configuration": [
+        "Seeds, datasets, feature versions and resource limits are explicit manifest inputs.",
+        "Environment differences are recorded rather than normalized away silently."
+      ],
+      "observability": [
+        "Record run identity, durations, resource use, failures and artifact digests.",
+        "Protect proprietary datasets and secrets from logs/artifacts."
+      ],
+      "security": [
+        "Sandbox untrusted research inputs and prohibit production credentials.",
+        "Promotion requires separate reviewed contracts and qualification."
+      ],
+      "operations": [
+        "Use reproducible runners and immutable evidence storage.",
+        "Delete or quarantine incomplete runs; never merge them into authoritative qualification evidence."
+      ],
+      "known_gaps": [
+        "External dataset licenses and production model approval are outside repository-only closure."
+      ]
+    },
+    {
+      "module_id": "hepta.risk.policy",
+      "title": "Risk Policy",
+      "purpose": "Evaluates versioned, fail-closed risk policy and can only preserve or reduce permitted risk.",
+      "responsibilities": [
+        "Validate policy revision, limits, overrides and input freshness.",
+        "Return deterministic allow/reduce/deny outcomes with reason codes.",
+        "Enforce monotonic risk reduction for emergency and fallback paths."
+      ],
+      "non_responsibilities": [
+        "Does not place orders or hold venue credentials.",
+        "Does not expand authority beyond the incoming decision/session capability.",
+        "Does not silently ignore missing limits or stale state."
+      ],
+      "state_notes": [
+        "Policy definitions are immutable per revision; evaluation is deterministic over explicit inputs.",
+        "Overrides are separate audited objects with bounded scope and lifetime."
+      ],
+      "ordering_and_backpressure": [
+        "Serialize conflicting policy revisions and reject stale evaluation context.",
+        "Evaluation queues must be bounded; timeout denies or reduces according to registered policy."
+      ],
+      "recovery": [
+        "Reload the last verified policy revision and invalidate stale caches.",
+        "On configuration ambiguity, apply the stricter valid policy or deny."
+      ],
+      "configuration": [
+        "All limits, hierarchies and override rules are canonical policy data.",
+        "Breaking policy semantics require a new revision and replay qualification."
+      ],
+      "observability": [
+        "Report decisions, reductions, denials, override use, stale inputs and evaluation latency.",
+        "Avoid leaking account-sensitive absolute values where aggregates suffice."
+      ],
+      "security": [
+        "Separate policy authorship, approval and execution roles.",
+        "Overrides require authenticated identity, reason, scope, expiry and audit trail."
+      ],
+      "operations": [
+        "Canary policy revisions in replay/simulator and compare counterfactual outcomes.",
+        "Rollback selects a previously verified revision; emergency kill controls remain dominant."
+      ],
+      "known_gaps": [
+        "Venue/account-specific PAPER evidence remains required for environment qualification."
+      ]
+    },
+    {
+      "module_id": "hepta.session.runtime",
+      "title": "Session Runtime",
+      "purpose": "Owns session identity, leases, epochs, fencing and supervisor lifecycle used to prevent stale actors from exercising capabilities.",
+      "responsibilities": [
+        "Issue and validate bounded session/lease identity.",
+        "Advance epochs and fence superseded owners deterministically.",
+        "Coordinate startup, heartbeat, expiry and supervised restart state."
+      ],
+      "non_responsibilities": [
+        "Does not decide trades or mutate venue orders.",
+        "Does not treat network liveness as authority by itself.",
+        "Does not reuse expired capability across epochs."
+      ],
+      "state_notes": [
+        "Session state is authoritative for lease/epoch ownership and expiry.",
+        "Dependent cached capabilities are invalidated whenever the session epoch changes."
+      ],
+      "ordering_and_backpressure": [
+        "Serialize lease transitions and reject stale heartbeats/owners.",
+        "Bound supervisor event queues and prioritize fencing/expiry over new admission."
+      ],
+      "recovery": [
+        "On restart, establish a new epoch or prove continuation according to contract before serving work.",
+        "Fence uncertain prior owners before reissuing authority."
+      ],
+      "configuration": [
+        "Lease duration, heartbeat cadence and restart policy are canonical configuration.",
+        "Unsafe timeout relaxation requires reviewed contract and qualification changes."
+      ],
+      "observability": [
+        "Track active sessions, epoch changes, heartbeat lag, expiries, fencing and restart loops.",
+        "Correlate without exposing secret token material."
+      ],
+      "security": [
+        "Capabilities are scoped to session identity, audience and lifetime.",
+        "Prevent confused-deputy use across accounts, agents or environments."
+      ],
+      "operations": [
+        "Start Session before dependent control/data-plane readiness.",
+        "On instability, stop admission and fence rather than extending leases optimistically."
+      ],
+      "known_gaps": [
+        "Distributed session authority requires a deployed consensus/storage design and evidence if moved beyond the current boundary."
+      ]
+    },
+    {
+      "module_id": "hepta.simulation.runtime",
+      "title": "Simulation Runtime",
+      "purpose": "Provides deterministic clocks, scheduling, scenarios and fault controls for simulator qualification and replay.",
+      "responsibilities": [
+        "Advance virtual time and event schedules deterministically.",
+        "Inject registered faults and preserve scenario identity/provenance.",
+        "Coordinate simulator components without accessing real venue authority."
+      ],
+      "non_responsibilities": [
+        "Does not claim real-market latency or fill realism without evidence.",
+        "Does not connect to PAPER/LIVE credentials.",
+        "Does not allow wall-clock races to alter deterministic results."
+      ],
+      "state_notes": [
+        "Scenario state is isolated per run and keyed by seed, clock and scenario version.",
+        "Artifacts are replayable evidence, not production state."
+      ],
+      "ordering_and_backpressure": [
+        "Use a canonical event queue and deterministic tie-breaking.",
+        "Bound scenario event count and resource usage; overflow fails the run explicitly."
+      ],
+      "recovery": [
+        "Restart from an explicit checkpoint or rerun from immutable scenario inputs.",
+        "Partial runs are marked incomplete and cannot satisfy qualification."
+      ],
+      "configuration": [
+        "Clock, seed, latency, fault and scenario parameters are explicit versioned inputs.",
+        "Defaults are recorded in evidence, not hidden process globals."
+      ],
+      "observability": [
+        "Record virtual time, event counts, injected faults, queue depth and determinism digests.",
+        "Separate simulator metrics from real environment telemetry."
+      ],
+      "security": [
+        "Prohibit real broker credentials and network mutation in simulator profiles.",
+        "Fault controls are test-only capabilities unavailable to production entrypoints."
+      ],
+      "operations": [
+        "Run cross-compiler/replay determinism suites before accepting changes.",
+        "Rollback restores prior scenario/model versions and compares golden digests."
+      ],
+      "known_gaps": [
+        "Simulator success cannot close IB PAPER or LIVE qualification gaps."
+      ]
+    },
+    {
+      "module_id": "hepta.strategy.runtime",
+      "title": "Strategy Runtime",
+      "purpose": "Hosts bounded strategy logic that emits proposals under explicit identity, lifetime and resource limits.",
+      "responsibilities": [
+        "Load registered strategy implementations and configuration.",
+        "Produce versioned proposals with complete identity, snapshot and lifetime context.",
+        "Enforce strategy isolation, quotas and quarantine outcomes."
+      ],
+      "non_responsibilities": [
+        "Does not allocate global capital or place venue orders.",
+        "Does not possess broker credentials or Execution capability.",
+        "Does not mark its own proposal accepted."
+      ],
+      "state_notes": [
+        "Strategy-local state is isolated by strategy/agent identity and is never authoritative portfolio state.",
+        "Proposal output is immutable and expires according to contract."
+      ],
+      "ordering_and_backpressure": [
+        "Consume ordered feature/snapshot inputs according to the declared contract.",
+        "Bound per-strategy work and output queues; overload causes throttling/quarantine, not system-wide lock contention."
+      ],
+      "recovery": [
+        "Restart isolated strategy state from approved checkpoint/configuration and reacquire session capability.",
+        "Discard expired proposals after restart."
+      ],
+      "configuration": [
+        "Strategy versions, parameters, resource budgets and enablement are canonical configuration.",
+        "Unknown or unapproved strategy versions cannot load."
+      ],
+      "observability": [
+        "Report compute latency, proposal counts, expiry, quota violations and quarantine events.",
+        "Keep proprietary model data out of shared telemetry."
+      ],
+      "security": [
+        "Treat strategy code and output as untrusted relative to Decision and Execution.",
+        "Sandbox resources and forbid dependencies on venue credentials or execution internals."
+      ],
+      "operations": [
+        "Promote through research validation, replay and simulator gates before enabling.",
+        "Quarantine one strategy without weakening global risk or other tenants."
+      ],
+      "known_gaps": [
+        "Production-grade sandboxing and model promotion evidence are deployment-specific beyond repository structure."
+      ]
+    },
+    {
+      "module_id": "hepta.venue.ctp",
+      "title": "CTP Venue Adapter",
+      "purpose": "Defines the quarantined adapter boundary for a future CTP integration; the current lifecycle does not authorize runtime use.",
+      "responsibilities": [
+        "Keep vendor-specific transport and normalization behind the venue adapter boundary.",
+        "Document required contracts, dependencies and enablement prerequisites.",
+        "Fail closed while unsupported."
+      ],
+      "non_responsibilities": [
+        "Does not expose an active CTP connection or credentials.",
+        "Does not bypass Execution, Risk or Session.",
+        "Does not claim PAPER/LIVE compatibility."
+      ],
+      "state_notes": [
+        "No authoritative runtime state may be enabled while lifecycle is unsupported.",
+        "Future order/session state must map to canonical Execution and reconciliation contracts."
+      ],
+      "ordering_and_backpressure": [
+        "A future adapter must preserve vendor sequence/order identity and bounded callbacks.",
+        "Current unsupported entrypoints reject activation."
+      ],
+      "recovery": [
+        "No runtime recovery claim exists while unsupported.",
+        "Future recovery must reconnect, fence stale sessions and reconcile before mutation."
+      ],
+      "configuration": [
+        "Enablement remains false unless lifecycle, capability and qualification registries are changed together.",
+        "Vendor SDK/version/configuration must be pinned when introduced."
+      ],
+      "observability": [
+        "Unsupported activation attempts must be visible.",
+        "Future adapter telemetry must include session, sequence, callback and reconciliation health."
+      ],
+      "security": [
+        "No vendor credential may enter unsupported code paths.",
+        "Vendor code remains isolated from strategy and management boundaries."
+      ],
+      "operations": [
+        "Do not deploy or package as an enabled venue.",
+        "Activation requires reviewed code, negative tests, simulator/PAPER evidence and rollback procedures."
+      ],
+      "known_gaps": [
+        "The adapter is intentionally unsupported; all real integration and qualification work remains future scope."
+      ]
+    },
+    {
+      "module_id": "hepta.venue.ib",
+      "title": "Interactive Brokers Venue Adapter",
+      "purpose": "Adapts the pinned Interactive Brokers API to canonical Execution, market-data and reconciliation contracts for simulator-first and eventual PAPER qualification.",
+      "responsibilities": [
+        "Map IB callbacks, identifiers and order lifecycle into canonical typed state.",
+        "Keep SDK, account, session and credential handling inside the venue/Execution boundary.",
+        "Support reconciliation and explicit uncertain outcomes across disconnects."
+      ],
+      "non_responsibilities": [
+        "Does not grant PAPER or LIVE qualification by compiling.",
+        "Does not replace Decimal semantics with unverified binary-floating emulation.",
+        "Does not submit orders outside Execution authority."
+      ],
+      "state_notes": [
+        "Adapter state includes connection/session, request/order ID mapping and callback-derived venue observations.",
+        "Canonical OMS remains authoritative; adapter caches are reconciled after reconnect."
+      ],
+      "ordering_and_backpressure": [
+        "Serialize callback-to-state transitions and preserve IB ordering/identifier semantics.",
+        "Bound outbound/inbound queues and close mutation admission during disconnect or callback backlog."
+      ],
+      "recovery": [
+        "Reconnect under a fenced session, resynchronize IDs/state and reconcile open orders/executions before resuming.",
+        "Uncertain mutations remain uncertain until venue evidence resolves them."
+      ],
+      "configuration": [
+        "Pin exact IB API archive/tree, account/environment, gateway/TWS build, Decimal ABI and connection policy.",
+        "PAPER enablement requires a verified qualification receipt for the exact artifact/configuration."
+      ],
+      "observability": [
+        "Track connection state, callback lag, request/order mapping, rejects, reconciliation lag and Decimal conversion failures.",
+        "Redact account and credential material."
+      ],
+      "security": [
+        "Credentials stay in the adapter/Execution trust boundary with least privilege.",
+        "Qualification evidence binds code, binary, config, SDK, toolchain, account/session and scenario identities."
+      ],
+      "operations": [
+        "Keep disabled outside explicit simulator/PAPER profiles.",
+        "PAPER rollout requires official SDK build, scenario matrix, soak, disconnect/reconnect and rollback evidence."
+      ],
+      "known_gaps": [
+        "G-IB-001 remains external until real official-SDK PAPER evidence exists; repository hardening cannot fabricate it."
+      ]
+    },
+    {
+      "module_id": "hepta.venue.simulator",
+      "title": "Simulator Venue Adapter",
+      "purpose": "Implements the deterministic simulated venue used for execution, reconciliation and failure-path verification.",
+      "responsibilities": [
+        "Model accepted/rejected/cancelled/filled order transitions deterministically.",
+        "Apply registered latency, fill and fault rules under virtual time.",
+        "Expose canonical venue observations to Execution and tests."
+      ],
+      "non_responsibilities": [
+        "Does not claim real venue market quality or latency.",
+        "Does not connect to external broker credentials.",
+        "Does not silently use wall-clock randomness."
+      ],
+      "state_notes": [
+        "Order book, order lifecycle and fault state are isolated per scenario/run.",
+        "All mutations are replayable from scenario inputs and canonical seeds."
+      ],
+      "ordering_and_backpressure": [
+        "Use deterministic event ordering and tie-breaking for fills, cancels and disconnect races.",
+        "Bound simulated queues and fail scenarios explicitly on resource exhaustion."
+      ],
+      "recovery": [
+        "Restore from declared simulator checkpoint or replay from run start.",
+        "Reconnect/fault recovery follows scenario rules and produces evidence."
+      ],
+      "configuration": [
+        "Matching, latency, fill, reject and fault models are versioned scenario inputs.",
+        "Unknown model versions fail closed."
+      ],
+      "observability": [
+        "Record simulated event order, fill decisions, injected faults, queue depth and determinism digests.",
+        "Clearly label all telemetry as simulator environment."
+      ],
+      "security": [
+        "Simulator profiles prohibit real credentials and real venue endpoints.",
+        "Test-only fault controls are not exposed through production capability paths."
+      ],
+      "operations": [
+        "Run golden lifecycle and race scenarios on every relevant change.",
+        "Rollback selects prior model/scenario versions and compares deterministic outputs."
+      ],
+      "known_gaps": [
+        "Simulator evidence is necessary but cannot substitute for IB PAPER qualification."
+      ]
+    },
+    {
+      "module_id": "hepta.venue.xt",
+      "title": "XT Venue Adapter",
+      "purpose": "Defines the quarantined adapter boundary for a future XT integration; the current lifecycle does not authorize runtime use.",
+      "responsibilities": [
+        "Keep vendor-specific transport and normalization behind the venue adapter boundary.",
+        "Document required contracts, dependencies and enablement prerequisites.",
+        "Fail closed while unsupported."
+      ],
+      "non_responsibilities": [
+        "Does not expose an active XT connection or credentials.",
+        "Does not bypass Execution, Risk or Session.",
+        "Does not claim PAPER/LIVE compatibility."
+      ],
+      "state_notes": [
+        "No authoritative runtime state may be enabled while lifecycle is unsupported.",
+        "Future order/session state must map to canonical Execution and reconciliation contracts."
+      ],
+      "ordering_and_backpressure": [
+        "A future adapter must preserve vendor sequence/order identity and bounded callbacks.",
+        "Current unsupported entrypoints reject activation."
+      ],
+      "recovery": [
+        "No runtime recovery claim exists while unsupported.",
+        "Future recovery must reconnect, fence stale sessions and reconcile before mutation."
+      ],
+      "configuration": [
+        "Enablement remains false unless lifecycle, capability and qualification registries are changed together.",
+        "Vendor SDK/version/configuration must be pinned when introduced."
+      ],
+      "observability": [
+        "Unsupported activation attempts must be visible.",
+        "Future adapter telemetry must include session, sequence, callback and reconciliation health."
+      ],
+      "security": [
+        "No vendor credential may enter unsupported code paths.",
+        "Vendor code remains isolated from strategy and management boundaries."
+      ],
+      "operations": [
+        "Do not deploy or package as an enabled venue.",
+        "Activation requires reviewed code, negative tests, simulator/PAPER evidence and rollback procedures."
+      ],
+      "known_gaps": [
+        "The adapter is intentionally unsupported; all real integration and qualification work remains future scope."
+      ]
+    }
+  ]
+}
