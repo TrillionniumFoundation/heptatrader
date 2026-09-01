@@ -4,8 +4,8 @@
     {"id":"M0","title":"Canonical Truth Consolidation","state":"closed","depends_on":[],"exit":["one active documentation graph","no historical docs or aliases","direct-main PR exact-head and merge-candidate CI"]},
     {"id":"M1","title":"Documentation Control Plane","state":"closed","depends_on":["M0"],"exit":["generated views deterministic","registries cross-validated","evidence schema integrated"]},
     {"id":"M2","title":"Modular Runtime Foundation","state":"closed","depends_on":["M1"],"exit":["one target per module","no shared-migration source ownership","module-aware test impact"]},
-    {"id":"M3","title":"Typed Data and Concurrency Foundation","state":"in-progress","depends_on":["M2"],"exit":["single-source bindings","fixed numeric boundary","shard and queue contracts"]},
-    {"id":"M4","title":"Global Decision Shadow","state":"planned","depends_on":["M3"],"exit":["StrategyProposal to AllocationPlan shadow E2E","deterministic solver record","Execution revalidation"]},
+    {"id":"M3","title":"Typed Data and Concurrency Foundation","state":"closed","depends_on":["M2"],"exit":["single-source bindings","fixed numeric boundary","shard and queue contracts"]},
+    {"id":"M4","title":"Global Decision Shadow","state":"in-progress","depends_on":["M3"],"exit":["StrategyProposal to AllocationPlan shadow E2E","deterministic solver record","Execution revalidation"]},
     {"id":"M5","title":"Active Multi-Agent Simulator","state":"planned","depends_on":["M4"],"exit":["module lifecycle","fault isolation","active capital allocation"]},
     {"id":"M6","title":"IB PAPER Parity and Qualification","state":"planned","depends_on":["M5"],"exit":["exact-artifact qualification","fault scenarios","soak and rollback"]},
     {"id":"M7","title":"Team-Scale Continuous Development","state":"planned","depends_on":["M2"],"exit":["team ownership","merge queue","module SLO and impact closure"]}
