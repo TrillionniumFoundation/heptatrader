@@ -1,0 +1,109 @@
+name: post-v5-same-head-gate
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/post-v5-same-head-gate.yml
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: heptatrader-post-v5-same-head-gate
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Lock final robust canonical head
+        id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          for attempt in $(seq 1 600); do
+            sha="$(gh api "repos/$REPO/branches/$branch" --jq '.commit.sha')"
+            git fetch origin "$sha" >/dev/null 2>&1
+            if git show "$sha:docs/program/gap-registry-v2.json" 2>/dev/null | grep -Fq G-OPT-007 && \
+               git show "$sha:tests/global_allocator_tests.cpp" | grep -Fq 'maximumExactCombinations = 1000000' && \
+               git show "$sha:tests/python/test_internal_verification_evidence.py" | grep -Fq 'issubset({"G-IB-001", "G-TEAM-001"})'; then
+              pr_head="$(gh api "repos/$REPO/pulls/7" --jq '.head.sha')"
+              test "$pr_head" = "$sha"
+              echo "sha=$sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "final robust canonical head did not appear" >&2
+          exit 1
+      - name: Require unchanged exact PR workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required='["canonical-full-suite","core-runtime","documentation-control-plane","merge-candidate"]'
+          for attempt in $(seq 1 480); do
+            current="$(gh api "repos/$REPO/pulls/7" --jq '.head.sha')"
+            test "$current" = "$HEAD_SHA"
+            runs="$(gh api "repos/$REPO/actions/runs?head_sha=$HEAD_SHA&event=pull_request&per_page=100")"
+            state="$(jq -c --argjson required "$required" '
+              [.workflow_runs[] | select(.name as $name | $required | index($name))]
+              | group_by(.name)
+              | map(sort_by(.run_number) | last)
+              | {count:length,
+                 pending:[.[] | select(.status != "completed") | .name],
+                 failed:[.[] | select(.status == "completed" and .conclusion != "success") | {name,conclusion,url:.html_url}],
+                 success:[.[] | select(.status == "completed" and .conclusion == "success") | .name]}
+            ' <<<"$runs")"
+            if [[ "$(jq -r '.failed | length' <<<"$state")" -ne 0 ]]; then
+              jq . <<<"$state" >&2
+              exit 1
+            fi
+            if [[ "$(jq -r '.count' <<<"$state")" -eq 4 && \
+                  "$(jq -r '.pending | length' <<<"$state")" -eq 0 && \
+                  "$(jq -r '.success | length' <<<"$state")" -eq 4 ]]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "final exact-head workflows were missing or incomplete" >&2
+          exit 1
+      - name: Request fresh independent review on unchanged head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/$REPO/pulls/7" --jq '.head.sha')" = "$HEAD_SHA"
+          gh api --method POST "repos/$REPO/pulls/7/requested_reviewers" \
+            --input - <<'JSON'
+          {"reviewers":["ProfHepta"]}
+          JSON
+          marker="<!-- post-v5-same-head:$HEAD_SHA -->"
+          if ! gh api "repos/$REPO/issues/7/comments?per_page=100" --jq '.[].body' | grep -Fq "$marker"; then
+            gh api --method POST "repos/$REPO/issues/7/comments" \
+              -f body="$marker
+
+          Final robust internal closure is green on the unchanged exact PR head across canonical-full-suite, core-runtime, documentation-control-plane and merge-candidate. Fresh independent review is requested. External GitHub-governance and real IB PAPER qualification remain separate gates and are not inferred from these checks."
+          fi
