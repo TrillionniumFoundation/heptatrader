@@ -23,53 +23,316 @@ jobs:
         with:
           ref: codex/heptatrader-m5-work
           fetch-depth: 0
-      - name: Complete any pending M5 integration
+
+      - name: Merge latest canonical PR head
         shell: bash
         run: |
           set -euo pipefail
           git config user.name "Hepta Gap Closure Bot"
           git config user.email "hepta-gap-closure-bot@users.noreply.github.com"
+          git fetch origin codex/heptatrader-documentation-control-plane-v2
+          git merge --no-ff --no-edit origin/codex/heptatrader-documentation-control-plane-v2
+
+      - name: Integrate M5 and separate simulation orchestration
+        shell: bash
+        run: |
+          set -euo pipefail
           if test -f scripts/m5_repair_patch.py; then
             python3 scripts/m5_repair_patch.py
           elif test -f scripts/m5_patch.py; then
             python3 scripts/m5_patch.py
           fi
+
           python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
           from pathlib import Path
-          for relative in (
-              'tests/module_lifecycle_tests.cpp',
-              'tests/multi_agent_allocation_tests.cpp',
+
+          ROOT = Path('.')
+          SIMULATION_MODULE = 'hepta.simulation.runtime'
+          SIMULATION_MANIFEST = 'modules/manifests/hepta-simulation-runtime.json'
+
+
+          def read_json(relative: str):
+              return json.loads((ROOT / relative).read_text(encoding='utf-8'))
+
+
+          def write_json(relative: str, value, *, compact: bool = False):
+              path = ROOT / relative
+              path.parent.mkdir(parents=True, exist_ok=True)
+              if compact:
+                  rendered = json.dumps(
+                      value, ensure_ascii=False, separators=(',', ':')
+                  )
+              else:
+                  rendered = json.dumps(value, ensure_ascii=False, indent=2)
+              path.write_text(rendered + '\n', encoding='utf-8')
+
+
+          # A deterministic venue and an orchestration harness have opposite
+          # dependency directions. Keeping both under hepta.venue.simulator
+          # made Execution <-> Simulator cyclic. Give the orchestration target
+          # its own module; it may consume Execution revalidation, while the
+          # venue remains a leaf dependency of Execution.
+          ownership_path = 'docs/modules/source-ownership-registry-v1.json'
+          ownership = read_json(ownership_path)
+          matched = False
+          for rule in ownership['physical_ownership_rules']:
+              if rule.get('id') == 'multi-agent-simulator':
+                  rule['selector'] = {
+                      'kind': 'prefix',
+                      'path': 'HeptaTrade/simulator/multi_agent_allocation',
+                  }
+                  rule['physical_owner'] = SIMULATION_MODULE
+                  rule['priority'] = 350
+                  matched = True
+          if not matched:
+              ownership['physical_ownership_rules'].append({
+                  'id': 'multi-agent-simulator',
+                  'selector': {
+                      'kind': 'prefix',
+                      'path': 'HeptaTrade/simulator/multi_agent_allocation',
+                  },
+                  'physical_owner': SIMULATION_MODULE,
+                  'priority': 350,
+              })
+          write_json(ownership_path, ownership, compact=True)
+
+          venue_path = 'docs/modules/manifests/hepta-venue-simulator.json'
+          venue = read_json(venue_path)
+          venue['build_targets'] = [
+              target for target in venue.get('build_targets', [])
+              if target != 'hepta_multi_agent_simulator'
+          ]
+          orchestration_dependencies = {
+              'hepta.execution.runtime',
+              'hepta.global.decision',
+              'hepta.management.control',
+              'hepta.numeric.core',
+              'hepta.portfolio.compiler',
+              'hepta.strategy.runtime',
+          }
+          venue['allowed_dependencies'] = sorted(
+              dependency
+              for dependency in venue.get('allowed_dependencies', [])
+              if dependency not in orchestration_dependencies
+          )
+          venue['verification'] = [
+              check for check in venue.get('verification', [])
+              if check not in {'lifecycle-faults', 'rollout-rollback'}
+          ]
+          write_json(venue_path, venue)
+
+          consumed_contracts = [
+              'hepta.allocation-plan.v1',
+              'hepta.authoritative-snapshot.v2',
+              'hepta.global-optimization.v1',
+              'hepta.module-lifecycle.v1',
+              'hepta.numeric.fixed-v1',
+              'hepta.solver-result.v1',
+              'hepta.strategy-proposal.v1',
+              'portfolio.net-target.v1',
+              'proposal-set.v1',
+          ]
+          simulation_manifest = {
+              'schema': 'heptatrader.module-manifest.v2',
+              'id': SIMULATION_MODULE,
+              'version': '1.0.0',
+              'lifecycle': 'current',
+              'kind': 'simulation-orchestrator',
+              'trust_domain': 'simulation-control',
+              'authority': (
+                  'simulation-only multi-agent orchestration without broker '
+                  'mutation authority'
+              ),
+              'ownership_mode': 'exclusive',
+              'source_roots': [
+                  'HeptaTrade/simulator/multi_agent_allocation'
+              ],
+              'build_targets': ['hepta_multi_agent_simulator'],
+              'provides': [],
+              'consumes': consumed_contracts,
+              'allowed_dependencies': sorted([
+                  'hepta.execution.runtime',
+                  'hepta.global.decision',
+                  'hepta.management.control',
+                  'hepta.numeric.core',
+                  'hepta.portfolio.compiler',
+                  'hepta.strategy.runtime',
+              ]),
+              'forbidden_dependencies': [
+                  'broker.credentials',
+                  'hepta.gateway.runtime',
+                  'hepta.venue.*',
+              ],
+              'state': {
+                  'model': 'ephemeral-cycle',
+                  'persistence': 'none',
+                  'writer': 'single-owner',
+              },
+              'concurrency': {
+                  'model': 'capital-pool-cycle',
+                  'shard_key': 'capital-pool',
+                  'blocking_io': 'forbidden',
+                  'cross_module_lock': 'forbidden',
+              },
+              'backpressure': {
+                  'class': 'bounded-proposal-set',
+                  'overflow': 'typed-failure',
+              },
+              'failure': {
+                  'risk_increase': 'no-plan',
+                  'safe_exit': 'never-weaken',
+              },
+              'resource_budget': 'multi-agent-simulator-v1',
+              'owners': {
+                  'dri': '@hepta/simulator',
+                  'backup': '@hepta/global-allocation',
+                  'reviewers': [
+                      '@hepta/architecture',
+                      '@hepta/execution-safety',
+                  ],
+              },
+              'verification': [
+                  'proposal-completeness',
+                  'optimizer-determinism',
+                  'constraint-properties',
+                  'shadow-parity',
+                  'lifecycle-faults',
+                  'rollout-rollback',
+              ],
+          }
+          write_json('docs/' + SIMULATION_MANIFEST, simulation_manifest)
+
+          module_registry_path = 'docs/modules/module-registry-v2.json'
+          module_registry = read_json(module_registry_path)
+          paths = module_registry['manifest_paths']
+          if SIMULATION_MANIFEST not in paths:
+              paths.append(SIMULATION_MANIFEST)
+          paths.sort()
+          write_json(module_registry_path, module_registry)
+
+          document_registry_path = 'docs/document-registry-v2.json'
+          document_registry = read_json(document_registry_path)
+          document_path = SIMULATION_MANIFEST
+          if not any(
+              item.get('path') == document_path
+              for item in document_registry['documents']
           ):
-              path = Path(relative)
-              text = path.read_text()
-              text = text.replace("Digest('m')", "Digest('d')")
-              text = text.replace("Digest('h')", "Digest('e')")
-              text = text.replace("char evidence = 'h'", "char evidence = 'e'")
-              path.write_text(text)
+              document_registry['documents'].append({
+                  'path': document_path,
+                  'class': 'machine-registry',
+                  'owner': '@hepta/platform',
+              })
+          document_registry['documents'].sort(
+              key=lambda item: item['path']
+          )
+          write_json(document_registry_path, document_registry, compact=True)
+
+          contract_registry_path = 'docs/contracts/contract-registry-v2.json'
+          contract_registry = read_json(contract_registry_path)
+          remaining = set(consumed_contracts)
+          for contract in contract_registry['contracts']:
+              if contract.get('id') in remaining:
+                  consumers = contract.setdefault('consumers', [])
+                  if SIMULATION_MODULE not in consumers:
+                      consumers.append(SIMULATION_MODULE)
+                      consumers.sort()
+                  remaining.remove(contract['id'])
+          if remaining:
+              raise SystemExit(
+                  'simulation contracts missing from registry: ' +
+                  ', '.join(sorted(remaining))
+              )
+          write_json(contract_registry_path, contract_registry)
+
+          capability_path = 'docs/product/capability-registry-v2.json'
+          capability_registry = read_json(capability_path)
+          found_capability = False
+          for capability in capability_registry['capabilities']:
+              if capability.get('id') != 'hepta.global.multi-agent-allocation':
+                  continue
+              found_capability = True
+              modules = capability.setdefault('modules', [])
+              if SIMULATION_MODULE not in modules:
+                  modules.append(SIMULATION_MODULE)
+                  modules.sort()
+              verification = capability.setdefault('verification', [])
+              for check in ('lifecycle-faults', 'rollout-rollback'):
+                  if check not in verification:
+                      verification.append(check)
+              capability['declared_state'] = 'implemented'
+              capability['implementation'] = 'implemented-core'
+              capability['build'] = 'default'
+              capability['integration'] = {
+                  'simulator': 'active',
+                  'paper': 'absent',
+                  'live': 'forbidden',
+              }
+          if not found_capability:
+              raise SystemExit('global multi-agent capability missing')
+          write_json(capability_path, capability_registry)
+
+          gap_path = 'docs/program/gap-registry-v2.json'
+          gap_registry = read_json(gap_path)
+          close_gaps = {
+              'G-OPT-001', 'G-OPT-002', 'G-OPT-003', 'G-LIFE-001'
+          }
+          seen_gaps = set()
+          for gap in gap_registry['gaps']:
+              if gap.get('id') in close_gaps:
+                  gap['state'] = 'closed'
+                  seen_gaps.add(gap['id'])
+          if seen_gaps != close_gaps:
+              raise SystemExit(
+                  'closure gaps missing: ' +
+                  ', '.join(sorted(close_gaps - seen_gaps))
+              )
+          write_json(gap_path, gap_registry, compact=True)
+
+          milestone_path = 'docs/program/milestone-registry-v1.json'
+          milestone_registry = read_json(milestone_path)
+          close_milestones = {'M4', 'M5'}
+          seen_milestones = set()
+          for milestone in milestone_registry['milestones']:
+              if milestone.get('id') in close_milestones:
+                  milestone['state'] = 'closed'
+                  seen_milestones.add(milestone['id'])
+          if seen_milestones != close_milestones:
+              raise SystemExit(
+                  'closure milestones missing: ' +
+                  ', '.join(sorted(close_milestones - seen_milestones))
+              )
+          write_json(milestone_path, milestone_registry)
           PY
-          rm -f .github/workflows/gap-closure-m5.yml
-          rm -f .github/workflows/gap-closure-m5-repair.yml
+
+          # Keep only durable source, tests and canonical registries. The exact
+          # commit validated below contains no staging patch or self-mutating
+          # workflow files.
+          rm -f \
+            .github/workflows/gap-closure-m5.yml \
+            .github/workflows/gap-closure-m5-repair.yml \
+            .github/workflows/gap-closure-m5-finalize.yml \
+            scripts/m5_patch.py \
+            scripts/m5_repair_patch.py
+
+          python3 scripts/generate_documentation_views.py --write
           git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "feat: add module lifecycle and active multi-agent simulator"
-          fi
-      - name: Merge latest canonical PR head
+          git commit -m "feat: close M4 and M5 with acyclic simulation runtime"
+          test -z "$(git status --porcelain)"
+
+      - name: Validate exact M5 closure revision
+        run: |
+          set -euo pipefail
+          git diff --exit-code
+          git diff --cached --exit-code
+          ./scripts/dev_core.sh
+          test -z "$(git status --porcelain)"
+
+      - name: Publish exact tested revision
         shell: bash
         run: |
           set -euo pipefail
-          git fetch origin codex/heptatrader-documentation-control-plane-v2
-          git merge --no-ff --no-edit origin/codex/heptatrader-documentation-control-plane-v2
-      - name: Validate synchronized M5 revision
-        run: ./scripts/dev_core.sh
-      - name: Remove temporary automation and push
-        shell: bash
-        run: |
-          set -euo pipefail
-          rm -f .github/workflows/gap-closure-m5-finalize.yml
-          rm -f scripts/m5_patch.py scripts/m5_repair_patch.py
-          git add -A
-          if ! git diff --cached --quiet; then
-            git commit -m "chore: seal tested M5 integration"
-          fi
           git push origin HEAD:codex/heptatrader-m5-work
           git push origin HEAD:codex/heptatrader-documentation-control-plane-v2
