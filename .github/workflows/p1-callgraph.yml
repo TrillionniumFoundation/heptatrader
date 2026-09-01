@@ -1,0 +1,38 @@
+name: p1-callgraph
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-review-p1-work
+    paths:
+      - .github/workflows/p1-callgraph.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-review-p1-work
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Enumerate authority call sites
+        run: |
+          set -euo pipefail
+          printf '\n=== fixed constructors ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'HeptaFixedDecimal(' HeptaTrade tests || true
+          printf '\n=== ToDouble ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'ToDouble' HeptaTrade tests || true
+          printf '\n=== MarketDataSnapshot construction and mutation ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'MarketDataSnapshot' HeptaTrade tests || true
+          printf '\n=== ReadVector ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'ReadVector' HeptaTrade tests || true
+          printf '\n=== GlobalAllocator Allocate ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'GlobalAllocator::Allocate' HeptaTrade tests || true
+          printf '\n=== ValidateShadow ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'ValidateShadow' HeptaTrade tests || true
+          printf '\n=== AllocationPlan direct use ===\n'
+          grep -RIn --include='*.h' --include='*.cpp' 'AllocationPlan' HeptaTrade tests || true
