@@ -97,7 +97,17 @@ std::string ShardedFeatureStore::SnapshotDigest(
 }
 
 FeatureWriteResult ShardedFeatureStore::Compute(
-    const MarketDataSnapshot& input,
+    const MarketDataSnapshot&,
+    std::uint64_t,
+    const std::string&)
+{
+    FeatureWriteResult result;
+    result.reasonCode = "FEATURE_INPUT_RECEIPT_REQUIRED";
+    return result;
+}
+
+FeatureWriteResult ShardedFeatureStore::Compute(
+    const MarketDataSnapshotReceipt& receipt,
     std::uint64_t nowMs,
     const std::string& featureSetId)
 {
@@ -107,6 +117,12 @@ FeatureWriteResult ShardedFeatureStore::Compute(
         result.reasonCode = "FEATURE_SET_UNSUPPORTED";
         return result;
     }
+    if (!receipt.IsValid())
+    {
+        result.reasonCode = "FEATURE_INPUT_RECEIPT_INVALID";
+        return result;
+    }
+    const MarketDataSnapshot& input = receipt.Snapshot();
     if (!input.found || input.digest.empty() || input.producerEpoch == 0 ||
         input.sequence == 0 || input.generation == 0)
     {

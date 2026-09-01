@@ -7,7 +7,13 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
+
+static_assert(
+    !std::is_constructible<MarketDataSnapshotReceipt,
+                           MarketDataSnapshot>::value,
+    "raw market-data snapshots must not construct authority receipts");
 
 namespace
 {
@@ -87,6 +93,51 @@ void TestOrderingAndEpochs()
     assert(store.Apply(Event(1, 4)).reasonCode == "MARKET_EPOCH_STALE");
 }
 
+void TestReceiptAuthority()
+{
+    ShardedMarketDataStore store;
+    MarketDataSnapshotReceipt receipt;
+    assert(!receipt.IsValid());
+
+    assert(store.Apply(Event(1, 1)).accepted);
+    std::string reason;
+    assert(store.GetRiskReady(
+        {"SIM", "EUR.USD"}, 1200, receipt, reason));
+    assert(receipt.IsValid());
+    assert(receipt.Snapshot().generation == 1);
+    assert(!receipt.Snapshot().sequenceGap);
+
+    MarketDataSnapshot diagnostic = receipt.Snapshot();
+    diagnostic.generation += 100;
+    diagnostic.sequenceGap = true;
+    assert(receipt.Snapshot().generation == 1);
+    assert(!receipt.Snapshot().sequenceGap);
+
+    MarketDataWriteResult gap = store.Apply(Event(1, 3));
+    assert(gap.accepted && gap.sequenceGap);
+    MarketDataSnapshotReceipt blocked = receipt;
+    assert(!store.GetRiskReady(
+        {"SIM", "EUR.USD"}, 1200, blocked, reason));
+    assert(reason == "MARKET_SEQUENCE_GAP");
+    assert(!blocked.IsValid());
+
+    MarketDataSnapshot rawGap;
+    assert(store.Get({"SIM", "EUR.USD"}, rawGap));
+    assert(rawGap.sequenceGap);
+    rawGap.sequenceGap = false;
+    rawGap.generation += 100;
+    assert(ShardedMarketDataStore::ValidateSnapshot(rawGap, reason));
+
+    MarketDataEvent reset = Event(2, 1);
+    reset.producer = "feed-b";
+    assert(store.Apply(reset).accepted);
+    assert(store.GetRiskReady(
+        {"SIM", "EUR.USD"}, 1200, blocked, reason));
+    assert(blocked.IsValid());
+    assert(blocked.Snapshot().producerEpoch == 2);
+    assert(blocked.Snapshot().generation == 3);
+}
+
 void TestFreshnessAndValidation()
 {
     ShardedMarketDataStore store;
@@ -97,6 +148,16 @@ void TestFreshnessAndValidation()
     assert(!store.GetRiskReady({"SIM", "EUR.USD"}, 1000, snapshot, reason));
     assert(reason == "MARKET_CLOCK_REGRESSION");
     assert(!store.GetRiskReady({"SIM", "EUR.USD"}, 6000, snapshot, reason));
+    assert(reason == "MARKET_SNAPSHOT_STALE");
+
+    MarketDataSnapshotReceipt receipt;
+    assert(!store.GetRiskReady(
+        {"SIM", "EUR.USD"}, 1000, receipt, reason));
+    assert(!receipt.IsValid());
+    assert(reason == "MARKET_CLOCK_REGRESSION");
+    assert(!store.GetRiskReady(
+        {"SIM", "EUR.USD"}, 6000, receipt, reason));
+    assert(!receipt.IsValid());
     assert(reason == "MARKET_SNAPSHOT_STALE");
 
     event = Event(1, 2);
@@ -241,6 +302,7 @@ void TestIndependentShardProgress()
 int main()
 {
     TestOrderingAndEpochs();
+    TestReceiptAuthority();
     TestFreshnessAndValidation();
     TestCapacityAndVector();
     TestVectorIsOneCoherentCut();

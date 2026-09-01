@@ -43,10 +43,20 @@ public:
 
     explicit ShardedFeatureStore(std::size_t maximumKeys = 4096);
 
+    // The authoritative path accepts only a same-process capability issued by
+    // ShardedMarketDataStore after structural, continuity and freshness checks.
+    FeatureWriteResult Compute(const MarketDataSnapshotReceipt& input,
+                               std::uint64_t nowMs,
+                               const std::string& featureSetId =
+                                   "mid-spread-v1");
+
+    // Source-compatible fail-closed boundary for legacy callers. A mutable raw
+    // snapshot is diagnostic data, not proof of Market Data authority.
     FeatureWriteResult Compute(const MarketDataSnapshot& input,
                                std::uint64_t nowMs,
                                const std::string& featureSetId =
                                    "mid-spread-v1");
+
     bool Get(const MarketDataKey& key,
              const std::string& featureSetId,
              FeatureSnapshot& out) const;

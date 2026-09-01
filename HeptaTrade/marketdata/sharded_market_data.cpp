@@ -412,6 +412,20 @@ bool ShardedMarketDataStore::GetRiskReady(
     return true;
 }
 
+bool ShardedMarketDataStore::GetRiskReady(
+    const MarketDataKey& key,
+    std::uint64_t nowMs,
+    MarketDataSnapshotReceipt& out,
+    std::string& reason) const
+{
+    out = MarketDataSnapshotReceipt();
+    MarketDataSnapshot snapshot;
+    if (!GetRiskReady(key, nowMs, snapshot, reason)) return false;
+    out = MarketDataSnapshotReceipt(snapshot);
+    reason.clear();
+    return true;
+}
+
 bool ShardedMarketDataStore::ReadVector(
     const std::vector<MarketDataKey>& keys,
     std::uint64_t nowMs,

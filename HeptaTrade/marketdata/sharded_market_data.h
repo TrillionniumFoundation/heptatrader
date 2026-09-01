@@ -57,6 +57,9 @@ struct MarketDataWriteResult
     std::string digest;
 };
 
+// Diagnostic and replay value. This public aggregate is deliberately not an
+// authority token: callers may inspect, copy, serialize, or mutate it, but
+// risk-sensitive consumers must require MarketDataSnapshotReceipt instead.
 struct MarketDataSnapshot
 {
     bool found = false;
@@ -79,6 +82,29 @@ struct MarketDataSnapshot
     std::string digest;
 };
 
+class ShardedMarketDataStore;
+
+// Same-process typed capability issued only after the store has validated
+// structural integrity, ordering continuity, freshness, and clock direction.
+// It is not a cross-process authentication envelope.
+class MarketDataSnapshotReceipt final
+{
+public:
+    MarketDataSnapshotReceipt() noexcept : m_valid(false) {}
+
+    bool IsValid() const noexcept { return m_valid; }
+    const MarketDataSnapshot& Snapshot() const noexcept { return m_snapshot; }
+
+private:
+    explicit MarketDataSnapshotReceipt(const MarketDataSnapshot& snapshot)
+        : m_snapshot(snapshot), m_valid(true) {}
+
+    MarketDataSnapshot m_snapshot;
+    bool m_valid;
+
+    friend class ShardedMarketDataStore;
+};
+
 struct MarketDataSnapshotVector
 {
     std::vector<MarketDataSnapshot> components;
@@ -94,10 +120,20 @@ public:
 
     MarketDataWriteResult Apply(const MarketDataEvent& event);
     bool Get(const MarketDataKey& key, MarketDataSnapshot& out) const;
+
+    // Diagnostic compatibility path. This returns a mutable value and must
+    // never be treated as proof that the store issued the value.
     bool GetRiskReady(const MarketDataKey& key,
                       std::uint64_t nowMs,
                       MarketDataSnapshot& out,
                       std::string& reason) const;
+
+    // Authoritative same-process path for Feature/risk-sensitive consumers.
+    bool GetRiskReady(const MarketDataKey& key,
+                      std::uint64_t nowMs,
+                      MarketDataSnapshotReceipt& out,
+                      std::string& reason) const;
+
     bool ReadVector(const std::vector<MarketDataKey>& keys,
                     std::uint64_t nowMs,
                     MarketDataSnapshotVector& out,
