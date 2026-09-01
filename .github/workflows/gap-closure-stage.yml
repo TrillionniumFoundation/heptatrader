@@ -45,18 +45,22 @@ jobs:
           from pathlib import Path
           path = Path('tests/python/test_documentation_control_plane.py')
           text = path.read_text()
-          old = '''    def test_module_schema_enforces_migration_conditionals(self) -> None:
-        manifest = self._manifest()
-        manifest.pop("migration_gap")
-        self.assertTrue(self._schema_errors(manifest))
-'''
-          new = '''    def test_module_schema_enforces_migration_conditionals(self) -> None:
-        manifest = self._manifest()
-        manifest["ownership_mode"] = "shared-migration"
-        manifest["migration_gap"] = "G-MOD-002"
-        manifest.pop("migration_gap")
-        self.assertTrue(self._schema_errors(manifest))
-'''
+          old = '\n'.join([
+              '    def test_module_schema_enforces_migration_conditionals(self) -> None:',
+              '        manifest = self._manifest()',
+              '        manifest.pop("migration_gap")',
+              '        self.assertTrue(self._schema_errors(manifest))',
+              '',
+          ])
+          new = '\n'.join([
+              '    def test_module_schema_enforces_migration_conditionals(self) -> None:',
+              '        manifest = self._manifest()',
+              '        manifest["ownership_mode"] = "shared-migration"',
+              '        manifest["migration_gap"] = "G-MOD-002"',
+              '        manifest.pop("migration_gap")',
+              '        self.assertTrue(self._schema_errors(manifest))',
+              '',
+          ])
           assert text.count(old) == 1
           path.write_text(text.replace(old, new))
           PY
