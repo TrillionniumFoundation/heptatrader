@@ -1,0 +1,228 @@
+name: execute-protected-ib-paper-closure
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/execute-protected-ib-paper-closure.yml
+
+permissions:
+  actions: read
+  contents: write
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: heptatrader-protected-ib-paper-closure
+  cancel-in-progress: false
+
+jobs:
+  qualify-and-close:
+    runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
+    environment: ib-paper
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Lock unchanged canonical internal-closure revision
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          for attempt in $(seq 1 360); do
+            sha="$(gh api "repos/$REPO/branches/$branch" --jq '.commit.sha')"
+            git fetch origin "$sha"
+            if git show "$sha:docs/program/gap-registry-v2.json" 2>/dev/null | grep -Fq 'G-OPT-007' && \
+               git show "$sha:docs/program/gap-registry-v2.json" | grep -Fq '"id":"G-IB-001"'; then
+              echo "sha=$sha" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "canonical internal closure revision was not available" >&2
+          exit 1
+      - name: Validate controlled PAPER runner inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${IBAPI_ROOT:-}"
+          test -d "$IBAPI_ROOT"
+          test ! -L "$IBAPI_ROOT"
+          test -n "${HEPTA_IB_PAPER_QUALIFIER:-}"
+          test -f "$HEPTA_IB_PAPER_QUALIFIER"
+          test -x "$HEPTA_IB_PAPER_QUALIFIER"
+          test ! -L "$HEPTA_IB_PAPER_QUALIFIER"
+      - name: Materialize exact canonical source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          worktree="$RUNNER_TEMP/heptatrader-ib-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git worktree add --detach "$worktree" "$SOURCE_SHA"
+          cd "$worktree"
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          test -z "$(git status --porcelain)"
+          bash -n scripts/run_ib_paper_qualification.sh
+          python3 -m py_compile scripts/verify_ib_paper_qualification.py
+          printf '%s\n' "$worktree" > "$RUNNER_TEMP/heptatrader-ib-source-dir"
+      - name: Configure broker-enabled exact artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_dir="$(cat "$RUNNER_TEMP/heptatrader-ib-source-dir")"
+          build="$RUNNER_TEMP/heptatrader-ib-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$build"
+          cmake -S "$source_dir" -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_INSTALL_RUNTIME=ON \
+            -DHEPTA_ENABLE_IBAPI=ON \
+            -DIBAPI_ROOT="$IBAPI_ROOT"
+          printf '%s\n' "$build" > "$RUNNER_TEMP/heptatrader-ib-build-dir"
+      - name: Build and run deterministic prequalification
+        shell: bash
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          source_dir="$(cat "$RUNNER_TEMP/heptatrader-ib-source-dir")"
+          cmake --build "$build" --parallel 2 --target \
+            hepta_ib_executiond hepta_core_test_binaries hepta_runtime_binaries
+          ctest --test-dir "$build" --output-on-failure --parallel 1 \
+            -L core --no-tests=error
+          stage="$RUNNER_TEMP/heptatrader-ib-stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$stage"
+          DESTDIR="$stage" cmake --install "$build" --component runtime
+          python3 "$source_dir/scripts/check_install_tree.py" "$stage"
+      - name: Execute real bounded PAPER fault and recovery campaign
+        shell: bash
+        env:
+          HEPTA_QUALIFICATION_MUTATIONS: '1'
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          source_dir="$(cat "$RUNNER_TEMP/heptatrader-ib-source-dir")"
+          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cd "$source_dir"
+          ./scripts/run_ib_paper_qualification.sh "$build" "$evidence"
+          printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
+      - name: Independently reverify exact evidence
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          source_dir="$(cat "$RUNNER_TEMP/heptatrader-ib-source-dir")"
+          evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
+          binary="$(find "$build" -type f -name hepta-ib-executiond -perm -u+x -print -quit)"
+          test -n "$binary"
+          python3 "$source_dir/scripts/verify_ib_paper_qualification.py" \
+            --result "$evidence/qualification-result.json" \
+            --evidence-root "$evidence" \
+            --expected-git-sha "$SOURCE_SHA" \
+            --expected-binary "$binary" \
+            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
+            --receipt "$evidence/qualification-verification-final.json"
+      - name: Record qualification and close exact external gap
+        id: closure
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          current="$(gh api "repos/$REPO/branches/$branch" --jq '.commit.sha')"
+          test "$current" = "$SOURCE_SHA"
+          source_dir="$(cat "$RUNNER_TEMP/heptatrader-ib-source-dir")"
+          cd "$source_dir"
+          git config user.name "Hepta Protected IB Qualification Bot"
+          git config user.email "hepta-ib-qualification-bot@users.noreply.github.com"
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path('.')
+          gap_path = root / 'docs/program/gap-registry-v2.json'
+          gaps = json.loads(gap_path.read_text(encoding='utf-8'))
+          found = False
+          for gap in gaps['gaps']:
+              if gap.get('id') == 'G-IB-001':
+                  gap['state'] = 'closed'
+                  found = True
+          if not found:
+              raise SystemExit('G-IB-001 missing')
+          gap_path.write_text(json.dumps(gaps, ensure_ascii=False, separators=(',', ':')) + '\n', encoding='utf-8')
+
+          milestone_path = root / 'docs/program/milestone-registry-v1.json'
+          milestones = json.loads(milestone_path.read_text(encoding='utf-8'))
+          for milestone in milestones['milestones']:
+              if milestone.get('id') == 'M6':
+                  milestone['state'] = 'closed'
+                  break
+          else:
+              raise SystemExit('M6 missing')
+          milestone_path.write_text(json.dumps(milestones, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+
+          capability_path = root / 'docs/product/capability-registry-v2.json'
+          capabilities = json.loads(capability_path.read_text(encoding='utf-8'))
+          for capability in capabilities['capabilities']:
+              if capability.get('id') == 'hepta.venue.ib-paper':
+                  capability['declared_state'] = 'qualified'
+                  capability['implementation'] = 'qualified-paper'
+                  capability['integration']['paper'] = 'qualified'
+                  capability['qualification'] = 'passed-external'
+                  break
+          else:
+              raise SystemExit('IB PAPER capability missing')
+          capability_path.write_text(json.dumps(capabilities, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+          PY
+          python3 scripts/generate_documentation_views.py --write
+          python3 scripts/check_documentation_control_plane.py
+          python3 scripts/check_repository_integrity.py
+          git add -A
+          git commit -m "ops: record protected exact-artifact IB PAPER qualification"
+          test -z "$(git status --porcelain)"
+          closure_sha="$(git rev-parse HEAD)"
+          git push \
+            --force-with-lease="refs/heads/$branch:$SOURCE_SHA" \
+            origin "HEAD:refs/heads/$branch"
+          echo "sha=$closure_sha" >> "$GITHUB_OUTPUT"
+      - name: Upload immutable qualification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: ib-paper-qualification-${{ steps.source.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Record external evidence on issue and close it
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          CLOSURE_SHA: ${{ steps.closure.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --method POST "repos/$REPO/issues/9/comments" \
+            -f body="Protected exact-artifact IB PAPER qualification succeeded.
+
+          Qualified source revision: $SOURCE_SHA
+          Closure revision: $CLOSURE_SHA
+          Workflow run: $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID
+          Artifact: ib-paper-qualification-$SOURCE_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT
+
+          The verifier accepted real PAPER broker identity, rejected simulation/test-double authority, bound source/binary/harness digests and validated every canonical fault/recovery scenario."
+          gh api --method PATCH "repos/$REPO/issues/9" -f state=closed >/dev/null
