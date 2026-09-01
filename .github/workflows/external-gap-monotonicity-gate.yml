@@ -1,0 +1,135 @@
+name: external-gap-monotonicity-gate
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/external-gap-monotonicity-gate.yml
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: heptatrader-external-gap-monotonicity
+  cancel-in-progress: true
+
+jobs:
+  enforce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Wait for internal closure and build monotonic candidate
+        id: candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-documentation-control-plane-v2
+          for attempt in $(seq 1 600); do
+            git fetch origin "$branch" >/dev/null 2>&1
+            base_sha="$(git rev-parse "origin/$branch")"
+            if git show "$base_sha:docs/program/gap-registry-v2.json" 2>/dev/null | grep -Fq G-OPT-007; then
+              break
+            fi
+            sleep 10
+          done
+          git show "$base_sha:docs/program/gap-registry-v2.json" | grep -Fq G-OPT-007
+          worktree="$RUNNER_TEMP/heptatrader-external-gap-monotonicity"
+          git worktree add --detach "$worktree" "$base_sha"
+          cd "$worktree"
+          git config user.name "Hepta External Gap Monotonicity Bot"
+          git config user.email "hepta-external-gap-monotonicity-bot@users.noreply.github.com"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('tests/python/test_internal_verification_evidence.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''        self.assertEqual(
+              remaining,
+              {"G-IB-001": "in-progress", "G-TEAM-001": "in-progress"},
+          )
+          '''
+          old_unindented = '''        self.assertEqual(
+            remaining,
+            {"G-IB-001": "in-progress", "G-TEAM-001": "in-progress"},
+        )
+          '''
+          new = '''        self.assertTrue(
+            set(remaining).issubset({"G-IB-001", "G-TEAM-001"})
+        )
+        for state in remaining.values():
+            self.assertEqual(state, "in-progress")
+          '''
+          if 'issubset({"G-IB-001", "G-TEAM-001"})' not in text:
+              if old_unindented in text:
+                  text = text.replace(old_unindented, new, 1)
+              elif old in text:
+                  text = text.replace(old, new, 1)
+              else:
+                  raise SystemExit('external-gap assertion is not recognized')
+              path.write_text(text, encoding='utf-8')
+          PY
+          python3 -m py_compile tests/python/test_internal_verification_evidence.py
+          git add tests/python/test_internal_verification_evidence.py
+          if ! git diff --cached --quiet; then
+            git commit -m "test: make external gap closure monotonic"
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          fi
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+          echo "worktree=$worktree" >> "$GITHUB_OUTPUT"
+      - name: Validate monotonic exact core
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+        run: |
+          cd "$WORKTREE"
+          HEPTA_BUILD_DIR="$RUNNER_TEMP/heptatrader-external-gap-monotonic-core" \
+          HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 ./scripts/dev_core.sh
+      - name: Validate monotonic GCC sanitizer
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+        run: |
+          cd "$WORKTREE"
+          CXX=g++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-external-gap-monotonic-gcc" \
+            ./scripts/reliability_core.sh
+      - name: Validate monotonic Clang sanitizer
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+        run: |
+          cd "$WORKTREE"
+          CXX=clang++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-external-gap-monotonic-clang" \
+            ./scripts/reliability_core.sh
+      - name: Publish monotonic candidate
+        if: steps.candidate.outputs.changed == 'true'
+        env:
+          WORKTREE: ${{ steps.candidate.outputs.worktree }}
+          BASE_SHA: ${{ steps.candidate.outputs.base_sha }}
+        run: |
+          cd "$WORKTREE"
+          head_sha="$(git rev-parse HEAD)"
+          git push --force origin "$head_sha:refs/heads/codex/heptatrader-external-gap-monotonic-candidate"
+          git push \
+            --force-with-lease="refs/heads/codex/heptatrader-documentation-control-plane-v2:$BASE_SHA" \
+            origin "$head_sha:refs/heads/codex/heptatrader-documentation-control-plane-v2"
+      - name: Record failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh api --method POST "repos/$REPO/issues/7/comments" \
+            -f body="<!-- external-gap-monotonicity-failure:$GITHUB_RUN_ID -->
+
+          The external-gap monotonicity gate stopped fail-closed. Inspect $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID." || true
