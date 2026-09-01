@@ -59,7 +59,7 @@ replacement = '''def rewrite_add_sources(
 
 
 def add_link_libraries'''
-text, count = pattern.subn(replacement, text)
+text, count = pattern.subn(lambda _match: replacement, text)
 if count != 1:
     raise SystemExit(f"expected one parser function, found {count}")
 path.write_text(text, encoding="utf-8")
