@@ -8,14 +8,11 @@
 #include <string>
 #include <vector>
 
-struct AllocationTarget
-{
-    std::string instrument;
-    DecisionMicrounits targetPosition = 0;
-};
+struct AllocationTarget { std::string instrument; DecisionMicrounits targetPosition = 0; };
 
 struct GlobalAllocationPolicy
 {
+    std::string policyRevision;
     DecisionMicrounits maximumGrossTarget = 0;
     std::size_t maximumInstruments = 0;
     std::uint64_t maximumExactCombinations = 0;
@@ -40,8 +37,12 @@ struct AllocationPlan
     std::uint64_t allocatorEpoch = 0;
     std::string capitalPool;
     std::string accountBook;
+    std::string policyRevision;
     std::string proposalSetDigest;
     std::string snapshotDigest;
+    std::uint64_t proposalCapturedAtMs = 0;
+    std::uint64_t proposalValidUntilMs = 0;
+    std::uint64_t snapshotValidUntilMs = 0;
     AllocationSolverResult solver;
     std::vector<AllocationTarget> targets;
     std::vector<std::string> acceptedCandidates;
@@ -51,11 +52,28 @@ struct AllocationPlan
     std::string planDigest;
 };
 
+class GlobalAllocator;
+
+class GlobalDecisionReceipt
+{
+public:
+    GlobalDecisionReceipt() noexcept : m_valid(false) {}
+    bool IsValid() const noexcept { return m_valid; }
+    const AllocationPlan& Plan() const noexcept { return m_plan; }
+private:
+    explicit GlobalDecisionReceipt(const AllocationPlan& plan)
+        : m_plan(plan), m_valid(true) {}
+    AllocationPlan m_plan;
+    bool m_valid;
+    friend class GlobalAllocator;
+};
+
 struct GlobalAllocationResult
 {
     bool accepted = false;
     std::string reasonCode;
     AllocationPlan plan;
+    GlobalDecisionReceipt receipt;
 };
 
 class GlobalAllocator
@@ -66,8 +84,7 @@ public:
         const ProposalSet& proposalSet,
         const GlobalAllocationPolicy& policy,
         std::uint64_t allocatorEpoch,
-        std::uint64_t createdAtMs,
-        std::uint64_t validUntilMs);
+        std::uint64_t createdAtMs);
     static std::string SolverDigest(const AllocationSolverResult& solver);
     static std::string PlanDigest(const AllocationPlan& plan);
 };

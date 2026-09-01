@@ -97,16 +97,16 @@ void TestProposalSetCompleteness()
     expected.push_back("hepta.strategy.alpha");
     expected.push_back("hepta.strategy.beta");
     ProposalSetBuildResult set = ProposalSetBuilder::Build(
-        proposals, expected, 1500);
+        proposals, expected, 1500, 1800);
     assert(set.accepted);
     assert(set.proposalSet.proposals[0].moduleId == "hepta.strategy.alpha");
     assert(!set.proposalSet.digest.empty());
 
     proposals.pop_back();
-    assert(ProposalSetBuilder::Build(proposals, expected, 1500).reasonCode ==
+    assert(ProposalSetBuilder::Build(proposals, expected, 1500, 1800).reasonCode ==
            "PROPOSAL_SET_INCOMPLETE");
     proposals.push_back(beta);
-    assert(ProposalSetBuilder::Build(proposals, expected, 1500).reasonCode ==
+    assert(ProposalSetBuilder::Build(proposals, expected, 1500, 1800).reasonCode ==
            "PROPOSAL_SET_DUPLICATE_MODULE");
 
     proposals.clear();
@@ -115,7 +115,7 @@ void TestProposalSetCompleteness()
     beta.snapshotDigest = Digest('b');
     proposals.push_back(alpha);
     proposals.push_back(beta);
-    assert(ProposalSetBuilder::Build(proposals, expected, 1500).reasonCode ==
+    assert(ProposalSetBuilder::Build(proposals, expected, 1500, 1800).reasonCode ==
            "PROPOSAL_SET_SNAPSHOT_MISMATCH");
 }
 }
