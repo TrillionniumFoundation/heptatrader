@@ -51,6 +51,7 @@ jobs:
             scripts/check_schema_catalog.py \
             scripts/check_module_discipline.py \
             scripts/check_cmake_module_graph.py \
+            scripts/check_change_impact.py \
             scripts/check_install_tree.py \
             scripts/resolve_hepta_config.py \
             scripts/hepta_agent_mcp_launcher.py \
