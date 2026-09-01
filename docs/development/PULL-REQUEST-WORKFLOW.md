@@ -27,3 +27,17 @@ Draft、Ready、Approved 和 Mergeable 是不同状态：
 5. 外部 qualification 和 release authority 不由普通 PR checks 推导。
 
 禁止 self-approval、self-merge、管理员绕过和临时 write-enabled finalizer workflow。任何 required check 失败或 base 未被接受时，PR 保持 Draft/不合并。
+
+## Exact merge-candidate and impact evidence
+
+`merge-candidate` Lane C checks GitHub's synthetic two-parent merge commit, not
+only the source branch head. It binds the first parent to the live base SHA and
+the second parent to the live PR head SHA, derives directly changed physical
+owners, expands through the reverse module dependency graph, and records a
+canonical `heptatrader.change-impact.v1` digest. Contract, build, governance,
+test and unknown surfaces conservatively expand to every active module.
+
+The same merged revision then runs the deterministic core plus the bounded
+ASAN/UBSAN reliability and performance lane. A merge queue revision receives
+the same full validation. Impact selection may add evidence and reviewers; it
+must never remove the full merge-candidate gates or external qualification.
