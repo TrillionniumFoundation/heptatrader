@@ -13,8 +13,8 @@ Authority: generated from milestone and gap registries
 | `M1` | Documentation Control Plane | **closed** | M0 | 0 | generated views deterministic; registries cross-validated; evidence schema integrated |
 | `M2` | Modular Runtime Foundation | **closed** | M1 | 0 | one target per module; no shared-migration source ownership; module-aware test impact |
 | `M3` | Typed Data and Concurrency Foundation | **closed** | M2 | 0 | single-source bindings; fixed numeric boundary; shard and queue contracts |
-| `M4` | Global Decision Shadow | **in-progress** | M3 | 3 | StrategyProposal to AllocationPlan shadow E2E; deterministic solver record; Execution revalidation |
-| `M5` | Active Multi-Agent Simulator | **planned** | M4 | 1 | module lifecycle; fault isolation; active capital allocation |
+| `M4` | Global Decision Shadow | **closed** | M3 | 0 | StrategyProposal to AllocationPlan shadow E2E; deterministic solver record; Execution revalidation |
+| `M5` | Active Multi-Agent Simulator | **closed** | M4 | 0 | module lifecycle; fault isolation; active capital allocation |
 | `M6` | IB PAPER Parity and Qualification | **planned** | M5 | 1 | exact-artifact qualification; fault scenarios; soak and rollback |
 | `M7` | Team-Scale Continuous Development | **planned** | M2 | 2 | team ownership; merge queue; module SLO and impact closure |
 

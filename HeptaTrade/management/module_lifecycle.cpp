@@ -1,6 +1,7 @@
 #include "module_lifecycle.h"
 
 #include <algorithm>
+#include <limits>
 
 namespace
 {
@@ -178,6 +179,9 @@ ModuleLifecycleResult ModuleLifecycleRegistry::StageUpgrade(
         record.previousActive = record.current;
         record.havePreviousActive = true;
     }
+    if (record.current.generation ==
+        std::numeric_limits<std::uint64_t>::max())
+        return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
     record.current.identity = identity;
     record.current.state = ModuleLifecycleState::Warming;
     ++record.current.generation;
@@ -212,6 +216,9 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Transition(
         target == ModuleLifecycleState::Active;
     if (healthRequired && !ValidHealth(health, observedAtMs))
         return Reject("MODULE_HEALTH_EVIDENCE_INVALID", &record.current);
+    if (record.current.generation ==
+        std::numeric_limits<std::uint64_t>::max())
+        return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
     record.current.state = target;
     ++record.current.generation;
     record.current.updatedAtMs = observedAtMs;
@@ -246,6 +253,9 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Quarantine(
         return Reject("MODULE_TIME_REGRESSION", &record.current);
     if (record.current.state == ModuleLifecycleState::Stopped)
         return Reject("MODULE_QUARANTINE_STATE_INVALID", &record.current);
+    if (record.current.generation ==
+        std::numeric_limits<std::uint64_t>::max())
+        return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
     record.current.state = ModuleLifecycleState::Quarantined;
     ++record.current.generation;
     record.current.updatedAtMs = observedAtMs;
@@ -279,6 +289,9 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Rollback(
         return Reject("MODULE_ROLLBACK_UNAVAILABLE", &record.current);
     if (!ValidHealth(health, observedAtMs))
         return Reject("MODULE_HEALTH_EVIDENCE_INVALID", &record.current);
+    if (record.current.generation ==
+        std::numeric_limits<std::uint64_t>::max())
+        return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
     ModuleLifecycleSnapshot restored = record.previousActive;
     restored.generation = record.current.generation + 1u;
     restored.updatedAtMs = observedAtMs;

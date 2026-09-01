@@ -12,9 +12,9 @@ Authority: generated from capability-registry-v2.json
 | `hepta.data.feature-plane` — Shard-aware market-data and feature plane | **experimental** | active-library | absent | forbidden | core |
 | `hepta.execution.authority` — Execution authority, OMS, journal and recovery | **implemented** | active | experimental | forbidden | core |
 | `hepta.gateway.typed-local-tools` — Typed local Tool Gateway and clients | **implemented** | active | experimental | forbidden | core |
-| `hepta.global.multi-agent-allocation` — Global multi-Agent capital allocation | **experimental** | active-shadow | absent | forbidden | core |
+| `hepta.global.multi-agent-allocation` — Global multi-Agent capital allocation | **implemented** | active | absent | forbidden | core |
 | `hepta.intent.target-position` — Generation-bound target-position preview/apply | **implemented** | active | experimental | forbidden | core |
-| `hepta.management.module-lifecycle` — Module registry, lifecycle and rollout control plane | **planned** | planned | absent | forbidden | excluded |
+| `hepta.management.module-lifecycle` — Module registry, lifecycle and rollout control plane | **experimental** | active | absent | forbidden | core |
 | `hepta.portfolio.compiler` — Deterministic multi-strategy portfolio compiler | **implemented** | library-boundary | absent | forbidden | core |
 | `hepta.research.replay` — Capability-free deterministic research and replay | **experimental** | offline | no-mutation | forbidden | core-tools |
 | `hepta.simulator.deterministic` — Deterministic simulator | **implemented** | active | not-applicable | not-applicable | core |

@@ -157,6 +157,24 @@ target_link_libraries(hepta_allocation_revalidator PUBLIC
     hepta_numeric_core)
 
 
+add_library(hepta_management_control STATIC
+    management/module_lifecycle.cpp)
+hepta_runtime_target(hepta_management_control)
+target_link_libraries(hepta_management_control PUBLIC Threads::Threads)
+
+add_library(hepta_multi_agent_simulator STATIC
+    simulator/multi_agent_allocation.cpp)
+hepta_runtime_target(hepta_multi_agent_simulator)
+target_link_libraries(hepta_multi_agent_simulator PUBLIC
+    hepta_management_control
+    hepta_allocation_revalidator
+    hepta_global_allocator
+    hepta_proposal_aggregator
+    hepta_strategy_runtime
+    hepta_portfolio_core
+    hepta_numeric_core)
+
+
 add_library(hepta_oms_core STATIC
     oms_journal.cpp
     oms_recover.cpp)

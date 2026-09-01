@@ -1,18 +1,116 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "ModuleLifecycleV1",
+  "title": "ModuleLifecycleSnapshotV1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema","module_id","instance_id","version","state","generation","observed_at_ms"],
+  "required": [
+    "schema",
+    "identity",
+    "state",
+    "generation",
+    "updated_at_ms",
+    "reason_code"
+  ],
   "properties": {
-    "schema": {"const":"hepta.module-lifecycle.v1"},
-    "module_id": {"type":"string"},
-    "instance_id": {"type":"string"},
-    "version": {"type":"string"},
-    "state": {"enum":["REGISTERED","WARMING","SHADOW","ACTIVE","DEGRADED","QUARANTINED","DRAINING","RETIRED"]},
-    "generation": {"type":"integer","minimum":0},
-    "observed_at_ms": {"type":"integer","minimum":0},
-    "reason_code": {"type":"string"},
-    "health_digest": {"type":"string"}
+    "schema": {
+      "const": "hepta.module-lifecycle.v1"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "module_id",
+        "version",
+        "artifact_digest",
+        "config_digest"
+      ],
+      "properties": {
+        "module_id": {
+          "type": "string",
+          "pattern": "^hepta\\.[A-Za-z0-9._:-]+$",
+          "maxLength": 128
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "artifact_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "config_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "model_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "string",
+              "maxLength": 0
+            }
+          ]
+        }
+      }
+    },
+    "state": {
+      "enum": [
+        "registered",
+        "warming",
+        "shadow",
+        "active",
+        "quarantined",
+        "draining",
+        "stopped"
+      ]
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "updated_at_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "reason_code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "pattern": "^[A-Z0-9_]+$"
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "healthy",
+        "observed_at_ms",
+        "evidence_digest"
+      ],
+      "properties": {
+        "healthy": {
+          "type": "boolean"
+        },
+        "observed_at_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "evidence_digest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            {
+              "type": "string",
+              "maxLength": 0
+            }
+          ]
+        }
+      }
+    }
   }
 }

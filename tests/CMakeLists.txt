@@ -272,6 +272,19 @@ target_link_libraries(hepta_allocation_plan_revalidator_tests
     hepta_allocation_revalidator)
 hepta_register_core_test(hepta_allocation_plan_revalidator_tests)
 
+
+add_executable(hepta_module_lifecycle_tests
+    module_lifecycle_tests.cpp)
+target_link_libraries(hepta_module_lifecycle_tests
+    hepta_management_control)
+hepta_register_core_test(hepta_module_lifecycle_tests)
+
+add_executable(hepta_multi_agent_allocation_tests
+    multi_agent_allocation_tests.cpp)
+target_link_libraries(hepta_multi_agent_allocation_tests
+    hepta_multi_agent_simulator)
+hepta_register_core_test(hepta_multi_agent_allocation_tests)
+
 add_executable(hepta_oms_crash_replay_tests
     oms_crash_replay_tests.cpp)
 target_link_libraries(hepta_oms_crash_replay_tests

@@ -29,6 +29,7 @@
     "modules/manifests/hepta-research-protocol.json",
     "modules/manifests/hepta-risk-policy.json",
     "modules/manifests/hepta-session-runtime.json",
+    "modules/manifests/hepta-simulation-runtime.json",
     "modules/manifests/hepta-strategy-runtime.json",
     "modules/manifests/hepta-venue-ctp.json",
     "modules/manifests/hepta-venue-ib.json",

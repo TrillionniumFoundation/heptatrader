@@ -1,30 +1,10 @@
-# Module Lifecycle V1
+# Module Lifecycle Contract V1
 
-Status: current target contract
-Applies to: Management Control Plane, strategy/feature modules and proposal aggregation
-Verification: state-machine, lease, health, quarantine, rollout and rollback tests
-Authority: module lifecycle semantics
+Status: current normative
+Applies to: Management Control and simulator strategy modules
+Verification: lifecycle-faults and rollout-rollback CTests
+Authority: generation-fenced lifecycle state
 
-状态机：
+每个模块版本绑定 module/version、artifact/config/model digest 与单调 generation。允许状态为 REGISTERED → WARMING → SHADOW → ACTIVE → DRAINING → STOPPED；任意非 stopped 状态可被 fail-closed QUARANTINED。所有 transition 使用 expected generation，旧 generation、时间回退、过期/不健康 evidence 和非法状态跳转均拒绝。
 
-```text
-REGISTERED -> WARMING -> SHADOW -> ACTIVE -> DEGRADED
-                                      |          |
-                                      v          v
-                                  DRAINING <- QUARANTINED
-                                      |
-                                      v
-                                   RETIRED
-```
-
-每次 transition 绑定 module/instance/version、control generation、effective time、reason code、config/model/artifact digest、health evidence 和 actor identity。非法跳转、generation 回退或未验证 artifact 拒绝。
-
-- WARMING 不产生可用 proposal；
-- SHADOW 输出不参与 active capital allocation；
-- ACTIVE 需要当前 contract、resource budget 和 deterministic validation；
-- DEGRADED 可降低频率/预算，但不得隐式扩大权限；
-- QUARANTINED 使 proposal 立即 expiry，不影响 Execution safe exit；
-- DRAINING 停止新 proposal 并等待有界状态迁移；
-- RETIRED 不再被调度，历史版本由 artifact/evidence 存档而非当前 docs。
-
-自动 SHADOW→PAPER/LIVE promotion 禁止。Management 只能控制 module lifecycle，不能改变 Execution mutation authority。
+ACTIVE 升级会保存 previous-active identity 并进入 WARMING；若 shadow diverges 或运行故障，Management 可 quarantine 新版本，再以新 generation 恢复经健康验证的 previous active。Management 不持有 broker credential，不参与 tick hot path，也不能绕过 Execution。机器 schema 为 `schemas/module-lifecycle-v1.json`。

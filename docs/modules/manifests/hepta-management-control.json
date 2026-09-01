@@ -2,7 +2,7 @@
   "schema": "heptatrader.module-manifest.v2",
   "id": "hepta.management.control",
   "version": "1.0.0",
-  "lifecycle": "planned",
+  "lifecycle": "current",
   "kind": "control-plane",
   "trust_domain": "management",
   "authority": "module/config/resource lifecycle",
@@ -11,7 +11,7 @@
     "HeptaTrade/management/"
   ],
   "build_targets": [
-    "hepta_managementd"
+    "hepta_management_control"
   ],
   "provides": [
     "capital-policy.v1",
@@ -59,7 +59,6 @@
     ]
   },
   "verification": [
-    "module-dag",
     "lifecycle-faults",
     "rollout-rollback"
   ]

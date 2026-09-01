@@ -8,7 +8,7 @@
   "authority": "deterministic simulated venue",
   "ownership_mode": "exclusive",
   "source_roots": [
-    "HeptaTrade/simulator/"
+    "HeptaTrade/simulator/deterministic_execution_venue"
   ],
   "build_targets": [
     "hepta_simulator_venue"

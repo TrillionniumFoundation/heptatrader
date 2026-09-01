@@ -19,11 +19,11 @@ ModuleArtifactIdentity Identity(const std::string& module,
     identity.version = version;
     identity.artifactDigest = Digest(artifact);
     identity.configDigest = Digest('c');
-    identity.modelDigest = Digest('m');
+    identity.modelDigest = Digest('d');
     return identity;
 }
 
-ModuleHealthEvidence Health(std::uint64_t observedAtMs, char evidence = 'h')
+ModuleHealthEvidence Health(std::uint64_t observedAtMs, char evidence = 'e')
 {
     ModuleHealthEvidence health;
     health.healthy = true;
