@@ -1,0 +1,119 @@
+name: closure-status-reporter
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/closure-status-reporter.yml
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+concurrency:
+  group: heptatrader-closure-status-reporter
+  cancel-in-progress: true
+
+jobs:
+  report:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Build and publish exact live status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          canonical_branch=codex/heptatrader-documentation-control-plane-v2
+          controller_branch=codex/heptatrader-p1-integration-controller
+          canonical_sha="$(gh api "repos/$REPO/branches/$canonical_branch" --jq '.commit.sha')"
+          pr="$(gh api "repos/$REPO/pulls/7")"
+          pr_head="$(jq -r '.head.sha' <<<"$pr")"
+          gaps="$(gh api "repos/$REPO/contents/docs/program/gap-registry-v2.json?ref=$canonical_sha" --jq -r '.content' | tr -d '\n' | base64 -d)"
+          open_gaps="$(jq -c '[.gaps[] | select(.state != "closed") | {id,priority,state,milestone,title}]' <<<"$gaps")"
+
+          refs='[]'
+          for branch in \
+            codex/heptatrader-review-p1-allocation-clean \
+            codex/heptatrader-review-p1-integration-clean \
+            codex/heptatrader-p1-final-candidate \
+            codex/heptatrader-internal-closure-candidate \
+            codex/heptatrader-internal-closure-candidate-v3; do
+            if value="$(gh api "repos/$REPO/branches/$branch" 2>/dev/null)"; then
+              refs="$(jq -c --arg branch "$branch" --arg sha "$(jq -r '.commit.sha' <<<"$value")" '. + [{branch:$branch,sha:$sha}]' <<<"$refs")"
+            else
+              refs="$(jq -c --arg branch "$branch" '. + [{branch:$branch,sha:null}]' <<<"$refs")"
+            fi
+          done
+
+          controller_runs="$(gh api "repos/$REPO/actions/runs?branch=$controller_branch&per_page=100")"
+          tracked='[
+            "p1-allocation-clean-controller",
+            "p1-combined-clean-controller",
+            "p1-finalization-controller",
+            "p1-internal-monolithic-finalizer-v3",
+            "reconcile-internal-closure-candidate",
+            "publish-internal-closure-v2",
+            "post-publish-review-request-v2",
+            "execute-protected-ib-paper-closure",
+            "execute-team-governance-closure"
+          ]'
+          finalizers="$(jq -c --argjson tracked "$tracked" '
+            [.workflow_runs[] | select(.name as $name | $tracked | index($name))]
+            | group_by(.name)
+            | map(sort_by(.run_number) | last)
+            | map({name,status,conclusion,head_sha,run_number,url:.html_url})
+          ' <<<"$controller_runs")"
+
+          pr_runs="$(gh api "repos/$REPO/actions/runs?head_sha=$pr_head&event=pull_request&per_page=100")"
+          pr_required='["canonical-full-suite","core-runtime","documentation-control-plane","merge-candidate"]'
+          pr_checks="$(jq -c --argjson required "$pr_required" '
+            [.workflow_runs[] | select(.name as $name | $required | index($name))]
+            | group_by(.name)
+            | map(sort_by(.run_number) | last)
+            | map({name,status,conclusion,head_sha,run_number,url:.html_url})
+          ' <<<"$pr_runs")"
+
+          reviews="$(gh api "repos/$REPO/pulls/7/reviews?per_page=100" | jq -c 'map({user:.user.login,state,submitted_at,commit_id})')"
+          requested="$(jq -c '[.requested_reviewers[].login]' <<<"$pr")"
+          issue8="$(gh api "repos/$REPO/issues/8" | jq -c '{state,updated_at,assignees:[.assignees[].login]}')"
+          issue9="$(gh api "repos/$REPO/issues/9" | jq -c '{state,updated_at,assignees:[.assignees[].login]}')"
+
+          status="$(jq -cn \
+            --arg schema 'heptatrader.closure-live-status.v1' \
+            --arg canonical_branch "$canonical_branch" \
+            --arg canonical_sha "$canonical_sha" \
+            --arg pr_head "$pr_head" \
+            --argjson pr_number 7 \
+            --argjson draft "$(jq '.draft' <<<"$pr")" \
+            --argjson open_gaps "$open_gaps" \
+            --argjson refs "$refs" \
+            --argjson finalizers "$finalizers" \
+            --argjson pr_checks "$pr_checks" \
+            --argjson reviews "$reviews" \
+            --argjson requested_reviewers "$requested" \
+            --argjson issue8 "$issue8" \
+            --argjson issue9 "$issue9" \
+            '{schema:$schema,canonical:{branch:$canonical_branch,sha:$canonical_sha},pull_request:{number:$pr_number,head_sha:$pr_head,draft:$draft,required_workflows:$pr_checks,reviews:$reviews,requested_reviewers:$requested_reviewers},open_gaps:$open_gaps,candidate_refs:$refs,controller_workflows:$finalizers,issues:{team: $issue8,ib_paper:$issue9}}')"
+
+          marker='<!-- heptatrader-closure-live-status -->'
+          body="$marker
+
+          ## Live closure status
+
+          \`\`\`json
+          $(jq . <<<"$status")
+          \`\`\`
+
+          This comment is generated from current GitHub objects. A closed machine gap, green exact-head workflow and independent review remain separate evidence dimensions."
+          existing="$(gh api "repos/$REPO/issues/7/comments?per_page=100" --jq ".[] | select(.body | startswith(\"$marker\")) | .id" | head -n1)"
+          if [[ -n "$existing" ]]; then
+            gh api --method PATCH "repos/$REPO/issues/comments/$existing" -f body="$body" >/dev/null
+          else
+            gh api --method POST "repos/$REPO/issues/7/comments" -f body="$body" >/dev/null
+          fi
