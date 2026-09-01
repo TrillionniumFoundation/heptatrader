@@ -47,6 +47,7 @@ jobs:
             scripts/check_schema_catalog.py \
             scripts/check_module_discipline.py \
             scripts/check_cmake_module_graph.py \
+            scripts/check_change_impact.py \
             scripts/check_install_tree.py \
             research/run_protocol.py research/protocol_support.py
           python3 scripts/generate_documentation_views.py --check
