@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  migrate:
+  finalize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -23,19 +23,24 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-      - name: Materialize ModuleManifest V3 and module technical guides
+      - name: Complete ModuleManifest V3 identity and normative documentation
         run: |
-          python3 scripts/bootstrap_module_documentation_v3.py
+          python3 scripts/finalize_module_documentation_v3.py
           python3 scripts/generate_documentation_views.py --write
-      - name: Commit deterministic migration
+          python3 scripts/generate_documentation_views.py --check
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+      - name: Remove one-shot migration surface and commit deterministic result
         run: |
+          git rm .github/workflows/module-documentation-v3-bootstrap.yml
+          git rm scripts/bootstrap_module_documentation_v3.py
+          git rm scripts/finalize_module_documentation_v3.py
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs scripts tests
+          git add -A
           git diff --cached --check
           if git diff --cached --quiet; then
-            echo "No migration delta"
+            echo "No finalization delta"
             exit 0
           fi
-          git commit -m "docs: materialize ModuleManifest V3 technical guides"
+          git commit -m "docs: complete ModuleManifest V3 documentation control plane"
           git push origin "HEAD:${GITHUB_REF_NAME}"
