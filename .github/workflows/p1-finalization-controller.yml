@@ -1,0 +1,231 @@
+name: p1-finalization-controller
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/p1-finalization-controller.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-p1-finalization-controller
+  cancel-in-progress: true
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 95
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Wait for combined implementation candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch=codex/heptatrader-review-p1-integration-clean
+          for attempt in $(seq 1 150); do
+            if git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "combined P1 implementation candidate was not published" >&2
+          exit 1
+      - name: Bind implementation to canonical contracts and gaps
+        shell: bash
+        run: |
+          set -euo pipefail
+          source=codex/heptatrader-review-p1-integration-clean
+          git fetch origin "$source"
+          worktree="$RUNNER_TEMP/heptatrader-p1-final"
+          git worktree add --detach "$worktree" "origin/$source"
+          cd "$worktree"
+          git config user.name "Hepta P1 Finalization Bot"
+          git config user.email "hepta-p1-finalization-bot@users.noreply.github.com"
+
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          from pathlib import Path
+
+          ROOT = Path('.')
+
+          def append_once(relative: str, marker: str, body: str) -> None:
+              path = ROOT / relative
+              text = path.read_text(encoding='utf-8')
+              if marker in text:
+                  return
+              if not text.endswith('\n'):
+                  text += '\n'
+              path.write_text(text + '\n' + body.strip() + '\n', encoding='utf-8')
+
+          append_once(
+              'docs/architecture/NUMERIC-POLICY.md',
+              '## Checked raw construction and binary64 projection',
+              '''
+          ## Checked raw construction and binary64 projection
+
+          Fixed microunits are authoritative. Runtime code must construct a fixed value through canonical decimal parsing or a checked raw factory; an unchecked public raw constructor is forbidden. Every raw value is range-checked before it enters a trusted boundary.
+
+          Binary64 is compatibility output only. Projection is accepted only when converting the projected value back through the canonical fixed parser produces the identical raw microunit. A collapse, scale mismatch, non-finite value, signed zero ambiguity or range loss returns a typed failure. Allocation, risk, accounting, snapshot identity and digest logic never use a projected binary64 value as authority.
+          ''')
+
+          append_once(
+              'docs/architecture/DATAFLOW-AND-CONSISTENCY.md',
+              '## Snapshot integrity and coherent vector cuts',
+              '''
+          ## Snapshot integrity and coherent vector cuts
+
+          A market-data snapshot is not trusted merely because it was produced by an in-process object. Before feature or decision consumption, the consumer reconstructs the canonical event, validates every bounded fixed field and timing invariant, recomputes the event digest and rejects any mismatch.
+
+          A multi-instrument vector is one coherent store cut. The reader sorts the complete shard set, acquires every target shard lock in canonical order, reads all components while those locks remain held, validates each component, and only then computes the vector digest. Writers cannot advance one component between vector reads. Duplicate keys, missing components, sequence gaps, stale values, clock regression and digest failure are fail-closed.
+          ''')
+
+          append_once(
+              'docs/contracts/STRATEGY-PROPOSAL-CONTRACT.md',
+              '## ProposalSet lifetime intersection',
+              '''
+          ## ProposalSet lifetime intersection
+
+          `ProposalSet` records `captured_at_ms`, effective `valid_from_ms`, effective `valid_until_ms` and `snapshot_valid_until_ms`. Its effective start is the maximum member start. Its effective end is the minimum of every member expiry, every `captured_at + horizon` bound and the authoritative snapshot expiry. Arithmetic overflow, a future effective start, an empty interval, an expired member or an interval extending beyond the snapshot is rejected before allocation.
+          ''')
+
+          append_once(
+              'docs/contracts/ALLOCATION-PLAN-CONTRACT.md',
+              '## Sealed provenance and Execution context binding',
+              '''
+          ## Sealed provenance and Execution context binding
+
+          An `AllocationPlan` binds allocator epoch, capital pool, account book, policy revision, ProposalSet digest, authoritative snapshot digest, ProposalSet capture/expiry and snapshot expiry. These fields, solver evidence and ordered targets are covered by the plan digest. Plan validity is derived from the ProposalSet/snapshot intersection and cannot be extended by a caller.
+
+          Execution accepts only a `GlobalDecisionReceipt` issued by the allocator together with an independently supplied authoritative execution context. A default, forged or client-reconstructed receipt is rejected. Execution rechecks receipt integrity, solver bounds and gap, allocator epoch, pool, book, policy revision, ProposalSet identity, snapshot identity and lifetime, then recompiles targets against the authoritative portfolio and current execution budget. Any mismatch yields no venue mutation.
+          ''')
+
+          gap_path = ROOT / 'docs/program/gap-registry-v2.json'
+          registry = json.loads(gap_path.read_text(encoding='utf-8'))
+          additions = [
+              {
+                  'id': 'G-NUM-002', 'priority': 'P1',
+                  'title': 'Unchecked fixed raw construction bypasses the trusted numeric range',
+                  'workstream': 'WS-DATA', 'milestone': 'M3', 'state': 'closed',
+                  'evidence': ['numeric-negative', 'numeric-properties'],
+              },
+              {
+                  'id': 'G-NUM-003', 'priority': 'P1',
+                  'title': 'Compatibility binary64 projection can collapse distinct fixed microunits',
+                  'workstream': 'WS-DATA', 'milestone': 'M3', 'state': 'closed',
+                  'evidence': ['numeric-negative', 'numeric-properties'],
+              },
+              {
+                  'id': 'G-CONC-002', 'priority': 'P1',
+                  'title': 'Market-data snapshots are consumed without canonical digest revalidation',
+                  'workstream': 'WS-DATA', 'milestone': 'M3', 'state': 'closed',
+                  'evidence': ['marketdata-ordering', 'feature-generation'],
+              },
+              {
+                  'id': 'G-CONC-003', 'priority': 'P1',
+                  'title': 'Multi-shard snapshot vectors do not identify one coherent store cut',
+                  'workstream': 'WS-DATA', 'milestone': 'M3', 'state': 'closed',
+                  'evidence': ['marketdata-ordering', 'sequence-gap', 'feature-determinism'],
+              },
+              {
+                  'id': 'G-OPT-004', 'priority': 'P1',
+                  'title': 'ProposalSet lifetime is not intersected with proposal horizons and snapshot expiry',
+                  'workstream': 'WS-OPT', 'milestone': 'M4', 'state': 'closed',
+                  'evidence': ['proposal-contracts', 'proposal-completeness'],
+              },
+              {
+                  'id': 'G-OPT-005', 'priority': 'P1',
+                  'title': 'AllocationPlan provenance is publicly forgeable outside Global Decision',
+                  'workstream': 'WS-OPT', 'milestone': 'M4', 'state': 'closed',
+                  'evidence': ['optimizer-determinism', 'shadow-parity'],
+              },
+              {
+                  'id': 'G-OPT-006', 'priority': 'P1',
+                  'title': 'Execution revalidation is not bound to allocator, book, policy and snapshot context',
+                  'workstream': 'WS-OPT', 'milestone': 'M4', 'state': 'closed',
+                  'evidence': ['shadow-parity', 'permit-lifecycle', 'negative-paths'],
+              },
+          ]
+          by_id = {item['id']: item for item in registry['gaps']}
+          for item in additions:
+              existing = by_id.get(item['id'])
+              if existing is not None and existing != item:
+                  raise SystemExit(f"gap definition drift: {item['id']}")
+              if existing is None:
+                  registry['gaps'].append(item)
+          gap_path.write_text(
+              json.dumps(registry, ensure_ascii=False, separators=(',', ':')) + '\n',
+              encoding='utf-8',
+          )
+
+          matrix_path = ROOT / 'docs/verification/test-matrix-v2.json'
+          matrix = json.loads(matrix_path.read_text(encoding='utf-8'))
+          evidence_updates = {
+              'numeric-properties': 'checked raw construction, exact fixed arithmetic and fail-closed binary64 round-trip projection tests',
+              'marketdata-ordering': 'sharded epoch/sequence ordering plus canonical-lock coherent vector-cut CTest',
+              'feature-generation': 'input generation, canonical snapshot digest revalidation, duplicate and regression CTest',
+              'proposal-completeness': 'expected-module completeness plus proposal/horizon/snapshot lifetime intersection CTest',
+              'shadow-parity': 'sealed allocator receipt, context-bound AllocationPlan and PortfolioCompiler Execution revalidation CTest',
+          }
+          seen = set()
+          for check in matrix['checks']:
+              check_id = check.get('id')
+              if check_id in evidence_updates:
+                  check['state'] = 'implemented'
+                  check['evidence'] = evidence_updates[check_id]
+                  seen.add(check_id)
+          if seen != set(evidence_updates):
+              raise SystemExit('missing verification checks: ' + ', '.join(sorted(set(evidence_updates) - seen)))
+          matrix_path.write_text(
+              json.dumps(matrix, ensure_ascii=False, separators=(',', ':')) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+          python3 scripts/generate_documentation_views.py --write
+          git add -A
+          git commit -m "docs: bind P1 authority fixes to canonical contracts"
+          test -z "$(git status --porcelain)"
+          printf '%s\n' "$worktree" > "$RUNNER_TEMP/p1-final-worktree"
+      - name: Validate exact final core and registries
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-final-worktree")"
+          cd "$worktree"
+          HEPTA_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-final-core" \
+          HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+            ./scripts/dev_core.sh
+          test -z "$(git status --porcelain)"
+      - name: Validate exact final GCC sanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-final-worktree")"
+          cd "$worktree"
+          CXX=g++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-final-gcc" \
+            ./scripts/reliability_core.sh
+      - name: Validate exact final Clang sanitizer
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-final-worktree")"
+          cd "$worktree"
+          CXX=clang++ HEPTA_CMAKE_GENERATOR=Ninja HEPTA_JOBS=2 \
+          HEPTA_RELIABILITY_BUILD_DIR="$RUNNER_TEMP/heptatrader-p1-final-clang" \
+            ./scripts/reliability_core.sh
+      - name: Publish exact tested final candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          worktree="$(cat "$RUNNER_TEMP/p1-final-worktree")"
+          cd "$worktree"
+          git push --force origin HEAD:codex/heptatrader-p1-final-candidate
