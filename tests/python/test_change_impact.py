@@ -12,6 +12,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from check_change_impact import (  # noqa: E402
+    _decode_nul_paths,
     build_reverse_dependencies,
     canonical_evidence,
     derive_direct_impact,
@@ -114,6 +115,18 @@ class ChangeImpactTests(unittest.TestCase):
             global_paths,
             ["schemas/public-contract.json", "unclassified/new-surface.txt"],
         )
+
+    def test_nul_framing_preserves_unicode_and_newlines(self) -> None:
+        self.assertEqual(
+            _decode_nul_paths(
+                "Tools/Centos/说明.txt\x00odd\nname.txt\x00".encode("utf-8")
+            ),
+            ["Tools/Centos/说明.txt", "odd\nname.txt"],
+        )
+        with self.assertRaisesRegex(ValueError, "NUL terminated"):
+            _decode_nul_paths(b"unterminated")
+        with self.assertRaisesRegex(ValueError, "valid UTF-8"):
+            _decode_nul_paths(b"bad-utf8-\xff\x00")
 
     def test_planned_verification_cannot_cover_active_module(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
