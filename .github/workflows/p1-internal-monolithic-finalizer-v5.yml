@@ -1,0 +1,53 @@
+name: p1-internal-monolithic-finalizer-v5
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-p1-integration-controller
+    paths:
+      - .github/workflows/p1-internal-monolithic-finalizer-v5.yml
+      - scripts/internal_closure_finalizer.py
+      - scripts/internal_closure_finalizer_v2.py
+      - scripts/internal_closure_finalizer_v3.py
+      - scripts/internal_closure_finalizer_v4.py
+      - scripts/run_internal_closure_controller.sh
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: heptatrader-p1-internal-monolithic-finalizer
+  cancel-in-progress: true
+
+jobs:
+  close-internal:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/heptatrader-p1-integration-controller
+          fetch-depth: 0
+      - name: Run robust monotonic exact internal closure controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          temporary=scripts/.run_internal_closure_controller_v5.sh
+          sed 's/internal_closure_finalizer_v2\.py/internal_closure_finalizer_v4.py/g' \
+            scripts/run_internal_closure_controller.sh > "$temporary"
+          chmod +x "$temporary"
+          trap 'rm -f "$temporary"' EXIT
+          bash "$temporary"
+      - name: Record failed finalizer location
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          gh api --method POST "repos/$REPO/issues/7/comments" \
+            -f body="<!-- p1-monolithic-finalizer-v5-failure:$GITHUB_RUN_ID -->
+
+          The robust fail-closed internal finalizer v5 stopped. No failed candidate was published to the canonical PR branch. Inspect $GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID for the exact failing gate." || true
