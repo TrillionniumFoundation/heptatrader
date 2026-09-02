@@ -7,16 +7,13 @@
     "required_contexts_must_be_event_reachable": true,
     "skipped_or_missing_is_not_success": true
   },
-  "required_pull_request_contexts": [
+  "required_branch_contexts": [
     "documentation-control-plane-exact-head",
     "core-runtime-exact-head",
     "canonical-full-suite-core",
     "canonical-full-suite-reliability (g++)",
     "canonical-full-suite-reliability (clang++)",
-    "exact-pr-merge-candidate"
-  ],
-  "required_merge_group_contexts": [
-    "exact-merge-group-candidate"
+    "exact-merge-candidate"
   ],
   "external_qualification_contexts": [
     "github-governance-exact-artifact-verification",
