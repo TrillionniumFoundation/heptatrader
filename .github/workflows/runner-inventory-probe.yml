@@ -1,0 +1,79 @@
+name: Repository Runner Inventory Probe
+
+on:
+  push:
+    branches:
+      - codex/runner-inventory-probe-20260902
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  inventory:
+    name: repository-runner-inventory-probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Query and sanitize repository runner inventory
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          raw="$RUNNER_TEMP/runner-inventory-raw.json"
+          receipt="$RUNNER_TEMP/runner-inventory.json"
+          code="$(curl --silent --show-error --output "$raw" --write-out '%{http_code}' \
+            --header 'Accept: application/vnd.github+json' \
+            --header "Authorization: Bearer $GH_TOKEN" \
+            --header 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$REPOSITORY/actions/runners?per_page=100")"
+          HTTP_CODE="$code" RAW_PATH="$raw" python3 - <<'PY' > "$receipt"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          code = int(os.environ['HTTP_CODE'])
+          raw = Path(os.environ['RAW_PATH']).read_text(encoding='utf-8', errors='replace')
+          payload = {
+              'schema': 'heptatrader.repository-runner-inventory-probe.v1',
+              'http_status': code,
+              'runners': [],
+          }
+          try:
+              value = json.loads(raw)
+          except json.JSONDecodeError:
+              value = None
+          if code == 200 and isinstance(value, dict):
+              for runner in value.get('runners', []):
+                  if not isinstance(runner, dict):
+                      continue
+                  labels = sorted(
+                      item.get('name')
+                      for item in runner.get('labels', [])
+                      if isinstance(item, dict) and isinstance(item.get('name'), str)
+                  )
+                  payload['runners'].append({
+                      'name_sha256': hashlib.sha256(
+                          str(runner.get('name', '')).encode()
+                      ).hexdigest(),
+                      'os': runner.get('os'),
+                      'status': runner.get('status'),
+                      'busy': runner.get('busy'),
+                      'labels': labels,
+                  })
+              payload['total_count'] = value.get('total_count')
+          elif isinstance(value, dict):
+              payload['error_message'] = str(value.get('message', ''))[:256]
+          print(json.dumps(payload, sort_keys=True, separators=(',', ':')))
+          PY
+          chmod 0600 "$receipt"
+
+      - name: Upload sanitized inventory receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: repository-runner-inventory-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/runner-inventory.json
+          if-no-files-found: error
+          retention-days: 7
