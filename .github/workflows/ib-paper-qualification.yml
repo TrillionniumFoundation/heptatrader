@@ -29,7 +29,9 @@ jobs:
     if: github.event_name == 'pull_request'
     name: ib-paper-workflow-bootstrap-audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 35
+    env:
+      PREFLIGHT_CANDIDATE_SHA: 9e170b5f9edd71d39f97fcbcb67bf2b730db3004
     steps:
       - name: Checkout exact pull-request head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -78,6 +80,54 @@ jobs:
               if required not in on_block:
                   raise SystemExit(f'missing dispatch guard: {required}')
           PY
+      - name: Install hosted preflight dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++ libssl-dev python3-jsonschema
+      - name: Checkout pinned exact integration candidate for non-broker preflight
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.PREFLIGHT_CANDIDATE_SHA }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Execute repository-owned IB-disabled qualification preflight
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$PREFLIGHT_CANDIDATE_SHA"
+          test -f candidate/scripts/run_ib_paper_qualification.sh
+          test -f candidate/scripts/verify_ib_paper_qualification.py
+          test -f candidate/scripts/check_install_tree.py
+          bash -n candidate/scripts/run_ib_paper_qualification.sh
+          python3 -m py_compile \
+            candidate/scripts/verify_ib_paper_qualification.py \
+            candidate/scripts/check_install_tree.py
+          grep -Fq 'HEPTA_ENABLE_IBAPI' \
+            candidate/CMakeLists.txt candidate/HeptaTrade/CMakeLists.txt
+          grep -Fq 'hepta_core_test_binaries' candidate/tests/CMakeLists.txt
+          grep -Fq 'hepta_runtime_binaries' candidate/HeptaTrade/CMakeLists.txt
+
+          build="$RUNNER_TEMP/heptatrader-ib-bootstrap-preflight"
+          cmake -S candidate -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_INSTALL_RUNTIME=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF
+          cmake --build "$build" --parallel 2 --target \
+            hepta_ib_adapter_core \
+            hepta_core_test_binaries \
+            hepta_runtime_binaries
+          ctest --test-dir "$build" --output-on-failure --parallel 1 -R \
+            '^hepta_(ib_order_lifecycle|ib_gateway_adapter_risk|ib_paper_kill_switch|unsupported_venue_adapter)_tests$' \
+            --no-tests=error
+
+          printf '%s\n' \
+            "Hosted preflight passed for exact candidate $PREFLIGHT_CANDIDATE_SHA." \
+            'This proves repository inputs and IB-disabled deterministic paths only.' \
+            'It is not PAPER qualification and performed no broker mutation.' \
+            >> "$GITHUB_STEP_SUMMARY"
 
   qualify:
     if: github.event_name == 'workflow_dispatch'
