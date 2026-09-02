@@ -51,6 +51,7 @@
     "required_patterns": [
       "*",
       "/.github/",
+      "/cmake/",
       "/docs/governance/",
       "/docs/modules/",
       "/docs/program/",
