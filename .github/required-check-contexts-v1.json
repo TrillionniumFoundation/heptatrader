@@ -5,7 +5,8 @@
     "globally_unique_contexts": true,
     "dynamic_context_expressions": "matrix-only",
     "required_contexts_must_be_event_reachable": true,
-    "skipped_or_missing_is_not_success": true
+    "skipped_or_missing_is_not_success": true,
+    "merge_group_cancel_in_progress": "forbidden"
   },
   "required_branch_contexts": [
     "documentation-control-plane-exact-head",
