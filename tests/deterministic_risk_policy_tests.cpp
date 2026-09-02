@@ -67,7 +67,9 @@ void TestAllowsBoundedOrder()
     assert(decision.allow);
     assert(decision.reasonCode == "RISK_OK");
     assert(std::string(DeterministicRiskPolicy::Version()) ==
-           "deterministic-risk-v2");
+           "deterministic-risk-v3");
+    assert(std::string(DeterministicRiskPolicy::NumericPolicy()) ==
+           "hepta.numeric.fixed-v1");
 }
 
 void TestKillAndSubmissionGates()
@@ -131,7 +133,7 @@ void TestReduceOnlyCannotCrossZero()
     DeterministicRiskContext context = StrictReduction();
     // Current exposure can be +10 and a SELL 15 would project gross from 10 to
     // 5 while crossing into a new -5 position. The signed position projection
-    // must reject it independently of any portfolio-gross tolerance.
+    // must reject it independently of portfolio gross.
     context.quantity = 15.0;
     context.grossAbsolutePosition = 10.0;
     context.projectedGrossAbsolutePosition = 5.0;
@@ -145,24 +147,22 @@ void TestReduceOnlyCannotCrossZero()
     ExpectReject(wider, context, "RISK_REDUCE_ONLY_CROSS_ZERO");
 }
 
-void TestPortfolioScaleCannotHideCrossZero()
+void TestLargePortfolioCannotHideCrossZero()
 {
     DeterministicRiskLimits limits = Limits();
     limits.maxOrderQuantity = 20.0;
     limits.maxOrderNotional = 5000.0;
-    limits.maxGrossPosition = 2.0e12;
+    limits.maxGrossPosition = 2000000000.0;
 
     DeterministicRiskContext context = StrictReduction();
     context.quantity = 15.0;
     context.netPosition = 10.0;
     context.projectedNetPosition = -5.0;
-    context.grossAbsolutePosition = 1.0e12;
-    context.projectedGrossAbsolutePosition = context.grossAbsolutePosition - 5.0;
+    context.grossAbsolutePosition = 1000000000.0;
+    context.projectedGrossAbsolutePosition = 999999995.0;
 
-    // The former portfolio-scaled equality tolerance considered the ten-unit
-    // gross mismatch negligible at this book size. Signed local projection is
-    // now authoritative, so a crossing order cannot use the kill-switch exit
-    // lane regardless of unrelated portfolio exposure.
+    // Exact fixed-point signed-position identity is authoritative. No
+    // portfolio-scaled epsilon can turn this crossing order into a safe exit.
     limits.globalKillSwitch = true;
     ExpectReject(limits, context, "RISK_REDUCE_ONLY_CROSS_ZERO");
 }
@@ -252,8 +252,6 @@ void TestMultipleViolationPriorityIsStable()
     context.drawdown = 50.0;
 
     // The policy publishes one stable primary reason in evaluation order.
-    // Additional violations may be exposed later as diagnostics, but cannot
-    // change the canonical first reason without a versioned contract change.
     ExpectReject(limits, context, "RISK_NET_POSITION_LIMIT");
 }
 
@@ -284,6 +282,27 @@ void TestInvalidNumbersFailClosed()
     assert(!DeterministicRiskPolicy::ValidateLimits(limits, reason));
     assert(reason == "RISK_LIMITS_INVALID");
 }
+
+void TestCompatibilityIngressMustBeExactFixedPoint()
+{
+    DeterministicRiskContext context = Context();
+    context.quantity = 0.0000005;
+    ExpectReject(Limits(), context, "RISK_ORDER_QUANTITY_INVALID");
+
+    context = Context();
+    context.submittedPrice = 100.0000005;
+    ExpectReject(Limits(), context, "RISK_LIMIT_PRICE_INVALID");
+
+    context = Context();
+    context.dailyPnl = -0.0;
+    ExpectReject(Limits(), context, "RISK_POSITION_SNAPSHOT_INVALID");
+
+    DeterministicRiskLimits limits = Limits();
+    limits.maxOrderNotional = 1000.0000005;
+    std::string reason;
+    assert(!DeterministicRiskPolicy::ValidateLimits(limits, reason));
+    assert(reason == "RISK_LIMITS_INVALID");
+}
 }
 
 int main()
@@ -294,7 +313,7 @@ int main()
     TestRateAndActiveOrderLimits();
     TestProjectedGrossLimitAndReductionEscape();
     TestReduceOnlyCannotCrossZero();
-    TestPortfolioScaleCannotHideCrossZero();
+    TestLargePortfolioCannotHideCrossZero();
     TestReductionProjectionMustMatchOrder();
     TestFlattenOnly();
     TestFreshnessAndSnapshotGates();
@@ -302,5 +321,6 @@ int main()
     TestMultipleViolationPriorityIsStable();
     TestPriceDeviation();
     TestInvalidNumbersFailClosed();
+    TestCompatibilityIngressMustBeExactFixedPoint();
     return 0;
 }
