@@ -5,6 +5,7 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import re
 import unittest
 
 from jsonschema import Draft202012Validator
@@ -15,6 +16,23 @@ SPEC = importlib.util.spec_from_file_location("hepta_doc_generator", GENERATOR_P
 assert SPEC is not None and SPEC.loader is not None
 GENERATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GENERATOR)
+
+REQUIRED_HEADINGS = [
+    "## Purpose and Scope",
+    "## Responsibilities and Non-Responsibilities",
+    "## Trust Domain and Authority",
+    "## Physical Source and Build Boundaries",
+    "## Contracts and Public Interfaces",
+    "## State and Data Model",
+    "## Concurrency, Ordering, and Backpressure",
+    "## Failure and Recovery",
+    "## Configuration and Compatibility",
+    "## Observability and Resource Budgets",
+    "## Security",
+    "## Verification and Testing",
+    "## Operations, Rollout, and Known Gaps",
+]
+PLACEHOLDER = re.compile(r"\b(?:TODO|TBD|FIXME|coming soon)\b", re.IGNORECASE)
 
 
 class ModuleDocumentationCoverageTests(unittest.TestCase):
@@ -31,29 +49,42 @@ class ModuleDocumentationCoverageTests(unittest.TestCase):
         )
         self.profile = json.loads(
             (
-                ROOT
-                / "docs/modules/module-documentation-profiles-v1.json"
+                ROOT / "docs/modules/module-documentation-profiles-v1.json"
             ).read_text(encoding="utf-8")
         )
-
-    def manifest(self) -> dict:
-        relative = self.registry["manifest_paths"][0]
-        return json.loads((ROOT / "docs" / relative).read_text(encoding="utf-8"))
-
-    def test_all_22_modules_have_unique_profiles_and_guides(self) -> None:
-        manifests = [
+        self.manifests = [
             json.loads((ROOT / "docs" / relative).read_text(encoding="utf-8"))
             for relative in self.registry["manifest_paths"]
         ]
-        profiles = self.profile["profiles"]
-        self.assertEqual(22, len(manifests))
-        self.assertEqual(22, len(profiles))
+        self.profiles = {
+            item["module_id"]: item for item in self.profile["profiles"]
+        }
+
+    def manifest(self) -> dict:
+        return copy.deepcopy(self.manifests[0])
+
+    @staticmethod
+    def guide_text(manifest: dict) -> str:
+        return (
+            ROOT / "docs" / manifest["documentation"]["technical_guide"]
+        ).read_text(encoding="utf-8")
+
+    @staticmethod
+    def section(text: str, heading: str) -> str:
+        start = text.index(heading) + len(heading)
+        next_heading = text.find("\n## ", start)
+        return text[start:] if next_heading < 0 else text[start:next_heading]
+
+    def test_all_22_modules_have_unique_profiles_and_guides(self) -> None:
+        self.assertEqual(22, len(self.manifests))
+        self.assertEqual(22, len(self.profiles))
         self.assertEqual(
-            {item["id"] for item in manifests},
-            {item["module_id"] for item in profiles},
+            {item["id"] for item in self.manifests},
+            set(self.profiles),
         )
         guides = [
-            item["documentation"]["technical_guide"] for item in manifests
+            item["documentation"]["technical_guide"]
+            for item in self.manifests
         ]
         self.assertEqual(len(guides), len(set(guides)))
         for guide in guides:
@@ -66,13 +97,13 @@ class ModuleDocumentationCoverageTests(unittest.TestCase):
         self.assertTrue(errors)
 
     def test_schema_rejects_incomplete_topic_coverage(self) -> None:
-        manifest = copy.deepcopy(self.manifest())
+        manifest = self.manifest()
         manifest["documentation"]["coverage_topics"].pop()
         errors = list(Draft202012Validator(self.schema).iter_errors(manifest))
         self.assertTrue(errors)
 
     def test_schema_rejects_duplicate_topic_coverage(self) -> None:
-        manifest = copy.deepcopy(self.manifest())
+        manifest = self.manifest()
         topics = manifest["documentation"]["coverage_topics"]
         topics[-1] = topics[0]
         errors = list(Draft202012Validator(self.schema).iter_errors(manifest))
@@ -81,39 +112,85 @@ class ModuleDocumentationCoverageTests(unittest.TestCase):
     def test_generated_output_set_contains_every_module_guide(self) -> None:
         outputs = GENERATOR.outputs()
         guides = {
-            "docs/" + json.loads(
-                (ROOT / "docs" / relative).read_text(encoding="utf-8")
-            )["documentation"]["technical_guide"]
-            for relative in self.registry["manifest_paths"]
+            "docs/" + item["documentation"]["technical_guide"]
+            for item in self.manifests
         }
         self.assertTrue(guides.issubset(outputs))
         self.assertEqual(26, len(outputs))
 
-    def test_each_guide_contains_every_required_section(self) -> None:
-        headings = [
-            "## Purpose and Scope",
-            "## Responsibilities and Non-Responsibilities",
-            "## Trust Domain and Authority",
-            "## Physical Source and Build Boundaries",
-            "## Contracts and Public Interfaces",
-            "## State and Data Model",
-            "## Concurrency, Ordering, and Backpressure",
-            "## Failure and Recovery",
-            "## Configuration and Compatibility",
-            "## Observability and Resource Budgets",
-            "## Security",
-            "## Verification and Testing",
-            "## Operations, Rollout, and Known Gaps",
-        ]
-        for relative in self.registry["manifest_paths"]:
-            manifest = json.loads(
-                (ROOT / "docs" / relative).read_text(encoding="utf-8")
+    def test_each_guide_contains_every_required_section_with_real_body(self) -> None:
+        for manifest in self.manifests:
+            text = self.guide_text(manifest)
+            self.assertGreaterEqual(
+                len(text.encode("utf-8")),
+                4000,
+                manifest["id"],
             )
-            text = (
-                ROOT / "docs" / manifest["documentation"]["technical_guide"]
-            ).read_text(encoding="utf-8")
-            for heading in headings:
-                self.assertIn(heading, text)
+            self.assertIsNone(PLACEHOLDER.search(text), manifest["id"])
+            for heading in REQUIRED_HEADINGS:
+                self.assertIn(heading, text, manifest["id"])
+                body = self.section(text, heading).strip()
+                self.assertGreaterEqual(
+                    len(body),
+                    120,
+                    f"{manifest['id']} {heading} is too shallow",
+                )
+
+    def test_each_guide_materializes_manifest_engineering_contract(self) -> None:
+        for manifest in self.manifests:
+            text = self.guide_text(manifest)
+            expected_values: list[str] = [
+                manifest["id"],
+                manifest["version"],
+                manifest["lifecycle"],
+                manifest["kind"],
+                manifest["trust_domain"],
+                manifest["authority"],
+                manifest["resource_budget"],
+                manifest["owners"]["dri"],
+                manifest["owners"]["backup"],
+            ]
+            for field in (
+                "source_roots",
+                "build_targets",
+                "provides",
+                "consumes",
+                "allowed_dependencies",
+                "forbidden_dependencies",
+                "verification",
+            ):
+                expected_values.extend(manifest[field])
+            expected_values.extend(manifest["owners"]["reviewers"])
+            expected_values.extend(manifest["state"].values())
+            expected_values.extend(manifest["concurrency"].values())
+            expected_values.extend(manifest["backpressure"].values())
+            expected_values.extend(manifest["failure"].values())
+            for value in expected_values:
+                self.assertIn(str(value), text, f"{manifest['id']}: {value}")
+
+    def test_each_guide_materializes_profile_specific_detail(self) -> None:
+        fields = (
+            "purpose",
+            "responsibilities",
+            "non_responsibilities",
+            "state_notes",
+            "ordering_and_backpressure",
+            "recovery",
+            "configuration",
+            "observability",
+            "security",
+            "operations",
+            "known_gaps",
+        )
+        for manifest in self.manifests:
+            text = self.guide_text(manifest)
+            profile = self.profiles[manifest["id"]]
+            for field in fields:
+                values = profile[field]
+                if isinstance(values, str):
+                    values = [values]
+                for value in values:
+                    self.assertIn(value, text, f"{manifest['id']}: {field}")
 
 
 if __name__ == "__main__":
