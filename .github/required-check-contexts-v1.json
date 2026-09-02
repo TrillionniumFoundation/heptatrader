@@ -19,6 +19,7 @@
     "exact-merge-group-candidate"
   ],
   "external_qualification_contexts": [
+    "github-governance-exact-artifact-verification",
     "ib-paper-exact-artifact-qualification"
   ],
   "non_required_observation_contexts": [
