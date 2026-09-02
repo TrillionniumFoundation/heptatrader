@@ -6,6 +6,12 @@
 // Venue-independent, deterministic limits shared by Simulator and broker
 // profiles. A venue may add stricter order-shape and transport rules, but it
 // must not silently weaken these controls.
+//
+// The public fields remain binary64 compatibility ingress for existing venue
+// adapters. They are not authoritative numeric state: ValidateLimits/Evaluate
+// convert every numeric field to the canonical hepta.numeric.fixed-v1
+// microunit representation before applying any business rule. Non-finite,
+// negative-zero, out-of-range or non-exact values fail closed.
 struct DeterministicRiskLimits
 {
     bool orderSubmissionEnabled = true;
@@ -48,8 +54,8 @@ struct DeterministicRiskContext
     double projectedGrossAbsolutePosition = 0.0;
 
     // This is a claim made by trusted portfolio/execution code. The policy
-    // independently verifies it using quantity and gross projection so a
-    // crossing-through-zero order cannot masquerade as reduce-only.
+    // independently verifies it using exact quantity and signed-position
+    // projections so crossing through zero cannot masquerade as reduce-only.
     bool exposureReducing = false;
 
     bool quoteFresh = false;
@@ -76,6 +82,7 @@ class DeterministicRiskPolicy
 {
 public:
     static const char* Version();
+    static const char* NumericPolicy();
 
     static bool ValidateLimits(
         const DeterministicRiskLimits& limits,
