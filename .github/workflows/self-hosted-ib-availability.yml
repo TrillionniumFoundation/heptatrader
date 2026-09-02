@@ -1,0 +1,43 @@
+name: Self-hosted IB runner availability
+
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: Why this bounded IB-runner probe is being requested
+        required: false
+        default: operator-check
+        type: string
+
+# This probe intentionally does not check out repository code or touch IB
+# credentials. It only verifies the trusted X230 runner and local gateway port.
+permissions: {}
+
+jobs:
+  ib-runner-probe:
+    name: X230 IB runner probe
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+    timeout-minutes: 10
+    steps:
+      - name: Verify trusted manual main invocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test "$GITHUB_REF" = refs/heads/main
+          test "$RUNNER_NAME" = x230
+          printf 'runner=%s\nos=%s\narch=%s\nref=%s\nreason=%s\n' \
+            "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_REF" \
+            '${{ inputs.reason }}'
+      - name: Read-only IB Gateway reachability snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v nc >/dev/null 2>&1; then
+            nc -z -w 3 127.0.0.1 4002
+          else
+            timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
+          fi
