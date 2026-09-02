@@ -52,6 +52,7 @@ jobs:
             scripts/check_repository_integrity.py \
             scripts/check_systemd_documentation.py \
             scripts/check_workflow_check_contexts.py \
+            scripts/check_required_context_projections.py \
             scripts/check_github_team_mapping.py \
             scripts/verify_github_governance.py \
             scripts/check_schema_catalog.py \
@@ -67,6 +68,7 @@ jobs:
           python3 scripts/check_repository_integrity.py
           python3 scripts/check_systemd_documentation.py
           python3 scripts/check_workflow_check_contexts.py
+          python3 scripts/check_required_context_projections.py
           python3 scripts/check_github_team_mapping.py
           python3 scripts/check_schema_catalog.py
           python3 scripts/check_module_discipline.py
