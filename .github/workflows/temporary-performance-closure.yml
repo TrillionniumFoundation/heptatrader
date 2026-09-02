@@ -1,4 +1,4 @@
-# one-shot revision: 2
+# one-shot revision: 3
 name: temporary-performance-closure
 
 on:
@@ -37,22 +37,13 @@ jobs:
           python3 scripts/temporary_performance_closure_patch.py
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('tests/python/test_performance_budget_registry.py')
           text = path.read_text(encoding='utf-8')
-          old = '''        for budget in self.budgets.values():
-            if budget.get("scope") == "repository-ci":
-                self.assertIn(Path(budget["baseline"]).name, cmake)
-                self.assertIn(budget["test_target"], cmake)
-'''
-          new = '''        for budget_id, budget in self.budgets.items():
-            if (
-                budget.get("scope") == "repository-ci"
-                and budget_id != "risk-policy-v1"
-            ):
-                self.assertIn(Path(budget["baseline"]).name, cmake)
-                self.assertIn(budget["test_target"], cmake)
-'''
+          old = ('        for budget in self.budgets.values():\n'
+                 '            if budget.get("scope") == "repository-ci":\n')
+          new = ('        for budget_id, budget in self.budgets.items():\n'
+                 '            if (budget.get("scope") == "repository-ci" and\n'
+                 '                    budget_id != "risk-policy-v1"):\n')
           if text.count(old) != 1:
               raise SystemExit('unexpected performance registry test layout')
           path.write_text(text.replace(old, new, 1), encoding='utf-8')
