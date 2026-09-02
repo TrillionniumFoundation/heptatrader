@@ -1,7 +1,7 @@
 # Documentation Control Plane Technical Guide
 
 Status: generated current view
-Applies to: `hepta.documentation.control` version `1.1.0` (current)
+Applies to: `hepta.documentation.control` version `1.2.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-documentation-control.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -97,7 +97,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Policies are checked in and reviewed as code; environment-specific relaxation is forbidden.
 - Tool dependencies and schema versions are pinned by CI and repository contracts.
 
-The manifest version is `1.1.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.2.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
@@ -117,7 +117,7 @@ The module follows least privilege and must not expose secrets, credentials or c
 
 ## Verification and Testing
 
-- **Required verification IDs:** `docs-generated`, `docs-control`, `module-registry`, `no-historical-docs`, `module-documentation-coverage`
+- **Required verification IDs:** `debugging-guide-executable`, `docs-control`, `docs-generated`, `module-documentation-coverage`, `module-registry`, `no-historical-docs`
 
 Each ID resolves through the [verification test matrix](../../verification/test-matrix-v2.json). Module changes require positive, negative and relevant fault-path evidence on the same exact revision.
 

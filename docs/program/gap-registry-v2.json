@@ -418,6 +418,19 @@
         "performance-budgets",
         "sanitizers"
       ]
+    },
+    {
+      "id": "G-DOC-005",
+      "priority": "P1",
+      "title": "Debugging guidance lacks executable authority-first triage, deterministic reproduction and evidence-preservation controls",
+      "workstream": "WS-DOC",
+      "milestone": "M1",
+      "state": "closed",
+      "evidence": [
+        "debugging-guide-executable",
+        "docs-control",
+        "repository-contracts"
+      ]
     }
   ]
 }

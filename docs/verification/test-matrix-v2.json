@@ -430,6 +430,12 @@
       "lane": "C-merge-candidate",
       "state": "implemented",
       "evidence": "synthetic merge parent binding, physical owner and reverse dependency impact evidence"
+    },
+    {
+      "id": "debugging-guide-executable",
+      "lane": "A-module-fast",
+      "state": "implemented",
+      "evidence": "python3 tests/python/test_debugging_guide.py validates the normative fault-isolation sequence, executable repository commands, authority fields, evidence controls and prohibited unsafe repairs"
     }
   ],
   "principle": "Historical green evidence never substitutes for the exact revision or exact merge candidate."

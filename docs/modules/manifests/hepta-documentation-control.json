@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.documentation.control",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "lifecycle": "current",
   "kind": "governance-tooling",
   "trust_domain": "development",
@@ -56,11 +56,12 @@
     ]
   },
   "verification": [
-    "docs-generated",
+    "debugging-guide-executable",
     "docs-control",
+    "docs-generated",
+    "module-documentation-coverage",
     "module-registry",
-    "no-historical-docs",
-    "module-documentation-coverage"
+    "no-historical-docs"
   ],
   "documentation": {
     "technical_guide": "modules/technical/hepta-documentation-control.md",
