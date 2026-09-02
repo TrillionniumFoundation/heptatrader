@@ -144,7 +144,8 @@ class DebuggingGuideTests(unittest.TestCase):
         for requirement in prohibited_requirements:
             self.assertIn(requirement, self.text, requirement)
 
-        self.assertGreaterEqual(self.text.count("new-risk gate closed"), 2)
+        self.assertIn("new-risk gate closed", self.text)
+        self.assertIn("risk-increase closed", self.text)
         self.assertIn("不得包含 raw credential", self.text)
         self.assertIn("权限至少 `0600`", self.text)
         self.assertNotRegex(
