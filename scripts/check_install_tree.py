@@ -14,6 +14,7 @@ REQUIRED_RELATIVE_PATHS = (
     "share/heptatrader/research/protocol_support.py",
     "share/heptatrader/schemas/tool-catalog-v1.json", "share/heptatrader/schemas/tool-catalog-v1.sha256",
     "share/heptatrader/schemas/execution-wire-v1.json", "share/heptatrader/schemas/research-run-v1.json",
+    "share/doc/HeptaTrader/LICENSE", "share/doc/HeptaTrader/NOTICE",
     "share/doc/HeptaTrader/README.md", "share/doc/HeptaTrader/document-registry-v2.json",
     "share/doc/HeptaTrader/governance/CONSTITUTION.md",
     "share/doc/HeptaTrader/architecture/PLANE-ARCHITECTURE.md",
