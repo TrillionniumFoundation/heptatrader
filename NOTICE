@@ -1,0 +1,24 @@
+HeptaTrader
+Copyright 2026 Trillionnium Foundation
+
+The original HeptaTrader source and documentation distributed from this
+repository are licensed under the Apache License, Version 2.0, except where an
+individual file or directory carries a different notice.
+
+Optional broker, exchange, market-data, operating-system, cryptographic, build
+or other third-party software is not relicensed by the HeptaTrader license.
+Users must obtain such software from its authorized source and comply with the
+applicable terms. In particular, an optional vendor SDK path supplied at build
+or qualification time is an external input and is not part of the default
+IB-disabled core distribution.
+
+Files retained under legacy/ or vendor-designated paths are historical or
+third-party material and must be evaluated under their own notices before use,
+copying or redistribution. The default public runtime install allowlist does
+not grant permission to package proprietary credentials, account data, vendor
+SDK payloads, CTP/XT integrations or any LIVE trading capability.
+
+HeptaTrader, its capability registry and its qualification evidence do not
+constitute investment advice, a warranty of trading performance, or authority
+to operate against a broker account. PAPER and LIVE permissions remain subject
+to the repository's explicit capability and qualification controls.
