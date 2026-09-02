@@ -1,6 +1,6 @@
 [Unit]
 Description=HeptaTrader trust-domain Tool Gateway (%i)
-Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Documentation=file:/usr/share/doc/heptatrader/README.md
 Requires=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
 After=hepta-tool-gateway@%i.socket hepta-tool-session-supervisor@%i.socket
 
