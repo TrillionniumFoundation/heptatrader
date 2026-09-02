@@ -1,0 +1,9 @@
+{
+  "authorization": "bounded-paper-mutations",
+  "candidate_sha": "d00f37e43ee45ae12b0c75e638120d2884ee52d5",
+  "environment": "ib-paper",
+  "nonce": "20260902-d00f37e4",
+  "requested_by": "repository-owner",
+  "runner_label": "heptatrader-ib-paper",
+  "schema": "heptatrader.ib-paper-qualification-request.v1"
+}
