@@ -66,9 +66,11 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           python3 -m py_compile \
             scripts/check_workflow_check_contexts.py \
+            scripts/check_required_context_projections.py \
             scripts/check_github_team_mapping.py \
             scripts/verify_github_governance.py
           python3 scripts/check_workflow_check_contexts.py
+          python3 scripts/check_required_context_projections.py
           python3 scripts/check_github_team_mapping.py
       - name: Collect and verify live organization and repository evidence
         env:
