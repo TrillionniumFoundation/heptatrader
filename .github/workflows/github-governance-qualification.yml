@@ -40,7 +40,9 @@ jobs:
     if: github.event_name == 'pull_request'
     name: github-governance-workflow-bootstrap-audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
+    env:
+      PREFLIGHT_CANDIDATE_SHA: 9e170b5f9edd71d39f97fcbcb67bf2b730db3004
     steps:
       - name: Checkout exact pull-request head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -94,6 +96,41 @@ jobs:
           if actual != expected:
               raise SystemExit(f'permissions are not exact read-only map: {actual!r}')
           PY
+      - name: Checkout pinned exact integration candidate for hosted verifier preflight
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ env.PREFLIGHT_CANDIDATE_SHA }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Execute repository-owned governance verifier preflight
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$PREFLIGHT_CANDIDATE_SHA"
+          cd candidate
+          test -f .github/github-governance-policy-v1.json
+          test -f .github/github-team-mapping-v1.json
+          test -f .github/required-check-contexts-v1.json
+          test -f scripts/check_workflow_check_contexts.py
+          test -f scripts/check_required_context_projections.py
+          test -f scripts/check_github_team_mapping.py
+          test -f scripts/verify_github_governance.py
+          python3 -m py_compile \
+            scripts/check_workflow_check_contexts.py \
+            scripts/check_required_context_projections.py \
+            scripts/check_github_team_mapping.py \
+            scripts/verify_github_governance.py
+          python3 scripts/check_workflow_check_contexts.py
+          python3 scripts/check_required_context_projections.py
+          python3 scripts/check_github_team_mapping.py
+          python3 tests/python/test_github_governance.py
+          python3 tests/python/test_github_team_mapping.py
+          printf '%s\n' \
+            "Hosted governance verifier preflight passed for exact candidate $PREFLIGHT_CANDIDATE_SHA." \
+            'This proves repository policy/static verifier inputs and hostile-negative tests only.' \
+            'It did not read live organization controls or create a governance receipt.' \
+            >> "$GITHUB_STEP_SUMMARY"
 
   qualify:
     if: github.event_name == 'workflow_dispatch'
