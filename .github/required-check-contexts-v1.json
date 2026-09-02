@@ -1,0 +1,28 @@
+{
+  "schema": "heptatrader.required-check-contexts.v1",
+  "policy": {
+    "explicit_job_names": true,
+    "globally_unique_contexts": true,
+    "dynamic_context_expressions": "matrix-only",
+    "required_contexts_must_be_event_reachable": true,
+    "skipped_or_missing_is_not_success": true
+  },
+  "required_pull_request_contexts": [
+    "documentation-control-plane-exact-head",
+    "core-runtime-exact-head",
+    "canonical-full-suite-core",
+    "canonical-full-suite-reliability (g++)",
+    "canonical-full-suite-reliability (clang++)",
+    "exact-pr-merge-candidate"
+  ],
+  "required_merge_group_contexts": [
+    "exact-merge-group-candidate"
+  ],
+  "external_qualification_contexts": [
+    "ib-paper-exact-artifact-qualification"
+  ],
+  "non_required_observation_contexts": [
+    "reliability-runtime-sanitizers (g++)",
+    "reliability-runtime-sanitizers (clang++)"
+  ]
+}
