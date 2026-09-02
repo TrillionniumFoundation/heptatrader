@@ -17,11 +17,12 @@ class LegalDistributionTests(unittest.TestCase):
 
     def test_notice_preserves_vendor_and_capability_boundaries(self) -> None:
         text = (ROOT / "NOTICE").read_text(encoding="utf-8")
-        self.assertIn("not relicensed", text)
-        self.assertIn("external input", text)
-        self.assertIn("does not constitute investment advice", text)
-        self.assertIn("PAPER and LIVE permissions", text)
-        self.assertIn("legacy/", text)
+        normalized = " ".join(text.split())
+        self.assertIn("not relicensed", normalized)
+        self.assertIn("external input", normalized)
+        self.assertIn("do not constitute investment advice", normalized)
+        self.assertIn("PAPER and LIVE permissions", normalized)
+        self.assertIn("legacy/", normalized)
 
     def test_runtime_install_always_ships_version_license_and_notice(self) -> None:
         install = (ROOT / "cmake/RuntimeInstall.cmake").read_text(
