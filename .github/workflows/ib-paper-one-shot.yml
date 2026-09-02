@@ -5,22 +5,22 @@ on:
     branches:
       - codex/ib-paper-qualification-trigger-20260902
     paths:
-      - '.github/qualification-requests/ib-paper-a4338fca39a21d2f6a2423a2c6a8473bfd00787b.json'
+      - '.github/qualification-requests/ib-paper-d00f37e43ee45ae12b0c75e638120d2884ee52d5.json'
 
 permissions:
   contents: read
 
 concurrency:
-  group: heptatrader-ib-paper-one-shot-a4338fca39a21d2f6a2423a2c6a8473bfd00787b
+  group: heptatrader-ib-paper-one-shot-d00f37e43ee45ae12b0c75e638120d2884ee52d5
   cancel-in-progress: false
 
 env:
-  HEPTA_QUALIFICATION_CANDIDATE_SHA: a4338fca39a21d2f6a2423a2c6a8473bfd00787b
-  HEPTA_QUALIFICATION_REQUEST_PATH: .github/qualification-requests/ib-paper-a4338fca39a21d2f6a2423a2c6a8473bfd00787b.json
+  HEPTA_QUALIFICATION_CANDIDATE_SHA: d00f37e43ee45ae12b0c75e638120d2884ee52d5
+  HEPTA_QUALIFICATION_REQUEST_PATH: .github/qualification-requests/ib-paper-d00f37e43ee45ae12b0c75e638120d2884ee52d5.json
 
 jobs:
   qualify:
-    name: ib-paper-one-shot-a4338fca39a2
+    name: ib-paper-one-shot-d00f37e43ee4
     runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
     timeout-minutes: 120
@@ -53,7 +53,7 @@ jobs:
               "environment": "ib-paper",
               "runner_label": "heptatrader-ib-paper",
               "requested_by": "repository-owner",
-              "nonce": "20260902-a4338fca",
+              "nonce": "20260902-d00f37e4",
           }
           if value != expected:
               raise SystemExit("qualification request is not the reviewed one-shot request")
@@ -148,7 +148,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: ib-paper-qualification-a4338fca39a21d2f6a2423a2c6a8473bfd00787b-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ib-paper-qualification-d00f37e43ee45ae12b0c75e638120d2884ee52d5-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
           retention-days: 90
