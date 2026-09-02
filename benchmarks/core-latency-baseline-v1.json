@@ -1,6 +1,13 @@
 {
   "fixture": "risk-evaluate-v1",
-  "maximum_regression_percent": 20,
+  "maximum_regression_percent": 10,
   "p99_microseconds": 50000,
+  "required_distribution": [
+    "p50",
+    "p95",
+    "p99",
+    "p999",
+    "max"
+  ],
   "schema": "heptatrader.latency-baseline.v1"
 }
