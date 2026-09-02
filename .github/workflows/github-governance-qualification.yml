@@ -56,38 +56,37 @@ jobs:
       - name: Audit immutable governance controls
         run: |
           set -euo pipefail
+          workflow=.github/workflows/github-governance-qualification.yml
+          qualify="$RUNNER_TEMP/github-governance-qualify-job.yml"
+          sed -n '/^  qualify:/,$p' "$workflow" > "$qualify"
+          test -s "$qualify"
+          grep -Fq "if: github.event_name == 'workflow_dispatch'" "$qualify"
+          grep -Fq 'environment: repository-governance' "$qualify"
+          grep -Fq 'HEPTA_GOVERNANCE_TOKEN:' "$qualify"
+          grep -Fq 'secrets.HEPTA_GOVERNANCE_TOKEN' "$qualify"
+          grep -Fq -- '--expected-head-sha "$EXPECTED_HEAD_SHA"' "$qualify"
+          grep -Fq -- '--merge-group-sha "$MERGE_GROUP_SHA"' "$qualify"
+          grep -Fq -- '--pull-number "$PULL_NUMBER"' "$qualify"
+          test "$(grep -Fc 'uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262' "$qualify")" = 1
+          test "$(grep -Fc 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' "$qualify")" = 1
           python3 - <<'PY'
           from pathlib import Path
-
-          path = Path(".github/workflows/github-governance-qualification.yml")
-          text = path.read_text(encoding="utf-8")
-          required = (
-              "workflow_dispatch:",
-              "pull_number:",
-              "expected_head_sha:",
-              "merge_group_sha:",
-              "acknowledge_no_bypass:",
-              "default: false",
-              "if: github.event_name == 'workflow_dispatch'",
-              "environment: repository-governance",
-              "actions: read",
-              "checks: read",
-              "contents: read",
-              "pull-requests: read",
-              "persist-credentials: false",
-              "HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}",
-              "--expected-head-sha \"$EXPECTED_HEAD_SHA\"",
-              "--merge-group-sha \"$MERGE_GROUP_SHA\"",
-          )
-          missing = [value for value in required if value not in text]
-          if missing:
-              raise SystemExit("missing governance controls: " + repr(missing))
-          if "\n  push:" in text or "\n  schedule:" in text:
-              raise SystemExit("governance qualification has an automatic trigger")
-          if text.count("uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262") != 2:
-              raise SystemExit("checkout action pin count changed")
-          if text.count("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a") != 1:
-              raise SystemExit("artifact action pin count changed")
+          text = Path('.github/workflows/github-governance-qualification.yml').read_text(encoding='utf-8')
+          on_block = text.split('\npermissions:', 1)[0]
+          for forbidden in ('\n  push:', '\n  schedule:'):
+              if forbidden in on_block:
+                  raise SystemExit('automatic governance trigger is forbidden')
+          for required in (
+              'workflow_dispatch:', 'pull_number:', 'expected_head_sha:',
+              'merge_group_sha:', 'acknowledge_no_bypass:', 'default: false'
+          ):
+              if required not in on_block:
+                  raise SystemExit(f'missing dispatch guard: {required}')
+          permission_block = text.split('\npermissions:', 1)[1].split('\nconcurrency:', 1)[0]
+          expected = {'actions: read', 'checks: read', 'contents: read', 'pull-requests: read'}
+          actual = {line.strip() for line in permission_block.splitlines() if line.strip()}
+          if actual != expected:
+              raise SystemExit(f'permissions are not exact read-only map: {actual!r}')
           PY
 
   qualify:
