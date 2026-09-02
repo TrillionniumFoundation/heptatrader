@@ -18,7 +18,7 @@ concurrency:
 jobs:
   core:
     name: core-runtime-exact-head
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - name: Checkout exact revision
@@ -42,6 +42,7 @@ jobs:
           bash -n scripts/dev_core.sh
           python3 -m py_compile \
             scripts/generate_documentation_views.py \
+            scripts/generate_release_evidence.py \
             scripts/hepta_module_boundaries.py \
             scripts/hepta_document_checks.py \
             scripts/hepta_registry_checks.py \
@@ -75,6 +76,8 @@ jobs:
           DESTDIR="$stage" cmake --install build/core-release --component runtime
           test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/LICENSE"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/NOTICE"
           test -f "$stage/usr/local/share/doc/HeptaTrader/README.md"
           test -f "$stage/usr/local/share/doc/HeptaTrader/architecture/PLANE-ARCHITECTURE.md"
           test -f "$stage/usr/local/share/doc/HeptaTrader/product/capability-registry-v2.json"
