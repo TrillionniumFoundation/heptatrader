@@ -16,10 +16,25 @@ import check_install_tree  # noqa: E402
 
 class InstallTreeTests(unittest.TestCase):
     def _populate_prefix(self, prefix: Path) -> Path:
+        version = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
         for relative in check_install_tree.REQUIRED_RELATIVE_PATHS:
             path = prefix / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("", encoding="utf-8")
+            if relative == "share/doc/HeptaTrader/VERSION":
+                path.write_text(version + "\n", encoding="utf-8")
+            elif relative == "bin/heptactl":
+                path.write_text(
+                    "#!/bin/sh\n"
+                    "if [ \"${1:-}\" = \"--version\" ]; then\n"
+                    f"  printf '%s\\n' '{version}'\n"
+                    "  exit 0\n"
+                    "fi\n"
+                    "exit 64\n",
+                    encoding="utf-8",
+                )
+                path.chmod(0o755)
+            else:
+                path.write_text("", encoding="utf-8")
         service = prefix / "lib/systemd/system/hepta-tool-gateway.service"
         service.parent.mkdir(parents=True, exist_ok=True)
         service.write_text(
@@ -78,7 +93,7 @@ class InstallTreeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             # A stale local prefix can contain a single old binary while the
-            # distro prefix contains the complete current contract.  Prefix
+            # distro prefix contains the complete current contract. Prefix
             # selection must score the full allowlist rather than preferring
             # /usr/local solely because it exists.
             stale = root / "usr/local"
