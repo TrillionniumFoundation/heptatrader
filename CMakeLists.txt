@@ -199,6 +199,8 @@ if(BUILD_TESTING)
     endif()
 endif()
 
+include(cmake/BoundedRuntimeComponents.cmake)
+
 if(HEPTA_INSTALL_RUNTIME)
     include(cmake/RuntimeInstall.cmake)
 endif()
