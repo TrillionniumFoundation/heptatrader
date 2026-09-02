@@ -42,12 +42,16 @@ jobs:
             scripts/hepta_registry_checks.py \
             scripts/check_documentation_control_plane.py \
             scripts/check_repository_integrity.py \
+            scripts/check_systemd_documentation.py \
             scripts/check_module_discipline.py \
             scripts/check_cmake_module_graph.py \
             scripts/check_change_impact.py
           python3 scripts/generate_documentation_views.py --check
           python3 scripts/check_documentation_control_plane.py
           python3 scripts/check_repository_integrity.py
+          python3 scripts/check_systemd_documentation.py
           python3 scripts/check_module_discipline.py
           python3 -m unittest discover \
             -s tests/python -p 'test_documentation_control_plane.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_systemd_documentation.py'
