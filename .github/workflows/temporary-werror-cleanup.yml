@@ -1,0 +1,71 @@
+name: temporary-werror-cleanup
+
+on:
+  push:
+    branches:
+      - codex/werror-cleanup-20260902
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-werror-cleanup
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    name: temporary-werror-cleanup
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact staging revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Apply minimal conditional-compilation repair
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('HeptaTrade/adapter_ib/ib_api_wrapper.cpp')
+          text = path.read_text(encoding='utf-8-sig')
+          start = 'namespace\n{\nbool ParseCanonicalUnsignedText'
+          end = '    return true;\n}\n}\n\nIBAuthoritativeEventQueue::'
+          if text.count(start) != 1 or text.count(end) != 1:
+              raise SystemExit('unexpected ib_api_wrapper.cpp helper layout')
+          text = text.replace(
+              start,
+              'namespace\n{\n#ifdef HEPTA_ENABLE_IBAPI\nbool ParseCanonicalUnsignedText',
+              1,
+          )
+          text = text.replace(
+              end,
+              '    return true;\n}\n#endif\n}\n\nIBAuthoritativeEventQueue::',
+              1,
+          )
+          path.write_text(text, encoding='utf-8')
+          PY
+          git diff --check
+          git diff -- HeptaTrade/adapter_ib/ib_api_wrapper.cpp
+      - name: Prove IB-disabled Werror compilation
+        run: |
+          set -euo pipefail
+          cmake -S . -B "$RUNNER_TEMP/heptatrader-werror" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CXX_FLAGS='-Wall -Wextra -Wpedantic -Werror' \
+            -DBUILD_TESTING=OFF \
+            -DHEPTA_INSTALL_RUNTIME=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF
+          cmake --build "$RUNNER_TEMP/heptatrader-werror" --parallel 2 \
+            --target hepta_ib_adapter_core
+      - name: Commit exact repair to staging branch
+        run: |
+          set -euo pipefail
+          git config user.name 'heptatrader-ci'
+          git config user.email 'heptatrader-ci@users.noreply.github.com'
+          git add HeptaTrade/adapter_ib/ib_api_wrapper.cpp
+          git commit -m 'fix(ib): compile parser only with official API support' \
+            -m 'Signed-off-by: HeptaTrader CI <heptatrader-ci@users.noreply.github.com>'
+          git push origin HEAD:codex/werror-cleanup-20260902
