@@ -18,7 +18,7 @@ concurrency:
 jobs:
   docs:
     name: documentation-control-plane-exact-head
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 12
     steps:
       - name: Checkout exact revision
@@ -40,6 +40,7 @@ jobs:
           git diff --check
           python3 -m py_compile \
             scripts/generate_documentation_views.py \
+            scripts/generate_release_evidence.py \
             scripts/hepta_module_boundaries.py \
             scripts/hepta_document_checks.py \
             scripts/hepta_registry_checks.py \
@@ -63,6 +64,10 @@ jobs:
           python3 scripts/check_module_discipline.py
           python3 -m unittest discover \
             -s tests/python -p 'test_documentation_control_plane.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_module_documentation.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_release_evidence.py'
           python3 -m unittest discover \
             -s tests/python -p 'test_systemd_documentation.py'
           python3 -m unittest discover \
