@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -29,14 +30,87 @@ class GapClosureTests(unittest.TestCase):
             )
         )
 
-    def validate(self, gaps: dict, modules: dict) -> list[str]:
+    def validate(
+        self,
+        gaps: dict,
+        modules: dict,
+        receipts: dict[str, dict] | None = None,
+    ) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             gap_path = root / "gaps.json"
             module_path = root / "modules.json"
             gap_path.write_text(json.dumps(gaps), encoding="utf-8")
             module_path.write_text(json.dumps(modules), encoding="utf-8")
-            return CHECKER.validate(gap_path, module_path)
+            for relative, payload in (receipts or {}).items():
+                path = root / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(payload), encoding="utf-8")
+            return CHECKER.validate(
+                gap_path, module_path, repository_root=root
+            )
+
+    @staticmethod
+    def ib_receipt() -> dict:
+        scenarios = [
+            {
+                "id": scenario_id,
+                "status": "PASS",
+                "evidence": [
+                    {
+                        "path": f"{scenario_id}/evidence.json",
+                        "kind": "oms-journal",
+                        "sha256": "a" * 64,
+                        "size": 1,
+                    }
+                ],
+            }
+            for scenario_id in sorted(CHECKER.IB_SCENARIOS)
+        ]
+        return {
+            "schema": "hepta.ib-paper-qualification-verification.v1",
+            "verified": True,
+            "qualified": True,
+            "git_sha": "1" * 40,
+            "binary": {"name": "hepta-ib-executiond", "sha256": "2" * 64},
+            "harness": {"name": "ib-paper-harness", "sha256": "3" * 64},
+            "result_sha256": "4" * 64,
+            "broker": {
+                "venue": "IB",
+                "environment": "PAPER",
+                "session_id": "paper-session",
+                "account_fingerprint": "sha256:" + "5" * 64,
+                "host_fingerprint": "sha256:" + "6" * 64,
+            },
+            "scenarios": scenarios,
+        }
+
+    @staticmethod
+    def governance_receipt() -> dict:
+        body = {
+            "schema": "heptatrader.github-governance-receipt.v1",
+            "verified_at": "2026-09-02T00:00:00Z",
+            "repository": "TrillionniumFoundation/heptatrader",
+            "default_branch": "main",
+            "pull_number": 17,
+            "head_sha": "7" * 40,
+            "merge_group_sha": "8" * 40,
+            "ruleset_id": 123,
+            "team_slugs": ["architecture", "execution", "risk", "reliability"],
+            "required_pull_request_contexts": ["core-runtime-exact-head"],
+            "required_merge_group_contexts": ["exact-merge-candidate"],
+            "api_response_digests": {
+                "/repos/TrillionniumFoundation/heptatrader": "sha256:"
+                + "9" * 64
+            },
+        }
+        canonical = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        return {
+            "body": body,
+            "receipt_sha256": "sha256:" + hashlib.sha256(canonical).hexdigest(),
+        }
 
     def test_current_repository_has_zero_open_internal_gaps(self) -> None:
         self.assertEqual([], self.validate(self.gaps, self.modules))
@@ -45,6 +119,7 @@ class GapClosureTests(unittest.TestCase):
         self.assertEqual(
             ["G-IB-001", "G-TEAM-001"], result["external_open"]
         )
+        self.assertEqual([], result["external_closed_with_receipt"])
         self.assertFalse(result["external_evidence_synthesized"])
 
     def test_open_repository_gap_is_rejected(self) -> None:
@@ -79,6 +154,9 @@ class GapClosureTests(unittest.TestCase):
         self.assertTrue(
             any("external gate is absent" in item for item in errors), errors
         )
+        self.assertTrue(
+            any("no receipt verifier" in item for item in errors), errors
+        )
 
     def test_external_gate_cannot_be_closed_without_receipt(self) -> None:
         gaps = copy.deepcopy(self.gaps)
@@ -86,8 +164,74 @@ class GapClosureTests(unittest.TestCase):
         gate["state"] = "closed"
         errors = self.validate(gaps, self.modules)
         self.assertTrue(
-            any("qualification receipt" in item for item in errors), errors
+            any("requires qualification_receipt" in item for item in errors),
+            errors,
         )
+
+    def test_ib_external_gate_closes_with_verifier_receipt(self) -> None:
+        gaps = copy.deepcopy(self.gaps)
+        gate = next(item for item in gaps["gaps"] if item["id"] == "G-IB-001")
+        gate["state"] = "closed"
+        gate["qualification_receipt"] = "receipts/ib.json"
+        errors = self.validate(
+            gaps,
+            self.modules,
+            {"receipts/ib.json": self.ib_receipt()},
+        )
+        self.assertEqual([], errors)
+
+    def test_ib_receipt_capability_inflation_is_rejected(self) -> None:
+        gaps = copy.deepcopy(self.gaps)
+        gate = next(item for item in gaps["gaps"] if item["id"] == "G-IB-001")
+        gate["state"] = "closed"
+        gate["qualification_receipt"] = "receipts/ib.json"
+        receipt = self.ib_receipt()
+        receipt["broker"]["environment"] = "LIVE"
+        errors = self.validate(
+            gaps, self.modules, {"receipts/ib.json": receipt}
+        )
+        self.assertTrue(any("must bind IB PAPER" in item for item in errors), errors)
+
+    def test_governance_external_gate_closes_with_digest_bound_receipt(self) -> None:
+        gaps = copy.deepcopy(self.gaps)
+        gate = next(
+            item for item in gaps["gaps"] if item["id"] == "G-TEAM-001"
+        )
+        gate["state"] = "closed"
+        gate["qualification_receipt"] = "receipts/governance.json"
+        errors = self.validate(
+            gaps,
+            self.modules,
+            {"receipts/governance.json": self.governance_receipt()},
+        )
+        self.assertEqual([], errors)
+
+    def test_governance_receipt_tampering_is_rejected(self) -> None:
+        gaps = copy.deepcopy(self.gaps)
+        gate = next(
+            item for item in gaps["gaps"] if item["id"] == "G-TEAM-001"
+        )
+        gate["state"] = "closed"
+        gate["qualification_receipt"] = "receipts/governance.json"
+        receipt = self.governance_receipt()
+        receipt["body"]["team_slugs"].pop()
+        errors = self.validate(
+            gaps,
+            self.modules,
+            {"receipts/governance.json": receipt},
+        )
+        self.assertTrue(
+            any("four distinct teams" in item for item in errors), errors
+        )
+        self.assertTrue(any("digest mismatch" in item for item in errors), errors)
+
+    def test_external_receipt_path_escape_is_rejected(self) -> None:
+        gaps = copy.deepcopy(self.gaps)
+        gate = next(item for item in gaps["gaps"] if item["id"] == "G-IB-001")
+        gate["state"] = "closed"
+        gate["qualification_receipt"] = "../receipt.json"
+        errors = self.validate(gaps, self.modules)
+        self.assertTrue(any("path is unsafe" in item for item in errors), errors)
 
     def test_external_fail_closed_policy_is_mandatory(self) -> None:
         modules = copy.deepcopy(self.modules)
