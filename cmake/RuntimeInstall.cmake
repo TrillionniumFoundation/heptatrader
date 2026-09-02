@@ -62,6 +62,13 @@ install(FILES
     "${CMAKE_SOURCE_DIR}/research/README.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research" COMPONENT runtime)
 
+# License and third-party boundaries are part of every distributed artifact.
+install(FILES
+    "${CMAKE_SOURCE_DIR}/LICENSE"
+    "${CMAKE_SOURCE_DIR}/NOTICE"
+    DESTINATION "${CMAKE_INSTALL_DOCDIR}"
+    COMPONENT runtime)
+
 # Install the complete registered canonical documentation graph. The repository
 # checker forbids aliases, historical directories and unregistered files.
 install(DIRECTORY "${CMAKE_SOURCE_DIR}/docs/"
