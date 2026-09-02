@@ -26,7 +26,7 @@ class GitHubGovernanceTests(unittest.TestCase):
         merge_contexts = self.contexts["required_merge_group_contexts"]
         required_checks = [
             {"context": context, "integration_id": 15368}
-            for context in pr_contexts + merge_contexts
+            for context in dict.fromkeys(pr_contexts + merge_contexts)
         ]
         teams = ["architecture", "execution", "security", "reliability"]
         required_patterns = self.policy["codeowners"]["required_patterns"]
@@ -168,6 +168,15 @@ class GitHubGovernanceTests(unittest.TestCase):
             self.policy, self.contexts, snapshot, HEAD, MERGE
         )
 
+    def test_required_context_projections_match_canonical_branch_set(self) -> None:
+        canonical = self.contexts["required_branch_contexts"]
+        self.assertEqual(
+            self.contexts["required_pull_request_contexts"], canonical
+        )
+        self.assertEqual(
+            self.contexts["required_merge_group_contexts"], canonical
+        )
+
     def test_complete_governance_snapshot_passes(self) -> None:
         errors = self._errors(self._snapshot())
         self.assertEqual(errors, [], errors)
@@ -243,13 +252,16 @@ class GitHubGovernanceTests(unittest.TestCase):
             f"source head: check {context} is not terminal success", errors
         )
 
-    def test_merge_group_check_is_required(self) -> None:
+    def test_every_merge_group_check_is_required(self) -> None:
         snapshot = self._snapshot()
-        snapshot["merge_group_check_runs"]["check_runs"] = []
+        context = self.contexts["required_merge_group_contexts"][0]
+        snapshot["merge_group_check_runs"]["check_runs"] = [
+            item
+            for item in snapshot["merge_group_check_runs"]["check_runs"]
+            if item["name"] != context
+        ]
         errors = self._errors(snapshot)
-        self.assertIn(
-            "merge group: missing check exact-merge-group-candidate", errors
-        )
+        self.assertIn(f"merge group: missing check {context}", errors)
 
     def test_ruleset_check_context_is_bound_to_github_actions(self) -> None:
         snapshot = self._snapshot()
