@@ -1,0 +1,44 @@
+name: audit-source-export
+
+on:
+  push:
+    branches:
+      - codex/heptatrader-audit-export-20260903
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: audit-source-export-current-head
+    runs-on:
+      - self-hosted
+      - linux
+      - x64
+    timeout-minutes: 10
+    steps:
+      - name: Verify isolated audit branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/codex/heptatrader-audit-export-20260903
+      - name: Checkout exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Archive exact revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/heptatrader-audit-${GITHUB_SHA}.tar.gz" HEAD
+      - name: Upload audit source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-audit-source-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-audit-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
