@@ -1,0 +1,154 @@
+name: IB PAPER Exact Candidate One-Shot
+
+on:
+  push:
+    branches:
+      - codex/ib-paper-qualification-trigger-20260902
+    paths:
+      - '.github/qualification-requests/ib-paper-a4338fca39a21d2f6a2423a2c6a8473bfd00787b.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-ib-paper-one-shot-a4338fca39a21d2f6a2423a2c6a8473bfd00787b
+  cancel-in-progress: false
+
+env:
+  HEPTA_QUALIFICATION_CANDIDATE_SHA: a4338fca39a21d2f6a2423a2c6a8473bfd00787b
+  HEPTA_QUALIFICATION_REQUEST_PATH: .github/qualification-requests/ib-paper-a4338fca39a21d2f6a2423a2c6a8473bfd00787b.json
+
+jobs:
+  qualify:
+    name: ib-paper-one-shot-a4338fca39a2
+    runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
+    environment: ib-paper
+    timeout-minutes: 120
+    steps:
+      - name: Checkout immutable authorization request
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: authorization
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate one-shot authorization
+        env:
+          EXPECTED_REF: refs/heads/codex/ib-paper-qualification-trigger-20260902
+        run: |
+          set -euo pipefail
+          test "${{ github.ref }}" = "$EXPECTED_REF"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("authorization") / os.environ["HEPTA_QUALIFICATION_REQUEST_PATH"]
+          value = json.loads(path.read_text(encoding="utf-8"))
+          expected = {
+              "schema": "heptatrader.ib-paper-qualification-request.v1",
+              "candidate_sha": os.environ["HEPTA_QUALIFICATION_CANDIDATE_SHA"],
+              "authorization": "bounded-paper-mutations",
+              "environment": "ib-paper",
+              "runner_label": "heptatrader-ib-paper",
+              "requested_by": "repository-owner",
+              "nonce": "20260902-a4338fca",
+          }
+          if value != expected:
+              raise SystemExit("qualification request is not the reviewed one-shot request")
+          PY
+
+      - name: Checkout exact candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ env.HEPTA_QUALIFICATION_CANDIDATE_SHA }}
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert candidate and controlled runner inputs
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = "$HEPTA_QUALIFICATION_CANDIDATE_SHA"
+          git -C candidate diff --quiet --
+          git -C candidate diff --cached --quiet --
+          test -n "${IBAPI_ROOT:-}"
+          test -d "$IBAPI_ROOT"
+          test ! -L "$IBAPI_ROOT"
+          test -n "${HEPTA_IB_PAPER_QUALIFIER:-}"
+          test -f "$HEPTA_IB_PAPER_QUALIFIER"
+          test -x "$HEPTA_IB_PAPER_QUALIFIER"
+          test ! -L "$HEPTA_IB_PAPER_QUALIFIER"
+          bash -n candidate/scripts/run_ib_paper_qualification.sh
+          python3 -m py_compile candidate/scripts/verify_ib_paper_qualification.py
+
+      - name: Configure broker-enabled exact artifact
+        run: |
+          set -euo pipefail
+          build="$RUNNER_TEMP/heptatrader-ib-build-${{ github.run_id }}-${{ github.run_attempt }}"
+          test ! -e "$build"
+          cmake -S candidate -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_INSTALL_RUNTIME=ON \
+            -DHEPTA_ENABLE_IBAPI=ON \
+            -DIBAPI_ROOT="$IBAPI_ROOT"
+          printf '%s\n' "$build" > "$RUNNER_TEMP/heptatrader-ib-build-dir"
+
+      - name: Build broker authority and deterministic tests
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          cmake --build "$build" --parallel 2 --target \
+            hepta_ib_executiond \
+            hepta_core_test_binaries \
+            hepta_runtime_binaries
+
+      - name: Run deterministic core tests
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          ctest --test-dir "$build" --output-on-failure --parallel 1 -L core --no-tests=error
+
+      - name: Validate canonical runtime install tree
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          stage="$RUNNER_TEMP/heptatrader-ib-stage-${{ github.run_id }}-${{ github.run_attempt }}"
+          test ! -e "$stage"
+          DESTDIR="$stage" cmake --install "$build" --component runtime
+          python3 candidate/scripts/check_install_tree.py "$stage"
+
+      - name: Run and verify controlled PAPER qualification
+        env:
+          HEPTA_QUALIFICATION_MUTATIONS: '1'
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}"
+          candidate/scripts/run_ib_paper_qualification.sh "$build" "$evidence"
+          printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
+
+      - name: Re-verify exact evidence and artifact identity
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
+          binary="$(find "$build" -type f -name hepta-ib-executiond -perm -u+x -print -quit)"
+          test -n "$binary"
+          python3 candidate/scripts/verify_ib_paper_qualification.py \
+            --result "$evidence/qualification-result.json" \
+            --evidence-root "$evidence" \
+            --expected-git-sha "$HEPTA_QUALIFICATION_CANDIDATE_SHA" \
+            --expected-binary "$binary" \
+            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
+
+      - name: Upload immutable qualification evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: ib-paper-qualification-a4338fca39a21d2f6a2423a2c6a8473bfd00787b-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+          if-no-files-found: error
+          retention-days: 90
