@@ -1,0 +1,41 @@
+name: temporary-cancel-obsolete-self-hosted-runs
+
+on:
+  push:
+    branches:
+      - codex/cancel-obsolete-self-hosted-runs-20260902
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cancel:
+    name: cancel-obsolete-self-hosted-runs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Cancel obsolete queued runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          for run_id in 33595073398 33595184247 33595226088; do
+            code="$(curl --silent --show-error --output "$RUNNER_TEMP/cancel-$run_id.json" \
+              --write-out '%{http_code}' \
+              --request POST \
+              --header 'Accept: application/vnd.github+json' \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header 'X-GitHub-Api-Version: 2022-11-28' \
+              "https://api.github.com/repos/$REPOSITORY/actions/runs/$run_id/cancel")"
+            case "$code" in
+              202|409) ;;
+              *)
+                cat "$RUNNER_TEMP/cancel-$run_id.json" >&2
+                echo "unexpected cancel HTTP $code for run $run_id" >&2
+                exit 1
+                ;;
+            esac
+            printf '%s %s\n' "$run_id" "$code"
+          done
