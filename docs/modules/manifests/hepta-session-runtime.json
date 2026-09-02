@@ -25,13 +25,13 @@
   ],
   "state": {
     "model": "durable-generation-fenced",
-    "persistence": "module-declared",
+    "persistence": "encrypted-lease-store-atomic-replace",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "supervisor-serialized",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "supervisor-single-owner",
+    "blocking_io": "durable-store-and-af-unix-control-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

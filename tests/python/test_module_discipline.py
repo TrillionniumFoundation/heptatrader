@@ -7,6 +7,8 @@ import subprocess
 import sys
 import unittest
 
+import jsonschema
+
 
 class ModuleDisciplineTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -18,6 +20,40 @@ class ModuleDisciplineTests(unittest.TestCase):
             cwd=self.root,
             check=True,
         )
+
+    def test_active_manifest_engineering_semantics_are_concrete(self) -> None:
+        registry = json.loads(
+            (self.root / "docs/modules/module-registry-v2.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        schema = json.loads(
+            (self.root / "docs/modules/module-manifest-schema-v3.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        validator = jsonschema.Draft202012Validator(schema)
+        sentinels = {"declared-only", "module-declared"}
+        fields = (
+            ("state", "persistence"),
+            ("concurrency", "shard_key"),
+            ("concurrency", "blocking_io"),
+        )
+        for relative in registry["manifest_paths"]:
+            manifest = json.loads(
+                (self.root / "docs" / relative).read_text(encoding="utf-8")
+            )
+            if manifest["lifecycle"] not in {"current", "experimental", "unsupported"}:
+                continue
+            for object_name, field_name in fields:
+                self.assertNotIn(
+                    manifest[object_name][field_name], sentinels, manifest["id"]
+                )
+                for sentinel in sentinels:
+                    candidate = json.loads(json.dumps(manifest))
+                    candidate[object_name][field_name] = sentinel
+                    with self.assertRaises(jsonschema.ValidationError):
+                        validator.validate(candidate)
 
     def test_source_size_exceptions_are_no_growth_debt_not_closed_gaps(self) -> None:
         document = json.loads(

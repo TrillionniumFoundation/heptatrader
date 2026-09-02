@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `bounded-local`
-- **persistence:** `module-declared`
+- **persistence:** `process-local-reconstructible-cache`
 - **writer:** `single-owner`
 
 - Support state is subordinate to the owning session and must be disposable or reconstructible.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `owner-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `agent-session-owner`
+- **blocking io:** `forbidden-on-event-dispatch`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

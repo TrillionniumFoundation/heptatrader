@@ -33,13 +33,13 @@
   ],
   "state": {
     "model": "none",
-    "persistence": "module-declared",
+    "persistence": "none-immutable-policy-input",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "pure-reentrant",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "none-pure-reentrant",
+    "blocking_io": "forbidden",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

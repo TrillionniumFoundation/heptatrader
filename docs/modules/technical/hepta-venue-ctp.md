@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `none`
-- **persistence:** `module-declared`
+- **persistence:** `none-unsupported`
 - **writer:** `single-owner`
 
 - No authoritative runtime state may be enabled while lifecycle is unsupported.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `none`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `none-unsupported`
+- **blocking io:** `forbidden-unsupported`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

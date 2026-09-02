@@ -30,13 +30,13 @@
   ],
   "state": {
     "model": "git-versioned",
-    "persistence": "module-declared",
+    "persistence": "git-versioned-repository-state",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "deterministic-batch",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "repository-revision",
+    "blocking_io": "filesystem-batch-validation-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

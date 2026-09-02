@@ -54,13 +54,13 @@
   ],
   "state": {
     "model": "durable-session-audit",
-    "persistence": "module-declared",
+    "persistence": "durable-session-audit-plus-ephemeral-connections",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "owner-sharded-control",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "session-owner",
+    "blocking_io": "bounded-af-unix-and-audit-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

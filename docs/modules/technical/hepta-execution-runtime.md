@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `durable-authoritative`
-- **persistence:** `module-declared`
+- **persistence:** `durable-oms-journal-and-authoritative-state`
 - **writer:** `single-owner`
 
 - Order, intent, idempotency and reconciliation state are authoritative within the Execution boundary.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `execution-domain-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `execution-domain-account-order`
+- **blocking io:** `journal-and-venue-boundary-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

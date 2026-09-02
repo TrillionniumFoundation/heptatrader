@@ -44,13 +44,13 @@
   ],
   "state": {
     "model": "decision-log",
-    "persistence": "module-declared",
+    "persistence": "none-recomputable-from-immutable-inputs",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "capital-pool-sharded",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "capital-pool-policy-revision",
+    "blocking_io": "forbidden-on-solver-path",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

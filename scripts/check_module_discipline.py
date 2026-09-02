@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUDGET_REL = "docs/modules/source-size-budget-v1.json"
 GAPS_REL = "docs/program/gap-registry-v2.json"
 
+_GENERIC_ENGINEERING_SENTINELS = frozenset({"declared-only", "module-declared"})
+
 _SIZE_DEBT_ID = re.compile(r"^TD-SIZE-[A-Z0-9-]+$")
 _TEAM = re.compile(r"^@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
@@ -275,6 +277,31 @@ def _validate_source_size_budget(
         errors.append(f"source-size exception is stale or path is missing: {relative}")
 
 
+
+def _validate_manifest_engineering_semantics(
+    modules: dict[str, dict[str, Any]], errors: list[str]
+) -> None:
+    fields = (
+        ("state", "persistence"),
+        ("concurrency", "shard_key"),
+        ("concurrency", "blocking_io"),
+    )
+    for module_id, module in sorted(modules.items()):
+        if module.get("lifecycle") not in ACTIVE_LIFECYCLES:
+            continue
+        for object_name, field_name in fields:
+            parent = module.get(object_name)
+            value = parent.get(field_name) if isinstance(parent, dict) else None
+            if not isinstance(value, str) or not value.strip():
+                errors.append(
+                    f"module {module_id}: {object_name}.{field_name} must be concrete"
+                )
+            elif value in _GENERIC_ENGINEERING_SENTINELS:
+                errors.append(
+                    f"module {module_id}: {object_name}.{field_name} uses "
+                    f"forbidden generic sentinel {value}"
+                )
+
 def validate() -> list[str]:
     errors: list[str] = []
     modules, module_registry = load_modules(ROOT, errors)
@@ -285,6 +312,8 @@ def validate() -> list[str]:
         errors.append("module registry schema mismatch")
     if ownership.get("schema") != "heptatrader.source-ownership-registry.v1":
         errors.append("source ownership registry schema mismatch")
+
+    _validate_manifest_engineering_semantics(modules, errors)
 
     gaps = _gap_map(errors)
     rules = parse_source_rules(ROOT, ownership, errors)

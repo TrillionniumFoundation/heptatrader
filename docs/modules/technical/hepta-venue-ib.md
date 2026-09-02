@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `broker-observed`
-- **persistence:** `module-declared`
+- **persistence:** `process-local-adapter-state-reconciled-from-broker`
 - **writer:** `single-owner`
 
 - Adapter state includes connection/session, request/order ID mapping and callback-derived venue observations.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `single-projector`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `broker-session-account`
+- **blocking io:** `official-ib-transport-thread-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

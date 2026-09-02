@@ -392,6 +392,20 @@
         "protocol-contracts",
         "session-boundary"
       ]
+    },
+    {
+      "id": "G-DOC-004",
+      "priority": "P0",
+      "title": "Active ModuleManifests permit non-empty generic engineering sentinels instead of concrete persistence and concurrency semantics",
+      "workstream": "WS-DOC",
+      "milestone": "M1",
+      "state": "closed",
+      "evidence": [
+        "docs-generated",
+        "module-documentation-coverage",
+        "module-manifest-schema",
+        "module-registry"
+      ]
     }
   ]
 }

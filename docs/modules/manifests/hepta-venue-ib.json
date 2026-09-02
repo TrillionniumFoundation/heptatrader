@@ -32,13 +32,13 @@
   ],
   "state": {
     "model": "broker-observed",
-    "persistence": "module-declared",
+    "persistence": "process-local-adapter-state-reconciled-from-broker",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "single-projector",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "broker-session-account",
+    "blocking_io": "official-ib-transport-thread-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

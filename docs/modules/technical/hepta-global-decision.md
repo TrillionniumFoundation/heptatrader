@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `decision-log`
-- **persistence:** `module-declared`
+- **persistence:** `none-recomputable-from-immutable-inputs`
 - **writer:** `single-owner`
 
 - Decision state is immutable per proposal set and policy/snapshot context.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `capital-pool-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `capital-pool-policy-revision`
+- **blocking io:** `forbidden-on-solver-path`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

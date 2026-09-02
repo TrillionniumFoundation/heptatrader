@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `durable-generation-fenced`
-- **persistence:** `module-declared`
+- **persistence:** `encrypted-lease-store-atomic-replace`
 - **writer:** `single-owner`
 
 - Session state is authoritative for lease/epoch ownership and expiry.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `supervisor-serialized`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `supervisor-single-owner`
+- **blocking io:** `durable-store-and-af-unix-control-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

@@ -45,7 +45,7 @@
       "id": "module-manifest-schema",
       "lane": "A-module-fast",
       "state": "implemented",
-      "evidence": "Draft 2020-12 validation for every ModuleManifest"
+      "evidence": "Draft 2020-12 validation for every ModuleManifest, including rejection of generic persistence, shard-key and blocking-I/O sentinels"
     },
     {
       "id": "module-documentation-coverage",

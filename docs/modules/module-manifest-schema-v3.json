@@ -122,7 +122,13 @@
         "persistence": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 96
+          "maxLength": 96,
+          "not": {
+            "enum": [
+              "declared-only",
+              "module-declared"
+            ]
+          }
         },
         "writer": {
           "type": "string",
@@ -149,12 +155,24 @@
         "shard_key": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 96
+          "maxLength": 96,
+          "not": {
+            "enum": [
+              "declared-only",
+              "module-declared"
+            ]
+          }
         },
         "blocking_io": {
           "type": "string",
           "minLength": 1,
-          "maxLength": 96
+          "maxLength": 96,
+          "not": {
+            "enum": [
+              "declared-only",
+              "module-declared"
+            ]
+          }
         },
         "cross_module_lock": {
           "type": "string",

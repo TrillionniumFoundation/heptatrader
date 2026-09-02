@@ -25,13 +25,13 @@
   ],
   "state": {
     "model": "none",
-    "persistence": "module-declared",
+    "persistence": "none-unsupported",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "none",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "none-unsupported",
+    "blocking_io": "forbidden-unsupported",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `module-isolated`
-- **persistence:** `module-declared`
+- **persistence:** `module-isolated-approved-checkpoint`
 - **writer:** `single-owner`
 
 - Strategy-local state is isolated by strategy/agent identity and is never authoritative portfolio state.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `instance-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `strategy-agent-instance`
+- **blocking io:** `startup-checkpoint-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

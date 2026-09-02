@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `none`
-- **persistence:** `module-declared`
+- **persistence:** `none-recomputable-from-plan-and-metadata`
 - **writer:** `single-owner`
 
 - Compilation is a deterministic transformation; outputs are immutable intents bound to the input plan.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `pure-reentrant`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `none-pure-reentrant`
+- **blocking io:** `forbidden`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

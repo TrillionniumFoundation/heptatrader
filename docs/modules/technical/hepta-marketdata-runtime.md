@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `single-writer-shard`
-- **persistence:** `module-declared`
+- **persistence:** `process-local-state-rebuilt-from-feed-or-replay`
 - **writer:** `single-owner`
 
 - Per venue/instrument entries retain the latest normalized event, generation, sequence-gap state and digest.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `venue-instrument-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `venue-instrument`
+- **blocking io:** `forbidden-on-admission-and-snapshot`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

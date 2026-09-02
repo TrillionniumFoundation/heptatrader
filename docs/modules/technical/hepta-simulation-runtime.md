@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `ephemeral-cycle`
-- **persistence:** `none`
+- **persistence:** `none-scenario-replay-from-immutable-inputs`
 - **writer:** `single-owner`
 
 - Scenario state is isolated per run and keyed by seed, clock and scenario version.
@@ -70,7 +70,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `capital-pool-cycle`
-- **shard key:** `capital-pool`
+- **shard key:** `capital-pool-scenario`
 - **blocking io:** `forbidden`
 - **cross module lock:** `forbidden`
 

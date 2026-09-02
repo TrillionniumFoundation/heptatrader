@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `durable-session-audit`
-- **persistence:** `module-declared`
+- **persistence:** `durable-session-audit-plus-ephemeral-connections`
 - **writer:** `single-owner`
 
 - Gateway state contains bounded connections, sessions and in-flight requests; domain authority remains in downstream modules.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `owner-sharded-control`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `session-owner`
+- **blocking io:** `bounded-af-unix-and-audit-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

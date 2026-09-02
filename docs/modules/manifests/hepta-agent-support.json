@@ -28,13 +28,13 @@
   ],
   "state": {
     "model": "bounded-local",
-    "persistence": "module-declared",
+    "persistence": "process-local-reconstructible-cache",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "owner-sharded",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "agent-session-owner",
+    "blocking_io": "forbidden-on-event-dispatch",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

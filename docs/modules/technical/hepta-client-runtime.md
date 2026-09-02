@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `none`
-- **persistence:** `module-declared`
+- **persistence:** `none-ephemeral-request-context`
 - **writer:** `single-owner`
 
 - Client state is ephemeral request/session context; authoritative state remains server-side.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `caller-owned`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `caller-owned`
+- **blocking io:** `bounded-client-transport-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

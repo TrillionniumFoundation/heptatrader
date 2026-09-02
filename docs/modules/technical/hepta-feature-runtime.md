@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `immutable-generation`
-- **persistence:** `module-declared`
+- **persistence:** `derived-process-local-generation-cache`
 - **writer:** `single-owner`
 
 - Feature state is keyed by market identity and feature-set version with monotonic generation.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `instrument-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `venue-instrument-feature-set`
+- **blocking io:** `forbidden-on-feature-compute`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

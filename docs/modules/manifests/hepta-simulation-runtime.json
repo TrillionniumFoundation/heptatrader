@@ -40,12 +40,12 @@
   ],
   "state": {
     "model": "ephemeral-cycle",
-    "persistence": "none",
+    "persistence": "none-scenario-replay-from-immutable-inputs",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "capital-pool-cycle",
-    "shard_key": "capital-pool",
+    "shard_key": "capital-pool-scenario",
     "blocking_io": "forbidden",
     "cross_module_lock": "forbidden"
   },

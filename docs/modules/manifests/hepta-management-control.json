@@ -32,13 +32,13 @@
   ],
   "state": {
     "model": "versioned-control",
-    "persistence": "module-declared",
+    "persistence": "canonical-config-plus-versioned-rollout-state",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "control-domain-sharded",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "module-rollout-domain",
+    "blocking_io": "control-path-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

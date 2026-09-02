@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `versioned-control`
-- **persistence:** `module-declared`
+- **persistence:** `canonical-config-plus-versioned-rollout-state`
 - **writer:** `single-owner`
 
 - Management state is desired-state and rollout metadata; runtime modules retain their domain state.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `control-domain-sharded`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `module-rollout-domain`
+- **blocking io:** `control-path-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

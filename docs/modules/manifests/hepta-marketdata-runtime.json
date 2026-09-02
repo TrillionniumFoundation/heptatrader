@@ -28,13 +28,13 @@
   ],
   "state": {
     "model": "single-writer-shard",
-    "persistence": "module-declared",
+    "persistence": "process-local-state-rebuilt-from-feed-or-replay",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "venue-instrument-sharded",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "venue-instrument",
+    "blocking_io": "forbidden-on-admission-and-snapshot",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `git-versioned`
-- **persistence:** `module-declared`
+- **persistence:** `git-versioned-repository-state`
 - **writer:** `single-owner`
 
 - Canonical state is the checked-in set of registries, normative documents and deterministic generators.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `deterministic-batch`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `repository-revision`
+- **blocking io:** `filesystem-batch-validation-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

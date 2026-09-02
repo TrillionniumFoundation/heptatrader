@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `append-only-run`
-- **persistence:** `module-declared`
+- **persistence:** `append-only-run-artifacts`
 - **writer:** `single-owner`
 
 - Runs are immutable evidence bundles keyed by protocol, dataset and code identity.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `run-isolated`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `research-run`
+- **blocking io:** `offline-runner-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

@@ -41,13 +41,13 @@
   ],
   "state": {
     "model": "none",
-    "persistence": "module-declared",
+    "persistence": "none-ephemeral-request-context",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "caller-owned",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "caller-owned",
+    "blocking_io": "bounded-client-transport-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

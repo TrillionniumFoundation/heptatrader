@@ -31,13 +31,13 @@
   ],
   "state": {
     "model": "module-isolated",
-    "persistence": "module-declared",
+    "persistence": "module-isolated-approved-checkpoint",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "instance-sharded",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "strategy-agent-instance",
+    "blocking_io": "startup-checkpoint-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

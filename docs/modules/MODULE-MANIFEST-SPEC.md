@@ -61,3 +61,9 @@ A module boundary is complete only when:
 6. the module has one unique generated technical guide covering every required engineering topic;
 7. documentation profiles, manifests, generated guides and canonical registries are byte-consistent;
 8. module-local, documentation and system verification pass on the same unchanged revision.
+
+## Concrete engineering semantics
+
+Current, experimental and unsupported modules must state concrete engineering behavior. `state.persistence` identifies the actual durable, derived, checkpoint or no-persistence model; `concurrency.shard_key` identifies the real serialization or ownership key, including an explicit `none`; `concurrency.blocking_io` identifies the exact boundary where blocking I/O is allowed or states that it is forbidden.
+
+Generic values such as `module-declared` and `declared-only` are invalid. A non-empty placeholder is not an engineering contract. Unsupported modules still declare concrete `none-unsupported` and `forbidden-unsupported` behavior so activation, packaging and future implementation cannot inherit a permissive default. Any change to these fields must update the affected guide, tests and resource/failure analysis on the same revision.

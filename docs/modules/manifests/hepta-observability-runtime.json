@@ -28,13 +28,13 @@
   ],
   "state": {
     "model": "bounded-process-local",
-    "persistence": "module-declared",
+    "persistence": "bounded-non-authoritative-export-buffer",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "per-thread-target",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "thread-metric-target",
+    "blocking_io": "exporter-thread-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

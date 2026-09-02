@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `deterministic-fixture`
-- **persistence:** `module-declared`
+- **persistence:** `scenario-local-replayable-state`
 - **writer:** `single-owner`
 
 - Order book, order lifecycle and fault state are isolated per scenario/run.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `single-writer`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `scenario-order-book`
+- **blocking io:** `forbidden`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

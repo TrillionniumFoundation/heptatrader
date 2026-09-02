@@ -27,13 +27,13 @@
   ],
   "state": {
     "model": "deterministic-fixture",
-    "persistence": "module-declared",
+    "persistence": "scenario-local-replayable-state",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "single-writer",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "scenario-order-book",
+    "blocking_io": "forbidden",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

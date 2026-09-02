@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `none`
-- **persistence:** `module-declared`
+- **persistence:** `none-immutable-policy-input`
 - **writer:** `single-owner`
 
 - Policy definitions are immutable per revision; evaluation is deterministic over explicit inputs.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `pure-reentrant`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `none-pure-reentrant`
+- **blocking io:** `forbidden`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

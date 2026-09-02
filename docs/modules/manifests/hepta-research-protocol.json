@@ -22,13 +22,13 @@
   ],
   "state": {
     "model": "append-only-run",
-    "persistence": "module-declared",
+    "persistence": "append-only-run-artifacts",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "run-isolated",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "research-run",
+    "blocking_io": "offline-runner-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {

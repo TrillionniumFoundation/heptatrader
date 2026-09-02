@@ -59,7 +59,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `bounded-process-local`
-- **persistence:** `module-declared`
+- **persistence:** `bounded-non-authoritative-export-buffer`
 - **writer:** `single-owner`
 
 - Telemetry buffers and aggregation state are non-authoritative and may be dropped according to policy.
@@ -70,8 +70,8 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ### Concurrency contract
 
 - **model:** `per-thread-target`
-- **shard key:** `module-declared`
-- **blocking io:** `declared-only`
+- **shard key:** `thread-metric-target`
+- **blocking io:** `exporter-thread-only`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract

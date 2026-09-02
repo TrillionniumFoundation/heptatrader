@@ -91,13 +91,13 @@
   ],
   "state": {
     "model": "durable-authoritative",
-    "persistence": "module-declared",
+    "persistence": "durable-oms-journal-and-authoritative-state",
     "writer": "single-owner"
   },
   "concurrency": {
     "model": "execution-domain-sharded",
-    "shard_key": "module-declared",
-    "blocking_io": "declared-only",
+    "shard_key": "execution-domain-account-order",
+    "blocking_io": "journal-and-venue-boundary-only",
     "cross_module_lock": "forbidden"
   },
   "backpressure": {
