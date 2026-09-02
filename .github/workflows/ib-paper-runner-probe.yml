@@ -1,0 +1,130 @@
+name: IB PAPER Runner Probe
+
+on:
+  push:
+    branches:
+      - codex/ib-paper-runner-probe-20260902
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-ib-paper-runner-probe
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: ib-paper-runner-probe
+    runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact probe revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Record non-sensitive runner readiness
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/heptatrader-ib-runner-probe.json"
+          python3 - <<'PY' > "$receipt"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import socket
+          import stat
+          import subprocess
+
+          def path_state(name):
+              raw = os.environ.get(name, "")
+              result = {
+                  "present": bool(raw),
+                  "directory": False,
+                  "regular_file": False,
+                  "executable": False,
+                  "symlink": False,
+              }
+              if not raw:
+                  return result
+              path = Path(raw)
+              try:
+                  info = path.lstat()
+              except OSError:
+                  return result
+              result["directory"] = stat.S_ISDIR(info.st_mode)
+              result["regular_file"] = stat.S_ISREG(info.st_mode)
+              result["executable"] = bool(info.st_mode & 0o111)
+              result["symlink"] = stat.S_ISLNK(info.st_mode)
+              return result
+
+          def tool(name):
+              path = shutil.which(name)
+              if path is None:
+                  return {"present": False}
+              try:
+                  output = subprocess.run(
+                      [path, "--version"],
+                      check=False,
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      timeout=5,
+                  ).stdout.splitlines()
+              except Exception:
+                  output = []
+              return {
+                  "present": True,
+                  "version_line": output[0][:256] if output else "unknown",
+              }
+
+          listeners = {}
+          for port in (4001, 4002, 7496, 7497):
+              sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              sock.settimeout(0.2)
+              try:
+                  listeners[str(port)] = sock.connect_ex(("127.0.0.1", port)) == 0
+              finally:
+                  sock.close()
+
+          payload = {
+              "schema": "heptatrader.ib-paper-runner-probe.v1",
+              "trigger_sha": os.environ.get("GITHUB_SHA", ""),
+              "runner": {
+                  "name_sha256": hashlib.sha256(
+                      os.environ.get("RUNNER_NAME", "").encode()
+                  ).hexdigest(),
+                  "os": os.environ.get("RUNNER_OS", ""),
+                  "arch": os.environ.get("RUNNER_ARCH", ""),
+              },
+              "ibapi_root": path_state("IBAPI_ROOT"),
+              "qualifier": path_state("HEPTA_IB_PAPER_QUALIFIER"),
+              "loopback_gateway_ports": listeners,
+              "tools": {
+                  name: tool(name)
+                  for name in ("cmake", "ninja", "g++", "python3")
+              },
+          }
+          print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+          PY
+          chmod 0600 "$receipt"
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path = Path(os.environ["RUNNER_TEMP"]) / "heptatrader-ib-runner-probe.json"
+          value = json.loads(path.read_text(encoding="utf-8"))
+          assert value["runner"]["os"] == "Linux"
+          assert value["runner"]["arch"] in {"X64", "x64"}
+          PY
+
+      - name: Upload runner probe receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ib-paper-runner-probe-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/heptatrader-ib-runner-probe.json
+          if-no-files-found: error
+          retention-days: 7
