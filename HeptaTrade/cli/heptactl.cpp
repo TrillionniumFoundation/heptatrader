@@ -1,6 +1,7 @@
 #include "heptactl_command.h"
 #include "heptactl_exit_codes.h"
 #include "../client/native_tool_client.h"
+#include "heptatrader_version.h"
 
 #include <iostream>
 #include <chrono>
@@ -66,6 +67,12 @@ int RunWatchSnapshot(const HeptaCtlCommand& command, NativeToolClient& client)
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--version")
+    {
+        std::cout << HEPTA_VERSION_FULL << std::endl;
+        return HeptaCtlSuccess;
+    }
+
     HeptaCtlCommand command;
     std::string reason;
     if (!HeptaCtlCommandParser::Parse(argc, argv, command, reason))
