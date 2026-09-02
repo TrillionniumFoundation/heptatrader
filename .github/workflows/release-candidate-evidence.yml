@@ -39,7 +39,8 @@ jobs:
           python3 scripts/check_documentation_control_plane.py
           python3 scripts/check_repository_integrity.py
           python3 scripts/check_module_discipline.py
-          python3 -m unittest tests.python.test_release_evidence
+          python3 -m unittest discover \
+            -s tests/python -p 'test_release_evidence.py'
       - name: Build and install two clean IB-disabled candidates
         run: |
           set -euo pipefail
