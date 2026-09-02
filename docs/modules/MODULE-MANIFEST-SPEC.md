@@ -83,9 +83,9 @@ The checker rejects missing modules, duplicate entries, unsafe paths, absent evi
 
 The ledger is deliberately stricter for architectural names that can be mistaken for complete services:
 
-- `hepta.management.control` is bounded to the in-process lifecycle authority unless durable configuration, rollout persistence and distributed reconciliation source and tests are added.
-- `hepta.strategy.runtime` is contract-only while the source root contains proposal construction and validation but no approved artifact loader or OS-level sandbox.
-- `hepta.simulation.runtime` is harness-only while it provides deterministic multi-agent allocation composition but no virtual clock or scenario runtime.
+- `hepta.management.control` is a bounded single-writer control plane: it includes in-process lifecycle authority plus checksummed local desired-state persistence and deterministic reconciliation actions, but not distributed fan-out, consensus or high availability.
+- `hepta.strategy.runtime` is a bounded admission and lifecycle controller: it pins artifact/configuration identity, checkpoint metadata and quarantine/replacement generations, but it does not load or execute untrusted artifacts and does not provide an OS process sandbox or operating-system quota enforcement.
+- `hepta.simulation.runtime` is a bounded deterministic scenario runtime with virtual-clock ordering, cursor snapshots and replay; it does not provide an external scenario language, parallel process isolation or realistic exchange microstructure.
 - `hepta.research.protocol` is contract-only while it provides validation protocol and fixtures rather than a production point-in-time data platform.
 - CTP and XT remain unsupported.
 - IB remains externally gated until exact official-SDK, host, account and broker-observed PAPER evidence exists.
