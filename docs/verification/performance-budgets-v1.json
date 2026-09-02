@@ -10,18 +10,32 @@
       "p99",
       "p999",
       "max"
+    ],
+    "allowed_states": [
+      "declared",
+      "implemented"
+    ],
+    "declared_claim_ceiling": "target only; cannot support a performance or readiness claim",
+    "implemented_requires": [
+      "executable same-revision fixture",
+      "machine-bound threshold or bounded complexity contract",
+      "recorded source, build and toolchain identity"
     ]
   },
   "budgets": [
     {
       "id": "gateway-control-v1",
       "metric": "p99 request latency",
-      "regression_percent": 20
+      "regression_percent": 20,
+      "state": "declared",
+      "missing_evidence": "no canonical absolute baseline and distribution artifact"
     },
     {
       "id": "snapshot-v1",
       "metric": "p99 capture latency",
-      "regression_percent": 20
+      "regression_percent": 20,
+      "state": "declared",
+      "missing_evidence": "no canonical absolute baseline and coherent-snapshot distribution artifact"
     },
     {
       "id": "risk-policy-v1",
@@ -29,23 +43,30 @@
       "regression_percent": 10,
       "baseline": "benchmarks/core-latency-baseline-v1.json",
       "fixture": "risk-evaluate-v1",
+      "test_target": "hepta_risk_latency_fixture_tests",
       "numeric_policy": "hepta.numeric.fixed-v1",
       "state": "implemented"
     },
     {
       "id": "portfolio-compiler-v1",
       "metric": "p99 compile latency",
-      "regression_percent": 10
+      "regression_percent": 10,
+      "state": "declared",
+      "missing_evidence": "no canonical absolute baseline and representative portfolio distribution artifact"
     },
     {
       "id": "execution-authority-v1",
       "metric": "journal-durable-to-send p99",
-      "regression_percent": 20
+      "regression_percent": 20,
+      "state": "declared",
+      "missing_evidence": "no target-host durability/send fixture and absolute threshold"
     },
     {
       "id": "global-allocator-v1",
       "metric": "deadline and optimality gap",
       "regression_percent": 0,
+      "fixture": "global-allocator-bounded-complexity-v1",
+      "test_target": "hepta_global_allocator_tests",
       "state": "implemented"
     }
   ]
