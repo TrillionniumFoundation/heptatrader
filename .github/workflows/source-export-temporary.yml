@@ -1,0 +1,36 @@
+name: source-export-temporary
+
+on:
+  push:
+    branches:
+      - codex/final-blocker-closure-20260902
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    name: export-exact-source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert and archive exact revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          git archive --format=tar.gz \
+            --output="$RUNNER_TEMP/heptatrader-source-${GITHUB_SHA}.tar.gz" HEAD
+      - name: Upload exact source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-export-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-source-${{ github.sha }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
