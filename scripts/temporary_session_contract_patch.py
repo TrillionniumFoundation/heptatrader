@@ -101,7 +101,7 @@ Recovery state is non-authorizing except for the explicitly registered recovery 
 
 The C++ wire DTO in `HeptaTrade/tool_host/session_supervisor_protocol.h`, the durable record and transition API in `session_supervisor_lease_store.h`, the contract registry, ModuleManifests and generated guides must change atomically. Removing or reinterpreting an operation or field is a major contract change. Additive fields require closed-world decoder tests, old/new golden vectors, malformed-input negatives, crash-before/after-persist tests, stale-generation/fencing tests and exact replay evidence. The current verification authority is `session-boundary` plus `protocol-contracts`; distributed consensus is not claimed by this same-host contract.
 """
-    path.write_text(text.rstrip() + section + "\n", encoding="utf-8")
+    path.write_text(text.rstrip() + section.rstrip() + "\n", encoding="utf-8")
 
 
 def update_gap_and_test_registries() -> None:
