@@ -47,6 +47,7 @@ jobs:
             scripts/check_repository_integrity.py \
             scripts/check_systemd_documentation.py \
             scripts/check_workflow_check_contexts.py \
+            scripts/verify_github_governance.py \
             scripts/check_schema_catalog.py \
             scripts/check_module_discipline.py \
             scripts/check_cmake_module_graph.py \
