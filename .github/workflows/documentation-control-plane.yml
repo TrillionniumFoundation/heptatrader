@@ -2,6 +2,8 @@ name: documentation-control-plane
 
 on:
   pull_request: {}
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
   workflow_dispatch: {}
@@ -11,7 +13,7 @@ permissions:
 
 concurrency:
   group: documentation-control-plane-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   docs:
