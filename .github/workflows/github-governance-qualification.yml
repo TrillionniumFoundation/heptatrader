@@ -1,0 +1,99 @@
+name: GitHub Governance Qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      pull_number:
+        description: Final pull request number targeting protected main
+        required: true
+        type: string
+      expected_head_sha:
+        description: Exact unchanged source head to verify
+        required: true
+        type: string
+      merge_group_sha:
+        description: Exact merge-group revision that passed the queue gate
+        required: true
+        type: string
+      acknowledge_no_bypass:
+        description: Confirm this run is evidence-only and may not use a bypass
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: heptatrader-github-governance-qualification
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    name: github-governance-exact-artifact-verification
+    runs-on: ubuntu-24.04
+    environment: repository-governance
+    timeout-minutes: 15
+    steps:
+      - name: Require exact immutable inputs and no-bypass acknowledgement
+        env:
+          ACKNOWLEDGE_NO_BYPASS: ${{ inputs.acknowledge_no_bypass }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          MERGE_GROUP_SHA: ${{ inputs.merge_group_sha }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$ACKNOWLEDGE_NO_BYPASS" = "true"
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          test "$DISPATCH_SHA" = "$EXPECTED_HEAD_SHA"
+      - name: Checkout exact governance candidate
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.expected_head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert exact source and verifier
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          python3 -m py_compile \
+            scripts/check_workflow_check_contexts.py \
+            scripts/check_required_context_projections.py \
+            scripts/check_github_team_mapping.py \
+            scripts/verify_github_governance.py
+          python3 scripts/check_workflow_check_contexts.py
+          python3 scripts/check_required_context_projections.py
+          python3 scripts/check_github_team_mapping.py
+      - name: Collect and verify live organization and repository evidence
+        env:
+          HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          MERGE_GROUP_SHA: ${{ inputs.merge_group_sha }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+        run: |
+          set -euo pipefail
+          test -n "$HEPTA_GOVERNANCE_TOKEN"
+          receipt="$RUNNER_TEMP/github-governance-receipt.json"
+          python3 scripts/verify_github_governance.py \
+            --pull-number "$PULL_NUMBER" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --merge-group-sha "$MERGE_GROUP_SHA" \
+            --output "$receipt"
+          test -s "$receipt"
+          test ! -L "$receipt"
+          test "$(stat -c '%a' "$receipt")" = "600"
+      - name: Upload immutable governance receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: github-governance-${{ inputs.expected_head_sha }}-${{ inputs.merge_group_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/github-governance-receipt.json
+          if-no-files-found: error
+          retention-days: 90
