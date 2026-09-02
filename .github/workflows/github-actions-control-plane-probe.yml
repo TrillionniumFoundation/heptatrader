@@ -1,0 +1,145 @@
+name: GitHub Actions Control Plane Probe
+
+on:
+  push:
+    branches:
+      - codex/github-actions-control-plane-probe-20260902
+    paths:
+      - '.github/workflows/github-actions-control-plane-probe.yml'
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: heptatrader-github-actions-control-plane-probe-20260902
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: github-actions-control-plane-probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Collect sanitized read-only API status
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/github-actions-control-plane-probe.json"
+          python3 - <<'PY' > "$receipt"
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          base = f"https://api.github.com/repos/{repository}"
+
+          def get(path: str):
+              request = Request(
+                  base + path,
+                  method="GET",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "heptatrader-control-plane-probe/1",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      body = response.read()
+                      return response.status, json.loads(body.decode("utf-8"))
+              except HTTPError as error:
+                  body = error.read(4096)
+                  try:
+                      value = json.loads(body.decode("utf-8"))
+                      message = str(value.get("message", ""))[:256]
+                  except Exception:
+                      message = body.decode("utf-8", errors="replace")[:256]
+                  return error.code, {"message": message}
+
+          endpoints = {
+              "runners": "/actions/runners?per_page=100",
+              "environments": "/environments?per_page=100",
+              "rulesets": "/rulesets?per_page=100",
+              "main_branch": "/branches/main",
+              "main_protection": "/branches/main/protection",
+          }
+          result = {
+              "schema": "heptatrader.github-actions-control-plane-probe.v1",
+              "repository": repository,
+              "trigger_sha": os.environ["GITHUB_SHA"],
+              "endpoints": {},
+          }
+          for name, path in endpoints.items():
+              status, value = get(path)
+              item = {"http_status": status}
+              if name == "runners" and isinstance(value, dict):
+                  runners = value.get("runners")
+                  if isinstance(runners, list):
+                      item["total_count"] = value.get("total_count")
+                      item["runners"] = [
+                          {
+                              "name_sha256": hashlib.sha256(
+                                  str(runner.get("name", "")).encode()
+                              ).hexdigest(),
+                              "os": runner.get("os"),
+                              "status": runner.get("status"),
+                              "busy": runner.get("busy"),
+                              "labels": sorted(
+                                  str(label.get("name"))
+                                  for label in runner.get("labels", [])
+                                  if isinstance(label, dict) and label.get("name")
+                              ),
+                          }
+                          for runner in runners
+                          if isinstance(runner, dict)
+                      ]
+              elif name == "environments" and isinstance(value, dict):
+                  environments = value.get("environments")
+                  if isinstance(environments, list):
+                      item["total_count"] = value.get("total_count")
+                      item["names"] = sorted(
+                          str(environment.get("name"))
+                          for environment in environments
+                          if isinstance(environment, dict) and environment.get("name")
+                      )
+              elif name == "rulesets" and isinstance(value, list):
+                  item["count"] = len(value)
+                  item["enforcements"] = sorted(
+                      str(entry.get("enforcement"))
+                      for entry in value
+                      if isinstance(entry, dict)
+                  )
+              elif name == "main_branch" and isinstance(value, dict):
+                  item["name"] = value.get("name")
+                  item["protected"] = value.get("protected")
+                  item["sha"] = value.get("commit", {}).get("sha")
+              elif name == "main_protection" and isinstance(value, dict):
+                  item["required_status_checks_present"] = bool(
+                      value.get("required_status_checks")
+                  )
+                  item["required_pull_request_reviews_present"] = bool(
+                      value.get("required_pull_request_reviews")
+                  )
+              if isinstance(value, dict) and "message" in value:
+                  item["message"] = value["message"]
+              result["endpoints"][name] = item
+
+          print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+          PY
+          chmod 0600 "$receipt"
+
+      - name: Upload control-plane receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: github-actions-control-plane-probe-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/github-actions-control-plane-probe.json
+          if-no-files-found: error
+          retention-days: 7
