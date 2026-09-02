@@ -39,6 +39,7 @@
   "non_required_observation_contexts": [
     "reliability-runtime-sanitizers (g++)",
     "reliability-runtime-sanitizers (clang++)",
-    "release-candidate-reproducibility-observation"
+    "release-candidate-reproducibility-observation",
+    "X230 IB runner probe"
   ]
 }
