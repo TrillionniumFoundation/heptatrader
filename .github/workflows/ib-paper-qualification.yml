@@ -100,6 +100,7 @@ jobs:
           test -f candidate/scripts/run_ib_paper_qualification.sh
           test -f candidate/scripts/verify_ib_paper_qualification.py
           test -f candidate/scripts/check_install_tree.py
+          test -f candidate/cmake/RuntimeInstall.cmake
           bash -n candidate/scripts/run_ib_paper_qualification.sh
           python3 -m py_compile \
             candidate/scripts/verify_ib_paper_qualification.py \
@@ -107,13 +108,14 @@ jobs:
           grep -Fq 'HEPTA_ENABLE_IBAPI' \
             candidate/CMakeLists.txt candidate/HeptaTrade/CMakeLists.txt
           grep -Fq 'hepta_core_test_binaries' candidate/tests/CMakeLists.txt
-          grep -Fq 'hepta_runtime_binaries' candidate/HeptaTrade/CMakeLists.txt
+          grep -Fq 'add_custom_target(hepta_runtime_binaries' \
+            candidate/cmake/RuntimeInstall.cmake
 
           build="$RUNNER_TEMP/heptatrader-ib-bootstrap-preflight"
           cmake -S candidate -B "$build" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_TESTING=ON \
-            -DHEPTA_INSTALL_RUNTIME=OFF \
+            -DHEPTA_INSTALL_RUNTIME=ON \
             -DHEPTA_ENABLE_IBAPI=OFF
           cmake --build "$build" --parallel 2 --target \
             hepta_ib_adapter_core \
@@ -165,13 +167,15 @@ jobs:
           test -f scripts/run_ib_paper_qualification.sh
           test -f scripts/verify_ib_paper_qualification.py
           test -f scripts/check_install_tree.py
+          test -f cmake/RuntimeInstall.cmake
           bash -n scripts/run_ib_paper_qualification.sh
           python3 -m py_compile \
             scripts/verify_ib_paper_qualification.py \
             scripts/check_install_tree.py
           grep -Fq 'HEPTA_ENABLE_IBAPI' CMakeLists.txt HeptaTrade/CMakeLists.txt
           grep -Fq 'hepta_core_test_binaries' tests/CMakeLists.txt
-          grep -Fq 'hepta_runtime_binaries' HeptaTrade/CMakeLists.txt
+          grep -Fq 'add_custom_target(hepta_runtime_binaries' \
+            cmake/RuntimeInstall.cmake
       - name: Validate controlled runner inputs
         run: |
           set -euo pipefail
