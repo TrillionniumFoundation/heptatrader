@@ -62,8 +62,9 @@ install(FILES
     "${CMAKE_SOURCE_DIR}/research/README.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research" COMPONENT runtime)
 
-# License and third-party boundaries are part of every distributed artifact.
+# Version, license and third-party boundaries are part of every artifact.
 install(FILES
+    "${CMAKE_SOURCE_DIR}/VERSION"
     "${CMAKE_SOURCE_DIR}/LICENSE"
     "${CMAKE_SOURCE_DIR}/NOTICE"
     DESTINATION "${CMAKE_INSTALL_DOCDIR}"
