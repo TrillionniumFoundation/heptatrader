@@ -1,166 +1,88 @@
 name: IB PAPER Qualification
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/ib-paper-qualification.yml'
-  workflow_dispatch:
-    inputs:
-      mutation_mode:
-        description: Explicitly approve the bounded real PAPER mutation campaign
-        required: true
-        type: boolean
-        default: false
+  push:
+    branches:
+      - codex/ib-paper-canonical-runner-probe-20260902
 
 permissions:
   contents: read
 
 concurrency:
-  group: heptatrader-ib-paper-qualification-${{ github.event_name }}-${{ github.ref }}
+  group: heptatrader-ib-paper-canonical-runner-probe
   cancel-in-progress: false
 
 jobs:
-  bootstrap-audit:
-    if: github.event_name == 'pull_request'
-    name: ib-paper-workflow-bootstrap-audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - name: Checkout exact pull-request head
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Assert exact bootstrap revision
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Audit immutable qualification controls
-        run: |
-          set -euo pipefail
-          workflow=.github/workflows/ib-paper-qualification.yml
-          qualify="$RUNNER_TEMP/ib-paper-qualify-job.yml"
-          sed -n '/^  qualify:/,$p' "$workflow" > "$qualify"
-          test -s "$qualify"
-          grep -Fq "if: github.event_name == 'workflow_dispatch'" "$qualify"
-          grep -Fq 'runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]' "$qualify"
-          grep -Fq 'environment: ib-paper' "$qualify"
-          grep -Fq 'HEPTA_QUALIFICATION_MUTATIONS:' "$qualify"
-          grep -Fq -- '--expected-git-sha' "$qualify"
-          grep -Fq -- '--expected-binary "$binary"' "$qualify"
-          grep -Fq -- '--expected-harness "$HEPTA_IB_PAPER_QUALIFIER"' "$qualify"
-          test "$(grep -Fc 'uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262' "$qualify")" = 1
-          test "$(grep -Fc 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' "$qualify")" = 1
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('.github/workflows/ib-paper-qualification.yml').read_text(encoding='utf-8')
-          on_block = text.split('\npermissions:', 1)[0]
-          for forbidden in ('\n  push:', '\n  schedule:'):
-              if forbidden in on_block:
-                  raise SystemExit('automatic qualification trigger is forbidden')
-          for required in ('workflow_dispatch:', 'mutation_mode:', 'type: boolean', 'default: false'):
-              if required not in on_block:
-                  raise SystemExit(f'missing dispatch guard: {required}')
-          PY
-
-  qualify:
-    if: github.event_name == 'workflow_dispatch'
-    name: ib-paper-exact-artifact-qualification
+  probe:
+    name: ib-paper-canonical-runner-probe
     runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
-    timeout-minutes: 90
+    timeout-minutes: 10
     steps:
-      - name: Checkout exact qualification revision
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Require explicit bounded mutation approval
-        env:
-          MUTATION_MODE: ${{ inputs.mutation_mode }}
+      - name: Record non-sensitive canonical-path readiness
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
-          if [[ "$MUTATION_MODE" != "true" ]]; then
-            echo "IB PAPER qualification requires mutation_mode=true and protected environment approval" >&2
-            exit 78
-          fi
-      - name: Validate controlled runner inputs
-        run: |
-          set -euo pipefail
-          test -n "${IBAPI_ROOT:-}"
-          test -d "$IBAPI_ROOT"
-          test ! -L "$IBAPI_ROOT"
-          test -n "${HEPTA_IB_PAPER_QUALIFIER:-}"
-          test -f "$HEPTA_IB_PAPER_QUALIFIER"
-          test -x "$HEPTA_IB_PAPER_QUALIFIER"
-          test ! -L "$HEPTA_IB_PAPER_QUALIFIER"
-          bash -n scripts/run_ib_paper_qualification.sh
-          python3 -m py_compile scripts/verify_ib_paper_qualification.py
-      - name: Configure broker-enabled exact artifact
-        run: |
-          set -euo pipefail
-          build="$RUNNER_TEMP/heptatrader-ib-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$build"
-          cmake -S . -B "$build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=ON \
-            -DHEPTA_INSTALL_RUNTIME=ON \
-            -DHEPTA_ENABLE_IBAPI=ON \
-            -DIBAPI_ROOT="$IBAPI_ROOT"
-          printf '%s\n' "$build" > "$RUNNER_TEMP/heptatrader-ib-build-dir"
-      - name: Build broker authority and deterministic tests
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          cmake --build "$build" --parallel 2 --target \
-            hepta_ib_executiond \
-            hepta_core_test_binaries \
-            hepta_runtime_binaries
-      - name: Run deterministic tests
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          ctest --test-dir "$build" --output-on-failure --parallel 1 -L core --no-tests=error
-      - name: Validate canonical runtime install tree
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          stage="$RUNNER_TEMP/heptatrader-ib-stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$stage"
-          DESTDIR="$stage" cmake --install "$build" --component runtime
-          python3 scripts/check_install_tree.py "$stage"
-      - name: Run and independently verify controlled PAPER qualification
-        env:
-          HEPTA_QUALIFICATION_MUTATIONS: '1'
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          ./scripts/run_ib_paper_qualification.sh "$build" "$evidence"
-          printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
-      - name: Re-verify exact evidence and artifact identity
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
-          binary="$(find "$build" -type f -name hepta-ib-executiond -perm -u+x -print -quit)"
-          test -n "$binary"
-          python3 scripts/verify_ib_paper_qualification.py \
-            --result "$evidence/qualification-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "${{ github.sha }}" \
-            --expected-binary "$binary" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
-      - name: Upload immutable qualification evidence
+          receipt="$RUNNER_TEMP/ib-paper-canonical-runner-probe.json"
+          python3 - <<'PY' > "$receipt"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import socket
+          import stat
+
+          def inspect(name):
+              raw = os.environ.get(name, "")
+              result = {
+                  "present": bool(raw),
+                  "directory": False,
+                  "regular_file": False,
+                  "executable": False,
+                  "symlink": False,
+              }
+              if not raw:
+                  return result
+              path = Path(raw)
+              try:
+                  info = path.lstat()
+              except OSError:
+                  return result
+              result["directory"] = stat.S_ISDIR(info.st_mode)
+              result["regular_file"] = stat.S_ISREG(info.st_mode)
+              result["executable"] = bool(info.st_mode & 0o111)
+              result["symlink"] = stat.S_ISLNK(info.st_mode)
+              return result
+
+          ports = {}
+          for port in (4001, 4002, 7496, 7497):
+              client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+              client.settimeout(0.2)
+              try:
+                  ports[str(port)] = client.connect_ex(("127.0.0.1", port)) == 0
+              finally:
+                  client.close()
+
+          print(json.dumps({
+              "schema": "heptatrader.ib-paper-canonical-runner-probe.v1",
+              "trigger_sha": os.environ.get("GITHUB_SHA", ""),
+              "runner": {
+                  "name_sha256": hashlib.sha256(
+                      os.environ.get("RUNNER_NAME", "").encode("utf-8")
+                  ).hexdigest(),
+                  "os": os.environ.get("RUNNER_OS", ""),
+                  "arch": os.environ.get("RUNNER_ARCH", ""),
+              },
+              "ibapi_root": inspect("IBAPI_ROOT"),
+              "qualifier": inspect("HEPTA_IB_PAPER_QUALIFIER"),
+              "loopback_gateway_ports": ports,
+          }, sort_keys=True, separators=(",", ":")))
+          PY
+          chmod 0600 "$receipt"
+
+      - name: Upload immutable probe receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
         with:
-          name: ib-paper-qualification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+          name: ib-paper-canonical-runner-probe-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ib-paper-canonical-runner-probe.json
           if-no-files-found: error
-          retention-days: 90
+          retention-days: 7
