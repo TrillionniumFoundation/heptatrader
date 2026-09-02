@@ -18,6 +18,7 @@ concurrency:
 
 jobs:
   qualify:
+    name: ib-paper-exact-artifact-qualification
     runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
     timeout-minutes: 90
