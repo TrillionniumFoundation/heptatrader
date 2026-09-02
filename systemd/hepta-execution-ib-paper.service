@@ -1,6 +1,6 @@
 [Unit]
 Description=HeptaTrader IB PAPER execution authority
-Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Documentation=file:/usr/share/doc/heptatrader/operations/IB-PAPER-QUALIFICATION.md
 Requires=hepta-broker-egress-policy.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
 After=hepta-broker-egress-policy.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket network.target
 Conflicts=hepta-execution-simulator.service hepta-execution-simulator.socket hepta-execution-events-simulator.socket
