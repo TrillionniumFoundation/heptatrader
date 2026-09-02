@@ -417,7 +417,7 @@
       "id": "performance-budgets",
       "lane": "C-merge-candidate",
       "state": "implemented",
-      "evidence": "same-fixture performance gate plus bounded exact global-allocation complexity/deadline CTest"
+      "evidence": "same-revision risk, Gateway validated-read, authoritative decision snapshot, portfolio limit-profile and critical OMS durable-append distributions plus bounded exact global-allocation complexity; target-host Execution remains explicitly unpromoted"
     },
     {
       "id": "live-absence",

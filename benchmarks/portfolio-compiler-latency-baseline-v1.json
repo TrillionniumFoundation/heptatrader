@@ -1,0 +1,21 @@
+{
+  "schema": "heptatrader.latency-baseline.v1",
+  "fixture": "portfolio-compiler-limit-v1",
+  "operation_scope": "64-strategy by 16-instrument deterministic fixed-point netting and delta compilation",
+  "scope": "repository-ci",
+  "build_type": "Release",
+  "runner_class": "github-hosted-ubuntu-24.04",
+  "toolchain_binding": "fixture emits compiler family/version and __cplusplus; workflow and check record bind exact source SHA and runner image",
+  "p99_microseconds": 200000,
+  "maximum_regression_percent": 10,
+  "warmup_iterations": 100,
+  "sample_count": 2000,
+  "required_distribution": [
+    "p50",
+    "p95",
+    "p99",
+    "p999",
+    "max"
+  ],
+  "claim_ceiling": "same-fixture repository regression guard only; not a deployed, PAPER-host, venue-network or product latency SLO"
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "heptatrader.latency-baseline.v1",
+  "fixture": "gateway-validated-read-dispatch-v1",
+  "operation_scope": "in-process capability/environment/schema validation, read callback and bounded JSON result validation",
+  "scope": "repository-ci",
+  "build_type": "Release",
+  "runner_class": "github-hosted-ubuntu-24.04",
+  "toolchain_binding": "fixture emits compiler family/version and __cplusplus; workflow and check record bind exact source SHA and runner image",
+  "p99_microseconds": 50000,
+  "maximum_regression_percent": 20,
+  "warmup_iterations": 1000,
+  "sample_count": 10000,
+  "required_distribution": [
+    "p50",
+    "p95",
+    "p99",
+    "p999",
+    "max"
+  ],
+  "claim_ceiling": "same-fixture repository regression guard only; not a deployed, PAPER-host, venue-network or product latency SLO"
+}

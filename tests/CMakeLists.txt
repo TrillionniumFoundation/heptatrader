@@ -42,6 +42,29 @@ function(hepta_register_core_test target)
     set(HEPTA_CORE_TEST_TARGETS "${HEPTA_CORE_TEST_TARGETS}" PARENT_SCOPE)
 endfunction()
 
+function(hepta_load_latency_baseline prefix relative_path expected_fixture)
+    set(path "${CMAKE_SOURCE_DIR}/${relative_path}")
+    file(READ "${path}" json)
+    string(JSON schema ERROR_VARIABLE error GET "${json}" schema)
+    if(error OR NOT schema STREQUAL "heptatrader.latency-baseline.v1")
+        message(FATAL_ERROR "${relative_path}: invalid latency baseline schema: ${error}")
+    endif()
+    string(JSON fixture ERROR_VARIABLE error GET "${json}" fixture)
+    if(error OR NOT fixture STREQUAL expected_fixture)
+        message(FATAL_ERROR "${relative_path}: invalid fixture identity: ${error}")
+    endif()
+    string(JSON p99 ERROR_VARIABLE error GET "${json}" p99_microseconds)
+    if(error OR NOT p99 MATCHES "^[1-9][0-9]*$")
+        message(FATAL_ERROR "${relative_path}: invalid p99 baseline: ${error}")
+    endif()
+    string(JSON regression ERROR_VARIABLE error GET "${json}" maximum_regression_percent)
+    if(error OR NOT regression MATCHES "^[0-9]+$" OR regression GREATER 100)
+        message(FATAL_ERROR "${relative_path}: invalid regression percentage: ${error}")
+    endif()
+    set(${prefix}_P99_US "${p99}" PARENT_SCOPE)
+    set(${prefix}_REGRESSION_PERCENT "${regression}" PARENT_SCOPE)
+endfunction()
+
 add_executable(hepta_trading_contract_tests
     trading_contract_tests.cpp)
 hepta_register_core_test(hepta_trading_contract_tests)
@@ -318,6 +341,70 @@ target_compile_definitions(hepta_risk_latency_fixture_tests PRIVATE
 hepta_register_reliability_test(hepta_risk_latency_fixture_tests)
 set_tests_properties(hepta_risk_latency_fixture_tests PROPERTIES
     LABELS "reliability;performance")
+
+hepta_load_latency_baseline(
+    HEPTA_GATEWAY
+    "benchmarks/gateway-control-latency-baseline-v1.json"
+    "gateway-validated-read-dispatch-v1")
+add_executable(hepta_gateway_latency_fixture_tests
+    gateway_latency_fixture_tests.cpp)
+target_link_libraries(hepta_gateway_latency_fixture_tests
+    hepta_trading_tool_core)
+target_compile_definitions(hepta_gateway_latency_fixture_tests PRIVATE
+    HEPTA_P99_BASELINE_US=${HEPTA_GATEWAY_P99_US}
+    HEPTA_MAX_REGRESSION_PERCENT=${HEPTA_GATEWAY_REGRESSION_PERCENT}
+    HEPTA_PERF_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+hepta_register_reliability_test(hepta_gateway_latency_fixture_tests)
+set_tests_properties(hepta_gateway_latency_fixture_tests PROPERTIES
+    LABELS "reliability;performance" TIMEOUT 60)
+
+hepta_load_latency_baseline(
+    HEPTA_SNAPSHOT
+    "benchmarks/decision-snapshot-latency-baseline-v1.json"
+    "decision-snapshot-capture-v1")
+add_executable(hepta_snapshot_latency_fixture_tests
+    snapshot_latency_fixture_tests.cpp)
+target_link_libraries(hepta_snapshot_latency_fixture_tests
+    hepta_trading_tool_core)
+target_compile_definitions(hepta_snapshot_latency_fixture_tests PRIVATE
+    HEPTA_P99_BASELINE_US=${HEPTA_SNAPSHOT_P99_US}
+    HEPTA_MAX_REGRESSION_PERCENT=${HEPTA_SNAPSHOT_REGRESSION_PERCENT}
+    HEPTA_PERF_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+hepta_register_reliability_test(hepta_snapshot_latency_fixture_tests)
+set_tests_properties(hepta_snapshot_latency_fixture_tests PROPERTIES
+    LABELS "reliability;performance" TIMEOUT 90)
+
+hepta_load_latency_baseline(
+    HEPTA_PORTFOLIO
+    "benchmarks/portfolio-compiler-latency-baseline-v1.json"
+    "portfolio-compiler-limit-v1")
+add_executable(hepta_portfolio_latency_fixture_tests
+    portfolio_latency_fixture_tests.cpp)
+target_link_libraries(hepta_portfolio_latency_fixture_tests
+    hepta_portfolio_core)
+target_compile_definitions(hepta_portfolio_latency_fixture_tests PRIVATE
+    HEPTA_P99_BASELINE_US=${HEPTA_PORTFOLIO_P99_US}
+    HEPTA_MAX_REGRESSION_PERCENT=${HEPTA_PORTFOLIO_REGRESSION_PERCENT}
+    HEPTA_PERF_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+hepta_register_reliability_test(hepta_portfolio_latency_fixture_tests)
+set_tests_properties(hepta_portfolio_latency_fixture_tests PROPERTIES
+    LABELS "reliability;performance" TIMEOUT 90)
+
+hepta_load_latency_baseline(
+    HEPTA_OMS_JOURNAL_CI
+    "benchmarks/oms-journal-ci-latency-baseline-v1.json"
+    "oms-critical-durable-append-ci-v1")
+add_executable(hepta_oms_journal_latency_fixture_tests
+    oms_journal_latency_fixture_tests.cpp)
+target_link_libraries(hepta_oms_journal_latency_fixture_tests
+    pthread hepta_observability_core hepta_oms_core)
+target_compile_definitions(hepta_oms_journal_latency_fixture_tests PRIVATE
+    HEPTA_P99_BASELINE_US=${HEPTA_OMS_JOURNAL_CI_P99_US}
+    HEPTA_MAX_REGRESSION_PERCENT=${HEPTA_OMS_JOURNAL_CI_REGRESSION_PERCENT}
+    HEPTA_PERF_BUILD_TYPE="${CMAKE_BUILD_TYPE}")
+hepta_register_reliability_test(hepta_oms_journal_latency_fixture_tests)
+set_tests_properties(hepta_oms_journal_latency_fixture_tests PROPERTIES
+    LABELS "reliability;performance" RUN_SERIAL TRUE TIMEOUT 120)
 
 add_custom_target(hepta_reliability_test_binaries
     DEPENDS ${HEPTA_RELIABILITY_TEST_TARGETS})

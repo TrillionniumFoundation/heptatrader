@@ -20,22 +20,35 @@
       "executable same-revision fixture",
       "machine-bound threshold or bounded complexity contract",
       "recorded source, build and toolchain identity"
-    ]
+    ],
+    "implemented_scopes": [
+      "repository-ci",
+      "bounded-complexity"
+    ],
+    "repository_ci_claim_ceiling": "same-fixture regression evidence only; target-host, network and venue latency require separate qualification"
   },
   "budgets": [
     {
       "id": "gateway-control-v1",
-      "metric": "p99 request latency",
+      "metric": "p99 validated in-process read dispatch latency",
       "regression_percent": 20,
-      "state": "declared",
-      "missing_evidence": "no canonical absolute baseline and distribution artifact"
+      "baseline": "benchmarks/gateway-control-latency-baseline-v1.json",
+      "fixture": "gateway-validated-read-dispatch-v1",
+      "fixture_source": "tests/gateway_latency_fixture_tests.cpp",
+      "test_target": "hepta_gateway_latency_fixture_tests",
+      "scope": "repository-ci",
+      "state": "implemented"
     },
     {
       "id": "snapshot-v1",
-      "metric": "p99 capture latency",
+      "metric": "p99 authoritative decision snapshot capture latency",
       "regression_percent": 20,
-      "state": "declared",
-      "missing_evidence": "no canonical absolute baseline and coherent-snapshot distribution artifact"
+      "baseline": "benchmarks/decision-snapshot-latency-baseline-v1.json",
+      "fixture": "decision-snapshot-capture-v1",
+      "fixture_source": "tests/snapshot_latency_fixture_tests.cpp",
+      "test_target": "hepta_snapshot_latency_fixture_tests",
+      "scope": "repository-ci",
+      "state": "implemented"
     },
     {
       "id": "risk-policy-v1",
@@ -43,23 +56,34 @@
       "regression_percent": 10,
       "baseline": "benchmarks/core-latency-baseline-v1.json",
       "fixture": "risk-evaluate-v1",
+      "fixture_source": "tests/risk_latency_fixture_tests.cpp",
       "test_target": "hepta_risk_latency_fixture_tests",
       "numeric_policy": "hepta.numeric.fixed-v1",
+      "scope": "repository-ci",
       "state": "implemented"
     },
     {
       "id": "portfolio-compiler-v1",
-      "metric": "p99 compile latency",
+      "metric": "p99 limit-profile compile latency",
       "regression_percent": 10,
-      "state": "declared",
-      "missing_evidence": "no canonical absolute baseline and representative portfolio distribution artifact"
+      "baseline": "benchmarks/portfolio-compiler-latency-baseline-v1.json",
+      "fixture": "portfolio-compiler-limit-v1",
+      "fixture_source": "tests/portfolio_latency_fixture_tests.cpp",
+      "test_target": "hepta_portfolio_latency_fixture_tests",
+      "scope": "repository-ci",
+      "state": "implemented"
     },
     {
       "id": "execution-authority-v1",
       "metric": "journal-durable-to-send p99",
       "regression_percent": 20,
       "state": "declared",
-      "missing_evidence": "no target-host durability/send fixture and absolute threshold"
+      "missing_evidence": "repository CI now guards critical append+fdatasync, but the canonical journal-durable-to-send target still lacks the qualified PAPER host filesystem, send handoff, queue/load distribution and absolute threshold",
+      "scope": "target-host",
+      "repository_ci_baseline": "benchmarks/oms-journal-ci-latency-baseline-v1.json",
+      "repository_ci_fixture": "oms-critical-durable-append-ci-v1",
+      "repository_ci_fixture_source": "tests/oms_journal_latency_fixture_tests.cpp",
+      "repository_ci_test_target": "hepta_oms_journal_latency_fixture_tests"
     },
     {
       "id": "global-allocator-v1",
@@ -67,7 +91,9 @@
       "regression_percent": 0,
       "fixture": "global-allocator-bounded-complexity-v1",
       "test_target": "hepta_global_allocator_tests",
-      "state": "implemented"
+      "state": "implemented",
+      "scope": "bounded-complexity",
+      "fixture_source": "tests/global_allocator_tests.cpp"
     }
   ]
 }

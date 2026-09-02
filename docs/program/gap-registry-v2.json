@@ -406,6 +406,18 @@
         "module-manifest-schema",
         "module-registry"
       ]
+    },
+    {
+      "id": "G-PERF-002",
+      "priority": "P1",
+      "title": "Gateway, authoritative snapshot and portfolio compiler lack same-revision executable repository performance distributions",
+      "workstream": "WS-REL",
+      "milestone": "M7",
+      "state": "closed",
+      "evidence": [
+        "performance-budgets",
+        "sanitizers"
+      ]
     }
   ]
 }
