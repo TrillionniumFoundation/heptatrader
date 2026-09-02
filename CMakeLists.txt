@@ -28,6 +28,10 @@ include(CTest)
 include(GNUInstallDirs)
 
 add_subdirectory(HeptaTrade)
+if(TARGET heptactl)
+    target_include_directories(heptactl PRIVATE
+        "${HEPTA_GENERATED_INCLUDE_DIR}")
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)
