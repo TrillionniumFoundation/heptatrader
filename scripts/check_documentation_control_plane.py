@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import sys
 
+from check_module_implementation_evidence import (
+    validate as validate_module_implementation_evidence,
+)
 from hepta_document_checks import (
     DOCS, _validate_document_registry, _validate_generated_views,
     _validate_legacy, _validate_repository_entrypoints,
@@ -21,6 +24,7 @@ def validate() -> list[str]:
     _validate_legacy(errors)
     _validate_generated_views(errors)
     _validate_registries(errors)
+    errors.extend(validate_module_implementation_evidence())
     return errors
 
 
