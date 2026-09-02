@@ -1,0 +1,156 @@
+name: Protected Governance Readback
+
+on:
+  push:
+    branches:
+      - codex/protected-governance-readback-20260902
+    paths:
+      - '.github/workflows/protected-governance-readback.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-protected-governance-readback-20260902
+  cancel-in-progress: false
+
+jobs:
+  readback:
+    name: protected-governance-readback
+    runs-on: ubuntu-24.04
+    environment: repository-governance
+    timeout-minutes: 15
+    env:
+      HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
+    steps:
+      - name: Collect sanitized protected readback
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/protected-governance-readback.json"
+          python3 - <<'PY' > "$receipt"
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from urllib.error import HTTPError
+          from urllib.request import Request, urlopen
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          organization = repository.split('/', 1)[0]
+          token = os.environ.get("HEPTA_GOVERNANCE_TOKEN", "")
+
+          def get(url: str):
+              request = Request(
+                  url,
+                  method="GET",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "heptatrader-protected-governance-readback/1",
+                  },
+              )
+              try:
+                  with urlopen(request, timeout=30) as response:
+                      return response.status, json.loads(
+                          response.read().decode("utf-8")
+                      )
+              except HTTPError as error:
+                  raw = error.read(4096)
+                  try:
+                      value = json.loads(raw.decode("utf-8"))
+                      message = str(value.get("message", ""))[:256]
+                  except Exception:
+                      message = raw.decode("utf-8", errors="replace")[:256]
+                  return error.code, {"message": message}
+
+          result = {
+              "schema": "heptatrader.protected-governance-readback.v1",
+              "repository": repository,
+              "trigger_sha": os.environ["GITHUB_SHA"],
+              "token_present": bool(token),
+              "endpoints": {},
+          }
+          if not token:
+              print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+              raise SystemExit(2)
+
+          endpoints = {
+              "repository_runners": (
+                  f"https://api.github.com/repos/{repository}/actions/runners?per_page=100"
+              ),
+              "organization_teams": (
+                  f"https://api.github.com/orgs/{organization}/teams?per_page=100"
+              ),
+              "repository_rulesets": (
+                  f"https://api.github.com/repos/{repository}/rulesets?per_page=100"
+              ),
+              "main_branch": (
+                  f"https://api.github.com/repos/{repository}/branches/main"
+              ),
+              "codeowners_errors": (
+                  f"https://api.github.com/repos/{repository}/codeowners/errors?ref=main"
+              ),
+          }
+          for name, url in endpoints.items():
+              status, value = get(url)
+              item = {"http_status": status}
+              if isinstance(value, dict) and "message" in value:
+                  item["message"] = value["message"]
+              if name == "repository_runners" and isinstance(value, dict):
+                  runners = value.get("runners")
+                  if isinstance(runners, list):
+                      item["total_count"] = value.get("total_count")
+                      item["runners"] = [
+                          {
+                              "name_sha256": hashlib.sha256(
+                                  str(runner.get("name", "")).encode()
+                              ).hexdigest(),
+                              "os": runner.get("os"),
+                              "status": runner.get("status"),
+                              "busy": runner.get("busy"),
+                              "labels": sorted(
+                                  str(label.get("name"))
+                                  for label in runner.get("labels", [])
+                                  if isinstance(label, dict) and label.get("name")
+                              ),
+                          }
+                          for runner in runners
+                          if isinstance(runner, dict)
+                      ]
+              elif name == "organization_teams" and isinstance(value, list):
+                  item["count"] = len(value)
+                  item["slugs"] = sorted(
+                      str(team.get("slug"))
+                      for team in value
+                      if isinstance(team, dict) and team.get("slug")
+                  )
+              elif name == "repository_rulesets" and isinstance(value, list):
+                  item["count"] = len(value)
+                  item["ids"] = sorted(
+                      int(entry["id"])
+                      for entry in value
+                      if isinstance(entry, dict) and isinstance(entry.get("id"), int)
+                  )
+              elif name == "main_branch" and isinstance(value, dict):
+                  item["protected"] = value.get("protected")
+                  item["sha"] = value.get("commit", {}).get("sha")
+              elif name == "codeowners_errors" and isinstance(value, dict):
+                  errors = value.get("errors")
+                  if isinstance(errors, list):
+                      item["error_count"] = len(errors)
+              result["endpoints"][name] = item
+
+          print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+          PY
+          chmod 0600 "$receipt"
+
+      - name: Upload protected readback receipt
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: protected-governance-readback-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/protected-governance-readback.json
+          if-no-files-found: error
+          retention-days: 7
