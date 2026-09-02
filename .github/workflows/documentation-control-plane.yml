@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   docs:
+    name: documentation-control-plane-exact-head
     runs-on: ubuntu-latest
     timeout-minutes: 12
     steps:
