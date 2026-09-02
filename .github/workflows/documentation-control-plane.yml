@@ -45,6 +45,7 @@ jobs:
             scripts/check_repository_integrity.py \
             scripts/check_systemd_documentation.py \
             scripts/check_workflow_check_contexts.py \
+            scripts/verify_github_governance.py \
             scripts/check_module_discipline.py \
             scripts/check_cmake_module_graph.py \
             scripts/check_change_impact.py
@@ -60,3 +61,5 @@ jobs:
             -s tests/python -p 'test_systemd_documentation.py'
           python3 -m unittest discover \
             -s tests/python -p 'test_workflow_check_contexts.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_github_governance.py'
