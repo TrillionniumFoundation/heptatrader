@@ -28,9 +28,9 @@ class WorkflowCheckContextTests(unittest.TestCase):
                 "dynamic_context_expressions": "matrix-only",
                 "required_contexts_must_be_event_reachable": True,
                 "skipped_or_missing_is_not_success": True,
+                "merge_group_cancel_in_progress": "forbidden",
             },
-            "required_pull_request_contexts": ["pr-check"],
-            "required_merge_group_contexts": ["merge-check"],
+            "required_branch_contexts": ["branch-check"],
             "external_qualification_contexts": ["external-check"],
             "non_required_observation_contexts": [
                 "observation (g++)",
@@ -40,30 +40,20 @@ class WorkflowCheckContextTests(unittest.TestCase):
         (github / "required-check-contexts-v1.json").write_text(
             json.dumps(policy), encoding="utf-8"
         )
-        (workflows / "pr.yml").write_text(
-            """name: pr
+        (workflows / "branch.yml").write_text(
+            """name: branch
 on:
   pull_request: {}
+  merge_group:
+    types: [checks_requested]
 permissions:
   contents: read
+concurrency:
+  group: branch-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   verify:
-    name: pr-check
-    runs-on: ubuntu-latest
-    steps:
-      - run: true
-""",
-            encoding="utf-8",
-        )
-        (workflows / "merge.yml").write_text(
-            """name: merge
-on:
-  merge_group: {}
-permissions:
-  contents: read
-jobs:
-  verify:
-    name: merge-check
+    name: branch-check
     runs-on: ubuntu-latest
     steps:
       - run: true
@@ -127,7 +117,7 @@ permissions:
   contents: read
 jobs:
   verify:
-    name: pr-check
+    name: branch-check
     runs-on: ubuntu-latest
     steps:
       - run: true
@@ -136,7 +126,10 @@ jobs:
             )
             errors = check_workflow_check_contexts.validate(root)
             self.assertTrue(
-                any("duplicate workflow check context pr-check" in error for error in errors),
+                any(
+                    "duplicate workflow check context branch-check" in error
+                    for error in errors
+                ),
                 errors,
             )
 
@@ -144,12 +137,15 @@ jobs:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workflows = self._write_fixture(root)
-            (workflows / "pr.yml").write_text(
-                """name: pr
+            (workflows / "branch.yml").write_text(
+                """name: branch
 on:
   pull_request: {}
+  merge_group: {}
 permissions:
   contents: read
+concurrency:
+  cancel-in-progress: false
 jobs:
   verify:
     runs-on: ubuntu-latest
@@ -160,7 +156,10 @@ jobs:
             )
             errors = check_workflow_check_contexts.validate(root)
             self.assertTrue(
-                any("requires exactly one explicit non-empty name" in error for error in errors),
+                any(
+                    "requires exactly one explicit non-empty name" in error
+                    for error in errors
+                ),
                 errors,
             )
 
@@ -185,24 +184,57 @@ jobs:
             )
             errors = check_workflow_check_contexts.validate(root)
             self.assertTrue(
-                any("dynamic context expression is not matrix-bound" in error for error in errors),
+                any(
+                    "dynamic context expression is not matrix-bound" in error
+                    for error in errors
+                ),
                 errors,
             )
 
-    def test_required_context_must_be_reachable_on_declared_event(self) -> None:
+    def test_required_context_must_run_on_merge_group(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             workflows = self._write_fixture(root)
-            (workflows / "pr.yml").write_text(
-                """name: pr
+            (workflows / "branch.yml").write_text(
+                """name: branch
+on:
+  pull_request: {}
+permissions:
+  contents: read
+concurrency:
+  cancel-in-progress: false
+jobs:
+  verify:
+    name: branch-check
+    runs-on: ubuntu-latest
+    steps:
+      - run: true
+""",
+                encoding="utf-8",
+            )
+            errors = check_workflow_check_contexts.validate(root)
+            self.assertIn(
+                "required_branch_contexts: context is not reachable on "
+                "merge_group: branch-check",
+                errors,
+            )
+
+    def test_required_job_level_event_filter_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflows = self._write_fixture(root)
+            (workflows / "branch.yml").write_text(
+                """name: branch
 on:
   pull_request: {}
   merge_group: {}
 permissions:
   contents: read
+concurrency:
+  cancel-in-progress: false
 jobs:
   verify:
-    name: pr-check
+    name: branch-check
     if: github.event_name == 'merge_group'
     runs-on: ubuntu-latest
     steps:
@@ -211,9 +243,28 @@ jobs:
                 encoding="utf-8",
             )
             errors = check_workflow_check_contexts.validate(root)
+            self.assertIn(
+                "required_branch_contexts: context is not reachable on "
+                "pull_request: branch-check",
+                errors,
+            )
+
+    def test_required_merge_group_run_cannot_be_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workflows = self._write_fixture(root)
+            path = workflows / "branch.yml"
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(
+                    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+                    "cancel-in-progress: true",
+                ),
+                encoding="utf-8",
+            )
+            errors = check_workflow_check_contexts.validate(root)
             self.assertTrue(
                 any(
-                    "context is not reachable on pull_request: pr-check" in error
+                    "must not cancel an in-progress merge-group run" in error
                     for error in errors
                 ),
                 errors,
