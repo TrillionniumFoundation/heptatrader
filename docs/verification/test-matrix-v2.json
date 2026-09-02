@@ -105,7 +105,7 @@
       "id": "session-boundary",
       "lane": "B-pr-core",
       "state": "implemented",
-      "evidence": "session supervisor boundary tests"
+      "evidence": "session supervisor protocol/lease-store contract, peer boundary, generation fencing, migration and hostile-negative tests"
     },
     {
       "id": "lease-fencing",

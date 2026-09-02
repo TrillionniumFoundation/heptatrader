@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.session.runtime",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "lifecycle": "current",
   "kind": "stateful-library",
   "trust_domain": "agent-gateway",
@@ -14,7 +14,9 @@
   "build_targets": [
     "hepta_session_core"
   ],
-  "provides": [],
+  "provides": [
+    "hepta.session-supervisor.v1"
+  ],
   "consumes": [],
   "allowed_dependencies": [],
   "forbidden_dependencies": [
@@ -49,8 +51,9 @@
     ]
   },
   "verification": [
-    "session-boundary",
-    "module-documentation-coverage"
+    "module-documentation-coverage",
+    "protocol-contracts",
+    "session-boundary"
   ],
   "documentation": {
     "technical_guide": "modules/technical/hepta-session-runtime.md",

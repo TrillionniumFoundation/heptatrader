@@ -351,6 +351,20 @@
       ]
     },
     {
+      "id": "hepta.session-supervisor.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/IDENTITY-CAPABILITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.session.runtime"
+      ],
+      "consumers": [
+        "hepta.client.runtime",
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
       "id": "hepta.solver-result.v1",
       "version": "1",
       "stability": "target",

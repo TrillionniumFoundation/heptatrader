@@ -1,7 +1,7 @@
 # Session Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.session.runtime` version `1.0.0` (current)
+Applies to: `hepta.session.runtime` version `1.1.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-session-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -51,7 +51,7 @@ Physical ownership is verified against [`source-ownership-registry-v1.json`](../
 
 ## Contracts and Public Interfaces
 
-- **Provides:** none
+- **Provides:** `hepta.session-supervisor.v1`
 - **Consumes:** none
 
 Contract definitions, providers, consumers and compatibility state are resolved through the [canonical contract index](../../contracts/CONTRACT-INDEX.md). Inputs are validated before state admission; schema validity alone is not proof of issuer authority.
@@ -97,7 +97,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Lease duration, heartbeat cadence and restart policy are canonical configuration.
 - Unsafe timeout relaxation requires reviewed contract and qualification changes.
 
-The manifest version is `1.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.1.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
@@ -117,7 +117,7 @@ The module follows least privilege and must not expose secrets, credentials or c
 
 ## Verification and Testing
 
-- **Required verification IDs:** `session-boundary`, `module-documentation-coverage`
+- **Required verification IDs:** `module-documentation-coverage`, `protocol-contracts`, `session-boundary`
 
 Each ID resolves through the [verification test matrix](../../verification/test-matrix-v2.json). Module changes require positive, negative and relevant fault-path evidence on the same exact revision.
 

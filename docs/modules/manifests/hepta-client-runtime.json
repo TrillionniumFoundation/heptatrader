@@ -26,6 +26,7 @@
     "client.native.v1"
   ],
   "consumes": [
+    "hepta.session-supervisor.v1",
     "hepta.tool-catalog.v1"
   ],
   "allowed_dependencies": [

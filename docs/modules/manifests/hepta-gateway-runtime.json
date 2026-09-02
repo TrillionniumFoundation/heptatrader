@@ -36,7 +36,8 @@
     "hepta.configuration-authority.v1",
     "hepta.execution-authority.v1",
     "hepta.execution-wire.v1",
-    "hepta.identity-capability.v1"
+    "hepta.identity-capability.v1",
+    "hepta.session-supervisor.v1"
   ],
   "allowed_dependencies": [
     "hepta.agent.support",

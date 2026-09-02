@@ -378,6 +378,20 @@
         "performance-budgets",
         "optimizer-determinism"
       ]
+    },
+    {
+      "id": "G-SES-001",
+      "priority": "P0",
+      "title": "Durable Session authority lacks a registered inter-module supervisor contract",
+      "workstream": "WS-MOD",
+      "milestone": "M2",
+      "state": "closed",
+      "evidence": [
+        "docs-control",
+        "module-registry",
+        "protocol-contracts",
+        "session-boundary"
+      ]
     }
   ]
 }

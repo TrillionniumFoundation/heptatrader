@@ -52,7 +52,7 @@ Physical ownership is verified against [`source-ownership-registry-v1.json`](../
 ## Contracts and Public Interfaces
 
 - **Provides:** `gateway.session-boundary`, `gateway.tool-dispatch`, `hepta.identity-capability.v1`, `hepta.tool-catalog.v1`
-- **Consumes:** `execution.client.v1`, `hepta.configuration-authority.v1`, `hepta.execution-authority.v1`, `hepta.execution-wire.v1`, `hepta.identity-capability.v1`
+- **Consumes:** `execution.client.v1`, `hepta.configuration-authority.v1`, `hepta.execution-authority.v1`, `hepta.execution-wire.v1`, `hepta.identity-capability.v1`, `hepta.session-supervisor.v1`
 
 Contract definitions, providers, consumers and compatibility state are resolved through the [canonical contract index](../../contracts/CONTRACT-INDEX.md). Inputs are validated before state admission; schema validity alone is not proof of issuer authority.
 
