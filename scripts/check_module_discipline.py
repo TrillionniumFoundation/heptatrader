@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Hepta physical source ownership, module claims and migration debt."""
+"""Validate Hepta physical source ownership, module claims and bounded debt."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,6 @@ from typing import Any
 
 from hepta_module_boundaries import (
     ACTIVE_LIFECYCLES,
-    SOURCE_OWNERSHIP_REL,
     active_source_files,
     canonical_relative_path,
     load_json,
@@ -27,6 +26,19 @@ from hepta_module_boundaries import (
 ROOT = Path(__file__).resolve().parents[1]
 BUDGET_REL = "docs/modules/source-size-budget-v1.json"
 GAPS_REL = "docs/program/gap-registry-v2.json"
+
+_SIZE_DEBT_ID = re.compile(r"^TD-SIZE-[A-Z0-9-]+$")
+_TEAM = re.compile(r"^@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_ISO_DATE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
+_SIZE_EXCEPTION_FIELDS = {
+    "baseline_lines",
+    "debt_id",
+    "owner",
+    "status",
+    "rationale",
+    "exit",
+    "review_by",
+}
 
 
 def _load_object(relative: str, errors: list[str]) -> dict[str, Any] | None:
@@ -118,7 +130,9 @@ def _cmake_direct_production_pairs() -> set[tuple[str, str]]:
     return result
 
 
-def _registered_test_pairs(registry: dict[str, Any], errors: list[str]) -> set[tuple[str, str]]:
+def _registered_test_pairs(
+    registry: dict[str, Any], errors: list[str]
+) -> set[tuple[str, str]]:
     result: set[tuple[str, str]] = set()
     for index, item in enumerate(registry.get("compilation_exceptions", [])):
         if not isinstance(item, dict) or item.get("target_owner") != "hepta.tests":
@@ -131,7 +145,9 @@ def _registered_test_pairs(registry: dict[str, Any], errors: list[str]) -> set[t
             errors.append(f"compilation exception[{index}]: invalid test target/source")
             continue
         try:
-            source = canonical_relative_path(ROOT, source, allow_trailing_slash=False)
+            source = canonical_relative_path(
+                ROOT, source, allow_trailing_slash=False
+            )
         except ValueError as exc:
             errors.append(f"compilation exception[{index}]: {exc}")
             continue
@@ -140,6 +156,64 @@ def _registered_test_pairs(registry: dict[str, Any], errors: list[str]) -> set[t
             errors.append(f"duplicate test compilation exception: {target} -> {source}")
         result.add(pair)
     return result
+
+
+def _validate_size_exception(
+    relative: str,
+    count: int,
+    limit: int,
+    exception: dict[str, Any],
+    debt_ids: set[str],
+    errors: list[str],
+) -> None:
+    unknown = sorted(set(exception) - _SIZE_EXCEPTION_FIELDS)
+    if unknown:
+        errors.append(
+            f"source-size exception {relative} has unknown fields: "
+            + ", ".join(unknown)
+        )
+    if "gap" in exception:
+        errors.append(
+            f"source-size exception {relative} must use a TD-SIZE debt id, "
+            "not a functional gap"
+        )
+
+    try:
+        baseline = int(exception.get("baseline_lines", 0))
+    except (TypeError, ValueError):
+        errors.append(f"invalid source-size baseline: {relative}")
+        return
+    if baseline <= limit:
+        errors.append(
+            f"source-size baseline must exceed the ordinary limit: {relative}"
+        )
+    if count > baseline:
+        errors.append(f"large source grew beyond baseline: {relative}")
+
+    debt_id = exception.get("debt_id")
+    if not isinstance(debt_id, str) or not _SIZE_DEBT_ID.fullmatch(debt_id):
+        errors.append(f"invalid source-size debt id for {relative}: {debt_id}")
+    elif debt_id in debt_ids:
+        errors.append(f"duplicate source-size debt id: {debt_id}")
+    else:
+        debt_ids.add(debt_id)
+
+    owner = exception.get("owner")
+    if not isinstance(owner, str) or not _TEAM.fullmatch(owner):
+        errors.append(f"invalid source-size debt owner for {relative}: {owner}")
+    if exception.get("status") != "accepted-no-growth":
+        errors.append(
+            f"source-size debt {relative} must be accepted-no-growth"
+        )
+    for field in ("rationale", "exit"):
+        value = exception.get(field)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"source-size debt {relative} lacks {field}")
+    review_by = exception.get("review_by")
+    if not isinstance(review_by, str) or not _ISO_DATE.fullmatch(review_by):
+        errors.append(
+            f"source-size debt {relative} has invalid review_by: {review_by}"
+        )
 
 
 def _validate_source_size_budget(
@@ -161,42 +235,44 @@ def _validate_source_size_budget(
         return
     exceptions = budget.get("exceptions")
     if not isinstance(exceptions, dict):
+        errors.append("source-size exceptions must be an object")
         exceptions = {}
 
-    for path in active_sources:
-        if path.suffix.lower() not in {".c", ".cc", ".cpp"}:
-            continue
+    observed: set[str] = set()
+    debt_ids: set[str] = set()
+
+    def inspect(path: Path, limit: int, language: str) -> None:
         relative = path.relative_to(ROOT).as_posix()
         count = len(path.read_text(encoding="utf-8-sig").splitlines())
         exception = exceptions.get(relative)
-        if count > cpp_limit and not isinstance(exception, dict):
-            errors.append(f"large C++ source lacks migration budget: {relative}")
-        if isinstance(exception, dict):
-            try:
-                baseline = int(exception.get("baseline_lines", 0))
-            except (TypeError, ValueError):
-                errors.append(f"invalid source-size exception: {relative}")
-                continue
-            if count > baseline:
-                errors.append(f"large C++ source grew beyond baseline: {relative}")
+        if count > limit:
+            if not isinstance(exception, dict):
+                errors.append(
+                    f"large {language} source lacks no-growth debt record: {relative}"
+                )
+                return
+            observed.add(relative)
+            _validate_size_exception(
+                relative, count, limit, exception, debt_ids, errors
+            )
+        elif exception is not None:
+            observed.add(relative)
+            errors.append(
+                f"stale source-size exception for file within limit: {relative}"
+            )
+
+    for path in active_sources:
+        if path.suffix.lower() in {".c", ".cc", ".cpp"}:
+            inspect(path, cpp_limit, "C++")
 
     for base in (ROOT / "scripts", ROOT / "research"):
         if not base.is_dir():
             continue
         for path in sorted(base.rglob("*.py")):
-            relative = path.relative_to(ROOT).as_posix()
-            count = len(path.read_text(encoding="utf-8-sig").splitlines())
-            exception = exceptions.get(relative)
-            if count > python_limit and not isinstance(exception, dict):
-                errors.append(f"large Python source lacks migration budget: {relative}")
-            if isinstance(exception, dict):
-                try:
-                    baseline = int(exception.get("baseline_lines", 0))
-                except (TypeError, ValueError):
-                    errors.append(f"invalid source-size exception: {relative}")
-                    continue
-                if count > baseline:
-                    errors.append(f"large Python source grew beyond baseline: {relative}")
+            inspect(path, python_limit, "Python")
+
+    for relative in sorted(set(exceptions) - observed):
+        errors.append(f"source-size exception is stale or path is missing: {relative}")
 
 
 def validate() -> list[str]:
@@ -254,7 +330,7 @@ def validate() -> list[str]:
             errors.append(f"physical source ownership rule is stale: {rule_id}")
 
     # Every current/experimental/unsupported C++ claim must resolve to a real
-    # file set.  Planned modules may intentionally name future roots.
+    # file set. Planned modules may intentionally name future roots.
     active_relatives = [path.relative_to(ROOT).as_posix() for path in active_sources]
     for module_id, module in modules.items():
         if module.get("lifecycle") not in ACTIVE_LIFECYCLES:
@@ -265,17 +341,27 @@ def validate() -> list[str]:
             try:
                 selector = (
                     selector_from_object(ROOT, {"kind": "directory", "path": raw})
-                    if raw.endswith("/") else
-                    selector_from_object(ROOT, {
-                        "kind": "file" if (ROOT / raw).is_file() else "prefix",
-                        "path": raw,
-                    })
+                    if raw.endswith("/")
+                    else selector_from_object(
+                        ROOT,
+                        {
+                            "kind": "file" if (ROOT / raw).is_file() else "prefix",
+                            "path": raw,
+                        },
+                    )
                 )
             except ValueError as exc:
-                errors.append(f"module {module_id}: invalid source root {raw!r}: {exc}")
+                errors.append(
+                    f"module {module_id}: invalid source root {raw!r}: {exc}"
+                )
                 continue
-            if not any(selector_matches(relative, selector) for relative in active_relatives):
-                errors.append(f"module {module_id}: active source root matches no file: {raw}")
+            if not any(
+                selector_matches(relative, selector)
+                for relative in active_relatives
+            ):
+                errors.append(
+                    f"module {module_id}: active source root matches no file: {raw}"
+                )
 
     actual_pairs = _cmake_direct_production_pairs()
     registered_pairs = _registered_test_pairs(ownership, errors)
