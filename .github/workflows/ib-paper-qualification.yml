@@ -57,7 +57,7 @@ jobs:
               "permissions:\n  contents: read",
               "persist-credentials: false",
               "HEPTA_QUALIFICATION_MUTATIONS: '1'",
-              "--expected-git-sha \"${{ github.sha }}\"",
+              "--expected-git-sha",
               "--expected-binary \"$binary\"",
               "--expected-harness \"$HEPTA_IB_PAPER_QUALIFIER\"",
           )
@@ -66,6 +66,8 @@ jobs:
               raise SystemExit("missing qualification controls: " + repr(missing))
           if "\n  push:" in text or "\n  schedule:" in text:
               raise SystemExit("qualification workflow has an automatic mutation trigger")
+          if text.count("--expected-git-sha") != 1:
+              raise SystemExit("expected Git SHA binding count changed")
           if text.count("uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262") != 2:
               raise SystemExit("checkout action pin count changed")
           if text.count("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a") != 1:
