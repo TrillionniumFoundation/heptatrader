@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """Validate stable, globally unique GitHub Actions check contexts.
 
-GitHub branch rules select required checks by check-run context.  Reusing a job
-name such as ``core`` in multiple workflows makes the protection rule
-ambiguous: one workflow can satisfy the context intended for another.  This
-checker keeps the repository's required context registry synchronized with the
-actual workflow job names and their triggering events without executing YAML or
-contacting GitHub.
+GitHub merge-queue protection couples pull-request and merge-group checks. Every
+required context must therefore be emitted by one uniquely named job that runs
+on both events. A PR-only or merge-group-only required name either leaves the
+queue waiting forever or allows a different check to satisfy the wrong gate.
 """
 from __future__ import annotations
 
@@ -23,15 +21,13 @@ ROOT = Path(__file__).resolve().parents[1]
 POLICY_REL = Path(".github/required-check-contexts-v1.json")
 WORKFLOWS_REL = Path(".github/workflows")
 CONTEXT_LIST_FIELDS = (
-    "required_pull_request_contexts",
-    "required_merge_group_contexts",
+    "required_branch_contexts",
     "external_qualification_contexts",
     "non_required_observation_contexts",
 )
-EVENT_FIELD = {
-    "required_pull_request_contexts": "pull_request",
-    "required_merge_group_contexts": "merge_group",
-    "external_qualification_contexts": "workflow_dispatch",
+EVENT_REQUIREMENTS = {
+    "required_branch_contexts": frozenset({"pull_request", "merge_group"}),
+    "external_qualification_contexts": frozenset({"workflow_dispatch"}),
 }
 EXPRESSION_RE = re.compile(r"\$\{\{\s*([^}]+?)\s*}}")
 JOB_KEY_RE = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*(?:#.*)?$")
@@ -43,7 +39,9 @@ MATRIX_RE = re.compile(r"^      matrix:\s*(?:#.*)?$")
 MATRIX_VALUE_RE = re.compile(r"^        ([A-Za-z0-9_-]+):\s*\[(.*)]\s*(?:#.*)?$")
 TOP_LEVEL_RE = re.compile(r"^[A-Za-z0-9_.-]+:")
 EVENT_RE = re.compile(r"^  ([A-Za-z0-9_-]+):")
+CANCEL_RE = re.compile(r"^  cancel-in-progress:\s*(.*?)\s*$")
 ALLOWED_CONTEXT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._()+/:-]{0,127}$")
+SAFE_MERGE_GROUP_CANCELLATION = "${{ github.event_name == 'pull_request' }}"
 
 
 @dataclass(frozen=True)
@@ -86,6 +84,7 @@ def _load_policy(root: Path, errors: list[str]) -> dict[str, Any]:
         "dynamic_context_expressions": "matrix-only",
         "required_contexts_must_be_event_reachable": True,
         "skipped_or_missing_is_not_success": True,
+        "merge_group_cancel_in_progress": "forbidden",
     }
     if not isinstance(policy, dict):
         errors.append(f"{POLICY_REL.as_posix()}: policy must be an object")
@@ -136,12 +135,11 @@ def _workflow_events(lines: list[str], label: str, errors: list[str]) -> set[str
         return set()
     if inline:
         if inline.startswith("[") and inline.endswith("]"):
-            values = {
+            return {
                 _scalar(item)
                 for item in inline[1:-1].split(",")
                 if _scalar(item)
             }
-            return values
         errors.append(f"{label}: unsupported inline on: value")
         return set()
 
@@ -157,6 +155,16 @@ def _workflow_events(lines: list[str], label: str, errors: list[str]) -> set[str
     if not events:
         errors.append(f"{label}: workflow has no events")
     return events
+
+
+def _workflow_cancel_value(lines: list[str]) -> str | None:
+    for line in lines:
+        if line.strip() == "jobs:" and len(line) - len(line.lstrip()) == 0:
+            break
+        match = CANCEL_RE.match(line)
+        if match:
+            return _scalar(match.group(1))
+    return None
 
 
 def _matrix_values(
@@ -183,8 +191,7 @@ def _matrix_values(
                 errors.append(f"{label}: matrix values must use a bounded inline array")
             continue
         key = match.group(1)
-        raw_items = match.group(2).split(",")
-        parsed = [_scalar(item) for item in raw_items if _scalar(item)]
+        parsed = [_scalar(item) for item in match.group(2).split(",") if _scalar(item)]
         if not parsed or len(parsed) != len(set(parsed)):
             errors.append(f"{label}: matrix.{key} must contain unique values")
             continue
@@ -289,8 +296,7 @@ def _workflow_jobs(
             reachable = {event}
 
         matrix = _matrix_values(block, job_label, errors)
-        contexts = _expand_contexts(template, matrix, job_label, errors)
-        for context in contexts:
+        for context in _expand_contexts(template, matrix, job_label, errors):
             if not ALLOWED_CONTEXT_RE.fullmatch(context):
                 errors.append(f"{job_label}: expanded context is invalid: {context}")
                 continue
@@ -316,6 +322,7 @@ def validate(root: Path = ROOT) -> list[str]:
         return errors
 
     contexts: list[JobContext] = []
+    cancellation: dict[str, str | None] = {}
     for path in sorted(workflows.glob("*.y*ml")):
         label = path.relative_to(root).as_posix()
         try:
@@ -324,6 +331,7 @@ def validate(root: Path = ROOT) -> list[str]:
             errors.append(f"{label}: unreadable: {exc}")
             continue
         events = _workflow_events(lines, label, errors)
+        cancellation[label] = _workflow_cancel_value(lines)
         contexts.extend(_workflow_jobs(path, events, root, errors))
 
     by_context: dict[str, list[JobContext]] = {}
@@ -351,16 +359,33 @@ def validate(root: Path = ROOT) -> list[str]:
             errors.append(f"registered workflow check context is missing: {context}")
         for context in sorted(discovered - registered):
             errors.append(f"unregistered workflow check context: {context}")
-        for field, event in EVENT_FIELD.items():
+        for field, required_events in EVENT_REQUIREMENTS.items():
             raw_values = policy.get(field)
             if not isinstance(raw_values, list):
                 continue
-            reachable = by_event.get(event, set())
             for context in raw_values:
-                if isinstance(context, str) and context not in reachable:
-                    errors.append(
-                        f"{field}: context is not reachable on {event}: {context}"
-                    )
+                if not isinstance(context, str):
+                    continue
+                for event in sorted(required_events):
+                    if context not in by_event.get(event, set()):
+                        errors.append(
+                            f"{field}: context is not reachable on {event}: {context}"
+                        )
+
+        required = set(policy.get("required_branch_contexts", []))
+        for context in sorted(required):
+            owners = by_context.get(context, [])
+            if len(owners) != 1:
+                continue
+            item = owners[0]
+            if "merge_group" not in item.events:
+                continue
+            value = cancellation.get(item.workflow)
+            if value not in {"false", SAFE_MERGE_GROUP_CANCELLATION}:
+                errors.append(
+                    f"{item.workflow}: required merge-group workflow must not "
+                    "cancel an in-progress merge-group run"
+                )
     return errors
 
 
