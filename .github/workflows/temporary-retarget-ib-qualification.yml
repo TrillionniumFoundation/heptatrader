@@ -1,0 +1,62 @@
+name: temporary-retarget-ib-qualification
+
+on:
+  push:
+    branches:
+      - codex/ib-paper-qualification-trigger-20260902
+
+permissions:
+  contents: write
+
+jobs:
+  retarget:
+    name: temporary-retarget-ib-qualification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact staging revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Bind one-shot campaign to the current candidate
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          old_sha = 'a4338fca39a21d2f6a2423a2c6a8473bfd00787b'
+          new_sha = 'd00f37e43ee45ae12b0c75e638120d2884ee52d5'
+          old_nonce = '20260902-a4338fca'
+          new_nonce = '20260902-d00f37e4'
+          workflow = Path('.github/workflows/ib-paper-one-shot.yml')
+          text = workflow.read_text(encoding='utf-8')
+          if text.count(old_sha) < 4 or old_nonce not in text:
+              raise SystemExit('unexpected one-shot workflow identity')
+          text = text.replace(old_sha, new_sha)
+          text = text.replace(old_nonce, new_nonce)
+          text = text.replace('ib-paper-one-shot-a4338fca39a2', 'ib-paper-one-shot-d00f37e43ee4')
+          workflow.write_text(text, encoding='utf-8')
+
+          old_request = Path(f'.github/qualification-requests/ib-paper-{old_sha}.json')
+          new_request = Path(f'.github/qualification-requests/ib-paper-{new_sha}.json')
+          value = json.loads(old_request.read_text(encoding='utf-8'))
+          value['candidate_sha'] = new_sha
+          value['nonce'] = new_nonce
+          new_request.write_text(
+              json.dumps(value, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          old_request.unlink()
+          PY
+          git diff --check
+      - name: Commit current exact-candidate request
+        run: |
+          set -euo pipefail
+          git config user.name 'heptatrader-ci'
+          git config user.email 'heptatrader-ci@users.noreply.github.com'
+          git add .github/workflows/ib-paper-one-shot.yml .github/qualification-requests
+          git commit -m 'ci(ib-paper): retarget one-shot qualification to current exact candidate' \
+            -m 'Signed-off-by: HeptaTrader CI <heptatrader-ci@users.noreply.github.com>'
+          git push origin HEAD:codex/ib-paper-qualification-trigger-20260902
