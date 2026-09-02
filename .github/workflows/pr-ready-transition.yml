@@ -1,0 +1,132 @@
+name: Bootstrap PR Ready Transition
+
+on:
+  push:
+    branches:
+      - codex/pr-ready-transition-20260902
+    paths:
+      - '.github/workflows/pr-ready-transition.yml'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: heptatrader-bootstrap-pr-ready-transition-20260902
+  cancel-in-progress: false
+
+jobs:
+  transition:
+    name: bootstrap-pr-ready-transition
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Mark only exact audited bootstrap heads ready
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/bootstrap-pr-ready-transition.json"
+          python3 - <<'PY' > "$receipt"
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from urllib.request import Request, urlopen
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GH_TOKEN"]
+          expected = {
+              15: "47e603062f1f44f55984cf75a1328e0f29efa996",
+              18: "602247be2a019f98f20dc10f0640f6c0219bbd78",
+          }
+
+          def request_json(url: str, *, payload: dict | None = None) -> dict:
+              body = None if payload is None else json.dumps(payload).encode("utf-8")
+              request = Request(
+                  url,
+                  data=body,
+                  method="GET" if body is None else "POST",
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "Content-Type": "application/json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "heptatrader-pr-ready-transition/1",
+                  },
+              )
+              with urlopen(request, timeout=30) as response:
+                  value = json.loads(response.read().decode("utf-8"))
+              if not isinstance(value, dict):
+                  raise SystemExit("GitHub response is not an object")
+              return value
+
+          results = []
+          for number, expected_head in expected.items():
+              before = request_json(
+                  f"https://api.github.com/repos/{repository}/pulls/{number}"
+              )
+              actual_head = before.get("head", {}).get("sha")
+              if before.get("state") != "open" or actual_head != expected_head:
+                  raise SystemExit(
+                      f"PR #{number} identity changed: state={before.get('state')} "
+                      f"head={actual_head}"
+                  )
+              changed = False
+              if before.get("draft") is True:
+                  mutation = request_json(
+                      "https://api.github.com/graphql",
+                      payload={
+                          "query": (
+                              "mutation($id:ID!){markPullRequestReadyForReview("
+                              "input:{pullRequestId:$id}){pullRequest{number isDraft "
+                              "headRefOid}}}"
+                          ),
+                          "variables": {"id": before["node_id"]},
+                      },
+                  )
+                  if mutation.get("errors"):
+                      raise SystemExit(
+                          f"PR #{number} ready mutation failed: {mutation['errors']}"
+                      )
+                  changed = True
+              after = request_json(
+                  f"https://api.github.com/repos/{repository}/pulls/{number}"
+              )
+              if after.get("draft") is not False or \
+                      after.get("head", {}).get("sha") != expected_head:
+                  raise SystemExit(f"PR #{number} ready state did not persist")
+              results.append({
+                  "number": number,
+                  "head_sha": expected_head,
+                  "changed": changed,
+                  "draft": after["draft"],
+                  "state": after["state"],
+              })
+
+          body = {
+              "schema": "heptatrader.bootstrap-pr-ready-transition.v1",
+              "repository": repository,
+              "trigger_sha": os.environ["GITHUB_SHA"],
+              "pull_requests": results,
+              "approval_created": False,
+              "merge_performed": False,
+          }
+          canonical = json.dumps(body, sort_keys=True, separators=(",", ":"))
+          print(json.dumps({
+              "body": body,
+              "receipt_sha256": "sha256:" + hashlib.sha256(
+                  canonical.encode("utf-8")
+              ).hexdigest(),
+          }, sort_keys=True, separators=(",", ":")))
+          PY
+          chmod 0600 "$receipt"
+
+      - name: Upload ready-transition receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: bootstrap-pr-ready-transition-${{ github.run_id }}
+          path: ${{ runner.temp }}/bootstrap-pr-ready-transition.json
+          if-no-files-found: error
+          retention-days: 30
