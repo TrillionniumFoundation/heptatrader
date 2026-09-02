@@ -11,7 +11,8 @@
       "qualified",
       "deprecated"
     ],
-    "live_default": "unsupported"
+    "live_default": "unsupported",
+    "unsupported_venue_build": "negative-test-stub-only means compiled solely into fail-closed verification targets; it is excluded from runtime install and release"
   },
   "capabilities": [
     {
@@ -318,7 +319,7 @@
       "declared_state": "unsupported",
       "design": "not-approved",
       "implementation": "unsupported-scaffold",
-      "build": "excluded",
+      "build": "negative-test-stub-only",
       "integration": {
         "simulator": "not-applicable",
         "paper": "forbidden",
@@ -343,7 +344,7 @@
       "declared_state": "unsupported",
       "design": "not-approved",
       "implementation": "unsupported-scaffold",
-      "build": "excluded",
+      "build": "negative-test-stub-only",
       "integration": {
         "simulator": "not-applicable",
         "paper": "forbidden",
