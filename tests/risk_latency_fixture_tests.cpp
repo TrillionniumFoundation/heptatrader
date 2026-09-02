@@ -1,18 +1,11 @@
 #include "../HeptaTrade/risk/deterministic_risk_policy.h"
+#include "heptatrader_performance_budget.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
 #include <vector>
-
-#ifndef HEPTA_RISK_P99_BASELINE_US
-#define HEPTA_RISK_P99_BASELINE_US 50000
-#endif
-
-#ifndef HEPTA_RISK_MAX_REGRESSION_PERCENT
-#define HEPTA_RISK_MAX_REGRESSION_PERCENT 10
-#endif
 
 namespace
 {
@@ -72,8 +65,11 @@ int main()
     const long long p99 = Percentile(samples, 990u);
     const long long p999 = Percentile(samples, 999u);
     const long long maximum = samples.back();
-    const long long allowed = HEPTA_RISK_P99_BASELINE_US *
-        (100 + HEPTA_RISK_MAX_REGRESSION_PERCENT) / 100;
+    const long long baseline =
+        HeptaPerformanceBudget::kRiskP99BaselineMicroseconds;
+    const long long regression =
+        HeptaPerformanceBudget::kRiskMaximumRegressionPercent;
+    const long long allowed = baseline * (100 + regression) / 100;
 
     std::cout
         << "{\"fixture\":\"risk-evaluate-v1\","
@@ -85,9 +81,8 @@ int main()
         << "\"p99_us\":" << p99 << ','
         << "\"p999_us\":" << p999 << ','
         << "\"max_us\":" << maximum << ','
-        << "\"baseline_p99_us\":" << HEPTA_RISK_P99_BASELINE_US << ','
-        << "\"maximum_regression_percent\":"
-        << HEPTA_RISK_MAX_REGRESSION_PERCENT << ','
+        << "\"baseline_p99_us\":" << baseline << ','
+        << "\"maximum_regression_percent\":" << regression << ','
         << "\"allowed_p99_us\":" << allowed << "}\n";
     return p99 <= allowed ? 0 : 3;
 }
