@@ -1,6 +1,6 @@
 [Unit]
 Description=HeptaTrader trust-domain Simulator execution authority (%i)
-Documentation=file:/usr/share/doc/heptatrader/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md
+Documentation=file:/usr/share/doc/heptatrader/operations/DEPLOYMENT.md
 Requires=hepta-execution-simulator@%i.socket hepta-execution-events-simulator@%i.socket
 After=hepta-execution-simulator@%i.socket hepta-execution-events-simulator@%i.socket
 Conflicts=hepta-execution-ib-paper.service hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket hepta-execution-ib-paper@%i.service hepta-execution-ib-paper@%i.socket hepta-execution-events-ib-paper@%i.socket
