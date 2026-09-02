@@ -1,4 +1,4 @@
-﻿#include "ib_api_wrapper.h"
+#include "ib_api_wrapper.h"
 
 #include <algorithm>
 #include <atomic>
@@ -25,6 +25,7 @@
 
 namespace
 {
+#ifdef HEPTA_ENABLE_IBAPI
 bool ParseCanonicalUnsignedText(const char* raw,
                                 unsigned long long& parsed)
 {
@@ -41,6 +42,7 @@ bool ParseCanonicalUnsignedText(const char* raw,
     parsed = number;
     return true;
 }
+#endif
 }
 
 IBAuthoritativeEventQueue::IBAuthoritativeEventQueue(std::size_t maxEvents)
