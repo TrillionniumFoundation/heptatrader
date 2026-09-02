@@ -1,0 +1,80 @@
+name: temporary-performance-closure
+
+on:
+  push:
+    branches:
+      - codex/final-blocker-closure-20260902
+    paths:
+      - '.github/workflows/temporary-performance-closure.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-performance-closure
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    name: temporary-performance-closure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact candidate revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Install deterministic build dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y ninja-build g++ libssl-dev python3-jsonschema
+      - name: Materialize performance evidence patch
+        run: |
+          set -euo pipefail
+          python3 scripts/temporary_performance_closure_patch.py
+          git rm \
+            .github/workflows/temporary-performance-closure.yml \
+            scripts/temporary_performance_closure_patch.py
+          git diff --check
+      - name: Validate registries and configure exact tree
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/temporary-performance-closure.yml
+          test ! -e scripts/temporary_performance_closure_patch.py
+          python3 tests/python/test_performance_budget_registry.py
+          python3 tests/python/test_internal_verification_evidence.py
+          python3 scripts/check_documentation_control_plane.py
+          python3 scripts/check_module_discipline.py
+          python3 -m json.tool docs/verification/performance-budgets-v1.json >/dev/null
+          python3 -m json.tool docs/program/gap-registry-v2.json >/dev/null
+          build="$RUNNER_TEMP/heptatrader-performance-closure"
+          cmake -S . -B "$build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_INSTALL_RUNTIME=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF
+          printf '%s\n' "$build" > "$RUNNER_TEMP/hepta-performance-build"
+      - name: Build and run exact performance fixtures
+        run: |
+          set -euo pipefail
+          build="$(cat "$RUNNER_TEMP/hepta-performance-build")"
+          cmake --build "$build" --parallel 2 --target \
+            hepta_gateway_latency_fixture_tests \
+            hepta_snapshot_latency_fixture_tests \
+            hepta_portfolio_latency_fixture_tests \
+            hepta_oms_journal_latency_fixture_tests
+          ctest --test-dir "$build" --output-on-failure --parallel 1 -R \
+            'hepta_(gateway|snapshot|portfolio|oms_journal)_latency_fixture_tests' \
+            --no-tests=error
+      - name: Commit clean closure to canonical candidate
+        run: |
+          set -euo pipefail
+          git config user.name 'heptatrader-ci'
+          git config user.email 'heptatrader-ci@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'perf: add scoped executable runtime distributions' \
+            -m 'Signed-off-by: HeptaTrader CI <heptatrader-ci@users.noreply.github.com>'
+          git push origin HEAD:codex/final-blocker-closure-20260902
