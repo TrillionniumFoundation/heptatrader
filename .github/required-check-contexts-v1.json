@@ -38,6 +38,7 @@
   ],
   "non_required_observation_contexts": [
     "reliability-runtime-sanitizers (g++)",
-    "reliability-runtime-sanitizers (clang++)"
+    "reliability-runtime-sanitizers (clang++)",
+    "release-candidate-reproducibility-observation"
   ]
 }
