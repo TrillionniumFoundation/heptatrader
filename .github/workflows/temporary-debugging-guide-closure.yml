@@ -1,0 +1,62 @@
+name: temporary-debugging-guide-closure
+
+on:
+  push:
+    branches:
+      - codex/final-blocker-closure-20260902
+    paths:
+      - '.github/workflows/temporary-debugging-guide-closure.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: temporary-debugging-guide-closure
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    name: temporary-debugging-guide-closure
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact candidate revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Install validation dependency
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y python3-jsonschema
+      - name: Register debugging guide verification
+        run: |
+          set -euo pipefail
+          python3 scripts/temporary_debugging_guide_registry_patch.py
+          git rm \
+            .github/workflows/temporary-debugging-guide-closure.yml \
+            scripts/temporary_debugging_guide_registry_patch.py
+          python3 scripts/generate_documentation_views.py --write
+          git diff --check
+      - name: Validate clean final tree
+        run: |
+          set -euo pipefail
+          test ! -e .github/workflows/temporary-debugging-guide-closure.yml
+          test ! -e scripts/temporary_debugging_guide_registry_patch.py
+          python3 tests/python/test_debugging_guide.py
+          python3 scripts/generate_documentation_views.py --check
+          python3 scripts/check_documentation_control_plane.py
+          python3 scripts/check_module_discipline.py
+          python3 -m json.tool docs/program/gap-registry-v2.json >/dev/null
+          python3 -m json.tool docs/verification/test-matrix-v2.json >/dev/null
+      - name: Commit clean closure to canonical candidate
+        run: |
+          set -euo pipefail
+          git config user.name 'heptatrader-ci'
+          git config user.email 'heptatrader-ci@users.noreply.github.com'
+          git add -A
+          git status --short
+          git commit -m 'docs(debug): enforce executable fault-isolation guidance' \
+            -m 'Signed-off-by: HeptaTrader CI <heptatrader-ci@users.noreply.github.com>'
+          git push origin HEAD:codex/final-blocker-closure-20260902
