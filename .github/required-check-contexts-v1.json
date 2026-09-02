@@ -16,6 +16,22 @@
     "canonical-full-suite-reliability (clang++)",
     "exact-merge-candidate"
   ],
+  "required_pull_request_contexts": [
+    "documentation-control-plane-exact-head",
+    "core-runtime-exact-head",
+    "canonical-full-suite-core",
+    "canonical-full-suite-reliability (g++)",
+    "canonical-full-suite-reliability (clang++)",
+    "exact-merge-candidate"
+  ],
+  "required_merge_group_contexts": [
+    "documentation-control-plane-exact-head",
+    "core-runtime-exact-head",
+    "canonical-full-suite-core",
+    "canonical-full-suite-reliability (g++)",
+    "canonical-full-suite-reliability (clang++)",
+    "exact-merge-candidate"
+  ],
   "external_qualification_contexts": [
     "github-governance-exact-artifact-verification",
     "ib-paper-exact-artifact-qualification"
