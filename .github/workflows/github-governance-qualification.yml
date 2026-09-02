@@ -34,7 +34,7 @@ concurrency:
 jobs:
   qualify:
     name: github-governance-exact-artifact-verification
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: repository-governance
     timeout-minutes: 15
     steps:
