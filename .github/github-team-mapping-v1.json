@@ -1,0 +1,167 @@
+{
+  "schema": "heptatrader.github-team-mapping.v1",
+  "organization": "TrillionniumFoundation",
+  "minimum_members_per_team": 2,
+  "minimum_maintainers_per_team": 1,
+  "teams": [
+    {
+      "slug": "architecture-contracts",
+      "logical_handles": [
+        "@hepta/architecture",
+        "@hepta/contracts"
+      ]
+    },
+    {
+      "slug": "marketdata-feature",
+      "logical_handles": [
+        "@hepta/data-platform"
+      ]
+    },
+    {
+      "slug": "strategy-runtime",
+      "logical_handles": [
+        "@hepta/strategy-platform"
+      ]
+    },
+    {
+      "slug": "portfolio-risk",
+      "logical_handles": [
+        "@hepta/global-allocation",
+        "@hepta/portfolio",
+        "@hepta/risk"
+      ]
+    },
+    {
+      "slug": "execution-oms",
+      "logical_handles": [
+        "@hepta/execution-core",
+        "@hepta/execution-safety",
+        "@hepta/oms-recovery",
+        "@hepta/state"
+      ]
+    },
+    {
+      "slug": "venue-adapters",
+      "logical_handles": [
+        "@hepta/simulator",
+        "@hepta/venue-ctp",
+        "@hepta/venue-ib",
+        "@hepta/venue-xt"
+      ]
+    },
+    {
+      "slug": "gateway-session-security",
+      "logical_handles": [
+        "@hepta/agent-runtime",
+        "@hepta/gateway",
+        "@hepta/sdk",
+        "@hepta/security-runtime",
+        "@hepta/session-control"
+      ]
+    },
+    {
+      "slug": "reliability-operations-research",
+      "logical_handles": [
+        "@hepta/documentation",
+        "@hepta/operations",
+        "@hepta/platform",
+        "@hepta/reliability",
+        "@hepta/research-validation"
+      ]
+    }
+  ],
+  "codeowners_rules": [
+    {
+      "pattern": "*",
+      "teams": [
+        "architecture-contracts",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/.github/",
+      "teams": [
+        "gateway-session-security",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/cmake/",
+      "teams": [
+        "architecture-contracts",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/docs/governance/",
+      "teams": [
+        "architecture-contracts",
+        "gateway-session-security"
+      ]
+    },
+    {
+      "pattern": "/docs/modules/",
+      "teams": [
+        "architecture-contracts",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/docs/program/",
+      "teams": [
+        "architecture-contracts",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/docs/verification/",
+      "teams": [
+        "execution-oms",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/execution/",
+      "teams": [
+        "execution-oms",
+        "portfolio-risk"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/risk/",
+      "teams": [
+        "execution-oms",
+        "portfolio-risk"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/tool_host/",
+      "teams": [
+        "execution-oms",
+        "gateway-session-security"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/adapter_ib/",
+      "teams": [
+        "execution-oms",
+        "venue-adapters"
+      ]
+    },
+    {
+      "pattern": "/scripts/",
+      "teams": [
+        "gateway-session-security",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/systemd/",
+      "teams": [
+        "gateway-session-security",
+        "reliability-operations-research"
+      ]
+    }
+  ],
+  "template_path": ".github/CODEOWNERS.team-template"
+}
