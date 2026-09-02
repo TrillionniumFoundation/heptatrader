@@ -21,7 +21,7 @@ env:
 jobs:
   core:
     name: canonical-full-suite-core
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     steps:
       - name: Checkout exact revision
@@ -42,9 +42,12 @@ jobs:
       - name: Validate canonical source tree
         run: |
           git diff --check
+          test -s LICENSE
+          test -s NOTICE
           bash -n scripts/dev_core.sh scripts/reliability_core.sh
           python3 -m py_compile \
             scripts/generate_documentation_views.py \
+            scripts/generate_release_evidence.py \
             scripts/hepta_module_boundaries.py \
             scripts/hepta_document_checks.py \
             scripts/hepta_registry_checks.py \
@@ -90,6 +93,8 @@ jobs:
           test -x "$stage/usr/local/libexec/heptatrader/hepta-tool-gatewayd"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-executiond"
           test -x "$stage/usr/local/libexec/heptatrader/hepta-mcp-server"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/LICENSE"
+          test -f "$stage/usr/local/share/doc/HeptaTrader/NOTICE"
           test -f "$stage/usr/local/share/doc/HeptaTrader/README.md"
           test -f "$stage/usr/local/share/doc/HeptaTrader/governance/CONSTITUTION.md"
           test -f "$stage/usr/local/share/doc/HeptaTrader/contracts/contract-registry-v2.json"
@@ -102,7 +107,7 @@ jobs:
 
   reliability:
     name: canonical-full-suite-reliability (${{ matrix.compiler }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false
