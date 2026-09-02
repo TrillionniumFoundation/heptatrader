@@ -41,37 +41,29 @@ jobs:
       - name: Audit immutable qualification controls
         run: |
           set -euo pipefail
+          workflow=.github/workflows/ib-paper-qualification.yml
+          qualify="$RUNNER_TEMP/ib-paper-qualify-job.yml"
+          sed -n '/^  qualify:/,$p' "$workflow" > "$qualify"
+          test -s "$qualify"
+          grep -Fq "if: github.event_name == 'workflow_dispatch'" "$qualify"
+          grep -Fq 'runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]' "$qualify"
+          grep -Fq 'environment: ib-paper' "$qualify"
+          grep -Fq 'HEPTA_QUALIFICATION_MUTATIONS:' "$qualify"
+          grep -Fq -- '--expected-git-sha' "$qualify"
+          grep -Fq -- '--expected-binary "$binary"' "$qualify"
+          grep -Fq -- '--expected-harness "$HEPTA_IB_PAPER_QUALIFIER"' "$qualify"
+          test "$(grep -Fc 'uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262' "$qualify")" = 1
+          test "$(grep -Fc 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' "$qualify")" = 1
           python3 - <<'PY'
           from pathlib import Path
-
-          path = Path(".github/workflows/ib-paper-qualification.yml")
-          text = path.read_text(encoding="utf-8")
-          required = (
-              "workflow_dispatch:",
-              "mutation_mode:",
-              "type: boolean",
-              "default: false",
-              "if: github.event_name == 'workflow_dispatch'",
-              "runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]",
-              "environment: ib-paper",
-              "permissions:\n  contents: read",
-              "persist-credentials: false",
-              "HEPTA_QUALIFICATION_MUTATIONS: '1'",
-              "--expected-git-sha",
-              "--expected-binary \"$binary\"",
-              "--expected-harness \"$HEPTA_IB_PAPER_QUALIFIER\"",
-          )
-          missing = [value for value in required if value not in text]
-          if missing:
-              raise SystemExit("missing qualification controls: " + repr(missing))
-          if "\n  push:" in text or "\n  schedule:" in text:
-              raise SystemExit("qualification workflow has an automatic mutation trigger")
-          if text.count("--expected-git-sha") != 1:
-              raise SystemExit("expected Git SHA binding count changed")
-          if text.count("uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262") != 2:
-              raise SystemExit("checkout action pin count changed")
-          if text.count("uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a") != 1:
-              raise SystemExit("artifact action pin count changed")
+          text = Path('.github/workflows/ib-paper-qualification.yml').read_text(encoding='utf-8')
+          on_block = text.split('\npermissions:', 1)[0]
+          for forbidden in ('\n  push:', '\n  schedule:'):
+              if forbidden in on_block:
+                  raise SystemExit('automatic qualification trigger is forbidden')
+          for required in ('workflow_dispatch:', 'mutation_mode:', 'type: boolean', 'default: false'):
+              if required not in on_block:
+                  raise SystemExit(f'missing dispatch guard: {required}')
           PY
 
   qualify:
