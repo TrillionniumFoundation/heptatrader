@@ -1,4 +1,4 @@
-name: materialize-module-evidence
+name: materialize-module-evidence-sealed
 
 on:
   push:
@@ -6,154 +6,19 @@ on:
       - codex/heptatrader-doc-evidence-materializer-20260903
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  materialize:
-    name: materialize-module-evidence-current-head
+  sealed:
+    name: materialize-module-evidence-sealed-read-only
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    env:
-      TARGET_BRANCH: codex/heptatrader-traceability-stage-20260903
-      EXPECTED_HEAD: ef980b48594261b29618d069e2409bea28977c8a
-      DONOR_COMMIT: 71725b99390924793816b417b29c22fe2d7a802a
-      EXPECTED_PATCH_SHA256: 88465418285dae5867b89e5df5f10ab383529a6f3779333d3fe4c0d4b7b1937f
+    timeout-minutes: 2
     steps:
-      - name: Verify isolated materializer invocation
+      - name: Confirm one-shot materializer is sealed
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_REF" = refs/heads/codex/heptatrader-doc-evidence-materializer-20260903
-
-      - name: Checkout exact target head
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ env.TARGET_BRANCH }}
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Assert compare-and-swap base
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
-          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
-          test -z "$(git status --porcelain)"
-
-      - name: Recover and verify the reviewed patch
-        shell: bash
-        run: |
-          set -euo pipefail
-          git cat-file -e "${DONOR_COMMIT}^{commit}"
-          git show "${DONOR_COMMIT}:.github/workflows/materialize-module-evidence.yml" > /tmp/materializer-donor.yml
-          python3 - <<'PY'
-          import base64
-          import gzip
-          import hashlib
-          from pathlib import Path
-          import re
-
-          source = Path('/tmp/materializer-donor.yml').read_text(encoding='utf-8')
-          match = re.search(r"encoded = r'''(.*?)'''", source, re.DOTALL)
-          if match is None:
-              raise SystemExit('reviewed patch payload is absent from donor commit')
-          encoded = ''.join(match.group(1).split())
-          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
-          digest = hashlib.sha256(patch).hexdigest()
-          expected = '88465418285dae5867b89e5df5f10ab383529a6f3779333d3fe4c0d4b7b1937f'
-          if digest != expected:
-              raise SystemExit(f'patch digest mismatch: {digest}')
-          Path('/tmp/doc-evidence.patch').write_bytes(patch)
-          print(f'[MATERIALIZER-PATCH] PASS bytes={len(patch)} sha256={digest}')
-          PY
-          git apply --check /tmp/doc-evidence.patch
-          git apply /tmp/doc-evidence.patch
-
-      - name: Regenerate all module evidence views
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 scripts/generate_documentation_views.py --write
-          python3 scripts/generate_documentation_views.py --check
-
-      - name: Verify every module guide materializes current truth
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          root = Path('.')
-          registry = json.loads((root / 'docs/modules/module-registry-v2.json').read_text(encoding='utf-8'))
-          entries = {entry['module_id']: entry for entry in registry['implementation_evidence']}
-          assert len(entries) == 22
-          module_map = (root / 'docs/modules/MODULE-MAP.md').read_text(encoding='utf-8')
-          for manifest_relative in registry['manifest_paths']:
-              manifest = json.loads((root / 'docs' / manifest_relative).read_text(encoding='utf-8'))
-              module_id = manifest['id']
-              evidence = entries[module_id]
-              guide = (root / 'docs' / manifest['documentation']['technical_guide']).read_text(encoding='utf-8')
-              assert '## Current Implementation Evidence' in guide
-              assert f"**Evidence state:** `{evidence['state']}`" in guide
-              assert f"**Resource guardrail profile:** `{evidence['resource_guardrail_profile']}`" in guide
-              for field in ('implemented_scope', 'excluded_scope', 'source_evidence', 'test_evidence'):
-                  for value in evidence[field]:
-                      assert value in guide, (module_id, field, value)
-              for gate in evidence['external_gates']:
-                  assert gate in guide
-              rows = [line for line in module_map.splitlines() if line.startswith(f"| `{module_id}` |")]
-              assert len(rows) == 1, (module_id, rows)
-              cells = [cell.strip() for cell in rows[0].strip().strip('|').split('|')]
-              assert cells[2] == f"`{evidence['state']}`", (module_id, cells)
-          print('[MODULE-EVIDENCE-MATERIALIZATION] PASS modules=22')
-          PY
-
-      - name: Run canonical documentation tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 -m unittest -q tests.python.test_module_documentation
-          python3 scripts/check_documentation_control_plane.py
-
-      - name: Enforce bounded diff and commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          git diff --check
-          python3 - <<'PY'
-          import subprocess
-
-          allowed_exact = {
-              'scripts/generate_documentation_views.py',
-              'tests/python/test_module_documentation.py',
-              'docs/modules/MODULE-MAP.md',
-          }
-          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
-          unexpected = [
-              path for path in changed
-              if path not in allowed_exact and not path.startswith('docs/modules/technical/')
-          ]
-          if unexpected:
-              raise SystemExit(f'unexpected materializer paths: {unexpected}')
-          guides = [path for path in changed if path.startswith('docs/modules/technical/')]
-          if len(guides) != 22:
-              raise SystemExit(f'expected 22 changed module guides, got {len(guides)}')
-          print(f'[MATERIALIZER-DIFF] PASS files={len(changed)} guides={len(guides)}')
-          PY
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add scripts/generate_documentation_views.py \
-                  tests/python/test_module_documentation.py \
-                  docs/modules/MODULE-MAP.md \
-                  docs/modules/technical
-          git commit -m 'docs: materialize truthful evidence in every module guide'
-
-      - name: Push only if target head is unchanged
-        shell: bash
-        run: |
-          set -euo pipefail
-          git fetch origin "$TARGET_BRANCH"
-          test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
-          git push origin "HEAD:refs/heads/$TARGET_BRANCH"
+          printf '%s\n' 'The one-shot CAS materializer completed successfully in run 33722338681.'
+          printf '%s\n' 'This branch now has read-only permissions and cannot mutate the target branch.'
