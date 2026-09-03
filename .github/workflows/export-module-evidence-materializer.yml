@@ -1,0 +1,35 @@
+name: export-module-evidence-materializer
+on:
+  push:
+    branches:
+      - codex/heptatrader-module-materializer-export-20260903
+permissions:
+  contents: read
+jobs:
+  export:
+    name: export-module-evidence-materializer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact materializer source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: e91e3039a0d7c6c7382c192802367e6ce157213d
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Archive exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = e91e3039a0d7c6c7382c192802367e6ce157213d
+          git archive --format=tar.gz --output="$RUNNER_TEMP/materializer-source.tar.gz" HEAD
+          sha256sum "$RUNNER_TEMP/materializer-source.tar.gz" > "$RUNNER_TEMP/archive-sha256.txt"
+      - name: Upload immutable source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-module-materializer-source
+          path: |
+            ${{ runner.temp }}/materializer-source.tar.gz
+            ${{ runner.temp }}/archive-sha256.txt
+          retention-days: 1
+          if-no-files-found: error
