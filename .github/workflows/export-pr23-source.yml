@@ -1,0 +1,37 @@
+name: export-pr23-source
+on:
+  push:
+    branches:
+      - codex/heptatrader-pr23-source-export-20260903
+permissions:
+  contents: read
+jobs:
+  export:
+    name: export-pr23-source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout exact PR23 revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ef980b48594261b29618d069e2409bea28977c8a
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Archive exact revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = ef980b48594261b29618d069e2409bea28977c8a
+          git archive --format=tar.gz --output="$RUNNER_TEMP/heptatrader-pr23.tar.gz" HEAD
+          printf '%s\n' "$(git rev-parse HEAD)" > "$RUNNER_TEMP/source-sha.txt"
+          sha256sum "$RUNNER_TEMP/heptatrader-pr23.tar.gz" > "$RUNNER_TEMP/archive-sha256.txt"
+      - name: Upload immutable source
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-pr23-source
+          path: |
+            ${{ runner.temp }}/heptatrader-pr23.tar.gz
+            ${{ runner.temp }}/source-sha.txt
+            ${{ runner.temp }}/archive-sha256.txt
+          retention-days: 1
+          if-no-files-found: error
