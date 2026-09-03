@@ -25,7 +25,7 @@
       "id": "client.mcp.v1",
       "version": "1",
       "stability": "current-core",
-      "document": "contracts/CONTRACT-INDEX.md",
+      "document": "contracts/CLIENT-INTERFACE-CONTRACT.md",
       "schema_path": null,
       "providers": [
         "hepta.client.runtime"
@@ -36,7 +36,7 @@
       "id": "client.native.v1",
       "version": "1",
       "stability": "current-core",
-      "document": "contracts/CONTRACT-INDEX.md",
+      "document": "contracts/CLIENT-INTERFACE-CONTRACT.md",
       "schema_path": null,
       "providers": [
         "hepta.client.runtime"
@@ -195,7 +195,7 @@
       "id": "hepta.execution-wire.v1",
       "version": "1",
       "stability": "current-core",
-      "document": "contracts/CONTRACT-INDEX.md",
+      "document": "contracts/EXECUTION-WIRE-CONTRACT.md",
       "schema_path": "schemas/execution-wire-v1.json",
       "providers": [
         "hepta.protocol.contracts"
@@ -410,7 +410,7 @@
       "id": "hepta.tool-catalog.v1",
       "version": "1",
       "stability": "current-core",
-      "document": "contracts/CONTRACT-INDEX.md",
+      "document": "contracts/TOOL-CATALOG-CONTRACT.md",
       "schema_path": "schemas/tool-catalog-v1.json",
       "providers": [
         "hepta.gateway.runtime"
