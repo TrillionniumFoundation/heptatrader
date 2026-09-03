@@ -11,11 +11,11 @@ permissions:
 jobs:
   materialize:
     name: materialize-module-evidence-current-head
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     env:
-      TARGET_BRANCH: codex/final-blocker-closure-20260902
-      EXPECTED_HEAD: 69f1d66b2a54cc9ad10e61ac90db1125e2979a18
+      TARGET_BRANCH: codex/heptatrader-traceability-stage-20260903
+      EXPECTED_HEAD: ef980b48594261b29618d069e2409bea28977c8a
     steps:
       - name: Verify isolated materializer invocation
         shell: bash
@@ -85,6 +85,12 @@ jobs:
               assert f"| `{module_id}` | `{evidence['state']}` |" in module_map
           print('[MODULE-EVIDENCE-MATERIALIZATION] PASS modules=22')
           PY
+      - name: Run canonical documentation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest -q tests.python.test_module_documentation
+          python3 scripts/check_documentation_control_plane.py
       - name: Enforce bounded diff and commit
         shell: bash
         run: |
