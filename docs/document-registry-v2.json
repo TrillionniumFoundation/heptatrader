@@ -133,6 +133,11 @@
       "owner": "@hepta/contracts"
     },
     {
+      "path": "contracts/CLIENT-INTERFACE-CONTRACT.md",
+      "class": "normative",
+      "owner": "@hepta/contracts"
+    },
+    {
       "path": "contracts/CONFIGURATION-AUTHORITY-CONTRACT.md",
       "class": "normative",
       "owner": "@hepta/contracts"
@@ -149,6 +154,11 @@
     },
     {
       "path": "contracts/EXECUTION-AUTHORITY-CONTRACT.md",
+      "class": "normative",
+      "owner": "@hepta/contracts"
+    },
+    {
+      "path": "contracts/EXECUTION-WIRE-CONTRACT.md",
       "class": "normative",
       "owner": "@hepta/contracts"
     },
@@ -194,6 +204,11 @@
     },
     {
       "path": "contracts/TARGET-POSITION-INTENT-CONTRACT.md",
+      "class": "normative",
+      "owner": "@hepta/contracts"
+    },
+    {
+      "path": "contracts/TOOL-CATALOG-CONTRACT.md",
       "class": "normative",
       "owner": "@hepta/contracts"
     },
