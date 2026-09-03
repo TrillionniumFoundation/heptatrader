@@ -26,6 +26,57 @@ The current tree keeps one discoverable development-document authority. Normativ
 7. **Exact-revision evidence**  
    Run read-only documentation, core and canonical-full workflows on the unchanged head and merge candidate. External PAPER qualification remains a separate protected lane and never grants LIVE.
 
+## Implementation-level continuation
+
+The 22 registered guides establish module coverage, not complete implementation of every target responsibility. This plan requires the following work products; it does not declare them complete merely by listing them. The module registry's implemented and excluded scopes remain authoritative, and no future capability is silently added to the supported product scope.
+
+| Work product | Acceptance requirement |
+|---|---|
+| Per-guide current capability projection | Every generated technical guide opens with that module's implementation state, exact implemented/excluded scope, source/test references and external gates. Target semantics are explicitly separate. |
+| Interface specifications | Native, MCP, tool catalog and execution-wire entries resolve to actual field/operation specifications, not merely their own index. Examples are exercised by contract tests. |
+| State and persistence details | Execution/OMS, Session, Management and Strategy distinguish state transitions, durable commit points, crash windows, restart behavior and checkpoint metadata from checkpoint payload storage. |
+| Requirement-to-assertion traceability | Each material capability claim identifies a production symbol and a direct positive/negative test assertion. Existing file presence and headings alone do not establish behavioral coverage. |
+| Receipt integrity and exact binding | Reject stale source identity, wrong PR/merge group, mismatched required contexts, unsafe links, file substitutions, malformed evidence, duplicate JSON keys and non-finite JSON constants. |
+| Detached qualification identity | Protected verifier evidence remains separate from the immutable source candidate. Recording evidence must not require changing the candidate that it qualifies. |
+| Completion state semantics | Distinguish repository implementation, simulator verification, external qualification, release eligibility and deployment. Explain milestone dependency/state discrepancies rather than copying a single closed flag. |
+| Bounded product closure | Select and document the supported venue/instrument scope, then specify instrument metadata, cash/fee/position accounting, risk inputs and reconciliation invariants. Do not infer multi-asset completeness from order-control tests. |
+| Real runtime and research mechanisms | Implement and verify any promised artifact execution/isolation, checkpoint recovery, feature parity and rollout executor before promoting those capabilities beyond their registered bounded scopes. |
+
+Priority is receipt/authority correctness and truthful specifications first, then supported-scope financial and runtime behavior. Real broker, platform and independent-review evidence cannot be manufactured by adding source files, changing state strings or extending a timeout.
+
+## Receipt validation boundary
+
+`check_gap_closure.py` is a repository integrity and envelope-binding checker. Its PASS does **not** authenticate the receipt issuer, prove broker callbacks were observed, prove organization controls are currently installed, grant trading capability, or replace the protected live verifier. The JSON summary explicitly reports `grants_qualification=false`.
+
+When an external gate is represented as closed, the checker requires an independently selected exact source identity. A Git checkout must be clean and rooted at the actual top level; inherited `GIT_*` redirections are ignored. It uses its actual HEAD; a supplied `--expected-source-sha` must match that HEAD. An archive without Git metadata requires an explicit source identity from the controlled source/artifact workflow, never from the receipt being checked. Governance additionally requires the exact PR number, merge-group SHA and required contexts from the candidate's canonical policy.
+
+Receipts are read through retained directory descriptors. Every path component is no-follow, the leaf must be a bounded regular file with one hard link and no world-write permission, and file/directory bindings are rechecked after reading. Unsupported secure-read primitives fail closed. Digest integrity is not a digital signature and never proves issuer identity.
+
+## Detached evidence consumption
+
+Keep source, qualification evidence and release binding as separate immutable objects:
+
+```text
+source candidate S -> built artifact B -> protected qualification evidence E(S, B)
+                                     -> separate release record binds S, B and E
+```
+
+Do not commit E into S and then claim that a new source SHA was qualified. A protected qualification consumer may supply a separate gap-state projection and receipt root while preserving the candidate checkout:
+
+```bash
+python3 scripts/check_gap_closure.py \
+  --repository-root "$CANDIDATE_CHECKOUT" \
+  --module-registry "$CANDIDATE_CHECKOUT/docs/modules/module-registry-v2.json" \
+  --gap-registry "$VERIFIED_EVIDENCE_ROOT/gaps.json" \
+  --receipt-root "$VERIFIED_EVIDENCE_ROOT" \
+  --expected-source-sha "$VERIFIED_CANDIDATE_SHA" \
+  --expected-pull-number "$VERIFIED_PR_NUMBER" \
+  --expected-merge-group-sha "$VERIFIED_MERGE_GROUP_SHA" \
+  --json
+```
+
+These variables must come from the protected workflow's independently checked identity and verifier outputs. This command is the final structural cross-check, not the source of qualification. `gaps.json` is a detached result projection, not a second normative plan or a hand-authored success receipt. Ordinary source validation continues to accept explicitly open external gates and must not require broker credentials. A complete authenticated release-binding consumer and its deployment policy still require their own implementation/review; this path option alone does not create them.
+
 ## Exit contract
 
 The documentation-control-plane milestone can close only when all of the following hold on one unchanged revision:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from check_gap_closure import validate as validate_gap_closure
 from check_module_implementation_evidence import (
     validate as validate_module_implementation_evidence,
 )
@@ -29,6 +30,9 @@ def validate() -> list[str]:
     _validate_registries(errors)
     errors.extend(validate_module_implementation_evidence())
     errors.extend(validate_module_implementation_projection())
+    # A path-existing receipt must not pass the documentation lane while its
+    # contents or exact candidate binding fail the canonical closure lane.
+    errors.extend(validate_gap_closure())
     return errors
 
 
