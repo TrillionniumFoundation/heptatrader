@@ -1,13 +1,16 @@
-name: materialize-traceability-patch
+name: export-traceability-staging-source
+
 on:
   push:
     branches:
       - codex/heptatrader-traceability-patch-export-20260903
+
 permissions:
   contents: read
+
 jobs:
   export:
-    name: materialize-traceability-patch
+    name: export-traceability-staging-source
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -17,23 +20,21 @@ jobs:
           ref: c7814ddf7ab1434ccfc04299338676d74a993a0f
           fetch-depth: 1
           persist-credentials: false
-      - name: Decode and verify patch
+      - name: Archive immutable staging source
         shell: bash
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = c7814ddf7ab1434ccfc04299338676d74a993a0f
-          cat .materialize/traceability/chunk-* | tr -d '\n' | base64 --decode | gzip --decompress > "$RUNNER_TEMP/traceability.patch"
-          test -s "$RUNNER_TEMP/traceability.patch"
-          git apply --check "$RUNNER_TEMP/traceability.patch"
-          sha256sum "$RUNNER_TEMP/traceability.patch" > "$RUNNER_TEMP/traceability.patch.sha256"
-          wc -c "$RUNNER_TEMP/traceability.patch" > "$RUNNER_TEMP/traceability.patch.size"
-      - name: Upload immutable decoded patch
+          git archive --format=tar.gz --output="$RUNNER_TEMP/traceability-staging-source.tar.gz" HEAD
+          printf '%s\n' "$(git rev-parse HEAD)" > "$RUNNER_TEMP/source-sha.txt"
+          sha256sum "$RUNNER_TEMP/traceability-staging-source.tar.gz" > "$RUNNER_TEMP/archive-sha256.txt"
+      - name: Upload immutable source
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: heptatrader-traceability-patch
+          name: heptatrader-traceability-staging-source
           path: |
-            ${{ runner.temp }}/traceability.patch
-            ${{ runner.temp }}/traceability.patch.sha256
-            ${{ runner.temp }}/traceability.patch.size
+            ${{ runner.temp }}/traceability-staging-source.tar.gz
+            ${{ runner.temp }}/source-sha.txt
+            ${{ runner.temp }}/archive-sha256.txt
           retention-days: 1
           if-no-files-found: error
