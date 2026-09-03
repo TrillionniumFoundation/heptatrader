@@ -9,6 +9,29 @@ Authority: generated from `modules/manifests/hepta-numeric-core.json`, module-do
 
 Manifest: [`modules/manifests/hepta-numeric-core.json`](../manifests/hepta-numeric-core.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `implemented`
+- **Resource guardrail profile:** `guardrail-6`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- checked fixed-point decimal arithmetic
+- trusted-boundary finite/range validation
+- canonical numeric projection
+
+### Excluded or not-current scope
+
+- None within the explicitly registered repository scope.
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/numeric/`
+- **Test evidence:** `tests/fixed_decimal_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Defines deterministic fixed-point numeric types, checked arithmetic and venue-conversion boundaries used by risk-sensitive code.

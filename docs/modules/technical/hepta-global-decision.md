@@ -9,6 +9,32 @@ Authority: generated from `modules/manifests/hepta-global-decision.json`, module
 
 Manifest: [`modules/manifests/hepta-global-decision.json`](../manifests/hepta-global-decision.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- deterministic StrategyProposal aggregation
+- fixed-point allocation
+- truthful solver result
+- allocation provenance
+
+### Excluded or not-current scope
+
+- covariance/factor optimizer
+- transaction-cost and market-impact optimizer
+- multi-currency margin allocation
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/proposal/`, `HeptaTrade/allocation/`
+- **Test evidence:** `tests/strategy_proposal_tests.cpp`, `tests/global_allocator_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Performs deterministic global allocation across bounded strategy proposals and issues the sole decision capability consumed by Execution.

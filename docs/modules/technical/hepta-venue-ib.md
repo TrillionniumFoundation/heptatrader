@@ -9,6 +9,30 @@ Authority: generated from `modules/manifests/hepta-venue-ib.json`, module-docume
 
 Manifest: [`modules/manifests/hepta-venue-ib.json`](../manifests/hepta-venue-ib.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `external-qualification-required`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** `G-IB-001`
+
+### Implemented repository scope
+
+- IB adapter state projection
+- order lifecycle and risk wiring
+- PAPER kill-switch controls
+
+### Excluded or not-current scope
+
+- qualified PAPER operation on an exact official SDK/host/account
+- LIVE authorization
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/adapter_ib/`
+- **Test evidence:** `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_gateway_adapter_risk_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/python/test_ib_paper_qualification.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Adapts the pinned Interactive Brokers API to canonical Execution, market-data and reconciliation contracts for simulator-first and eventual PAPER qualification.

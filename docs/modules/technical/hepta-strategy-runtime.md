@@ -9,6 +9,34 @@ Authority: generated from `modules/manifests/hepta-strategy-runtime.json`, modul
 
 Manifest: [`modules/manifests/hepta-strategy-runtime.json`](../manifests/hepta-strategy-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- StrategyProposal validation and canonical digest
+- pinned artifact and configuration identity admission
+- bounded checkpoint metadata lifecycle
+- generation-fenced start, stop, quarantine and replacement control
+
+### Excluded or not-current scope
+
+- artifact byte loading and signature verification
+- untrusted strategy code execution
+- OS process sandbox
+- operating-system CPU, memory and file-descriptor enforcement
+- checkpoint payload storage
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/strategy_runtime/`
+- **Test evidence:** `tests/strategy_proposal_tests.cpp`, `tests/python/test_bounded_runtime_components.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Hosts bounded strategy logic that emits proposals under explicit identity, lifetime and resource limits.

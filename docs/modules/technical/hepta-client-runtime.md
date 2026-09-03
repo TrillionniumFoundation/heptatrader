@@ -9,6 +9,30 @@ Authority: generated from `modules/manifests/hepta-client-runtime.json`, module-
 
 Manifest: [`modules/manifests/hepta-client-runtime.json`](../manifests/hepta-client-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- native tool client
+- CLI composition
+- session-supervisor client transport
+
+### Excluded or not-current scope
+
+- stable public SDK compatibility guarantee
+- remote multi-tenant client service
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/client/`, `HeptaTrade/cli/`
+- **Test evidence:** `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Implements supported client entrypoints and protocol adapters for operators, native callers and agent-facing interfaces while preserving server-side authority checks.

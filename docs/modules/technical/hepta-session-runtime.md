@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-session-runtime.json`, module
 
 Manifest: [`modules/manifests/hepta-session-runtime.json`](../manifests/hepta-session-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- durable lease authority
+- epoch and fencing semantics
+- atomic lease-store migration
+- session-supervisor contract
+
+### Excluded or not-current scope
+
+- distributed consensus-backed session authority
+- multi-region high availability
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/tool_host/`
+- **Test evidence:** `tests/session_supervisor_protocol_boundary_tests.cpp`, `tests/session_supervisor_lease_store_migration_tests.cpp`, `tests/unix_session_supervisor_server_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Owns session identity, leases, epochs, fencing and supervisor lifecycle used to prevent stale actors from exercising capabilities.

@@ -9,6 +9,32 @@ Authority: generated from `modules/manifests/hepta-risk-policy.json`, module-doc
 
 Manifest: [`modules/manifests/hepta-risk-policy.json`](../manifests/hepta-risk-policy.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- deterministic pre-trade limits
+- freshness and exposure rejection
+- safe-exit preserving risk decisions
+
+### Excluded or not-current scope
+
+- product margin engines
+- Greeks and scenario risk
+- borrow and locate authority
+- venue-specific regulatory policy
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/risk/`
+- **Test evidence:** `tests/deterministic_risk_policy_tests.cpp`, `tests/risk_latency_fixture_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Evaluates versioned, fail-closed risk policy and can only preserve or reduce permitted risk.

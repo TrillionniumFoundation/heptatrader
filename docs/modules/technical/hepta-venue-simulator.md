@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-venue-simulator.json`, module
 
 Manifest: [`modules/manifests/hepta-venue-simulator.json`](../manifests/hepta-venue-simulator.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- deterministic correctness simulator
+- order/cancel/recovery fixture
+- agent-to-execution end-to-end simulation
+
+### Excluded or not-current scope
+
+- queue-position model
+- stochastic partial fills
+- market impact and auction realism
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/simulator/`
+- **Test evidence:** `tests/agent_simulator_e2e_tests.cpp`, `tests/multi_agent_allocation_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Implements the deterministic simulated venue used for execution, reconciliation and failure-path verification.

@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-agent-support.json`, module-d
 
 Manifest: [`modules/manifests/hepta-agent-support.json`](../manifests/hepta-agent-support.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- decision lease client support
+- typed execution event fan-out
+- authority-preserving agent helpers
+
+### Excluded or not-current scope
+
+- general autonomous-agent scheduler
+- credential ownership
+- direct venue mutation
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/agent/`, `HeptaTrade/events/`
+- **Test evidence:** `tests/decision_lease_manager_tests.cpp`, `tests/execution_event_hub_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Provides bounded support services used by agent processes, including event distribution, lease-aware coordination helpers and non-authoritative runtime utilities.

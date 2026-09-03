@@ -54,17 +54,32 @@ def contract_index() -> str:
 
 def module_map() -> str:
     registry = load(MODULE_REGISTRY_PATH)
+    evidence = _implementation_evidence_index(registry)
     doc = {"modules": [load("docs/" + path) for path in registry["manifest_paths"]]}
     lines = header("Hepta Module Map", "current and target module boundaries", "generated from module-registry-v2.json")
-    lines += ["| Module | Lifecycle | Authority | Trust domain | Build targets | Ownership | DRI / backup | Technical guide |", "|---|---|---|---|---|---|---|---|"]
+    lines += [
+        "| Module | Lifecycle | Current evidence | Authority | Trust domain | Build targets | Ownership | DRI / backup | Technical guide |",
+        "|---|---|---|---|---|---|---|---|---|",
+    ]
     for item in sorted(doc["modules"], key=lambda x: x["id"]):
         targets = ", ".join(f"`{v}`" for v in item["build_targets"]) or "—"
         migration = f" ({item['migration_gap']})" if item.get("migration_gap") else ""
         owners = item["owners"]
         guide = item["documentation"]["technical_guide"]
         guide_from_map = guide.removeprefix("modules/")
-        lines.append(f"| `{item['id']}` | {item['lifecycle']} | {item['authority']} | `{item['trust_domain']}` | {targets} | {item['ownership_mode']}{migration} | {owners['dri']} / {owners['backup']} | [`{guide}`]({guide_from_map}) |")
-    lines += ["", "`shared-migration` 是待拆分债务，不是允许永久共享所有权。", ""]
+        state = evidence[item["id"]]["state"]
+        lines.append(
+            f"| `{item['id']}` | {item['lifecycle']} | `{state}` | "
+            f"{item['authority']} | `{item['trust_domain']}` | {targets} | "
+            f"{item['ownership_mode']}{migration} | {owners['dri']} / "
+            f"{owners['backup']} | [`{guide}`]({guide_from_map}) |"
+        )
+    lines += [
+        "",
+        "Current evidence is a repository-scope ceiling, not deployment or external qualification. "
+        "`shared-migration` 是待拆分债务，不是允许永久共享所有权。",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -93,6 +108,69 @@ def _string_list(value: Any, label: str) -> list[str]:
     if len(value) != len(set(value)):
         raise ValueError(f"{label} contains duplicates")
     return value
+
+
+def _implementation_evidence_index(
+    registry: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    raw = registry.get("implementation_evidence")
+    if not isinstance(raw, list):
+        raise ValueError("module implementation evidence must be an array")
+    allowed = set(
+        registry.get("implementation_evidence_policy", {}).get("allowed_states", [])
+    )
+    if not allowed:
+        raise ValueError("module implementation evidence allowed states are missing")
+    result: dict[str, dict[str, Any]] = {}
+    required_non_empty = (
+        "implemented_scope",
+        "source_evidence",
+        "test_evidence",
+    )
+    for position, entry in enumerate(raw):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"implementation_evidence[{position}] must be an object"
+            )
+        module_id = entry.get("module_id")
+        if not isinstance(module_id, str) or not module_id:
+            raise ValueError(
+                f"implementation_evidence[{position}].module_id missing"
+            )
+        if module_id in result:
+            raise ValueError(f"duplicate implementation evidence: {module_id}")
+        state = entry.get("state")
+        if state not in allowed:
+            raise ValueError(f"{module_id}: invalid implementation state {state!r}")
+        for field in required_non_empty:
+            _string_list(entry.get(field), f"{module_id}.{field}")
+        excluded = entry.get("excluded_scope")
+        if not isinstance(excluded, list) or any(
+            not isinstance(item, str) or not item.strip() for item in excluded
+        ):
+            raise ValueError(f"{module_id}.excluded_scope must be strings")
+        if len(excluded) != len(set(excluded)):
+            raise ValueError(f"{module_id}.excluded_scope contains duplicates")
+        if state == "implemented" and excluded:
+            raise ValueError(
+                f"{module_id}: implemented state cannot retain excluded scope"
+            )
+        if state != "implemented" and not excluded:
+            raise ValueError(
+                f"{module_id}: non-implemented state requires excluded scope"
+            )
+        gates = entry.get("external_gates")
+        if not isinstance(gates, list) or any(
+            not isinstance(item, str) or not item.strip() for item in gates
+        ):
+            raise ValueError(f"{module_id}.external_gates must be strings")
+        if len(gates) != len(set(gates)):
+            raise ValueError(f"{module_id}.external_gates contains duplicates")
+        guardrail = entry.get("resource_guardrail_profile")
+        if not isinstance(guardrail, str) or not guardrail:
+            raise ValueError(f"{module_id}.resource_guardrail_profile missing")
+        result[module_id] = entry
+    return result
 
 
 def _profile_index() -> tuple[list[str], dict[str, dict[str, Any]]]:
@@ -147,6 +225,7 @@ def module_technical_guide(
     manifest_path: str,
     manifest: dict[str, Any],
     profile: dict[str, Any],
+    evidence: dict[str, Any],
     required_topics: list[str],
 ) -> str:
     module_id = manifest["id"]
@@ -170,6 +249,33 @@ def module_technical_guide(
     )
     lines += [
         f"Manifest: [`{manifest_path}`](../manifests/{Path(manifest_path).name})",
+        "",
+        "## Current Implementation Evidence",
+        "",
+        f"- **Evidence state:** `{evidence['state']}`",
+        f"- **Resource guardrail profile:** `{evidence['resource_guardrail_profile']}`",
+        f"- **External qualification gates:** {_inline(evidence['external_gates'])}",
+        "",
+        "### Implemented repository scope",
+        "",
+    ]
+    lines += _bullets(evidence["implemented_scope"])
+    lines += ["", "### Excluded or not-current scope", ""]
+    if evidence["excluded_scope"]:
+        lines += _bullets(evidence["excluded_scope"])
+    else:
+        lines += ["- None within the explicitly registered repository scope."]
+    lines += [
+        "",
+        "### Direct implementation evidence",
+        "",
+        f"- **Source evidence:** {_inline(evidence['source_evidence'])}",
+        f"- **Test evidence:** {_inline(evidence['test_evidence'])}",
+        "",
+        "This section is the current repository-scope capability ceiling. The target "
+        "contract below may describe future or deployment-dependent behavior, but it "
+        "cannot raise the evidence state, erase exclusions, close an external gate, "
+        "or imply PAPER/LIVE/deployment qualification.",
         "",
         "## Purpose and Scope",
         "",
@@ -318,6 +424,7 @@ def module_technical_guide(
 def module_technical_outputs() -> dict[str, Callable[[], str]]:
     required_topics, profiles = _profile_index()
     registry = load(MODULE_REGISTRY_PATH)
+    evidence = _implementation_evidence_index(registry)
     outputs: dict[str, Callable[[], str]] = {}
     seen_modules: set[str] = set()
     for manifest_path in registry["manifest_paths"]:
@@ -331,6 +438,9 @@ def module_technical_outputs() -> dict[str, Callable[[], str]]:
         profile = profiles.get(module_id)
         if profile is None:
             raise ValueError(f"module {module_id}: documentation profile missing")
+        module_evidence = evidence.get(module_id)
+        if module_evidence is None:
+            raise ValueError(f"module {module_id}: implementation evidence missing")
         relative = manifest.get("documentation", {}).get("technical_guide")
         if not isinstance(relative, str) or not relative:
             raise ValueError(f"module {module_id}: technical guide path missing")
@@ -338,12 +448,17 @@ def module_technical_outputs() -> dict[str, Callable[[], str]]:
         if output_path in outputs:
             raise ValueError(f"duplicate technical guide path: {output_path}")
         outputs[output_path] = (
-            lambda mp=manifest_path, m=manifest, p=profile, t=required_topics:
-                module_technical_guide(mp, m, p, t)
+            lambda mp=manifest_path, m=manifest, p=profile, e=module_evidence,
+                   t=required_topics: module_technical_guide(mp, m, p, e, t)
         )
     extra = sorted(set(profiles) - seen_modules)
     if extra:
         raise ValueError("documentation profiles without modules: " + ", ".join(extra))
+    extra_evidence = sorted(set(evidence) - seen_modules)
+    if extra_evidence:
+        raise ValueError(
+            "implementation evidence without modules: " + ", ".join(extra_evidence)
+        )
     return outputs
 
 

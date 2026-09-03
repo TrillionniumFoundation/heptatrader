@@ -18,6 +18,7 @@ GENERATOR = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(GENERATOR)
 
 REQUIRED_HEADINGS = [
+    "## Current Implementation Evidence",
     "## Purpose and Scope",
     "## Responsibilities and Non-Responsibilities",
     "## Trust Domain and Authority",
@@ -58,6 +59,10 @@ class ModuleDocumentationCoverageTests(unittest.TestCase):
         ]
         self.profiles = {
             item["module_id"]: item for item in self.profile["profiles"]
+        }
+        self.evidence = {
+            item["module_id"]: item
+            for item in self.registry["implementation_evidence"]
         }
 
     def manifest(self) -> dict:
@@ -118,6 +123,17 @@ class ModuleDocumentationCoverageTests(unittest.TestCase):
         self.assertTrue(guides.issubset(outputs))
         self.assertEqual(26, len(outputs))
 
+    def test_module_map_materializes_current_evidence_state(self) -> None:
+        text = (ROOT / "docs/modules/MODULE-MAP.md").read_text(encoding="utf-8")
+        self.assertIn("| Module | Lifecycle | Current evidence |", text)
+        for manifest in self.manifests:
+            state = self.evidence[manifest["id"]]["state"]
+            self.assertIn(
+                f"| `{manifest['id']}` | {manifest['lifecycle']} | `{state}` |",
+                text,
+                manifest["id"],
+            )
+
     def test_each_guide_contains_every_required_section_with_real_body(self) -> None:
         for manifest in self.manifests:
             text = self.guide_text(manifest)
@@ -167,6 +183,39 @@ class ModuleDocumentationCoverageTests(unittest.TestCase):
             expected_values.extend(manifest["failure"].values())
             for value in expected_values:
                 self.assertIn(str(value), text, f"{manifest['id']}: {value}")
+
+    def test_each_guide_materializes_current_implementation_evidence(self) -> None:
+        self.assertEqual(
+            {item["id"] for item in self.manifests},
+            set(self.evidence),
+        )
+        for manifest in self.manifests:
+            text = self.guide_text(manifest)
+            evidence = self.evidence[manifest["id"]]
+            self.assertIn(
+                f"- **Evidence state:** `{evidence['state']}`",
+                text,
+                manifest["id"],
+            )
+            self.assertIn(
+                evidence["resource_guardrail_profile"],
+                text,
+                manifest["id"],
+            )
+            for field in (
+                "implemented_scope",
+                "excluded_scope",
+                "source_evidence",
+                "test_evidence",
+                "external_gates",
+            ):
+                for value in evidence[field]:
+                    self.assertIn(value, text, f"{manifest['id']}: {field}")
+            if evidence["state"] != "implemented":
+                self.assertTrue(
+                    evidence["excluded_scope"],
+                    f"{manifest['id']}: bounded evidence must retain exclusions",
+                )
 
     def test_each_guide_materializes_profile_specific_detail(self) -> None:
         fields = (

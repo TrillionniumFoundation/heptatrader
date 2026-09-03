@@ -9,6 +9,29 @@ Authority: generated from `modules/manifests/hepta-documentation-control.json`, 
 
 Manifest: [`modules/manifests/hepta-documentation-control.json`](../manifests/hepta-documentation-control.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `implemented`
+- **Resource guardrail profile:** `guardrail-2`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- canonical document registry
+- generated-view drift detection
+- module and repository integrity checks
+
+### Excluded or not-current scope
+
+- None within the explicitly registered repository scope.
+
+### Direct implementation evidence
+
+- **Source evidence:** `scripts/generate_documentation_views.py`, `scripts/check_documentation_control_plane.py`, `scripts/hepta_document_checks.py`
+- **Test evidence:** `tests/python/test_documentation_control_plane.py`, `tests/python/test_module_documentation.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Maintains the canonical documentation, registry, generated-view and repository-integrity control plane.

@@ -9,6 +9,30 @@ Authority: generated from `modules/manifests/hepta-protocol-contracts.json`, mod
 
 Manifest: [`modules/manifests/hepta-protocol-contracts.json`](../manifests/hepta-protocol-contracts.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- canonical protocol contract registry
+- generated contract bindings
+- closed-world validation for registered schemas
+
+### Excluded or not-current scope
+
+- wire compatibility guarantee for unregistered third-party clients
+- all future venue protocol mappings
+
+### Direct implementation evidence
+
+- **Source evidence:** `schemas/`, `scripts/generate_contract_bindings.py`
+- **Test evidence:** `tests/trading_contract_tests.cpp`, `tests/protocol_fuzz_smoke_tests.cpp`, `tests/python/test_schema_catalog.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Owns versioned schemas, canonical serialization rules and compatibility boundaries for inter-module messages.

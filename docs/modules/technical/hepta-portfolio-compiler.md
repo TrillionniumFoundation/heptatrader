@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-portfolio-compiler.json`, mod
 
 Manifest: [`modules/manifests/hepta-portfolio-compiler.json`](../manifests/hepta-portfolio-compiler.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- deterministic cross-strategy netting
+- gross budget compilation
+- target-position plan construction
+
+### Excluded or not-current scope
+
+- multi-currency cash ledger
+- margin and borrow allocation
+- factor and Greek exposure compilation
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/portfolio/`
+- **Test evidence:** `tests/portfolio_compiler_tests.cpp`, `tests/portfolio_latency_fixture_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Compiles approved allocation output into deterministic target-position intents while enforcing portfolio-level normalization and netting rules.

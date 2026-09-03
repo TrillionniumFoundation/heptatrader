@@ -9,6 +9,33 @@ Authority: generated from `modules/manifests/hepta-feature-runtime.json`, module
 
 Manifest: [`modules/manifests/hepta-feature-runtime.json`](../manifests/hepta-feature-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- authority-bound sharded mid/spread feature snapshots
+- deterministic feature digest and freshness checks
+- bounded fixed-catalog feature DAG validation
+- transactional rolling-mean state with cycle and overflow rejection
+
+### Excluded or not-current scope
+
+- arbitrary feature plugin execution
+- persistent rolling-window recovery
+- cache eviction policy
+- broad offline/online feature parity
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/features/`
+- **Test evidence:** `tests/feature_generation_tests.cpp`, `tests/python/test_bounded_runtime_components.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Transforms authoritative point-in-time market snapshots into deterministic, versioned feature snapshots for downstream decision logic.

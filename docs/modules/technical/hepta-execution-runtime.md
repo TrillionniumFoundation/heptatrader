@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-execution-runtime.json`, modu
 
 Manifest: [`modules/manifests/hepta-execution-runtime.json`](../manifests/hepta-execution-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-3`
+- **External qualification gates:** `G-IB-001`
+
+### Implemented repository scope
+
+- single venue-mutation authority
+- journal-before-send orchestration
+- allocation-plan revalidation
+- uncertain-command reconciliation
+
+### Excluded or not-current scope
+
+- externally qualified live broker operation
+- multi-region active-active mutation authority
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/execution/`, `HeptaTrade/intent/`, `HeptaTrade/state/`
+- **Test evidence:** `tests/execution_coordinator_tests.cpp`, `tests/allocation_plan_revalidator_tests.cpp`, `tests/oms_crash_replay_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Owns the sole mutation authority for venue-facing order intent, order lifecycle, OMS journaling and reconciliation.

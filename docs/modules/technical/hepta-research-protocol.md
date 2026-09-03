@@ -9,6 +9,32 @@ Authority: generated from `modules/manifests/hepta-research-protocol.json`, modu
 
 Manifest: [`modules/manifests/hepta-research-protocol.json`](../manifests/hepta-research-protocol.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `contract-only`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- purged walk-forward protocol
+- embargo/final-OOS controls
+- research manifest and deterministic verification fixtures
+
+### Excluded or not-current scope
+
+- production point-in-time data lake
+- broad licensed dataset catalog
+- experiment service
+- production feature store
+
+### Direct implementation evidence
+
+- **Source evidence:** `research/`, `scripts/check_research_registries.py`
+- **Test evidence:** `tests/python/test_research_protocol.py`, `tests/python/test_research_registries.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Runs deterministic research and replay protocols under bounded resources without granting production trading authority.

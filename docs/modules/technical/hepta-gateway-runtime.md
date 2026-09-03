@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-gateway-runtime.json`, module
 
 Manifest: [`modules/manifests/hepta-gateway-runtime.json`](../manifests/hepta-gateway-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-4`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- typed tool dispatch
+- identity and capability checks
+- bounded owner queues
+- execution authority separation
+
+### Excluded or not-current scope
+
+- internet-facing multi-tenant gateway
+- target-host production SLO qualification
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/tool_host/`, `HeptaTrade/tools/`
+- **Test evidence:** `tests/trading_tool_registry_tests.cpp`, `tests/unix_tool_server_owner_backpressure_tests.cpp`, `tests/execution_gateway_runtime_composition_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Provides the bounded server-side ingress, capability dispatch and protocol routing boundary for client and agent requests.

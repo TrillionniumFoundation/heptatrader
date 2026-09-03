@@ -9,6 +9,32 @@ Authority: generated from `modules/manifests/hepta-management-control.json`, mod
 
 Manifest: [`modules/manifests/hepta-management-control.json`](../manifests/hepta-management-control.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** `G-TEAM-001`
+
+### Implemented repository scope
+
+- in-process module lifecycle authority
+- health, quarantine and rollback state transitions
+- checksummed local desired-state rollout persistence
+- atomic restart recovery and deterministic reconciliation actions
+
+### Excluded or not-current scope
+
+- distributed rollout fan-out executor
+- multi-writer consensus or remote configuration service
+- high-availability management authority
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/management/`
+- **Test evidence:** `tests/module_lifecycle_tests.cpp`, `tests/python/test_bounded_runtime_components.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Coordinates governed lifecycle, rollout, configuration and operational control without obtaining broker mutation authority.

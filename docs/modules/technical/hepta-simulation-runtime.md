@@ -9,6 +9,31 @@ Authority: generated from `modules/manifests/hepta-simulation-runtime.json`, mod
 
 Manifest: [`modules/manifests/hepta-simulation-runtime.json`](../manifests/hepta-simulation-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- deterministic multi-agent proposal aggregation harness
+- bounded virtual-clock scenario scheduling
+- ordered event replay with cursor snapshot and restore
+
+### Excluded or not-current scope
+
+- external scenario language parser
+- parallel process experiment isolation
+- realistic exchange microstructure simulation
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/simulator/`
+- **Test evidence:** `tests/multi_agent_allocation_tests.cpp`, `tests/python/test_bounded_runtime_components.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Provides deterministic clocks, scheduling, scenarios and fault controls for simulator qualification and replay.

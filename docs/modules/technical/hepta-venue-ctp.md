@@ -9,6 +9,30 @@ Authority: generated from `modules/manifests/hepta-venue-ctp.json`, module-docum
 
 Manifest: [`modules/manifests/hepta-venue-ctp.json`](../manifests/hepta-venue-ctp.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `unsupported`
+- **Resource guardrail profile:** `guardrail-7`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- fail-closed unsupported adapter scaffold
+- negative activation tests
+
+### Excluded or not-current scope
+
+- CTP protocol integration
+- PAPER operation
+- LIVE operation
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/adapter_ctp/`
+- **Test evidence:** `tests/unsupported_venue_adapter_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Defines the quarantined adapter boundary for a future CTP integration; the current lifecycle does not authorize runtime use.

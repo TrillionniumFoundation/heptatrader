@@ -9,6 +9,33 @@ Authority: generated from `modules/manifests/hepta-marketdata-runtime.json`, mod
 
 Manifest: [`modules/manifests/hepta-marketdata-runtime.json`](../manifests/hepta-marketdata-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-5`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- sharded market-data authority
+- epoch and sequence ordering
+- gap and freshness rejection
+- canonical snapshot digest
+
+### Excluded or not-current scope
+
+- feed-specific normalization catalog
+- instrument master
+- corporate actions
+- target-host throughput qualification
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/marketdata/`
+- **Test evidence:** `tests/sharded_market_data_tests.cpp`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Normalizes point-in-time market events, enforces producer ordering and issues authoritative same-process risk-ready snapshot receipts.

@@ -9,6 +9,30 @@ Authority: generated from `modules/manifests/hepta-observability-runtime.json`, 
 
 Manifest: [`modules/manifests/hepta-observability-runtime.json`](../manifests/hepta-observability-runtime.json)
 
+## Current Implementation Evidence
+
+- **Evidence state:** `bounded-implementation`
+- **Resource guardrail profile:** `guardrail-1`
+- **External qualification gates:** none
+
+### Implemented repository scope
+
+- low-cardinality metric registry
+- bounded series registry
+- runtime counters and latency distributions
+
+### Excluded or not-current scope
+
+- full module-wide telemetry coverage
+- production telemetry backend qualification
+
+### Direct implementation evidence
+
+- **Source evidence:** `HeptaTrade/observability/`
+- **Test evidence:** `tests/runtime_telemetry_tests.cpp`, `tests/python/test_metric_registry.py`
+
+This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
+
 ## Purpose and Scope
 
 Collects bounded metrics, logs and traces needed to operate and verify the system without becoming a trading authority.
