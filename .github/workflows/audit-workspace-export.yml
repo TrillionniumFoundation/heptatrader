@@ -1,0 +1,34 @@
+name: audit-workspace-export
+on:
+  push:
+    branches: [codex/heptatrader-workspace-export-20260903]
+permissions:
+  contents: read
+jobs:
+  export:
+    name: audit-workspace-export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 69f1d66b2a54cc9ad10e61ac90db1125e2979a18
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export immutable audit input
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 69f1d66b2a54cc9ad10e61ac90db1125e2979a18
+          git archive --format=tar.gz --output="$RUNNER_TEMP/heptatrader-source.tar.gz" HEAD
+          git rev-parse HEAD > "$RUNNER_TEMP/source-sha.txt"
+          sha256sum "$RUNNER_TEMP/heptatrader-source.tar.gz" > "$RUNNER_TEMP/archive-sha256.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-workspace-source
+          path: |
+            ${{ runner.temp }}/heptatrader-source.tar.gz
+            ${{ runner.temp }}/source-sha.txt
+            ${{ runner.temp }}/archive-sha256.txt
+          retention-days: 1
+          if-no-files-found: error
