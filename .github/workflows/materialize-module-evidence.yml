@@ -16,6 +16,8 @@ jobs:
     env:
       TARGET_BRANCH: codex/heptatrader-traceability-stage-20260903
       EXPECTED_HEAD: ef980b48594261b29618d069e2409bea28977c8a
+      DONOR_COMMIT: 71725b99390924793816b417b29c22fe2d7a802a
+      EXPECTED_PATCH_SHA256: 88465418285dae5867b89e5df5f10ab383529a6f3779333d3fe4c0d4b7b1937f
     steps:
       - name: Verify isolated materializer invocation
         shell: bash
@@ -23,12 +25,14 @@ jobs:
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_REF" = refs/heads/codex/heptatrader-doc-evidence-materializer-20260903
+
       - name: Checkout exact target head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
           persist-credentials: true
+
       - name: Assert compare-and-swap base
         shell: bash
         run: |
@@ -36,26 +40,43 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD"
           test "$(git rev-parse origin/$TARGET_BRANCH)" = "$EXPECTED_HEAD"
           test -z "$(git status --porcelain)"
-      - name: Apply reviewed generator and hostile-test patch
+
+      - name: Recover and verify the reviewed patch
         shell: bash
         run: |
           set -euo pipefail
+          git cat-file -e "${DONOR_COMMIT}^{commit}"
+          git show "${DONOR_COMMIT}:.github/workflows/materialize-module-evidence.yml" > /tmp/materializer-donor.yml
           python3 - <<'PY'
           import base64
           import gzip
+          import hashlib
           from pathlib import Path
+          import re
 
-          encoded = r'''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'''
-          Path('/tmp/doc-evidence.patch').write_bytes(gzip.decompress(base64.b64decode(encoded)))
+          source = Path('/tmp/materializer-donor.yml').read_text(encoding='utf-8')
+          match = re.search(r"encoded = r'''(.*?)'''", source, re.DOTALL)
+          if match is None:
+              raise SystemExit('reviewed patch payload is absent from donor commit')
+          encoded = ''.join(match.group(1).split())
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          digest = hashlib.sha256(patch).hexdigest()
+          expected = '88465418285dae5867b89e5df5f10ab383529a6f3779333d3fe4c0d4b7b1937f'
+          if digest != expected:
+              raise SystemExit(f'patch digest mismatch: {digest}')
+          Path('/tmp/doc-evidence.patch').write_bytes(patch)
+          print(f'[MATERIALIZER-PATCH] PASS bytes={len(patch)} sha256={digest}')
           PY
           git apply --check /tmp/doc-evidence.patch
           git apply /tmp/doc-evidence.patch
+
       - name: Regenerate all module evidence views
         shell: bash
         run: |
           set -euo pipefail
           python3 scripts/generate_documentation_views.py --write
           python3 scripts/generate_documentation_views.py --check
+
       - name: Verify every module guide materializes current truth
         shell: bash
         run: |
@@ -82,21 +103,20 @@ jobs:
                       assert value in guide, (module_id, field, value)
               for gate in evidence['external_gates']:
                   assert gate in guide
-              rows = [
-                  line for line in module_map.splitlines()
-                  if line.startswith(f"| `{module_id}` |")
-              ]
+              rows = [line for line in module_map.splitlines() if line.startswith(f"| `{module_id}` |")]
               assert len(rows) == 1, (module_id, rows)
               cells = [cell.strip() for cell in rows[0].strip().strip('|').split('|')]
               assert cells[2] == f"`{evidence['state']}`", (module_id, cells)
           print('[MODULE-EVIDENCE-MATERIALIZATION] PASS modules=22')
           PY
+
       - name: Run canonical documentation tests
         shell: bash
         run: |
           set -euo pipefail
           python3 -m unittest -q tests.python.test_module_documentation
           python3 scripts/check_documentation_control_plane.py
+
       - name: Enforce bounded diff and commit
         shell: bash
         run: |
@@ -104,14 +124,13 @@ jobs:
           git diff --check
           python3 - <<'PY'
           import subprocess
+
           allowed_exact = {
               'scripts/generate_documentation_views.py',
               'tests/python/test_module_documentation.py',
               'docs/modules/MODULE-MAP.md',
           }
-          changed = subprocess.check_output(
-              ['git', 'diff', '--name-only'], text=True
-          ).splitlines()
+          changed = subprocess.check_output(['git', 'diff', '--name-only'], text=True).splitlines()
           unexpected = [
               path for path in changed
               if path not in allowed_exact and not path.startswith('docs/modules/technical/')
@@ -123,13 +142,14 @@ jobs:
               raise SystemExit(f'expected 22 changed module guides, got {len(guides)}')
           print(f'[MATERIALIZER-DIFF] PASS files={len(changed)} guides={len(guides)}')
           PY
-          git config user.name 'Franksudoman'
-          git config user.email 'sunfocapital@gmail.com'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add scripts/generate_documentation_views.py \
                   tests/python/test_module_documentation.py \
                   docs/modules/MODULE-MAP.md \
                   docs/modules/technical
           git commit -m 'docs: materialize truthful evidence in every module guide'
+
       - name: Push only if target head is unchanged
         shell: bash
         run: |
