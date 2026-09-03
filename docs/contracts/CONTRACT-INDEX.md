@@ -10,8 +10,8 @@ Authority: generated from contract-registry-v2.json
 | Contract | Stability | Canonical document | Schema | Providers | Consumers |
 |---|---|---|---|---|---|
 | `capital-policy.v1` | target | [`contracts/GLOBAL-OPTIMIZATION-CONTRACT.md`](../contracts/GLOBAL-OPTIMIZATION-CONTRACT.md) | — | `hepta.management.control` | `hepta.global.decision`, `hepta.portfolio.compiler` |
-| `client.mcp.v1` | current-core | [`contracts/CONTRACT-INDEX.md`](../contracts/CONTRACT-INDEX.md) | — | `hepta.client.runtime` | none |
-| `client.native.v1` | current-core | [`contracts/CONTRACT-INDEX.md`](../contracts/CONTRACT-INDEX.md) | — | `hepta.client.runtime` | none |
+| `client.mcp.v1` | current-core | [`contracts/CLIENT-INTERFACE-CONTRACT.md`](../contracts/CLIENT-INTERFACE-CONTRACT.md) | — | `hepta.client.runtime` | none |
+| `client.native.v1` | current-core | [`contracts/CLIENT-INTERFACE-CONTRACT.md`](../contracts/CLIENT-INTERFACE-CONTRACT.md) | — | `hepta.client.runtime` | none |
 | `decision-lease.v1` | current-core | [`contracts/IDENTITY-CAPABILITY-CONTRACT.md`](../contracts/IDENTITY-CAPABILITY-CONTRACT.md) | — | `hepta.agent.support` | `hepta.execution.runtime` |
 | `execution.client.v1` | current-core | [`contracts/EXECUTION-AUTHORITY-CONTRACT.md`](../contracts/EXECUTION-AUTHORITY-CONTRACT.md) | — | `hepta.execution.runtime` | `hepta.gateway.runtime` |
 | `execution.permit.v1` | current-core | [`contracts/TARGET-POSITION-INTENT-CONTRACT.md`](../contracts/TARGET-POSITION-INTENT-CONTRACT.md) | — | `hepta.execution.runtime` | `hepta.execution.runtime` |
@@ -23,7 +23,7 @@ Authority: generated from contract-registry-v2.json
 | `hepta.configuration-authority.v1` | target | [`contracts/CONFIGURATION-AUTHORITY-CONTRACT.md`](../contracts/CONFIGURATION-AUTHORITY-CONTRACT.md) | — | `hepta.management.control` | `hepta.execution.runtime`, `hepta.gateway.runtime` |
 | `hepta.event-envelope.v1` | target | [`contracts/EVENT-ORDERING-CONTRACT.md`](../contracts/EVENT-ORDERING-CONTRACT.md) | `../../schemas/event-envelope-v1.json` | `hepta.protocol.contracts` | `hepta.execution.runtime`, `hepta.venue.ib`, `hepta.venue.simulator` |
 | `hepta.execution-authority.v1` | current-core | [`contracts/EXECUTION-AUTHORITY-CONTRACT.md`](../contracts/EXECUTION-AUTHORITY-CONTRACT.md) | `../../schemas/execution-wire-v1.json` | `hepta.execution.runtime` | `hepta.execution.runtime`, `hepta.gateway.runtime` |
-| `hepta.execution-wire.v1` | current-core | [`contracts/CONTRACT-INDEX.md`](../contracts/CONTRACT-INDEX.md) | `../../schemas/execution-wire-v1.json` | `hepta.protocol.contracts` | `hepta.execution.runtime`, `hepta.gateway.runtime` |
+| `hepta.execution-wire.v1` | current-core | [`contracts/EXECUTION-WIRE-CONTRACT.md`](../contracts/EXECUTION-WIRE-CONTRACT.md) | `../../schemas/execution-wire-v1.json` | `hepta.protocol.contracts` | `hepta.execution.runtime`, `hepta.gateway.runtime` |
 | `hepta.global-optimization.v1` | target | [`contracts/GLOBAL-OPTIMIZATION-CONTRACT.md`](../contracts/GLOBAL-OPTIMIZATION-CONTRACT.md) | — | `hepta.global.decision` | `hepta.simulation.runtime` |
 | `hepta.ib-paper-qualification.v1` | target-external | [`operations/IB-PAPER-QUALIFICATION.md`](../operations/IB-PAPER-QUALIFICATION.md) | — | external/none | none |
 | `hepta.identity-capability.v1` | current-core | [`contracts/IDENTITY-CAPABILITY-CONTRACT.md`](../contracts/IDENTITY-CAPABILITY-CONTRACT.md) | — | `hepta.gateway.runtime` | `hepta.gateway.runtime` |
@@ -39,7 +39,7 @@ Authority: generated from contract-registry-v2.json
 | `hepta.solver-result.v1` | target | [`contracts/SOLVER-RESULT-CONTRACT.md`](../contracts/SOLVER-RESULT-CONTRACT.md) | `../../schemas/solver-result-v1.json` | `hepta.global.decision` | `hepta.execution.runtime`, `hepta.simulation.runtime` |
 | `hepta.strategy-proposal.v1` | target | [`contracts/STRATEGY-PROPOSAL-CONTRACT.md`](../contracts/STRATEGY-PROPOSAL-CONTRACT.md) | `../../schemas/strategy-proposal-v1.json` | `hepta.strategy.runtime` | `hepta.global.decision`, `hepta.portfolio.compiler`, `hepta.simulation.runtime` |
 | `hepta.target-position-intent.v1` | current-core | [`contracts/TARGET-POSITION-INTENT-CONTRACT.md`](../contracts/TARGET-POSITION-INTENT-CONTRACT.md) | `../../schemas/target-position-intent-v1.json` | `hepta.execution.runtime` | `hepta.execution.runtime` |
-| `hepta.tool-catalog.v1` | current-core | [`contracts/CONTRACT-INDEX.md`](../contracts/CONTRACT-INDEX.md) | `../../schemas/tool-catalog-v1.json` | `hepta.gateway.runtime` | `hepta.client.runtime` |
+| `hepta.tool-catalog.v1` | current-core | [`contracts/TOOL-CATALOG-CONTRACT.md`](../contracts/TOOL-CATALOG-CONTRACT.md) | `../../schemas/tool-catalog-v1.json` | `hepta.gateway.runtime` | `hepta.client.runtime` |
 | `hepta.venue.v1` | current-core | [`contracts/EXECUTION-AUTHORITY-CONTRACT.md`](../contracts/EXECUTION-AUTHORITY-CONTRACT.md) | — | `hepta.venue.ctp`, `hepta.venue.ib`, `hepta.venue.simulator`, `hepta.venue.xt` | `hepta.execution.runtime` |
 | `market-event.v1` | target | [`research/POINT-IN-TIME-DATA-CONTRACT.md`](../research/POINT-IN-TIME-DATA-CONTRACT.md) | — | `hepta.marketdata.runtime` | `hepta.feature.runtime` |
 | `portfolio.net-target.v1` | current-core | [`contracts/ALLOCATION-PLAN-CONTRACT.md`](../contracts/ALLOCATION-PLAN-CONTRACT.md) | — | `hepta.portfolio.compiler` | `hepta.execution.runtime`, `hepta.risk.policy`, `hepta.simulation.runtime` |
