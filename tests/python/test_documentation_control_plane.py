@@ -135,6 +135,27 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             head = "\n".join((ROOT / relative).read_text().splitlines()[:14])
             self.assertIn("Authority: entrypoint only", head)
 
+    def test_cross_module_lock_exception_is_narrow_and_documented(self) -> None:
+        errors: list[str] = []
+        modules, _ = registry_checks.load_modules(ROOT, errors)
+        self.assertEqual(errors, [])
+        exception = "marketdata-feature-capability-transaction-only"
+        permitted = {"hepta.marketdata.runtime", "hepta.feature.runtime"}
+        declared = {
+            module_id for module_id, manifest in modules.items()
+            if manifest["concurrency"]["cross_module_lock"] != "forbidden"
+        }
+        self.assertEqual(declared, permitted)
+        document = (ROOT / "docs/architecture/CONCURRENCY-AND-SHARDING.md").read_text()
+        self.assertIn(exception, document)
+        self.assertIn("MarketDataAuthorityState::mutex", document)
+        self.assertIn("GetRiskReady", document)
+        for module_id in sorted(permitted):
+            manifest = modules[module_id]
+            self.assertEqual(manifest["concurrency"]["cross_module_lock"], exception)
+            guide = (ROOT / "docs" / manifest["documentation"]["technical_guide"]).read_text()
+            self.assertIn(f"**cross module lock:** `{exception}`", guide)
+
     def test_legacy_tree_contains_no_docs_media_or_build_entrypoints(self) -> None:
         forbidden_suffixes = {".md", ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".webp"}
         residual = []

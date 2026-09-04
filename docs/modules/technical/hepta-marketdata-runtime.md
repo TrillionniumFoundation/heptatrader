@@ -1,7 +1,7 @@
 # Market Data Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.marketdata.runtime` version `1.0.0` (current)
+Applies to: `hepta.marketdata.runtime` version `1.0.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-marketdata-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -99,7 +99,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 - **model:** `venue-instrument-sharded`
 - **shard key:** `venue-instrument`
 - **blocking io:** `forbidden-on-admission-and-snapshot`
-- **cross module lock:** `forbidden`
+- **cross module lock:** `marketdata-feature-capability-transaction-only`
 
 ### Backpressure contract
 
@@ -124,7 +124,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Feed identities, freshness windows, calendars and capacity are canonical configuration or upstream contract data.
 - Unsupported time/identity formats fail closed.
 
-The manifest version is `1.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.0.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.marketdata.runtime",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "lifecycle": "current",
   "kind": "data-plane",
   "trust_domain": "market-data",
@@ -35,7 +35,7 @@
     "model": "venue-instrument-sharded",
     "shard_key": "venue-instrument",
     "blocking_io": "forbidden-on-admission-and-snapshot",
-    "cross_module_lock": "forbidden"
+    "cross_module_lock": "marketdata-feature-capability-transaction-only"
   },
   "backpressure": {
     "class": "coalescing-gap",

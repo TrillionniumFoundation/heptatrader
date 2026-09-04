@@ -1,7 +1,7 @@
 # Feature Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.feature.runtime` version `1.0.0` (current)
+Applies to: `hepta.feature.runtime` version `1.0.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-feature-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -99,7 +99,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 - **model:** `instrument-sharded`
 - **shard key:** `venue-instrument-feature-set`
 - **blocking io:** `forbidden-on-feature-compute`
-- **cross module lock:** `forbidden`
+- **cross module lock:** `marketdata-feature-capability-transaction-only`
 
 ### Backpressure contract
 
@@ -124,7 +124,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Feature-set IDs and numeric policies are versioned contracts.
 - Unknown feature versions fail closed rather than falling back silently.
 
-The manifest version is `1.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.0.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
