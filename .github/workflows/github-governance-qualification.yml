@@ -8,6 +8,7 @@ on:
       - '.github/workflows/ib-paper-qualification.yml'
       - '.github/github-governance-policy-v1.json'
       - '.github/required-check-contexts-v1.json'
+      - 'scripts/github_qualification_evidence.py'
       - 'scripts/verify_github_governance.py'
       - 'scripts/verify_ib_paper_qualification.py'
       - 'scripts/verify_ib_candidate_artifact.py'
@@ -25,15 +26,15 @@ on:
         required: true
         type: string
       expected_head_sha:
-        description: Exact unchanged source head to verify as data, never execute
+        description: Exact unchanged source head, treated only as API data
         required: true
         type: string
       merge_group_sha:
-        description: Exact merge-group revision that passed the queue gate
+        description: Exact live merge-queue revision for that PR/head/base
         required: true
         type: string
       acknowledge_no_bypass:
-        description: Confirm this run is evidence-only and may not use a bypass
+        description: Confirm this evidence run did not use a bypass
         required: true
         type: boolean
         default: false
@@ -66,33 +67,30 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Install hostile-boundary test dependency
+      - name: Confirm Docker hostile-isolation dependency
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
-      - name: Validate trusted harnesses and hostile candidate isolation
+          docker version
+      - name: Validate trusted harnesses, provenance and hostile isolation
         run: |
           set -euo pipefail
           git diff --check
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 -m py_compile \
+            scripts/github_qualification_evidence.py \
             scripts/verify_github_governance.py \
             scripts/verify_ib_paper_qualification.py \
             scripts/verify_ib_candidate_artifact.py \
             scripts/verify_qualification_candidate.py \
             scripts/check_qualification_trust_boundary.py
           python3 scripts/check_qualification_trust_boundary.py --self-test
-          python3 -m unittest discover \
-            -s tests/python -p 'test_github_governance.py'
-          python3 -m unittest discover \
-            -s tests/python -p 'test_ib_paper_qualification.py'
-          python3 -m unittest discover \
-            -s tests/python -p 'test_qualification_trust_boundary.py'
+          python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
+          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
+          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           printf '%s\n' \
             'Trusted qualification boundary audit passed.' \
-            'No secret, broker credential or candidate mutation was used.' \
+            'No secret, Broker credential or candidate mutation was used.' \
             >> "$GITHUB_STEP_SUMMARY"
 
   qualify:
@@ -100,7 +98,7 @@ jobs:
     name: github-governance-exact-artifact-verification
     runs-on: ubuntu-24.04
     environment: repository-governance
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - name: Require trusted main dispatch and immutable data inputs
         env:
@@ -112,7 +110,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$DISPATCH_REF" = 'refs/heads/main'
-          test "$ACKNOWLEDGE_NO_BYPASS" = "true"
+          test "$ACKNOWLEDGE_NO_BYPASS" = 'true'
           [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
@@ -130,10 +128,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C trusted rev-parse HEAD)" = "$DISPATCH_SHA"
-          python3 -m py_compile trusted/scripts/verify_github_governance.py
-          python3 trusted/scripts/check_qualification_trust_boundary.py \
-            --root trusted
-      - name: Collect live evidence with trusted code only
+          python3 -m py_compile \
+            trusted/scripts/github_qualification_evidence.py \
+            trusted/scripts/verify_github_governance.py
+          python3 trusted/scripts/check_qualification_trust_boundary.py --root trusted
+      - name: Collect fully paginated live evidence with trusted code only
         env:
           HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
@@ -149,7 +148,7 @@ jobs:
             --output "$receipt"
           test -s "$receipt"
           test ! -L "$receipt"
-          test "$(stat -c '%a' "$receipt")" = "600"
+          test "$(stat -c '%a' "$receipt")" = '600'
       - name: Upload immutable governance receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
