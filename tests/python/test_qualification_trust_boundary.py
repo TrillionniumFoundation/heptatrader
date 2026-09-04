@@ -10,10 +10,16 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
+TESTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+if str(TESTS) not in sys.path:
+    sys.path.insert(0, str(TESTS))
 
 import check_qualification_trust_boundary as boundary  # noqa: E402
+from test_team_codeowners_activation import (  # noqa: E402,F401
+    TeamCodeownersActivationTests,
+)
 import verify_ib_candidate_artifact as artifact  # noqa: E402
 import verify_qualification_candidate as admission  # noqa: E402
 
