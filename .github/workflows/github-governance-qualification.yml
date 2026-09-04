@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      PREFLIGHT_CANDIDATE_SHA: 69f1d66b2a54cc9ad10e61ac90db1125e2979a18
+      PREFLIGHT_CANDIDATE_SHA: a6b228ab1f79a0971bc188fefe77a1c0f2acf507
     steps:
       - name: Checkout exact pull-request head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
