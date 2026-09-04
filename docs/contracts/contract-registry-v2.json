@@ -144,6 +144,7 @@
       "consumers": [
         "hepta.execution.runtime",
         "hepta.global.decision",
+        "hepta.portfolio.compiler",
         "hepta.risk.policy",
         "hepta.simulation.runtime"
       ]
@@ -172,7 +173,9 @@
         "hepta.protocol.contracts"
       ],
       "consumers": [
+        "hepta.agent.support",
         "hepta.execution.runtime",
+        "hepta.marketdata.runtime",
         "hepta.venue.ib",
         "hepta.venue.simulator"
       ]
@@ -347,7 +350,8 @@
         "hepta.risk.policy"
       ],
       "consumers": [
-        "hepta.execution.runtime"
+        "hepta.execution.runtime",
+        "hepta.venue.ib"
       ]
     },
     {

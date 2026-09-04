@@ -13,6 +13,7 @@ if str(ROOT / "scripts") not in sys.path:
 
 import check_documentation_control_plane as control  # noqa: E402
 import check_module_discipline as discipline  # noqa: E402
+import hepta_registry_checks as registry_checks  # noqa: E402
 from hepta_module_boundaries import (  # noqa: E402
     canonical_relative_path,
     selector_from_object,
@@ -148,6 +149,112 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             ):
                 residual.append(str(path.relative_to(ROOT)))
         self.assertEqual(residual, [])
+
+
+class ContractRelationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.modules = {
+            "provider": {"provides": ["contract.v1"], "consumes": []},
+            "consumer": {"provides": [], "consumes": ["contract.v1"]},
+            "unused": {"provides": [], "consumes": []},
+        }
+        self.contracts = {
+            "contract.v1": {"providers": ["provider"], "consumers": ["consumer"]},
+            "external.v1": {"providers": [], "consumers": []},
+        }
+
+    def errors(self) -> list[str]:
+        errors: list[str] = []
+        registry_checks.validate_contract_relations(self.modules, self.contracts, errors)
+        return errors
+
+    def test_exact_inverse_and_external_empty_contract_pass(self) -> None:
+        self.assertEqual(self.errors(), [])
+
+    def test_missing_consumer_is_rejected(self) -> None:
+        self.contracts["contract.v1"]["consumers"] = []
+        self.assertIn("missing consumer consumer", "\n".join(self.errors()))
+
+    def test_missing_provider_is_rejected(self) -> None:
+        self.contracts["contract.v1"]["providers"] = []
+        self.assertIn("missing provider provider", "\n".join(self.errors()))
+
+    def test_extra_consumer_and_provider_are_rejected(self) -> None:
+        for relation in ("consumers", "providers"):
+            with self.subTest(relation=relation):
+                self.setUp()
+                self.contracts["contract.v1"][relation].append("unused")
+                self.assertIn("unused does not declare", "\n".join(self.errors()))
+
+    def test_unknown_module_and_contract_are_rejected(self) -> None:
+        self.contracts["contract.v1"]["consumers"].append("unknown")
+        self.modules["consumer"]["consumes"].append("unknown.v1")
+        errors = "\n".join(self.errors())
+        self.assertIn("unknown consumer unknown", errors)
+        self.assertIn("unknown contract unknown.v1", errors)
+
+    def test_duplicate_references_on_both_sides_are_rejected(self) -> None:
+        for side, key, relation, value in (
+            ("modules", "provider", "provides", "contract.v1"),
+            ("modules", "consumer", "consumes", "contract.v1"),
+            ("contracts", "contract.v1", "providers", "provider"),
+            ("contracts", "contract.v1", "consumers", "consumer"),
+        ):
+            with self.subTest(side=side, relation=relation):
+                self.setUp()
+                getattr(self, side)[key][relation].append(value)
+                self.assertIn("duplicate reference", "\n".join(self.errors()))
+
+    def test_malformed_reference_values_fail_without_crashing(self) -> None:
+        for bad in (None, "consumer", {}, [None], [{}], [[]], [False], [1], [""], [" "]):
+            for side, key, relation in (
+                ("contracts", "contract.v1", "consumers"),
+                ("modules", "consumer", "consumes"),
+            ):
+                with self.subTest(bad=bad, side=side):
+                    self.setUp()
+                    getattr(self, side)[key][relation] = bad
+                    self.assertTrue(self.errors())
+
+    def test_missing_relation_fields_are_rejected(self) -> None:
+        del self.contracts["external.v1"]["providers"]
+        self.assertTrue(self.errors())
+        self.setUp()
+        del self.modules["unused"]["consumes"]
+        self.assertTrue(self.errors())
+
+    def test_unsupported_module_is_not_exempt_from_inverse_edges(self) -> None:
+        self.modules["provider"]["lifecycle"] = "unsupported"
+        self.contracts["contract.v1"]["providers"] = []
+        self.assertIn("missing provider", "\n".join(self.errors()))
+
+    def test_validation_is_deterministic_and_never_repairs_inputs(self) -> None:
+        self.contracts["contract.v1"]["consumers"] = []
+        before = deepcopy((self.modules, self.contracts))
+        first = self.errors()
+        self.modules = dict(reversed(list(self.modules.items())))
+        self.contracts = dict(reversed(list(self.contracts.items())))
+        self.assertEqual(first, self.errors())
+        self.assertEqual((self.modules, self.contracts), before)
+
+    def test_repository_relations_and_regression_edges(self) -> None:
+        errors: list[str] = []
+        self.modules, _ = registry_checks.load_modules(ROOT, errors)
+        self.assertEqual(errors, [])
+        document = json.loads((ROOT / "docs/contracts/contract-registry-v2.json").read_text())
+        self.contracts = {item["id"]: item for item in document["contracts"]}
+        self.assertEqual(self.errors(), [])
+        for contract_id, module_id in (
+            ("hepta.authoritative-snapshot.v2", "hepta.portfolio.compiler"),
+            ("hepta.event-envelope.v1", "hepta.agent.support"),
+            ("hepta.event-envelope.v1", "hepta.marketdata.runtime"),
+            ("hepta.risk-policy.v2", "hepta.venue.ib"),
+        ):
+            with self.subTest(contract=contract_id, module=module_id):
+                original = self.contracts[contract_id]["consumers"]
+                self.contracts[contract_id]["consumers"] = [x for x in original if x != module_id]
+                self.assertIn(f"missing consumer {module_id}", "\n".join(self.errors()))
+                self.contracts[contract_id]["consumers"] = original
 
 
 if __name__ == "__main__":

@@ -14,6 +14,64 @@ from hepta_module_boundaries import (
     selector_from_manifest_claim, selector_from_object, selector_matches,
 )
 
+def _contract_reference_set(value: object, label: str, errors: list[str]) -> set[str]:
+    """Validate before set conversion so malformed references fail diagnostically."""
+    if not isinstance(value, list):
+        errors.append(f"{label}: expected string array")
+        return set()
+    result: set[str] = set()
+    for index, reference in enumerate(value):
+        if not isinstance(reference, str) or not reference.strip():
+            errors.append(f"{label}[{index}]: expected non-empty string")
+        elif reference in result:
+            errors.append(f"{label}: duplicate reference {reference}")
+        else:
+            result.add(reference)
+    return result
+
+
+def validate_contract_relations(
+    modules: dict[str, dict], contracts: dict[str, dict], errors: list[str],
+) -> None:
+    """Require exact inverse edges, including unsupported and target modules.
+
+    A matching declaration is documentation ownership, not runtime authority.
+    Never repair either side while validating: a missing edge must fail CI.
+    """
+    relations = (("provides", "providers"), ("consumes", "consumers"))
+    expected: dict[str, dict[str, set[str]]] = {
+        contract_id: {"providers": set(), "consumers": set()}
+        for contract_id in contracts
+    }
+    for module_id, manifest in sorted(modules.items()):
+        for relation, inverse in relations:
+            references = _contract_reference_set(
+                manifest.get(relation), f"module {module_id}.{relation}", errors,
+            )
+            for contract_id in sorted(references):
+                if contract_id not in contracts:
+                    errors.append(f"module {module_id}: unknown contract {contract_id}")
+                else:
+                    expected[contract_id][inverse].add(module_id)
+    for contract_id, contract in sorted(contracts.items()):
+        for inverse, relation in relations:
+            declared = _contract_reference_set(
+                contract.get(relation), f"contract {contract_id}.{relation}", errors,
+            )
+            for module_id in sorted(expected[contract_id][relation] - declared):
+                errors.append(
+                    f"contract {contract_id}: missing {relation[:-1]} {module_id} "
+                    f"declared by module {inverse}"
+                )
+            for module_id in sorted(declared - expected[contract_id][relation]):
+                if module_id not in modules:
+                    errors.append(f"contract {contract_id}: unknown {relation[:-1]} {module_id}")
+                else:
+                    errors.append(
+                        f"contract {contract_id}: {module_id} does not declare {inverse}"
+                    )
+
+
 def _validate_registries(errors: list[str]) -> None:
     contract_doc = load(DOCS / "contracts/contract-registry-v2.json", errors)
     capability_doc = load(DOCS / "product/capability-registry-v2.json", errors)
@@ -119,10 +177,6 @@ def _validate_registries(errors: list[str]) -> None:
                 errors.append(f"module {module_id}: unknown dependency {dependency}")
             else:
                 module_edges[module_id].add(dependency)
-        for relation in ("provides", "consumes"):
-            for contract_id in manifest.get(relation, []):
-                if contract_id not in contracts:
-                    errors.append(f"module {module_id}: unknown contract {contract_id}")
         for check_id in manifest.get("verification", []):
             if check_id not in checks:
                 errors.append(f"module {module_id}: unknown verification {check_id}")
@@ -162,20 +216,8 @@ def _validate_registries(errors: list[str]) -> None:
                     errors.append(f"contract {contract_id}: schema missing: {canonical}")
                 elif schema_file.suffix.lower() == ".json":
                     load(schema_file, errors)
-        for relation, inverse in (("providers", "provides"), ("consumers", "consumes")):
-            values = contract.get(relation, [])
-            if not isinstance(values, list):
-                errors.append(f"contract {contract_id}: {relation} must be an array")
-                continue
-            if len(values) != len(set(values)):
-                errors.append(f"contract {contract_id}: duplicate {relation}")
-            for module_id in values:
-                if module_id not in modules:
-                    errors.append(f"contract {contract_id}: unknown {relation[:-1]} {module_id}")
-                elif contract_id not in modules[module_id].get(inverse, []):
-                    errors.append(
-                        f"contract {contract_id}: {module_id} does not declare {inverse}"
-                    )
+
+    validate_contract_relations(modules, contracts, errors)
 
     capabilities = indexed(
         capability_doc.get("capabilities") if isinstance(capability_doc, dict) else None,
