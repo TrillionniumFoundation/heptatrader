@@ -269,6 +269,108 @@ void TestAsyncCriticalWritesPreserveAppendOrder()
     ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "250", 1);
 }
 
+void TestBufferedAppendIsNotDurableUntilCriticalBarrier()
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
+    ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+    ::setenv("HEPTA_OMS_BATCH_SIZE", "64", 1);
+    ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "9223372036854775807", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        OmsJournalEvent buffered = MakeCriticalEvent("buffered");
+        buffered.eventType = "ack";
+        REQUIRE(journal.Append(buffered));
+        OmsJournalHealthSnapshot health = journal.GetHealthSnapshot();
+        REQUIRE(health.bufferedDepth == 1);
+        REQUIRE(health.flushedTotal == 0);
+        REQUIRE(health.durableSyncWrites == 0);
+        REQUIRE(IsEmptyFile(path));
+
+        REQUIRE(journal.Append(MakeCriticalEvent("barrier")));
+        health = journal.GetHealthSnapshot();
+        REQUIRE(health.bufferedDepth == 0);
+        REQUIRE(health.flushedTotal == 2);
+        REQUIRE(health.durableSyncWrites == 1);
+        REQUIRE(!health.writePoisoned);
+        std::vector<std::string> ids;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& event) {
+            ids.push_back(event.reqId);
+        }) == 2);
+        REQUIRE(ids.size() == 2);
+        REQUIRE(ids[0] == "buffered");
+        REQUIRE(ids[1] == "barrier");
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ::setenv("HEPTA_OMS_BATCH_SIZE", "8", 1);
+    ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "250", 1);
+}
+
+void TestRecordVersionAndRequestAliasRoundTrip()
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
+    ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        OmsJournalEvent current = MakeCriticalEvent("canonical-request");
+        REQUIRE(current.schemaVersion == 4);
+        REQUIRE(OmsJournal::kSchemaVersion == 4);
+        current.clientReqId = "not-the-authoritative-alias";
+        current.brokerCallbackType = "orderStatus";
+        current.brokerExecutionId = "execution-id";
+        REQUIRE(journal.Append(current));
+        OmsJournalEvent previous = MakeCriticalEvent("legacy-request");
+        previous.schemaVersion = 3;
+        previous.reqId.clear();
+        REQUIRE(journal.Append(previous));
+        std::vector<OmsJournalEvent> replayed;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& event) {
+            replayed.push_back(event);
+        }) == 2);
+        REQUIRE(replayed.size() == 2);
+        REQUIRE(replayed[0].schemaVersion == 4);
+        REQUIRE(replayed[0].reqId == "canonical-request");
+        REQUIRE(replayed[0].clientReqId == "canonical-request");
+        REQUIRE(replayed[0].brokerCallbackType == "orderStatus");
+        REQUIRE(replayed[0].brokerExecutionId == "execution-id");
+        REQUIRE(replayed[1].schemaVersion == 3);
+        REQUIRE(replayed[1].reqId == "legacy-request");
+        REQUIRE(replayed[1].clientReqId == "legacy-request");
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestJournalReplayDoesNotInventCommandDeduplication()
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
+    ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        const OmsJournalEvent event = MakeCriticalEvent("same-event-identity");
+        REQUIRE(journal.Append(event));
+        REQUIRE(journal.Append(event));
+        int callbacks = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& replayed) {
+            ++callbacks;
+            REQUIRE(replayed.eventId == event.eventId);
+            REQUIRE(replayed.reqId == event.reqId);
+        }) == 2);
+        REQUIRE(callbacks == 2);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
 void TestUnsafePermissionsLinksAndTornFilesFailClosed()
 {
     const std::string directory = MakeTempDirectory();
@@ -315,5 +417,8 @@ int main()
     TestAsyncQueueAndBufferAccounting();
     TestAsyncCriticalWritesPreserveAppendOrder();
     TestUnsafePermissionsLinksAndTornFilesFailClosed();
+    TestBufferedAppendIsNotDurableUntilCriticalBarrier();
+    TestRecordVersionAndRequestAliasRoundTrip();
+    TestJournalReplayDoesNotInventCommandDeduplication();
     return 0;
 }
