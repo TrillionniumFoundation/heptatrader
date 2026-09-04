@@ -10,6 +10,11 @@ on:
       - '.github/pr24-hardening-payload.part01'
       - '.github/pr24-hardening-payload.part02'
       - '.github/pr24-boundary-docker.b64'
+      - '.github/pr24-boundary-docker.part00'
+      - '.github/pr24-boundary-docker.part01'
+      - '.github/pr24-boundary-docker.part02'
+      - '.github/pr24-boundary-docker.part03'
+      - '.github/pr24-boundary-docker.part04'
 
 permissions:
   contents: write
@@ -90,8 +95,13 @@ jobs:
                   os.chmod(temporary, expected[member.name])
                   os.replace(temporary, destination)
           PY
-          base64 --decode .github/pr24-boundary-docker.b64 \
-            > scripts/check_qualification_trust_boundary.py
+          cat \
+            .github/pr24-boundary-docker.part00 \
+            .github/pr24-boundary-docker.part01 \
+            .github/pr24-boundary-docker.part02 \
+            .github/pr24-boundary-docker.part03 \
+            .github/pr24-boundary-docker.part04 \
+            | base64 --decode > scripts/check_qualification_trust_boundary.py
           chmod 0755 scripts/check_qualification_trust_boundary.py
           printf '%s  %s\n' \
             '32287b9ca23aa049ccca75846ed7486aa0fa1049c0b30508a2e357645c47b34e' \
@@ -126,7 +136,12 @@ jobs:
             .github/pr24-hardening-payload.part00 \
             .github/pr24-hardening-payload.part01 \
             .github/pr24-hardening-payload.part02 \
-            .github/pr24-boundary-docker.b64
+            .github/pr24-boundary-docker.b64 \
+            .github/pr24-boundary-docker.part00 \
+            .github/pr24-boundary-docker.part01 \
+            .github/pr24-boundary-docker.part02 \
+            .github/pr24-boundary-docker.part03 \
+            .github/pr24-boundary-docker.part04
           git add -- \
             .github/github-governance-policy-v1.json \
             .github/required-check-contexts-v1.json \
