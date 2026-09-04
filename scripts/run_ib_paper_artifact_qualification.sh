@@ -116,12 +116,33 @@ export HEPTA_QUALIFICATION_RESULT_PATH="$RESULT_PATH"
 
 # Only the independently pinned external harness may launch the candidate
 # binary. Candidate source, CMake, tests and repository scripts are absent from
-# this credential-bearing job.
-"$QUALIFIER" \
+# this credential-bearing job. The harness starts from an empty environment and
+# must enforce a broker-proxy-only operation allowlist; raw workflow/runner
+# credentials are never inherited by the candidate process.
+HARNESS_HOME="$WORK_DIR/harness-home"
+mkdir -m 0700 "$HARNESS_HOME"
+env -i \
+  PATH=/usr/bin:/bin \
+  HOME="$HARNESS_HOME" \
+  LC_ALL=C \
+  HEPTA_QUALIFICATION_EXPECTED_GIT_SHA="$EXPECTED_SHA" \
+  HEPTA_QUALIFICATION_EXPECTED_BINARY="$BINARY" \
+  HEPTA_QUALIFICATION_EXPECTED_BINARY_SHA256="$BINARY_SHA256" \
+  HEPTA_QUALIFICATION_EXPECTED_HARNESS_SHA256="$QUALIFIER_SHA256" \
+  HEPTA_QUALIFICATION_TRUSTED_RUNNER_SHA256="$TRUSTED_RUNNER_SHA256" \
+  HEPTA_QUALIFICATION_TRUSTED_VERIFIER_SHA256="$TRUSTED_VERIFIER_SHA256" \
+  HEPTA_QUALIFICATION_REQUIRED_SCENARIOS="$REQUIRED_SCENARIOS" \
+  HEPTA_QUALIFICATION_RESULT_PATH="$RESULT_PATH" \
+  HEPTA_QUALIFICATION_MUTATIONS=1 \
+  "$QUALIFIER" \
   --execution-binary "$BINARY" \
   --expected-binary-sha256 "$BINARY_SHA256" \
   --expected-git-sha "$EXPECTED_SHA" \
   --required-scenarios "$REQUIRED_SCENARIOS" \
+  --operation-allowlist "$REQUIRED_SCENARIOS" \
+  --candidate-environment cleared \
+  --candidate-network-policy broker-proxy-only \
+  --credential-delivery harness-only \
   --evidence-dir "$WORK_DIR" \
   --result "$RESULT_PATH" \
   --mode bounded-mutations
