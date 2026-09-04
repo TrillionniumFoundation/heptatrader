@@ -184,6 +184,11 @@ def validate(root: Path = ROOT) -> list[str]:
         "HEPTA_IB_PAPER_QUALIFIER_SHA256",
         "qualification harness digest mismatch",
         "Only the independently pinned external harness",
+        "env -i",
+        "--operation-allowlist",
+        "--candidate-environment cleared",
+        "--candidate-network-policy broker-proxy-only",
+        "--credential-delivery harness-only",
         "verify_ib_paper_qualification.py",
     ):
         _require(runner_script, token, "trusted PAPER runner", errors)
@@ -270,7 +275,6 @@ printf '%s\n' '${{ secrets.HEPTA_GOVERNANCE_TOKEN }}' > /work/inert-candidate-ou
             errors.append("parent secret crossed the cleared sandbox environment")
         if not (work / "inert-candidate-output").is_file():
             errors.append("hostile output was not confined to the disposable output mount")
-        # Print only a digest, never untrusted captured bytes.
         print(
             "[QUALIFICATION-TRUST-BOUNDARY] hostile-output-sha256="
             + hashlib.sha256(output).hexdigest()

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -23,6 +25,7 @@ import verify_qualification_candidate as admission  # noqa: E402
 class QualificationTrustBoundaryTests(unittest.TestCase):
     def test_repository_workflows_keep_candidate_code_out_of_privileged_jobs(self) -> None:
         self.assertEqual(boundary.validate(ROOT), [])
+
 
     def _admission_snapshot(self) -> tuple[dict, list[dict], dict]:
         candidate = "1" * 40
@@ -207,6 +210,28 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
             errors = boundary.validate(fixture)
             self.assertTrue(
                 any("input SHA controls a checkout" in error for error in errors),
+                errors,
+            )
+
+    def test_external_harness_must_start_with_cleared_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            for relative in boundary.TRUSTED_FILES:
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            for relative in (boundary.GOVERNANCE, boundary.IB):
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            path = fixture / Path("scripts/run_ib_paper_artifact_qualification.sh")
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("env -i \\\n", "env \\\n", 1),
+                encoding="utf-8",
+            )
+            errors = boundary.validate(fixture)
+            self.assertTrue(
+                any("env -i" in error for error in errors),
                 errors,
             )
 
