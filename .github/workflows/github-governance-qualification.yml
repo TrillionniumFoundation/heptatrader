@@ -1,4 +1,5 @@
 # Exact-head bootstrap audit trigger after temporary materialization removal.
+# PR17 exact-head audit trigger after trusted-main bootstrap integration.
 name: GitHub Governance Qualification
 
 on:
