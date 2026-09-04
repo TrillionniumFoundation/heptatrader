@@ -1,3 +1,4 @@
+# Exact-head bootstrap audit trigger after temporary materialization removal.
 name: GitHub Governance Qualification
 
 on:
