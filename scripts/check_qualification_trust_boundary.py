@@ -18,6 +18,7 @@ IB = Path(".github/workflows/ib-paper-qualification.yml")
 TRUSTED_FILES = (
     Path("scripts/github_qualification_evidence.py"),
     Path("scripts/verify_github_governance.py"),
+    Path("scripts/verify_github_governance_legacy.py"),
     Path("scripts/verify_ib_paper_qualification.py"),
     Path("scripts/verify_ib_candidate_artifact.py"),
     Path("scripts/verify_qualification_candidate.py"),
@@ -246,7 +247,30 @@ def validate(root: Path = ROOT) -> list[str]:
     ):
         _require(evidence, token, "GitHub evidence helper", errors)
 
-    governance_script = contents.get(Path("scripts/verify_github_governance.py"), "")
+    governance_entry = contents.get(Path("scripts/verify_github_governance.py"), "")
+    for token in (
+        "LEGACY_BLOB_SHA",
+        "verify_github_governance_legacy.py",
+        "_git_blob_sha",
+        "_legacy._main_ruleset = _main_ruleset",
+        "ruleset_ref_condition_sha256",
+        "RULESET_SCOPE_SELF_TEST_PASSED",
+    ):
+        _require(governance_entry, token, "governance verifier entry point", errors)
+
+    # The public entry point intentionally stays small: it digest-binds the
+    # previously reviewed implementation, replaces only the ruleset selector,
+    # and delegates pagination/provenance collection to the shared helper. Scan
+    # the complete, regular-file trusted source set rather than treating a thin
+    # wrapper as if it must duplicate every inherited control string.
+    governance_script = "\n".join(
+        contents.get(relative, "")
+        for relative in (
+            Path("scripts/verify_github_governance.py"),
+            Path("scripts/verify_github_governance_legacy.py"),
+            Path("scripts/github_qualification_evidence.py"),
+        )
+    )
     for token in (
         "git/matching-refs",
         "merge_group_commit",
@@ -255,7 +279,7 @@ def validate(root: Path = ROOT) -> list[str]:
         "validate_reviews",
         "collect_check_evidence",
     ):
-        _require(governance_script, token, "governance verifier", errors)
+        _require(governance_script, token, "governance verifier trusted source set", errors)
 
     admission = contents.get(Path("scripts/verify_qualification_candidate.py"), "")
     for token in (
@@ -414,7 +438,6 @@ printf '%s\n' '${{ secrets.HEPTA_GOVERNANCE_TOKEN }}' > /work/inert-candidate-ou
             + hashlib.sha256(output).hexdigest()
         )
     return errors
-
 
 
 def main(argv: list[str] | None = None) -> int:
