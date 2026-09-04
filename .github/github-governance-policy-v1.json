@@ -1,0 +1,71 @@
+{
+  "schema": "heptatrader.github-governance-policy.v1",
+  "repository": "TrillionniumFoundation/heptatrader",
+  "organization": "TrillionniumFoundation",
+  "default_branch": "main",
+  "ruleset": {
+    "target": "branch",
+    "enforcement": "active",
+    "accepted_ref_includes": [
+      "~DEFAULT_BRANCH",
+      "refs/heads/main"
+    ],
+    "bypass_actors": [],
+    "required_rule_types": [
+      "deletion",
+      "non_fast_forward",
+      "pull_request",
+      "required_status_checks",
+      "merge_queue"
+    ],
+    "pull_request": {
+      "dismiss_stale_reviews_on_push": true,
+      "require_code_owner_review": true,
+      "require_last_push_approval": true,
+      "required_approving_review_count": 2,
+      "required_review_thread_resolution": true,
+      "required_allowed_merge_method": "squash"
+    },
+    "required_status_checks": {
+      "strict_required_status_checks_policy": true,
+      "do_not_enforce_on_create": false,
+      "context_registry": ".github/required-check-contexts-v1.json",
+      "required_integration_id": 15368
+    },
+    "merge_queue": {
+      "grouping_strategy": "ALLGREEN",
+      "merge_method": "SQUASH",
+      "max_entries_to_merge": 1,
+      "minimum_check_response_timeout_minutes": 5,
+      "maximum_check_response_timeout_minutes": 60
+    }
+  },
+  "codeowners": {
+    "path": ".github/CODEOWNERS",
+    "required_team_prefix": "@TrillionniumFoundation/",
+    "minimum_distinct_teams": 4,
+    "minimum_members_per_team": 2,
+    "minimum_maintainers_per_team": 1,
+    "require_non_secret_team": true,
+    "require_write_access": true,
+    "required_patterns": [
+      "*",
+      "/.github/",
+      "/cmake/",
+      "/docs/governance/",
+      "/docs/modules/",
+      "/docs/program/",
+      "/docs/verification/",
+      "/HeptaTrade/execution/",
+      "/HeptaTrade/risk/",
+      "/HeptaTrade/tool_host/",
+      "/HeptaTrade/adapter_ib/",
+      "/scripts/",
+      "/systemd/"
+    ]
+  },
+  "approval": {
+    "minimum_non_author_approvals_on_exact_head": 1,
+    "require_merge_group_success": true
+  }
+}
