@@ -5,6 +5,19 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/github-governance-qualification.yml'
+      - '.github/workflows/ib-paper-qualification.yml'
+      - '.github/github-governance-policy-v1.json'
+      - '.github/required-check-contexts-v1.json'
+      - 'scripts/verify_github_governance.py'
+      - 'scripts/verify_ib_paper_qualification.py'
+      - 'scripts/verify_ib_candidate_artifact.py'
+      - 'scripts/verify_qualification_candidate.py'
+      - 'scripts/build_ib_candidate_artifact.sh'
+      - 'scripts/run_ib_paper_artifact_qualification.sh'
+      - 'scripts/check_qualification_trust_boundary.py'
+      - 'tests/python/test_github_governance.py'
+      - 'tests/python/test_ib_paper_qualification.py'
+      - 'tests/python/test_qualification_trust_boundary.py'
   workflow_dispatch:
     inputs:
       pull_number:
@@ -12,7 +25,7 @@ on:
         required: true
         type: string
       expected_head_sha:
-        description: Exact unchanged source head to verify
+        description: Exact unchanged source head to verify as data, never execute
         required: true
         type: string
       merge_group_sha:
@@ -40,11 +53,9 @@ jobs:
     if: github.event_name == 'pull_request'
     name: github-governance-workflow-bootstrap-audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      PREFLIGHT_CANDIDATE_SHA: a6b228ab1f79a0971bc188fefe77a1c0f2acf507
+    timeout-minutes: 25
     steps:
-      - name: Checkout exact pull-request head
+      - name: Checkout exact bootstrap pull-request head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -55,81 +66,33 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Audit immutable governance controls
+      - name: Install hostile-boundary test dependency
         run: |
           set -euo pipefail
-          workflow=.github/workflows/github-governance-qualification.yml
-          qualify="$RUNNER_TEMP/github-governance-qualify-job.yml"
-          sed -n '/^  qualify:/,$p' "$workflow" > "$qualify"
-          test -s "$qualify"
-          grep -Fq "if: github.event_name == 'workflow_dispatch'" "$qualify"
-          grep -Fq 'environment: repository-governance' "$qualify"
-          grep -Fq 'HEPTA_GOVERNANCE_TOKEN:' "$qualify"
-          grep -Fq 'secrets.HEPTA_GOVERNANCE_TOKEN' "$qualify"
-          grep -Fq 'test "$DISPATCH_REF" = '\''refs/heads/main'\''' "$qualify"
-          grep -Fq 'ref: ${{ inputs.expected_head_sha }}' "$qualify"
-          grep -Fq -- '--expected-head-sha "$EXPECTED_HEAD_SHA"' "$qualify"
-          grep -Fq -- '--merge-group-sha "$MERGE_GROUP_SHA"' "$qualify"
-          grep -Fq -- '--pull-number "$PULL_NUMBER"' "$qualify"
-          test "$(grep -Fc 'uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262' "$qualify")" = 1
-          test "$(grep -Fc 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' "$qualify")" = 1
-          if grep -Fq 'test "$DISPATCH_SHA" = "$EXPECTED_HEAD_SHA"' "$qualify"; then
-            echo 'governance candidate must be checked out explicitly from trusted main bootstrap' >&2
-            exit 1
-          fi
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('.github/workflows/github-governance-qualification.yml').read_text(encoding='utf-8')
-          on_block = text.split('\npermissions:', 1)[0]
-          for forbidden in ('\n  push:', '\n  schedule:'):
-              if forbidden in on_block:
-                  raise SystemExit('automatic governance trigger is forbidden')
-          for required in (
-              'workflow_dispatch:', 'pull_number:', 'expected_head_sha:',
-              'merge_group_sha:', 'acknowledge_no_bypass:', 'default: false'
-          ):
-              if required not in on_block:
-                  raise SystemExit(f'missing dispatch guard: {required}')
-          permission_block = text.split('\npermissions:', 1)[1].split('\nconcurrency:', 1)[0]
-          expected = {'actions: read', 'checks: read', 'contents: read', 'pull-requests: read'}
-          actual = {line.strip() for line in permission_block.splitlines() if line.strip()}
-          if actual != expected:
-              raise SystemExit(f'permissions are not exact read-only map: {actual!r}')
-          PY
-      - name: Checkout pinned exact integration candidate for hosted verifier preflight
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ env.PREFLIGHT_CANDIDATE_SHA }}
-          path: candidate
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Execute repository-owned governance verifier preflight
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+      - name: Validate trusted harnesses and hostile candidate isolation
         run: |
           set -euo pipefail
-          test "$(git -C candidate rev-parse HEAD)" = "$PREFLIGHT_CANDIDATE_SHA"
-          cd candidate
-          test -f .github/github-governance-policy-v1.json
-          test -f .github/github-team-mapping-v1.json
-          test -f .github/required-check-contexts-v1.json
-          test -f scripts/check_workflow_check_contexts.py
-          test -f scripts/check_required_context_projections.py
-          test -f scripts/check_github_team_mapping.py
-          test -f scripts/verify_github_governance.py
+          git diff --check
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 -m py_compile \
-            scripts/check_workflow_check_contexts.py \
-            scripts/check_required_context_projections.py \
-            scripts/check_github_team_mapping.py \
-            scripts/verify_github_governance.py
-          python3 scripts/check_workflow_check_contexts.py
-          python3 scripts/check_required_context_projections.py
-          python3 scripts/check_github_team_mapping.py
-          python3 tests/python/test_github_governance.py
-          python3 tests/python/test_github_team_mapping.py
+            scripts/verify_github_governance.py \
+            scripts/verify_ib_paper_qualification.py \
+            scripts/verify_ib_candidate_artifact.py \
+            scripts/verify_qualification_candidate.py \
+            scripts/check_qualification_trust_boundary.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover \
+            -s tests/python -p 'test_github_governance.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_ib_paper_qualification.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_qualification_trust_boundary.py'
           printf '%s\n' \
-            "Hosted governance verifier preflight passed for exact candidate $PREFLIGHT_CANDIDATE_SHA." \
-            'This proves repository policy/static verifier inputs and hostile-negative tests only.' \
-            'It did not read live organization controls or create a governance receipt.' \
+            'Trusted qualification boundary audit passed.' \
+            'No secret, broker credential or candidate mutation was used.' \
             >> "$GITHUB_STEP_SUMMARY"
 
   qualify:
@@ -139,7 +102,7 @@ jobs:
     environment: repository-governance
     timeout-minutes: 15
     steps:
-      - name: Require trusted bootstrap ref, exact immutable inputs and no-bypass acknowledgement
+      - name: Require trusted main dispatch and immutable data inputs
         env:
           ACKNOWLEDGE_NO_BYPASS: ${{ inputs.acknowledge_no_bypass }}
           DISPATCH_REF: ${{ github.ref }}
@@ -153,35 +116,24 @@ jobs:
           [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
-      - name: Checkout exact governance candidate
+      - name: Checkout only the trusted default-branch harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
-          ref: ${{ inputs.expected_head_sha }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: trusted
+          fetch-depth: 1
           persist-credentials: false
-      - name: Assert exact source and repository-owned verifier inputs
+      - name: Assert trusted harness identity and static boundary
         env:
-          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
-          test -f .github/github-governance-policy-v1.json
-          test -f .github/github-team-mapping-v1.json
-          test -f .github/required-check-contexts-v1.json
-          test -f scripts/check_workflow_check_contexts.py
-          test -f scripts/check_required_context_projections.py
-          test -f scripts/check_github_team_mapping.py
-          test -f scripts/verify_github_governance.py
-          python3 -m py_compile \
-            scripts/check_workflow_check_contexts.py \
-            scripts/check_required_context_projections.py \
-            scripts/check_github_team_mapping.py \
-            scripts/verify_github_governance.py
-          python3 scripts/check_workflow_check_contexts.py
-          python3 scripts/check_required_context_projections.py
-          python3 scripts/check_github_team_mapping.py
-      - name: Collect and verify live organization and repository evidence
+          test "$(git -C trusted rev-parse HEAD)" = "$DISPATCH_SHA"
+          python3 -m py_compile trusted/scripts/verify_github_governance.py
+          python3 trusted/scripts/check_qualification_trust_boundary.py \
+            --root trusted
+      - name: Collect live evidence with trusted code only
         env:
           HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
           EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
@@ -189,9 +141,8 @@ jobs:
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
-          test -n "$HEPTA_GOVERNANCE_TOKEN"
           receipt="$RUNNER_TEMP/github-governance-receipt.json"
-          python3 scripts/verify_github_governance.py \
+          python3 trusted/scripts/verify_github_governance.py \
             --pull-number "$PULL_NUMBER" \
             --expected-head-sha "$EXPECTED_HEAD_SHA" \
             --merge-group-sha "$MERGE_GROUP_SHA" \
@@ -202,7 +153,7 @@ jobs:
       - name: Upload immutable governance receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: github-governance-${{ inputs.expected_head_sha }}-${{ inputs.merge_group_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: github-governance-${{ github.sha }}-${{ inputs.expected_head_sha }}-${{ inputs.merge_group_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/github-governance-receipt.json
           if-no-files-found: error
           retention-days: 90

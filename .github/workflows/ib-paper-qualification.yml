@@ -4,11 +4,28 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - '.github/workflows/github-governance-qualification.yml'
       - '.github/workflows/ib-paper-qualification.yml'
+      - '.github/github-governance-policy-v1.json'
+      - '.github/required-check-contexts-v1.json'
+      - 'scripts/verify_github_governance.py'
+      - 'scripts/verify_ib_paper_qualification.py'
+      - 'scripts/verify_ib_candidate_artifact.py'
+      - 'scripts/verify_qualification_candidate.py'
+      - 'scripts/build_ib_candidate_artifact.sh'
+      - 'scripts/run_ib_paper_artifact_qualification.sh'
+      - 'scripts/check_qualification_trust_boundary.py'
+      - 'tests/python/test_github_governance.py'
+      - 'tests/python/test_ib_paper_qualification.py'
+      - 'tests/python/test_qualification_trust_boundary.py'
   workflow_dispatch:
     inputs:
+      pull_number:
+        description: Pull request whose exact reviewed head may be qualified
+        required: true
+        type: string
       candidate_sha:
-        description: Exact unchanged HeptaTrader candidate commit to qualify
+        description: Exact candidate source SHA to build in the no-secret sandbox
         required: true
         type: string
       mutation_mode:
@@ -18,7 +35,10 @@ on:
         default: false
 
 permissions:
+  actions: read
+  checks: read
   contents: read
+  pull-requests: read
 
 concurrency:
   group: heptatrader-ib-paper-qualification-${{ github.event_name }}-${{ github.ref }}
@@ -29,11 +49,9 @@ jobs:
     if: github.event_name == 'pull_request'
     name: ib-paper-workflow-bootstrap-audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    env:
-      PREFLIGHT_CANDIDATE_SHA: a6b228ab1f79a0971bc188fefe77a1c0f2acf507
+    timeout-minutes: 25
     steps:
-      - name: Checkout exact pull-request head
+      - name: Checkout exact bootstrap pull-request head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -44,224 +62,202 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Audit immutable qualification controls
-        run: |
-          set -euo pipefail
-          workflow=.github/workflows/ib-paper-qualification.yml
-          qualify="$RUNNER_TEMP/ib-paper-qualify-job.yml"
-          sed -n '/^  qualify:/,$p' "$workflow" > "$qualify"
-          test -s "$qualify"
-          grep -Fq "if: github.event_name == 'workflow_dispatch'" "$qualify"
-          grep -Fq 'runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]' "$qualify"
-          grep -Fq 'environment: ib-paper' "$qualify"
-          grep -Fq 'CANDIDATE_SHA: ${{ inputs.candidate_sha }}' "$qualify"
-          grep -Fq 'ref: ${{ inputs.candidate_sha }}' "$qualify"
-          grep -Fq 'HEPTA_QUALIFICATION_MUTATIONS:' "$qualify"
-          grep -Fq -- '--expected-git-sha "$CANDIDATE_SHA"' "$qualify"
-          grep -Fq -- '--expected-binary "$binary"' "$qualify"
-          grep -Fq -- '--expected-harness "$HEPTA_IB_PAPER_QUALIFIER"' "$qualify"
-          test "$(grep -Fc 'uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262' "$qualify")" = 1
-          test "$(grep -Fc 'uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a' "$qualify")" = 1
-          if grep -Fq 'ref: ${{ github.sha }}' "$qualify"; then
-            echo 'qualification must not bind candidate checkout to the bootstrap commit' >&2
-            exit 1
-          fi
-          python3 - <<'PY'
-          from pathlib import Path
-          text = Path('.github/workflows/ib-paper-qualification.yml').read_text(encoding='utf-8')
-          on_block = text.split('\npermissions:', 1)[0]
-          for forbidden in ('\n  push:', '\n  schedule:'):
-              if forbidden in on_block:
-                  raise SystemExit('automatic qualification trigger is forbidden')
-          for required in (
-              'workflow_dispatch:', 'candidate_sha:', 'mutation_mode:',
-              'type: boolean', 'default: false'
-          ):
-              if required not in on_block:
-                  raise SystemExit(f'missing dispatch guard: {required}')
-          PY
-      - name: Install hosted preflight dependencies
+      - name: Install hostile-boundary test dependency
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y ninja-build g++ libssl-dev python3-jsonschema
-      - name: Checkout pinned exact integration candidate for non-broker preflight
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+      - name: Validate trusted harnesses and hostile candidate isolation
+        run: |
+          set -euo pipefail
+          git diff --check
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
+          python3 -m py_compile \
+            scripts/verify_github_governance.py \
+            scripts/verify_ib_paper_qualification.py \
+            scripts/verify_ib_candidate_artifact.py \
+            scripts/verify_qualification_candidate.py \
+            scripts/check_qualification_trust_boundary.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover \
+            -s tests/python -p 'test_github_governance.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_ib_paper_qualification.py'
+          python3 -m unittest discover \
+            -s tests/python -p 'test_qualification_trust_boundary.py'
+          printf '%s\n' \
+            'Trusted qualification boundary audit passed.' \
+            'No secret, broker credential or candidate mutation was used.' \
+            >> "$GITHUB_STEP_SUMMARY"
+
+  build-candidate:
+    if: github.event_name == 'workflow_dispatch'
+    name: ib-paper-candidate-artifact-build
+    runs-on: [self-hosted, linux, x64, heptatrader-ib-builder]
+    timeout-minutes: 100
+    steps:
+      - name: Require trusted main dispatch and canonical candidate identity
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          DISPATCH_REF: ${{ github.ref }}
+          MUTATION_MODE: ${{ inputs.mutation_mode }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_REF" = 'refs/heads/main'
+          test "$MUTATION_MODE" = 'true'
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
+      - name: Checkout trusted default-branch builder
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
-          ref: ${{ env.PREFLIGHT_CANDIDATE_SHA }}
+          ref: ${{ github.sha }}
+          path: trusted
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Admit exact reviewed candidate with trusted code only
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
+          receipt="$RUNNER_TEMP/qualification-candidate-admission.json"
+          python3 trusted/scripts/verify_qualification_candidate.py \
+            --pull-number "$PULL_NUMBER" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --output "$receipt"
+          test -s "$receipt"
+          test "$(stat -c '%a' "$receipt")" = '600'
+      - name: Checkout candidate as untrusted source input
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ inputs.candidate_sha }}
           path: candidate
           fetch-depth: 1
           persist-credentials: false
-      - name: Execute repository-owned IB-disabled qualification preflight
+          submodules: false
+      - name: Build content-addressed binary in no-network sandbox
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
-          test "$(git -C candidate rev-parse HEAD)" = "$PREFLIGHT_CANDIDATE_SHA"
-          test -f candidate/scripts/run_ib_paper_qualification.sh
-          test -f candidate/scripts/verify_ib_paper_qualification.py
-          test -f candidate/scripts/check_install_tree.py
-          test -f candidate/cmake/RuntimeInstall.cmake
-          bash -n candidate/scripts/run_ib_paper_qualification.sh
-          python3 -m py_compile \
-            candidate/scripts/verify_ib_paper_qualification.py \
-            candidate/scripts/check_install_tree.py
-          grep -Fq 'HEPTA_ENABLE_IBAPI' \
-            candidate/CMakeLists.txt candidate/HeptaTrade/CMakeLists.txt
-          grep -Fq 'hepta_core_test_binaries' candidate/tests/CMakeLists.txt
-          grep -Fq 'add_custom_target(hepta_runtime_binaries' \
-            candidate/cmake/RuntimeInstall.cmake
-
-          build="$RUNNER_TEMP/heptatrader-ib-bootstrap-preflight"
-          cmake -S candidate -B "$build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=ON \
-            -DHEPTA_INSTALL_RUNTIME=ON \
-            -DHEPTA_ENABLE_IBAPI=OFF
-          cmake --build "$build" --parallel 2 --target \
-            hepta_ib_adapter_core \
-            hepta_core_test_binaries \
-            hepta_runtime_binaries
-          ctest --test-dir "$build" --output-on-failure --parallel 1 -R \
-            '^hepta_(ib_order_lifecycle|ib_gateway_adapter_risk|ib_paper_kill_switch|unsupported_venue_adapter)_tests$' \
-            --no-tests=error
-
-          printf '%s\n' \
-            "Hosted preflight passed for exact candidate $PREFLIGHT_CANDIDATE_SHA." \
-            'This proves repository inputs and IB-disabled deterministic paths only.' \
-            'It is not PAPER qualification and performed no broker mutation.' \
-            >> "$GITHUB_STEP_SUMMARY"
+          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
+          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
+          bash -n trusted/scripts/build_ib_candidate_artifact.sh
+          python3 -m py_compile trusted/scripts/verify_ib_candidate_artifact.py
+          artifact="$RUNNER_TEMP/ib-paper-candidate-$CANDIDATE_SHA.tar"
+          trusted/scripts/build_ib_candidate_artifact.sh \
+            candidate "$CANDIDATE_SHA" "$artifact"
+          test -s "$artifact"
+          test ! -L "$artifact"
+      - name: Upload immutable no-secret candidate artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ib-paper-candidate-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ib-paper-candidate-${{ inputs.candidate_sha }}.tar
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
 
   qualify:
     if: github.event_name == 'workflow_dispatch'
+    needs: build-candidate
     name: ib-paper-exact-artifact-qualification
     runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
     timeout-minutes: 90
     steps:
-      - name: Require trusted bootstrap ref and explicit bounded mutation approval
+      - name: Require trusted main dispatch and explicit protected approval
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           DISPATCH_REF: ${{ github.ref }}
           MUTATION_MODE: ${{ inputs.mutation_mode }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
           test "$DISPATCH_REF" = 'refs/heads/main'
+          test "$MUTATION_MODE" = 'true'
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          if [[ "$MUTATION_MODE" != "true" ]]; then
-            echo "IB PAPER qualification requires mutation_mode=true and protected environment approval" >&2
-            exit 78
-          fi
-      - name: Checkout exact qualification candidate
+          [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
+      - name: Checkout only the trusted default-branch qualification harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
-          ref: ${{ inputs.candidate_sha }}
-          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: trusted
+          fetch-depth: 1
           persist-credentials: false
-      - name: Assert exact candidate and repository-owned qualification inputs
+      - name: Re-admit unchanged reviewed candidate before protected mutation
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
+          python3 trusted/scripts/verify_qualification_candidate.py \
+            --pull-number "$PULL_NUMBER" \
+            --candidate-sha "$CANDIDATE_SHA"
+      - name: Download immutable candidate artifact from no-secret build job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ib-paper-candidate-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-download
+      - name: Verify and extract candidate as hostile data
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
-          test -f scripts/run_ib_paper_qualification.sh
-          test -f scripts/verify_ib_paper_qualification.py
-          test -f scripts/check_install_tree.py
-          test -f cmake/RuntimeInstall.cmake
-          bash -n scripts/run_ib_paper_qualification.sh
-          python3 -m py_compile \
-            scripts/verify_ib_paper_qualification.py \
-            scripts/check_install_tree.py
-          grep -Fq 'HEPTA_ENABLE_IBAPI' CMakeLists.txt HeptaTrade/CMakeLists.txt
-          grep -Fq 'hepta_core_test_binaries' tests/CMakeLists.txt
-          grep -Fq 'add_custom_target(hepta_runtime_binaries' \
-            cmake/RuntimeInstall.cmake
-      - name: Validate controlled runner inputs
-        run: |
-          set -euo pipefail
-          test -n "${IBAPI_ROOT:-}"
-          test -d "$IBAPI_ROOT"
-          test ! -L "$IBAPI_ROOT"
-          test -n "${HEPTA_IB_PAPER_QUALIFIER:-}"
-          test -f "$HEPTA_IB_PAPER_QUALIFIER"
-          test -x "$HEPTA_IB_PAPER_QUALIFIER"
-          test ! -L "$HEPTA_IB_PAPER_QUALIFIER"
-      - name: Run deterministic non-broker contract fixture
-        run: |
-          set -euo pipefail
-          probe="$RUNNER_TEMP/heptatrader-ib-contract-probe-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$probe"
-          cmake -S . -B "$probe" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=ON \
-            -DHEPTA_INSTALL_RUNTIME=OFF \
-            -DHEPTA_ENABLE_IBAPI=OFF
-          cmake --build "$probe" --parallel 2 --target \
-            hepta_ib_adapter_core \
-            hepta_core_test_binaries
-          ctest --test-dir "$probe" --output-on-failure --parallel 1 -L core --no-tests=error
-      - name: Configure broker-enabled exact artifact
-        run: |
-          set -euo pipefail
-          build="$RUNNER_TEMP/heptatrader-ib-build-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$build"
-          cmake -S . -B "$build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_TESTING=ON \
-            -DHEPTA_INSTALL_RUNTIME=ON \
-            -DHEPTA_ENABLE_IBAPI=ON \
-            -DIBAPI_ROOT="$IBAPI_ROOT"
-          printf '%s\n' "$build" > "$RUNNER_TEMP/heptatrader-ib-build-dir"
-      - name: Build broker authority and deterministic tests
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          cmake --build "$build" --parallel 2 --target \
-            hepta_ib_executiond \
-            hepta_core_test_binaries \
-            hepta_runtime_binaries
-      - name: Run deterministic tests
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          ctest --test-dir "$build" --output-on-failure --parallel 1 -L core --no-tests=error
-      - name: Validate canonical runtime install tree
-        run: |
-          set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          stage="$RUNNER_TEMP/heptatrader-ib-stage-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          test ! -e "$stage"
-          DESTDIR="$stage" cmake --install "$build" --component runtime
-          python3 scripts/check_install_tree.py "$stage"
-      - name: Run and independently verify controlled PAPER qualification
+          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
+          archive="$RUNNER_TEMP/candidate-download/ib-paper-candidate-$CANDIDATE_SHA.tar"
+          builder_sha="$(sha256sum trusted/scripts/build_ib_candidate_artifact.sh | awk '{print $1}')"
+          destination="$RUNNER_TEMP/verified-ib-candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
+            --archive "$archive" \
+            --expected-candidate-sha "$CANDIDATE_SHA" \
+            --expected-builder-sha256 "$builder_sha" \
+            --destination "$destination"
+          printf '%s\n' "$destination" > "$RUNNER_TEMP/verified-ib-candidate-dir"
+      - name: Run controlled PAPER campaign through trusted external harness
         env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
+          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
           HEPTA_QUALIFICATION_MUTATIONS: '1'
         run: |
           set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
-          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          ./scripts/run_ib_paper_qualification.sh "$build" "$evidence"
+          artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
+          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          trusted/scripts/run_ib_paper_artifact_qualification.sh \
+            "$artifact_dir" "$CANDIDATE_SHA" "$evidence"
           printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
-      - name: Re-verify exact evidence and artifact identity
+      - name: Re-verify exact evidence with trusted verifier
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
+          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
         run: |
           set -euo pipefail
-          build="$(cat "$RUNNER_TEMP/heptatrader-ib-build-dir")"
+          test -n "$HEPTA_IB_PAPER_QUALIFIER"
+          test -n "$HEPTA_IB_PAPER_QUALIFIER_SHA256"
+          artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
           evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
-          binary="$(find "$build" -type f -name hepta-ib-executiond -perm -u+x -print -quit)"
-          test -n "$binary"
-          python3 scripts/verify_ib_paper_qualification.py \
+          python3 trusted/scripts/verify_ib_paper_qualification.py \
             --result "$evidence/qualification-result.json" \
             --evidence-root "$evidence" \
             --expected-git-sha "$CANDIDATE_SHA" \
-            --expected-binary "$binary" \
+            --expected-binary "$artifact_dir/hepta-ib-executiond" \
             --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
       - name: Upload immutable qualification evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: ib-paper-qualification-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ib-paper-qualification-${{ github.sha }}-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
           if-no-files-found: error
           retention-days: 90
