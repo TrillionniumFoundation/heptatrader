@@ -6,7 +6,9 @@
     "dynamic_context_expressions": "matrix-only",
     "required_contexts_must_be_event_reachable": true,
     "skipped_or_missing_is_not_success": true,
-    "merge_group_cancel_in_progress": "forbidden"
+    "merge_group_cancel_in_progress": "forbidden",
+    "all_pages_must_be_collected": true,
+    "check_run_must_bind_workflow_and_non_empty_job": true
   },
   "required_branch_contexts": [
     "documentation-control-plane-exact-head",
@@ -32,6 +34,41 @@
     "canonical-full-suite-reliability (clang++)",
     "exact-merge-candidate"
   ],
+  "required_check_provenance": {
+    "integration_id": 15368,
+    "contexts": {
+      "documentation-control-plane-exact-head": {
+        "workflow_id": 346626270,
+        "workflow_path": ".github/workflows/documentation-control-plane.yml",
+        "job_name": "documentation-control-plane-exact-head"
+      },
+      "core-runtime-exact-head": {
+        "workflow_id": 345160803,
+        "workflow_path": ".github/workflows/core-ci.yml",
+        "job_name": "core-runtime-exact-head"
+      },
+      "canonical-full-suite-core": {
+        "workflow_id": 346064356,
+        "workflow_path": ".github/workflows/canonical-full-suite.yml",
+        "job_name": "canonical-full-suite-core"
+      },
+      "canonical-full-suite-reliability (g++)": {
+        "workflow_id": 346064356,
+        "workflow_path": ".github/workflows/canonical-full-suite.yml",
+        "job_name": "canonical-full-suite-reliability (g++)"
+      },
+      "canonical-full-suite-reliability (clang++)": {
+        "workflow_id": 346064356,
+        "workflow_path": ".github/workflows/canonical-full-suite.yml",
+        "job_name": "canonical-full-suite-reliability (clang++)"
+      },
+      "exact-merge-candidate": {
+        "workflow_id": 347121068,
+        "workflow_path": ".github/workflows/merge-candidate.yml",
+        "job_name": "exact-merge-candidate"
+      }
+    }
+  },
   "external_qualification_contexts": [
     "github-governance-exact-artifact-verification",
     "ib-paper-exact-artifact-qualification"
