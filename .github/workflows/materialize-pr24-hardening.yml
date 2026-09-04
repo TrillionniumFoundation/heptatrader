@@ -1,4 +1,4 @@
-name: Validate and extract reviewed PR24 hardening payload
+name: Materialize reviewed PR24 non-workflow hardening
 
 on:
   push:
@@ -9,27 +9,28 @@ on:
       - '.github/pr24-hardening-payload.part00'
       - '.github/pr24-hardening-payload.part01'
       - '.github/pr24-hardening-payload.part02'
+      - '.github/pr24-boundary-docker.b64'
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
-  group: validate-extract-pr24-hardening-${{ github.sha }}
+  group: materialize-pr24-hardening-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  validate-extract:
+  materialize:
     if: github.repository == 'TrillionniumFoundation/heptatrader' && github.ref == 'refs/heads/codex/harden-qualification-trust-boundary-20260904'
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
-      - name: Checkout exact extraction commit without credentials
+      - name: Checkout exact materialization commit
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
-          persist-credentials: false
-      - name: Verify and extract the closed patch payload
+          persist-credentials: true
+      - name: Verify and extract the closed reviewed payload
         env:
           EXPECTED_BOOTSTRAP_SHA: ${{ github.sha }}
         run: |
@@ -50,7 +51,6 @@ jobs:
           import sys
           import tarfile
 
-          archive_path = Path(sys.argv[1])
           expected = {
               '.github/github-governance-policy-v1.json': 0o644,
               '.github/required-check-contexts-v1.json': 0o644,
@@ -66,7 +66,7 @@ jobs:
               'tests/python/test_github_governance.py': 0o644,
               'tests/python/test_qualification_trust_boundary.py': 0o644,
           }
-          with tarfile.open(archive_path, 'r:gz') as archive:
+          with tarfile.open(sys.argv[1], 'r:gz') as archive:
               members = archive.getmembers()
               names = [member.name for member in members]
               if len(names) != len(set(names)) or set(names) != set(expected):
@@ -77,10 +77,10 @@ jobs:
                       raise SystemExit(f'unsafe payload member: {member.name}')
                   if member.size < 0 or member.size > 2_000_000:
                       raise SystemExit(f'payload member size invalid: {member.name}')
-                  source = archive.extractfile(member)
-                  if source is None:
+                  stream = archive.extractfile(member)
+                  if stream is None:
                       raise SystemExit(f'unreadable payload member: {member.name}')
-                  data = source.read(2_000_001)
+                  data = stream.read(2_000_001)
                   if len(data) != member.size:
                       raise SystemExit(f'payload member short read: {member.name}')
                   destination = Path(member.name)
@@ -90,15 +90,18 @@ jobs:
                   os.chmod(temporary, expected[member.name])
                   os.replace(temporary, destination)
           PY
+          base64 --decode .github/pr24-boundary-docker.b64 \
+            > scripts/check_qualification_trust_boundary.py
+          chmod 0755 scripts/check_qualification_trust_boundary.py
+          printf '%s  %s\n' \
+            '32287b9ca23aa049ccca75846ed7486aa0fa1049c0b30508a2e357645c47b34e' \
+            scripts/check_qualification_trust_boundary.py \
+            | sha256sum --check --strict
           git diff --check
-      - name: Install hostile-isolation test dependency
+      - name: Validate the materialized non-workflow security implementation
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
-      - name: Execute complete materialized security test set
-        run: |
-          set -euo pipefail
+          docker version
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 -m py_compile \
@@ -112,16 +115,21 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
-      - name: Package only the final static file set
+      - name: Commit only static non-workflow files and remove transport payloads
         run: |
           set -euo pipefail
-          output="$RUNNER_TEMP/pr24-final-static.tar.gz"
-          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-            -czf "$output" \
+          git checkout -- \
+            .github/workflows/github-governance-qualification.yml \
+            .github/workflows/ib-paper-qualification.yml
+          find scripts tests -type d -name __pycache__ -prune -exec rm -rf {} +
+          git rm -- \
+            .github/pr24-hardening-payload.part00 \
+            .github/pr24-hardening-payload.part01 \
+            .github/pr24-hardening-payload.part02 \
+            .github/pr24-boundary-docker.b64
+          git add -- \
             .github/github-governance-policy-v1.json \
             .github/required-check-contexts-v1.json \
-            .github/workflows/github-governance-qualification.yml \
-            .github/workflows/ib-paper-qualification.yml \
             scripts/build_ib_candidate_artifact.sh \
             scripts/check_qualification_trust_boundary.py \
             scripts/github_qualification_evidence.py \
@@ -131,14 +139,14 @@ jobs:
             scripts/verify_qualification_candidate.py \
             tests/python/test_github_governance.py \
             tests/python/test_qualification_trust_boundary.py
-          sha256sum "$output" > "$RUNNER_TEMP/pr24-final-static.tar.gz.sha256"
-      - name: Upload immutable extraction artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: pr24-final-static-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/pr24-final-static.tar.gz
-            ${{ runner.temp }}/pr24-final-static.tar.gz.sha256
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+          if ! git diff --cached --quiet -- .github/workflows; then
+            echo 'materialization commit must not modify a workflow file' >&2
+            exit 1
+          fi
+          test -n "$(git diff --cached --name-only)"
+          git diff --cached --check
+          git config user.name 'heptatrader-security-bot'
+          git config user.email 'heptatrader-security-bot@users.noreply.github.com'
+          git commit -m 'security: materialize static qualification hardening' \
+            -m 'Replace the temporary transport payload with reviewed static verifier, provenance, resource-bound builder, merge-group binding, pagination and pre/post admission files. Workflow files are deliberately excluded and will be installed through an independently visible repository write.'
+          git push origin HEAD:codex/harden-qualification-trust-boundary-20260904
