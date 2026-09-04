@@ -1,4 +1,4 @@
-name: Materialize reviewed PR24 hardening patch
+name: Extract reviewed PR24 hardening payload
 
 on:
   push:
@@ -11,25 +11,25 @@ on:
       - '.github/pr24-hardening-payload.part02'
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: materialize-pr24-hardening-${{ github.sha }}
-  cancel-in-progress: true
+  group: extract-pr24-hardening-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
-  apply:
+  extract:
     if: github.repository == 'TrillionniumFoundation/heptatrader' && github.ref == 'refs/heads/codex/harden-qualification-trust-boundary-20260904'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - name: Checkout exact bootstrap commit
+      - name: Checkout exact extraction commit without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
-          persist-credentials: true
-      - name: Verify and materialize the closed patch payload
+          persist-credentials: false
+      - name: Verify and extract the closed patch payload
         env:
           EXPECTED_BOOTSTRAP_SHA: ${{ github.sha }}
         run: |
@@ -85,25 +85,39 @@ jobs:
                       raise SystemExit(f'payload member short read: {member.name}')
                   destination = Path(member.name)
                   destination.parent.mkdir(parents=True, exist_ok=True)
-                  temporary = destination.with_name(destination.name + '.materialize.tmp')
+                  temporary = destination.with_name(destination.name + '.extract.tmp')
                   temporary.write_bytes(data)
                   os.chmod(temporary, expected[member.name])
                   os.replace(temporary, destination)
           PY
-          rm -f \
-            .github/pr24-hardening-payload.part00 \
-            .github/pr24-hardening-payload.part01 \
-            .github/pr24-hardening-payload.part02 \
-            .github/workflows/materialize-pr24-hardening.yml
           git diff --check
-          git status --short
-      - name: Commit the atomic hardening set and remove bootstrap material
+      - name: Package only the final static file set
         run: |
           set -euo pipefail
-          git config user.name 'HeptaTrader Security Automation'
-          git config user.email 'security-automation@users.noreply.github.com'
-          git add --all
-          git diff --cached --check
-          test -n "$(git diff --cached --name-only)"
-          git commit -m 'security: bind qualification to exact queue and immutable builder'
-          git push origin HEAD:codex/harden-qualification-trust-boundary-20260904
+          output="$RUNNER_TEMP/pr24-final-static.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$output" \
+            .github/github-governance-policy-v1.json \
+            .github/required-check-contexts-v1.json \
+            .github/workflows/github-governance-qualification.yml \
+            .github/workflows/ib-paper-qualification.yml \
+            scripts/build_ib_candidate_artifact.sh \
+            scripts/check_qualification_trust_boundary.py \
+            scripts/github_qualification_evidence.py \
+            scripts/run_ib_paper_artifact_qualification.sh \
+            scripts/verify_github_governance.py \
+            scripts/verify_ib_candidate_artifact.py \
+            scripts/verify_qualification_candidate.py \
+            tests/python/test_github_governance.py \
+            tests/python/test_qualification_trust_boundary.py
+          sha256sum "$output" > "$RUNNER_TEMP/pr24-final-static.tar.gz.sha256"
+      - name: Upload immutable extraction artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: pr24-final-static-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/pr24-final-static.tar.gz
+            ${{ runner.temp }}/pr24-final-static.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
