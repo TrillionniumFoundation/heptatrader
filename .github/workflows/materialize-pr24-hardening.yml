@@ -11,6 +11,11 @@ on:
       - '.github/pr24-hardening-payload.part02'
       - '.github/pr24-boundary-docker.b64'
       - '.github/pr24-boundary-docker.part00'
+      - '.github/pr24-boundary-docker.part00a'
+      - '.github/pr24-boundary-docker.part00b'
+      - '.github/pr24-boundary-docker.part00c'
+      - '.github/pr24-boundary-docker.part00d'
+      - '.github/pr24-boundary-docker.part00e'
       - '.github/pr24-boundary-docker.part01'
       - '.github/pr24-boundary-docker.part02'
       - '.github/pr24-boundary-docker.part03'
@@ -96,7 +101,11 @@ jobs:
                   os.replace(temporary, destination)
           PY
           cat \
-            .github/pr24-boundary-docker.part00 \
+            .github/pr24-boundary-docker.part00a \
+            .github/pr24-boundary-docker.part00b \
+            .github/pr24-boundary-docker.part00c \
+            .github/pr24-boundary-docker.part00d \
+            .github/pr24-boundary-docker.part00e \
             .github/pr24-boundary-docker.part01 \
             .github/pr24-boundary-docker.part02 \
             .github/pr24-boundary-docker.part03 \
@@ -138,6 +147,11 @@ jobs:
             .github/pr24-hardening-payload.part02 \
             .github/pr24-boundary-docker.b64 \
             .github/pr24-boundary-docker.part00 \
+            .github/pr24-boundary-docker.part00a \
+            .github/pr24-boundary-docker.part00b \
+            .github/pr24-boundary-docker.part00c \
+            .github/pr24-boundary-docker.part00d \
+            .github/pr24-boundary-docker.part00e \
             .github/pr24-boundary-docker.part01 \
             .github/pr24-boundary-docker.part02 \
             .github/pr24-boundary-docker.part03 \
