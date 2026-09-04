@@ -6,6 +6,8 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 enum class StrategyRuntimePhase
 {
@@ -42,6 +44,7 @@ struct StrategyRuntimeSnapshot
     std::uint64_t updatedAtMs = 0;
     std::uint64_t checkpointSequence = 0;
     std::string checkpointDigest;
+    std::uint64_t checkpointBytes = 0;
     std::string reasonCode;
 };
 
@@ -56,6 +59,8 @@ struct StrategyRuntimeControlResult
 // This controller deliberately does not execute untrusted code. It is the
 // fail-closed admission/checkpoint/quarantine boundary that an OS sandbox
 // must call after independently enforcing process, memory, CPU and FD limits.
+// Checkpoints here are metadata only, not persisted payloads. Observed time is
+// a trusted composition input; this object is not an independent clock authority.
 class StrategyRuntimeControl
 {
 public:
@@ -66,7 +71,7 @@ public:
 
     static const char* Version() noexcept
     {
-        return "hepta.strategy-runtime-control.v1";
+        return "hepta.strategy-runtime-control.v2";
     }
 
     StrategyRuntimeControlResult Admit(const StrategyArtifactDescriptor& descriptor,
@@ -79,6 +84,9 @@ public:
         const auto found = m_records.find(descriptor.moduleId);
         if (found != m_records.end())
         {
+            if (!Guard(found->second, found->second.generation, observedAtMs))
+                return GuardFailure(found->second, found->second.generation,
+                                    observedAtMs);
             if (SameDescriptor(found->second.descriptor, descriptor) &&
                 found->second.phase == StrategyRuntimePhase::Admitted)
             {
@@ -99,8 +107,11 @@ public:
         snapshot.generation = 1;
         snapshot.updatedAtMs = observedAtMs;
         snapshot.reasonCode = "STRATEGY_ADMITTED";
-        m_records.emplace(descriptor.moduleId, snapshot);
-        return Accept(snapshot.reasonCode.c_str(), snapshot);
+        // Construct the acknowledgement before publication. Map insertion has
+        // the strong guarantee; after it succeeds no allocating copy remains.
+        StrategyRuntimeControlResult result = Accept(snapshot.reasonCode.c_str(), snapshot);
+        m_records.emplace(descriptor.moduleId, std::move(snapshot));
+        return result;
     }
 
     StrategyRuntimeControlResult Start(const std::string& moduleId,
@@ -119,11 +130,12 @@ public:
             return Reject("STRATEGY_START_STATE_INVALID", &snapshot);
         if (artifactDigest != snapshot.descriptor.artifactDigest)
             return Reject("STRATEGY_ARTIFACT_DIGEST_MISMATCH", &snapshot);
-        if (!Advance(snapshot, observedAtMs))
+        StrategyRuntimeSnapshot proposed = snapshot;
+        if (!Advance(proposed, observedAtMs))
             return Reject("STRATEGY_GENERATION_EXHAUSTED", &snapshot);
-        snapshot.phase = StrategyRuntimePhase::Running;
-        snapshot.reasonCode = "STRATEGY_RUNNING";
-        return Accept(snapshot.reasonCode.c_str(), snapshot);
+        proposed.phase = StrategyRuntimePhase::Running;
+        proposed.reasonCode = "STRATEGY_RUNNING";
+        return Commit(snapshot, std::move(proposed));
     }
 
     StrategyRuntimeControlResult Checkpoint(
@@ -153,19 +165,22 @@ public:
             return Reject("STRATEGY_CHECKPOINT_SEQUENCE_STALE", &snapshot);
         if (checkpointSequence == snapshot.checkpointSequence)
         {
-            if (checkpointDigest != snapshot.checkpointDigest)
+            if (checkpointDigest != snapshot.checkpointDigest ||
+                checkpointBytes != snapshot.checkpointBytes)
                 return Reject("STRATEGY_CHECKPOINT_SEQUENCE_CONFLICT", &snapshot);
             StrategyRuntimeControlResult result = Accept(
                 "STRATEGY_CHECKPOINT_DUPLICATE", snapshot);
             result.duplicate = true;
             return result;
         }
-        if (!Advance(snapshot, observedAtMs))
+        StrategyRuntimeSnapshot proposed = snapshot;
+        if (!Advance(proposed, observedAtMs))
             return Reject("STRATEGY_GENERATION_EXHAUSTED", &snapshot);
-        snapshot.checkpointSequence = checkpointSequence;
-        snapshot.checkpointDigest = checkpointDigest;
-        snapshot.reasonCode = "STRATEGY_CHECKPOINT_COMMITTED";
-        return Accept(snapshot.reasonCode.c_str(), snapshot);
+        proposed.checkpointSequence = checkpointSequence;
+        proposed.checkpointDigest = checkpointDigest;
+        proposed.checkpointBytes = checkpointBytes;
+        proposed.reasonCode = "STRATEGY_CHECKPOINT_COMMITTED";
+        return Commit(snapshot, std::move(proposed));
     }
 
     StrategyRuntimeControlResult Quarantine(const std::string& moduleId,
@@ -184,11 +199,12 @@ public:
             return GuardFailure(snapshot, expectedGeneration, observedAtMs);
         if (snapshot.phase == StrategyRuntimePhase::Stopped)
             return Reject("STRATEGY_QUARANTINE_STATE_INVALID", &snapshot);
-        if (!Advance(snapshot, observedAtMs))
+        StrategyRuntimeSnapshot proposed = snapshot;
+        if (!Advance(proposed, observedAtMs))
             return Reject("STRATEGY_GENERATION_EXHAUSTED", &snapshot);
-        snapshot.phase = StrategyRuntimePhase::Quarantined;
-        snapshot.reasonCode = reasonCode;
-        return Accept("STRATEGY_QUARANTINED", snapshot);
+        proposed.phase = StrategyRuntimePhase::Quarantined;
+        proposed.reasonCode = reasonCode;
+        return Commit(snapshot, std::move(proposed), "STRATEGY_QUARANTINED");
     }
 
     StrategyRuntimeControlResult Replace(const StrategyArtifactDescriptor& descriptor,
@@ -209,14 +225,16 @@ public:
             return Reject("STRATEGY_REPLACEMENT_STATE_INVALID", &snapshot);
         if (SameDescriptor(snapshot.descriptor, descriptor))
             return Reject("STRATEGY_REPLACEMENT_IDENTITY_UNCHANGED", &snapshot);
-        if (!Advance(snapshot, observedAtMs))
+        StrategyRuntimeSnapshot proposed = snapshot;
+        if (!Advance(proposed, observedAtMs))
             return Reject("STRATEGY_GENERATION_EXHAUSTED", &snapshot);
-        snapshot.descriptor = descriptor;
-        snapshot.phase = StrategyRuntimePhase::Admitted;
-        snapshot.checkpointSequence = 0;
-        snapshot.checkpointDigest.clear();
-        snapshot.reasonCode = "STRATEGY_REPLACEMENT_ADMITTED";
-        return Accept(snapshot.reasonCode.c_str(), snapshot);
+        proposed.descriptor = descriptor;
+        proposed.phase = StrategyRuntimePhase::Admitted;
+        proposed.checkpointSequence = 0;
+        proposed.checkpointDigest.clear();
+        proposed.checkpointBytes = 0;
+        proposed.reasonCode = "STRATEGY_REPLACEMENT_ADMITTED";
+        return Commit(snapshot, std::move(proposed));
     }
 
     StrategyRuntimeControlResult Stop(const std::string& moduleId,
@@ -237,19 +255,20 @@ public:
             result.duplicate = true;
             return result;
         }
-        if (!Advance(snapshot, observedAtMs))
+        StrategyRuntimeSnapshot proposed = snapshot;
+        if (!Advance(proposed, observedAtMs))
             return Reject("STRATEGY_GENERATION_EXHAUSTED", &snapshot);
-        snapshot.phase = StrategyRuntimePhase::Stopped;
-        snapshot.reasonCode = "STRATEGY_STOPPED";
-        return Accept(snapshot.reasonCode.c_str(), snapshot);
+        proposed.phase = StrategyRuntimePhase::Stopped;
+        proposed.reasonCode = "STRATEGY_STOPPED";
+        return Commit(snapshot, std::move(proposed));
     }
 
     bool Get(const std::string& moduleId, StrategyRuntimeSnapshot& out) const
     {
-        out = StrategyRuntimeSnapshot();
         std::lock_guard<std::mutex> lock(m_mutex);
+        // Resolve a key that may alias out.descriptor.moduleId before reset.
         const auto found = m_records.find(moduleId);
-        if (found == m_records.end()) return false;
+        if (found == m_records.end()) { out = StrategyRuntimeSnapshot(); return false; }
         out = found->second;
         return true;
     }
@@ -341,6 +360,23 @@ private:
         ++snapshot.generation;
         snapshot.updatedAtMs = observedAtMs;
         return true;
+    }
+
+    // The mutex serializes publication. All potentially allocating state and
+    // acknowledgement construction precede the no-throw move. Allocation
+    // failures propagate to the trusted caller with the old state untouched.
+    static StrategyRuntimeControlResult Commit(
+        StrategyRuntimeSnapshot& current, StrategyRuntimeSnapshot&& proposed,
+        const char* code = nullptr)
+    {
+        static_assert(std::is_nothrow_move_assignable<StrategyRuntimeSnapshot>::value,
+                      "Strategy state publication must not throw");
+        static_assert(std::is_nothrow_move_constructible<StrategyRuntimeControlResult>::value,
+                      "Returning an accepted result must not throw");
+        StrategyRuntimeControlResult result = Accept(
+            code == nullptr ? proposed.reasonCode.c_str() : code, proposed);
+        current = std::move(proposed);
+        return result;
     }
 
     static StrategyRuntimeControlResult Accept(

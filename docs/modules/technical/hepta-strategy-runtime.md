@@ -1,7 +1,7 @@
 # Strategy Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.strategy.runtime` version `1.0.0` (current)
+Applies to: `hepta.strategy.runtime` version `2.0.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-strategy-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -87,7 +87,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `module-isolated`
-- **persistence:** `module-isolated-approved-checkpoint`
+- **persistence:** `process-local-checkpoint-metadata-only`
 - **writer:** `single-owner`
 
 - Strategy-local state is isolated by strategy/agent identity and is never authoritative portfolio state.
@@ -97,9 +97,9 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 
 ### Concurrency contract
 
-- **model:** `instance-sharded`
+- **model:** `single-controller-mutex`
 - **shard key:** `strategy-agent-instance`
-- **blocking io:** `startup-checkpoint-only`
+- **blocking io:** `none-in-controller-payload-storage-external`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract
@@ -125,7 +125,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Strategy versions, parameters, resource budgets and enablement are canonical configuration.
 - Unknown or unapproved strategy versions cannot load.
 
-The manifest version is `1.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `2.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
