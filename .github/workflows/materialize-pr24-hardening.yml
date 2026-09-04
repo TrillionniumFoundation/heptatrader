@@ -1,4 +1,4 @@
-name: Extract reviewed PR24 hardening payload
+name: Validate and extract reviewed PR24 hardening payload
 
 on:
   push:
@@ -14,14 +14,14 @@ permissions:
   contents: read
 
 concurrency:
-  group: extract-pr24-hardening-${{ github.sha }}
+  group: validate-extract-pr24-hardening-${{ github.sha }}
   cancel-in-progress: false
 
 jobs:
-  extract:
+  validate-extract:
     if: github.repository == 'TrillionniumFoundation/heptatrader' && github.ref == 'refs/heads/codex/harden-qualification-trust-boundary-20260904'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - name: Checkout exact extraction commit without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -91,6 +91,27 @@ jobs:
                   os.replace(temporary, destination)
           PY
           git diff --check
+      - name: Install hostile-isolation test dependency
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap
+      - name: Execute complete materialized security test set
+        run: |
+          set -euo pipefail
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
+          python3 -m py_compile \
+            scripts/github_qualification_evidence.py \
+            scripts/verify_github_governance.py \
+            scripts/verify_ib_paper_qualification.py \
+            scripts/verify_ib_candidate_artifact.py \
+            scripts/verify_qualification_candidate.py \
+            scripts/check_qualification_trust_boundary.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
+          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
+          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
       - name: Package only the final static file set
         run: |
           set -euo pipefail
