@@ -37,7 +37,8 @@
       "merge_method": "SQUASH",
       "max_entries_to_merge": 1,
       "minimum_check_response_timeout_minutes": 5,
-      "maximum_check_response_timeout_minutes": 60
+      "maximum_check_response_timeout_minutes": 60,
+      "required_ref_prefix": "refs/heads/gh-readonly-queue/main/pr-"
     }
   },
   "codeowners": {
@@ -66,6 +67,8 @@
   },
   "approval": {
     "minimum_non_author_approvals_on_exact_head": 1,
-    "require_merge_group_success": true
+    "require_merge_group_success": true,
+    "reduce_each_reviewer_to_latest_exact_head_state": true,
+    "reject_current_exact_head_change_requests": true
   }
 }

@@ -8,6 +8,7 @@ on:
       - '.github/workflows/ib-paper-qualification.yml'
       - '.github/github-governance-policy-v1.json'
       - '.github/required-check-contexts-v1.json'
+      - 'scripts/github_qualification_evidence.py'
       - 'scripts/verify_github_governance.py'
       - 'scripts/verify_ib_paper_qualification.py'
       - 'scripts/verify_ib_candidate_artifact.py'
@@ -25,11 +26,11 @@ on:
         required: true
         type: string
       candidate_sha:
-        description: Exact candidate source SHA to build in the no-secret sandbox
+        description: Exact candidate source SHA, used only as untrusted build data
         required: true
         type: string
       mutation_mode:
-        description: Explicitly approve the bounded real PAPER mutation campaign
+        description: Explicitly approve the bounded real PAPER campaign
         required: true
         type: boolean
         default: false
@@ -62,11 +63,10 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Install hostile-boundary test dependency
+      - name: Confirm Docker hostile-isolation dependency
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends bubblewrap
+          docker version
       - name: Validate trusted harnesses and hostile candidate isolation
         run: |
           set -euo pipefail
@@ -74,21 +74,19 @@ jobs:
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 -m py_compile \
+            scripts/github_qualification_evidence.py \
             scripts/verify_github_governance.py \
             scripts/verify_ib_paper_qualification.py \
             scripts/verify_ib_candidate_artifact.py \
             scripts/verify_qualification_candidate.py \
             scripts/check_qualification_trust_boundary.py
           python3 scripts/check_qualification_trust_boundary.py --self-test
-          python3 -m unittest discover \
-            -s tests/python -p 'test_github_governance.py'
-          python3 -m unittest discover \
-            -s tests/python -p 'test_ib_paper_qualification.py'
-          python3 -m unittest discover \
-            -s tests/python -p 'test_qualification_trust_boundary.py'
+          python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
+          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
+          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           printf '%s\n' \
             'Trusted qualification boundary audit passed.' \
-            'No secret, broker credential or candidate mutation was used.' \
+            'No secret, Broker credential or candidate mutation was used.' \
             >> "$GITHUB_STEP_SUMMARY"
 
   build-candidate:
@@ -96,6 +94,10 @@ jobs:
     name: ib-paper-candidate-artifact-build
     runs-on: [self-hosted, linux, x64, heptatrader-ib-builder]
     timeout-minutes: 100
+    env:
+      HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
+      HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
+      HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
       - name: Require trusted main dispatch and canonical candidate identity
         env:
@@ -125,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
-          receipt="$RUNNER_TEMP/qualification-candidate-admission.json"
+          receipt="$RUNNER_TEMP/builder-admission.json"
           python3 trusted/scripts/verify_qualification_candidate.py \
             --pull-number "$PULL_NUMBER" \
             --candidate-sha "$CANDIDATE_SHA" \
@@ -141,18 +143,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
           submodules: false
-      - name: Build content-addressed binary in no-network sandbox
+      - name: Build content-addressed binary in bounded digest-pinned OCI sandbox
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
           test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
           test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
-          bash -n trusted/scripts/build_ib_candidate_artifact.sh
-          python3 -m py_compile trusted/scripts/verify_ib_candidate_artifact.py
           artifact="$RUNNER_TEMP/ib-paper-candidate-$CANDIDATE_SHA.tar"
-          trusted/scripts/build_ib_candidate_artifact.sh \
-            candidate "$CANDIDATE_SHA" "$artifact"
+          trusted/scripts/build_ib_candidate_artifact.sh candidate "$CANDIDATE_SHA" "$artifact"
           test -s "$artifact"
           test ! -L "$artifact"
       - name: Upload immutable no-secret candidate artifact
@@ -171,6 +170,8 @@ jobs:
     runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
     timeout-minutes: 90
+    env:
+      HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
       - name: Require trusted main dispatch and explicit protected approval
         env:
@@ -192,7 +193,7 @@ jobs:
           path: trusted
           fetch-depth: 1
           persist-credentials: false
-      - name: Re-admit unchanged reviewed candidate before protected mutation
+      - name: Record pre-campaign exact admission
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           GITHUB_TOKEN: ${{ github.token }}
@@ -202,7 +203,8 @@ jobs:
           test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
           python3 trusted/scripts/verify_qualification_candidate.py \
             --pull-number "$PULL_NUMBER" \
-            --candidate-sha "$CANDIDATE_SHA"
+            --candidate-sha "$CANDIDATE_SHA" \
+            --output "$RUNNER_TEMP/pre-campaign-admission.json"
       - name: Download immutable candidate artifact from no-secret build job
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
@@ -213,14 +215,13 @@ jobs:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
           archive="$RUNNER_TEMP/candidate-download/ib-paper-candidate-$CANDIDATE_SHA.tar"
-          builder_sha="$(sha256sum trusted/scripts/build_ib_candidate_artifact.sh | awk '{print $1}')"
           destination="$RUNNER_TEMP/verified-ib-candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
             --archive "$archive" \
             --expected-candidate-sha "$CANDIDATE_SHA" \
-            --expected-builder-sha256 "$builder_sha" \
+            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
+            --trusted-root trusted \
             --destination "$destination"
           printf '%s\n' "$destination" > "$RUNNER_TEMP/verified-ib-candidate-dir"
       - name: Run controlled PAPER campaign through trusted external harness
@@ -236,28 +237,48 @@ jobs:
           trusted/scripts/run_ib_paper_artifact_qualification.sh \
             "$artifact_dir" "$CANDIDATE_SHA" "$evidence"
           printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
-      - name: Re-verify exact evidence with trusted verifier
+      - name: Re-admit unchanged candidate after Broker campaign
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GITHUB_TOKEN: ${{ github.token }}
+          PULL_NUMBER: ${{ inputs.pull_number }}
+        run: |
+          set -euo pipefail
+          python3 trusted/scripts/verify_qualification_candidate.py \
+            --pull-number "$PULL_NUMBER" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --output "$RUNNER_TEMP/post-campaign-admission.json"
+          python3 trusted/scripts/verify_qualification_candidate.py \
+            --compare-before "$RUNNER_TEMP/pre-campaign-admission.json" \
+            --compare-after "$RUNNER_TEMP/post-campaign-admission.json" \
+            --comparison-output "$RUNNER_TEMP/campaign-admission-pair.json"
+      - name: Issue final receipt only after stable post-campaign admission
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
         run: |
           set -euo pipefail
-          test -n "$HEPTA_IB_PAPER_QUALIFIER"
-          test -n "$HEPTA_IB_PAPER_QUALIFIER_SHA256"
           artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
           evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
+          test -s "$RUNNER_TEMP/campaign-admission-pair.json"
+          test ! -e "$evidence/qualification-verification.json"
           python3 trusted/scripts/verify_ib_paper_qualification.py \
             --result "$evidence/qualification-result.json" \
             --evidence-root "$evidence" \
             --expected-git-sha "$CANDIDATE_SHA" \
             --expected-binary "$artifact_dir/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
-      - name: Upload immutable qualification evidence
+            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
+            --receipt "$evidence/qualification-verification.json"
+          test -s "$evidence/qualification-verification.json"
+      - name: Upload immutable qualification and admission evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: ib-paper-qualification-${{ github.sha }}-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+          path: |
+            ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/pre-campaign-admission.json
+            ${{ runner.temp }}/post-campaign-admission.json
+            ${{ runner.temp }}/campaign-admission-pair.json
           if-no-files-found: error
           retention-days: 90
