@@ -4,12 +4,16 @@
   "minimum_members_per_team": 2,
   "minimum_maintainers_per_team": 1,
   "tracked_path_policy": {
-    "source": "git-ls-files",
+    "source": "git-ls-files-stage-zero",
     "scope": "all-top-level-directories",
     "require_match_per_rule": true,
     "require_byte_sorted_root_rules": true,
+    "require_git_repository_root": true,
+    "allow_filesystem_fallback": false,
     "allow_future_only_patterns": false,
-    "wildcard_counts_for_team_qualification": false
+    "wildcard_counts_for_team_qualification": false,
+    "reject_gitlinks": true,
+    "reject_unmerged_index": true
   },
   "teams": [
     {
