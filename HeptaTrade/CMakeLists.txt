@@ -96,8 +96,10 @@ add_library(hepta_observability_core STATIC
 hepta_runtime_target(hepta_observability_core)
 
 add_library(hepta_portfolio_core STATIC
-    portfolio/portfolio_compiler.cpp)
+    portfolio/portfolio_compiler.cpp
+    portfolio/simulator_fx_accounting.cpp)
 hepta_runtime_target(hepta_portfolio_core)
+target_link_libraries(hepta_portfolio_core PUBLIC OpenSSL::Crypto)
 
 add_library(hepta_numeric_core STATIC
     numeric/fixed_decimal.cpp)

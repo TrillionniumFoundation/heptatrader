@@ -1,7 +1,7 @@
 # Portfolio Compiler Technical Guide
 
 Status: generated current view
-Applies to: `hepta.portfolio.compiler` version `1.0.0` (current)
+Applies to: `hepta.portfolio.compiler` version `1.1.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-portfolio-compiler.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -20,17 +20,20 @@ Manifest: [`modules/manifests/hepta-portfolio-compiler.json`](../manifests/hepta
 - deterministic cross-strategy netting
 - gross budget compilation
 - target-position plan construction
+- bounded simulator-only fully funded EUR/USD cash and position replay
+- separate USD commission completeness and exact-cut balance reconciliation
 
 ### Excluded or not-current scope
 
-- multi-currency cash ledger
+- production multi-currency cash ledger and broker settlement
 - margin and borrow allocation
 - factor and Greek exposure compilation
+- trade busts, corrections, funding, interest and realized-PnL accounting
 
 ### Direct implementation evidence
 
 - **Source evidence:** `HeptaTrade/portfolio/`
-- **Test evidence:** `tests/portfolio_compiler_tests.cpp`, `tests/portfolio_latency_fixture_tests.cpp`
+- **Test evidence:** `tests/portfolio_compiler_tests.cpp`, `tests/portfolio_latency_fixture_tests.cpp`, `tests/simulator_fx_accounting_tests.cpp`, `tests/python/test_simulator_fx_accounting.py`
 
 This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
 
@@ -84,7 +87,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 ## State and Data Model
 
 - **model:** `none`
-- **persistence:** `none-recomputable-from-plan-and-metadata`
+- **persistence:** `none-recomputable-from-plan-metadata-and-simulator-events`
 - **writer:** `single-owner`
 
 - Compilation is a deterministic transformation; outputs are immutable intents bound to the input plan.
@@ -122,7 +125,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Lot size, instrument mapping and portfolio rules are versioned metadata/configuration.
 - Unsupported venue/instrument combinations fail closed.
 
-The manifest version is `1.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.1.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

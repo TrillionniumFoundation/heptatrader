@@ -32,3 +32,20 @@ HeptaTrader 当前产品是 **Agent-compatible deterministic trading control and
 IB PAPER 是 conditional：只有与 exact artifact/config/harness/session 绑定的外部 qualification 可把该特定构建视为 qualified。目录、代码、示例或单元测试存在不能提升能力状态。
 
 命名规则：当前使用 “deterministic Agent trading runtime”；只有 M4/M5 闭环后可称 “AI-native quantitative trading system”；只有完整 multi-Agent lifecycle/evaluation/capital allocation 后才使用 “Agent OS”。
+
+## Bounded simulator accounting profile
+
+`SimulatorFxAccounting` adds a pure, replay-derived accounting profile for the
+simulator only: one EUR/USD cash book, explicitly versioned instrument metadata,
+whole-EUR fill quantities, exact micro-USD prices/notionals and separate USD fee
+reports. Opening balances and ordered events are independent supervisor inputs.
+Buy/sell cash movements, nonnegative balances, duplicate/conflict handling,
+commission completeness and same-cut reconciliation have executable tests.
+The native profile is specified under [supporting accounting projections](../contracts/AUTHORITATIVE-SNAPSHOT-CONTRACT.md#simulator-only-spot-fx-accounting-projection).
+
+This does not qualify IB terms, fees or settlement; metadata defaults are
+simulator rules, not venue limits. No margin, credit, fractional-base fills,
+foreign-currency fees, funding, corrections/busts, interest, tax lots, realized
+P&L, durable financial ledger or automatic authoritative snapshot integration
+is implemented by this profile. Replay success and exact balance agreement do
+not authenticate input completeness or create Execution/PAPER/LIVE authority.
