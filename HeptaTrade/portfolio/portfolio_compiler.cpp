@@ -73,9 +73,30 @@ PortfolioCompileResult PortfolioCompiler::Compile(
 {
     if (!authoritative.complete || authoritative.generation == 0)
         return Reject("PORTFOLIO_SNAPSHOT_INCOMPLETE");
-    if (policy.maximumGrossTarget <= 0 ||
-        policy.maximumStrategies == 0 || policy.maximumInstruments == 0)
+    if (policy.maximumGrossTarget <= 0 || policy.maximumStrategies == 0 ||
+        policy.maximumStrategies > kMaximumStrategyBudgets ||
+        policy.maximumInstruments == 0 ||
+        policy.maximumInstruments > kMaximumTargetInstruments)
         return Reject("PORTFOLIO_POLICY_INVALID");
+    // Check all container sizes before walking caller-controlled bodies.
+    if (intents.size() > kMaximumIntents)
+        return Reject("PORTFOLIO_INTENT_CAPACITY_EXCEEDED");
+    if (policy.strategyBudgets.size() > kMaximumStrategyBudgets)
+        return Reject("PORTFOLIO_POLICY_CAPACITY_EXCEEDED");
+    if (authoritative.currentPositions.size() > kMaximumSnapshotPositions)
+        return Reject("PORTFOLIO_SNAPSHOT_CAPACITY_EXCEEDED");
+
+    // Validate the complete policy, including currently unused entries. A
+    // malformed budget must not be accepted by the empty-intent fast path.
+    // Registered budgets may exceed the participating-strategy policy limit.
+    for (const auto& entry : policy.strategyBudgets)
+    {
+        if (!CanonicalId(entry.first, 64) ||
+            !CanonicalId(entry.second.strategyId, 64) ||
+            entry.first != entry.second.strategyId ||
+            entry.second.maximumGrossTarget <= 0)
+            return Reject("PORTFOLIO_STRATEGY_BUDGET_INVALID");
+    }
 
     // Validate the complete authoritative position map before taking the
     // no-intent fast path.  A malformed snapshot must never be treated as a
@@ -102,32 +123,45 @@ PortfolioCompileResult PortfolioCompiler::Compile(
         return result;
     }
 
-    std::vector<StrategyTargetIntent> ordered = intents;
+    // Validate all fields before sorting or allocating normalization indices.
+    // Rejection still constructs its bounded reason string; it is not claimed
+    // to be allocation-free under sustained memory exhaustion.
+    for (const auto& intent : intents)
+    {
+        if (!CanonicalId(intent.strategyId, 64) ||
+            !CanonicalId(intent.instrument, 128))
+            return Reject("PORTFOLIO_INTENT_IDENTITY_INVALID");
+        if (intent.snapshotGeneration != authoritative.generation)
+            return Reject("PORTFOLIO_INTENT_GENERATION_MISMATCH");
+        PortfolioMicrounits magnitude = 0;
+        if (!CheckedAbsolute(intent.targetPosition, magnitude))
+            return Reject("PORTFOLIO_ARITHMETIC_OVERFLOW");
+        if (policy.strategyBudgets.find(intent.strategyId) == policy.strategyBudgets.end())
+            return Reject("PORTFOLIO_STRATEGY_BUDGET_MISSING");
+    }
+    // Inputs are immutable for the duration of Compile. Only a bounded pointer
+    // index is copied: no rejected or valid body strings need duplication here.
+    std::vector<const StrategyTargetIntent*> ordered;
+    ordered.reserve(intents.size());
+    for (const auto& intent : intents) ordered.push_back(&intent);
     std::sort(ordered.begin(), ordered.end(),
-        [](const StrategyTargetIntent& left,
- const StrategyTargetIntent& right) {
-  if (left.strategyId != right.strategyId)
-      return left.strategyId < right.strategyId;
-  if (left.instrument != right.instrument)
-      return left.instrument < right.instrument;
-  return left.targetPosition < right.targetPosition;
+        [](const StrategyTargetIntent* left, const StrategyTargetIntent* right) {
+            if (left->strategyId != right->strategyId)
+                return left->strategyId < right->strategyId;
+            if (left->instrument != right->instrument)
+                return left->instrument < right->instrument;
+            return left->targetPosition < right->targetPosition;
         });
 
     std::set<std::string> strategies;
     std::set<std::string> instruments;
-    std::set<std::string> uniqueIntents;
     PortfolioCompileResult result;
     for (std::size_t i = 0; i < ordered.size(); ++i)
     {
-        const StrategyTargetIntent& intent = ordered[i];
-        if (!CanonicalId(intent.strategyId, 64) ||
-  !CanonicalId(intent.instrument, 128))
-  return Reject("PORTFOLIO_INTENT_IDENTITY_INVALID");
-        if (intent.snapshotGeneration != authoritative.generation)
-  return Reject("PORTFOLIO_INTENT_GENERATION_MISMATCH");
-        const std::string unique = intent.strategyId + '\x1f' + intent.instrument;
-        if (!uniqueIntents.insert(unique).second)
-  return Reject("PORTFOLIO_DUPLICATE_STRATEGY_INSTRUMENT");
+        const StrategyTargetIntent& intent = *ordered[i];
+        if (i != 0 && ordered[i - 1]->strategyId == intent.strategyId &&
+            ordered[i - 1]->instrument == intent.instrument)
+            return Reject("PORTFOLIO_DUPLICATE_STRATEGY_INSTRUMENT");
         strategies.insert(intent.strategyId);
         instruments.insert(intent.instrument);
         if (strategies.size() > policy.maximumStrategies)
@@ -176,8 +210,6 @@ PortfolioCompileResult PortfolioCompiler::Compile(
    authoritative.currentPositions.begin();
          it != authoritative.currentPositions.end(); ++it)
     {
-        if (!CanonicalId(it->first, 128))
-  return Reject("PORTFOLIO_SNAPSHOT_INSTRUMENT_INVALID");
         deltaInstruments.insert(it->first);
     }
     for (std::set<std::string>::const_iterator it = deltaInstruments.begin();

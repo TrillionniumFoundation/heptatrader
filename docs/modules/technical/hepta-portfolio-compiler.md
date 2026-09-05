@@ -1,7 +1,7 @@
 # Portfolio Compiler Technical Guide
 
 Status: generated current view
-Applies to: `hepta.portfolio.compiler` version `1.1.0` (current)
+Applies to: `hepta.portfolio.compiler` version `1.1.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-portfolio-compiler.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -125,7 +125,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Lot size, instrument mapping and portfolio rules are versioned metadata/configuration.
 - Unsupported venue/instrument combinations fail closed.
 
-The manifest version is `1.1.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.1.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

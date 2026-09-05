@@ -63,6 +63,16 @@ class PortfolioCompiler
 public:
     static const char* Version();
 
+    // Hard per-call ceilings; policy may narrow participating strategies and
+    // target instruments, but cannot expand these implementation bounds.
+    enum : std::size_t {
+        kMaximumIntents = 16384,
+        kMaximumStrategyBudgets = 256,
+        kMaximumTargetInstruments = 4096,
+        kMaximumSnapshotPositions = 4096,
+        kMaximumDeltaInstruments = 8192
+    };
+
     static PortfolioCompileResult Compile(
         const std::vector<StrategyTargetIntent>& intents,
         const AuthoritativePortfolioInput& authoritative,
