@@ -2,6 +2,9 @@
 """Generate human-readable views from Hepta machine registries."""
 from __future__ import annotations
 import argparse
+import heapq
+import math
+import re
 import json
 from pathlib import Path
 import sys
@@ -83,20 +86,258 @@ def module_map() -> str:
     return "\n".join(lines)
 
 
-def roadmap() -> str:
-    milestones = load("docs/program/milestone-registry-v1.json")["milestones"]
-    gaps = load("docs/program/gap-registry-v2.json")["gaps"]
-    by_milestone: dict[str, list[dict[str, Any]]] = {}
-    for gap in gaps:
-        by_milestone.setdefault(gap["milestone"], []).append(gap)
-    lines = header("Hepta Modular Runtime Global Development Roadmap V2", "all active development workstreams", "generated from milestone and gap registries")
-    lines += ["| ID | Milestone | State | Depends on | Open/blocked gaps | Exit contract |", "|---|---|---|---|---:|---|"]
+PROGRAM_STATES = ("planned", "in-progress", "blocked", "closed")
+MAX_PROGRAM_MILESTONES = 256
+MAX_PROGRAM_GAPS = 4096
+MAX_PROGRAM_REGISTRY_BYTES = 1024 * 1024
+
+
+def _program_text(value: Any, label: str, maximum: int = 4096) -> str:
+    if (not isinstance(value, str) or not value or value != value.strip()
+            or len(value) > maximum
+            or any(ord(c) < 32 or 127 <= ord(c) <= 159
+                   or 0xD800 <= ord(c) <= 0xDFFF or c in "\u2028\u2029" for c in value)):
+        raise ValueError(f"{label}: expected bounded nonempty single-line text")
+    return value
+
+
+def _program_id(value: Any, label: str) -> str:
+    text = _program_text(value, label, 64)
+    if re.fullmatch(r"[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*", text) is None:
+        raise ValueError(f"{label}: invalid program identifier")
+    return text
+
+
+def _program_state(value: Any, label: str) -> str:
+    if not isinstance(value, str) or value not in PROGRAM_STATES:
+        raise ValueError(f"{label}: invalid declaration state")
+    return value
+
+
+def program_progress(milestones: Any, gaps: Any) -> dict[str, Any]:
+    """Project declarations, never verification or permission, from private values.
+
+    Callers supply quiescent parsed inputs. No source identity, check execution,
+    receipt authentication or deployment observation is established here.
+    """
+    if not isinstance(milestones, list) or not 1 <= len(milestones) <= MAX_PROGRAM_MILESTONES:
+        raise ValueError("milestones: expected 1..256 records")
+    if not isinstance(gaps, list) or len(gaps) > MAX_PROGRAM_GAPS:
+        raise ValueError("gaps: expected at most 4096 records")
+    nodes: dict[str, dict[str, Any]] = {}
     for item in milestones:
-        open_count = sum(g["state"] != "closed" for g in by_milestone.get(item["id"], []))
-        deps = ", ".join(item["depends_on"]) or "—"
-        exit_text = "; ".join(item["exit"])
-        lines.append(f"| `{item['id']}` | {item['title']} | **{item['state']}** | {deps} | {open_count} | {exit_text} |")
-    lines += ["", "实时完成状态必须由 exact-revision evidence 派生；本视图不替代 CI 或外部 qualification。", ""]
+        if not isinstance(item, dict):
+            raise ValueError("milestone: expected object")
+        key = _program_id(item.get("id"), "milestone.id")
+        if key in nodes:
+            raise ValueError(f"duplicate milestone: {key}")
+        deps = item.get("depends_on")
+        if not isinstance(deps, list) or len(deps) > MAX_PROGRAM_MILESTONES:
+            raise ValueError(f"{key}: invalid dependency array")
+        dependencies = [_program_id(dep, f"{key}.depends_on") for dep in deps]
+        if len(dependencies) != len(set(dependencies)) or key in dependencies:
+            raise ValueError(f"{key}: duplicate or self dependency")
+        exits = item.get("exit")
+        if not isinstance(exits, list) or not 1 <= len(exits) <= 64:
+            raise ValueError(f"{key}: invalid exit array")
+        exit_contract = [_program_text(v, f"{key}.exit") for v in exits]
+        if len(exit_contract) != len(set(exit_contract)):
+            raise ValueError(f"{key}: duplicate exit condition")
+        nodes[key] = {
+            "id": key,
+            "title": _program_text(item.get("title"), f"{key}.title"),
+            "declared_state": _program_state(item.get("state"), f"{key}.state"),
+            "depends_on": sorted(dependencies),
+            "exit": exit_contract,
+            "integration_gate": _program_text(item.get("integration_gate"), f"{key}.integration_gate"),
+        }
+    children: dict[str, list[str]] = {key: [] for key in nodes}
+    remaining = {key: len(node["depends_on"]) for key, node in nodes.items()}
+    for key, node in nodes.items():
+        for dep in node["depends_on"]:
+            if dep not in nodes:
+                raise ValueError(f"{key}: unknown dependency {dep}")
+            children[dep].append(key)
+    ready = sorted(key for key, count in remaining.items() if count == 0)
+    ancestors: dict[str, set[str]] = {}
+    while ready:
+        key = heapq.heappop(ready)
+        ancestors[key] = set(nodes[key]["depends_on"])
+        for dep in nodes[key]["depends_on"]:
+            ancestors[key].update(ancestors[dep])
+        for child in children[key]:
+            remaining[child] -= 1
+            if remaining[child] == 0:
+                heapq.heappush(ready, child)
+    if len(ancestors) != len(nodes):
+        raise ValueError("milestone dependency cycle")
+
+    open_by_node: dict[str, list[str]] = {key: [] for key in nodes}
+    counts = {state: 0 for state in PROGRAM_STATES}
+    seen: set[str] = set()
+    open_gaps: list[dict[str, str]] = []
+    for item in gaps:
+        if not isinstance(item, dict):
+            raise ValueError("gap: expected object")
+        key = _program_id(item.get("id"), "gap.id")
+        if key in seen:
+            raise ValueError(f"duplicate gap: {key}")
+        seen.add(key)
+        owner = _program_id(item.get("milestone"), f"{key}.milestone")
+        if owner not in nodes:
+            raise ValueError(f"{key}: unknown milestone {owner}")
+        state = _program_state(item.get("state"), f"{key}.state")
+        title = _program_text(item.get("title"), f"{key}.title")
+        counts[state] += 1
+        if state != "closed":
+            open_by_node[owner].append(key)
+            open_gaps.append({"id": key, "milestone": owner, "state": state, "title": title})
+
+    rows: list[dict[str, Any]] = []
+    for key in sorted(nodes):
+        row = nodes[key]
+        row["open_gap_ids"] = sorted(open_by_node[key])
+        # Report every unresolved ancestor, not just the immediate dependency.
+        row["unresolved_prerequisites"] = sorted(
+            dep for dep in ancestors[key]
+            if nodes[dep]["declared_state"] != "closed" or open_by_node[dep]
+        )
+        row["declaration_diagnostics"] = []
+        if row["declared_state"] == "closed":
+            if row["open_gap_ids"]:
+                row["declaration_diagnostics"].append("closed-with-open-gaps")
+            if row["unresolved_prerequisites"]:
+                row["declaration_diagnostics"].append("closed-with-unmet-prerequisites")
+        rows.append(row)
+    return {
+        "schema": "heptatrader.program-progress.v1",
+        "scope": "registry-declarations-only",
+        "grants_qualification": False,
+        "observations": {
+            stage: "not-evaluated" for stage in (
+                "exact_head_checks", "independent_review", "merge_group_checks",
+                "merged_main", "artifact_reproducibility", "external_qualification",
+                "release_eligibility", "deployment_readiness", "paper_authority", "live_authority",
+            )
+        },
+        "registered_gap_counts": counts,
+        "registered_open_gaps": sorted(open_gaps, key=lambda row: row["id"]),
+        "milestones": rows,
+    }
+
+
+def _program_unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate program registry key: {key}")
+        result[key] = value
+    return result
+
+
+def _program_constant(value: str) -> Any:
+    raise ValueError(f"non-finite program registry number: {value}")
+
+
+def _program_float(value: str) -> float:
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("non-finite program registry number")
+    return result
+
+
+def _load_program_registry(path: str, schema: str) -> dict[str, Any]:
+    # Repository input, not a secure receipt reader or atomic multi-file snapshot.
+    with (ROOT / path).open("rb") as stream:
+        payload = stream.read(MAX_PROGRAM_REGISTRY_BYTES + 1)
+    if len(payload) > MAX_PROGRAM_REGISTRY_BYTES:
+        raise ValueError("program registry exceeds 1 MiB")
+    try:
+        document = json.loads(
+            payload.decode("utf-8"), object_pairs_hook=_program_unique_object,
+            parse_constant=_program_constant, parse_float=_program_float,
+        )
+    except RecursionError as exc:
+        raise ValueError("program registry nesting exceeds parser capacity") from exc
+    if not isinstance(document, dict) or document.get("schema") != schema:
+        raise ValueError(f"{path}: program registry schema mismatch")
+    return document
+
+
+def load_program_progress() -> dict[str, Any]:
+    milestones = _load_program_registry(
+        "docs/program/milestone-registry-v1.json", "heptatrader.milestone-registry.v1"
+    )
+    gaps = _load_program_registry(
+        "docs/program/gap-registry-v2.json", "heptatrader.gap-registry.v2"
+    )
+    return program_progress(milestones.get("milestones"), gaps.get("gaps"))
+
+
+def _program_cell(text: str) -> str:
+    # Keep registry prose inert in a generated Markdown table.
+    return "".join(f"&#{ord(c)};" if c in "&<>|`\\[]*_~" else c for c in text)
+
+
+def roadmap() -> str:
+    progress = load_program_progress()
+    lines = header("Hepta Modular Runtime Global Development Roadmap V2", "all active development workstreams", "generated from milestone and gap registries")
+    lines += [
+        "## Repository declarations and dependency diagnostics", "",
+        "Recorded states describe repository implementation declarations only. "
+        "A recorded `closed` never means current-head checks, review, integration, "
+        "release, external qualification or deployment succeeded.", "",
+        "| ID | Milestone | Recorded state | Depends on | Own non-closed gaps | Unresolved prerequisites (transitive) | Declaration diagnostics |",
+        "|---|---|---|---|---|---|---|",
+    ]
+    for row in progress["milestones"]:
+        deps = ", ".join(row["depends_on"]) or "—"
+        gaps = ", ".join(row["open_gap_ids"]) or "—"
+        unmet = ", ".join(row["unresolved_prerequisites"]) or "—"
+        diagnostics = "; ".join(row["declaration_diagnostics"]) or "none (not verification)"
+        lines.append(
+            f"| `{row['id']}` | {_program_cell(row['title'])} | `{row['declared_state']}` | "
+            f"{deps} | {gaps} | {unmet} | {diagnostics} |"
+        )
+    lines += [
+        "", "Unresolved prerequisites include every ancestor with a non-closed "
+        "declaration or its own non-closed registered gap. Diagnostics do not rewrite "
+        "historical states or infer successful checks from zero open gaps.", "",
+        "## Exit contracts and independent integration gates", "",
+        "| ID | Repository exit contract | Required integration gate (not observed here) |",
+        "|---|---|---|",
+    ]
+    for row in progress["milestones"]:
+        lines.append(
+            f"| `{row['id']}` | {_program_cell('; '.join(row['exit']))} | "
+            f"{_program_cell(row['integration_gate'])} |"
+        )
+    lines += ["", "## Registered gaps are not the complete product backlog", ""]
+    counts = progress["registered_gap_counts"]
+    lines.append("Registered declarations: " + ", ".join(f"`{s}`={counts[s]}" for s in PROGRAM_STATES) + ".")
+    lines += ["", "| Non-closed gap | Recorded state | Milestone | Scope |", "|---|---|---|---|"]
+    for row in progress["registered_open_gaps"]:
+        lines.append(f"| `{row['id']}` | `{row['state']}` | `{row['milestone']}` | {_program_cell(row['title'])} |")
+    if not progress["registered_open_gaps"]:
+        lines.append("| — | No non-closed registered gap | — | Not an all-product closure claim |")
+    lines += [
+        "", "Module exclusions remain authoritative in "
+        "[module implementation scope](../modules/module-registry-v2.json). "
+        "They neither disappear when gap counts reach zero nor automatically become "
+        "promised product scope. Remaining implementation work products are specified "
+        "by the [current upgrade plan](DOCUMENTATION-UPGRADE-PLAN.md).", "",
+        "## Verification and authority observations", "",
+        "| Evidence dimension | Observation from this generator |", "|---|---|",
+    ]
+    for stage, observation in progress["observations"].items():
+        lines.append(f"| `{stage}` | `{observation}` |")
+    lines += [
+        "", "`grants_qualification=false`. This read-only declaration projection "
+        "does not query GitHub, authenticate receipts, execute tests, change gap "
+        "states or enable trading. Use independently bound live evidence for the "
+        "dimensions above; see the [traceability model](TRACEABILITY-MODEL.md).", "",
+        "实时完成状态必须由 exact-revision evidence 派生；本视图不替代 CI 或外部 qualification。", "",
+    ]
     return "\n".join(lines)
 
 
@@ -481,7 +722,16 @@ def main() -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--write", action="store_true")
     mode.add_argument("--check", action="store_true")
+    mode.add_argument("--progress-json", action="store_true")
     args = parser.parse_args()
+    if args.progress_json:
+        try:
+            report = load_program_progress()
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            print(f"[DOC-GENERATOR] invalid program registry: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(report, sort_keys=True, ensure_ascii=False, allow_nan=False))
+        return 0
     drift: list[str] = []
     try:
         rendered_outputs = outputs()
@@ -491,7 +741,7 @@ def main() -> int:
     for relative, render in rendered_outputs.items():
         try:
             expected = render()
-        except (KeyError, TypeError, ValueError) as exc:
+        except (KeyError, OSError, TypeError, ValueError) as exc:
             drift.append(f"cannot render {relative}: {exc}")
             continue
         path = ROOT / relative
