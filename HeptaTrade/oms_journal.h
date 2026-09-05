@@ -11,6 +11,8 @@
 #include <thread>
 #include <condition_variable>
 
+class OmsSegmentedJournal;
+
 struct OmsJournalEvent {
     // v4 schema. Keep old keys/fields for backward compatibility.
     int schemaVersion = 4;
@@ -89,6 +91,8 @@ struct OmsJournalHealthSnapshot {
     std::uint64_t replayCapacityRejects = 0;
     std::uint64_t replayBusyRejects = 0;
     bool workerStoppedOnFailure = false;
+    std::size_t onDiskBytes = 0; // Pinned file bytes observed under the journal lock.
+    bool onDiskBytesValid = false;
     OmsJournalLimits limits;
 };
 
@@ -126,6 +130,8 @@ private:
     static std::string EscapeJson(const std::string& s);
     static std::string BuildJsonLine(const OmsJournalEvent& evt);
     static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
+    OmsJournalHealthSnapshot GetHealthSnapshotCore() const;
+    friend class OmsSegmentedJournal;
 
 private:
     std::string m_path;

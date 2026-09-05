@@ -231,6 +231,88 @@ Interface references: `https://man7.org/linux/man-pages/man2/getrlimit.2.html`,
 `https://eel.is/c++draft/thread.mutex.requirements.mutex`.
 
 
+### Bounded segmented journal profile
+
+Execution Runtime 1.3.0 adds `OmsSegmentedJournal`, an opt-in Linux local-filesystem
+profile over the existing physical record codec. It uses a pre-existing private
+`0700` directory, one active file, a retained nonblocking writer lock and sealed
+segments. All file operations remain inside a pinned directory descriptor through
+`/proc/self/fd`; a second cooperating writer cannot initialize the same base name.
+This requires Linux `flock`, `renameat2(RENAME_NOREPLACE)` and procfs. It is not a
+network filesystem, multi-host consensus or uncooperative same-UID attacker model.
+
+The canonical names are:
+
+```text
+<base>.writer.lock
+<base>.active.jsonl
+<base>.segment.<20-digit-sequence>.<10-digit-record-count>.<sha256>.jsonl
+```
+
+The base name begins with ASCII alphanumeric and contains only ASCII alphanumeric,
+period, underscore or hyphen. Segment sequence begins at one and must remain
+contiguous. Unknown files beginning with `<base>.`, malformed segment names,
+symlinks, wrong ownership/mode/link count, missing sequences, record-count drift,
+invalid records or content-digest mismatch fail initialization/replay. The SHA-256
+name detects byte replacement and accidental corruption; because the directory is
+controlled by the same local authority, it is **not producer authentication or a
+signature**. The SHA-256 implementation has a writer-record known-vector regression.
+
+Before appending, the wrapper includes active on-disk bytes, queued/buffered bytes,
+sealed bytes and logical record count in admission. Default/hard ceilings are:
+
+| Segmented budget | Default / hard ceiling |
+|---|---:|
+| Active segment logical bytes | 16 MiB / 64 MiB |
+| All sealed + active logical bytes | 256 MiB / 256 MiB |
+| Sealed segment count | 255 / 255 |
+| Total replayable records | 262,144 / 262,144 |
+| Active queue bytes | 16 MiB / 256 MiB repository ceiling, and never above active segment limit |
+| Active queued records | 65,536 / 65,536, and never above total record limit |
+
+`OmsJournalHealthSnapshot::onDiskBytesValid` distinguishes a real pinned-file size
+observation from a zero default. Rotation never relies on an invalid observation.
+When the next encoded record does not fit the active segment, rotation first uses
+normal replay/sync to validate and flush it. The closed active bytes are hashed,
+then atomically renamed without replacement and the directory is synchronized.
+Only after the sealed file is re-opened, parsed, counted and digest-verified does a
+new active file become available. A missing active file with a valid contiguous
+segment set—equivalent to restart after rename and before active creation—is
+recreated. A post-rename failure leaves the object unavailable until fresh Init;
+it does not continue from a segment set absent from in-memory ordering.
+
+Replay validates all sealed segments in sequence, then the active journal, and
+retains the complete bounded event set before any external callback. Corruption in
+a later segment or active file therefore publishes no earlier callbacks. The
+segmented object has its own reservation through callback completion; nested or
+overlapping segmented replay rejects. Appends may proceed during callbacks and are
+outside that captured batch. External caller quiescence is still required for
+object destruction.
+
+Rotation and total-capacity refusal return failure without deleting sealed history.
+The active journal's synchronous critical barrier remains available while it can
+write within the total byte/record budget; this profile does not fabricate an
+unbounded emergency disk reserve. Exhaustion stops new admission. It never prunes,
+renumbers, skips or rewrites authoritative segments automatically.
+
+Direct regressions in `tests/oms_journal_durability_tests.cpp` cover automatic and
+explicit rotation, exact SHA-256 identity, ordered restart replay, the post-rename
+missing-active layout, writer-lock exclusion, private-directory/base-name rules,
+content tamper, sequence gaps, malformed segment surfaces, total byte/record and
+segment-count refusal, cross-segment callback atomicity, overlapping replay, and
+four concurrent producers. The inherited record/queue/failure tests and the
+process-exit crash fixture remain in the same build target/lane.
+
+**Unclosed checkpoint boundary:** this profile bounds disk and remains replayable
+within its configured cut, but it intentionally stops at the total limit. It does
+not assert that a financial/OMS authoritative snapshot semantically covers a
+segment prefix, and therefore exposes no destructive prune operation. Continuing
+indefinitely requires a separately versioned checkpoint that binds the complete
+Execution/financial state, exact segment chain and recovery tests before any sealed
+bytes can be deleted. Raising the ceiling or manually removing a segment is not
+recovery and will fail the sequence/integrity checks.
+
+
 ## Verification and explicit limits
 
 | Requirement | Direct implementation / assertion evidence |
@@ -257,6 +339,6 @@ Interface references: `https://man7.org/linux/man-pages/man2/getrlimit.2.html`,
 
 Command idempotency, venue mutation gating and uncertain outcome handling additionally require `tests/execution_coordinator_tests.cpp`; their success must be checked on the same revision rather than inferred from the journal tests.
 
-The journal now enforces the per-object queue/replay limits above, but has no segment rotation/compaction protocol or authenticated remote backup/replication. Batch thresholds are not capacity budgets. Deployment sizing, whole-service resource enforcement, long-running disk capacity, corruption recovery and target-storage fault qualification remain distinct engineering work; this document does not close them by describing the current implementation. Any future record reinterpretation or schema-major migration requires writer/reader compatibility rules, golden old/new records, restart/replay tests and a rollback procedure.
+The journal now enforces the per-object queue/replay limits and the opt-in bounded segmented profile above, but has no destructive checkpoint/compaction protocol or authenticated remote backup/replication. Batch thresholds are not capacity budgets. Deployment sizing, whole-service resource enforcement, long-running disk capacity, corruption recovery and target-storage fault qualification remain distinct engineering work; this document does not close them by describing the current implementation. Any future record reinterpretation or schema-major migration requires writer/reader compatibility rules, golden old/new records, restart/replay tests and a rollback procedure.
 
 No journal test, generated document or hosted workflow grants IB PAPER or LIVE authority. The protected exact-artifact qualification requirements remain unchanged.
