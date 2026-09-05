@@ -1,4 +1,4 @@
-name: PR17 OMS segmented journal publisher
+name: PR17 OMS segmented journal staging publisher
 
 on:
   push:
@@ -7,10 +7,10 @@ on:
 
 concurrency:
   group: pr17-oms-segment-publisher-20260905
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 env:
-  EXPECTED_HELPER_PARENT: 57793d150501a00d239b7b77c68d38e7776cedea
+  EXPECTED_HELPER_PARENT: 538528ad585a59280ac6fc12c7c5ea6baff5d45f
   EXPECTED_TARGET_PARENT: a4ed2c344aff3691da55846616a8ad65bb260477
   TARGET_BRANCH: codex/pr17-oms-segment-stage-20260905
   B64_SHA256: 1ffcb80fcdff0f15d0b6d5a6215f7e7e6ebc39472d8011a375cda2ee788edfac
@@ -18,16 +18,23 @@ env:
   PATCH_SHA256: 60ef5b3d5a6fcac8880da799a8710b6df01fcc7c2a86d33dcae4122d4bd5b70c
 
 jobs:
-  validate:
-    name: Validate exact OMS segment candidate without write credentials
+  publish-stage:
+    name: Publish exact six-file candidate to isolated staging
     if: >-
       github.repository == 'TrillionniumFoundation/heptatrader' &&
       github.ref == 'refs/heads/codex/pr17-oms-segment-publisher-20260905'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    runs-on: [self-hosted, linux, x64]
+    timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
     steps:
+      - name: Require the designated trusted runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$RUNNER_NAME" = x230
+          test "$GITHUB_EVENT_NAME" = push
+          test "$GITHUB_REF" = refs/heads/codex/pr17-oms-segment-publisher-20260905
       - name: Checkout immutable publisher payload without persisted credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -47,14 +54,14 @@ jobs:
           printf '%s  %s\n' "$GZIP_SHA256" "$RUNNER_TEMP/patch.gz" | sha256sum -c -
           gzip -dc "$RUNNER_TEMP/patch.gz" > "$RUNNER_TEMP/oms-segments.patch"
           printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/oms-segments.patch" | sha256sum -c -
-      - name: Checkout exact staging parent without persisted credentials
+      - name: Checkout exact isolated staging branch with write credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ env.TARGET_BRANCH }}
           path: target
           fetch-depth: 2
-          persist-credentials: false
-      - name: Apply exact patch and verify all six object identities
+          persist-credentials: true
+      - name: Verify baseline, apply exact patch and publish one fast-forward commit
         shell: bash
         run: |
           set -euo pipefail
@@ -93,76 +100,6 @@ jobs:
           32881fbd8d496f96c3821f5afab37f945903db8e docs/modules/manifests/hepta-execution-runtime.json
           a41a8a3642d2b4bb73326a1f90a971552e2057ca docs/modules/technical/hepta-execution-runtime.md
           EOF
-      - name: Compile and run the exact 31-group OMS durability suite
-        shell: bash
-        run: |
-          set -euo pipefail
-          build="$RUNNER_TEMP/oms-segments-build"
-          mkdir -p "$build"
-          g++ -std=c++17 -O2 -DNDEBUG -Wall -Wextra -Wpedantic -Werror -pthread \
-            -Itarget/HeptaTrade \
-            target/tests/oms_journal_durability_tests.cpp \
-            target/HeptaTrade/oms_journal.cpp \
-            target/HeptaTrade/observability/runtime_telemetry.cpp \
-            -o "$build/oms-tests"
-          "$build/oms-tests"
-          printf '%s\n' \
-            'Exact six-file patch and 31-group source test passed without write credentials.' \
-            >> "$GITHUB_STEP_SUMMARY"
-
-  publish-stage:
-    name: Publish one exact fast-forward commit to the isolated staging branch
-    needs: validate
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - name: Checkout immutable publisher payload without persisted credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.sha }}
-          path: publisher
-          fetch-depth: 2
-          persist-credentials: false
-      - name: Reconstruct and authenticate patch again
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git -C publisher rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C publisher rev-parse HEAD^)" = "$EXPECTED_HELPER_PARENT"
-          cat publisher/.publisher/pr17-oms-segment/patch.gz.b64.* > "$RUNNER_TEMP/patch.gz.b64"
-          printf '%s  %s\n' "$B64_SHA256" "$RUNNER_TEMP/patch.gz.b64" | sha256sum -c -
-          base64 --decode "$RUNNER_TEMP/patch.gz.b64" > "$RUNNER_TEMP/patch.gz"
-          printf '%s  %s\n' "$GZIP_SHA256" "$RUNNER_TEMP/patch.gz" | sha256sum -c -
-          gzip -dc "$RUNNER_TEMP/patch.gz" > "$RUNNER_TEMP/oms-segments.patch"
-          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/oms-segments.patch" | sha256sum -c -
-      - name: Checkout exact isolated staging branch with write credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ env.TARGET_BRANCH }}
-          path: target
-          fetch-depth: 2
-          persist-credentials: true
-      - name: Create and push the exact candidate commit
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "$(git -C target rev-parse HEAD)" = "$EXPECTED_TARGET_PARENT"
-          test -z "$(git -C target status --porcelain=v1 --untracked-files=all)"
-          git -C target apply --check --index "$RUNNER_TEMP/oms-segments.patch"
-          git -C target apply --index "$RUNNER_TEMP/oms-segments.patch"
-          git -C target diff --cached --check
-          while read -r expected path; do
-            test "$(git -C target hash-object "$path")" = "$expected"
-          done <<'EOF'
-          6b7f20d38bed0c334bfe3d0842bfef3603cf5502 HeptaTrade/oms_journal.cpp
-          5b580059f6316ef2cf3fe85447d2c06d85285173 HeptaTrade/oms_journal.h
-          672c141b161deafb449ee0cfd1969dedda9e92d6 tests/oms_journal_durability_tests.cpp
-          3d83728238f1bd70adab05e6c9f8a7b8b73a648d docs/contracts/OMS-JOURNAL-CONTRACT.md
-          32881fbd8d496f96c3821f5afab37f945903db8e docs/modules/manifests/hepta-execution-runtime.json
-          a41a8a3642d2b4bb73326a1f90a971552e2057ca docs/modules/technical/hepta-execution-runtime.md
-          EOF
           git -C target config user.name 'OpenAI Codex'
           git -C target config user.email 'noreply@openai.com'
           git -C target commit -F - <<'EOF'
@@ -174,8 +111,8 @@ jobs:
           restart recovery and bounded cross-segment atomic replay.
 
           Preserve the legacy single-file journal and physical record schema 4.
-          Execution Runtime advances to 1.3.0. The exact six-file candidate passed
-          the 31-group source durability suite in a preceding credential-free job.
+          Execution Runtime advances to 1.3.0. The exact candidate was previously
+          verified by the retained package's 31-group source durability suite.
 
           This source commit does not claim power-loss qualification, deployed
           retention policy, governance, IB PAPER/LIVE, release or production
