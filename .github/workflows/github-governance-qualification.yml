@@ -1,4 +1,5 @@
 # Exact-head bootstrap audit trigger after temporary materialization removal.
+# Stable-head audit trigger after fail-closed CODEOWNERS verifier repair.
 name: GitHub Governance Qualification
 
 on:
