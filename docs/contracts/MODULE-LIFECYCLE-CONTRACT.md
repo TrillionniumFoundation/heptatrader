@@ -20,7 +20,7 @@ starts a process, proves health or grants Execution authority.
 The inter-module contract remains `hepta.module-lifecycle.v1`. The native
 controller identifiers are independently versioned:
 `hepta.strategy-runtime-control.v2` and `hepta.durable-rollout-store.v2`.
-Strategy Runtime is module version 2.1.0; Management Control is 2.0.1
+Strategy Runtime is module version 2.2.0; Management Control is 2.0.1
 with the seven-state exception-safety correction below. Existing V2 native callers
 must still review the stricter admission rules and recompile native types. Wire
 schema V1 is unchanged; no ABI, automatic migration or deployment qualification
@@ -126,6 +126,166 @@ is returned and no admission slot is consumed. A caller must catch failures at
 its supervisor boundary; this API does not claim it can allocate an error result
 under sustained memory exhaustion. Duplicate observations do not advance the
 committed timestamp, and failed observations do not create a clock-fault epoch.
+
+## Signed artifact bytes and verified metadata entry
+
+Strategy Runtime module **2.2.0** adds `StrategyArtifactVerifier` and immutable
+`VerifiedStrategyArtifact` in `strategy_runtime/strategy_artifact_verifier.*`.
+The private read-only Linux file boundary is `strategy_artifact_files.h`. They
+are compiled into `hepta_strategy_runtime`. The native verifier identifier is
+`hepta.strategy-artifact-verifier.v1`; the controller identifier remains V2.
+
+This implementation loads and verifies artifact, configuration and optional
+model **bytes**. It never maps them as executable memory, dynamically links,
+extracts archives, interprets configuration/model formats, executes a process or
+creates a sandbox. A valid signature authenticates the bounded authorization
+message under the selected public key; it does not prove that the program is
+benign, profitable, compatible, independently reviewed or qualified for trading.
+
+### Trust policy and canonical signed message
+
+`StrategyArtifactTrustPolicy` is copied at verifier construction and immutable.
+The trusted supervisor independently chooses its revision, exact audience,
+module, key ID and 32-byte raw Ed25519 public key, revocation flag, key-validity
+window, minimum release sequence, maximum signed lifetime and byte limits. No
+key is accepted from the manifest or fetched from a URL/environment variable.
+One verifier admits one exact module/key/audience tuple. Key provisioning,
+rotation, policy authentication, active-policy selection and persisted monotonic
+release state are outside this object. Do not let candidate code construct or
+choose the verifier which will authorize its own admission.
+
+`SignedStrategyArtifact` is a typed input, not a JSON/package parser. Callers
+must bound and validate any transport before constructing it, and must not
+concurrently mutate arguments during validation. `SigningMessage` returns the
+following unambiguous, domain-separated bytes, or an empty string for an invalid
+manifest. Production code contains verification and message construction only;
+private keys and signing in the repository are confined to public test fixtures.
+
+```text
+ASCII "HEPTA_STRATEGY_ARTIFACT_AUTHORIZATION_V1\n"
+8 length-prefixed strings, in order:
+  policyRevision, audience, keyId,
+  moduleId, version, artifactDigest, configDigest, modelDigest
+7 unsigned integers, in order:
+  maxThreads, maxFileDescriptors, maxMemoryBytes, maxCheckpointBytes,
+  releaseSequence, issuedAtMs, expiresAtMs
+```
+
+Every length/integer is eight-byte unsigned big-endian. Digests are canonical
+lowercase `sha256:` strings. An empty model digest requires no model path;
+otherwise the model is mandatory. Module/version IDs and budgets obey the
+controller's existing validation limits. Policy/audience/key IDs are nonempty
+bounded identifiers. Signature is exactly 64 raw bytes and is not part of its
+own signed message. OpenSSL Pure Ed25519 verification uses one-shot
+`EVP_DigestVerify` with a null digest algorithm, and every initialization and
+verification result must succeed; no algorithm fallback exists. API reference:
+`https://docs.openssl.org/3.0/man7/EVP_SIGNATURE-ED25519/`.
+
+Load rejects mismatched scope, revoked keys, releases below the independent
+minimum, malformed signatures and invalid times **before file reads**. Valid
+signed intervals satisfy `issuedAtMs <= observedAtMs < expiresAtMs`, fit wholly
+within the pinned key window, and do not exceed the configured maximum lifetime
+(default/hard maximum 86,400,000 ms). Timestamp arithmetic uses ordered unsigned
+subtraction, not potentially overflowing expiry addition. Observation time is
+provided by a trusted supervisor; there is no trusted clock or live revocation
+service inside this library.
+
+The verifier's policy digest covers its domain, all four identity strings, raw
+public key, revocation flag, both key times, minimum sequence, maximum lifetime
+and all four byte limits using the same field/integer encoding. The immutable
+verified result retains this digest, signed manifest, copied bytes and validation
+time. A policy with the same revision name but changed key/limits has a different
+fingerprint and cannot authorize an old result without fresh verification.
+
+### Read-only bounded file admission
+
+The three files must have distinct simple leaf names of at most 96 characters
+from letters/digits/dot/underscore/hyphen; `.` and `..` are refused. The absolute
+existing directory is at most 4,096 bytes and 64 components, with no empty,
+dot, parent or NUL components and no trailing separator. Its effective-UID
+ownership and exact 0700 mode are checked. All components are opened with
+no-follow directory descriptors. Files must be effective-UID-owned, exact 0600,
+single-linked regular files; symlinks, executable/set-ID modes, FIFOs, devices,
+directories, missing and zero-length required files are refused.
+
+Artifact/configuration/model default byte caps are respectively 16/1/32 MiB;
+total default and hard maximum is 64 MiB. Each individual cap must fit the total;
+a model cap of zero explicitly forbids model-bearing bundles. Each read is also
+limited by remaining aggregate capacity and the descriptor's declared memory-byte
+ceiling. These bound input bytes and per-call allocations, not allocator overhead,
+OpenSSL internals, caller-retained result copies, filesystem caches or total
+process memory. They do not enforce CPU/FD/OS sandbox budgets or wall-clock I/O
+deadlines. Depth bounds permit at most root plus 64 component FDs and 3 files.
+
+The reader retains every file descriptor until all files are read and all digests
+match. It handles short/interrupted reads, probes one byte beyond the captured
+size, and revalidates every file's device/inode/size/mtime/ctime/mode/UID/link count
+and named bindings after the complete bundle has been read. Directory bindings
+are rechecked as well. This rejects even identical-byte inode substitution of an
+earlier file while a later one is read. File/directory close errors also prevent
+success. No persistent file, permission or lock is created or changed. Failures
+release all owned descriptors, including when a C++ allocation throws; successful
+output is published only after all checks and closes complete.
+
+These checks assume a trusted local directory and cooperating deployment actor;
+they do not prove resistance to arbitrary malicious same-UID code, all network
+filesystem behavior or privileged directory manipulation. The result owns a
+historical immutable copy, not a promise that the path will remain current.
+Subsequent execution must consume the verified bytes, not reopen a path and assume
+it still denotes the same artifact. Non-Linux loading fails closed. Platform
+support outside Linux has not been qualified by this implementation.
+
+### Controller composition and policy changes
+
+`Authorizes(result, now)` rechecks the exact current verifier fingerprint,
+revocation, release minimum, key/manifest time windows and non-regression from the
+result's validation time. `AdmitVerified` uses this check before ordinary complete
+descriptor admission. `StartVerified` repeats it at use time and under the
+controller mutex requires the exact expected generation, Admitted phase and
+**full descriptor equality**, not only an equal executable hash. Publication uses
+the existing prepared-state/prepared-acknowledgement no-throw commit.
+
+A tested recovery sequence is: verify bundle; AdmitVerified; Load an independently
+selected checkpoint for that descriptor; RestoreCheckpoint under the new local
+generation; StartVerified with the resulting generation and fresh observation time.
+The latter updates metadata only. It neither deserializes checkpoint/model/config
+bytes nor executes the artifact. An expired or revoked selection cannot pass the
+verified Start path, and a different config/model/budget cannot be substituted.
+
+The older raw `Admit`/`Start` APIs remain metadata-only compatibility operations.
+They do not perform signature verification and must not be treated as authorization
+for a future process launcher. This additive change does **not** turn the existing
+metadata controller into a globally enforced execution gate. A real supervisor
+must choose the current trusted verifier, use the verified paths, revalidate at
+launch, and independently enforce isolation and health/release policy. Keeping an
+old verifier after revocation can retain its old policy view; this library does
+not authenticate or automatically distribute policy updates. No result grants
+Broker credentials, PAPER/LIVE operation, merge or deployment permission.
+
+### Requirement-to-assertion mapping
+
+`tests/strategy_artifact_verifier_tests.cpp`, invoked by the canonical Python
+wrapper `tests/python/test_strategy_artifact_verifier.py`, contains eight functions:
+
+| Requirement | Direct regression |
+|---|---|
+| Exact bytes, optional model, immutable result and independently encoded golden signature | `TestRoundTripAndIndependentSignatureVector` |
+| All signed fields, every signature byte, length, wrong key and crypto initialization failure | `TestSignedFieldTamperingAndInvalidCrypto` |
+| Scope, revoked policy, key window, release minimum, lifetime and use-time fingerprint | `TestTrustPolicyRevocationWindowsAndSequence` |
+| All payload domains and inclusive individual/aggregate bounds | `TestAllPayloadsAndExactResourceCaps` |
+| Unsafe paths, modes, symlink/hardlink/FIFO/directory rejection | `TestUnsafePathsPermissionsAndSpecialFiles` |
+| Retained-file replacement, short/EINTR/read/close faults, descriptor cleanup | `TestRetainedFileRevalidationAndIoFailures` |
+| Verified admission/start, full identity and actual checkpoint restore composition | `TestVerifiedControllerEntryAndCheckpointComposition` |
+| Every observed C++ allocation-failure ordinal in Load/Start and unchanged state | `TestAllocationFailurePublicationAndFdCleanup` |
+
+The golden signing message/signature is independently encoded with Python
+`struct`/`hashlib` and `cryptography`, then fixed in the C++ test. This validates
+application-level interoperability, not an independent cryptographic proof or a
+second implementation of Ed25519. Public test seeds are not production signing
+credentials. Interposers exist only in test binaries. Always-active assertions,
+NDEBUG and disabled constructor elision keep failure-path checks effective in
+Release-like builds. Full repository CI and independent security review are still
+required on the exact changed source; these fixtures do not qualify a target host.
 
 ## Bounded checkpoint payload persistence and explicit restore
 

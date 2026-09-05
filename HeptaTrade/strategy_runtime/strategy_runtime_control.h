@@ -62,6 +62,8 @@ struct StrategyRuntimeControlResult
 // Checkpoints here are metadata only, not persisted payloads. Observed time is
 // a trusted composition input; this object is not an independent clock authority.
 class VerifiedStrategyCheckpoint;
+class VerifiedStrategyArtifact;
+class StrategyArtifactVerifier;
 
 class StrategyRuntimeControl
 {
@@ -274,6 +276,14 @@ public:
         out = found->second;
         return true;
     }
+
+    // Additive signature-gated metadata entry points. The active verifier must
+    // be selected by the trusted supervisor, not supplied by a strategy.
+    StrategyRuntimeControlResult AdmitVerified(const VerifiedStrategyArtifact& artifact,
+        const StrategyArtifactVerifier& verifier, std::uint64_t observedAtMs);
+    StrategyRuntimeControlResult StartVerified(const std::string& moduleId,
+        std::uint64_t expectedGeneration, const VerifiedStrategyArtifact& artifact,
+        const StrategyArtifactVerifier& verifier, std::uint64_t observedAtMs);
 
     // Restore verified opaque checkpoint metadata before Start. Implemented
     // with the payload store; does not deserialize or execute checkpoint bytes.

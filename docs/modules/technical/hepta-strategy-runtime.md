@@ -1,7 +1,7 @@
 # Strategy Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.strategy.runtime` version `2.1.0` (current)
+Applies to: `hepta.strategy.runtime` version `2.2.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-strategy-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -23,20 +23,23 @@ Manifest: [`modules/manifests/hepta-strategy-runtime.json`](../manifests/hepta-s
 - generation-fenced start, stop, quarantine and replacement control
 - bounded Linux checkpoint payload persistence with exact digest selection
 - verified opaque checkpoint restoration into admitted metadata
+- bounded read-only artifact/config/model byte loading with pinned Ed25519 verification
+- policy- and lifetime-bound verified metadata admission and start
 
 ### Excluded or not-current scope
 
-- artifact byte loading and signature verification
 - untrusted strategy code execution
 - OS process sandbox
 - operating-system CPU, memory and file-descriptor enforcement
 - automatic checkpoint selection, payload deserialization and process recovery
 - cross-host checkpoint replication and authenticated global anti-rollback
+- production signing-key provisioning, active-policy distribution and authenticated rollback protection
+- package parsing, dynamic linking and executable semantic validation
 
 ### Direct implementation evidence
 
 - **Source evidence:** `HeptaTrade/strategy_runtime/`
-- **Test evidence:** `tests/strategy_proposal_tests.cpp`, `tests/python/test_bounded_runtime_components.py`, `tests/strategy_checkpoint_store_tests.cpp`, `tests/python/test_strategy_checkpoint_store.py`
+- **Test evidence:** `tests/strategy_proposal_tests.cpp`, `tests/python/test_bounded_runtime_components.py`, `tests/strategy_checkpoint_store_tests.cpp`, `tests/python/test_strategy_checkpoint_store.py`, `tests/strategy_artifact_verifier_tests.cpp`, `tests/python/test_strategy_artifact_verifier.py`
 
 This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
 
@@ -102,7 +105,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 
 - **model:** `separate-controller-and-payload-store-mutexes`
 - **shard key:** `strategy-agent-instance`
-- **blocking io:** `checkpoint-store-only-never-under-controller-lock`
+- **blocking io:** `artifact-and-checkpoint-stores-only-never-under-controller-lock`
 - **cross module lock:** `forbidden`
 
 ### Backpressure contract
@@ -128,7 +131,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Strategy versions, parameters, resource budgets and enablement are canonical configuration.
 - Unknown or unapproved strategy versions cannot load.
 
-The manifest version is `2.1.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `2.2.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
