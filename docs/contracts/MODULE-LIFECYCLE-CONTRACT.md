@@ -20,9 +20,75 @@ starts a process, proves health or grants Execution authority.
 The inter-module contract remains `hepta.module-lifecycle.v1`. The native
 controller identifiers are independently versioned:
 `hepta.strategy-runtime-control.v2` and `hepta.durable-rollout-store.v2`.
-Both module manifests are version 2.0.0 because existing callers must review the
-stricter admission rules and recompile native types. Wire schema V1 is unchanged;
-no ABI, automatic migration or deployment qualification is implied.
+Strategy Runtime remains module version 2.0.0; Management Control is 2.0.1
+with the seven-state exception-safety correction below. Existing V2 native callers
+must still review the stricter admission rules and recompile native types. Wire
+schema V1 is unchanged; no ABI, automatic migration or deployment qualification
+is implied.
+
+## Seven-state registry transaction contract
+
+`ModuleLifecycleRegistry` is implemented in
+`HeptaTrade/management/module_lifecycle.cpp`. It is separate from the four-state
+strategy metadata controller, even though both use generation-fenced updates.
+The registry holds one mutex and an in-memory map; no persistent journal,
+per-key parallelism, built-in record-count ceiling or OS resource enforcement is
+provided by this class. The trusted composition must bound module admission.
+
+| Operation | Required conditions | Atomic publication |
+|---|---|---|
+| Register | Valid identity and nonzero time; unused module ID | Complete Registered record at generation 1, or no record on failure |
+| Duplicate Register | Same identity; time at least the latest committed update | Unchanged snapshot in any current phase; no generation/time advance |
+| StageUpgrade | Current generation, non-regressing time, Active or Stopped, different identity | Warming/new identity, generation + 1; save previous-active only when staging from Active |
+| Transition | Current generation/time and one of the seven allowed directed edges | State, generation, timestamp, health and reason change together |
+| Quarantine | Current generation/time, valid bounded reason, not Stopped | Quarantined with cleared health and generation + 1 |
+| Rollback | Current generation/time, saved previous-active, Warming/Shadow/Quarantined, valid health | Restore Active identity at a new generation and consume saved rollback state together |
+
+The allowed directed edges remain Registered-to-Warming, Warming-to-Shadow,
+Shadow-to-Active, Active-to-Draining, Draining-to-Stopped,
+Quarantined-to-Stopped and Stopped-to-Warming. Quarantine and Rollback are
+separate operations, not additional arbitrary Transition edges. Repeating a
+Transition to the same state is not an idempotent success. Shadow/Active entry
+and rollback require healthy evidence with a canonical digest, nonzero evidence
+time not in the future, and age at most 30,000 ms inclusive. Caller observations
+are trusted composition inputs; freshness and a digest string do not authenticate
+an issuer or bind evidence to a particular process/artifact. Such admission
+belongs outside this in-process registry.
+
+Every existing-record mutation prepares a complete private `Record`, including
+both the current and previous-active snapshots, before calling `Commit`.
+`Commit` constructs the accepted acknowledgement first and only then publishes
+the record via a compile-time checked no-throw move. Register prepares its
+complete result before single-element map insertion; a failed allocation cannot
+leave a default/partial entry that consumes the module ID. All generation
+exhaustion checks happen before preparing modified rollback history.
+
+An allocation exception propagates with the existing record and saved rollback
+state unchanged. Failed upgrade staging cannot manufacture a rollback target;
+failed rollback cannot consume one. No error object is promised under sustained
+memory exhaustion: the supervising caller must handle the exception without
+inferring a successful transition. The accepted result can be returned without
+throwing even when constructor elision is disabled. This is an in-process
+exception guarantee, not a process-crash or persistent transaction guarantee.
+
+`Get` looks up its input before modifying the output so an input key may alias
+`out.identity.moduleId`. A miss clears the output. On success, the complete
+snapshot copy is prepared before a no-throw move to the caller's output; a copy
+exception leaves that output unchanged. `ListActive` also returns copies, not
+mutable references or deployment capabilities.
+
+`tests/module_lifecycle_transaction_tests.cpp`, discovered through
+`tests/python/test_module_lifecycle_transactions.py`, supplies six regression
+functions. It checks all 49 state-pair combinations, the inclusive health-age
+boundary, invalid health/generation/time/enum inputs, duplicate registration,
+alias-safe reads, independent snapshots and twelve barrier-synchronized writers
+with exactly one accepted generation. Its thread-local allocation interposer
+walks each allocation ordinal until success across registration, upgrade,
+rollback, quarantine and five transition paths. Every thrown allocation must
+preserve observable state; additional rollback probes check the private history.
+The test uses always-active assertions with `NDEBUG` and disables constructor
+elision. Interposition is confined to the test executable and introduces no
+production fault-injection or authority bypass.
 
 ## Strategy metadata transaction contract
 
@@ -140,8 +206,8 @@ observations and corruption closing readiness. Interposers exist only in the
 test binary. They do not change production permission or durability checks.
 
 Run these from the repository root with `python3 -m unittest discover -s
-tests/python -p '*transactions.py'`. The canonical Python suite discovers both
-wrappers; existing bounded-runtime CTests continue to exercise the public
+tests/python -p '*transactions.py'`. The canonical Python suite discovers all three
+transaction wrappers; existing bounded-runtime CTests continue to exercise the public
 composition. Passing these fixtures is not real power-loss, network-filesystem,
 malicious same-UID, independent-review, production-SLO or Broker qualification.
 The current plan's remaining payload persistence, sandbox execution, deployment

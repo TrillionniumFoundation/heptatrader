@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <type_traits>
+#include <utility>
 
 namespace
 {
@@ -116,6 +118,22 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Reject(
     return result;
 }
 
+ModuleLifecycleResult ModuleLifecycleRegistry::Commit(
+    Record& current, Record proposed, const char* code)
+{
+    static_assert(std::is_nothrow_move_assignable<Record>::value,
+                  "lifecycle record publication must not throw");
+    static_assert(std::is_nothrow_move_constructible<ModuleLifecycleResult>::value,
+                  "returning an accepted lifecycle result must not throw");
+    ModuleLifecycleResult result;
+    result.accepted = true;
+    result.reasonCode = code;
+    result.snapshot = proposed.current;
+    // Everything that may allocate has succeeded, including the acknowledgement.
+    current = std::move(proposed);
+    return result;
+}
+
 ModuleLifecycleResult ModuleLifecycleRegistry::Register(
     const ModuleArtifactIdentity& identity,
     std::uint64_t observedAtMs)
@@ -127,6 +145,8 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Register(
         m_records.find(identity.moduleId);
     if (existing != m_records.end())
     {
+        if (observedAtMs < existing->second.current.updatedAtMs)
+            return Reject("MODULE_TIME_REGRESSION", &existing->second.current);
         if (SameIdentity(existing->second.current.identity, identity))
         {
             ModuleLifecycleResult duplicate;
@@ -144,11 +164,12 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Register(
     record.current.generation = 1;
     record.current.updatedAtMs = observedAtMs;
     record.current.reasonCode = "MODULE_REGISTERED";
-    m_records[identity.moduleId] = record;
     ModuleLifecycleResult result;
     result.accepted = true;
     result.reasonCode = "MODULE_REGISTERED";
     result.snapshot = record.current;
+    // emplace either inserts a complete record or leaves the map unchanged.
+    m_records.emplace(identity.moduleId, std::move(record));
     return result;
 }
 
@@ -174,25 +195,22 @@ ModuleLifecycleResult ModuleLifecycleRegistry::StageUpgrade(
         return Reject("MODULE_UPGRADE_STATE_INVALID", &record.current);
     if (SameIdentity(record.current.identity, identity))
         return Reject("MODULE_UPGRADE_IDENTITY_UNCHANGED", &record.current);
-    if (record.current.state == ModuleLifecycleState::Active)
-    {
-        record.previousActive = record.current;
-        record.havePreviousActive = true;
-    }
     if (record.current.generation ==
         std::numeric_limits<std::uint64_t>::max())
         return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
-    record.current.identity = identity;
-    record.current.state = ModuleLifecycleState::Warming;
-    ++record.current.generation;
-    record.current.updatedAtMs = observedAtMs;
-    record.current.health = ModuleHealthEvidence();
-    record.current.reasonCode = "MODULE_UPGRADE_STAGED";
-    ModuleLifecycleResult result;
-    result.accepted = true;
-    result.reasonCode = record.current.reasonCode;
-    result.snapshot = record.current;
-    return result;
+    Record proposed = record;
+    if (proposed.current.state == ModuleLifecycleState::Active)
+    {
+        proposed.previousActive = proposed.current;
+        proposed.havePreviousActive = true;
+    }
+    proposed.current.identity = identity;
+    proposed.current.state = ModuleLifecycleState::Warming;
+    ++proposed.current.generation;
+    proposed.current.updatedAtMs = observedAtMs;
+    proposed.current.health = ModuleHealthEvidence();
+    proposed.current.reasonCode = "MODULE_UPGRADE_STAGED";
+    return Commit(record, std::move(proposed), "MODULE_UPGRADE_STAGED");
 }
 
 ModuleLifecycleResult ModuleLifecycleRegistry::Transition(
@@ -219,20 +237,19 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Transition(
     if (record.current.generation ==
         std::numeric_limits<std::uint64_t>::max())
         return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
-    record.current.state = target;
-    ++record.current.generation;
-    record.current.updatedAtMs = observedAtMs;
-    record.current.health = healthRequired ? health : ModuleHealthEvidence();
-    record.current.reasonCode = std::string("MODULE_") +
+    Record proposed = record;
+    proposed.current.state = target;
+    ++proposed.current.generation;
+    proposed.current.updatedAtMs = observedAtMs;
+    proposed.current.health = healthRequired ? health : ModuleHealthEvidence();
+    proposed.current.reasonCode = std::string("MODULE_") +
         (target == ModuleLifecycleState::Warming ? "WARMING" :
          target == ModuleLifecycleState::Shadow ? "SHADOW" :
          target == ModuleLifecycleState::Active ? "ACTIVE" :
          target == ModuleLifecycleState::Draining ? "DRAINING" : "STOPPED");
-    ModuleLifecycleResult result;
-    result.accepted = true;
-    result.reasonCode = record.current.reasonCode;
-    result.snapshot = record.current;
-    return result;
+    // Keep the code pointer alive until Commit has prepared its result.
+    const std::string code = proposed.current.reasonCode;
+    return Commit(record, std::move(proposed), code.c_str());
 }
 
 ModuleLifecycleResult ModuleLifecycleRegistry::Quarantine(
@@ -256,16 +273,13 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Quarantine(
     if (record.current.generation ==
         std::numeric_limits<std::uint64_t>::max())
         return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
-    record.current.state = ModuleLifecycleState::Quarantined;
-    ++record.current.generation;
-    record.current.updatedAtMs = observedAtMs;
-    record.current.health = ModuleHealthEvidence();
-    record.current.reasonCode = reasonCode;
-    ModuleLifecycleResult result;
-    result.accepted = true;
-    result.reasonCode = "MODULE_QUARANTINED";
-    result.snapshot = record.current;
-    return result;
+    Record proposed = record;
+    proposed.current.state = ModuleLifecycleState::Quarantined;
+    ++proposed.current.generation;
+    proposed.current.updatedAtMs = observedAtMs;
+    proposed.current.health = ModuleHealthEvidence();
+    proposed.current.reasonCode = reasonCode;
+    return Commit(record, std::move(proposed), "MODULE_QUARANTINED");
 }
 
 ModuleLifecycleResult ModuleLifecycleRegistry::Rollback(
@@ -292,31 +306,36 @@ ModuleLifecycleResult ModuleLifecycleRegistry::Rollback(
     if (record.current.generation ==
         std::numeric_limits<std::uint64_t>::max())
         return Reject("MODULE_GENERATION_EXHAUSTED", &record.current);
-    ModuleLifecycleSnapshot restored = record.previousActive;
-    restored.generation = record.current.generation + 1u;
-    restored.updatedAtMs = observedAtMs;
-    restored.state = ModuleLifecycleState::Active;
-    restored.health = health;
-    restored.reasonCode = "MODULE_ROLLBACK_ACTIVE";
-    record.current = restored;
-    record.havePreviousActive = false;
-    ModuleLifecycleResult result;
-    result.accepted = true;
-    result.reasonCode = "MODULE_ROLLBACK_ACTIVE";
-    result.snapshot = record.current;
-    return result;
+    Record proposed = record;
+    proposed.current = record.previousActive;
+    proposed.current.generation = record.current.generation + 1u;
+    proposed.current.updatedAtMs = observedAtMs;
+    proposed.current.state = ModuleLifecycleState::Active;
+    proposed.current.health = health;
+    proposed.current.reasonCode = "MODULE_ROLLBACK_ACTIVE";
+    proposed.previousActive = ModuleLifecycleSnapshot();
+    proposed.havePreviousActive = false;
+    return Commit(record, std::move(proposed), "MODULE_ROLLBACK_ACTIVE");
 }
 
 bool ModuleLifecycleRegistry::Get(
     const std::string& moduleId,
     ModuleLifecycleSnapshot& out) const
 {
-    out = ModuleLifecycleSnapshot();
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::map<std::string, Record>::const_iterator found =
         m_records.find(moduleId);
-    if (found == m_records.end()) return false;
-    out = found->second.current;
+    if (found == m_records.end())
+    {
+        out = ModuleLifecycleSnapshot();
+        return false;
+    }
+    // Lookup precedes any output mutation because moduleId may alias out.
+    // Copy failure leaves the caller's output unchanged as well as the registry.
+    ModuleLifecycleSnapshot snapshot = found->second.current;
+    static_assert(std::is_nothrow_move_assignable<ModuleLifecycleSnapshot>::value,
+                  "lifecycle snapshot publication must not throw");
+    out = std::move(snapshot);
     return true;
 }
 

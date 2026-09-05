@@ -92,6 +92,10 @@ private:
         bool havePreviousActive = false;
     };
 
+    // Prepare the accepted result before publishing the whole record.
+    static ModuleLifecycleResult Commit(Record& current, Record proposed,
+                                        const char* code);
+
     static bool ValidIdentity(const ModuleArtifactIdentity& identity);
     static bool ValidHealth(const ModuleHealthEvidence& health,
                             std::uint64_t observedAtMs);

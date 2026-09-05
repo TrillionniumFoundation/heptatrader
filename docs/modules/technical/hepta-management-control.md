@@ -1,7 +1,7 @@
 # Management Control Plane Technical Guide
 
 Status: generated current view
-Applies to: `hepta.management.control` version `2.0.0` (current)
+Applies to: `hepta.management.control` version `2.0.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-management-control.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -123,7 +123,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Management consumes the canonical configuration authority and may narrow, not silently broaden, capability.
 - Emergency controls are explicit and auditable.
 
-The manifest version is `2.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `2.0.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
