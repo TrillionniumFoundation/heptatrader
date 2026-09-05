@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <map>
 #include <openssl/evp.h>
 #include <set>
@@ -68,6 +69,7 @@ std::string Sha256(const std::string& value)
     EVP_MD_CTX_free(context);
     if (!ok || length != 32) return std::string();
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "sha256:" << std::hex << std::setfill('0');
     for (unsigned int i = 0; i < length; ++i)
         output << std::setw(2) << static_cast<unsigned int>(digest[i]);
@@ -470,6 +472,7 @@ std::string EncodePaperTerminalFenceBinding(
     std::string reason;
     if (!ValidPaperTerminalFenceBinding(binding, reason)) return std::string();
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "HPTF2\n"
         << "owner_agent_id_hex=" << Hex(binding.owner.agentId) << '\n'
         << "owner_session_id_hex=" << Hex(binding.owner.sessionId) << '\n'
@@ -653,6 +656,7 @@ bool BuildPaperTerminalMutationManifest(
         return false;
     }
     std::ostringstream body;
+    body.imbue(std::locale::classic());
     body << "schema=hepta.ib-paper-terminal-mutation-manifest.v1\n"
         << "version=1\n"
         << "finalization_id=" << binding.finalizationId << '\n'
@@ -895,6 +899,7 @@ std::string TerminalLatchPrefix(
     const PaperTerminalMutationManifest* manifest)
 {
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << "HPT2\n"
         << "state=" << state << '\n'
         << "finalization_id=" << binding.finalizationId << '\n'
@@ -954,6 +959,7 @@ bool ReadSelfStartTicks(std::uint64_t& ticks)
     if (commandEnd == std::string::npos || commandEnd + 2 >= contents.size())
         return false;
     std::istringstream fields(contents.substr(commandEnd + 2));
+    fields.imbue(std::locale::classic());
     std::string value;
     for (int index = 3; index <= 22; ++index)
     {

@@ -1,6 +1,6 @@
 [Unit]
 Description=HeptaTrader broker-port egress boundary
-Documentation=file:/usr/share/doc/heptatrader/BROKER-NETWORK-ISOLATION.md
+Documentation=file:/usr/share/doc/heptatrader/operations/DEPLOYMENT.md
 DefaultDependencies=no
 After=systemd-modules-load.service local-fs.target
 Before=network-pre.target hepta-execution-ib-paper.service

@@ -1,0 +1,70 @@
+{
+  "schema": "heptatrader.source-size-budget.v1",
+  "new_cpp_line_limit": 2500,
+  "new_python_line_limit": 1200,
+  "exceptions": {
+    "HeptaTrade/tool_host/session_supervisor_lease_store.cpp": {
+      "baseline_lines": 3128,
+      "debt_id": "TD-SIZE-SESSION-LEASE-STORE",
+      "owner": "@hepta/session-control",
+      "status": "accepted-no-growth",
+      "rationale": "The durable lease-store migration surface predates the module extraction and cannot be split without a storage-format compatibility fixture.",
+      "exit": "Extract serialization, migration and filesystem transaction code behind versioned lease-store interfaces while preserving replay fixtures.",
+      "review_by": "2027-03-01"
+    },
+    "HeptaTrade/tool_host/unix_session_supervisor_server.cpp": {
+      "baseline_lines": 3654,
+      "debt_id": "TD-SIZE-SESSION-SUPERVISOR",
+      "owner": "@hepta/session-control",
+      "status": "accepted-no-growth",
+      "rationale": "The current server combines protocol dispatch, lifecycle fencing and Unix transport inherited from the pre-module runtime.",
+      "exit": "Split transport, command dispatch and lifecycle state machine into independently tested translation units without changing wire behavior.",
+      "review_by": "2027-03-01"
+    },
+    "scripts/hepta_market_context_builder.py": {
+      "baseline_lines": 1499,
+      "debt_id": "TD-SIZE-MARKET-CONTEXT",
+      "owner": "@hepta/research-validation",
+      "status": "accepted-no-growth",
+      "rationale": "Point-in-time context assembly and validation are still colocated in the research compatibility entrypoint.",
+      "exit": "Extract typed source, calendar, normalization and context-assembly libraries with unchanged golden manifests.",
+      "review_by": "2027-03-01"
+    },
+    "scripts/hepta_market_official_source_extractor.py": {
+      "baseline_lines": 1252,
+      "debt_id": "TD-SIZE-OFFICIAL-SOURCE",
+      "owner": "@hepta/research-validation",
+      "status": "accepted-no-growth",
+      "rationale": "Official-source parsing and provenance validation share one compatibility command surface.",
+      "exit": "Separate transport-free parsers, provenance validation and CLI composition with source-specific fixtures.",
+      "review_by": "2027-03-01"
+    },
+    "scripts/hepta_shadow_market_history.py": {
+      "baseline_lines": 2771,
+      "debt_id": "TD-SIZE-SHADOW-HISTORY",
+      "owner": "@hepta/research-validation",
+      "status": "accepted-no-growth",
+      "rationale": "Historical shadow capture, normalization and retention logic remain in one legacy-compatible tool.",
+      "exit": "Extract immutable capture, normalization, retention and evidence-index components with point-in-time regression tests.",
+      "review_by": "2027-03-01"
+    },
+    "scripts/hepta_strategy_replay_evaluator.py": {
+      "baseline_lines": 1654,
+      "debt_id": "TD-SIZE-REPLAY-EVALUATOR",
+      "owner": "@hepta/research-validation",
+      "status": "accepted-no-growth",
+      "rationale": "Replay orchestration, scoring and report serialization are still combined for compatibility with existing research fixtures.",
+      "exit": "Separate replay engine, metric computation and report codec while retaining deterministic digest parity.",
+      "review_by": "2027-03-01"
+    },
+    "research/run_protocol.py": {
+      "baseline_lines": 1790,
+      "debt_id": "TD-SIZE-RESEARCH-PROTOCOL",
+      "owner": "@hepta/research-validation",
+      "status": "accepted-no-growth",
+      "rationale": "The single capability-free entrypoint currently owns validation, execution and evidence assembly for stable CLI compatibility.",
+      "exit": "Extract manifest validation, sandbox execution and evidence assembly behind a thin CLI while keeping command and digest compatibility.",
+      "review_by": "2027-03-01"
+    }
+  }
+}

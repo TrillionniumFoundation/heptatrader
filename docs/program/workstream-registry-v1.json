@@ -1,0 +1,12 @@
+{
+  "schema": "heptatrader.workstream-registry.v1",
+  "workstreams": [
+    {"id":"WS-DOC","title":"Documentation and truth","owner":"@hepta/documentation","milestones":["M0","M1"]},
+    {"id":"WS-MOD","title":"Module platform and team topology","owner":"@hepta/platform","milestones":["M2","M5","M7"]},
+    {"id":"WS-DATA","title":"Contracts, numeric, market data and concurrency","owner":"@hepta/data-platform","milestones":["M3"]},
+    {"id":"WS-OPT","title":"Global allocation and portfolio","owner":"@hepta/global-allocation","milestones":["M4","M5"]},
+    {"id":"WS-REL","title":"Reliability, evidence and delivery","owner":"@hepta/reliability","milestones":["M0","M1","M7"]},
+    {"id":"WS-IB","title":"IB PAPER qualification","owner":"@hepta/venue-ib","milestones":["M6"]},
+    {"id":"WS-RES","title":"Research and validation","owner":"@hepta/research-validation","milestones":["M3","M4"]}
+  ]
+}

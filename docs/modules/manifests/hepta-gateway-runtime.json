@@ -1,0 +1,106 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.gateway.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "service",
+  "trust_domain": "agent-gateway",
+  "authority": "identity/session/capability/tool dispatch",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/tool_host/agent_",
+    "HeptaTrade/tool_host/execution_",
+    "HeptaTrade/tool_host/hepta_tool_gatewayd.cpp",
+    "HeptaTrade/tool_host/session_supervisor_audit_",
+    "HeptaTrade/tool_host/tool_",
+    "HeptaTrade/tool_host/trading_",
+    "HeptaTrade/tool_host/unix_session_supervisor_server",
+    "HeptaTrade/tool_host/unix_socket_path_identity.h",
+    "HeptaTrade/tool_host/unix_tool_server",
+    "HeptaTrade/tools/"
+  ],
+  "build_targets": [
+    "hepta_agent_os_core",
+    "hepta_tool_gatewayd",
+    "hepta_trading_tool_core",
+    "hepta_execution_event_relay_core"
+  ],
+  "provides": [
+    "gateway.session-boundary",
+    "gateway.tool-dispatch",
+    "hepta.identity-capability.v1",
+    "hepta.tool-catalog.v1"
+  ],
+  "consumes": [
+    "execution.client.v1",
+    "hepta.configuration-authority.v1",
+    "hepta.execution-authority.v1",
+    "hepta.execution-wire.v1",
+    "hepta.identity-capability.v1",
+    "hepta.session-supervisor.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.agent.support",
+    "hepta.client.runtime",
+    "hepta.execution.runtime",
+    "hepta.numeric.core",
+    "hepta.observability.runtime",
+    "hepta.protocol.contracts",
+    "hepta.session.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "durable-session-audit",
+    "persistence": "durable-session-audit-plus-ephemeral-connections",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "owner-sharded-control",
+    "shard_key": "session-owner",
+    "blocking_io": "bounded-af-unix-and-audit-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-owner-queue",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "gateway-control-v1",
+  "owners": {
+    "dri": "@hepta/gateway",
+    "backup": "@hepta/security-runtime",
+    "reviewers": [
+      "@hepta/architecture"
+    ]
+  },
+  "verification": [
+    "gateway-boundary",
+    "session-boundary",
+    "backpressure-contracts",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-gateway-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

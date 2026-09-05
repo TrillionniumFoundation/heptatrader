@@ -51,6 +51,19 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
     adapterConfig.risk.maxOrderQuantity = m_config.profile.maxOrderQuantity;
     adapterConfig.risk.maxDailyOrders = 100000;
     adapterConfig.risk.maxPriceDeviationBps = 0.0;
+    // Bind the adapter's common deterministic budgets to the reviewed PAPER
+    // profile.  The runtime guard checks them first; the adapter rechecks the
+    // same values immediately before the broker mutation.
+    adapterConfig.risk.maxOrderNotional =
+        m_config.profile.maxOrderNotional;
+    adapterConfig.risk.maxOrdersPerMinute =
+        m_config.profile.maxOrdersPerMinute;
+    adapterConfig.risk.maxActiveOrders =
+        m_config.profile.maxActiveOrders;
+    adapterConfig.risk.maxGrossPosition =
+        m_config.profile.maxGrossPosition;
+    adapterConfig.risk.requireFreshQuote = true;
+    adapterConfig.risk.requireCompleteSnapshot = true;
     adapterConfig.risk.allowLiveTrading = false;
     adapterConfig.risk.liveKillSwitch = true;
 

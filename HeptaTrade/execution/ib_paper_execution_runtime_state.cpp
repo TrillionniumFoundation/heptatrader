@@ -6,6 +6,7 @@
 #include <fcntl.h>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <map>
 #include <sstream>
 #include <vector>
@@ -14,6 +15,56 @@
 #include <unistd.h>
 
 using namespace ib_paper_execution_runtime_internal;
+
+namespace
+{
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+
+bool ParseClassicDouble(const std::string& value, double& parsed)
+{
+    std::istringstream input(value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws >> parsed;
+    return input && input.eof() && std::isfinite(parsed);
+}
+}
 
 bool IbPaperExecutionRuntimeComposition::PreparePrivateState(std::string& reason)
 {
@@ -41,7 +92,15 @@ bool IbPaperExecutionRuntimeComposition::ValidateFxCashBaselineRecords(
         if (proof.size() != 71 || proof.compare(0, 7, "sha256:") != 0)
             return false;
         for (std::size_t i = 7; i < proof.size(); ++i)
-            if (!std::isxdigit(static_cast<unsigned char>(proof[i])))
+            const unsigned char character =
+                static_cast<unsigned char>(proof[i]);
+            const bool digit = character >= static_cast<unsigned char>('0') &&
+                character <= static_cast<unsigned char>('9');
+            const bool lower = character >= static_cast<unsigned char>('a') &&
+                character <= static_cast<unsigned char>('f');
+            const bool upper = character >= static_cast<unsigned char>('A') &&
+                character <= static_cast<unsigned char>('F');
+            if (!digit && !lower && !upper)
                 return false;
         return true;
     };
@@ -158,22 +217,30 @@ bool IbPaperExecutionRuntimeComposition::LoadFxCashBaselines(
             reason = "IB_FX_CASH_BASELINE_PROOF_MISMATCH";
             return false;
         }
-        char* end = nullptr;
-        errno = 0;
-        const double baseline = std::strtod(fields[3].c_str(), &end);
-        if (errno != 0 || end == fields[3].c_str() || *end != '\0') {
+        if (!CanonicalFloating(fields[3])) {
             reason = "IB_FX_CASH_BASELINE_INVALID";
             return false;
         }
-        errno = 0;
-        const double observed = std::strtod(fields[4].c_str(), &end);
-        if (errno != 0 || end == fields[4].c_str() || *end != '\0') {
+        double baseline = 0.0;
+        if (!ParseClassicDouble(fields[3], baseline)) {
             reason = "IB_FX_CASH_BASELINE_INVALID";
             return false;
         }
-        errno = 0;
-        const double delta = std::strtod(fields[5].c_str(), &end);
-        if (errno != 0 || end == fields[5].c_str() || *end != '\0') {
+        if (!CanonicalFloating(fields[4])) {
+            reason = "IB_FX_CASH_BASELINE_INVALID";
+            return false;
+        }
+        double observed = 0.0;
+        if (!ParseClassicDouble(fields[4], observed)) {
+            reason = "IB_FX_CASH_BASELINE_INVALID";
+            return false;
+        }
+        if (!CanonicalFloating(fields[5])) {
+            reason = "IB_FX_CASH_BASELINE_INVALID";
+            return false;
+        }
+        double delta = 0.0;
+        if (!ParseClassicDouble(fields[5], delta)) {
             reason = "IB_FX_CASH_BASELINE_INVALID";
             return false;
         }
@@ -299,27 +366,32 @@ bool IbPaperExecutionRuntimeComposition::LoadFxCashRestartCheckpoint(
             reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
             return false;
         }
-        char* end = nullptr;
-        errno = 0;
-        const double baseline = std::strtod(fields[3].c_str(), &end);
-        if (errno != 0 || end == fields[3].c_str() || *end != '\0' ||
-            !std::isfinite(baseline))
+        if (!CanonicalFloating(fields[3])) {
+            reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
+            return false;
+        }
+        double baseline = 0.0;
+        if (!ParseClassicDouble(fields[3], baseline))
         {
             reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
             return false;
         }
-        errno = 0;
-        const double observed = std::strtod(fields[4].c_str(), &end);
-        if (errno != 0 || end == fields[4].c_str() || *end != '\0' ||
-            !std::isfinite(observed))
+        if (!CanonicalFloating(fields[4])) {
+            reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
+            return false;
+        }
+        double observed = 0.0;
+        if (!ParseClassicDouble(fields[4], observed))
         {
             reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
             return false;
         }
-        errno = 0;
-        const double delta = std::strtod(fields[5].c_str(), &end);
-        if (errno != 0 || end == fields[5].c_str() || *end != '\0' ||
-            !std::isfinite(delta))
+        if (!CanonicalFloating(fields[5])) {
+            reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
+            return false;
+        }
+        double delta = 0.0;
+        if (!ParseClassicDouble(fields[5], delta))
         {
             reason = "IB_FX_CASH_RESTART_CHECKPOINT_INVALID";
             return false;
@@ -397,6 +469,7 @@ bool IbPaperExecutionRuntimeComposition::PersistFxCashRestartCheckpoint(
     const std::uint64_t observedAtMs = NowEpochMs();
     std::map<std::string, IbPaperFxCashBaseline> advanced;
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "HFXR1\n" << std::setprecision(
         std::numeric_limits<double>::max_digits10);
     for (std::map<std::string, InstrumentRef>::const_iterator it =
@@ -438,6 +511,7 @@ bool IbPaperExecutionRuntimeComposition::PersistFxCashRestartCheckpoint(
         checkpoint.observedAtMs = std::max(
             observedAtMs, original->second.observedAtMs);
         std::ostringstream signedFields;
+        signedFields.imbue(std::locale::classic());
         signedFields << std::setprecision(
             std::numeric_limits<double>::max_digits10)
             << checkpoint.account << '|' << checkpoint.instrument << '|'

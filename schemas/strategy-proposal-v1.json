@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "StrategyProposalV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "proposal_id",
+    "module_id",
+    "module_version",
+    "sequence",
+    "capital_pool",
+    "account_book",
+    "snapshot_digest",
+    "valid_from_ms",
+    "expires_at_ms",
+    "horizon_ms",
+    "candidates",
+    "numeric_policy_version",
+    "proposal_digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hepta.strategy-proposal.v1"
+    },
+    "proposal_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "module_id": {
+      "type": "string",
+      "minLength": 7,
+      "maxLength": 128,
+      "pattern": "^hepta\\.[A-Za-z0-9._:-]+$"
+    },
+    "module_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "capital_pool": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "account_book": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "snapshot_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "valid_from_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "expires_at_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "horizon_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "utility_raw",
+          "targets"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "utility_raw": {
+            "type": "integer",
+            "minimum": -9000000000000000,
+            "maximum": 9000000000000000
+          },
+          "targets": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "instrument",
+                "target_position_raw"
+              ],
+              "properties": {
+                "instrument": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128,
+                  "pattern": "^[A-Za-z0-9._:-]+$"
+                },
+                "target_position_raw": {
+                  "type": "integer",
+                  "minimum": -9000000000000000,
+                  "maximum": 9000000000000000
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "numeric_policy_version": {
+      "const": "hepta.numeric.fixed-v1"
+    },
+    "proposal_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

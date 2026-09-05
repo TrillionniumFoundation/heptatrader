@@ -33,8 +33,13 @@ public:
 
     bool Start(std::string& reason);
     bool Enabled() const;
+    // Probes and pins the matching mutation/event service identity pair.  If
+    // supplied, eventWatermark receives the Execution Service feed's latest
+    // allocated sequence from the same identity observation (zero means the
+    // feed is valid but has not published an event yet).
     bool ProbeRemoteService(ExecutionServiceIdentity& identity,
-                            std::string& reason);
+                            std::string& reason,
+                            std::uint64_t* eventWatermark = nullptr);
     const char* ModeName() const;
     ExecutionAuthority& Authority();
 
@@ -73,7 +78,8 @@ private:
     ExecutionControlResult RemoteIdentityRejected(
         const ExecutionControlCommand& command, const std::string& reason) const;
     bool ResolveRemoteIdentity(ExecutionServiceIdentity& identity,
-                               std::string& reason);
+                               std::string& reason,
+                               std::uint64_t* eventWatermark = nullptr);
     void InvalidateRemoteIdentity(const ExecutionServiceIdentity& identity);
     void NotifyTestStage(const char* stage) const;
     bool ReadEligibleLocalEvent(const AgentExecutionContext& owner,

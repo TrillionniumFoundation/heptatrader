@@ -1,0 +1,6 @@
+{
+  "schema": "heptatrader.dependency-plan.v1",
+  "critical_path": ["M0","M1","M2","M3","M4","M5","M6"],
+  "parallel": ["M7 may start after M2"],
+  "rule": "No downstream capability claim may bypass an unmet predecessor exit."
+}

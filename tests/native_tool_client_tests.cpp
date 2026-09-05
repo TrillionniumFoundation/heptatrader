@@ -1,12 +1,15 @@
 #include "../HeptaTrade/client/native_tool_client.h"
 #include "../HeptaTrade/client/native_tool_discovery_contract.h"
+#include "../HeptaTrade/tool_host/typed_tool_protocol.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <string>
+#include <limits>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -15,6 +18,70 @@
 
 namespace
 {
+bool RewriteTokenFile(const std::string& path, const std::string& contents)
+{
+    const int fd = ::open(path.c_str(), O_WRONLY | O_TRUNC | O_CLOEXEC);
+    if (fd < 0) return false;
+    std::size_t offset = 0;
+    while (offset < contents.size())
+    {
+        const ssize_t written = ::write(
+            fd, contents.data() + offset, contents.size() - offset);
+        if (written < 0 && errno == EINTR) continue;
+        if (written <= 0)
+        {
+            ::close(fd);
+            return false;
+        }
+        offset += static_cast<std::size_t>(written);
+    }
+    const bool synced = ::fsync(fd) == 0;
+    return ::close(fd) == 0 && synced;
+}
+
+void AppendTypedField(std::string& body, unsigned int id,
+                      const std::string& value)
+{
+    body.push_back(static_cast<char>((id >> 8) & 0xff));
+    body.push_back(static_cast<char>(id & 0xff));
+    const std::uint32_t length = static_cast<std::uint32_t>(value.size());
+    body.push_back(static_cast<char>((length >> 24) & 0xff));
+    body.push_back(static_cast<char>((length >> 16) & 0xff));
+    body.push_back(static_cast<char>((length >> 8) & 0xff));
+    body.push_back(static_cast<char>(length & 0xff));
+    body.append(value);
+}
+
+std::string ReplaceTypedField(const std::string& input, unsigned int target,
+                              const std::string& replacement)
+{
+    assert(input.size() >= 4);
+    std::string output = input.substr(0, 4);
+    std::size_t offset = 4;
+    bool replaced = false;
+    while (offset < input.size())
+    {
+        assert(input.size() - offset >= 6);
+        const unsigned int id =
+            (static_cast<unsigned char>(input[offset]) << 8) |
+            static_cast<unsigned char>(input[offset + 1]);
+        const std::uint32_t length =
+            (static_cast<std::uint32_t>(static_cast<unsigned char>(input[offset + 2])) << 24) |
+            (static_cast<std::uint32_t>(static_cast<unsigned char>(input[offset + 3])) << 16) |
+            (static_cast<std::uint32_t>(static_cast<unsigned char>(input[offset + 4])) << 8) |
+            static_cast<std::uint32_t>(static_cast<unsigned char>(input[offset + 5]));
+        const std::size_t valueOffset = offset + 6;
+        assert(static_cast<std::size_t>(length) <= input.size() - valueOffset);
+        const std::string value = id == target ? replacement :
+            input.substr(valueOffset, length);
+        AppendTypedField(output, id, value);
+        replaced = replaced || id == target;
+        offset = valueOffset + length;
+    }
+    assert(replaced);
+    return output;
+}
+
 bool CallAgainstResponse(const std::string& response,
                          std::size_t maxResponseBytes,
                          NativeToolClientResult& result,
@@ -448,6 +515,220 @@ void TestTransportResponseBoundary()
     assert(!CallAgainstResponse(oversized, 128, result, reason));
     assert(reason == "FRAME_LENGTH_REJECTED");
 }
+
+void TestTargetIntentWireRoundTrip()
+{
+    const std::string permit =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const long long expiresAtMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() +
+        30000;
+    const std::string toolNames[] = {
+        "intent.preview_target_position", "intent.apply_target_position"
+    };
+    for (const std::string& toolName : toolNames)
+    {
+        TradingToolHostRequest request;
+        request.sessionToken = "target-intent-session-token";
+        request.toolCallId = "target-intent-wire-001";
+        request.call.name = toolName;
+        request.call.instrument = "EUR.USD";
+        // A signed target (including zero) is serialized in the quantity field;
+        // it must not be confused with raw positive order quantity.
+        request.call.ibOrder.totalQuantity =
+            toolName == toolNames[0] ? 0.0 : -12.5;
+        request.call.referencePrice = 0.0;
+        request.call.expiresAtMs = expiresAtMs;
+        if (toolName == toolNames[1]) request.call.previewPermit = permit;
+
+        std::string body;
+        std::string reason;
+        assert(TypedToolProtocol::EncodeRequest(request, body, reason));
+        TradingToolHostRequest decoded;
+        assert(TypedToolProtocol::DecodeRequest(body, decoded, reason));
+        assert(decoded.call.name == toolName);
+        assert(decoded.call.instrument == "EUR.USD");
+        assert(decoded.call.ibOrder.totalQuantity == request.call.ibOrder.totalQuantity);
+        assert(decoded.call.referencePrice == 0.0);
+        assert(decoded.call.expiresAtMs == request.call.expiresAtMs);
+        assert(decoded.call.previewPermit ==
+               (toolName == toolNames[1] ? permit : std::string()));
+    }
+
+    TradingToolHostRequest invalid;
+    std::string invalidBody;
+    std::string invalidReason;
+    invalid.sessionToken = "target-intent-session-token";
+    invalid.toolCallId = "target-intent-wire-002";
+    invalid.call.name = "intent.preview_target_position";
+    invalid.call.instrument = "EUR.USD";
+    invalid.call.ibOrder.totalQuantity = 1.0;
+    invalid.call.ibOrder.action = "BUY"; // raw-order field is not intent input
+    invalid.call.expiresAtMs = expiresAtMs;
+    assert(!TypedToolProtocol::EncodeRequest(invalid, invalidBody, invalidReason));
+    assert(invalidReason.find("UNEXPECTED_TOOL_FIELD") != std::string::npos);
+}
+
+void TestDecisionSnapshotWireRoundTrip()
+{
+    TradingToolHostRequest request;
+    request.sessionToken = "decision-wire-session-token";
+    request.toolCallId = "decision-wire-001";
+    request.call.name = "decision.get_snapshot";
+    request.call.instrument = "EUR.USD";
+
+    std::string body;
+    std::string reason;
+    assert(TypedToolProtocol::EncodeRequest(request, body, reason));
+    TradingToolHostRequest decoded;
+    assert(TypedToolProtocol::DecodeRequest(body, decoded, reason));
+    assert(decoded.call.name == request.call.name);
+    assert(decoded.call.instrument == request.call.instrument);
+
+    request.call.targetToolName = "market.get_quote";
+    assert(!TypedToolProtocol::EncodeRequest(request, body, reason));
+    assert(reason.find("UNEXPECTED_TOOL_FIELD") != std::string::npos);
+}
+
+void TestNativeWireFieldAndPermitBoundaries()
+{
+    const long long expiresAtMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() +
+        30000;
+    const std::string validPermit =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    std::string body;
+    std::string reason;
+
+    TradingToolHostRequest quote;
+    quote.sessionToken = "native-wire-boundary-session";
+    quote.toolCallId = "native-wire-quote-001";
+    quote.call.name = "market.get_quote";
+    quote.call.instrument = "EUR.USD";
+    quote.call.ibOrder.auxPrice = 0.25;
+    assert(!TypedToolProtocol::EncodeRequest(quote, body, reason));
+    assert(reason.find("UNEXPECTED_TOOL_FIELD") != std::string::npos);
+
+    TradingToolHostRequest flatten;
+    flatten.sessionToken = quote.sessionToken;
+    flatten.toolCallId = "native-wire-flatten-001";
+    flatten.call.name = "trade.flatten_position";
+    flatten.call.instrument = "EUR.USD";
+    flatten.call.previewPermit = validPermit;
+    flatten.call.ibOrder.orderRef = "agent-supplied-order-ref";
+    assert(!TypedToolProtocol::EncodeRequest(flatten, body, reason));
+    assert(reason.find("UNEXPECTED_TOOL_FIELD") != std::string::npos);
+
+    TradingToolHostRequest place;
+    place.sessionToken = quote.sessionToken;
+    place.toolCallId = "native-wire-place-001";
+    place.call.name = "trade.place_order";
+    place.call.instrument = "EUR.USD";
+    place.call.ibOrder.action = "BUY";
+    place.call.ibOrder.orderType = "LMT";
+    place.call.ibOrder.totalQuantity = 1.0;
+    place.call.ibOrder.lmtPrice = 1.1;
+    place.call.referencePrice = 1.1;
+    place.call.timeInForce = "DAY";
+    place.call.expiresAtMs = expiresAtMs;
+    assert(!TypedToolProtocol::EncodeRequest(place, body, reason));
+    assert(reason.find("PREVIEW_PERMIT_INVALID") != std::string::npos);
+    place.call.previewPermit = validPermit.substr(0, validPermit.size() - 1) + "G";
+    assert(!TypedToolProtocol::EncodeRequest(place, body, reason));
+    assert(reason.find("PREVIEW_PERMIT_INVALID") != std::string::npos);
+
+    TradingToolHostRequest preview = place;
+    preview.toolCallId = "native-wire-preview-001";
+    preview.call.name = "risk.preview_order";
+    preview.call.previewPermit = validPermit;
+    assert(!TypedToolProtocol::EncodeRequest(preview, body, reason));
+    assert(reason.find("UNEXPECTED_TOOL_FIELD") != std::string::npos);
+}
+
+void TestTypedUint64AndNumericBoundaries()
+{
+    const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
+    const std::string overflow = "18446744073709551616";
+    TradingToolHostRequest request;
+    request.sessionToken = "typed-boundary-session";
+    request.toolCallId = "typed-boundary-001";
+    request.call.name = "events.wait";
+    request.call.waitTimeoutMs = 30000;
+    request.call.afterEventSequence = maximum;
+    request.queueDeadlineAtMs = maximum;
+
+    std::string body;
+    std::string reason;
+    assert(TypedToolProtocol::EncodeRequest(request, body, reason));
+    TradingToolHostRequest decoded;
+    assert(TypedToolProtocol::DecodeRequest(body, decoded, reason));
+    assert(decoded.call.afterEventSequence == maximum);
+    assert(decoded.queueDeadlineAtMs == maximum);
+
+    // The parser must reject overflow without narrowing into a valid cursor.
+    assert(!TypedToolProtocol::DecodeRequest(
+        ReplaceTypedField(body, 17, overflow), decoded, reason));
+    assert(reason == "INVALID_EVENT_CURSOR");
+    assert(!TypedToolProtocol::DecodeRequest(
+        ReplaceTypedField(body, 19, overflow), decoded, reason));
+    assert(reason == "INVALID_QUEUE_DEADLINE");
+
+    // Leading signs/zeroes are not part of the canonical integer grammar.
+    assert(!TypedToolProtocol::DecodeRequest(
+        ReplaceTypedField(body, 17, "+1"), decoded, reason));
+    assert(!TypedToolProtocol::DecodeRequest(
+        ReplaceTypedField(body, 17, "01"), decoded, reason));
+
+    // Non-zero values that underflow a binary64, and signed zero, must not be
+    // accepted as ordinary zero and then re-emitted under a different lexeme.
+    TradingToolHostRequest intent;
+    intent.sessionToken = request.sessionToken;
+    intent.toolCallId = "typed-boundary-intent";
+    intent.call.name = "intent.preview_target_position";
+    intent.call.instrument = "EUR.USD";
+    intent.call.ibOrder.totalQuantity = 1.0;
+    intent.call.referencePrice = 0.0;
+    intent.call.expiresAtMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count() +
+        30000;
+    assert(TypedToolProtocol::EncodeRequest(intent, body, reason));
+    assert(!TypedToolProtocol::DecodeRequest(
+        ReplaceTypedField(body, 12, "1e-999"), decoded, reason));
+    assert(!TypedToolProtocol::DecodeRequest(
+        ReplaceTypedField(body, 12, "-0"), decoded, reason));
+}
+
+void TestTypedResultNestedTextControls()
+{
+    const std::string envelopePrefix =
+        "{\"status\":\"ok\",\"tool\":\"market.get_quote\","
+        "\"reason_code\":\"\",\"detail\":\"\",\"order_id\":-1,"
+        "\"payload\":{";
+    const std::string envelopeSuffix = "}}";
+    TypedToolResultEnvelope decoded;
+    std::string reason;
+    // Controls hidden behind JSON escapes must be rejected even when they
+    // occur in the opaque nested payload, not just in top-level detail.
+    assert(!TypedToolProtocol::DecodeResultEnvelope(
+        envelopePrefix + "\"message\":\"\\u007f\"" + envelopeSuffix,
+        decoded, reason));
+    assert(reason == "INVALID_RESULT_ENVELOPE");
+    assert(!TypedToolProtocol::DecodeResultEnvelope(
+        envelopePrefix + "\"message\":\"\\u0085\"" + envelopeSuffix,
+        decoded, reason));
+    assert(reason == "INVALID_RESULT_ENVELOPE");
+    std::string signedZeroOrderId = envelopePrefix;
+    const std::size_t orderIdOffset = signedZeroOrderId.find("-1");
+    assert(orderIdOffset != std::string::npos);
+    signedZeroOrderId.replace(orderIdOffset, 2, "-0");
+    assert(!TypedToolProtocol::DecodeResultEnvelope(
+        signedZeroOrderId + envelopeSuffix,
+        decoded, reason));
+    assert(reason == "INVALID_RESULT_ENVELOPE");
+}
 }
 
 int main()
@@ -462,6 +743,31 @@ int main()
 
     std::string loaded;
     std::string reason;
+    assert(NativeToolClient::ReadSessionToken(path, loaded, reason));
+    assert(loaded == "native-client-session-token");
+
+    // The direct token-file API must enforce the same strict UTF-8/control
+    // contract as the typed request encoder.  These values are all within the
+    // byte-size bound, so a false result cannot be attributed to truncation.
+    const std::string controlToken = std::string("safe") +
+        std::string(1, static_cast<char>(0x7f)) + "token\n";
+    assert(RewriteTokenFile(path, controlToken));
+    assert(!NativeToolClient::ReadSessionToken(path, loaded, reason));
+    assert(reason == "TOKEN_FILE_INVALID");
+    const std::string c1Token = std::string("safe") +
+        std::string("\xc2\x85", 2) + "token\n";
+    assert(RewriteTokenFile(path, c1Token));
+    assert(!NativeToolClient::ReadSessionToken(path, loaded, reason));
+    assert(reason == "TOKEN_FILE_INVALID");
+    const std::string invalidUtf8Token = std::string("safe") +
+        std::string("\xc3\x28", 2) + "token\n";
+    assert(RewriteTokenFile(path, invalidUtf8Token));
+    assert(!NativeToolClient::ReadSessionToken(path, loaded, reason));
+    assert(reason == "TOKEN_FILE_INVALID");
+    assert(RewriteTokenFile(path, std::string(513, 'x')));
+    assert(!NativeToolClient::ReadSessionToken(path, loaded, reason));
+    assert(reason == "TOKEN_FILE_INVALID");
+    assert(RewriteTokenFile(path, token));
     assert(NativeToolClient::ReadSessionToken(path, loaded, reason));
     assert(loaded == "native-client-session-token");
 
@@ -491,7 +797,37 @@ int main()
 
     std::remove(link.c_str());
     std::remove(path);
+    // Invalid command IDs are rejected before discovery derives a child ID or
+    // touches the configured socket.  Use a deliberately absent socket to
+    // prove the stable validation result wins over transport failure.
+    NativeToolClientConfig invalidIdConfig;
+    invalidIdConfig.socketPath = "/tmp/hepta-native-client-no-such-socket";
+    invalidIdConfig.sessionToken = "native-client-session-token";
+    NativeToolClient invalidIdClient(invalidIdConfig);
+    TradingToolHostRequest invalidIdRequest;
+    invalidIdRequest.toolCallId = "--------";
+    invalidIdRequest.call.name = "system.tools.list";
+    NativeToolClientResult invalidIdResult;
+    assert(!invalidIdClient.Call(invalidIdRequest, invalidIdResult, reason));
+    assert(reason == "INVALID_TOOL_CALL_ID");
+
+    NativeToolClientConfig invalidTokenConfig = invalidIdConfig;
+    invalidTokenConfig.sessionToken = std::string("bad") +
+        std::string(1, static_cast<char>(0x85)) + "token";
+    NativeToolClient invalidTokenClient(invalidTokenConfig);
+    TradingToolHostRequest validRequest;
+    validRequest.toolCallId = "native-valid-001";
+    validRequest.call.name = "system.tools.list";
+    NativeToolClientResult invalidTokenResult;
+    assert(!invalidTokenClient.Call(validRequest, invalidTokenResult, reason));
+    assert(reason == "SESSION_TOKEN_INVALID");
+
     TestAutomaticSchemaDiscoveryAndInjection();
     TestTransportResponseBoundary();
+    TestTargetIntentWireRoundTrip();
+    TestDecisionSnapshotWireRoundTrip();
+    TestNativeWireFieldAndPermitBoundaries();
+    TestTypedUint64AndNumericBoundaries();
+    TestTypedResultNestedTextControls();
     return 0;
 }

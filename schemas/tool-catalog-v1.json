@@ -1,0 +1,262 @@
+{
+  "protocol": "hepta.agent-tools",
+  "protocol_version": 1,
+  "schema": "heptatrader.tool-catalog.v1",
+  "tools": [
+    {
+      "capability": "system.read",
+      "name": "system.tools.list",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "system.read",
+      "name": "system.tools.describe",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "system.read",
+      "name": "system.cancel_request",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "system.read",
+      "name": "system.get_health",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "market.read",
+      "name": "market.get_quote",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "account.read",
+      "name": "account.get_summary",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "portfolio.read",
+      "name": "portfolio.list_positions",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "orders.read",
+      "name": "orders.list",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "orders.read",
+      "name": "execution.get_command_status",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "risk.read",
+      "name": "risk.get_limits",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "system.read",
+      "name": "decision.get_snapshot",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "risk.read",
+      "name": "intent.preview_target_position",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "intent.apply",
+      "name": "intent.apply_target_position",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "events.read",
+      "name": "events.wait",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "system.read",
+      "name": "watch.get_snapshot",
+      "visibility": "watch"
+    },
+    {
+      "capability": "operator.risk.preview",
+      "name": "risk.preview_order",
+      "visibility": "operator"
+    },
+    {
+      "capability": "operator.trade.place",
+      "name": "trade.place_order",
+      "visibility": "operator"
+    },
+    {
+      "capability": "trade.cancel",
+      "name": "trade.cancel_order",
+      "visibility": "ordinary"
+    },
+    {
+      "capability": "trade.flatten",
+      "name": "risk.preview_flatten",
+      "visibility": "conditional"
+    },
+    {
+      "capability": "trade.flatten",
+      "name": "trade.flatten_position",
+      "visibility": "conditional"
+    }
+  ],
+  "unsupported_environments": [
+    "LIVE",
+    "LIVE_REDUCE_ONLY",
+    "LIVE_CAPPED"
+  ],
+  "wire_aliases": {
+    "max_slippage_bps": "reference_price",
+    "mutation_command_id": "tool_call_id",
+    "target_position": "quantity"
+  },
+  "fields": [
+    {
+      "id": 1,
+      "name": "session_token",
+      "symbol": "SessionToken"
+    },
+    {
+      "id": 2,
+      "name": "tool_call_id",
+      "symbol": "ToolCallId"
+    },
+    {
+      "id": 3,
+      "name": "tool_name",
+      "symbol": "ToolName"
+    },
+    {
+      "id": 4,
+      "name": "instrument",
+      "symbol": "Instrument"
+    },
+    {
+      "id": 5,
+      "name": "order_id",
+      "symbol": "OrderId"
+    },
+    {
+      "id": 6,
+      "name": "symbol",
+      "symbol": "Symbol"
+    },
+    {
+      "id": 7,
+      "name": "currency",
+      "symbol": "Currency"
+    },
+    {
+      "id": 8,
+      "name": "sec_type",
+      "symbol": "SecType"
+    },
+    {
+      "id": 9,
+      "name": "exchange",
+      "symbol": "Exchange"
+    },
+    {
+      "id": 10,
+      "name": "side",
+      "symbol": "Side"
+    },
+    {
+      "id": 11,
+      "name": "order_type",
+      "symbol": "OrderType"
+    },
+    {
+      "id": 12,
+      "name": "quantity",
+      "symbol": "Quantity"
+    },
+    {
+      "id": 13,
+      "name": "limit_price",
+      "symbol": "LimitPrice"
+    },
+    {
+      "id": 14,
+      "name": "reference_price",
+      "symbol": "ReferencePrice"
+    },
+    {
+      "id": 15,
+      "name": "expires_at_ms",
+      "symbol": "ExpiresAtMs"
+    },
+    {
+      "id": 16,
+      "name": "timeout_ms",
+      "symbol": "WaitTimeoutMs"
+    },
+    {
+      "id": 17,
+      "name": "after_sequence",
+      "symbol": "AfterEventSequence"
+    },
+    {
+      "id": 18,
+      "name": "tif",
+      "symbol": "TimeInForce"
+    },
+    {
+      "id": 19,
+      "name": "queue_deadline_at_ms",
+      "symbol": "QueueDeadlineAtMs"
+    },
+    {
+      "id": 20,
+      "name": "cancel_tool_call_id",
+      "symbol": "CancelToolCallId"
+    },
+    {
+      "id": 21,
+      "name": "target_tool_name",
+      "symbol": "TargetToolName"
+    },
+    {
+      "id": 22,
+      "name": "protocol_min_version",
+      "symbol": "ProtocolMinVersion"
+    },
+    {
+      "id": 23,
+      "name": "protocol_max_version",
+      "symbol": "ProtocolMaxVersion"
+    },
+    {
+      "id": 24,
+      "name": "expected_schema_hash",
+      "symbol": "ExpectedSchemaHash"
+    },
+    {
+      "id": 25,
+      "name": "preview_permit",
+      "symbol": "PreviewPermit"
+    },
+    {
+      "id": 26,
+      "name": "command_id",
+      "symbol": "TargetCommandId"
+    }
+  ],
+  "numeric_policy": {
+    "id": "hepta.numeric.fixed-v1",
+    "scale": 1000000,
+    "maximum_raw": 9000000000000000
+  },
+  "target_intent_aliases": {
+    "max_slippage_bps": "reference_price",
+    "target_position": "quantity"
+  },
+  "target_intent_tools": [
+    "intent.apply_target_position",
+    "intent.preview_target_position"
+  ]
+}

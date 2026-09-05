@@ -1,0 +1,76 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.session.runtime",
+  "version": "1.1.0",
+  "lifecycle": "current",
+  "kind": "stateful-library",
+  "trust_domain": "agent-gateway",
+  "authority": "durable session lease and supervisor protocol state",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/tool_host/session_supervisor_lease_",
+    "HeptaTrade/tool_host/session_supervisor_protocol"
+  ],
+  "build_targets": [
+    "hepta_session_core"
+  ],
+  "provides": [
+    "hepta.session-supervisor.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "durable-generation-fenced",
+    "persistence": "encrypted-lease-store-atomic-replace",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "supervisor-serialized",
+    "shard_key": "supervisor-single-owner",
+    "blocking_io": "durable-store-and-af-unix-control-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "control-path",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "session-control-v1",
+  "owners": {
+    "dri": "@hepta/session-control",
+    "backup": "@hepta/gateway",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "module-documentation-coverage",
+    "protocol-contracts",
+    "session-boundary"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-session-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "current_protocol_version": 1,
+  "identity": [
+    "service_epoch",
+    "service_fencing_generation"
+  ],
+  "live_mutation": false,
+  "mutation_invariants": [
+    "gateway_context_binding",
+    "decision_lease",
+    "opaque_single_use_preview_permit",
+    "journal_before_send",
+    "stable_command_id_and_normalized_payload"
+  ],
+  "protocol_magic": "HEX1",
+  "schema": "heptatrader.execution-wire.v1"
+}

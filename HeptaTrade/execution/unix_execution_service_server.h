@@ -26,6 +26,7 @@ struct ExecutionServiceRequest;
 // unix_execution_service_client.h instead of this header.
 class UnixExecutionServiceServer
 {
+    friend class PreviewPermitTestAccess;
 public:
     explicit UnixExecutionServiceServer(
         ExecutionAuthority& authority,
@@ -94,6 +95,26 @@ private:
         std::string flattenPlanBinding;
     };
 
+    // A permit is removed from m_previewPermits at the single transition
+    // point immediately before authority dispatch.  Keep a bounded, in-memory
+    // witness for that transition while the authority call is running (and
+    // for a short replay window after it completes).  This closes the race in
+    // which a concurrent retry would otherwise observe only
+    // UNKNOWN_OR_CONSUMED before the first call has produced its durable
+    // Execution result.  The durable authority remains the source of truth
+    // across process restart; this cache is deliberately bounded and never
+    // stores a raw permit in completed records.
+    struct PreviewDispatchRecord
+    {
+        std::string ownerKey;
+        std::string fingerprint;
+        std::string permit;
+        bool flatten = false;
+        bool complete = false;
+        ExecutionCommandResult result;
+        std::chrono::steady_clock::time_point steadyExpiresAt;
+    };
+
     void AcceptLoop();
     void HandleClient(int clientFd);
     bool ReadAuthorizedRequest(int clientFd,
@@ -132,6 +153,11 @@ private:
                             std::string& mutationCommandId,
                             long long& expiresAtMs,
                             std::string& reason);
+    // Validate without mutating the permit store.  Dispatch uses this phase
+    // before acquiring the decision lease so a caller that fails an
+    // independent safety check can retry the exact preview command.
+    bool ValidatePreviewPermit(const PlaceOrderCommand& command,
+                               std::string& reason) const;
     bool ConsumePreviewPermit(const PlaceOrderCommand& command,
                               std::string& reason);
     bool IssueFlattenPreviewPermit(
@@ -141,6 +167,11 @@ private:
         std::string& mutationCommandId,
         long long& expiresAtMs,
         std::string& reason);
+    // See ValidatePreviewPermit().  Flatten validation also checks the
+    // service-owned snapshot binding, but does not inject or consume it.
+    bool ValidateFlattenPreviewPermit(
+        const FlattenPositionCommand& command,
+        std::string& reason) const;
     bool ConsumeFlattenPreviewPermit(
         FlattenPositionCommand& command,
         std::string& reason);
@@ -173,4 +204,7 @@ private:
     mutable std::mutex m_lifecycleMutex;
     mutable std::mutex m_previewMutex;
     std::unordered_map<std::string, PreviewPermitRecord> m_previewPermits;
+    // Keyed by owner + operation + server-issued mutation command id.
+    std::unordered_map<std::string, PreviewDispatchRecord>
+        m_previewDispatches;
 };

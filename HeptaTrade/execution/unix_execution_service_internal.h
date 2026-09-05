@@ -25,6 +25,10 @@ bool ReadFrame(int fd,
 bool WriteFrame(int fd,
                 const std::string& body,
                 const IoDeadline& deadline);
+// Preview/read authority details are embedded into a larger JSON envelope by
+// the Unix service. Validate the bounded document before splicing it so an
+// authority callback cannot turn an accepted preview into malformed wire JSON.
+bool ValidPreviewJson(const std::string& value);
 ExecutionCommandResult TransportFailure(
     const std::string& commandId,
     const std::string& detail);

@@ -1,13 +1,15 @@
 #include "ib_paper_execution_profile.h"
+#include "../observability/runtime_telemetry.h"
+#include "../risk/deterministic_risk_policy.h"
 
 #include <cerrno>
-#include <cctype>
 #include <cmath>
 #include <cstring>
 #include <cstdlib>
 #include <fcntl.h>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <openssl/evp.h>
 #include <set>
 #include <sstream>
@@ -29,6 +31,69 @@ const char* const kExternalMaxOrderNotionalKey =
     "HEPTA_EXECUTION_MAX_ORDER_NOTIONAL";
 const char* const kQuoteMaxAgeKey =
     "HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS";
+
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+
+std::string EscapeJson(const std::string& value)
+{
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (std::string::const_iterator it = value.begin();
+         it != value.end(); ++it)
+    {
+        const unsigned char byte = static_cast<unsigned char>(*it);
+        if (byte == '"' || byte == '\\') escaped.push_back('\\');
+        // Subscription identifiers are authority metadata. Keep the outer
+        // preview envelope valid even if an adapter supplies an odd value.
+        escaped.push_back(byte < 0x20u ? '?' : static_cast<char>(byte));
+    }
+    return escaped;
+}
+
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
 
 std::string Read(const std::map<std::string, std::string>& values, const char* key)
 {
@@ -63,7 +128,7 @@ bool SameOrChildPath(const std::string& path, const std::string& parent)
 
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum, std::uint64_t& out)
 {
-    if (value.empty() || value[0] == '-') return false;
+    if (!CanonicalUnsignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long parsed = std::strtoull(value.c_str(), &end, 10);
@@ -75,12 +140,13 @@ bool ParseUnsigned(const std::string& value, std::uint64_t maximum, std::uint64_
 
 bool ParsePositiveDouble(const std::string& value, double& out)
 {
-    if (value.empty()) return false;
-    char* end = nullptr;
-    errno = 0;
-    const double parsed = std::strtod(value.c_str(), &end);
-    if (errno != 0 || end == value.c_str() || *end != '\0' ||
-        !std::isfinite(parsed) || parsed <= 0.0)
+    if (!CanonicalFloating(value)) return false;
+    std::istringstream input(value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double parsed = 0.0;
+    input >> parsed;
+    if (!input || !input.eof() || !std::isfinite(parsed) || parsed <= 0.0)
         return false;
     out = parsed;
     return true;
@@ -91,6 +157,7 @@ std::string CanonicalRecoveryDecimal(double value)
     if (!std::isfinite(value)) return std::string();
     if (value == 0.0) return "0";
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << std::fixed << std::setprecision(17) << value;
     std::string canonical = output.str();
     const std::size_t dot = canonical.find('.');
@@ -133,6 +200,7 @@ std::string CanonicalDouble(double value)
     std::uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << std::hex << std::setw(16) << std::setfill('0') << bits;
     return out.str();
 }
@@ -149,6 +217,7 @@ std::string Sha256Hex(const std::string& value)
     EVP_MD_CTX_free(context);
     if (!ok || length != 32) return std::string();
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << std::hex << std::setfill('0');
     for (unsigned int i = 0; i < length; ++i)
         out << std::setw(2) << static_cast<unsigned int>(digest[i]);
@@ -165,7 +234,8 @@ bool StrictPaperAccount(const std::string& account)
     {
         const unsigned char character =
             static_cast<unsigned char>(account[i]);
-        if (std::isdigit(character))
+        if (character >= static_cast<unsigned char>('0') &&
+            character <= static_cast<unsigned char>('9'))
             hasDigit = true;
         else if (character < 'A' || character > 'Z')
             return false;
@@ -182,8 +252,11 @@ bool CanonicalDomainName(const std::string& value)
     {
         const unsigned char character =
             static_cast<unsigned char>(value[i]);
-        if (!std::islower(character) &&
-            !std::isdigit(character) && character != '-')
+        const bool lower = character >= static_cast<unsigned char>('a') &&
+            character <= static_cast<unsigned char>('z');
+        const bool digit = character >= static_cast<unsigned char>('0') &&
+            character <= static_cast<unsigned char>('9');
+        if (!lower && !digit && character != '-')
             return false;
     }
     return true;
@@ -256,6 +329,23 @@ bool ReadPrivateCredential(const std::string& path, std::string& value,
                               value[value.size() - 1] == '\r'))
         value.resize(value.size() - 1);
     return true;
+}
+std::string MapCommonRiskReason(const std::string& code)
+{
+    if (code == "RISK_ORDER_QUANTITY_LIMIT" ||
+        code == "RISK_ORDER_QUANTITY_INVALID")
+        return "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
+    if (code == "RISK_ORDER_NOTIONAL_LIMIT" ||
+        code == "RISK_VALUATION_PRICE_INVALID")
+        return "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
+    if (code == "RISK_ORDER_RATE_LIMIT")
+        return "IB_PAPER_ORDER_RATE_EXCEEDED";
+    if (code == "RISK_ACTIVE_ORDER_LIMIT")
+        return "IB_PAPER_MAX_ACTIVE_ORDERS_EXCEEDED";
+    if (code == "RISK_GROSS_POSITION_LIMIT" ||
+        code == "RISK_POSITION_SNAPSHOT_INVALID")
+        return "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED";
+    return code;
 }
 }
 
@@ -644,22 +734,20 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN";
         return false;
     }
-    if (m_killSwitch->BlocksRiskIncrease(reason)) return false;
+    if (m_killSwitch->BlocksRiskIncrease(reason))
+    {
+        RuntimeRecordKillSwitch("blocked");
+        return false;
+    }
+    RuntimeRecordKillSwitch("open");
     if (!snapshot.complete)
     {
         reason = "IB_PAPER_AUTHORITATIVE_RISK_SNAPSHOT_REQUIRED";
         return false;
     }
     const double quantity = std::fabs(command.order.totalQuantity);
-    if (!std::isfinite(quantity) || quantity <= 0.0 ||
-        quantity > m_config.maxOrderQuantity)
-    {
-        reason = "IB_PAPER_MAX_ORDER_QUANTITY_EXCEEDED";
-        return false;
-    }
     if (command.timeInForce != "DAY" ||
-        (command.order.action != "BUY" &&
-         command.order.action != "SELL"))
+        (command.order.action != "BUY" && command.order.action != "SELL"))
     {
         reason = "IB_PAPER_ORDER_INTENT_INVALID";
         return false;
@@ -667,8 +755,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
     if (m_config.UsesExternalLimitDay())
     {
         if (!(command.order.totalQuantity > 0.0) ||
-            command.order.auxPrice != 0.0 ||
-            command.order.outsideRth ||
+            command.order.auxPrice != 0.0 || command.order.outsideRth ||
             !command.order.orderRef.empty())
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_FIELDS_INVALID";
@@ -699,8 +786,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
             return false;
         }
     }
-    if (!std::isfinite(command.referencePrice) ||
-        command.referencePrice <= 0.0)
+    if (!std::isfinite(command.referencePrice) || command.referencePrice <= 0.0)
     {
         reason = "IB_PAPER_REFERENCE_PRICE_REQUIRED";
         return false;
@@ -719,29 +805,36 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         reason = "IB_PAPER_EXTERNAL_LIMIT_PRICE_MISMATCH";
         return false;
     }
-    if (authoritativePrice >
-        m_config.maxOrderNotional / quantity)
-    {
-        reason = "IB_PAPER_MAX_ORDER_NOTIONAL_EXCEEDED";
-        return false;
-    }
-    if (snapshot.activeOrderCount >= m_config.maxActiveOrders)
-    {
-        reason = "IB_PAPER_MAX_ACTIVE_ORDERS_EXCEEDED";
-        return false;
-    }
-    if (!std::isfinite(snapshot.grossAbsolutePosition) ||
-        snapshot.grossAbsolutePosition < 0.0 ||
-        snapshot.grossAbsolutePosition > m_config.maxGrossPosition ||
-        quantity > m_config.maxGrossPosition - snapshot.grossAbsolutePosition)
-    {
-        reason = "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED";
-        return false;
-    }
+
     PruneRateWindow(nowMs);
-    if (m_acceptedPlaceTimesMs.size() >= m_config.maxOrdersPerMinute)
+    DeterministicRiskLimits limits;
+    limits.maxOrderQuantity = m_config.maxOrderQuantity;
+    limits.maxOrderNotional = m_config.maxOrderNotional;
+    limits.maxOrdersPerMinute = m_config.maxOrdersPerMinute;
+    limits.maxActiveOrders = m_config.maxActiveOrders;
+    limits.maxGrossPosition = m_config.maxGrossPosition;
+    limits.maxPriceDeviationBps = 0.0;
+
+    DeterministicRiskContext context;
+    context.action = command.order.action;
+    context.orderType = command.order.orderType;
+    context.quantity = quantity;
+    context.valuationPrice = authoritativePrice;
+    context.submittedPrice = command.order.lmtPrice;
+    context.referencePrice = authoritativePrice;
+    context.ordersInLastMinute = m_acceptedPlaceTimesMs.size();
+    context.activeOrderCount = snapshot.activeOrderCount;
+    context.grossAbsolutePosition = snapshot.grossAbsolutePosition;
+    context.projectedGrossAbsolutePosition =
+        snapshot.grossAbsolutePosition + quantity;
+    context.exposureReducing = false;
+    context.quoteFresh = true;
+    context.portfolioSnapshotComplete = snapshot.complete;
+    const DeterministicRiskDecision decision =
+        DeterministicRiskPolicy::Evaluate(limits, context);
+    if (!decision.allow)
     {
-        reason = "IB_PAPER_ORDER_RATE_EXCEEDED";
+        reason = MapCommonRiskReason(decision.reasonCode);
         return false;
     }
     reason.clear();
@@ -827,7 +920,7 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PlaceOrder(
         !m_callbacks.authoritativeQuote)
         return Reject(command.context, -1, "IB_PAPER_POLICY_CALLBACKS_REQUIRED");
     const std::int64_t now = m_callbacks.nowMs();
-    if (command.expiresAtMs <= 0 || now > command.expiresAtMs)
+    if (command.expiresAtMs <= 0 || now >= command.expiresAtMs)
         return Reject(command.context, -1, "TOOL_CALL_EXPIRED");
     if (command.instrument.empty() || command.contract.symbol.empty() ||
         (command.order.action != "BUY" &&
@@ -915,7 +1008,7 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PreviewOrder(
         !m_callbacks.authoritativeQuote)
         return Reject(command.context, -1, "IB_PAPER_POLICY_CALLBACKS_REQUIRED");
     const std::int64_t now = m_callbacks.nowMs();
-    if (command.expiresAtMs <= 0 || now > command.expiresAtMs)
+    if (command.expiresAtMs <= 0 || now >= command.expiresAtMs)
         return Reject(command.context, -1, "TOOL_CALL_EXPIRED");
     if (command.instrument.empty() || command.contract.symbol.empty() ||
         (command.order.action != "BUY" &&
@@ -947,8 +1040,10 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PreviewOrder(
     result.status = ExecutionCommandStatus::Accepted;
     result.commandId = command.context.toolCallId;
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "{\"source\":\"IB\",\"authoritative\":true,"
-           << "\"subscription_id\":\"" << quote.subscriptionId << "\","
+           << "\"subscription_id\":\""
+           << EscapeJson(quote.subscriptionId) << "\","
            << "\"observed_at_ms\":" << quote.observedAtMs << ','
            << "\"stale_after_ms\":" << quote.staleAfterMs << ','
            << "\"stale\":false";

@@ -6,6 +6,7 @@
 #include "../HeptaTrade/tool_host/typed_tool_protocol.h"
 #include "../HeptaTrade/tool_host/unix_session_supervisor_server.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <arpa/inet.h>

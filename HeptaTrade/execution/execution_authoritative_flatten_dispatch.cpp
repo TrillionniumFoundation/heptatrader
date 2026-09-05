@@ -116,27 +116,17 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
     owner.executionDomain = context.executionDomain;
     owner.instrument = command.instrument;
     owner.side = plan.order.action;
-    m_orderOwners[orderId] = owner;
-    if (m_callbacks.trackOrder)
-        m_callbacks.trackOrder(
-            context.venue.empty() ? "IB" : context.venue, orderId, "",
-            command.instrument, plan.order.action, context.strategy);
-
+    // Zero is a non-unique broker outcome, not a cancellable order key.
+    if (orderId > 0) m_orderOwners[orderId] = owner;
     bool projectionOk = true;
     std::string projectionReason;
-    if (m_callbacks.onIbOrderPlaced)
+    if (m_callbacks.trackOrder)
     {
-        PlaceOrderCommand projected;
-        projected.context = context;
-        projected.contract = plan.contract;
-        projected.order = plan.order;
-        projected.instrument = plan.instrument;
-        projected.timeInForce = plan.timeInForce;
-        projected.referencePrice = plan.referencePrice;
         try
         {
-            projectionOk = m_callbacks.onIbOrderPlaced(
-                projected, orderId, &projectionReason);
+            m_callbacks.trackOrder(
+                context.venue.empty() ? "IB" : context.venue, orderId, "",
+                command.instrument, plan.order.action, context.strategy);
         }
         catch (const std::exception& error)
         {
@@ -146,8 +136,36 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
         catch (...)
         {
             projectionOk = false;
-            projectionReason =
-                "unknown flatten projection exception";
+            projectionReason = "flatten order tracking callback threw";
+        }
+    }
+    if (m_callbacks.onIbOrderPlaced)
+    {
+        if (projectionOk)
+        {
+            PlaceOrderCommand projected;
+            projected.context = context;
+            projected.contract = plan.contract;
+            projected.order = plan.order;
+            projected.instrument = plan.instrument;
+            projected.timeInForce = plan.timeInForce;
+            projected.referencePrice = plan.referencePrice;
+            try
+            {
+                projectionOk = m_callbacks.onIbOrderPlaced(
+                    projected, orderId, &projectionReason);
+            }
+            catch (const std::exception& error)
+            {
+                projectionOk = false;
+                projectionReason = error.what();
+            }
+            catch (...)
+            {
+                projectionOk = false;
+                projectionReason =
+                    "unknown flatten projection exception";
+            }
         }
     }
 

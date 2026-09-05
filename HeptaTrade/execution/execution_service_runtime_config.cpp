@@ -1,12 +1,62 @@
 #include "execution_service_runtime_config.h"
+#include "../risk/deterministic_risk_policy.h"
 
 #include <cerrno>
-#include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <locale>
+#include <sstream>
 
 namespace
 {
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+
+bool CanonicalFloating(const std::string& value)
+{
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0')
+    {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    }
+    else
+    {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.')
+    {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E'))
+    {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+
 std::string ReadString(const std::map<std::string, std::string>& values, const char* key)
 {
     const std::map<std::string, std::string>::const_iterator found = values.find(key);
@@ -15,12 +65,33 @@ std::string ReadString(const std::map<std::string, std::string>& values, const c
 
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum, std::uint64_t& parsed)
 {
-    if (value.empty() || value[0] == '-') return false;
+    if (!CanonicalUnsignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
     if (errno != 0 || end == value.c_str() || *end != '\0' || number > maximum) return false;
     parsed = static_cast<std::uint64_t>(number);
+    return true;
+}
+
+bool ParseBool01(const std::string& value, bool& parsed)
+{
+    if (value == "0") { parsed = false; return true; }
+    if (value == "1") { parsed = true; return true; }
+    return false;
+}
+
+bool ParsePositiveDouble(const std::string& value, double& parsed)
+{
+    if (!CanonicalFloating(value)) return false;
+    std::istringstream input(value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double number = 0.0;
+    input >> number;
+    if (!input || !input.eof() || !std::isfinite(number) || number <= 0.0)
+        return false;
+    parsed = number;
     return true;
 }
 
@@ -33,8 +104,11 @@ bool CanonicalAgentId(const std::string& value)
     {
         const unsigned char character =
             static_cast<unsigned char>(value[i]);
-        if (!std::islower(character) && !std::isdigit(character) &&
-            character != '-')
+        const bool lower = character >= static_cast<unsigned char>('a') &&
+            character <= static_cast<unsigned char>('z');
+        const bool digit = character >= static_cast<unsigned char>('0') &&
+            character <= static_cast<unsigned char>('9');
+        if (!lower && !digit && character != '-')
             return false;
     }
     return true;
@@ -193,6 +267,18 @@ bool ExecutionServiceRuntimeConfig::Validate(std::string& reason) const
         reason = "EXECUTION_SIMULATOR_QUOTE_REFRESH_INTERVAL_INVALID";
         return false;
     }
+    DeterministicRiskLimits riskLimits;
+    riskLimits.orderSubmissionEnabled = simulatorOrderSubmissionEnabled;
+    riskLimits.globalKillSwitch = simulatorGlobalKillSwitch;
+    riskLimits.flattenOnly = simulatorFlattenOnly;
+    riskLimits.maxOrderQuantity = simulatorMaxOrderQuantity;
+    riskLimits.maxOrderNotional = simulatorMaxOrderNotional;
+    riskLimits.maxOrdersPerMinute = simulatorMaxOrdersPerMinute;
+    riskLimits.maxActiveOrders = simulatorMaxActiveOrders;
+    riskLimits.maxGrossPosition = simulatorMaxGrossPosition;
+    riskLimits.maxPriceDeviationBps = simulatorMaxPriceDeviationBps;
+    if (!DeterministicRiskPolicy::ValidateLimits(riskLimits, reason))
+        return false;
     reason.clear();
     return true;
 }
@@ -208,6 +294,15 @@ bool ExecutionServiceRuntimeConfig::FromEnvironment(
         "HEPTA_EXECUTION_GATEWAY_AGENT_ID",
         "HEPTA_EXECUTION_MAX_REQUEST_BYTES",
         "HEPTA_EXECUTION_IO_TIMEOUT_MS",
+        "HEPTA_SIM_ORDER_SUBMISSION_ENABLED",
+        "HEPTA_SIM_GLOBAL_KILL_SWITCH",
+        "HEPTA_SIM_FLATTEN_ONLY",
+        "HEPTA_SIM_MAX_ORDER_QTY",
+        "HEPTA_SIM_MAX_ORDER_NOTIONAL",
+        "HEPTA_SIM_MAX_ORDERS_PER_MINUTE",
+        "HEPTA_SIM_MAX_ACTIVE_ORDERS",
+        "HEPTA_SIM_MAX_GROSS_POSITION",
+        "HEPTA_SIM_MAX_PRICE_DEVIATION_BPS",
         "LISTEN_PID",
         "LISTEN_FDS",
         "LISTEN_FDNAMES",
@@ -304,6 +399,60 @@ bool ExecutionServiceRuntimeConfig::FromValues(
             return false;
         }
         config.ioTimeoutMs = static_cast<int>(parsed);
+    }
+    const std::string orderEnabled = ReadString(values,
+        "HEPTA_SIM_ORDER_SUBMISSION_ENABLED");
+    const std::string killSwitch = ReadString(values,
+        "HEPTA_SIM_GLOBAL_KILL_SWITCH");
+    const std::string flattenOnly = ReadString(values,
+        "HEPTA_SIM_FLATTEN_ONLY");
+    if ((!orderEnabled.empty() && !ParseBool01(orderEnabled,
+            config.simulatorOrderSubmissionEnabled)) ||
+        (!killSwitch.empty() && !ParseBool01(killSwitch,
+            config.simulatorGlobalKillSwitch)) ||
+        (!flattenOnly.empty() && !ParseBool01(flattenOnly,
+            config.simulatorFlattenOnly)))
+    {
+        reason = "EXECUTION_SIMULATOR_RISK_BOOLEAN_INVALID";
+        return false;
+    }
+    const std::string maxQty = ReadString(values, "HEPTA_SIM_MAX_ORDER_QTY");
+    const std::string maxNotional = ReadString(values,
+        "HEPTA_SIM_MAX_ORDER_NOTIONAL");
+    const std::string maxGross = ReadString(values,
+        "HEPTA_SIM_MAX_GROSS_POSITION");
+    const std::string maxDeviation = ReadString(values,
+        "HEPTA_SIM_MAX_PRICE_DEVIATION_BPS");
+    if ((!maxQty.empty() && !ParsePositiveDouble(maxQty,
+            config.simulatorMaxOrderQuantity)) ||
+        (!maxNotional.empty() && !ParsePositiveDouble(maxNotional,
+            config.simulatorMaxOrderNotional)) ||
+        (!maxGross.empty() && !ParsePositiveDouble(maxGross,
+            config.simulatorMaxGrossPosition)) ||
+        (!maxDeviation.empty() && !ParsePositiveDouble(maxDeviation,
+            config.simulatorMaxPriceDeviationBps)))
+    {
+        reason = "EXECUTION_SIMULATOR_RISK_DECIMAL_INVALID";
+        return false;
+    }
+    std::uint64_t riskInteger = 0;
+    const std::string maxRate = ReadString(values,
+        "HEPTA_SIM_MAX_ORDERS_PER_MINUTE");
+    if (!maxRate.empty())
+    {
+        if (!ParseUnsigned(maxRate, 1000000, riskInteger) || riskInteger == 0)
+        { reason = "EXECUTION_SIMULATOR_RISK_RATE_INVALID"; return false; }
+        config.simulatorMaxOrdersPerMinute =
+            static_cast<std::size_t>(riskInteger);
+    }
+    const std::string maxActive = ReadString(values,
+        "HEPTA_SIM_MAX_ACTIVE_ORDERS");
+    if (!maxActive.empty())
+    {
+        if (!ParseUnsigned(maxActive, 1000000, riskInteger) || riskInteger == 0)
+        { reason = "EXECUTION_SIMULATOR_RISK_ACTIVE_INVALID"; return false; }
+        config.simulatorMaxActiveOrders =
+            static_cast<std::size_t>(riskInteger);
     }
     return config.Validate(reason);
 }

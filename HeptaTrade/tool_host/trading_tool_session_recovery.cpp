@@ -59,6 +59,14 @@ bool TradingToolHost::EnterRecoveryOnlyAndQuery(
     if (!MarkRecoveryOnly(m_mutex, m_sessions, token, expectedGeneration,
             recoveryExpiresAtMs, reason))
         return false;
+    // Persisting the recovery-only fence closes the entry path.  Invalidate
+    // any target permits already issued for this owner as well, including
+    // permits held outside the host bearer replay map.  The dispatch lock
+    // orders this cleanup after any in-flight host call and before a caller
+    // can observe the recovery transition.
+    TradingToolSession targetOwner = binding.session;
+    targetOwner.executionContext.executionDomain = binding.executionDomain;
+    m_registry.RevokeTargetPermitsForOwner(targetOwner);
     // A recovery request must fail closed even when the remote control
     // authority is temporarily unavailable.  Persist and apply the local
     // recovery-only fence first; never leave an entry-enabled bearer beside

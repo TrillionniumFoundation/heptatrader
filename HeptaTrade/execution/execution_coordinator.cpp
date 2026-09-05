@@ -1,7 +1,10 @@
 #include "execution_coordinator.h"
+#include "../observability/runtime_telemetry.h"
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <iomanip>
+#include <locale>
 #include <openssl/evp.h>
 #include <sstream>
 #include <utility>
@@ -51,6 +54,7 @@ std::string CanonicalDouble(double value)
     std::uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << std::hex << std::setw(16) << std::setfill('0') << bits;
     return out.str();
 }
@@ -79,6 +83,7 @@ std::string Sha256(const std::string& value)
     if (!ok) return std::string();
 
     std::ostringstream out;
+    out.imbue(std::locale::classic());
     out << "sha256:" << std::hex << std::setfill('0');
     for (unsigned int i = 0; i < length; ++i)
         out << std::setw(2) << static_cast<unsigned int>(digest[i]);
@@ -224,7 +229,13 @@ void ExecutionCoordinator::BlockMutationsLocked(const std::string& reason)
 bool ExecutionCoordinator::AppendOrBlockLocked(const OmsJournalEvent& event,
                                                const std::string& failureCode)
 {
-    if (m_journal.Append(event)) return true;
+    if (m_journal.Append(event))
+    {
+        RuntimeRecordJournalEvent(
+            event.eventType, event.status, event.riskCode);
+        return true;
+    }
+    RuntimeRecordJournalFailure(failureCode);
     BlockMutationsLocked(failureCode);
     return false;
 }
@@ -282,7 +293,15 @@ std::string ExecutionCoordinator::RequestKey(const std::string& agentId,
                                              const std::string& sessionId,
                                              const std::string& toolCallId)
 {
-    return agentId + "\x1f" + sessionId + "\x1f" + toolCallId;
+    // Length-prefix each component instead of joining with a delimiter.  The
+    // old separator-based key admitted collisions when an externally sourced
+    // identity contained the separator (for example, ``a\x1fb`` versus a
+    // different three-component tuple).  Length framing remains unambiguous
+    // even for legacy in-process callers that have not passed through the
+    // execution wire validator.
+    return std::to_string(agentId.size()) + ":" + agentId +
+        std::to_string(sessionId.size()) + ":" + sessionId +
+        std::to_string(toolCallId.size()) + ":" + toolCallId;
 }
 
 std::string ExecutionCoordinator::OwnerKey(const std::string& agentId,
@@ -396,10 +415,25 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
     if (!m_callbacks.placeIbOrder && !m_callbacks.placeIbOrderCorrelated && !m_callbacks.placeIbOrderCommandCorrelated)
         return RejectLocked(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
                             -1, requestHash);
-    if (command.expiresAtMs > 0 && OmsJournal::NowEpochMs() > command.expiresAtMs)
+    // Expiry is an exclusive upper bound: at the exact millisecond deadline
+    // the command is no longer admissible.  Keep this boundary aligned with
+    // the session, permit and runtime policy checks (all use <= for expiry).
+    if (command.expiresAtMs > 0 &&
+        OmsJournal::NowEpochMs() >= command.expiresAtMs)
         return RejectLocked(context, "TOOL_CALL_EXPIRED", "order command expired before execution",
                             -1, requestHash);
-    if (command.contract.symbol.empty() || command.order.totalQuantity <= 0.0 || !IsBuyOrSell(command.order.action))
+    // Numeric fields arrive from an untrusted protocol boundary (and direct
+    // embedded callers can bypass the wire decoder).  NaN compares false to
+    // the old `<= 0` check, so explicitly reject every non-finite value before
+    // it reaches hashing, journaling or a venue adapter.
+    if (command.contract.symbol.empty() ||
+        !std::isfinite(command.contract.strike) ||
+        !std::isfinite(command.order.totalQuantity) ||
+        !std::isfinite(command.order.lmtPrice) ||
+        !std::isfinite(command.order.auxPrice) ||
+        !std::isfinite(command.referencePrice) ||
+        command.order.totalQuantity <= 0.0 ||
+        !IsBuyOrSell(command.order.action))
         return RejectLocked(context, "INVALID_ORDER", "symbol, BUY/SELL action and positive quantity are required",
                             -1, requestHash);
 
@@ -411,7 +445,21 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
             return RejectLocked(context, "DECISION_LEASE_REQUIRED", "Agent mutation lacks a server-validated lease",
                                 -1, requestHash);
         std::string leaseReason;
-        if (!m_callbacks.validateDecisionLease(context, instrument, &leaseReason))
+        bool leaseValid = false;
+        try
+        {
+            leaseValid = m_callbacks.validateDecisionLease(
+                context, instrument, &leaseReason);
+        }
+        catch (const std::exception& error)
+        {
+            leaseReason = error.what();
+        }
+        catch (...)
+        {
+            leaseReason = "decision lease authority threw";
+        }
+        if (!leaseValid)
             return RejectLocked(context, "DECISION_LEASE_INVALID", leaseReason, -1, requestHash);
     }
     const double eventPrice = command.order.lmtPrice > 0.0 ? command.order.lmtPrice : command.referencePrice;
@@ -528,7 +576,10 @@ bool ExecutionCoordinator::ApplyRecoveredPlaceReceiptLocked(
     owner.executionDomain = event.executionDomain;
     owner.instrument = event.instrument;
     owner.side = event.side;
-    if (event.orderId >= 0) m_orderOwners[event.orderId] = owner;
+    // Zero is a non-unique IB completed-order marker, not an ownership key.
+    // Keep the accepted command status on replay, but do not let it authorize
+    // a cancel or block reconnect through a fabricated owner entry.
+    if (event.orderId > 0) m_orderOwners[event.orderId] = owner;
     return true;
 }
 
@@ -689,7 +740,7 @@ bool ExecutionCoordinator::ApplyRecoveredCommandStateLocked(
             ExecutionCommandStatus::Accepted : ExecutionCommandStatus::Rejected;
         record.reasonCode = event.riskCode;
         record.detail = event.reason;
-        if (record.status == ExecutionCommandStatus::Accepted && event.orderId >= 0)
+        if (record.status == ExecutionCommandStatus::Accepted && event.orderId > 0)
         {
             ExecutionOrderOwner owner;
             owner.agentId = agentId;
@@ -796,6 +847,73 @@ bool ExecutionCoordinator::ResolveUncertainPlaceCommands(
         reason = "AUTHORITATIVE_CORRELATION_SNAPSHOT_INCOMPLETE";
         return false;
     }
+
+    // Validate the complete broker projection before touching any durable
+    // command state.  Callers normally obtain this map from a venue adapter,
+    // but this authority is also reachable through embedded/runtime paths;
+    // trusting a malformed map here could turn one broker order into several
+    // accepted commands (or reinterpret a negative sentinel as a rejection).
+    // Order id zero is intentionally tolerated as non-unique *place* evidence
+    // for IB completed orders.  It is never inserted into the owner map below
+    // and therefore cannot authorize a later cancel by id.
+    std::set<long> authoritativePositiveOrderIds;
+    for (std::map<std::string, long>::const_iterator item =
+             authoritativeCorrelations.begin();
+         item != authoritativeCorrelations.end(); ++item)
+    {
+        if (item->first.empty() || item->second < 0)
+        {
+            reason = "AUTHORITATIVE_CORRELATION_INVALID";
+            return false;
+        }
+        if (item->second > 0 &&
+            !authoritativePositiveOrderIds.insert(item->second).second)
+        {
+            reason = "AUTHORITATIVE_CORRELATION_ORDER_ID_CONFLICT";
+            return false;
+        }
+    }
+
+    // A corrupt journal could contain two unresolved commands carrying the
+    // same correlation.  Resolve each correlation at most once, and never
+    // overwrite an already-owned positive order id with a different command.
+    std::set<std::string> unresolvedCorrelations;
+    std::set<long> unresolvedPositiveOrderIds;
+    for (std::unordered_map<std::string, RequestRecord>::const_iterator it =
+             m_requests.begin(); it != m_requests.end(); ++it)
+    {
+        const RequestRecord& record = it->second;
+        if (record.status != ExecutionCommandStatus::Uncertain ||
+            (record.operation != "place" &&
+             record.operation != "flatten") ||
+            (record.reasonCode != "RECOVERY_RECONCILE_REQUIRED" &&
+             !(record.operation == "place" &&
+               record.reasonCode == "IB_PLACE_OUTCOME_UNCERTAIN") &&
+             !(record.operation == "flatten" &&
+               record.reasonCode == "IB_FLATTEN_OUTCOME_UNCERTAIN")) ||
+            record.venueCorrelationId.empty())
+            continue;
+        const std::map<std::string, long>::const_iterator venue =
+            authoritativeCorrelations.find(record.venueCorrelationId);
+        if (venue == authoritativeCorrelations.end()) continue;
+        if (!unresolvedCorrelations.insert(record.venueCorrelationId).second)
+        {
+            reason = "AUTHORITATIVE_CORRELATION_DUPLICATE";
+            return false;
+        }
+        if (venue->second > 0 &&
+            !unresolvedPositiveOrderIds.insert(venue->second).second)
+        {
+            reason = "AUTHORITATIVE_CORRELATION_ORDER_ID_CONFLICT";
+            return false;
+        }
+        if (venue->second > 0 &&
+            m_orderOwners.find(venue->second) != m_orderOwners.end())
+        {
+            reason = "AUTHORITATIVE_CORRELATION_ORDER_ID_CONFLICT";
+            return false;
+        }
+    }
     for (std::unordered_map<std::string, RequestRecord>::iterator it = m_requests.begin();
          it != m_requests.end(); ++it)
     {
@@ -846,7 +964,10 @@ bool ExecutionCoordinator::ResolveUncertainPlaceCommands(
             owner.executionDomain = record.context.executionDomain;
             owner.instrument = record.instrument;
             owner.side = record.side;
-            m_orderOwners[orderId] = owner;
+            // IB may report order id zero for multiple completed/manual
+            // orders.  It proves this place reached the broker, but is not a
+            // unique ownership key and must never authorize a later cancel.
+            if (orderId > 0) m_orderOwners[orderId] = owner;
         }
         ++resolvedCommands;
     }
@@ -990,9 +1111,14 @@ bool ExecutionCoordinator::IsMutationBlocked(std::string* reason) const
 void ExecutionCoordinator::ResetMutationBlockAfterReconcile()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    if (m_mutationBlockReason == "IB_PAPER_TERMINAL_HALTED") return;
-    m_mutationBlocked = false;
-    m_mutationBlockReason.clear();
+    // Do not expose an unconditional escape hatch from the mutation fence.
+    // The old implementation cleared every reason merely because a caller
+    // said reconciliation had happened; that allowed RECOVERY_RECONCILE_REQUIRED,
+    // journal failures and owner-fence failures to be bypassed without an
+    // authoritative receipt.  The typed resolution methods below append and
+    // validate their own proof before clearing a specific block.  Keep this
+    // legacy entry point as an intentional no-op for source compatibility.
+    (void)lock;
 }
 
 bool ExecutionCoordinator::ResolveProjectionBlockAfterAuthoritativeResync()

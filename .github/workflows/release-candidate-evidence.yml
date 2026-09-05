@@ -1,0 +1,127 @@
+name: release-candidate-evidence
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-release-candidate-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    name: release-candidate-reproducibility-observation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Assert exact revision and install build dependencies
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${{ github.sha }}"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev python3 python3-jsonschema
+      - name: Validate repository and release evidence tooling
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/generate_release_evidence.py \
+            scripts/check_install_tree.py
+          python3 scripts/generate_documentation_views.py --check
+          python3 scripts/check_documentation_control_plane.py
+          python3 scripts/check_repository_integrity.py
+          python3 scripts/check_module_discipline.py
+          python3 -m unittest discover \
+            -s tests/python -p 'test_release_evidence.py'
+      - name: Build and install two clean IB-disabled candidates
+        run: |
+          set -euo pipefail
+          source_date_epoch="$(git show -s --format=%ct HEAD)"
+          printf 'SOURCE_DATE_EPOCH=%s\n' "$source_date_epoch" >> "$GITHUB_ENV"
+          common_flags="-ffile-prefix-map=${GITHUB_WORKSPACE}=. -fdebug-prefix-map=${GITHUB_WORKSPACE}=. -ffile-prefix-map=${RUNNER_TEMP}=. -fdebug-prefix-map=${RUNNER_TEMP}=."
+          for lane in a b; do
+            build="$RUNNER_TEMP/heptatrader-release-build-$lane"
+            stage="$RUNNER_TEMP/heptatrader-release-stage-$lane"
+            test ! -e "$build"
+            test ! -e "$stage"
+            SOURCE_DATE_EPOCH="$source_date_epoch" cmake \
+              -S . -B "$build" -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_CXX_FLAGS="$common_flags" \
+              -DBUILD_TESTING=OFF \
+              -DHEPTA_INSTALL_RUNTIME=ON \
+              -DHEPTA_ENABLE_IBAPI=OFF
+            SOURCE_DATE_EPOCH="$source_date_epoch" \
+              cmake --build "$build" --parallel 2 --target hepta_runtime_binaries
+            DESTDIR="$stage" SOURCE_DATE_EPOCH="$source_date_epoch" \
+              cmake --install "$build" --component runtime
+            python3 scripts/check_install_tree.py "$stage"
+          done
+      - name: Record exact toolchain observation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+
+          def capture(*command: str) -> str:
+              completed = subprocess.run(
+                  command,
+                  check=True,
+                  text=True,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+              )
+              return completed.stdout.strip()
+
+          observation = {
+              "cmake": capture("cmake", "--version"),
+              "compiler": capture("g++", "--version"),
+              "ninja": capture("ninja", "--version"),
+              "openssl": capture("openssl", "version", "-a"),
+              "python": capture("python3", "--version"),
+              "runner_image": "/".join(
+                  value
+                  for value in (
+                      os.environ.get("ImageOS", "ubuntu-24.04"),
+                      os.environ.get("ImageVersion", "unknown"),
+                  )
+                  if value
+              ),
+              "source_date_epoch": int(os.environ["SOURCE_DATE_EPOCH"]),
+          }
+          path = Path(os.environ["RUNNER_TEMP"]) / "heptatrader-toolchain.json"
+          path.write_text(
+              json.dumps(observation, sort_keys=True, separators=(",", ":")) + "\n",
+              encoding="utf-8",
+          )
+          PY
+      - name: Generate reproducibility manifest, SPDX SBOM and provenance
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/heptatrader-release-evidence-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          python3 scripts/generate_release_evidence.py \
+            --install-a "$RUNNER_TEMP/heptatrader-release-stage-a" \
+            --install-b "$RUNNER_TEMP/heptatrader-release-stage-b" \
+            --output-dir "$evidence" \
+            --expected-git-sha "${{ github.sha }}" \
+            --toolchain-json "$RUNNER_TEMP/heptatrader-toolchain.json"
+          printf 'HEPTA_RELEASE_EVIDENCE=%s\n' "$evidence" >> "$GITHUB_ENV"
+      - name: Upload immutable release candidate evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-candidate-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.HEPTA_RELEASE_EVIDENCE }}/
+          if-no-files-found: error
+          retention-days: 90

@@ -53,6 +53,8 @@ struct ExecutionEventReadResult
     ExecutionServiceIdentity serviceIdentity;
     std::string streamEpoch;
     std::uint64_t droppedThroughSequence = 0;
+    // Highest sequence allocated in the source stream at observation time;
+    // identity responses use this as the read-only feed watermark.
     std::uint64_t latestSequence = 0;
     std::string reasonCode;
     ExecutionEvent event;
@@ -73,6 +75,12 @@ public:
         std::uint64_t afterSequence,
         int timeoutMs) = 0;
     virtual const std::string& StreamEpoch() const = 0;
+    // Returns the highest sequence allocated in this feed.  Zero is a valid
+    // empty-stream watermark before the first event is published.  The
+    // default keeps lightweight source test seams and older adapters source
+    // compatible; authoritative hubs override it with their synchronized
+    // value.
+    virtual std::uint64_t LatestSequence() const { return 0; }
 };
 
 // Bounded, owner-routed event channel used by the Agent-facing events.wait tool.
@@ -101,6 +109,7 @@ public:
                                       std::uint64_t afterSequence,
                                       int timeoutMs) override;
     const std::string& StreamEpoch() const override;
+    std::uint64_t LatestSequence() const override;
 
     static std::string ToJson(const ExecutionEvent& event);
 

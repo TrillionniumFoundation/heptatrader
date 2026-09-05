@@ -1,0 +1,92 @@
+{
+  "schema": "heptatrader.research-manifest.v1",
+  "mode": "shadow",
+  "run_contract": {
+    "manifest": "RunManifest",
+    "event_log": "EventLog",
+    "summary": "RunSummary",
+    "campaign_or_finalizer_required": false
+  },
+  "strategy": {
+    "id": "eurusd-confirmed-momentum-shadow-v2",
+    "version": "2.0.0",
+    "definition": "research/strategy-definition-v1.json",
+    "implementation": "research/run_protocol.py",
+    "context_builder": "research/run_protocol.py",
+    "replay_evaluator": "research/run_protocol.py"
+  },
+  "strategy_digests": {
+    "definition": "sha256:f8aa57bbb55362ce5db16f62a64e02e412b178ac149ce8ef93ab3fceef976493",
+    "implementation": "sha256:9c96275d99d06cdc2b5fdbb52c0d98d99a40a85f302bbc2ec452ba50eeda33b3",
+    "context_builder": "sha256:9c96275d99d06cdc2b5fdbb52c0d98d99a40a85f302bbc2ec452ba50eeda33b3",
+    "replay_evaluator": "sha256:9c96275d99d06cdc2b5fdbb52c0d98d99a40a85f302bbc2ec452ba50eeda33b3"
+  },
+  "runner_support": {
+    "path": "research/protocol_support.py",
+    "sha256": "sha256:e72118e8c046b782be7f9d853d7290e441a12f732ef3c85cf7f2240743992547"
+  },
+  "data_contract": {
+    "time_zone": "UTC",
+    "calendar": "explicit_by_run",
+    "symbol_mapping": "explicit_by_run",
+    "datasets": "required_by_run_with_uri_and_sha256",
+    "quote_order": "strictly_monotonic_per_instrument_or_exact_unchanged_repeat",
+    "duplicate_policy": "reject_changed_same_timestamp",
+    "missing_data_policy": "fail_closed",
+    "lookahead": "forbidden"
+  },
+  "experiment": {
+    "split": "purged_walk_forward_with_embargo",
+    "folds": "required_by_run",
+    "purge_ms": "required_by_run",
+    "embargo_ms": "required_by_run",
+    "final_out_of_sample": true,
+    "parameter_search_budget": "required_by_run",
+    "deterministic_seed": 0
+  },
+  "cost_model": {
+    "commission": "required_by_run",
+    "spread": "observed_or_conservative_fixture",
+    "slippage_bps": "required_by_run",
+    "decision_to_fill_delay_ms": "required_by_run",
+    "market_impact": "required_for_capacity_claim"
+  },
+  "validation": {
+    "regime_slices": [
+      "time_of_day",
+      "volatility",
+      "trend",
+      "spread"
+    ],
+    "required_failure_tests": [
+      "missing_quote",
+      "stale_quote",
+      "out_of_order_quote",
+      "duplicate_changed_timestamp",
+      "calendar_gap",
+      "cost_spike",
+      "execution_delay"
+    ]
+  },
+  "output": {
+    "event_schema": "heptatrader.research-event.v1",
+    "summary_schema": "heptatrader.run-summary.v1",
+    "deterministic": true,
+    "numeric_tolerance": 1e-12,
+    "records_input_digests": true,
+    "records_source_revision": true
+  },
+  "capability": {
+    "paper_mutation": false,
+    "live_mutation": false,
+    "broker_access": false,
+    "session_management": false
+  },
+  "unsupported": [
+    "paper_promotion",
+    "live_promotion",
+    "dynamic_campaign_authority",
+    "root_custodian_or_finalizer",
+    "release_or_certification_evidence"
+  ]
+}

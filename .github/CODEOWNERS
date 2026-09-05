@@ -1,0 +1,18 @@
+# Bootstrap independent review owner for the canonical integration candidate.
+# This file does not close G-TEAM-001 by itself: production enforcement still
+# requires organization teams plus a repository ruleset that requires CODEOWNER
+# approval and the exact source-head/merge-candidate checks.
+* @ProfHepta
+
+/.github/ @ProfHepta
+/cmake/ @ProfHepta
+/docs/governance/ @ProfHepta
+/docs/modules/ @ProfHepta
+/docs/program/ @ProfHepta
+/docs/verification/ @ProfHepta
+/HeptaTrade/execution/ @ProfHepta
+/HeptaTrade/risk/ @ProfHepta
+/HeptaTrade/tool_host/ @ProfHepta
+/HeptaTrade/adapter_ib/ @ProfHepta
+/scripts/ @ProfHepta
+/systemd/ @ProfHepta

@@ -16,7 +16,9 @@ const uid_t kFixedAgentUid = 2004;
 bool ParseUnsigned(const std::string& value, unsigned long long minimum,
                    unsigned long long maximum, unsigned long long& parsed)
 {
-    if (value.empty()) return false;
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);

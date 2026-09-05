@@ -48,20 +48,20 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
     owner.executionDomain = context.executionDomain;
     owner.instrument = dispatch.instrument;
     owner.side = command.order.action;
-    m_orderOwners[orderId] = owner;
+    // A broker-reported zero is evidence that the send reached the venue but
+    // is not a unique order identity.  Never retain it as an ownership key:
+    // doing so would let a later cancel resolve an unrelated zero-id order.
+    if (orderId > 0) m_orderOwners[orderId] = owner;
     // Track before receipt IO so watchdog coverage survives a write failure.
-    if (m_callbacks.trackOrder)
-        m_callbacks.trackOrder(
-            context.venue.empty() ? "IB" : context.venue, orderId, "",
-            dispatch.instrument, command.order.action, context.strategy);
     bool projectionOk = true;
     std::string projectionReason;
-    if (m_callbacks.onIbOrderPlaced)
+    if (m_callbacks.trackOrder)
     {
         try
         {
-            projectionOk = m_callbacks.onIbOrderPlaced(
-                command, orderId, &projectionReason);
+            m_callbacks.trackOrder(
+                context.venue.empty() ? "IB" : context.venue, orderId, "",
+                dispatch.instrument, command.order.action, context.strategy);
         }
         catch (const std::exception& error)
         {
@@ -71,7 +71,28 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
         catch (...)
         {
             projectionOk = false;
-            projectionReason = "unknown order projection exception";
+            projectionReason = "order tracking callback threw";
+        }
+    }
+    if (m_callbacks.onIbOrderPlaced)
+    {
+        if (projectionOk)
+        {
+            try
+            {
+                projectionOk = m_callbacks.onIbOrderPlaced(
+                    command, orderId, &projectionReason);
+            }
+            catch (const std::exception& error)
+            {
+                projectionOk = false;
+                projectionReason = error.what();
+            }
+            catch (...)
+            {
+                projectionOk = false;
+                projectionReason = "unknown order projection exception";
+            }
         }
     }
     const OmsJournalEvent sent = BuildEvent(

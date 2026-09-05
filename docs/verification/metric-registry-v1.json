@@ -1,0 +1,243 @@
+{
+  "schema": "heptatrader.metric-registry.v1",
+  "policy": {
+    "bounded_labels_only": true,
+    "forbidden_labels": [
+      "account",
+      "account_id",
+      "token",
+      "credential",
+      "session_id",
+      "order_id",
+      "strategy_prompt",
+      "free_text"
+    ],
+    "allowed_labels": [
+      "decision",
+      "environment",
+      "event_type",
+      "kind",
+      "operation",
+      "outcome",
+      "reason_code",
+      "series",
+      "state",
+      "status",
+      "tool",
+      "venue"
+    ],
+    "unknown_label_value": "redacted",
+    "series_cap": 2048,
+    "latency_unit": "microseconds",
+    "histogram_buckets_us": [
+      10,
+      50,
+      100,
+      500,
+      1000,
+      5000,
+      10000,
+      50000,
+      100000,
+      500000,
+      1000000,
+      5000000
+    ]
+  },
+  "metrics": [
+    {
+      "name": "hepta_tool_calls_total",
+      "type": "counter",
+      "unit": "calls",
+      "owner": "hepta.gateway.runtime",
+      "labels": [
+        "tool",
+        "status",
+        "reason_code"
+      ],
+      "description": "Bounded Tool Gateway outcomes after identity/capability dispatch.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_tool_execution_latency_microseconds",
+      "type": "histogram",
+      "unit": "microseconds",
+      "owner": "hepta.gateway.runtime",
+      "labels": [
+        "tool"
+      ],
+      "description": "Bounded Tool Gateway handler execution latency by sanitized tool name.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_session_rejections_total",
+      "type": "counter",
+      "unit": "rejections",
+      "owner": "hepta.session.runtime",
+      "labels": [
+        "reason_code"
+      ],
+      "description": "Session, peer and capability rejections at the gateway boundary.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_risk_decisions_total",
+      "type": "counter",
+      "unit": "decisions",
+      "owner": "hepta.risk.policy",
+      "labels": [
+        "decision",
+        "reason_code"
+      ],
+      "description": "Deterministic risk allow/reject decisions by stable reason code.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_risk_decision_latency_microseconds",
+      "type": "histogram",
+      "unit": "microseconds",
+      "owner": "hepta.risk.policy",
+      "labels": [],
+      "description": "End-to-end deterministic risk policy evaluation latency.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_execution_events_total",
+      "type": "counter",
+      "unit": "events",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "event_type"
+      ],
+      "description": "Canonical execution and venue lifecycle events admitted to telemetry.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_venue_sends_total",
+      "type": "counter",
+      "unit": "attempts",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "operation",
+        "status"
+      ],
+      "description": "Place, cancel and flatten venue send attempts after durable admission.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_execution_commands_total",
+      "type": "counter",
+      "unit": "commands",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "status",
+        "reason_code"
+      ],
+      "description": "Authoritative command lifecycle outcomes.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_oms_journal_failures_total",
+      "type": "counter",
+      "unit": "failures",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "reason_code"
+      ],
+      "description": "Durable OMS journal write, sync and replay failures by stable reason code.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_oms_append_latency_microseconds",
+      "type": "histogram",
+      "unit": "microseconds",
+      "owner": "hepta.execution.runtime",
+      "labels": [],
+      "description": "OMS append path latency including the configured durability boundary.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_oms_replay_latency_microseconds",
+      "type": "histogram",
+      "unit": "microseconds",
+      "owner": "hepta.execution.runtime",
+      "labels": [],
+      "description": "OMS journal replay and validation latency.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_oms_journal_backlog",
+      "type": "gauge",
+      "unit": "records",
+      "owner": "hepta.execution.runtime",
+      "labels": [],
+      "description": "Current buffered plus queued OMS journal record count.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_oms_journal_write_failures",
+      "type": "gauge",
+      "unit": "failures",
+      "owner": "hepta.execution.runtime",
+      "labels": [],
+      "description": "Current cumulative journal write-failure observation exported by journal stats.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_oms_journal_poisoned",
+      "type": "gauge",
+      "unit": "boolean",
+      "owner": "hepta.execution.runtime",
+      "labels": [],
+      "description": "One when the pinned journal writer has latched an unrecoverable write or identity fault.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_reconcile_runs_total",
+      "type": "counter",
+      "unit": "runs",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "operation",
+        "outcome",
+        "reason_code"
+      ],
+      "description": "Reconciliation and uncertain-outcome resolution runs.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_state_breaks_total",
+      "type": "counter",
+      "unit": "breaks",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "kind"
+      ],
+      "description": "State projection breaks that require gate closure or reconciliation.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_kill_switch_transitions_total",
+      "type": "counter",
+      "unit": "transitions",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "state"
+      ],
+      "description": "Observed kill-switch state transitions without actor or account labels.",
+      "state": "implemented"
+    },
+    {
+      "name": "hepta_snapshot_age_ms",
+      "type": "gauge",
+      "unit": "milliseconds",
+      "owner": "hepta.execution.runtime",
+      "labels": [
+        "environment",
+        "venue"
+      ],
+      "description": "Age of the current authoritative execution snapshot.",
+      "state": "declared"
+    }
+  ]
+}

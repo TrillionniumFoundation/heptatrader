@@ -1,0 +1,79 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.marketdata.runtime",
+  "version": "1.0.1",
+  "lifecycle": "current",
+  "kind": "data-plane",
+  "trust_domain": "market-data",
+  "authority": "normalized point-in-time events",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/marketdata/"
+  ],
+  "build_targets": [
+    "hepta_marketdata_core"
+  ],
+  "provides": [
+    "market-event.v1"
+  ],
+  "consumes": [
+    "hepta.event-envelope.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.numeric.core"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime"
+  ],
+  "state": {
+    "model": "single-writer-shard",
+    "persistence": "process-local-state-rebuilt-from-feed-or-replay",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "venue-instrument-sharded",
+    "shard_key": "venue-instrument",
+    "blocking_io": "forbidden-on-admission-and-snapshot",
+    "cross_module_lock": "marketdata-feature-capability-transaction-only"
+  },
+  "backpressure": {
+    "class": "coalescing-gap",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "stale-closes-gate",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "marketdata-v1",
+  "owners": {
+    "dri": "@hepta/data-platform",
+    "backup": "@hepta/venue-ib",
+    "reviewers": [
+      "@hepta/state"
+    ]
+  },
+  "verification": [
+    "marketdata-ordering",
+    "sequence-gap",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-marketdata-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

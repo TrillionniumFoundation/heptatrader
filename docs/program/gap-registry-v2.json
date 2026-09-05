@@ -1,0 +1,436 @@
+{
+  "schema": "heptatrader.gap-registry.v2",
+  "allowed_states": [
+    "planned",
+    "in-progress",
+    "blocked",
+    "closed"
+  ],
+  "closure_rule": "implementation + negative tests + canonical docs + exact-revision evidence",
+  "gaps": [
+    {
+      "id": "G-DOC-001",
+      "priority": "P0",
+      "title": "Historical document/build entrypoints and old checker paths must remain absent",
+      "workstream": "WS-DOC",
+      "milestone": "M0",
+      "state": "closed",
+      "evidence": [
+        "docs-generated",
+        "docs-control",
+        "no-historical-docs",
+        "repository-contracts"
+      ]
+    },
+    {
+      "id": "G-DOC-002",
+      "priority": "P0",
+      "title": "Generated views must remain byte-identical to registries",
+      "workstream": "WS-DOC",
+      "milestone": "M1",
+      "state": "closed",
+      "evidence": [
+        "docs-generated"
+      ]
+    },
+    {
+      "id": "G-DOC-003",
+      "priority": "P1",
+      "title": "Every registered module must have a complete, generated and machine-verified technical development guide",
+      "workstream": "WS-DOC",
+      "milestone": "M1",
+      "state": "closed",
+      "evidence": [
+        "docs-generated",
+        "docs-control",
+        "module-manifest-schema",
+        "module-documentation-coverage",
+        "physical-source-ownership",
+        "module-registry"
+      ]
+    },
+    {
+      "id": "G-MOD-001",
+      "priority": "P0",
+      "title": "Composite source roots are shared across current targets",
+      "workstream": "WS-MOD",
+      "milestone": "M2",
+      "state": "closed",
+      "evidence": [
+        "module-registry",
+        "module-dag",
+        "physical-source-ownership",
+        "configured-cmake-graph"
+      ]
+    },
+    {
+      "id": "G-MOD-002",
+      "priority": "P0",
+      "title": "Gateway, protocol, session, client and execution compilation ownership requires extraction",
+      "workstream": "WS-MOD",
+      "milestone": "M2",
+      "state": "closed",
+      "evidence": [
+        "module-manifest-schema",
+        "physical-source-ownership",
+        "configured-cmake-graph",
+        "protocol-contracts",
+        "gateway-boundary"
+      ]
+    },
+    {
+      "id": "G-CON-001",
+      "priority": "P0",
+      "title": "C++/Python/MCP bindings are not all generated from one source",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "schema-catalog",
+        "tool-catalog-drift"
+      ]
+    },
+    {
+      "id": "G-NUM-001",
+      "priority": "P0",
+      "title": "Trusted boundaries still mix fixed-point and floating representations",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "numeric-negative",
+        "numeric-properties"
+      ]
+    },
+    {
+      "id": "G-CONC-001",
+      "priority": "P0",
+      "title": "Hot-path data plane and shard ownership are not implemented",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "marketdata-ordering",
+        "sequence-gap",
+        "feature-generation"
+      ]
+    },
+    {
+      "id": "G-OPT-001",
+      "priority": "P0",
+      "title": "StrategyProposal runtime contract not implemented",
+      "workstream": "WS-OPT",
+      "milestone": "M4",
+      "state": "closed",
+      "evidence": [
+        "proposal-contracts",
+        "proposal-completeness"
+      ]
+    },
+    {
+      "id": "G-OPT-002",
+      "priority": "P0",
+      "title": "Global allocator and truthful optimality evidence absent",
+      "workstream": "WS-OPT",
+      "milestone": "M4",
+      "state": "closed",
+      "evidence": [
+        "optimizer-determinism",
+        "constraint-properties"
+      ]
+    },
+    {
+      "id": "G-OPT-003",
+      "priority": "P0",
+      "title": "AllocationPlan not integrated through Execution revalidation",
+      "workstream": "WS-OPT",
+      "milestone": "M4",
+      "state": "closed",
+      "evidence": [
+        "shadow-parity",
+        "permit-lifecycle",
+        "negative-paths"
+      ]
+    },
+    {
+      "id": "G-LIFE-001",
+      "priority": "P1",
+      "title": "Module lifecycle, health and quarantine authority absent",
+      "workstream": "WS-MOD",
+      "milestone": "M5",
+      "state": "closed",
+      "evidence": [
+        "lifecycle-faults",
+        "rollout-rollback"
+      ]
+    },
+    {
+      "id": "G-REL-001",
+      "priority": "P0",
+      "title": "Current upstream exact-head checks are not green",
+      "workstream": "WS-REL",
+      "milestone": "M0",
+      "state": "closed",
+      "evidence": [
+        "repository-contracts",
+        "sanitizers",
+        "crash-replay"
+      ]
+    },
+    {
+      "id": "G-REL-002",
+      "priority": "P1",
+      "title": "Merge-candidate module-aware verification closure absent",
+      "workstream": "WS-REL",
+      "milestone": "M7",
+      "state": "closed",
+      "evidence": [
+        "configured-cmake-graph",
+        "module-dag",
+        "performance-budgets",
+        "merge-candidate-impact"
+      ]
+    },
+    {
+      "id": "G-IB-001",
+      "priority": "P0",
+      "title": "IB PAPER lacks exact-artifact external qualification",
+      "workstream": "WS-IB",
+      "milestone": "M6",
+      "state": "in-progress",
+      "evidence": [
+        "paper-qualification",
+        "disconnect-reconnect",
+        "common-risk-parity"
+      ]
+    },
+    {
+      "id": "G-TEAM-001",
+      "priority": "P1",
+      "title": "Platform CODEOWNERS are not yet team-distributed",
+      "workstream": "WS-MOD",
+      "milestone": "M7",
+      "state": "in-progress",
+      "evidence": [
+        "module-registry"
+      ]
+    },
+    {
+      "id": "G-RES-001",
+      "priority": "P1",
+      "title": "Dataset and feature registries are target contracts only",
+      "workstream": "WS-RES",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "point-in-time",
+        "feature-determinism"
+      ]
+    },
+    {
+      "id": "G-NUM-002",
+      "priority": "P1",
+      "title": "Unchecked fixed raw construction bypasses the trusted numeric range",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "numeric-negative",
+        "numeric-properties"
+      ]
+    },
+    {
+      "id": "G-NUM-003",
+      "priority": "P1",
+      "title": "Compatibility binary64 projection can collapse distinct fixed microunits",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "numeric-negative",
+        "numeric-properties"
+      ]
+    },
+    {
+      "id": "G-CONC-002",
+      "priority": "P1",
+      "title": "Market-data snapshots are consumed without canonical digest revalidation",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "marketdata-ordering",
+        "feature-generation"
+      ]
+    },
+    {
+      "id": "G-CONC-003",
+      "priority": "P1",
+      "title": "Multi-shard snapshot vectors do not identify one coherent store cut",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "marketdata-ordering",
+        "sequence-gap",
+        "feature-determinism"
+      ]
+    },
+    {
+      "id": "G-AUTH-MD-001",
+      "priority": "P1",
+      "title": "Market Data receipts are transferable, caller-time replayable and not bound to current issuer state",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "market-authority-capability",
+        "marketdata-ordering",
+        "sequence-gap",
+        "feature-generation",
+        "docs-control"
+      ]
+    },
+    {
+      "id": "G-OPT-004",
+      "priority": "P1",
+      "title": "ProposalSet lifetime is not intersected with proposal horizons and snapshot expiry",
+      "workstream": "WS-OPT",
+      "milestone": "M4",
+      "state": "closed",
+      "evidence": [
+        "proposal-contracts",
+        "proposal-completeness"
+      ]
+    },
+    {
+      "id": "G-OPT-005",
+      "priority": "P1",
+      "title": "AllocationPlan provenance is publicly forgeable outside Global Decision",
+      "workstream": "WS-OPT",
+      "milestone": "M4",
+      "state": "closed",
+      "evidence": [
+        "optimizer-determinism",
+        "shadow-parity"
+      ]
+    },
+    {
+      "id": "G-OPT-006",
+      "priority": "P1",
+      "title": "Execution revalidation is not bound to allocator, book, policy and snapshot context",
+      "workstream": "WS-OPT",
+      "milestone": "M4",
+      "state": "closed",
+      "evidence": [
+        "shadow-parity",
+        "permit-lifecycle",
+        "negative-paths"
+      ]
+    },
+    {
+      "id": "G-EVT-001",
+      "priority": "P1",
+      "title": "Event ordering evidence remains partial for duplicate, epoch and sequence faults",
+      "workstream": "WS-DATA",
+      "milestone": "M3",
+      "state": "closed",
+      "evidence": [
+        "event-ordering",
+        "marketdata-ordering",
+        "sequence-gap"
+      ]
+    },
+    {
+      "id": "G-REC-001",
+      "priority": "P1",
+      "title": "Reconciliation evidence remains partial for divergence and uncertain recovery",
+      "workstream": "WS-REL",
+      "milestone": "M5",
+      "state": "closed",
+      "evidence": [
+        "reconciliation",
+        "uncertain-command",
+        "crash-replay"
+      ]
+    },
+    {
+      "id": "G-STRAT-001",
+      "priority": "P1",
+      "title": "Strategy shadow and quarantine fault isolation is not registered as implemented",
+      "workstream": "WS-OPT",
+      "milestone": "M5",
+      "state": "closed",
+      "evidence": [
+        "strategy-isolation",
+        "lifecycle-faults",
+        "shadow-parity"
+      ]
+    },
+    {
+      "id": "G-OPT-007",
+      "priority": "P1",
+      "title": "Global allocator performance budget lacks executable bounded evidence",
+      "workstream": "WS-OPT",
+      "milestone": "M7",
+      "state": "closed",
+      "evidence": [
+        "performance-budgets",
+        "optimizer-determinism"
+      ]
+    },
+    {
+      "id": "G-SES-001",
+      "priority": "P0",
+      "title": "Durable Session authority lacks a registered inter-module supervisor contract",
+      "workstream": "WS-MOD",
+      "milestone": "M2",
+      "state": "closed",
+      "evidence": [
+        "docs-control",
+        "module-registry",
+        "protocol-contracts",
+        "session-boundary"
+      ]
+    },
+    {
+      "id": "G-DOC-004",
+      "priority": "P0",
+      "title": "Active ModuleManifests permit non-empty generic engineering sentinels instead of concrete persistence and concurrency semantics",
+      "workstream": "WS-DOC",
+      "milestone": "M1",
+      "state": "closed",
+      "evidence": [
+        "docs-generated",
+        "module-documentation-coverage",
+        "module-manifest-schema",
+        "module-registry"
+      ]
+    },
+    {
+      "id": "G-PERF-002",
+      "priority": "P1",
+      "title": "Gateway, authoritative snapshot and portfolio compiler lack same-revision executable repository performance distributions",
+      "workstream": "WS-REL",
+      "milestone": "M7",
+      "state": "closed",
+      "evidence": [
+        "performance-budgets",
+        "sanitizers"
+      ]
+    },
+    {
+      "id": "G-DOC-005",
+      "priority": "P1",
+      "title": "Debugging guidance lacks executable authority-first triage, deterministic reproduction and evidence-preservation controls",
+      "workstream": "WS-DOC",
+      "milestone": "M1",
+      "state": "closed",
+      "evidence": [
+        "debugging-guide-executable",
+        "docs-control",
+        "repository-contracts"
+      ]
+    }
+  ]
+}

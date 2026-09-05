@@ -1,0 +1,128 @@
+{
+  "schema": "heptatrader.milestone-registry.v1",
+  "policy": {
+    "state_scope": "repository-tree implementation only",
+    "closed_does_not_imply": [
+      "merged-to-main",
+      "released",
+      "externally-qualified",
+      "deployed",
+      "paper-authorized",
+      "live-authorized"
+    ],
+    "integration_truth": "GitHub live PR, ruleset, merge-group, release and qualification evidence",
+    "external_gates_fail_closed": true
+  },
+  "milestones": [
+    {
+      "id": "M0",
+      "title": "Canonical Truth Consolidation",
+      "state": "closed",
+      "depends_on": [],
+      "exit": [
+        "one active documentation graph",
+        "no historical docs or aliases",
+        "direct-main PR exact-head and merge-candidate CI"
+      ],
+      "integration_gate": "direct-main candidate must pass exact-head and exact merge-group controls and be independently accepted into main"
+    },
+    {
+      "id": "M1",
+      "title": "Documentation Control Plane",
+      "state": "in-progress",
+      "depends_on": [
+        "M0"
+      ],
+      "exit": [
+        "generated views deterministic",
+        "registries cross-validated",
+        "evidence schema integrated"
+      ],
+      "integration_gate": "documentation-control-plane must be required by the live no-bypass default-branch ruleset"
+    },
+    {
+      "id": "M2",
+      "title": "Modular Runtime Foundation",
+      "state": "closed",
+      "depends_on": [
+        "M1"
+      ],
+      "exit": [
+        "one target per module",
+        "no shared-migration source ownership",
+        "module-aware test impact"
+      ],
+      "integration_gate": "module graph and source ownership must pass on the final main merge-group revision"
+    },
+    {
+      "id": "M3",
+      "title": "Typed Data and Concurrency Foundation",
+      "state": "closed",
+      "depends_on": [
+        "M2"
+      ],
+      "exit": [
+        "single-source bindings",
+        "fixed numeric boundary",
+        "shard and queue contracts"
+      ],
+      "integration_gate": "fixed numeric, market authority and concurrency evidence must pass on the released exact revision"
+    },
+    {
+      "id": "M4",
+      "title": "Global Decision Shadow",
+      "state": "closed",
+      "depends_on": [
+        "M3"
+      ],
+      "exit": [
+        "StrategyProposal to AllocationPlan shadow E2E",
+        "deterministic solver record",
+        "Execution revalidation"
+      ],
+      "integration_gate": "shadow and allocation evidence must remain Simulator-scoped until a separately qualified environment consumes it"
+    },
+    {
+      "id": "M5",
+      "title": "Active Multi-Agent Simulator",
+      "state": "closed",
+      "depends_on": [
+        "M4"
+      ],
+      "exit": [
+        "module lifecycle",
+        "fault isolation",
+        "active capital allocation"
+      ],
+      "integration_gate": "Simulator release artifact must be reproducible and pass startup, replay, rollback and install-tree evidence"
+    },
+    {
+      "id": "M6",
+      "title": "IB PAPER Parity and Qualification",
+      "state": "in-progress",
+      "depends_on": [
+        "M5"
+      ],
+      "exit": [
+        "exact-artifact qualification",
+        "fault scenarios",
+        "soak and rollback"
+      ],
+      "integration_gate": "protected real IB PAPER runner, official SDK, independent approval and broker-observed exact-artifact receipt"
+    },
+    {
+      "id": "M7",
+      "title": "Team-Scale Continuous Development",
+      "state": "in-progress",
+      "depends_on": [
+        "M2"
+      ],
+      "exit": [
+        "team ownership",
+        "merge queue",
+        "module SLO and impact closure"
+      ],
+      "integration_gate": "live organization teams, team-only CODEOWNERS, active no-bypass ruleset, merge queue and governance receipt"
+    }
+  ]
+}

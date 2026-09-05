@@ -7,6 +7,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <limits>
+#include <locale>
+#include <sstream>
 
 namespace {
 std::string EscapeJson(const std::string& value) {
@@ -43,13 +45,57 @@ bool HasEconomicFillEvidence(const IBEvent& event) {
         std::isfinite(event.number) && event.number > 0.0;
 }
 
+bool CanonicalSignedInteger(const std::string& value) {
+    if (value.empty()) return false;
+    const std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size() ||
+        (value[offset] == '0' &&
+         (offset != 0 || offset + 1u < value.size()))) return false;
+    for (std::size_t i = offset; i < value.size(); ++i)
+        if (value[i] < '0' || value[i] > '9') return false;
+    return true;
+}
+
+bool CanonicalFloating(const std::string& value) {
+    if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size()) return false;
+    if (value[offset] == '0') {
+        ++offset;
+        if (offset < value.size() && value[offset] >= '0' &&
+            value[offset] <= '9') return false;
+    } else {
+        if (value[offset] < '1' || value[offset] > '9') return false;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+    }
+    if (offset < value.size() && value[offset] == '.') {
+        ++offset;
+        const std::size_t fractionStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == fractionStart) return false;
+    }
+    if (offset < value.size() &&
+        (value[offset] == 'e' || value[offset] == 'E')) {
+        ++offset;
+        if (offset < value.size() &&
+            (value[offset] == '+' || value[offset] == '-')) ++offset;
+        const std::size_t exponentStart = offset;
+        while (offset < value.size() && value[offset] >= '0' &&
+               value[offset] <= '9') ++offset;
+        if (offset == exponentStart) return false;
+    }
+    return offset == value.size();
+}
+
 bool IsHistoricalSyntheticExecutionStatus(const IBEvent& event) {
     return event.type == IBEventType::OrderStatus &&
         event.value == "execDetails" && event.requestId >= 0;
 }
 
 bool ParseBrokerErrorCode(const std::string& value, int& code) {
-    if (value.empty()) return false;
+    if (!CanonicalSignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const long parsed = std::strtol(value.c_str(), &end, 10);
@@ -648,7 +694,11 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
         std::string ready = event.value;
         std::transform(ready.begin(), ready.end(), ready.begin(),
             [](unsigned char ch) {
-                return static_cast<char>(std::tolower(ch));
+                return ch >= static_cast<unsigned char>('A') &&
+                        ch <= static_cast<unsigned char>('Z') ?
+                    static_cast<char>(ch - static_cast<unsigned char>('A') +
+                                      static_cast<unsigned char>('a')) :
+                    static_cast<char>(ch);
             });
         if (ready != "true" && ready != "false") {
             if (initialSnapshot) m_fxCashRefreshConflict = true;
@@ -671,11 +721,17 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
     const std::string currency = event.key.substr(prefix.size());
     if (m_fxInstrumentByBaseCurrency.find(currency) ==
         m_fxInstrumentByBaseCurrency.end()) return true;
-    char* end = nullptr;
-    errno = 0;
-    const double parsed = std::strtod(event.value.c_str(), &end);
-    if (errno == ERANGE || end == event.value.c_str() || end == nullptr ||
-        *end != '\0' || !std::isfinite(parsed)) {
+    if (!CanonicalFloating(event.value)) {
+        if (initialSnapshot) m_fxCashRefreshConflict = true;
+        else InvalidateRiskSnapshot("IB_FX_CASH_BALANCE_INVALID");
+        return true;
+    }
+    std::istringstream input(event.value);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double parsed = 0.0;
+    input >> parsed;
+    if (!input || !input.eof() || !std::isfinite(parsed)) {
         if (initialSnapshot) m_fxCashRefreshConflict = true;
         else InvalidateRiskSnapshot("IB_FX_CASH_BALANCE_INVALID");
         return true;

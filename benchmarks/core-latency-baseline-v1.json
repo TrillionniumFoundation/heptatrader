@@ -1,0 +1,21 @@
+{
+  "fixture": "risk-evaluate-v1",
+  "maximum_regression_percent": 10,
+  "p99_microseconds": 50000,
+  "required_distribution": [
+    "p50",
+    "p95",
+    "p99",
+    "p999",
+    "max"
+  ],
+  "schema": "heptatrader.latency-baseline.v1",
+  "operation_scope": "deterministic fixed-point risk evaluation",
+  "scope": "repository-ci",
+  "build_type": "Release",
+  "runner_class": "github-hosted-ubuntu-24.04",
+  "toolchain_binding": "fixture emits numeric policy; workflow and check record bind exact source SHA, compiler and runner image",
+  "warmup_iterations": 500,
+  "sample_count": 10000,
+  "claim_ceiling": "same-fixture repository regression guard only; not a deployed or PAPER-host latency SLO"
+}

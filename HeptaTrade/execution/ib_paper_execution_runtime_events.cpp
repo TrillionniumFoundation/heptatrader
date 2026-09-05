@@ -333,7 +333,11 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
     std::string farmDescription = event.value;
     std::transform(farmDescription.begin(), farmDescription.end(),
                    farmDescription.begin(), [](unsigned char value) {
-        return static_cast<char>(std::tolower(value));
+        return value >= static_cast<unsigned char>('A') &&
+                value <= static_cast<unsigned char>('Z') ?
+            static_cast<char>(value - static_cast<unsigned char>('A') +
+                              static_cast<unsigned char>('a')) :
+            static_cast<char>(value);
     });
     const bool cashMarketDataFarm =
         farmDescription.find("cashfarm") != std::string::npos;

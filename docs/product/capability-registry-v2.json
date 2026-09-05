@@ -1,0 +1,388 @@
+{
+  "schema": "heptatrader.capability-registry.v2",
+  "policy": {
+    "state_is_declared_not_evidence": "declared_state cannot exceed same-revision evidence",
+    "derived_states": [
+      "unsupported",
+      "prototype",
+      "experimental",
+      "conditional",
+      "implemented",
+      "qualified",
+      "deprecated"
+    ],
+    "live_default": "unsupported",
+    "unsupported_venue_build": "negative-test-stub-only means compiled solely into fail-closed verification targets; it is excluded from runtime install and release"
+  },
+  "capabilities": [
+    {
+      "id": "hepta.gateway.typed-local-tools",
+      "title": "Typed local Tool Gateway and clients",
+      "declared_state": "implemented",
+      "design": "approved",
+      "implementation": "implemented",
+      "build": "default",
+      "integration": {
+        "simulator": "active",
+        "paper": "experimental",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.gateway.runtime",
+        "hepta.protocol.contracts",
+        "hepta.client.runtime"
+      ],
+      "contracts": [
+        "hepta.tool-catalog.v1",
+        "hepta.execution-wire.v1",
+        "hepta.identity-capability.v1"
+      ],
+      "verification": [
+        "repository-contracts",
+        "protocol-contracts",
+        "gateway-boundary",
+        "session-boundary"
+      ],
+      "qualification": "not-required",
+      "release": "core",
+      "milestone": "M1"
+    },
+    {
+      "id": "hepta.execution.authority",
+      "title": "Execution authority, OMS, journal and recovery",
+      "declared_state": "implemented",
+      "design": "approved",
+      "implementation": "implemented",
+      "build": "default",
+      "integration": {
+        "simulator": "active",
+        "paper": "experimental",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.execution.runtime"
+      ],
+      "contracts": [
+        "hepta.execution-authority.v1",
+        "hepta.authoritative-snapshot.v2",
+        "hepta.oms-journal.v3",
+        "hepta.risk-policy.v2"
+      ],
+      "verification": [
+        "journal-durability",
+        "idempotency",
+        "crash-replay",
+        "reconciliation"
+      ],
+      "qualification": "paper-required",
+      "release": "core",
+      "milestone": "M1"
+    },
+    {
+      "id": "hepta.simulator.deterministic",
+      "title": "Deterministic simulator",
+      "declared_state": "implemented",
+      "design": "approved",
+      "implementation": "implemented",
+      "build": "default",
+      "integration": {
+        "simulator": "active",
+        "paper": "not-applicable",
+        "live": "not-applicable"
+      },
+      "modules": [
+        "hepta.venue.simulator"
+      ],
+      "contracts": [
+        "hepta.venue.v1",
+        "hepta.event-envelope.v1"
+      ],
+      "verification": [
+        "simulator-e2e",
+        "deterministic-replay",
+        "fault-matrix"
+      ],
+      "qualification": "not-required",
+      "release": "core",
+      "milestone": "M1"
+    },
+    {
+      "id": "hepta.intent.target-position",
+      "title": "Generation-bound target-position preview/apply",
+      "declared_state": "implemented",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
+      "integration": {
+        "simulator": "active",
+        "paper": "experimental",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.execution.runtime"
+      ],
+      "contracts": [
+        "hepta.target-position-intent.v1",
+        "hepta.authoritative-snapshot.v2"
+      ],
+      "verification": [
+        "snapshot-contracts",
+        "permit-lifecycle",
+        "negative-paths"
+      ],
+      "qualification": "paper-required",
+      "release": "core",
+      "milestone": "M1"
+    },
+    {
+      "id": "hepta.portfolio.compiler",
+      "title": "Deterministic multi-strategy portfolio compiler",
+      "declared_state": "implemented",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
+      "integration": {
+        "simulator": "library-boundary",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.portfolio.compiler",
+        "hepta.risk.policy"
+      ],
+      "contracts": [
+        "hepta.strategy-proposal.v1",
+        "hepta.allocation-plan.v1"
+      ],
+      "verification": [
+        "portfolio-properties",
+        "budget-overflow",
+        "canonical-ordering"
+      ],
+      "qualification": "paper-required",
+      "release": "core",
+      "milestone": "M1"
+    },
+    {
+      "id": "hepta.global.multi-agent-allocation",
+      "title": "Global multi-Agent capital allocation",
+      "declared_state": "implemented",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
+      "integration": {
+        "simulator": "active",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.global.decision",
+        "hepta.simulation.runtime",
+        "hepta.strategy.runtime"
+      ],
+      "contracts": [
+        "hepta.strategy-proposal.v1",
+        "hepta.global-optimization.v1",
+        "hepta.solver-result.v1",
+        "hepta.allocation-plan.v1"
+      ],
+      "verification": [
+        "proposal-contracts",
+        "optimizer-determinism",
+        "constraint-properties",
+        "shadow-parity",
+        "lifecycle-faults",
+        "rollout-rollback"
+      ],
+      "qualification": "paper-required",
+      "release": "core",
+      "milestone": "M4"
+    },
+    {
+      "id": "hepta.management.module-lifecycle",
+      "title": "Module registry, lifecycle and rollout control plane",
+      "declared_state": "experimental",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
+      "integration": {
+        "simulator": "active",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.management.control"
+      ],
+      "contracts": [
+        "hepta.module-manifest.v3",
+        "hepta.module-lifecycle.v1",
+        "hepta.configuration-authority.v1"
+      ],
+      "verification": [
+        "module-dag",
+        "lifecycle-faults",
+        "rollout-rollback"
+      ],
+      "qualification": "environment-required",
+      "release": "core",
+      "milestone": "M5"
+    },
+    {
+      "id": "hepta.data.feature-plane",
+      "title": "Shard-aware market-data and feature plane",
+      "declared_state": "experimental",
+      "design": "approved",
+      "implementation": "implemented-core",
+      "build": "default",
+      "integration": {
+        "simulator": "active-library",
+        "paper": "absent",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.marketdata.runtime",
+        "hepta.feature.runtime"
+      ],
+      "contracts": [
+        "hepta.event-envelope.v1"
+      ],
+      "verification": [
+        "marketdata-ordering",
+        "sequence-gap",
+        "feature-determinism",
+        "feature-generation"
+      ],
+      "qualification": "environment-required",
+      "release": "core",
+      "milestone": "M3"
+    },
+    {
+      "id": "hepta.research.replay",
+      "title": "Capability-free deterministic research and replay",
+      "declared_state": "experimental",
+      "design": "approved",
+      "implementation": "experimental",
+      "build": "runtime-tools",
+      "integration": {
+        "simulator": "offline",
+        "paper": "no-mutation",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.research.protocol"
+      ],
+      "contracts": [
+        "hepta.research-run.v1"
+      ],
+      "verification": [
+        "research-self-test",
+        "point-in-time",
+        "cost-model",
+        "digest-parity"
+      ],
+      "qualification": "not-required",
+      "release": "core-tools",
+      "milestone": "M1"
+    },
+    {
+      "id": "hepta.venue.ib-paper",
+      "title": "Interactive Brokers PAPER execution",
+      "declared_state": "conditional",
+      "design": "approved-conditional",
+      "implementation": "experimental",
+      "build": "optional",
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "conditional",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.venue.ib",
+        "hepta.execution.runtime"
+      ],
+      "contracts": [
+        "hepta.venue.v1",
+        "hepta.ib-paper-qualification.v1"
+      ],
+      "verification": [
+        "ib-off-contracts",
+        "common-risk-parity",
+        "paper-qualification"
+      ],
+      "qualification": "mandatory-external",
+      "release": "optional-qualified-only",
+      "milestone": "M6"
+    },
+    {
+      "id": "hepta.venue.ctp",
+      "title": "CTP venue execution",
+      "declared_state": "unsupported",
+      "design": "not-approved",
+      "implementation": "unsupported-scaffold",
+      "build": "negative-test-stub-only",
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "forbidden",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.venue.ctp"
+      ],
+      "contracts": [
+        "hepta.venue.v1"
+      ],
+      "verification": [
+        "unsupported-venue-negative"
+      ],
+      "qualification": "none",
+      "release": "excluded",
+      "milestone": "M7"
+    },
+    {
+      "id": "hepta.venue.xt",
+      "title": "XT / MiniQMT venue execution",
+      "declared_state": "unsupported",
+      "design": "not-approved",
+      "implementation": "unsupported-scaffold",
+      "build": "negative-test-stub-only",
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "forbidden",
+        "live": "forbidden"
+      },
+      "modules": [
+        "hepta.venue.xt"
+      ],
+      "contracts": [
+        "hepta.venue.v1"
+      ],
+      "verification": [
+        "unsupported-venue-negative"
+      ],
+      "qualification": "none",
+      "release": "excluded",
+      "milestone": "M7"
+    },
+    {
+      "id": "hepta.venue.live",
+      "title": "Any LIVE execution capability",
+      "declared_state": "unsupported",
+      "design": "not-approved",
+      "implementation": "unsupported",
+      "build": "absent",
+      "integration": {
+        "simulator": "not-applicable",
+        "paper": "not-applicable",
+        "live": "forbidden"
+      },
+      "modules": [],
+      "contracts": [],
+      "verification": [
+        "live-absence"
+      ],
+      "qualification": "separate-o4-required",
+      "release": "excluded",
+      "milestone": "M7"
+    }
+  ]
+}

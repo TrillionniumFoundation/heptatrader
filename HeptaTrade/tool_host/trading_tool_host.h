@@ -4,6 +4,8 @@
 #include "../tools/trading_tool_registry.h"
 #include "trading_tool_session_catalog.h"
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -60,6 +62,7 @@ struct SessionSupervisorLeaseRecord;
 // a server-side session binding; request data can never grant privileges.
 class TradingToolHost
 {
+    friend class TradingToolHostTestAccess;
 public:
     explicit TradingToolHost(TradingToolRegistry& registry);
     TradingToolHost(TradingToolRegistry& registry,
@@ -186,6 +189,10 @@ private:
         TradingToolSession session;
         TradingToolCall call;
         TradingToolResult result;
+        // Host-local replay retention is bounded and process-local.  The
+        // durable registry/Execution ledger remains the source of truth after
+        // this entry expires or the host restarts.
+        std::chrono::steady_clock::time_point steadyExpiresAt;
     };
 
     static TradingToolResult Reject(const std::string& toolName,
@@ -219,6 +226,10 @@ private:
     void MoveSessionRateBudgetsLocked(
         const std::string& currentToken,
         const std::string& replacementToken);
+    void WaitForOwnerReadsLocked(
+        std::unique_lock<std::mutex>& lock,
+        const std::string& ownerKey);
+    void FinishReadDispatch(const std::string& ownerKey);
     bool BeginWatchTransaction(
         const std::vector<TradingToolHostSessionBinding>& expectedBindings,
         std::string& watchTransactionId,
@@ -318,17 +329,35 @@ private:
         const TradingToolHostRequest& request,
         const TradingToolSession& session,
         const TradingToolCall& call);
+    // Check an already completed mutation before acquiring a fresh decision
+    // lease or running the new-mutation readiness probe. An accepted command
+    // must remain replayable even when a retry arrives while the instrument
+    // lease is busy or its previous credential has expired; authorization,
+    // visibility, semantic validation and the current session fence are still
+    // checked by Invoke/this probe before returning the cached witness.
+    bool TryReplayMutationBeforeLease(
+        const TradingToolHostSessionBinding& binding,
+        const TradingToolHostRequest& request,
+        const TradingToolSession& session,
+        const TradingToolCall& call,
+        TradingToolResult& result) const;
+    // Caller must hold m_mutex.  Expired entries are only a local replay
+    // optimization and may be discarded without affecting durable authority
+    // state.
+    void PruneMutationReplaysLocked(
+        std::chrono::steady_clock::time_point now) const;
 
 private:
     TradingToolRegistry& m_registry;
-    // Linearizes every final dispatch gate with WATCH reservation,
-    // session revoke/fence and lease rotation. A call holds this lock from its
-    // last binding validation through the registry/authority call; control
-    // operations take it before changing the binding. Therefore a dispatch is
-    // wholly ordered before the control operation, or observes its
-    // disabled/pending binding and never reaches the registered handler.
+    // Mutations retain this lock through their authority call. Reads retain it
+    // only through final admission, then register an owner-scoped in-flight
+    // count. A control transition holds this lock and waits only for that
+    // owner's admitted reads, preserving revoke/rotation linearization without
+    // serializing unrelated owners' read callbacks.
     mutable std::mutex m_mutationDispatchMutex;
     mutable std::mutex m_mutex;
+    std::condition_variable m_ownerReadsDrained;
+    std::unordered_map<std::string, std::size_t> m_activeReadsByOwner;
     std::unordered_map<std::string, TradingToolHostSessionBinding> m_sessions;
     std::unordered_map<std::string, std::uint64_t> m_rateWindowStartMs;
     std::unordered_map<std::string, std::uint32_t> m_tradeCallsInWindow;
@@ -340,7 +369,7 @@ private:
         m_flattenWindowStartMs;
     std::unordered_map<std::string, std::uint32_t>
         m_flattenCallsInWindow;
-    std::unordered_map<std::string, MutationReplayRecord>
+    mutable std::unordered_map<std::string, MutationReplayRecord>
         m_mutationReplays;
     DecisionLeaseManager m_ownedDecisionLeases;
     DecisionLeaseManager& m_decisionLeases;

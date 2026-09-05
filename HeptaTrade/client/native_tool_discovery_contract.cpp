@@ -4,6 +4,7 @@
 #include <climits>
 #include <cstdint>
 #include <iomanip>
+#include <locale>
 #include <set>
 #include <sstream>
 #include <vector>
@@ -66,6 +67,7 @@ public:
         Transform();
 
         std::ostringstream out;
+        out.imbue(std::locale::classic());
         out << "sha256:" << std::hex << std::setfill('0');
         for (unsigned int word = 0; word < 8; ++word)
             out << std::setw(8) << m_state[word];
@@ -172,6 +174,37 @@ bool IsDigest(const std::string& value)
             return false;
     }
     return true;
+}
+
+// Keep the discovery parser independent from the privileged registry header:
+// this translation unit is part of the installed, unprivileged SDK.  The
+// grammar is intentionally the same ASCII dotted identifier contract used by
+// the native wire encoder, so a peer cannot poison the client catalog with a
+// descriptor name that can never be called on the wire.
+bool IsCanonicalToolName(const std::string& value)
+{
+    if (value.size() < 3 || value.size() > 64) return false;
+    bool segmentStart = true;
+    bool sawSeparator = false;
+    for (std::string::const_iterator it = value.begin();
+         it != value.end(); ++it)
+    {
+        const unsigned char c = static_cast<unsigned char>(*it);
+        if (segmentStart)
+        {
+            if (c < 'a' || c > 'z') return false;
+            segmentStart = false;
+        }
+        else if (c == '.')
+        {
+            sawSeparator = true;
+            segmentStart = true;
+        }
+        else if (!((c >= 'a' && c <= 'z') ||
+                   (c >= '0' && c <= '9') || c == '_'))
+            return false;
+    }
+    return sawSeparator && !segmentStart;
 }
 
 class Parser
@@ -323,6 +356,13 @@ private:
         if (m_offset < m_json.size() && m_json[m_offset] == ',')
         {
             ++m_offset;
+            // A comma must be followed by another member.  The old
+            // ``while (!ConsumeObjectEnd())`` loops otherwise accepted
+            // ``{"key": value,}`` because the next iteration consumed the
+            // closing brace as if it were an empty member.
+            SkipWhitespace();
+            if (m_offset >= m_json.size() || m_json[m_offset] == '}')
+                return false;
             return true;
         }
         return m_offset < m_json.size() && m_json[m_offset] == '}';
@@ -487,10 +527,12 @@ private:
                 ++m_offset;
         const std::string number = m_json.substr(start, m_offset - start);
         if (number.empty() || number == "-" ||
+            number == "-0" ||
             (number.size() > 1 && number[0] == '0') ||
             (number.size() > 2 && number[0] == '-' && number[1] == '0'))
             return false;
         std::istringstream input(number);
+        input.imbue(std::locale::classic());
         long long parsed = 0;
         input >> parsed;
         if (!input || !input.eof() || parsed < INT_MIN || parsed > INT_MAX)
@@ -502,6 +544,7 @@ private:
     static std::string EscapeCanonical(const std::string& value)
     {
         std::ostringstream out;
+        out.imbue(std::locale::classic());
         out << '"';
         for (std::size_t index = 0; index < value.size(); ++index)
         {
@@ -688,8 +731,9 @@ private:
             if (!ConsumeMemberEnd())
                 return Fail("DISCOVERY_DESCRIPTOR_INVALID", reason);
         }
-        if (seen.size() != 8 || descriptor.name.empty() ||
-            descriptor.name.size() > 64 || descriptor.capability.empty() ||
+        if (seen.size() != 8 || !IsCanonicalToolName(descriptor.name) ||
+            descriptor.description.size() > 65536 ||
+            descriptor.capability.empty() || descriptor.capability.size() > 128 ||
             (descriptor.effect != "read" &&
              descriptor.effect != "trade") ||
             descriptor.timeoutMs < 1 || descriptor.timeoutMs > 120000 ||

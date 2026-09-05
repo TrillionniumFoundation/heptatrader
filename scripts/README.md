@@ -1,25 +1,31 @@
-# Runtime and research scripts
+# Runtime, Research and Validation Scripts
 
-`scripts/` 只保留直接服务于核心 OS 的小型入口。
+Status: current entrypoint
+Applies to: `scripts/` navigation only
+Verification: `./scripts/dev_core.sh`
+Authority: entrypoint only; canonical authority is `docs/development/`
 
-## 开发
+The canonical developer entrypoint is [`../docs/development/LOCAL-DEVELOPMENT.md`](../docs/development/LOCAL-DEVELOPMENT.md). Module, contract and pull-request workflows are linked from the documentation index.
 
-- `dev_core.sh`：配置、构建并运行核心测试。
-- `resolve_hepta_config.py`：解析运行配置。
-- `validate_sim_data.py`：校验 simulator 数据。
-- `verify_oms_journal_replay.py`：校验 OMS journal replay。
+`scripts/dev_core.sh` is the local deterministic core gate. Validators inspect repository, documentation, schema, module, configured CMake graph, install and research boundaries. Scripts do not create product capability or override exact-revision evidence.
 
-## Agent runtime
+## Repository and documentation controls
 
-- `hepta_agent_mcp_launcher.py`：固定身份和环境下启动 MCP bridge。
-- `hepta_agent_trust_domain.py`：严格读取 trust-domain 配置。
-- `hepta_broker_egress_policy.py`：加载固定 UID/端口的最小 nftables 边界。
+- `check_documentation_control_plane.py`：验证 canonical docs graph、entrypoints、registries 和 generated views；
+- `check_repository_integrity.py`：验证仓库边界、安装与历史隔离不变量；
+- `check_systemd_documentation.py`：拒绝 systemd unit 指向未登记、历史或安装根之外的本地文档；
+- `check_workflow_check_contexts.py`：拒绝模糊/重复 required check context，并要求同一 context 同时覆盖 PR 与 merge group；
+- `check_required_context_projections.py`：保证 PR 与 merge-group required context 投影完全相同；
+- `check_github_team_mapping.py`：保证全部 ModuleManifest owner 唯一映射到目标 GitHub teams，且 team CODEOWNERS template 无漂移；
+- `verify_github_governance.py`：只读读取 live GitHub API，验证无 bypass ruleset、teams、CODEOWNERS、fresh approval、source-head 与 merge-group checks，并输出 digest-bound receipt。
 
-## Research and strategy
+前三类结构检查和治理检查的离线 hostile-negative corpus属于 repository evidence。`verify_github_governance.py` 的 live success 只能在受保护 `repository-governance` environment 中产生；缺少组织 team、规则集、只读 token、merge-group SHA 或 fresh approval 时必须失败。
 
-- `hepta_market_*`、`hepta_official_source_capture.py`：市场上下文与数据规范化。
-- `hepta_strategy_*`：策略契约、shadow runner 和 replay evaluation。
-- `hepta_eurusd_confirmed_momentum_strategy.py`：当前 EURUSD 策略实现。
-- `validate_hepta_strategy_decision_receipt.py`：验证有界 shadow 决策 receipt。
+## Runtime and qualification controls
 
-本目录不再包含发布打包、质量门禁、P1/round、动态 PAPER campaign、repair/renew/supervisor、attestation、terminal witness、Windows 一键上线或硬编码用户工作区脚本。
+- `resolve_hepta_config.py`：解析并规范化 runtime configuration；
+- `check_install_tree.py`：验证安装 allowlist、权限和路径安全；
+- `run_ib_paper_qualification.sh`：在受保护 real PAPER runner 上调用独立 qualifier；
+- `verify_ib_paper_qualification.py`：把 qualification result 绑定 exact Git SHA、binary、SDK、harness、session 与 broker-observed evidence。
+
+仓库脚本不能创建真实 GitHub team、安装 ruleset、提供 Broker credential、批准自身 PR、关闭外部 gap 或授予 LIVE authority。

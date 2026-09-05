@@ -1,8 +1,10 @@
 #include "trading_tool_host.h"
 #include "session_supervisor_lease_store.h"
+#include "../tools/trading_tool_wire_contract.h"
 #include <cmath>
 #include <chrono>
 #include <cstring>
+#include <exception>
 
 namespace
 {
@@ -21,6 +23,58 @@ bool IsDiscoveryToolName(const std::string& toolName)
 
 const std::uint32_t kMaximumCancelCallsPerMinute = 4;
 const std::uint32_t kMaximumFlattenCallsPerMinute = 2;
+const std::size_t kMaximumMutationReplayRecords = 2048;
+const std::chrono::hours kMutationReplayTtl(24);
+
+TradingToolResult MutationDispatchExceptionResult(const std::string& toolName)
+{
+    TradingToolResult result;
+    result.status = TradingToolCallStatus::Uncertain;
+    result.toolName = toolName;
+    // The registry and Execution Service use this code for an exception at
+    // their mutation boundary. Keep the host fallback identical so callers
+    // always enter the same recovery/idempotency path even if an unexpected
+    // implementation exception escapes the registry.
+    result.reasonCode = "EXECUTION_AUTHORITY_EXCEPTION";
+    result.detail = "execution authority outcome is uncertain";
+    return result;
+}
+
+std::string BoundedHostDetail(const std::string& value,
+                              const char* fallback)
+{
+    if (value.size() > 65536u ||
+        value.find('\0') != std::string::npos)
+        return fallback;
+    return value;
+}
+
+TradingToolResult ReadDispatchExceptionResult(const std::string& toolName)
+{
+    TradingToolResult result;
+    result.status = TradingToolCallStatus::Error;
+    result.toolName = toolName;
+    result.reasonCode = "TOOL_DISPATCH_EXCEPTION";
+    result.detail = "tool dispatch failed";
+    return result;
+}
+
+// Recovery-only owners retain read and explicitly owned risk-reduction
+// authority, but must not create a new entry path.  Target-position apply is
+// intentionally included alongside the raw place tool: a target can be
+// either an increase or a reduction, and the host cannot safely infer which
+// from the untrusted request without re-running the full authoritative plan.
+bool IsRecoveryBlockedEntryTool(const std::string& toolName)
+{
+    return toolName == "trade.place_order" ||
+        toolName == "intent.apply_target_position";
+}
+
+bool IsRecoveryBlockedEntryPreview(const std::string& toolName)
+{
+    return toolName == "risk.preview_order" ||
+        toolName == "intent.preview_target_position";
+}
 
 bool SameDoubleBits(double left, double right)
 {
@@ -85,6 +139,16 @@ bool SameMutationPayload(const TradingToolSession& leftSession,
             left.timeInForce == right.timeInForce &&
             SameContract(left.ibContract, right.ibContract) &&
             SameOrder(left.ibOrder, right.ibOrder);
+    if (left.name == "intent.apply_target_position")
+        // The target permit is a one-time credential and is intentionally not
+        // part of the idempotency payload.  Retries compare the normalized
+        // target request so the registry can return its durable replay result.
+        return left.instrument == right.instrument &&
+            left.targetCommandId == right.targetCommandId &&
+            SameDoubleBits(left.ibOrder.totalQuantity,
+                           right.ibOrder.totalQuantity) &&
+            SameDoubleBits(left.referencePrice, right.referencePrice) &&
+            left.expiresAtMs == right.expiresAtMs;
     return false;
 }
 
@@ -160,6 +224,48 @@ std::string TradingToolHost::MutationReplayKey(
 {
     const std::string ownerKey = SessionOwnerKey(binding);
     return std::to_string(ownerKey.size()) + ":" + ownerKey + toolCallId;
+}
+
+void TradingToolHost::PruneMutationReplaysLocked(
+    std::chrono::steady_clock::time_point now) const
+{
+    for (std::unordered_map<std::string,
+             MutationReplayRecord>::iterator it = m_mutationReplays.begin();
+         it != m_mutationReplays.end();)
+    {
+        if (it->second.steadyExpiresAt <= now)
+            it = m_mutationReplays.erase(it);
+        else
+            ++it;
+    }
+}
+
+void TradingToolHost::WaitForOwnerReadsLocked(
+    std::unique_lock<std::mutex>& lock,
+    const std::string& ownerKey)
+{
+    m_ownerReadsDrained.wait(lock, [this, &ownerKey]() {
+        const std::unordered_map<std::string, std::size_t>::const_iterator
+            active = m_activeReadsByOwner.find(ownerKey);
+        return active == m_activeReadsByOwner.end() || active->second == 0;
+    });
+}
+
+void TradingToolHost::FinishReadDispatch(const std::string& ownerKey)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        const std::unordered_map<std::string, std::size_t>::iterator active =
+            m_activeReadsByOwner.find(ownerKey);
+        if (active != m_activeReadsByOwner.end())
+        {
+            if (active->second <= 1)
+                m_activeReadsByOwner.erase(active);
+            else
+                --active->second;
+        }
+    }
+    m_ownerReadsDrained.notify_all();
 }
 
 void TradingToolHost::RevokeSession(const std::string& token)
@@ -280,6 +386,14 @@ TradingToolResult TradingToolHost::AuthorizeCommon(
     if (request.toolCallId.empty())
         return Reject(request.call.name, TradingToolCallStatus::Rejected,
                       "TOOL_CALL_ID_REQUIRED", "each call requires an idempotency key");
+    // Direct in-process callers do not pass through TypedToolProtocol. Keep
+    // the host API subject to the same bounded idempotency-key grammar as the
+    // binary wire so controls, all-punctuation keys and oversized values
+    // cannot enter replay/journal namespaces through an alternate path.
+    if (!TradingToolWireContract::IsCanonicalCommandId(request.toolCallId))
+        return Reject(request.call.name, TradingToolCallStatus::Rejected,
+                      "INVALID_COMMAND_ID",
+                      "tool_call_id must be a bounded canonical identifier");
 
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -362,9 +476,13 @@ TradingToolResult TradingToolHost::PrepareMutationCall(
 	if (binding.session.environment == "WATCH")
 		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 			"WATCH_SESSION_CANNOT_TRADE", "WATCH sessions have no mutation authority");
-	if (binding.session.environment == "LIVE_REDUCE_ONLY" && call.name == "trade.place_order")
+	if (binding.recoveryOnly && IsRecoveryBlockedEntryTool(call.name))
 		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
-			"REDUCE_ONLY_PLACE_FORBIDDEN", "reduce-only sessions may only cancel or flatten");
+			"SESSION_RECOVERY_ONLY",
+			"root custodian disabled new entry while command recovery is pending");
+	if (binding.session.environment != "PAPER")
+		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
+			"INVALID_SESSION_ENVIRONMENT", "only PAPER sessions may mutate");
 	std::string semanticReason;
 	std::string semanticDetail;
 	if (!TradingToolRegistry::ValidateCallSemantics(call, semanticReason, semanticDetail))
@@ -413,7 +531,7 @@ TradingToolResult TradingToolHost::PrepareReadCall(
 	const TradingToolHostSessionBinding& binding,
 	TradingToolCall& call) const
 {
-	if (binding.recoveryOnly && call.name == "risk.preview_order")
+	if (binding.recoveryOnly && IsRecoveryBlockedEntryPreview(call.name))
 		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 			"SESSION_RECOVERY_ONLY",
 			"root custodian disabled new entry while command recovery is pending");
@@ -452,6 +570,11 @@ TradingToolSession TradingToolHost::BuildDispatchSession(
 	TradingToolSession session = binding.session;
 	session.visibleInstruments = binding.allowedInstruments;
 	session.boundInstrumentContracts = binding.instrumentContracts;
+	// Never trust a client-populated session copy for the quantity ceiling;
+	// overwrite it from the supervisor-bound host policy at the authority
+	// boundary.  The registry then applies the same limit to target deltas as
+	// it does to raw order placement.
+	session.maxOrderQuantity = binding.maxOrderQuantity;
 	session.executionContext.toolCallId = request.toolCallId;
 	session.executionContext.executionDomain = binding.executionDomain;
 	session.executionContext.decisionLeaseFencingToken = credential.fencingToken;
@@ -465,9 +588,10 @@ TradingToolResult TradingToolHost::DispatchRead(
 	const TradingToolSession& session,
 	const TradingToolCall& call)
 {
-	std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
 	bool recoveryOnly = false;
+    std::string ownerKey;
 	{
+		std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
 		std::lock_guard<std::mutex> lock(m_mutex);
 		const std::unordered_map<std::string,
 			TradingToolHostSessionBinding>::const_iterator current =
@@ -490,12 +614,31 @@ TradingToolResult TradingToolHost::DispatchRead(
 			return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 				"SESSION_EXPIRED", "Agent session expired before read dispatch");
 		recoveryOnly = current->second.recoveryOnly;
+        ownerKey = SessionOwnerKey(current->second);
+        ++m_activeReadsByOwner[ownerKey];
 	}
-	if (recoveryOnly && call.name == "risk.preview_order")
-		return Reject(call.name, TradingToolCallStatus::PermissionDenied,
-			"SESSION_RECOVERY_ONLY",
-			"root custodian disabled new entry while command recovery is pending");
-	return m_registry.Invoke(session, call);
+    TradingToolResult result;
+    if (recoveryOnly && IsRecoveryBlockedEntryPreview(call.name))
+        result = Reject(call.name, TradingToolCallStatus::PermissionDenied,
+            "SESSION_RECOVERY_ONLY",
+            "root custodian disabled new entry while command recovery is pending");
+    else
+    {
+        try
+        {
+            result = m_registry.Invoke(session, call);
+        }
+        catch (const std::exception&)
+        {
+            result = ReadDispatchExceptionResult(call.name);
+        }
+        catch (...)
+        {
+            result = ReadDispatchExceptionResult(call.name);
+        }
+    }
+    FinishReadDispatch(ownerKey);
+    return result;
 }
 
 TradingToolResult TradingToolHost::DispatchMutation(
@@ -507,6 +650,7 @@ TradingToolResult TradingToolHost::DispatchMutation(
 	std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
+		PruneMutationReplaysLocked(std::chrono::steady_clock::now());
 		const std::unordered_map<std::string,
 			TradingToolHostSessionBinding>::const_iterator current =
 			m_sessions.find(request.sessionToken);
@@ -526,7 +670,7 @@ TradingToolResult TradingToolHost::DispatchMutation(
 				"Agent session owner is disabled pending remote fence");
 		const std::uint64_t dispatchNowMs = EpochNowMs();
 		if (current->second.recoveryOnly &&
-			call.name == "trade.place_order")
+			IsRecoveryBlockedEntryTool(call.name))
 			return Reject(call.name, TradingToolCallStatus::PermissionDenied,
 				"SESSION_RECOVERY_ONLY",
 				"root custodian permits only owned cancel or flatten during recovery");
@@ -584,21 +728,121 @@ TradingToolResult TradingToolHost::DispatchMutation(
 					"Agent session exhausted its entry trade-call budget");
 		++count;
 	}
-	const TradingToolResult result = m_registry.Invoke(session, call);
+	TradingToolResult result;
+	try
+	{
+		result = m_registry.Invoke(session, call);
+	}
+	catch (const std::exception&)
+	{
+		// Dispatch has already passed the host's authorization, rate and lease
+		// gates. An escaping registry exception is therefore treated as an
+		// uncertain mutation and retained in the replay witness; returning a
+		// plain rejection could let an identical retry cross the authority a
+		// second time.
+		result = MutationDispatchExceptionResult(call.name);
+	}
+	catch (...)
+	{
+		result = MutationDispatchExceptionResult(call.name);
+	}
 	if (result.status == TradingToolCallStatus::Ok ||
 		result.status == TradingToolCallStatus::Duplicate ||
 		result.status == TradingToolCallStatus::Uncertain)
 	{
 		std::lock_guard<std::mutex> lock(m_mutex);
+		PruneMutationReplaysLocked(std::chrono::steady_clock::now());
+		const std::string replayKey = MutationReplayKey(
+			binding, request.toolCallId);
+		const std::unordered_map<std::string,
+			MutationReplayRecord>::iterator existing =
+			m_mutationReplays.find(replayKey);
+		if (existing == m_mutationReplays.end() &&
+			m_mutationReplays.size() >= kMaximumMutationReplayRecords)
+		{
+			// Keep the local cache bounded.  Entries expire at insertion + TTL,
+			// so the earliest expiry is the oldest retained witness.  Eviction
+			// only removes a host optimization; the registry/Execution durable
+			// ledger remains authoritative for a later retry.
+			std::unordered_map<std::string,
+				MutationReplayRecord>::iterator oldest =
+				m_mutationReplays.begin();
+			for (std::unordered_map<std::string,
+					 MutationReplayRecord>::iterator it =
+					 m_mutationReplays.begin();
+				 it != m_mutationReplays.end(); ++it)
+			{
+				if (oldest == m_mutationReplays.end() ||
+					it->second.steadyExpiresAt <
+						oldest->second.steadyExpiresAt)
+					oldest = it;
+			}
+			if (oldest != m_mutationReplays.end())
+				m_mutationReplays.erase(oldest);
+		}
 		MutationReplayRecord replay;
 		replay.ownerKey = SessionOwnerKey(binding);
 		replay.session = session;
 		replay.call = call;
+		// The permit is a one-time credential and is intentionally excluded
+		// from SameMutationPayload. Never retain it in the host replay cache.
+		replay.call.previewPermit.clear();
 		replay.result = result;
-		m_mutationReplays[MutationReplayKey(
-			binding, request.toolCallId)] = replay;
+		replay.steadyExpiresAt = std::chrono::steady_clock::now() +
+			kMutationReplayTtl;
+		m_mutationReplays[replayKey] = replay;
 	}
 	return result;
+}
+
+bool TradingToolHost::TryReplayMutationBeforeLease(
+    const TradingToolHostSessionBinding& binding,
+    const TradingToolHostRequest& request,
+    const TradingToolSession& session,
+    const TradingToolCall& call,
+    TradingToolResult& result) const
+{
+    // Serialize this probe with final mutation dispatch and session-control
+    // transitions.  The normal authorization path has already checked the
+    // peer, capability, schema and semantic field set; these checks only make
+    // sure a replay cannot outlive a revoked/fenced/expired binding.
+    std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
+    std::lock_guard<std::mutex> lock(m_mutex);
+    PruneMutationReplaysLocked(std::chrono::steady_clock::now());
+    const std::unordered_map<std::string,
+        TradingToolHostSessionBinding>::const_iterator current =
+        m_sessions.find(request.sessionToken);
+    if (current == m_sessions.end() ||
+        current->second.leaseGeneration != binding.leaseGeneration ||
+        !current->second.enabled ||
+        m_pendingOwnerFences.find(SessionOwnerKey(current->second)) !=
+            m_pendingOwnerFences.end() ||
+        WatchTransactionPendingLocked(current->second) ||
+        current->second.expiresAtMs <= EpochNowMs())
+        return false;
+
+    const std::string replayKey = MutationReplayKey(
+        current->second, request.toolCallId);
+    const std::unordered_map<std::string, MutationReplayRecord>::const_iterator
+        replay = m_mutationReplays.find(replayKey);
+    if (replay == m_mutationReplays.end()) return false;
+    if (!SameMutationPayload(
+            replay->second.session, replay->second.call,
+            session, call))
+    {
+        result = Reject(call.name, TradingToolCallStatus::Rejected,
+            "IDEMPOTENCY_KEY_CONFLICT",
+            "tool_call_id was already used for a different execution operation or payload");
+        return true;
+    }
+    result = replay->second.result;
+    if (result.status == TradingToolCallStatus::Ok)
+    {
+        result.status = TradingToolCallStatus::Duplicate;
+        result.reasonCode = "DUPLICATE_TOOL_CALL";
+        result.detail = "previous_status=accepted";
+    }
+    return true;
 }
 
 TradingToolResult TradingToolHost::Invoke(std::uint32_t peerUid, const TradingToolHostRequest& request)
@@ -609,6 +853,16 @@ TradingToolResult TradingToolHost::Invoke(std::uint32_t peerUid, const TradingTo
 		AuthorizeCommon(peerUid, request, binding, descriptor);
 	if (authorized.status != TradingToolCallStatus::Ok)
 		return authorized;
+	// ``system.cancel_request`` is a queue-control operation.  It must be
+	// handled by UnixToolServer, which owns the pending-request queues and can
+	// atomically remove a request before dispatch.  A direct host invocation
+	// has no queue context; routing it through the read registry would return a
+	// misleading handler-unavailable result and could make callers believe a
+	// cancellation was applied.  Keep the boundary explicit and fail closed.
+	if (request.call.name == "system.cancel_request")
+		return Reject(request.call.name, TradingToolCallStatus::InvalidTool,
+			"CONTROL_TOOL_REQUIRED",
+			"request is handled only by the Tool Server control plane");
 	TradingToolCall authorizedCall = request.call;
 	if (descriptor.effect == TradingToolEffect::Trade)
 	{
@@ -622,15 +876,60 @@ TradingToolResult TradingToolHost::Invoke(std::uint32_t peerUid, const TradingTo
 		if (prepared.status != TradingToolCallStatus::Ok) return prepared;
 	}
 
+    // Resolve a completed mutation before any liveness/readiness probe or
+    // fresh decision-lease acquisition. Readiness is a gate for *new* side
+    // effects; it must not turn an exact retry of an already accepted command
+    // into TRADING_STATE_NOT_READY (or DECISION_LEASE_BUSY). Authorization,
+    // visibility, semantic validation and the current session fence were
+    // already checked above and again inside TryReplayMutationBeforeLease.
+    if (descriptor.effect == TradingToolEffect::Trade)
+    {
+        TradingToolSession replaySession = binding.session;
+        replaySession.visibleInstruments = binding.allowedInstruments;
+        replaySession.boundInstrumentContracts = binding.instrumentContracts;
+        replaySession.maxOrderQuantity = binding.maxOrderQuantity;
+        replaySession.executionContext.toolCallId = request.toolCallId;
+        replaySession.executionContext.executionDomain = binding.executionDomain;
+        TradingToolResult replay;
+        if (TryReplayMutationBeforeLease(
+                binding, request, replaySession, authorizedCall, replay))
+            return replay;
+    }
+
     if (descriptor.effect == TradingToolEffect::Trade && m_mutationReadiness)
     {
         TradingToolSession readinessSession = binding.session;
+        readinessSession.maxOrderQuantity = binding.maxOrderQuantity;
         readinessSession.executionContext.executionDomain = binding.executionDomain;
         readinessSession.executionContext.toolCallId = request.toolCallId;
         std::string readinessReason;
-        if (!m_mutationReadiness(readinessSession, authorizedCall, readinessReason))
+        bool ready = false;
+        try
+        {
+            ready = m_mutationReadiness(
+                readinessSession, authorizedCall, readinessReason);
+        }
+        catch (const std::exception&)
+        {
+            // A readiness callback is a pre-dispatch gate, so an exception
+            // cannot prove that a mutation was sent. Fail closed as a normal
+            // not-ready response and do not retain a replay witness.
             return Reject(authorizedCall.name, TradingToolCallStatus::Rejected,
-                          "TRADING_STATE_NOT_READY", readinessReason);
+                          "TRADING_STATE_NOT_READY",
+                          "mutation readiness check failed");
+        }
+        catch (...)
+        {
+            return Reject(authorizedCall.name, TradingToolCallStatus::Rejected,
+                          "TRADING_STATE_NOT_READY",
+                          "mutation readiness check failed");
+        }
+        if (!ready)
+            return Reject(authorizedCall.name, TradingToolCallStatus::Rejected,
+                          "TRADING_STATE_NOT_READY",
+                          BoundedHostDetail(
+                              readinessReason,
+                              "mutation readiness check failed"));
     }
 
     DecisionLeaseCredential leaseCredential;
@@ -824,6 +1123,9 @@ bool TradingToolHost::RestorePaperFinalizationTombstone(
         m_flattenCallsInWindow[tombstone.token] = 0;
         m_pendingOwnerFences.insert(SessionOwnerKey(tombstone));
     }
+    TradingToolSession targetOwner = tombstone.session;
+    targetOwner.executionContext.executionDomain = tombstone.executionDomain;
+    m_registry.RevokeTargetPermitsForOwner(targetOwner);
     DecisionLeaseOwner owner;
     owner.agentId = durableRecord.agentId;
     owner.sessionId = durableRecord.sessionId;
@@ -843,7 +1145,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
     TradingToolHostSessionBinding binding;
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
             m_sessions.find(token);
@@ -853,6 +1155,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
             reason = "SESSION_LEASE_GENERATION_MISMATCH";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
         binding = found->second;
         authority = m_recoveryControlAuthority;
     }
@@ -902,6 +1205,12 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
     owner.agentId = context.agentId;
     owner.sessionId = context.sessionId;
     m_decisionLeases.FenceOwner(owner);
+    TradingToolSession targetOwner = binding.session;
+    targetOwner.executionContext.executionDomain = binding.executionDomain;
+    // Finalization has completed the remote fence. Remove target permits
+    // before deleting the local bearer so a stale permit cannot survive a
+    // later registration that reuses the same agent/session identity.
+    m_registry.RevokeTargetPermitsForOwner(targetOwner);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         EraseSessionLocked(token);
@@ -926,12 +1235,13 @@ bool TradingToolHost::FenceRecoveryOnlyOwner(
     bool localExists = false;
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
             m_sessions.find(token);
         if (found != m_sessions.end())
         {
+            WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
             binding = found->second;
             localExists = true;
         }
@@ -996,6 +1306,11 @@ bool TradingToolHost::FenceRecoveryOnlyOwner(
     owner.agentId = durableRecord.agentId;
     owner.sessionId = durableRecord.sessionId;
     m_decisionLeases.FenceOwner(owner);
+    // This path may run with a recovery tombstone or a binding restored from
+    // durable state. Use the durable primary identity so permits from any
+    // prior strategy/account binding are invalidated too.
+    m_registry.RevokeTargetPermitsForIdentity(
+        durableRecord.agentId, durableRecord.sessionId);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
@@ -1028,7 +1343,7 @@ bool TradingToolHost::AuditFinalizedRecoveryOwner(
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         authority = m_recoveryControlAuthority;
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
@@ -1038,6 +1353,7 @@ bool TradingToolHost::AuditFinalizedRecoveryOwner(
             reason = "SESSION_FINALIZATION_TOMBSTONE_REQUIRED";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
         const AgentExecutionContext& context =
             found->second.session.executionContext;
         if (found->second.enabled || !found->second.recoveryOnly ||
@@ -1112,7 +1428,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     TradingToolHostSessionBinding binding;
     ExecutionControlAuthority* authority = nullptr;
     {
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const std::unordered_map<std::string,
             TradingToolHostSessionBinding>::const_iterator found =
             m_sessions.find(currentToken);
@@ -1122,6 +1438,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
             reason = "SESSION_LEASE_GENERATION_MISMATCH";
             return false;
         }
+        WaitForOwnerReadsLocked(lock, SessionOwnerKey(found->second));
         binding = found->second;
         authority = m_recoveryControlAuthority;
     }

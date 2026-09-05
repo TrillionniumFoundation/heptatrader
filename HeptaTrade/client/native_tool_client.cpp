@@ -1,6 +1,8 @@
 #include "native_tool_client.h"
 #include "native_tool_discovery_contract.h"
 
+#include "../tools/trading_tool_wire_contract.h"
+
 #include "../tool_host/unix_tool_client.h"
 
 #include <cerrno>
@@ -34,6 +36,61 @@ std::string DiscoveryToolCallId(const std::string& parentToolCallId)
         ? "native-sdk"
         : parentToolCallId.substr(0, 108);
     return base + "-catalog";
+}
+
+// Session tokens are Agent-boundary text, not arbitrary byte blobs.  Keep
+// this check in the native token-file entry point as well as in the typed
+// protocol encoder so an embedded caller cannot observe a different contract
+// merely by loading a token directly.  The grammar mirrors
+// TypedToolProtocol's field validator: strict UTF-8 scalar sequences and no
+// C0/C1 controls or DEL.
+bool IsSafeTokenText(const std::string& value)
+{
+    if (value.find('\0') != std::string::npos) return false;
+    std::size_t offset = 0;
+    while (offset < value.size())
+    {
+        const unsigned char first =
+            static_cast<unsigned char>(value[offset]);
+        if (first <= 0x7fu)
+        {
+            if (first < 0x20u || first == 0x7fu) return false;
+            ++offset;
+            continue;
+        }
+        std::size_t continuationCount = 0;
+        if (first >= 0xc2u && first <= 0xdfu) continuationCount = 1;
+        else if (first >= 0xe0u && first <= 0xefu) continuationCount = 2;
+        else if (first >= 0xf0u && first <= 0xf4u) continuationCount = 3;
+        else return false;
+        if (value.size() - offset <= continuationCount) return false;
+        const unsigned char second =
+            static_cast<unsigned char>(value[offset + 1]);
+        if ((first == 0xe0u && second < 0xa0u) ||
+            (first == 0xedu && second >= 0xa0u) ||
+            (first == 0xf0u && second < 0x90u) ||
+            (first == 0xf4u && second > 0x8fu))
+            return false;
+        std::uint32_t codepoint = first &
+            (continuationCount == 1u ? 0x1fu :
+             continuationCount == 2u ? 0x0fu : 0x07u);
+        for (std::size_t i = 1; i <= continuationCount; ++i)
+        {
+            const unsigned char continuation =
+                static_cast<unsigned char>(value[offset + i]);
+            if (continuation < 0x80u || continuation > 0xbfu) return false;
+            codepoint = (codepoint << 6) | (continuation & 0x3fu);
+        }
+        if ((continuationCount == 1u && codepoint < 0x80u) ||
+            (continuationCount == 2u && codepoint < 0x800u) ||
+            (continuationCount == 3u && codepoint < 0x10000u) ||
+            (codepoint >= 0xd800u && codepoint <= 0xdfffu) ||
+            codepoint > 0x10ffffu ||
+            (codepoint >= 0x7fu && codepoint <= 0x9fu))
+            return false;
+        offset += continuationCount + 1u;
+    }
+    return true;
 }
 }
 
@@ -103,7 +160,7 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
     token.assign(buffer, total);
     while (!token.empty() && (token[token.size() - 1] == '\n' || token[token.size() - 1] == '\r'))
         token.erase(token.size() - 1);
-    if (token.empty() || token.size() > 512 || token.find('\0') != std::string::npos)
+    if (token.empty() || token.size() > 512 || !IsSafeTokenText(token))
     {
         token.clear();
         reason = "TOKEN_FILE_INVALID";
@@ -124,6 +181,21 @@ bool NativeToolClient::Call(TradingToolHostRequest request,
             TradingToolWireLimits::MaximumResultEnvelopeBytes())
     {
         reason = "NATIVE_CLIENT_CONFIG_INVALID";
+        return false;
+    }
+    // Discovery is itself an RPC.  Validate the caller's idempotency key
+    // before deriving a discovery child id or touching the socket, otherwise
+    // malformed direct-client requests could return an unrelated transport
+    // error (and potentially amplify a retry) instead of the stable protocol
+    // rejection used by TypedToolProtocol::EncodeRequest.
+    if (!TradingToolWireContract::IsCanonicalCommandId(request.toolCallId))
+    {
+        reason = "INVALID_TOOL_CALL_ID";
+        return false;
+    }
+    if (!TradingToolWireContract::IsCanonicalToolName(request.call.name))
+    {
+        reason = "INVALID_TOOL_NAME";
         return false;
     }
     if (request.call.name != "system.tools.list")
@@ -205,7 +277,7 @@ bool NativeToolClient::CallOnce(TradingToolHostRequest request,
     {
         request.sessionToken = m_config.sessionToken;
         if (request.sessionToken.empty() || request.sessionToken.size() > 512 ||
-            request.sessionToken.find('\0') != std::string::npos)
+            !IsSafeTokenText(request.sessionToken))
         {
             reason = "SESSION_TOKEN_INVALID";
             return false;

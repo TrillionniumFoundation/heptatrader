@@ -1,4 +1,4 @@
-﻿#include "ib_api_wrapper.h"
+#include "ib_api_wrapper.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,17 +11,39 @@
 #include <fstream>
 #include <cstdlib>
 #include <cstring>
-#include <cctype>
 #include <cmath>
 #include <sstream>
 #include <iomanip>
 #include <utility>
 #include <unordered_map>
 #include <limits>
+#include <locale>
 #include <cerrno>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
+
+namespace
+{
+#ifdef HEPTA_ENABLE_IBAPI
+bool ParseCanonicalUnsignedText(const char* raw,
+                                unsigned long long& parsed)
+{
+    if (raw == nullptr || *raw == '\0') return false;
+    const std::string value(raw);
+    if (value.size() > 1 && value[0] == '0') return false;
+    for (std::size_t i = 0; i < value.size(); ++i)
+        if (value[i] < '0' || value[i] > '9') return false;
+    char* end = nullptr;
+    errno = 0;
+    const unsigned long long number = std::strtoull(
+        value.c_str(), &end, 10);
+    if (errno != 0 || end == value.c_str() || *end != '\0') return false;
+    parsed = number;
+    return true;
+}
+#endif
+}
 
 IBAuthoritativeEventQueue::IBAuthoritativeEventQueue(std::size_t maxEvents)
     : m_maxEvents(maxEvents == 0 ? 1 : maxEvents) {
@@ -615,7 +637,13 @@ static void PopulateContract(Contract& ct, const IBContractLite& c) {
     ct.tradingClass = c.tradingClass;
     if (!c.right.empty()) {
         std::string right = c.right;
-        for (char& ch : right) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+        for (char& ch : right) {
+            const unsigned char value = static_cast<unsigned char>(ch);
+            if (value >= static_cast<unsigned char>('a') &&
+                value <= static_cast<unsigned char>('z'))
+                ch = static_cast<char>(value - static_cast<unsigned char>('a') +
+                                       static_cast<unsigned char>('A'));
+        }
         if (right == "CALL") right = "C";
         if (right == "PUT") right = "P";
         ct.right = right;
@@ -714,25 +742,28 @@ public:
     int ResolveMarketDataType() const {
         const char* p = std::getenv("HEPTA_IB_MARKET_DATA_TYPE");
         if (p == nullptr || *p == '\0') return 1; // realtime
-        int t = atoi(p);
-        if (t < 1 || t > 4) return 1;
-        return t;
+        unsigned long long parsed = 0;
+        if (!ParseCanonicalUnsignedText(p, parsed) || parsed < 1 || parsed > 4)
+            return 1;
+        return static_cast<int>(parsed);
     }
     static int ResolveSignalTimeoutMs() {
         const char* p = std::getenv("HEPTA_IB_POLLONCE_TIMEOUT_MS");
         if (p == nullptr || *p == '\0') return 100;
-        int v = atoi(p);
-        if (v < 10) v = 10;
-        if (v > 2000) v = 2000;
-        return v;
+        unsigned long long parsed = 0;
+        if (!ParseCanonicalUnsignedText(p, parsed)) return 100;
+        if (parsed < 10) parsed = 10;
+        if (parsed > 2000) parsed = 2000;
+        return static_cast<int>(parsed);
     }
     static std::size_t ResolveMaxEventQueue() {
         const char* p = std::getenv("HEPTA_IB_EVENT_QUEUE_MAX");
         if (p == nullptr || *p == '\0') return 20000;
-        long v = std::strtol(p, nullptr, 10);
-        if (v < 1000) v = 1000;
-        if (v > 500000) v = 500000;
-        return static_cast<std::size_t>(v);
+        unsigned long long parsed = 0;
+        if (!ParseCanonicalUnsignedText(p, parsed)) return 20000;
+        if (parsed < 1000) parsed = 1000;
+        if (parsed > 500000) parsed = 500000;
+        return static_cast<std::size_t>(parsed);
     }
     bool IsTraceEnabled() const {
         const char* p = std::getenv("HEPTA_IB_TRACE");
@@ -915,7 +946,14 @@ public:
             return false;
         }
         catch (const std::exception& ex) {
-            m_status = std::string("IB_CONNECT_EXCEPTION:") + ex.what();
+            // m_status is observable through the adapter and can be copied
+            // into Agent-facing health/event payloads.  Keep it a stable
+            // reason code; exception text often contains filesystem paths,
+            // socket endpoints, credentials, or vendor internals.  Preserve
+            // the full text only in the local trace sink for operators.
+            const std::string localDetail =
+                std::string("IB_CONNECT_EXCEPTION:") + ex.what();
+            m_status = "IB_CONNECT_EXCEPTION";
             m_connected = false;
             m_client.eDisconnect();
             if (m_reader) {
@@ -924,7 +962,7 @@ public:
             }
             m_gotNextValidId = false;
             m_lastValidOrderId = -1;
-            Trace(m_status);
+            Trace(localDetail);
             return false;
         }
     }
@@ -1054,6 +1092,7 @@ public:
         };
         (void)digits;
         std::ostringstream canonical;
+        canonical.imbue(std::locale::classic());
         canonical << "IBSOCK1\nconnection_epoch=" << epoch
             << "\nst_dev=" << static_cast<unsigned long long>(metadata.st_dev)
             << "\nst_ino=" << static_cast<unsigned long long>(metadata.st_ino)
@@ -1327,6 +1366,7 @@ public:
 
     std::string BuildOrderTrace(long localOrderId, const Contract& ct, const Order& od) {
         std::ostringstream oss;
+        oss.imbue(std::locale::classic());
         oss << std::fixed << std::setprecision(8)
             << "placeOrder id=" << localOrderId
             << " symbol=" << ct.symbol
@@ -1671,6 +1711,7 @@ public:
         // identity fallback rather than collapsing option/future series by
         // symbol and undercounting gross position.
         std::ostringstream key;
+        key.imbue(std::locale::classic());
         key << "CONTRACT:" << c.secType << '|' << c.symbol << '|'
             << c.currency << '|' << c.exchange << '|'
             << c.primaryExchange << '|' << c.lastTradeDateOrContractMonth
@@ -1950,13 +1991,10 @@ private:
             return true;
         if (event.type != IBEventType::Error || event.key.empty())
             return event.type == IBEventType::Error;
-        char* end = nullptr;
-        errno = 0;
-        const long code = std::strtol(event.key.c_str(), &end, 10);
-        if (errno != 0 || end == event.key.c_str() ||
-            end == nullptr || *end != '\0')
+        unsigned long long parsedCode = 0;
+        if (!ParseCanonicalUnsignedText(event.key.c_str(), parsedCode))
             return true; // unknown broker error: keep the send gate closed
-        switch (code) {
+        switch (parsedCode) {
         case 2104: // market-data farm connection OK
         case 2106: // HMDS farm connection OK
         case 2107: // HMDS farm inactive (not needed for live quotes)
@@ -1988,7 +2026,11 @@ private:
         std::string description = event.value;
         std::transform(description.begin(), description.end(),
                        description.begin(), [](unsigned char value) {
-            return static_cast<char>(std::tolower(value));
+            return value >= static_cast<unsigned char>('A') &&
+                    value <= static_cast<unsigned char>('Z') ?
+                static_cast<char>(value - static_cast<unsigned char>('A') +
+                                  static_cast<unsigned char>('a')) :
+                static_cast<char>(value);
         });
         return description.find("cashfarm") != std::string::npos;
     }

@@ -2,15 +2,132 @@
 #include "../tools/trading_tool_wire_contract.h"
 
 #include <cerrno>
-#include <cctype>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <locale>
 #include <set>
+#include <sstream>
 
 namespace {
-bool ParseLong(const std::string& value, long& out)
+
+// Payload JSON is opaque to the typed result codec, but it still crosses an
+// IPC boundary and is parsed by downstream clients.  Validate every numeric
+// token as a finite classic-locale double before retaining its lexical form;
+// otherwise values such as 1e999999 would pass the structural parser and
+// fail later (or turn into an implementation-defined infinity).
+bool ParseFiniteNumber(const std::string& token)
+{
+    std::istringstream input(token);
+    input.imbue(std::locale::classic());
+    input >> std::noskipws;
+    double value = 0.0;
+    input >> value;
+    if (input.fail() || !input.eof() || !std::isfinite(value)) return false;
+    // Never admit signed zero.  Also reject a non-zero mantissa that
+    // underflowed to zero during conversion; otherwise two distinct payload
+    // numbers would become indistinguishable to downstream consumers.  Keep
+    // positive spellings such as 0.0 valid JSON (they are finite and carry no
+    // authority-sensitive sign).
+    if (value != 0.0) return true;
+    const bool negative = !token.empty() && token[0] == '-';
+    bool mantissaZero = true;
+    for (std::size_t i = negative ? 1u : 0u; i < token.size(); ++i)
+    {
+        if (token[i] == 'e' || token[i] == 'E') break;
+        if (token[i] == '.') continue;
+        if (token[i] != '0')
+        {
+            mantissaZero = false;
+            break;
+        }
+    }
+    return !negative && mantissaZero;
+}
+
+const std::size_t kMaximumResultNodes = 100000;
+const std::size_t kMaximumDecodedStringBytes =
+    TradingToolWireLimits::MaximumResultEnvelopeBytes();
+
+// Envelope text is forwarded across the Agent IPC boundary and is consumed
+// by terminals/loggers that treat C0/C1 controls and DEL as framing or
+// formatting bytes.  ParseString already enforces UTF-8 for raw input, but a
+// JSON escape (for example ``\u007f`` or ``\u0085``) can decode to the same
+// controls after parsing.  Revalidate the decoded top-level strings so those
+// aliases cannot bypass the boundary contract.
+bool IsSafeEnvelopeText(const std::string& value)
+{
+    if (value.find('\0') != std::string::npos) return false;
+    std::size_t offset = 0;
+    while (offset < value.size())
+    {
+        const unsigned char first =
+            static_cast<unsigned char>(value[offset]);
+        std::uint32_t codePoint = 0;
+        std::size_t continuationCount = 0;
+        if (first <= 0x7fu)
+        {
+            codePoint = first;
+            ++offset;
+        }
+        else
+        {
+            if (first >= 0xc2u && first <= 0xdfu)
+                continuationCount = 1;
+            else if (first >= 0xe0u && first <= 0xefu)
+                continuationCount = 2;
+            else if (first >= 0xf0u && first <= 0xf4u)
+                continuationCount = 3;
+            else
+                return false;
+            if (value.size() - offset <= continuationCount) return false;
+            const unsigned char second =
+                static_cast<unsigned char>(value[offset + 1]);
+            if ((first == 0xe0u && second < 0xa0u) ||
+                (first == 0xedu && second >= 0xa0u) ||
+                (first == 0xf0u && second < 0x90u) ||
+                (first == 0xf4u && second > 0x8fu))
+                return false;
+            codePoint = first & (continuationCount == 1 ? 0x1fu :
+                                 continuationCount == 2 ? 0x0fu : 0x07u);
+            for (std::size_t i = 1; i <= continuationCount; ++i)
+            {
+                const unsigned char continuation =
+                    static_cast<unsigned char>(value[offset + i]);
+                if (continuation < 0x80u || continuation > 0xbfu)
+                    return false;
+                codePoint = (codePoint << 6) | (continuation & 0x3fu);
+            }
+            if ((continuationCount == 1 && codePoint < 0x80u) ||
+                (continuationCount == 2 && codePoint < 0x800u) ||
+                (continuationCount == 3 && codePoint < 0x10000u) ||
+                (codePoint >= 0xd800u && codePoint <= 0xdfffu) ||
+                codePoint > 0x10ffffu)
+                return false;
+            offset += continuationCount + 1u;
+        }
+        if (codePoint < 0x20u ||
+            (codePoint >= 0x7fu && codePoint <= 0x9fu))
+            return false;
+    }
+    return true;
+}
+
+bool CanonicalSignedInteger(const std::string& value)
 {
     if (value.empty()) return false;
+    std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size() ||
+        (value[offset] == '0' &&
+         (offset != 0 || offset + 1u < value.size()))) return false;
+    for (; offset < value.size(); ++offset)
+        if (value[offset] < '0' || value[offset] > '9') return false;
+    return true;
+}
+
+bool ParseLong(const std::string& value, long& out)
+{
+    if (!CanonicalSignedInteger(value)) return false;
     char* end = nullptr;
     errno = 0;
     const long parsed = std::strtol(value.c_str(), &end, 10);
@@ -23,7 +140,7 @@ class ResultJsonParser
 {
 public:
     explicit ResultJsonParser(const std::string& json)
-        : m_json(json), m_offset(0)
+        : m_json(json), m_offset(0), m_nodes(0), m_decodedStringBytes(0)
     {
     }
 
@@ -98,12 +215,12 @@ public:
             seen.count("order_id") != 1 || seen.count("payload") != 1)
             return false;
         if (result.status.empty() || result.status.size() > 32 ||
-            result.toolName.empty() || result.toolName.size() > 64 ||
+            !TradingToolWireContract::IsCanonicalToolName(result.toolName) ||
             result.reasonCode.size() > 128 || result.detail.size() > 65536 ||
-            result.status.find('\0') != std::string::npos ||
-            result.toolName.find('\0') != std::string::npos ||
-            result.reasonCode.find('\0') != std::string::npos ||
-            result.detail.find('\0') != std::string::npos)
+            !IsSafeEnvelopeText(result.status) ||
+            !IsSafeEnvelopeText(result.toolName) ||
+            !IsSafeEnvelopeText(result.reasonCode) ||
+            !IsSafeEnvelopeText(result.detail))
             return false;
         return true;
     }
@@ -128,7 +245,8 @@ private:
 
     bool ParseHexQuad(unsigned int& value)
     {
-        if (m_offset + 4 > m_json.size()) return false;
+        if (m_offset > m_json.size() || m_json.size() - m_offset < 4)
+            return false;
         value = 0;
         for (unsigned int i = 0; i < 4; ++i)
         {
@@ -142,8 +260,16 @@ private:
         return true;
     }
 
-    static void AppendCodePoint(unsigned int codePoint, std::string& value)
+    static bool AppendCodePoint(unsigned int codePoint, std::string& value)
     {
+        // Result payload strings are still transported over the Agent wire.
+        // Reject C0/C1 controls and DEL at decode time, including values
+        // represented by JSON ``\u`` escapes.  Checking only raw bytes (or
+        // only the top-level envelope fields) would let a nested payload
+        // string smuggle framing/log controls through the opaque payload.
+        if (codePoint < 0x20u ||
+            (codePoint >= 0x7fu && codePoint <= 0x9fu))
+            return false;
         if (codePoint <= 0x7f)
         {
             value.push_back(static_cast<char>(codePoint));
@@ -166,6 +292,7 @@ private:
             value.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3f)));
             value.push_back(static_cast<char>(0x80 | (codePoint & 0x3f)));
         }
+        return true;
     }
 
     bool ParseRawUtf8(std::string& value)
@@ -193,7 +320,9 @@ private:
         {
             return false;
         }
-        if (m_offset + length > m_json.size()) return false;
+        if (m_offset > m_json.size() ||
+            static_cast<std::size_t>(length) > m_json.size() - m_offset)
+            return false;
         for (unsigned int i = 1; i < length; ++i)
         {
             const unsigned char next =
@@ -207,6 +336,9 @@ private:
             (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
             codePoint > 0x10ffff)
             return false;
+        if (codePoint < 0x20u ||
+            (codePoint >= 0x7fu && codePoint <= 0x9fu))
+            return false;
         m_offset += length;
         value.append(m_json, start, length);
         return true;
@@ -219,8 +351,16 @@ private:
         while (m_offset < m_json.size())
         {
             const unsigned char c = static_cast<unsigned char>(m_json[m_offset++]);
-            if (c == '"') return true;
-            if (c < 0x20) return false;
+            if (c == '"')
+            {
+                if (value.size() > kMaximumDecodedStringBytes ||
+                    m_decodedStringBytes >
+                        kMaximumDecodedStringBytes - value.size())
+                    return false;
+                m_decodedStringBytes += value.size();
+                return true;
+            }
+            if (c < 0x20 || c == 0x7f) return false;
             if (c >= 0x80)
             {
                 --m_offset;
@@ -236,18 +376,22 @@ private:
             const char escaped = m_json[m_offset++];
             if (escaped == '"' || escaped == '\\' || escaped == '/')
                 value.push_back(escaped);
-            else if (escaped == 'b') value.push_back('\b');
-            else if (escaped == 'f') value.push_back('\f');
-            else if (escaped == 'n') value.push_back('\n');
-            else if (escaped == 'r') value.push_back('\r');
-            else if (escaped == 't') value.push_back('\t');
+            else if (escaped == 'b' || escaped == 'f' || escaped == 'n' ||
+                     escaped == 'r' || escaped == 't')
+            {
+                // The short JSON escapes decode to C0 controls.  They are
+                // intentionally not admitted on this IPC boundary; callers
+                // can carry structured line breaks in a dedicated payload
+                // field if the contract permits them.
+                return false;
+            }
             else if (escaped == 'u')
             {
                 unsigned int codePoint = 0;
                 if (!ParseHexQuad(codePoint)) return false;
                 if (codePoint >= 0xd800 && codePoint <= 0xdbff)
                 {
-                    if (m_offset + 2 > m_json.size() ||
+                    if (m_offset > m_json.size() || m_json.size() - m_offset < 2 ||
                         m_json[m_offset] != '\\' || m_json[m_offset + 1] != 'u')
                         return false;
                     m_offset += 2;
@@ -261,7 +405,7 @@ private:
                 {
                     return false;
                 }
-                AppendCodePoint(codePoint, value);
+                if (!AppendCodePoint(codePoint, value)) return false;
             }
             else
             {
@@ -274,41 +418,50 @@ private:
     bool ParseInteger(long& value)
     {
         const std::size_t start = m_offset;
-        if (m_offset < m_json.size() && m_json[m_offset] == '-') ++m_offset;
+        const bool negative =
+            m_offset < m_json.size() && m_json[m_offset] == '-';
+        if (negative) ++m_offset;
         if (m_offset >= m_json.size()) return false;
         if (m_json[m_offset] == '0')
         {
             ++m_offset;
             if (m_offset < m_json.size() &&
-                std::isdigit(static_cast<unsigned char>(m_json[m_offset])))
+                m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
                 return false;
         }
         else
         {
             if (m_json[m_offset] < '1' || m_json[m_offset] > '9') return false;
             while (m_offset < m_json.size() &&
-                   std::isdigit(static_cast<unsigned char>(m_json[m_offset])))
+                   m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
                 ++m_offset;
         }
-        return ParseLong(m_json.substr(start, m_offset - start), value);
+        const std::string token = m_json.substr(start, m_offset - start);
+        // Keep integer result fields canonical too.  ``strtol`` maps -0 to
+        // the same value as 0, but accepting both spellings would let a peer
+        // create distinct wire envelopes for one order-id identity (and
+        // diverge from the Python bridge validator).
+        if (negative && token == "-0") return false;
+        return ParseLong(token, value);
     }
 
     bool ParseNumber()
     {
+        const std::size_t start = m_offset;
         if (m_offset < m_json.size() && m_json[m_offset] == '-') ++m_offset;
         if (m_offset >= m_json.size()) return false;
         if (m_json[m_offset] == '0')
         {
             ++m_offset;
             if (m_offset < m_json.size() &&
-                std::isdigit(static_cast<unsigned char>(m_json[m_offset])))
+                m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
                 return false;
         }
         else
         {
             if (m_json[m_offset] < '1' || m_json[m_offset] > '9') return false;
             while (m_offset < m_json.size() &&
-                   std::isdigit(static_cast<unsigned char>(m_json[m_offset])))
+                   m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
                 ++m_offset;
         }
         if (m_offset < m_json.size() && m_json[m_offset] == '.')
@@ -316,7 +469,7 @@ private:
             ++m_offset;
             const std::size_t fraction = m_offset;
             while (m_offset < m_json.size() &&
-                   std::isdigit(static_cast<unsigned char>(m_json[m_offset])))
+                   m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
                 ++m_offset;
             if (fraction == m_offset) return false;
         }
@@ -329,11 +482,11 @@ private:
                 ++m_offset;
             const std::size_t exponent = m_offset;
             while (m_offset < m_json.size() &&
-                   std::isdigit(static_cast<unsigned char>(m_json[m_offset])))
+                   m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
                 ++m_offset;
             if (exponent == m_offset) return false;
         }
-        return true;
+        return ParseFiniteNumber(m_json.substr(start, m_offset - start));
     }
 
     bool ParseLiteral(const char* literal)
@@ -382,7 +535,10 @@ private:
 
     bool ParseValue(unsigned int depth)
     {
-        if (depth > 64 || m_offset >= m_json.size()) return false;
+        if (depth > 64 || m_offset >= m_json.size() ||
+            m_nodes >= kMaximumResultNodes)
+            return false;
+        ++m_nodes;
         const char c = m_json[m_offset];
         if (c == '{') return ParseObject(depth);
         if (c == '[') return ParseArray(depth);
@@ -399,6 +555,8 @@ private:
 
     const std::string& m_json;
     std::size_t m_offset;
+    std::size_t m_nodes;
+    std::size_t m_decodedStringBytes;
 };
 
 } // namespace
@@ -416,6 +574,7 @@ bool TypedToolProtocol::DecodeResultEnvelope(const std::string& json,
     ResultJsonParser parser(json);
     if (!parser.ParseEnvelope(result))
     {
+        result = TypedToolResultEnvelope();
         reason = "INVALID_RESULT_ENVELOPE";
         return false;
     }
@@ -424,6 +583,7 @@ bool TypedToolProtocol::DecodeResultEnvelope(const std::string& json,
         result.status != "duplicate" && result.status != "uncertain" &&
         result.status != "error")
     {
+        result = TypedToolResultEnvelope();
         reason = "UNKNOWN_RESULT_STATUS";
         return false;
     }

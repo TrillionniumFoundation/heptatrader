@@ -1,0 +1,13 @@
+{
+  "schema": "heptatrader.fault-matrix.v1",
+  "faults": [
+    {"id":"journal-before-send-crash","owner":"hepta.execution.runtime","expected":"no unjournaled send"},
+    {"id":"duplicate-command","owner":"hepta.execution.runtime","expected":"durable replay"},
+    {"id":"generation-change","owner":"hepta.execution.runtime","expected":"reject new risk"},
+    {"id":"disconnect-reconnect","owner":"hepta.execution.runtime","expected":"risk gate closed until reconcile"},
+    {"id":"out-of-order-callback","owner":"hepta.execution.runtime","expected":"projection converges or terminal latch"},
+    {"id":"optimizer-timeout","owner":"hepta.global.decision","expected":"no new risk; typed fallback/no-plan"},
+    {"id":"module-crash","owner":"hepta.management.control","expected":"quarantine and proposal expiry"},
+    {"id":"emergency-lane-pressure","owner":"hepta.execution.runtime","expected":"cancel/reduce/flatten not starved"}
+  ]
+}

@@ -128,6 +128,11 @@ bool TradingToolHost::PurgeFinalizedRecoveryOwner(
     owner.agentId = durableRecord.agentId;
     owner.sessionId = durableRecord.sessionId;
     m_decisionLeases.FenceOwner(owner);
+    // Purge is the terminal lifecycle boundary.  Invalidate any registry
+    // target permits/replay witnesses even when the local tombstone is
+    // already absent and only durable agent/session identity remains.
+    m_registry.RevokeTargetPermitsForIdentity(
+        durableRecord.agentId, durableRecord.sessionId);
     if (!m_contractCatalog.RevokeIfPresent(durableRecord.token))
     {
         reason = "SESSION_CONTRACT_CATALOG_REVOKE_FAILED";

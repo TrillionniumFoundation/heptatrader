@@ -4,13 +4,23 @@
 #include <cassert>
 #include <chrono>
 #include <iostream>
+#include <limits>
+#include <locale>
 #include <thread>
 
 namespace {
 
+class CommaDecimalFacet : public std::numpunct<char>
+{
+protected:
+    char do_decimal_point() const override { return ','; }
+};
+
 void TestOwnerIsolationAndCursor()
 {
     ExecutionEventHub hub(4);
+    // Sequence zero is the valid empty-feed watermark before publication.
+    assert(hub.LatestSequence() == 0);
     ExecutionEvent a;
     a.executionDomain = "IB-PAPER";
     a.agentId = "agent-a";
@@ -21,11 +31,13 @@ void TestOwnerIsolationAndCursor()
     a.status = "Submitted";
     const std::uint64_t first = hub.Publish(a);
     assert(first > 0);
+    assert(hub.LatestSequence() == first);
 
     ExecutionEvent b = a;
     b.agentId = "agent-b";
     b.orderId = 202;
-    hub.Publish(b);
+    const std::uint64_t second = hub.Publish(b);
+    assert(hub.LatestSequence() == second);
 
     ExecutionEvent out;
     assert(hub.WaitNext("IB-PAPER", "agent-a", "paper-a", 0, 0, out));
@@ -37,7 +49,8 @@ void TestOwnerIsolationAndCursor()
     ExecutionEvent sameAgent = a;
     sameAgent.sessionId = "paper-a-new";
     sameAgent.orderId = 303;
-    hub.Publish(sameAgent);
+    const std::uint64_t third = hub.Publish(sameAgent);
+    assert(hub.LatestSequence() == third);
     assert(!hub.WaitNext("IB-PAPER", "agent-a", "paper-a", first, 0, out));
     assert(hub.WaitNext("IB-PAPER", "agent-a", "paper-a-new", first, 0, out));
     assert(out.orderId == 303);
@@ -56,6 +69,7 @@ void TestBoundedQueueAndBlockingWait()
         event.orderId = orderId;
         hub.Publish(event);
     }
+    assert(hub.LatestSequence() == 3);
     assert(hub.Pending("SIM-PAPER", "agent", "session", 0) == 2);
     ExecutionEvent out;
     assert(hub.WaitNext("SIM-PAPER", "agent", "session", 0, 0, out));
@@ -86,10 +100,79 @@ void TestBoundedQueueAndBlockingWait()
     });
     assert(hub.WaitNext("SIM-PAPER", "agent", "session", cursor, 500, out));
     assert(out.orderId == 4);
+    assert(hub.LatestSequence() == 4);
     assert(ExecutionEventHub::ToJson(out).find("\"status\":\"Filled\"") != std::string::npos);
     assert(ExecutionEventHub::ToJson(out).find(
         "\"execution_domain\":\"SIM-PAPER\"") != std::string::npos);
+    // ToJson is also used by the embedded Agent event path.  It must not
+    // inherit a process-global comma-decimal locale and emit invalid JSON.
+    const std::locale previous = std::locale::global(std::locale(
+        std::locale::classic(), new CommaDecimalFacet()));
+    out.filledQuantity = 1.25;
+    out.averageFillPrice = 1.25;
+    const std::string localizedDecimal = ExecutionEventHub::ToJson(out);
+    std::locale::global(previous);
+    assert(localizedDecimal.find("\"filled_quantity\":1.25") !=
+        std::string::npos);
+    assert(localizedDecimal.find("\"filled_quantity\":1,25") ==
+        std::string::npos);
+    assert(localizedDecimal.find("\"average_fill_price\":1.25") !=
+        std::string::npos);
     publisher.join();
+}
+
+void TestEmbeddedJsonSanitizesUntrustedFields()
+{
+    // The embedded gateway serializes local events directly through
+    // ExecutionEventHub::ToJson (without the Unix event-feed server's
+    // request-bound sanitizer).  Exercise that boundary with exception-like
+    // path/credential text and non-finite numerics.
+    ExecutionEvent hostile;
+    hostile.streamEpoch = "embedded-epoch";
+    hostile.sequence = 7;
+    hostile.executionDomain = "SIM-PAPER";
+    hostile.agentId = "agent";
+    hostile.sessionId = "session";
+    hostile.type = "order.fill";
+    hostile.venue = "IB";
+    hostile.orderId = 11;
+    hostile.instrument = "EURUSD";
+    hostile.side = "BUY";
+    hostile.status = "/private/event/socket credential=secret-token";
+    hostile.reasonCode = "callback exception: /private/event/socket";
+    hostile.filledQuantity = std::numeric_limits<double>::quiet_NaN();
+    hostile.remainingQuantity = std::numeric_limits<double>::infinity();
+    hostile.averageFillPrice = -std::numeric_limits<double>::infinity();
+
+    const std::string wire = ExecutionEventHub::ToJson(hostile);
+    assert(wire.find("secret-token") == std::string::npos);
+    assert(wire.find("/private/event/socket") == std::string::npos);
+    assert(wire.find("credential") == std::string::npos);
+    assert(wire.find("\"status\":\"Error\"") != std::string::npos);
+    assert(wire.find(
+        "\"reason_code\":\"EXECUTION_EVENT_CALLBACK_EXCEPTION\"") !=
+        std::string::npos);
+    assert(wire.find("nan") == std::string::npos);
+    assert(wire.find("inf") == std::string::npos);
+    assert(wire.find("\"filled_quantity\":0") != std::string::npos);
+    assert(wire.find("\"remaining_quantity\":0") != std::string::npos);
+    assert(wire.find("\"average_fill_price\":0") != std::string::npos);
+
+    // Canonical machine reasons containing security/error suffixes are still
+    // valid contract values; only prose/marker text is replaced.
+    hostile.reasonCode = "IB_TOKEN_EXPIRED";
+    hostile.status = "IB_CONNECT_FAILED";
+    const std::string canonicalReasonWire =
+        ExecutionEventHub::ToJson(hostile);
+    assert(canonicalReasonWire.find(
+        "\"reason_code\":\"IB_TOKEN_EXPIRED\"") != std::string::npos);
+    assert(canonicalReasonWire.find(
+        "\"status\":\"IB_CONNECT_FAILED\"") != std::string::npos);
+
+    hostile.status = "Partially Filled";
+    const std::string ordinaryStatusWire = ExecutionEventHub::ToJson(hostile);
+    assert(ordinaryStatusWire.find(
+        "\"status\":\"Partially Filled\"") != std::string::npos);
 }
 
 void TestOwnerScopedHealthPublisher()
@@ -136,6 +219,7 @@ int main()
 {
     TestOwnerIsolationAndCursor();
     TestBoundedQueueAndBlockingWait();
+	TestEmbeddedJsonSanitizesUntrustedFields();
 	TestOwnerScopedHealthPublisher();
     std::cout << "execution_event_hub_tests: PASS" << std::endl;
     return 0;

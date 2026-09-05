@@ -1,0 +1,96 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.simulation.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "simulation-orchestrator",
+  "trust_domain": "simulation-control",
+  "authority": "simulation-only multi-agent orchestration without broker mutation authority",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/simulator/multi_agent_allocation"
+  ],
+  "build_targets": [
+    "hepta_multi_agent_simulator"
+  ],
+  "provides": [],
+  "consumes": [
+    "hepta.allocation-plan.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.global-optimization.v1",
+    "hepta.module-lifecycle.v1",
+    "hepta.numeric.fixed-v1",
+    "hepta.solver-result.v1",
+    "hepta.strategy-proposal.v1",
+    "portfolio.net-target.v1",
+    "proposal-set.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.execution.runtime",
+    "hepta.global.decision",
+    "hepta.management.control",
+    "hepta.numeric.core",
+    "hepta.portfolio.compiler",
+    "hepta.strategy.runtime"
+  ],
+  "forbidden_dependencies": [
+    "broker.credentials",
+    "hepta.gateway.runtime",
+    "hepta.venue.*"
+  ],
+  "state": {
+    "model": "ephemeral-cycle",
+    "persistence": "none-scenario-replay-from-immutable-inputs",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "capital-pool-cycle",
+    "shard_key": "capital-pool-scenario",
+    "blocking_io": "forbidden",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-proposal-set",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "no-plan",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "multi-agent-simulator-v1",
+  "owners": {
+    "dri": "@hepta/simulator",
+    "backup": "@hepta/global-allocation",
+    "reviewers": [
+      "@hepta/architecture",
+      "@hepta/execution-safety"
+    ]
+  },
+  "verification": [
+    "proposal-completeness",
+    "optimizer-determinism",
+    "constraint-properties",
+    "shadow-parity",
+    "lifecycle-faults",
+    "rollout-rollback",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-simulation-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

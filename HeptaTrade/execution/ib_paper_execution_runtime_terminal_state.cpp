@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <fcntl.h>
 #include <iomanip>
+#include <locale>
 #include <map>
 #include <set>
 #include <sstream>
@@ -324,6 +325,7 @@ bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalHaltedLatch(
         return false;
     }
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     const std::string expectedIntent = TerminalLatchPrefix(
         m_terminalFenceBinding, "TERMINALIZING",
         &m_terminalMutationManifest);

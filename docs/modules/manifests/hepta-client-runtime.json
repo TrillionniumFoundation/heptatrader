@@ -1,0 +1,93 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.client.runtime",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "client-library",
+  "trust_domain": "unprivileged-client",
+  "authority": "CLI/native/MCP request encoding",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/cli/hepta_sessionctl",
+    "HeptaTrade/cli/heptactl",
+    "HeptaTrade/client/",
+    "HeptaTrade/tool_host/unix_session_supervisor_client",
+    "HeptaTrade/tool_host/unix_tool_client",
+    "adapters/mcp/",
+    "plugins/heptatrader-agent-os/"
+  ],
+  "build_targets": [
+    "hepta_native_tool_client",
+    "heptactl",
+    "hepta_sessionctl"
+  ],
+  "provides": [
+    "client.mcp.v1",
+    "client.native.v1"
+  ],
+  "consumes": [
+    "hepta.session-supervisor.v1",
+    "hepta.tool-catalog.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.numeric.core",
+    "hepta.protocol.contracts",
+    "hepta.session.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime",
+    "hepta.venue.*",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "none-ephemeral-request-context",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "caller-owned",
+    "shard_key": "caller-owned",
+    "blocking_io": "bounded-client-transport-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "caller-timeout",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "not-authoritative",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "client-v1",
+  "owners": {
+    "dri": "@hepta/sdk",
+    "backup": "@hepta/gateway",
+    "reviewers": [
+      "@hepta/contracts"
+    ]
+  },
+  "verification": [
+    "native-client-contracts",
+    "mcp-contracts",
+    "tool-catalog-drift",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-client-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

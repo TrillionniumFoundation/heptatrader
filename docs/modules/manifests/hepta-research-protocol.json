@@ -1,0 +1,75 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.research.protocol",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "offline-runtime",
+  "trust_domain": "capability-free-research",
+  "authority": "deterministic replay only",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "research/"
+  ],
+  "build_targets": [],
+  "provides": [
+    "hepta.research-run.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [],
+  "forbidden_dependencies": [
+    "hepta.execution.runtime",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "append-only-run",
+    "persistence": "append-only-run-artifacts",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "run-isolated",
+    "shard_key": "research-run",
+    "blocking_io": "offline-runner-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "offline-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "never-authorizes",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "research-run-v1",
+  "owners": {
+    "dri": "@hepta/research-validation",
+    "backup": "@hepta/data-platform",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "research-self-test",
+    "point-in-time",
+    "cost-model",
+    "digest-parity",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-research-protocol.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

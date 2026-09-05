@@ -1,0 +1,509 @@
+{
+  "schema": "heptatrader.contract-registry.v2",
+  "compatibility_policy": {
+    "additive_optional": "minor",
+    "remove_or_reinterpret": "major",
+    "unknown_fields": "reject-at-authority-unless-contract-says-ignore",
+    "version_negotiation": "explicit"
+  },
+  "contracts": [
+    {
+      "id": "capital-policy.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/GLOBAL-OPTIMIZATION-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.management.control"
+      ],
+      "consumers": [
+        "hepta.global.decision",
+        "hepta.portfolio.compiler"
+      ]
+    },
+    {
+      "id": "client.mcp.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/CLIENT-INTERFACE-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.client.runtime"
+      ],
+      "consumers": []
+    },
+    {
+      "id": "client.native.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/CLIENT-INTERFACE-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.client.runtime"
+      ],
+      "consumers": []
+    },
+    {
+      "id": "decision-lease.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/IDENTITY-CAPABILITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.agent.support"
+      ],
+      "consumers": [
+        "hepta.execution.runtime"
+      ]
+    },
+    {
+      "id": "execution.client.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/EXECUTION-AUTHORITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
+      "id": "execution.permit.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/TARGET-POSITION-INTENT-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.execution.runtime"
+      ]
+    },
+    {
+      "id": "feature-snapshot.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "research/FEATURE-REGISTRY.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.feature.runtime"
+      ],
+      "consumers": [
+        "hepta.strategy.runtime"
+      ]
+    },
+    {
+      "id": "gateway.session-boundary",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/IDENTITY-CAPABILITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.gateway.runtime"
+      ],
+      "consumers": []
+    },
+    {
+      "id": "gateway.tool-dispatch",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/IDENTITY-CAPABILITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.gateway.runtime"
+      ],
+      "consumers": []
+    },
+    {
+      "id": "hepta.allocation-plan.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/ALLOCATION-PLAN-CONTRACT.md",
+      "schema_path": "schemas/allocation-plan-v1.json",
+      "providers": [
+        "hepta.global.decision"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.portfolio.compiler",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "hepta.authoritative-snapshot.v2",
+      "version": "2",
+      "stability": "current-core",
+      "document": "contracts/AUTHORITATIVE-SNAPSHOT-CONTRACT.md",
+      "schema_path": "schemas/authoritative-snapshot-v2.json",
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.global.decision",
+        "hepta.portfolio.compiler",
+        "hepta.risk.policy",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "hepta.configuration-authority.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/CONFIGURATION-AUTHORITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.management.control"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
+      "id": "hepta.event-envelope.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/EVENT-ORDERING-CONTRACT.md",
+      "schema_path": "schemas/event-envelope-v1.json",
+      "providers": [
+        "hepta.protocol.contracts"
+      ],
+      "consumers": [
+        "hepta.agent.support",
+        "hepta.execution.runtime",
+        "hepta.marketdata.runtime",
+        "hepta.venue.ib",
+        "hepta.venue.simulator"
+      ]
+    },
+    {
+      "id": "hepta.execution-authority.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/EXECUTION-AUTHORITY-CONTRACT.md",
+      "schema_path": "schemas/execution-wire-v1.json",
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
+      "id": "hepta.execution-wire.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/EXECUTION-WIRE-CONTRACT.md",
+      "schema_path": "schemas/execution-wire-v1.json",
+      "providers": [
+        "hepta.protocol.contracts"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
+      "id": "hepta.global-optimization.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/GLOBAL-OPTIMIZATION-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.global.decision"
+      ],
+      "consumers": [
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "hepta.ib-paper-qualification.v1",
+      "version": "1",
+      "stability": "target-external",
+      "document": "operations/IB-PAPER-QUALIFICATION.md",
+      "schema_path": null,
+      "providers": [],
+      "consumers": []
+    },
+    {
+      "id": "hepta.identity-capability.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/IDENTITY-CAPABILITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.gateway.runtime"
+      ],
+      "consumers": [
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
+      "id": "hepta.metric-registry.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "operations/OBSERVABILITY.md",
+      "schema_path": "docs/verification/metric-registry-v1.json",
+      "providers": [
+        "hepta.documentation.control"
+      ],
+      "consumers": [
+        "hepta.observability.runtime"
+      ]
+    },
+    {
+      "id": "hepta.module-lifecycle.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/MODULE-LIFECYCLE-CONTRACT.md",
+      "schema_path": "schemas/module-lifecycle-v1.json",
+      "providers": [
+        "hepta.management.control"
+      ],
+      "consumers": [
+        "hepta.global.decision",
+        "hepta.simulation.runtime",
+        "hepta.strategy.runtime"
+      ]
+    },
+    {
+      "id": "hepta.module-manifest.v3",
+      "version": "3",
+      "stability": "target",
+      "document": "modules/MODULE-MANIFEST-SPEC.md",
+      "schema_path": "docs/modules/module-manifest-schema-v3.json",
+      "providers": [
+        "hepta.documentation.control"
+      ],
+      "consumers": [
+        "hepta.management.control"
+      ]
+    },
+    {
+      "id": "hepta.numeric.fixed-v1",
+      "version": "1",
+      "stability": "target",
+      "document": "architecture/NUMERIC-POLICY.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.numeric.core"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.global.decision",
+        "hepta.portfolio.compiler",
+        "hepta.risk.policy",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "hepta.oms-journal.v3",
+      "version": "3",
+      "stability": "current-core",
+      "document": "contracts/OMS-JOURNAL-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.execution.runtime"
+      ]
+    },
+    {
+      "id": "hepta.reason-code.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/REASON-CODE-CONTRACT.md",
+      "schema_path": "docs/verification/reason-code-registry-v1.json",
+      "providers": [
+        "hepta.documentation.control"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.observability.runtime",
+        "hepta.risk.policy"
+      ]
+    },
+    {
+      "id": "hepta.research-run.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "research/RESEARCH-PROTOCOL.md",
+      "schema_path": "schemas/research-run-v1.json",
+      "providers": [
+        "hepta.research.protocol"
+      ],
+      "consumers": []
+    },
+    {
+      "id": "hepta.risk-policy.v2",
+      "version": "2",
+      "stability": "current-core",
+      "document": "contracts/RISK-POLICY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.risk.policy"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.venue.ib"
+      ]
+    },
+    {
+      "id": "hepta.session-supervisor.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/IDENTITY-CAPABILITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.session.runtime"
+      ],
+      "consumers": [
+        "hepta.client.runtime",
+        "hepta.gateway.runtime"
+      ]
+    },
+    {
+      "id": "hepta.solver-result.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/SOLVER-RESULT-CONTRACT.md",
+      "schema_path": "schemas/solver-result-v1.json",
+      "providers": [
+        "hepta.global.decision"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "hepta.strategy-proposal.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/STRATEGY-PROPOSAL-CONTRACT.md",
+      "schema_path": "schemas/strategy-proposal-v1.json",
+      "providers": [
+        "hepta.strategy.runtime"
+      ],
+      "consumers": [
+        "hepta.global.decision",
+        "hepta.portfolio.compiler",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "hepta.target-position-intent.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/TARGET-POSITION-INTENT-CONTRACT.md",
+      "schema_path": "schemas/target-position-intent-v1.json",
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.execution.runtime"
+      ]
+    },
+    {
+      "id": "hepta.tool-catalog.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/TOOL-CATALOG-CONTRACT.md",
+      "schema_path": "schemas/tool-catalog-v1.json",
+      "providers": [
+        "hepta.gateway.runtime"
+      ],
+      "consumers": [
+        "hepta.client.runtime"
+      ]
+    },
+    {
+      "id": "hepta.venue.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/EXECUTION-AUTHORITY-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.venue.ctp",
+        "hepta.venue.ib",
+        "hepta.venue.simulator",
+        "hepta.venue.xt"
+      ],
+      "consumers": [
+        "hepta.execution.runtime"
+      ]
+    },
+    {
+      "id": "market-event.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "research/POINT-IN-TIME-DATA-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.marketdata.runtime"
+      ],
+      "consumers": [
+        "hepta.feature.runtime"
+      ]
+    },
+    {
+      "id": "portfolio.net-target.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "contracts/ALLOCATION-PLAN-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.portfolio.compiler"
+      ],
+      "consumers": [
+        "hepta.execution.runtime",
+        "hepta.risk.policy",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "proposal-set.v1",
+      "version": "1",
+      "stability": "target",
+      "document": "contracts/STRATEGY-PROPOSAL-CONTRACT.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.global.decision"
+      ],
+      "consumers": [
+        "hepta.global.decision",
+        "hepta.simulation.runtime"
+      ]
+    },
+    {
+      "id": "reconcile.decision.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "operations/RECONCILIATION.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.execution.runtime"
+      ],
+      "consumers": [
+        "hepta.execution.runtime"
+      ]
+    },
+    {
+      "id": "telemetry.runtime.v1",
+      "version": "1",
+      "stability": "current-core",
+      "document": "operations/OBSERVABILITY.md",
+      "schema_path": null,
+      "providers": [
+        "hepta.observability.runtime"
+      ],
+      "consumers": []
+    }
+  ]
+}

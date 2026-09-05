@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <iostream>
 #include <limits>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
@@ -39,8 +40,8 @@ TradingToolSession MakeSession(bool allowTrade)
     session.capabilities.insert("system.read");
     if (allowTrade)
     {
-        session.capabilities.insert("risk.preview");
-        session.capabilities.insert("trade.place");
+        session.capabilities.insert("operator.risk.preview");
+        session.capabilities.insert("operator.trade.place");
         session.capabilities.insert("trade.cancel");
     }
     return session;
@@ -104,8 +105,123 @@ TradingToolCall MakePlace()
     call.timeInForce = "DAY";
     call.ibOrder.totalQuantity = 1000.0;
     call.ibOrder.lmtPrice = 1.1;
+    call.previewPermit = "sha256:" + std::string(64, 'a');
     call.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
     return call;
+}
+
+class ThrowingMutationAuthority : public ExecutionAuthority
+{
+public:
+    ExecutionCommandResult PlaceOrder(const PlaceOrderCommand&) override
+    {
+        throw std::runtime_error("authority place failure");
+    }
+
+    ExecutionCommandResult CancelOrder(const CancelOrderCommand&) override
+    {
+        throw std::runtime_error("authority cancel failure");
+    }
+};
+
+class DetailMutationAuthority : public ExecutionAuthority
+{
+public:
+    ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override
+    {
+        ExecutionCommandResult result;
+        result.status = m_status;
+        result.commandId = command.context.toolCallId;
+        result.reasonCode = m_reasonCode;
+        result.detail = m_detail;
+        return result;
+    }
+
+    ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override
+    {
+        ExecutionCommandResult result;
+        result.status = m_status;
+        result.commandId = command.context.toolCallId;
+        result.reasonCode = m_reasonCode;
+        result.detail = m_detail;
+        return result;
+    }
+
+    ExecutionCommandStatus m_status = ExecutionCommandStatus::Rejected;
+    std::string m_reasonCode = "BROKER_REJECTED";
+    std::string m_detail;
+};
+
+void TestEmbeddedExecutionDetailsAreSanitized()
+{
+    DetailMutationAuthority authority;
+    authority.m_detail = "adapter exception: /private/venue/socket credential=secret";
+    TradingToolRegistry registry(authority);
+    TradingToolSession session = MakeSession(true);
+    const TradingToolResult rejected = registry.Invoke(session, MakePlace());
+    assert(rejected.status == TradingToolCallStatus::Rejected);
+    assert(rejected.reasonCode == "BROKER_REJECTED");
+    assert(rejected.detail == "execution request was rejected");
+    assert(rejected.detail.find("secret") == std::string::npos);
+
+    // A malformed authority reason is normalized as well; otherwise an
+    // embedded caller could bypass the Unix response codec's canonical-code
+    // check while still returning an exception/path detail.
+    authority.m_reasonCode = "/private/authority/path credential=secret";
+    const TradingToolResult malformed = registry.Invoke(session, MakePlace());
+    assert(malformed.status == TradingToolCallStatus::Rejected);
+    assert(malformed.reasonCode == "EXECUTION_REQUEST_REJECTED");
+    assert(malformed.detail == "execution request was rejected");
+
+    // Ordinary local diagnostics remain compatible when they are bounded and
+    // do not carry sensitive/error implementation markers.
+    authority.m_reasonCode = "BROKER_REJECTED";
+    authority.m_detail = "quote source is warming up";
+    const TradingToolResult ordinary = registry.Invoke(session, MakePlace());
+    assert(ordinary.detail == "quote source is warming up");
+}
+
+void TestMutationAuthorityExceptionsFailClosed()
+{
+    ThrowingMutationAuthority authority;
+    TradingToolSession session = MakeSession(true);
+
+    TradingToolRegistry registry(authority);
+    const TradingToolResult place = registry.Invoke(session, MakePlace());
+    assert(place.status == TradingToolCallStatus::Uncertain);
+    assert(place.reasonCode == "EXECUTION_AUTHORITY_EXCEPTION");
+    assert(place.detail == "execution authority outcome is uncertain");
+
+    TradingToolCall cancel;
+    cancel.name = "trade.cancel_order";
+    cancel.orderId = 701;
+    const TradingToolResult cancelled = registry.Invoke(session, cancel);
+    assert(cancelled.status == TradingToolCallStatus::Uncertain);
+    assert(cancelled.reasonCode == "EXECUTION_AUTHORITY_EXCEPTION");
+    assert(cancelled.detail == "execution authority outcome is uncertain");
+
+    TradingToolReadCallbacks reads;
+    reads.riskPreviewFlatten =
+        [](const TradingToolSession&, const TradingToolCall&,
+           std::string& payload, std::string&) {
+            payload = "{\"approved\":true}";
+            return true;
+        };
+    TradingToolTradeCallbacks trades;
+    trades.flattenPosition =
+        [](const TradingToolSession&, const TradingToolCall&) -> ExecutionCommandResult {
+            throw std::runtime_error("authority flatten failure");
+        };
+    session.capabilities.insert("trade.flatten");
+    TradingToolRegistry flattenRegistry(authority, reads, trades);
+    TradingToolCall flatten;
+    flatten.name = "trade.flatten_position";
+    flatten.instrument = "EUR.USD";
+    flatten.previewPermit = "sha256:" + std::string(64, 'a');
+    const TradingToolResult flattened = flattenRegistry.Invoke(session, flatten);
+    assert(flattened.status == TradingToolCallStatus::Uncertain);
+    assert(flattened.reasonCode == "EXECUTION_AUTHORITY_EXCEPTION");
+    assert(flattened.detail == "execution authority outcome is uncertain");
 }
 
 void TestCapabilityFilteredRegistryAndDirectTrade()
@@ -431,7 +547,27 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
 
     // The compound response is accepted through the exact maximum wire
     // envelope byte, then fails closed at limit+1 with no partial payload.
-    ordersPayloadOverride = "{\"padding\":\"\"}";
+    // Keep each individual JSON string below the bounded parser's per-string
+    // ceiling while still exercising the aggregate 1 MiB envelope limit.
+    const auto chunkedPadding = [](std::size_t bytes) {
+        const std::size_t chunkBytes = 64u * 1024u;
+        const std::size_t chunkCount = 32u;
+        std::string json = "{\"padding\":[";
+        for (std::size_t i = 0; i < chunkCount; ++i)
+        {
+            if (i != 0) json.push_back(',');
+            const std::size_t chunk =
+                std::min(chunkBytes, bytes);
+            json.push_back('"');
+            json.append(chunk, 'x');
+            json.push_back('"');
+            bytes -= chunk;
+        }
+        assert(bytes == 0);
+        json += "]}";
+        return json;
+    };
+    ordersPayloadOverride = chunkedPadding(0);
     const TradingToolResult emptyPaddingSnapshot =
         registry.Invoke(snapshotWatch, watchSnapshot);
     assert(emptyPaddingSnapshot.status == TradingToolCallStatus::Ok);
@@ -449,8 +585,7 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
     assert(emptyPaddingSnapshot.payloadJson.size() <= maximumPayloadBytes);
     const std::size_t exactPaddingBytes =
         maximumPayloadBytes - emptyPaddingSnapshot.payloadJson.size();
-    ordersPayloadOverride = "{\"padding\":\"" +
-        std::string(exactPaddingBytes, 'x') + "\"}";
+    ordersPayloadOverride = chunkedPadding(exactPaddingBytes);
     const TradingToolResult exactLimitSnapshot =
         registry.Invoke(snapshotWatch, watchSnapshot);
     assert(exactLimitSnapshot.status == TradingToolCallStatus::Ok);
@@ -458,8 +593,7 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
         exactLimitSnapshot).size() ==
         TradingToolWireLimits::MaximumResultEnvelopeBytes());
 
-    ordersPayloadOverride = "{\"padding\":\"" +
-        std::string(exactPaddingBytes + 1, 'x') + "\"}";
+    ordersPayloadOverride = chunkedPadding(exactPaddingBytes + 1);
     const TradingToolResult overLimitSnapshot =
         registry.Invoke(snapshotWatch, watchSnapshot);
     assert(overLimitSnapshot.status == TradingToolCallStatus::Error);
@@ -470,6 +604,39 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
     assert(TradingToolWireContract::EncodeResultEnvelope(
         overLimitSnapshot).size() <=
         TradingToolWireLimits::MaximumResultEnvelopeBytes());
+
+    // EncodeResultEnvelope must not splice callback-controlled payload text
+    // into the surrounding object.  An attempted sibling-field injection and
+    // malformed UTF-8 both fail closed to JSON null; no attacker-controlled
+    // bytes may survive on the wire.
+    TradingToolResult hostileEnvelope = emptyPayloadEnvelope;
+    hostileEnvelope.payloadJson =
+        "{\"ok\":true},\"injected\":\"secret\"/*";
+    const std::string hostileEncoded =
+        TradingToolWireContract::EncodeResultEnvelope(hostileEnvelope);
+    assert(hostileEncoded.find("injected") == std::string::npos);
+    assert(hostileEncoded.find("\"payload\":null}") != std::string::npos);
+    hostileEnvelope.payloadJson = std::string("{\"text\":\"") +
+        std::string(1, static_cast<char>(0xc3)) + "\"}";
+    const std::string malformedUtf8Encoded =
+        TradingToolWireContract::EncodeResultEnvelope(hostileEnvelope);
+    assert(malformedUtf8Encoded.find("\"payload\":null}") !=
+        std::string::npos);
+    assert(!TradingToolWireContract::IsSafePayloadJson(
+        hostileEnvelope.payloadJson));
+
+    // Direct callers cannot bypass the transport ceiling by supplying an
+    // oversized top-level field; the non-fallible encoder returns a fixed,
+    // parseable error envelope rather than truncating JSON.
+    TradingToolResult oversizedEnvelope = emptyPayloadEnvelope;
+    oversizedEnvelope.detail.assign(
+        TradingToolWireLimits::MaximumResultEnvelopeBytes(), 'x');
+    const std::string oversizedEncoded =
+        TradingToolWireContract::EncodeResultEnvelope(oversizedEnvelope);
+    assert(oversizedEncoded.size() <=
+        TradingToolWireLimits::MaximumResultEnvelopeBytes());
+    assert(oversizedEncoded.find("RESULT_ENVELOPE_TOO_LARGE") !=
+        std::string::npos);
     ordersPayloadOverride.clear();
 
     TradingToolSession paper = MakeSession(true);
@@ -499,6 +666,10 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
     paper.executionContext.decisionLeaseGeneration = lease.credential.generation;
     TradingToolCall preview = place;
     preview.name = "risk.preview_order";
+    // Preview requests never carry a mutation permit.  The permit in
+    // `place` is the one returned by this callback and is attached only after
+    // the preview has succeeded.
+    preview.previewPermit.clear();
     const TradingToolResult previewResult = registry.Invoke(paper, preview);
     assert(previewResult.status == TradingToolCallStatus::Ok);
     place.previewPermit = ExtractPreviewPermit(previewResult);
@@ -626,21 +797,18 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
     TradingToolSession liveCapped = paper;
     liveCapped.environment = "LIVE_CAPPED";
     const std::vector<TradingToolDescriptor> liveTools = registry.ListTools(liveCapped);
-    bool liveSawPlace = false;
-    bool liveSawCancel = false;
-    for (std::size_t i = 0; i < liveTools.size(); ++i)
-    {
-        if (liveTools[i].name == "trade.place_order") liveSawPlace = true;
-        if (liveTools[i].name == "trade.cancel_order") liveSawCancel = true;
-    }
-    assert(liveSawPlace && liveSawCancel);
+    // LIVE profiles are not an accepted Tool protocol environment.  An
+    // untrusted caller cannot make them visible by changing this string.
+    assert(liveTools.empty());
+    assert(registry.Invoke(liveCapped, place).reasonCode ==
+           "INVALID_SESSION_ENVIRONMENT");
 
     TradingToolSession reduceOnly = paper;
     reduceOnly.environment = "LIVE_REDUCE_ONLY";
     const std::vector<TradingToolDescriptor> reduceTools = registry.ListTools(reduceOnly);
-    for (std::size_t i = 0; i < reduceTools.size(); ++i)
-        assert(reduceTools[i].name != "trade.place_order");
-    assert(registry.Invoke(reduceOnly, place).reasonCode == "REDUCE_ONLY_PLACE_FORBIDDEN");
+    assert(reduceTools.empty());
+    assert(registry.Invoke(reduceOnly, place).reasonCode ==
+           "INVALID_SESSION_ENVIRONMENT");
 
     std::remove(path.c_str());
 }
@@ -672,7 +840,8 @@ void TestReadFailureReasonCodePropagation()
     TradingToolReadCallbacks humanFailure;
     humanFailure.marketGetQuote =
         [](const TradingToolSession&, const TradingToolCall&,
-           std::string&, std::string& reason) {
+           std::string& payload, std::string& reason) {
+            payload = "{\"partial_secret\":\"must-not-escape\"}";
             reason = "quote source is warming up";
             return false;
         };
@@ -681,6 +850,22 @@ void TestReadFailureReasonCodePropagation()
         humanRegistry.Invoke(MakeSession(false), quote);
     assert(human.reasonCode == "READ_TOOL_FAILED");
     assert(human.detail == "quote source is warming up");
+    assert(human.payloadJson.empty());
+
+    TradingToolReadCallbacks oversizedFailure;
+    oversizedFailure.marketGetQuote =
+        [](const TradingToolSession&, const TradingToolCall&,
+           std::string& payload, std::string& reason) {
+            payload = "{\"partial_secret\":\"must-not-escape\"}";
+            reason.assign(65537, 'x');
+            return false;
+        };
+    TradingToolRegistry oversizedRegistry(execution, oversizedFailure);
+    const TradingToolResult oversized =
+        oversizedRegistry.Invoke(MakeSession(false), quote);
+    assert(oversized.reasonCode == "READ_TOOL_FAILED");
+    assert(oversized.detail == "read tool handler failed");
+    assert(oversized.payloadJson.empty());
 
     TradingToolReadCallbacks throwingFailure;
     throwingFailure.marketGetQuote =
@@ -691,18 +876,94 @@ void TestReadFailureReasonCodePropagation()
     TradingToolRegistry throwingRegistry(execution, throwingFailure);
     const TradingToolResult throwing =
         throwingRegistry.Invoke(MakeSession(false), quote);
-    assert(throwing.reasonCode == "READ_TOOL_FAILED");
-    assert(throwing.detail == "IB_PAPER_KILL_SWITCH_ENGAGED");
+    // Exception text is process-local implementation data and must not cross
+    // the Agent-facing result boundary.
+    assert(throwing.reasonCode == "READ_TOOL_EXCEPTION");
+    assert(throwing.detail == "read tool handler threw");
 
     std::remove(path.c_str());
+}
+
+void TestWireFieldSmugglingAndPermitBoundaries()
+{
+    std::string reasonCode;
+    std::string detail;
+
+    TradingToolCall quote;
+    quote.name = "market.get_quote";
+    quote.instrument = "EUR.USD";
+    quote.ibOrder.auxPrice = 0.25;
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        quote, reasonCode, detail));
+    assert(reasonCode == "UNEXPECTED_TOOL_FIELD");
+
+    TradingToolCall flattenPreview;
+    flattenPreview.name = "risk.preview_flatten";
+    flattenPreview.instrument = "EUR.USD";
+    flattenPreview.ibOrder.orderRef = "agent-supplied-order-ref";
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        flattenPreview, reasonCode, detail));
+    assert(reasonCode == "UNEXPECTED_TOOL_FIELD");
+
+    // The in-process registry must enforce exactly the same narrow shape as
+    // the typed protocol/MCP schema.  A venue contract is not an Agent input
+    // for an authoritative flatten preview; accepting it here would create
+    // a direct-call-only field-smuggling path.
+    flattenPreview.ibOrder = OrderIntent();
+    flattenPreview.ibContract.symbol = "EUR";
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        flattenPreview, reasonCode, detail));
+    assert(reasonCode == "UNEXPECTED_TOOL_FIELD");
+
+    TradingToolCall flatten;
+    flatten.name = "trade.flatten_position";
+    flatten.instrument = "EUR.USD";
+    flatten.previewPermit = "sha256:" + std::string(64, 'a');
+    flatten.ibOrder.orderRef = "agent-supplied-order-ref";
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        flatten, reasonCode, detail));
+    assert(reasonCode == "UNEXPECTED_TOOL_FIELD");
+
+    TradingToolCall place = MakePlace();
+    place.previewPermit.clear();
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        place, reasonCode, detail));
+    assert(reasonCode == "PREVIEW_PERMIT_INVALID");
+    place.previewPermit = "sha256:" + std::string(63, 'a') + "G";
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        place, reasonCode, detail));
+    assert(reasonCode == "PREVIEW_PERMIT_INVALID");
+
+    TradingToolCall preview = MakePlace();
+    preview.name = "risk.preview_order";
+    assert(!TradingToolRegistry::ValidateCallSemantics(
+        preview, reasonCode, detail));
+    assert(reasonCode == "UNEXPECTED_TOOL_FIELD");
+
+    const char* malformedInstruments[] = {
+        ".", "...", ".EUR.USD", "EUR.USD.", "EUR..USD", "EUR\xC2\xB7USD"
+    };
+    for (std::size_t i = 0;
+         i < sizeof(malformedInstruments) / sizeof(malformedInstruments[0]); ++i)
+    {
+        TradingToolCall malformed = quote;
+        malformed.ibOrder = OrderIntent();
+        malformed.instrument = malformedInstruments[i];
+        assert(!TradingToolRegistry::ValidateCallSemantics(
+            malformed, reasonCode, detail));
+        assert(reasonCode == "INVALID_INSTRUMENT");
+    }
 }
 
 } // namespace
 
 int main()
 {
+    TestEmbeddedExecutionDetailsAreSanitized();
+    TestMutationAuthorityExceptionsFailClosed();
     TestCapabilityFilteredRegistryAndDirectTrade();
     TestReadFailureReasonCodePropagation();
+    TestWireFieldSmugglingAndPermitBoundaries();
     std::cout << "trading_tool_registry_tests: PASS" << std::endl;
     return 0;
 }

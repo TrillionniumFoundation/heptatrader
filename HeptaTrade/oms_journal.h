@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -9,6 +10,8 @@
 #include <deque>
 #include <thread>
 #include <condition_variable>
+
+class OmsSegmentedJournal;
 
 struct OmsJournalEvent {
     // v4 schema. Keep old keys/fields for backward compatibility.
@@ -54,6 +57,20 @@ struct OmsJournalEvent {
     std::string rawLine;
 };
 
+// Per-object admission/replay budgets. Overrides may narrow, never disable,
+// these repository ceilings. They are not a whole-process RSS or disk quota.
+struct OmsJournalLimits {
+    static constexpr std::size_t kQueuedRecordsCeiling = 65536;
+    static constexpr std::size_t kQueuedBytesCeiling = 256 * 1024 * 1024;
+    static constexpr std::size_t kReplayRecordsCeiling = 262144;
+    static constexpr std::size_t kReplayBytesCeiling = 256 * 1024 * 1024;
+
+    std::size_t maximumQueuedRecords = kQueuedRecordsCeiling;
+    std::size_t maximumQueuedBytes = kQueuedBytesCeiling;
+    std::size_t maximumReplayRecords = kReplayRecordsCeiling;
+    std::size_t maximumReplayBytes = kReplayBytesCeiling;
+};
+
 struct OmsJournalHealthSnapshot {
     bool asyncEnabled = false;
     bool syncCritical = true;
@@ -69,13 +86,24 @@ struct OmsJournalHealthSnapshot {
     long long maxQueueDepth = 0;
     long long lastFlushMs = 0;
     bool writePoisoned = false;
+    std::size_t retainedBytes = 0; // Queued + buffered encoded bytes, including LF.
+    std::uint64_t queueCapacityRejects = 0;
+    std::uint64_t replayCapacityRejects = 0;
+    std::uint64_t replayBusyRejects = 0;
+    bool workerStoppedOnFailure = false;
+    std::size_t onDiskBytes = 0; // Pinned file bytes observed under the journal lock.
+    bool onDiskBytesValid = false;
+    OmsJournalLimits limits;
 };
 
 class OmsJournal {
 public:
     static const int kSchemaVersion = 4;
+    // JSON bytes excluding the LF delimiter; shared by Append and Replay.
+    static constexpr std::size_t kMaximumRecordBytes = 1024 * 1024;
 
     OmsJournal() = default;
+    explicit OmsJournal(const OmsJournalLimits& limits) : m_limits(limits) {}
     ~OmsJournal() noexcept;
 
     bool Init(const std::string& path);
@@ -88,6 +116,7 @@ public:
 
 private:
     static bool IsCriticalEventType(const std::string& eventType);
+    bool AdmitQueuedLineLocked(std::string line);
     bool FlushBufferedLocked();
     bool FlushQueuedNoLock();
     bool WriteLineDirect(const std::string& line);
@@ -101,18 +130,25 @@ private:
     static std::string EscapeJson(const std::string& s);
     static std::string BuildJsonLine(const OmsJournalEvent& evt);
     static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
-    static std::string JsonGetString(const std::string& json, const std::string& key);
-    static long long JsonGetLong(const std::string& json, const std::string& key,
-                                 long long defVal);
-    static double JsonGetDouble(const std::string& json, const std::string& key, double defVal);
+    OmsJournalHealthSnapshot GetHealthSnapshotCore() const;
+    friend class OmsSegmentedJournal;
 
 private:
     std::string m_path;
     int m_fd = -1;
     bool m_writePoisoned = false;
+    const OmsJournalLimits m_limits{};
     mutable std::mutex m_mtx;
+    // Retained through callbacks; overlapping/nested replay rejects instead
+    // of multiplying retained batches or reacquiring a nonrecursive mutex.
+    mutable std::atomic_flag m_replayInProgress = ATOMIC_FLAG_INIT;
+    std::size_t m_retainedBytes = 0;
+    std::uint64_t m_queueCapacityRejects = 0;
+    std::uint64_t m_replayCapacityRejects = 0;
+    std::uint64_t m_replayBusyRejects = 0;
+    bool m_workerStoppedOnFailure = false;
 
-    std::vector<std::string> m_bufferedLines;
+    std::deque<std::string> m_bufferedLines;
     std::deque<std::string> m_asyncQueue;
     std::size_t m_batchSize = 1;
     long long m_flushIntervalMs = 0;

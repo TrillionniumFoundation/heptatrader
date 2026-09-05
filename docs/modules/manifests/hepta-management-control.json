@@ -1,0 +1,84 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.management.control",
+  "version": "2.0.1",
+  "lifecycle": "current",
+  "kind": "control-plane",
+  "trust_domain": "management",
+  "authority": "module/config/resource lifecycle",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/management/"
+  ],
+  "build_targets": [
+    "hepta_management_control"
+  ],
+  "provides": [
+    "capital-policy.v1",
+    "hepta.configuration-authority.v1",
+    "hepta.module-lifecycle.v1"
+  ],
+  "consumes": [
+    "hepta.module-manifest.v3"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts",
+    "hepta.observability.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "broker.credentials",
+    "hepta.execution.runtime"
+  ],
+  "state": {
+    "model": "versioned-control",
+    "persistence": "canonical-config-plus-versioned-rollout-state",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "single-controller-mutex-plus-local-file-lock",
+    "shard_key": "module-rollout-domain",
+    "blocking_io": "control-path-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "bounded-control",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "cannot-authorize",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "management-v1",
+  "owners": {
+    "dri": "@hepta/platform",
+    "backup": "@hepta/architecture",
+    "reviewers": [
+      "@hepta/security-runtime",
+      "@hepta/operations"
+    ]
+  },
+  "verification": [
+    "lifecycle-faults",
+    "rollout-rollback",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-management-control.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

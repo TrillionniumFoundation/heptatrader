@@ -5,6 +5,7 @@
 #include <cstring>
 #include <exception>
 #include <iomanip>
+#include <locale>
 #include <openssl/evp.h>
 #include <sstream>
 
@@ -26,6 +27,7 @@ std::string DoubleBits(double value)
     std::uint64_t bits = 0;
     std::memcpy(&bits, &value, sizeof(bits));
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << std::hex << std::setw(16) << std::setfill('0') << bits;
     return output.str();
 }
@@ -42,6 +44,7 @@ std::string Sha256(const std::string& value)
     EVP_MD_CTX_free(context);
     if (!ok) return std::string();
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "sha256:" << std::hex << std::setfill('0');
     for (unsigned int i = 0; i < length; ++i)
         output << std::setw(2) << static_cast<unsigned int>(digest[i]);
@@ -174,6 +177,7 @@ bool ExactReduceOnly(const FlattenPositionCommand& command,
 std::string SnapshotEvidence(const AuthoritativeFlattenPlan& plan)
 {
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "position_connection_epoch=" << plan.positionConnectionEpoch
            << ";position_generation=" << plan.positionGeneration
            << ";position_quantity=" << std::setprecision(17)
@@ -359,8 +363,21 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlatten(
                 command, plan, dispatch, "DECISION_LEASE_REQUIRED",
                 "flatten mutation lacks a server-validated lease");
         std::string leaseReason;
-        if (!m_callbacks.validateDecisionLease(
-                context, instrument, &leaseReason))
+        bool leaseValid = false;
+        try
+        {
+            leaseValid = m_callbacks.validateDecisionLease(
+                context, instrument, &leaseReason);
+        }
+        catch (const std::exception& error)
+        {
+            leaseReason = error.what();
+        }
+        catch (...)
+        {
+            leaseReason = "decision lease authority threw";
+        }
+        if (!leaseValid)
             return RejectAuthoritativeFlattenLocked(
                 command, plan, dispatch, "DECISION_LEASE_INVALID",
                 leaseReason);

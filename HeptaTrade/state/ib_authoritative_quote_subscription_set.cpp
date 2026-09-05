@@ -365,6 +365,9 @@ bool IBAuthoritativeQuoteSubscriptionSet::RecognizedTickField(
     bool& ask,
     bool& last)
 {
+    if (field.empty() || (field.size() > 1 && field[0] == '0')) return false;
+    for (std::string::const_iterator it = field.begin(); it != field.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
     char* end = nullptr;
     const long value = std::strtol(field.c_str(), &end, 10);
     if (end == field.c_str() || *end != '\0') return false;

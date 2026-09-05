@@ -1,0 +1,149 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.execution.runtime",
+  "version": "1.3.0",
+  "lifecycle": "current",
+  "kind": "stateful-service",
+  "trust_domain": "execution-authority",
+  "authority": "only venue mutation/state/OMS/permit authority",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/cli/hepta_paper_terminal_latch_committer.cpp",
+    "HeptaTrade/execution/allocation_plan_revalidator",
+    "HeptaTrade/execution/execution_authoritative_",
+    "HeptaTrade/execution/execution_authority.h",
+    "HeptaTrade/execution/execution_coordinator",
+    "HeptaTrade/execution/execution_decision_",
+    "HeptaTrade/execution/execution_event_feed_client",
+    "HeptaTrade/execution/execution_event_feed_server",
+    "HeptaTrade/execution/execution_gateway_context_binding.h",
+    "HeptaTrade/execution/execution_place_order_dispatch.cpp",
+    "HeptaTrade/execution/execution_service_runtime_",
+    "HeptaTrade/execution/hepta_",
+    "HeptaTrade/execution/ib_",
+    "HeptaTrade/execution/paper_",
+    "HeptaTrade/execution/trading_contract.h",
+    "HeptaTrade/execution/unix_execution_service.cpp",
+    "HeptaTrade/execution/unix_execution_service.h",
+    "HeptaTrade/execution/unix_execution_service_client",
+    "HeptaTrade/execution/unix_execution_service_flatten",
+    "HeptaTrade/execution/unix_execution_service_internal.h",
+    "HeptaTrade/execution/unix_execution_service_server.h",
+    "HeptaTrade/intent/",
+    "HeptaTrade/oms_",
+    "HeptaTrade/state/"
+  ],
+  "build_targets": [
+    "hepta_execution_client",
+    "hepta_execution_server",
+    "hepta_execution_core",
+    "hepta_executiond",
+    "hepta_ib_executiond",
+    "hepta_paper_terminal_latch_committer",
+    "hepta_oms_core",
+    "hepta_state_core",
+    "hepta_intent_core",
+    "hepta_allocation_revalidator"
+  ],
+  "provides": [
+    "execution.client.v1",
+    "execution.permit.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.execution-authority.v1",
+    "hepta.oms-journal.v3",
+    "hepta.target-position-intent.v1",
+    "reconcile.decision.v1"
+  ],
+  "consumes": [
+    "decision-lease.v1",
+    "execution.permit.v1",
+    "hepta.allocation-plan.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.configuration-authority.v1",
+    "hepta.event-envelope.v1",
+    "hepta.execution-authority.v1",
+    "hepta.execution-wire.v1",
+    "hepta.numeric.fixed-v1",
+    "hepta.oms-journal.v3",
+    "hepta.reason-code.v1",
+    "hepta.risk-policy.v2",
+    "hepta.solver-result.v1",
+    "hepta.target-position-intent.v1",
+    "hepta.venue.v1",
+    "portfolio.net-target.v1",
+    "reconcile.decision.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.agent.support",
+    "hepta.global.decision",
+    "hepta.numeric.core",
+    "hepta.observability.runtime",
+    "hepta.portfolio.compiler",
+    "hepta.protocol.contracts",
+    "hepta.risk.policy",
+    "hepta.strategy.runtime",
+    "hepta.venue.ib",
+    "hepta.venue.simulator"
+  ],
+  "forbidden_dependencies": [
+    "hepta.gateway.runtime",
+    "hepta.management.control"
+  ],
+  "state": {
+    "model": "durable-authoritative",
+    "persistence": "durable-oms-journal-and-authoritative-state",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "execution-domain-sharded",
+    "shard_key": "execution-domain-account-order",
+    "blocking_io": "journal-and-venue-boundary-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "lossless-plus-emergency",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "fail-closed",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "execution-authority-v1",
+  "owners": {
+    "dri": "@hepta/execution-core",
+    "backup": "@hepta/execution-safety",
+    "reviewers": [
+      "@hepta/oms-recovery",
+      "@hepta/risk"
+    ]
+  },
+  "verification": [
+    "journal-durability",
+    "idempotency",
+    "snapshot-contracts",
+    "permit-lifecycle",
+    "reconciliation",
+    "simulator-e2e",
+    "crash-replay",
+    "shadow-parity",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-execution-runtime.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

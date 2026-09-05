@@ -1,5 +1,6 @@
 #include "ib_paper_execution_runtime_internal.h"
 #include <cstdint>
+#include <locale>
 #include <map>
 #include <set>
 #include <sstream>
@@ -198,6 +199,7 @@ std::string IbPaperExecutionRuntimeComposition::OwnedOrdersJson(const AgentExecu
     const bool complete = orders.complete && projection.complete;
     const std::string reason = !orders.complete ? (orders.reasonCode.empty() ? "IB_ACTIVE_ORDER_SNAPSHOT_INCOMPLETE" : orders.reasonCode) : (!projection.complete ? "EXECUTION_ORDER_OWNER_PROJECTION_INCOMPLETE" : "");
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "{\"source\":\"IB\",\"authoritative\":" << (complete ? "true" : "false") << ",\"active_orders_source\":\"IB_OPEN_ORDERS\",\"active_orders_connection_epoch\":" << orders.connectionEpoch << ",\"active_orders_generation\":" << orders.generation << ",\"global_active_orders_complete\":" << (orders.complete ? "true" : "false")
            << ",\"owner_projection_source\":\"EXECUTION_COORDINATOR_ORDER_OWNERS\",\"owner_projection_connection_epoch\":" << orders.connectionEpoch << ",\"owner_projection_generation\":" << orders.generation << ",\"owner_projection_complete\":" << (complete ? "true" : "false") << ",\"owned_active_order_ids_authoritative\":" << (complete ? "true" : "false")
            << ",\"owner_scope\":{\"agent_id\":\"" << EscapeJson(context.agentId) << "\",\"session_id\":\"" << EscapeJson(context.sessionId) << "\",\"execution_domain\":\"" << EscapeJson(context.executionDomain) << "\",\"account\":\"" << EscapeJson(context.account) << "\"},\"reason_code\":\"" << EscapeJson(reason) << "\"";
@@ -224,6 +226,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
         const std::uint32_t authorizedConnectorCount =
             m_adapter && m_adapter->IsConnected() ? 1U : 0U;
         std::ostringstream health;
+        health.imbue(std::locale::classic());
         health << "{\"source\":\"IB\",\"authoritative\":true,"
                << "\"paper_order_mode\":\""
                << IbPaperExecutionProfileConfig::OrderModeName(
@@ -241,6 +244,7 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
     const std::string riskReason = postFillPending ?
         "IB_POST_FILL_RISK_REFRESH_PENDING" : risk.reasonCode;
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     if (command.query == "market.get_quote")
     {
         IBAuthoritativeQuoteSubscriptionHealth health;

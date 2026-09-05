@@ -1,0 +1,11 @@
+#pragma once
+
+#include <cstdint>
+
+namespace HeptaPerformanceBudget
+{
+constexpr std::int64_t kRiskP99BaselineMicroseconds =
+    @HEPTA_RISK_P99_BASELINE_US@;
+constexpr std::int64_t kRiskMaximumRegressionPercent =
+    @HEPTA_RISK_MAX_REGRESSION_PERCENT@;
+}

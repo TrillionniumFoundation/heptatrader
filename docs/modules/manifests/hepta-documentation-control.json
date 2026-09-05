@@ -1,0 +1,85 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.documentation.control",
+  "version": "1.3.1",
+  "lifecycle": "current",
+  "kind": "governance-tooling",
+  "trust_domain": "development",
+  "authority": "registries/generated views/module and build graph validators",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "docs/",
+    "scripts/check_cmake_module_graph.py",
+    "scripts/check_documentation_control_plane.py",
+    "scripts/check_module_discipline.py",
+    "scripts/generate_documentation_views.py",
+    "scripts/hepta_document_checks.py",
+    "scripts/hepta_document_metadata.py",
+    "scripts/hepta_module_boundaries.py",
+    "scripts/hepta_registry_checks.py"
+  ],
+  "build_targets": [],
+  "provides": [
+    "hepta.metric-registry.v1",
+    "hepta.module-manifest.v3",
+    "hepta.reason-code.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [],
+  "forbidden_dependencies": [
+    "runtime-capability"
+  ],
+  "state": {
+    "model": "git-versioned",
+    "persistence": "git-versioned-repository-state",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "deterministic-batch",
+    "shard_key": "repository-revision",
+    "blocking_io": "filesystem-batch-validation-only",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "validation",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "not-applicable",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "documentation-control-v1",
+  "owners": {
+    "dri": "@hepta/documentation",
+    "backup": "@hepta/architecture",
+    "reviewers": [
+      "@hepta/reliability"
+    ]
+  },
+  "verification": [
+    "debugging-guide-executable",
+    "docs-control",
+    "docs-generated",
+    "module-documentation-coverage",
+    "module-registry",
+    "no-historical-docs"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-documentation-control.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

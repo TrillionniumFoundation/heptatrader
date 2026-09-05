@@ -1,0 +1,75 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.venue.ctp",
+  "version": "1.0.0",
+  "lifecycle": "unsupported",
+  "kind": "unsupported-adapter",
+  "trust_domain": "execution-authority",
+  "authority": "none",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/adapter_ctp/"
+  ],
+  "build_targets": [
+    "hepta_venue_ctp"
+  ],
+  "provides": [
+    "hepta.venue.v1"
+  ],
+  "consumes": [],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "broker.transport"
+  ],
+  "state": {
+    "model": "none",
+    "persistence": "none-unsupported",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "none",
+    "shard_key": "none-unsupported",
+    "blocking_io": "forbidden-unsupported",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "none",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "always-reject",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "unsupported-v1",
+  "owners": {
+    "dri": "@hepta/venue-ctp",
+    "backup": "@hepta/execution-core",
+    "reviewers": [
+      "@hepta/security-runtime"
+    ]
+  },
+  "verification": [
+    "unsupported-venue-negative",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-venue-ctp.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

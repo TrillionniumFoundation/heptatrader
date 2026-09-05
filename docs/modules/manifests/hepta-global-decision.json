@@ -1,0 +1,98 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.global.decision",
+  "version": "1.0.1",
+  "lifecycle": "current",
+  "kind": "solver-service",
+  "trust_domain": "global-decision",
+  "authority": "proposal aggregation/global allocation",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/proposal/",
+    "HeptaTrade/allocation/"
+  ],
+  "build_targets": [
+    "hepta_proposal_aggregator",
+    "hepta_global_allocator"
+  ],
+  "provides": [
+    "hepta.allocation-plan.v1",
+    "hepta.global-optimization.v1",
+    "hepta.solver-result.v1",
+    "proposal-set.v1"
+  ],
+  "consumes": [
+    "capital-policy.v1",
+    "hepta.authoritative-snapshot.v2",
+    "hepta.module-lifecycle.v1",
+    "hepta.numeric.fixed-v1",
+    "hepta.strategy-proposal.v1",
+    "proposal-set.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.management.control",
+    "hepta.numeric.core",
+    "hepta.portfolio.compiler",
+    "hepta.protocol.contracts",
+    "hepta.risk.policy",
+    "hepta.strategy.runtime"
+  ],
+  "forbidden_dependencies": [
+    "hepta.venue.*",
+    "hepta.execution.runtime",
+    "broker.credentials"
+  ],
+  "state": {
+    "model": "decision-log",
+    "persistence": "none-recomputable-from-immutable-inputs",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "capital-pool-sharded",
+    "shard_key": "capital-pool-policy-revision",
+    "blocking_io": "forbidden-on-solver-path",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "deadline-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "no-plan",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "global-allocator-v1",
+  "owners": {
+    "dri": "@hepta/global-allocation",
+    "backup": "@hepta/risk",
+    "reviewers": [
+      "@hepta/research-validation",
+      "@hepta/execution-safety"
+    ]
+  },
+  "verification": [
+    "proposal-contracts",
+    "optimizer-determinism",
+    "constraint-properties",
+    "shadow-parity",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-global-decision.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventEnvelopeV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","event_id","producer","producer_epoch","shard","sequence","observed_at_ms","payload_type","payload"],
+  "properties": {
+    "schema": {"const":"hepta.event-envelope.v1"},
+    "event_id": {"type":"string"},
+    "producer": {"type":"string"},
+    "producer_epoch": {"type":"integer","minimum":0},
+    "shard": {"type":"string"},
+    "sequence": {"type":"integer","minimum":0},
+    "observed_at_ms": {"type":"integer","minimum":0},
+    "payload_type": {"type":"string"},
+    "payload": {},
+    "correlation_id": {"type":"string"},
+    "causation_id": {"type":"string"},
+    "digest": {"type":"string"}
+  }
+}

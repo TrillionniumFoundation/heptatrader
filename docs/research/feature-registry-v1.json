@@ -1,0 +1,27 @@
+{
+  "schema": "heptatrader.feature-registry.v1",
+  "features": [
+    {
+      "id": "mid-spread-v1",
+      "version": 1,
+      "implementation": "HeptaTrade/features/feature_generation.cpp",
+      "input_contract": "market-event.v1",
+      "output_contract": "feature-snapshot.v1",
+      "dataset": "sim-eurusd-sequence-v1",
+      "numeric_policy": "hepta.numeric.fixed-v1",
+      "deterministic": true,
+      "requires_complete_sequence": true,
+      "requires_fresh_input": true,
+      "outputs": [
+        {
+          "name": "mid",
+          "definition": "exact fixed-point (bid_raw + ask_raw) / 2; odd microunit sum rejected"
+        },
+        {
+          "name": "spread",
+          "definition": "exact fixed-point ask_raw - bid_raw"
+        }
+      ]
+    }
+  ]
+}

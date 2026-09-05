@@ -1,0 +1,14 @@
+{
+  "schema": "heptatrader.qualification-policy.v1",
+  "environments": [
+    {
+      "id": "ib-paper",
+      "capability": "hepta.venue.ib-paper",
+      "lane": "D-external-qualification",
+      "identity": ["source_sha","artifact_sha256","config_digest","harness_sha256","broker_session_fingerprint","host_fingerprint"],
+      "required_checks": ["paper-qualification","disconnect-reconnect","common-risk-parity"],
+      "grants": ["ib-paper-exact-artifact-only"],
+      "never_grants": ["live","other_artifact","other_config"]
+    }
+  ]
+}

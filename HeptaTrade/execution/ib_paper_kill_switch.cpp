@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <locale>
 #include <sstream>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -41,6 +42,7 @@ std::string ErrnoDetail(const char* operation)
 {
     const int saved = errno;
     std::ostringstream detail;
+    detail.imbue(std::locale::classic());
     detail << operation << ": errno=" << saved << " (" << std::strerror(saved) << ")";
     return detail.str();
 }

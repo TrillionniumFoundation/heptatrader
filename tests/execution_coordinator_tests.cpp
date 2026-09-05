@@ -197,6 +197,10 @@ void TestDurableAuthoritativeCorrelationResolution()
     std::string reason;
     assert(!coordinator.RecoverFromJournal(reason));
     assert(reason == "RECOVERY_RECONCILE_REQUIRED");
+    // The legacy reset hook must not bypass an unresolved durable mutation
+    // merely because a caller invokes it without authoritative evidence.
+    coordinator.ResetMutationBlockAfterReconcile();
+    assert(coordinator.IsMutationBlocked());
     std::size_t resolved = 0;
     assert(!coordinator.ResolveUncertainPlaceCommands(
         std::map<std::string, long>(), false, resolved, reason));
@@ -245,6 +249,111 @@ void TestDurableAuthoritativeCorrelationResolution()
         }
     });
     assert(resolutions == 2);
+    std::remove(path.c_str());
+}
+
+void ExerciseInvalidAuthoritativeCorrelationMap(
+    const std::map<std::string, long>& correlations,
+    const std::string& expectedReason)
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    AppendUncertainIntent(journal, "invalid-correlation", "corr-invalid");
+
+    ExecutionCoordinator coordinator(journal, ExecutionCoordinatorCallbacks());
+    std::string reason;
+    assert(!coordinator.RecoverFromJournal(reason));
+    assert(reason == "RECOVERY_RECONCILE_REQUIRED");
+    std::size_t resolved = 123;
+    assert(!coordinator.ResolveUncertainPlaceCommands(
+        correlations, true, resolved, reason));
+    assert(resolved == 0);
+    assert(reason == expectedReason);
+    assert(coordinator.IsMutationBlocked());
+
+    ExecutionCommandResult status;
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "invalid-correlation", status));
+    assert(status.status == ExecutionCommandStatus::Uncertain);
+    assert(status.reasonCode == "RECOVERY_RECONCILE_REQUIRED");
+    std::remove(path.c_str());
+}
+
+void TestAuthoritativeCorrelationMapValidation()
+{
+    std::map<std::string, long> emptyKey;
+    emptyKey[""] = 17;
+    ExerciseInvalidAuthoritativeCorrelationMap(
+        emptyKey, "AUTHORITATIVE_CORRELATION_INVALID");
+
+    std::map<std::string, long> negativeId;
+    negativeId["corr-invalid"] = -1;
+    ExerciseInvalidAuthoritativeCorrelationMap(
+        negativeId, "AUTHORITATIVE_CORRELATION_INVALID");
+
+    std::map<std::string, long> duplicateIds;
+    duplicateIds["corr-a"] = 17;
+    duplicateIds["corr-b"] = 17;
+    ExerciseInvalidAuthoritativeCorrelationMap(
+        duplicateIds, "AUTHORITATIVE_CORRELATION_ORDER_ID_CONFLICT");
+
+    // A duplicate correlation in two unresolved journal records is just as
+    // ambiguous as duplicate IDs in the venue map; neither command may be
+    // settled from the same witness.
+    const std::string duplicatePath = TempJournalPath();
+    OmsJournal duplicateJournal;
+    assert(duplicateJournal.Init(duplicatePath));
+    AppendUncertainIntent(duplicateJournal, "duplicate-correlation-a", "same-correlation");
+    AppendUncertainIntent(duplicateJournal, "duplicate-correlation-b", "same-correlation");
+    ExecutionCoordinator duplicateCoordinator(
+        duplicateJournal, ExecutionCoordinatorCallbacks());
+    std::string reason;
+    assert(!duplicateCoordinator.RecoverFromJournal(reason));
+    std::map<std::string, long> uniqueMap;
+    uniqueMap["same-correlation"] = 17;
+    std::size_t resolved = 0;
+    assert(!duplicateCoordinator.ResolveUncertainPlaceCommands(
+        uniqueMap, true, resolved, reason));
+    assert(resolved == 0);
+    assert(reason == "AUTHORITATIVE_CORRELATION_DUPLICATE");
+    assert(duplicateCoordinator.IsMutationBlocked());
+    std::remove(duplicatePath.c_str());
+}
+
+void TestZeroAuthoritativePlaceEvidenceIsNotAnOwner()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    AppendUncertainIntent(journal, "zero-evidence", "zero-correlation");
+
+    ExecutionCoordinator coordinator(journal, ExecutionCoordinatorCallbacks());
+    std::string reason;
+    assert(!coordinator.RecoverFromJournal(reason));
+    std::map<std::string, long> correlations;
+    correlations["zero-correlation"] = 0;
+    std::size_t resolved = 0;
+    assert(coordinator.ResolveUncertainPlaceCommands(
+        correlations, true, resolved, reason));
+    assert(resolved == 1);
+    assert(!coordinator.IsMutationBlocked());
+    ExecutionCommandResult status;
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "zero-evidence", status));
+    assert(status.status == ExecutionCommandStatus::Accepted);
+    assert(status.orderId == 0);
+    ExecutionOrderOwner owner;
+    assert(!coordinator.GetOrderOwner(0, owner));
+
+    // The no-owner invariant must survive replay of the durable resolution.
+    ExecutionCoordinator replay(journal, ExecutionCoordinatorCallbacks());
+    assert(replay.RecoverFromJournal(reason));
+    assert(replay.GetCommandStatus(
+        "agent-a", "session-1", "zero-evidence", status));
+    assert(status.status == ExecutionCommandStatus::Accepted);
+    assert(status.orderId == 0);
+    assert(!replay.GetOrderOwner(0, owner));
     std::remove(path.c_str());
 }
 
@@ -1838,6 +1947,8 @@ int main()
     TestRevokedSessionOwnerIsFenced();
     TestRecoveryOnlySessionOwnerIsDurableAndAllowsOwnedCancel();
     TestDurableAuthoritativeCorrelationResolution();
+    TestAuthoritativeCorrelationMapValidation();
+    TestZeroAuthoritativePlaceEvidenceIsNotAnOwner();
     TestDeferredCancelRecoveryResolution();
     TestDurableAuthoritativeCancelResolution();
     std::cout << "execution_coordinator_tests: PASS" << std::endl;

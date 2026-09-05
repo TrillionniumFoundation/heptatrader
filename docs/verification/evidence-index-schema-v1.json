@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heptatrader.local/schema/evidence-index-v1",
+  "title": "Hepta exact-revision evidence index",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","source_sha","tree_digest","checks","artifacts","qualifications"],
+  "properties": {
+    "schema": {"const":"heptatrader.evidence-index.v1"},
+    "source_sha": {"type":"string","pattern":"^[0-9a-f]{40}$"},
+    "tree_digest": {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "checks": {"type":"array","items":{"type":"object","required":["id","status"],"properties":{"id":{"type":"string"},"status":{"enum":["PASS","FAIL","SKIP"]},"evidence_digest":{"type":"string"}}}},
+    "artifacts": {"type":"array"},
+    "qualifications": {"type":"array"},
+    "generated_at_ms": {"type":"integer","minimum":0}
+  }
+}

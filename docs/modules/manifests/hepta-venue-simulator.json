@@ -1,0 +1,79 @@
+{
+  "schema": "heptatrader.module-manifest.v3",
+  "id": "hepta.venue.simulator",
+  "version": "1.0.0",
+  "lifecycle": "current",
+  "kind": "venue-adapter",
+  "trust_domain": "execution-authority",
+  "authority": "deterministic simulated venue",
+  "ownership_mode": "exclusive",
+  "source_roots": [
+    "HeptaTrade/simulator/deterministic_execution_venue"
+  ],
+  "build_targets": [
+    "hepta_simulator_venue"
+  ],
+  "provides": [
+    "hepta.venue.v1"
+  ],
+  "consumes": [
+    "hepta.event-envelope.v1"
+  ],
+  "allowed_dependencies": [
+    "hepta.protocol.contracts"
+  ],
+  "forbidden_dependencies": [
+    "hepta.gateway.runtime"
+  ],
+  "state": {
+    "model": "deterministic-fixture",
+    "persistence": "scenario-local-replayable-state",
+    "writer": "single-owner"
+  },
+  "concurrency": {
+    "model": "single-writer",
+    "shard_key": "scenario-order-book",
+    "blocking_io": "forbidden",
+    "cross_module_lock": "forbidden"
+  },
+  "backpressure": {
+    "class": "deterministic-bounded",
+    "overflow": "typed-failure"
+  },
+  "failure": {
+    "risk_increase": "deterministic-reject",
+    "safe_exit": "never-weaken"
+  },
+  "resource_budget": "simulator-v1",
+  "owners": {
+    "dri": "@hepta/simulator",
+    "backup": "@hepta/execution-core",
+    "reviewers": [
+      "@hepta/research-validation"
+    ]
+  },
+  "verification": [
+    "simulator-e2e",
+    "deterministic-replay",
+    "fault-matrix",
+    "module-documentation-coverage"
+  ],
+  "documentation": {
+    "technical_guide": "modules/technical/hepta-venue-simulator.md",
+    "coverage_topics": [
+      "purpose-scope",
+      "responsibilities-boundaries",
+      "trust-authority",
+      "source-build",
+      "contracts-interfaces",
+      "state-data",
+      "concurrency-ordering-backpressure",
+      "failure-recovery",
+      "configuration-compatibility",
+      "observability-resources",
+      "security",
+      "verification-testing",
+      "operations-rollout-gaps"
+    ]
+  }
+}

@@ -3,6 +3,17 @@
 #include <cerrno>
 #include <cstdlib>
 
+namespace
+{
+bool CanonicalUnsignedInteger(const std::string& value)
+{
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
+    return true;
+}
+}
+
 bool ExecutionCoordinator::ApplyRecoveredOwnershipEventLocked(
     const OmsJournalEvent& event, const std::string& agentId)
 {
@@ -13,7 +24,8 @@ bool ExecutionCoordinator::ApplyRecoveredOwnershipEventLocked(
         char* end = nullptr;
         errno = 0;
         const unsigned long long fence = std::strtoull(event.status.c_str(), &end, 10);
-        if (errno != 0 || end == event.status.c_str() || *end != '\0' ||
+        if (!CanonicalUnsignedInteger(event.status) || errno != 0 ||
+            end == event.status.c_str() || *end != '\0' ||
             fence == 0)
         {
             BlockMutationsLocked("OMS_RECOVERY_ONLY_FENCE_INVALID");

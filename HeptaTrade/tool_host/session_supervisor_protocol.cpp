@@ -10,6 +10,37 @@
 namespace {
 
 const char kMagic[] = {'H', 'S', 'S', '1'};
+// Keep direct codec callers subject to the same bounded envelope as the
+// supervisor socket clients.  The transport normally applies a tighter
+// request limit, but DecodeResult is also used on persisted/replayed bytes.
+const std::size_t kMaximumSupervisorBodyBytes = 65536;
+// A valid result currently contains at most 66 fields.  Keep a small amount
+// of room for forward-compatible additions while bounding map allocations
+// for an untrusted peer before the exact operation shape is known.
+const std::size_t kMaximumSupervisorFields = 128;
+const std::size_t kMaximumReasonBytes = 512;
+const std::size_t kMaximumStatusBytes = 64;
+const std::size_t kMaximumEpochBytes = 256;
+
+// EncodeRequest is a bool-returning API.  Never leave a partially assembled
+// HSS1 frame in the caller's output when validation fails; callers may reuse
+// the buffer and accidentally transmit stale authority fields if they ignore
+// the false return while handling an error.
+template <typename T>
+class ResetOnFailure
+{
+public:
+	explicit ResetOnFailure(T& value) : m_value(value), m_committed(false) {}
+	~ResetOnFailure()
+	{
+		if (!m_committed) m_value = T();
+	}
+	void Commit() { m_committed = true; }
+
+private:
+	T& m_value;
+	bool m_committed;
+};
 
 enum FieldId
 {
@@ -101,6 +132,35 @@ enum FieldId
 
 void AppendField(std::string& body, std::uint16_t id, const std::string& value)
 {
+	// EncodeResult has no error return in its public ABI.  Treat an attempted
+	// overflow as a failed encoding and leave an empty body; callers will write
+	// a frame that the peer rejects rather than allocating an attacker-sized
+	// buffer or emitting a wrapped uint32 length.
+	std::size_t maximumFieldBytes = 4096U;
+	if (id == TerminalEvidence || id == FinalizationReceipt)
+		maximumFieldBytes = 12288U;
+	else if (id == ReasonCode || id == CommandReasonCode)
+		maximumFieldBytes = kMaximumReasonBytes;
+	else if (id == CommandStatus)
+		maximumFieldBytes = kMaximumStatusBytes;
+	else if (id == ExecutionServiceEpoch || id == TerminalizationServiceEpoch)
+		maximumFieldBytes = kMaximumEpochBytes;
+	else if (id == TargetCommandId || id == RecoveryId || id == FinalizationId ||
+		id == TerminalProofKind || id == OwnerAccount ||
+		id == OwnerExecutionDomain)
+		maximumFieldBytes = 128U;
+	else if (id == BrokerPositionQuantity || id == BrokerGrossAbsolutePosition)
+		maximumFieldBytes = 128U;
+	if (body.size() < sizeof(kMagic) || value.size() > maximumFieldBytes ||
+		value.size() > std::numeric_limits<std::uint32_t>::max() ||
+		body.size() > kMaximumSupervisorBodyBytes -
+			(sizeof(std::uint16_t) + sizeof(std::uint32_t)) ||
+		value.size() > kMaximumSupervisorBodyBytes - body.size() -
+			(sizeof(std::uint16_t) + sizeof(std::uint32_t)))
+	{
+		body.clear();
+		return;
+	}
 	const std::uint16_t networkId = htons(id);
 	const std::uint32_t networkLength = htonl(static_cast<std::uint32_t>(value.size()));
 	body.append(reinterpret_cast<const char*>(&networkId), sizeof(networkId));
@@ -111,12 +171,18 @@ void AppendField(std::string& body, std::uint16_t id, const std::string& value)
 bool DecodeFields(const std::string& body, std::map<std::uint16_t, std::string>& fields,
 	std::string& reason)
 {
+	if (body.size() > kMaximumSupervisorBodyBytes)
+	{
+		reason = "SUPERVISOR_SCHEMA_BODY_TOO_LARGE";
+		return false;
+	}
 	if (body.size() < sizeof(kMagic) || std::memcmp(body.data(), kMagic, sizeof(kMagic)) != 0)
 	{
 		reason = "SUPERVISOR_SCHEMA_MAGIC_MISMATCH";
 		return false;
 	}
 	std::size_t offset = sizeof(kMagic);
+	std::size_t fieldCount = 0;
 	while (offset < body.size())
 	{
 		if (body.size() - offset < sizeof(std::uint16_t) + sizeof(std::uint32_t))
@@ -140,6 +206,11 @@ bool DecodeFields(const std::string& body, std::map<std::uint16_t, std::string>&
 			reason = "SUPERVISOR_SCHEMA_INVALID_FIELD_LENGTH";
 			return false;
 		}
+		if (++fieldCount > kMaximumSupervisorFields)
+		{
+			reason = "SUPERVISOR_SCHEMA_TOO_MANY_FIELDS";
+			return false;
+		}
 		if (fields.find(id) != fields.end())
 		{
 			reason = "SUPERVISOR_SCHEMA_DUPLICATE_FIELD";
@@ -154,13 +225,25 @@ bool DecodeFields(const std::string& body, std::map<std::uint16_t, std::string>&
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum,
 	std::uint64_t& parsed)
 {
-	if (value.empty()) return false;
-	char* end = nullptr;
-	errno = 0;
-	const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
-	if (errno != 0 || end == value.c_str() || *end != '\0' || number > maximum)
-		return false;
-	parsed = static_cast<std::uint64_t>(number);
+	if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+	for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+		if (*it < '0' || *it > '9') return false;
+	// Keep the supervisor wire parser independent of the host's
+	// unsigned-long-long width and libc grammar.  Checked decimal arithmetic
+	// accepts the complete uint64 range, then applies the operation-specific
+	// bound (for example the 24-hour TTL cap).
+	const std::uint64_t uint64Maximum =
+		(std::numeric_limits<std::uint64_t>::max)();
+	std::uint64_t number = 0;
+	for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+	{
+		const std::uint64_t digit =
+			static_cast<std::uint64_t>(*it - '0');
+		if (number > (uint64Maximum - digit) / 10u) return false;
+		number = number * 10u + digit;
+	}
+	if (number > maximum) return false;
+	parsed = number;
 	return true;
 }
 
@@ -177,12 +260,113 @@ bool Require(const std::map<std::uint16_t, std::string>& fields,
 	return true;
 }
 
-bool ValidateText(const std::string& value, std::size_t maximum)
+bool IsUnicodeFormatControl(std::uint32_t codepoint)
+{
+	// Unicode format controls are invisible in logs and identifiers.  They are
+	// not accepted on the supervisor authority boundary even though they are
+	// valid UTF-8 scalar values.  Keep this list limited to the ranges assigned
+	// as bidi/zero-width/word-joiner controls so ordinary non-ASCII identities
+	// (for example, CJK names) remain compatible.
+	return codepoint == 0x00adu ||
+		(codepoint >= 0x0600u && codepoint <= 0x0605u) ||
+		codepoint == 0x061cu || codepoint == 0x06ddu || codepoint == 0x070fu ||
+		(codepoint >= 0x0890u && codepoint <= 0x0891u) ||
+		codepoint == 0x08e2u || codepoint == 0x180eu ||
+		(codepoint >= 0x200bu && codepoint <= 0x200fu) ||
+		(codepoint >= 0x2028u && codepoint <= 0x202eu) ||
+		(codepoint >= 0x2060u && codepoint <= 0x2064u) ||
+		(codepoint >= 0x2066u && codepoint <= 0x206fu) ||
+		codepoint == 0xfeffu ||
+		(codepoint >= 0xfff9u && codepoint <= 0xfffbu) ||
+		(codepoint >= 0x1bca0u && codepoint <= 0x1bcafu) ||
+		(codepoint >= 0x1d173u && codepoint <= 0x1d17au) ||
+		codepoint == 0xe0001u ||
+		(codepoint >= 0xe0020u && codepoint <= 0xe007fu);
+}
+
+bool ValidateUtf8Text(const std::string& value, std::size_t maximum,
+	bool allowLineControls)
 {
 	if (value.empty() || value.size() > maximum) return false;
-	for (std::size_t i = 0; i < value.size(); ++i)
-		if (static_cast<unsigned char>(value[i]) < 0x20) return false;
+	// Supervisor identities and tokens are persisted and reused as map/file
+	// keys.  Validate UTF-8 explicitly instead of relying on locale/ctype
+	// behavior; malformed byte sequences or invisible Unicode controls must
+	// never cross this authority boundary.  Newline/tab remain invalid here
+	// (opaque evidence blobs do not use ValidateText and are checked by their
+	// digest), while printable non-ASCII identity text is retained for
+	// backwards compatibility.
+	std::size_t offset = 0;
+	while (offset < value.size())
+	{
+		const unsigned char first =
+			static_cast<unsigned char>(value[offset]);
+		std::uint32_t codepoint = 0;
+		std::size_t continuationCount = 0;
+		if (first <= 0x7fu)
+		{
+			codepoint = first;
+			++offset;
+		}
+		else
+		{
+			if (first >= 0xc2u && first <= 0xdfu)
+				continuationCount = 1;
+			else if (first >= 0xe0u && first <= 0xefu)
+				continuationCount = 2;
+			else if (first >= 0xf0u && first <= 0xf4u)
+				continuationCount = 3;
+			else
+				return false;
+			if (value.size() - offset <= continuationCount)
+				return false;
+			const unsigned char second =
+				static_cast<unsigned char>(value[offset + 1]);
+			if ((first == 0xe0u && second < 0xa0u) ||
+				(first == 0xedu && second >= 0xa0u) ||
+				(first == 0xf0u && second < 0x90u) ||
+				(first == 0xf4u && second > 0x8fu))
+				return false;
+			for (std::size_t i = 1; i <= continuationCount; ++i)
+			{
+				const unsigned char continuation =
+					static_cast<unsigned char>(value[offset + i]);
+				if (continuation < 0x80u || continuation > 0xbfu)
+					return false;
+			}
+			if (continuationCount == 1)
+				codepoint = (static_cast<std::uint32_t>(first & 0x1fu) << 6) |
+					static_cast<std::uint32_t>(value[offset + 1] & 0x3fu);
+			else if (continuationCount == 2)
+				codepoint = (static_cast<std::uint32_t>(first & 0x0fu) << 12) |
+					(static_cast<std::uint32_t>(value[offset + 1] & 0x3fu) << 6) |
+					static_cast<std::uint32_t>(value[offset + 2] & 0x3fu);
+			else
+				codepoint = (static_cast<std::uint32_t>(first & 0x07u) << 18) |
+					(static_cast<std::uint32_t>(value[offset + 1] & 0x3fu) << 12) |
+					(static_cast<std::uint32_t>(value[offset + 2] & 0x3fu) << 6) |
+					static_cast<std::uint32_t>(value[offset + 3] & 0x3fu);
+			offset += continuationCount + 1u;
+		}
+		if ((codepoint < 0x20u &&
+			(!allowLineControls ||
+				(codepoint != static_cast<std::uint32_t>('\n') &&
+				 codepoint != static_cast<std::uint32_t>('\r') &&
+				 codepoint != static_cast<std::uint32_t>('\t')))) ||
+			(codepoint >= 0x7fu && codepoint <= 0x9fu) ||
+			IsUnicodeFormatControl(codepoint))
+			return false;
+	}
 	return true;
+}
+
+bool ValidateText(const std::string& value, std::size_t maximum)
+{
+	return ValidateUtf8Text(value, maximum, false);
+}
+
+bool ValidateReceiptText(const std::string& value, std::size_t maximum)
+{
+	return ValidateUtf8Text(value, maximum, true);
 }
 
 bool ValidateSha256(const std::string& value)
@@ -199,6 +383,12 @@ bool ValidateSha256(const std::string& value)
 bool ParseSignedLong(const std::string& value, long& parsed)
 {
 	if (value.empty()) return false;
+	std::size_t offset = value[0] == '-' ? 1u : 0u;
+    if (offset == value.size() ||
+        (value[offset] == '0' &&
+         (offset != 0 || offset + 1u < value.size()))) return false;
+	for (; offset < value.size(); ++offset)
+		if (value[offset] < '0' || value[offset] > '9') return false;
 	char* end = nullptr;
 	errno = 0;
 	const long number = std::strtol(value.c_str(), &end, 10);
@@ -207,11 +397,87 @@ bool ParseSignedLong(const std::string& value, long& parsed)
 	return true;
 }
 
+bool IsCanonicalDecimal(const std::string& value, bool allowEmpty)
+{
+	if (value.empty()) return allowEmpty;
+	if (value == "0") return true;
+	std::size_t offset = 0;
+	if (value[0] == '-')
+	{
+		if (value.size() == 1) return false;
+		offset = 1;
+	}
+	if (value[offset] == '0')
+	{
+		++offset;
+		if (offset == value.size()) return false;
+	}
+	else
+	{
+		if (value[offset] < '1' || value[offset] > '9') return false;
+		while (offset < value.size() && value[offset] >= '0' &&
+			value[offset] <= '9') ++offset;
+	}
+	if (offset == value.size()) return true;
+	if (value[offset++] != '.' || offset == value.size()) return false;
+	for (; offset < value.size(); ++offset)
+		if (value[offset] < '0' || value[offset] > '9') return false;
+	return value.back() != '0';
+}
+
+bool IsCanonicalNonnegativeDecimal(const std::string& value, bool allowEmpty)
+{
+	return (value.empty() && allowEmpty) ||
+		(!value.empty() && value[0] != '-' &&
+		 IsCanonicalDecimal(value, false));
+}
+
+bool IsKnownRecoveryCommandStatus(const std::string& value)
+{
+	return value == "unavailable" || value == "not_found" ||
+		value == "accepted" || value == "rejected" || value == "uncertain";
+}
+
+bool IsKnownResultField(std::uint16_t id)
+{
+	// Most result IDs occupy one contiguous range, but ExpectedGeneration and
+	// ReplacementToken (10/11) are request-only, and TerminalEvidence (70) is
+	// an ingress-only opaque blob.  Keep those holes explicit so a response
+	// cannot smuggle a request field past the shape checks below.
+	return ((id >= Accepted && id <= TerminalCurrentEvidenceVerified) &&
+		id != ExpectedGeneration && id != ReplacementToken &&
+		id != TerminalEvidence) ||
+		id == EgressPublisherPid || id == EgressPublisherStartTicks;
+}
+
+bool IsBooleanLiteral(const std::string& value)
+{
+	return value == "0" || value == "1";
+}
+
+bool ValidateOptionalText(
+	const std::map<std::uint16_t, std::string>::const_iterator& field,
+	const std::map<std::uint16_t, std::string>::const_iterator& end,
+	std::size_t maximum)
+{
+	return field == end || field->second.empty() ||
+		ValidateText(field->second, maximum);
+}
+
+bool ValidateOptionalSha256(
+	const std::map<std::uint16_t, std::string>::const_iterator& field,
+	const std::map<std::uint16_t, std::string>::const_iterator& end)
+{
+	return field == end || field->second.empty() || ValidateSha256(field->second);
+}
+
 } // namespace
 
 bool SessionSupervisorProtocol::EncodeRequest(
 	const SessionSupervisorRequest& request, std::string& body, std::string& reason)
 {
+	body.clear();
+	ResetOnFailure<std::string> bodyGuard(body);
 	body.assign(kMagic, sizeof(kMagic));
 	if (!ValidateText(request.token, 512))
 	{
@@ -252,7 +518,8 @@ bool SessionSupervisorProtocol::EncodeRequest(
 	if (request.operation == SessionSupervisorOperation::Provision)
 	{
 		if (!ValidateText(request.templateId, 32) || !ValidateText(request.agentId, 128) ||
-			!ValidateText(request.sessionId, 256) || request.ttlMs == 0)
+			!ValidateText(request.sessionId, 256) || request.ttlMs == 0 ||
+			request.ttlMs > 86400000)
 		{
 			reason = "SUPERVISOR_INVALID_PROVISION_REQUEST";
 			return false;
@@ -286,7 +553,8 @@ bool SessionSupervisorProtocol::EncodeRequest(
 	else if (request.operation == SessionSupervisorOperation::Renew ||
 		request.operation == SessionSupervisorOperation::Rotate)
 	{
-		if (request.ttlMs == 0 || request.expectedGeneration == 0 ||
+		if (request.ttlMs == 0 || request.ttlMs > 86400000 ||
+			request.expectedGeneration == 0 ||
 			(request.operation == SessionSupervisorOperation::Rotate &&
 			 !ValidateText(request.replacementToken, 512)))
 		{
@@ -361,13 +629,20 @@ bool SessionSupervisorProtocol::EncodeRequest(
 			AppendField(body, TerminalEvidence, request.terminalEvidence);
 		}
 	}
+	if (body.empty())
+	{
+		reason = "SUPERVISOR_SCHEMA_BODY_TOO_LARGE";
+		return false;
+	}
 	reason.clear();
+	bodyGuard.Commit();
 	return true;
 }
 
 bool SessionSupervisorProtocol::DecodeRequest(
 	const std::string& body, SessionSupervisorRequest& request, std::string& reason)
 {
+	reason.clear();
 	request.operation = SessionSupervisorOperation::Provision;
 	request.templateId.clear();
 	request.token.clear();
@@ -581,7 +856,17 @@ std::string SessionSupervisorProtocol::EncodeResult(
 	const SessionSupervisorResult& result)
 {
 	std::string body(kMagic, sizeof(kMagic));
-	AppendField(body, Accepted, result.accepted ? "1" : "0");
+	// Older in-process callers may leave ``accepted`` set while reusing a
+	// result object for an intermediate paper-finalization state.  Never put a
+	// contradictory accepted=true claim on the wire; incomplete states are
+	// explicitly non-accepted and the durable receipt/replay path remains
+	// represented by its state/reason fields.
+	const bool incompleteFinalization = !result.FinalizationId().empty() &&
+		(result.PaperFinalizationState() == "NONE" ||
+		 result.PaperFinalizationState() == "FENCE_PENDING" ||
+		 result.PaperFinalizationState() == "FENCE_COMPLETE");
+	AppendField(body, Accepted,
+		(result.accepted && !incompleteFinalization) ? "1" : "0");
 	AppendField(body, ReasonCode, result.ReasonCode().empty() ? "OK" : result.ReasonCode());
 	AppendField(body, LeaseGeneration, std::to_string(result.leaseGeneration));
 	if (!result.TargetCommandId().empty())
@@ -756,8 +1041,22 @@ std::string SessionSupervisorProtocol::EncodeResult(
 bool SessionSupervisorProtocol::DecodeResult(
 	const std::string& body, SessionSupervisorResult& result, std::string& reason)
 {
+	reason.clear();
+	// Never leave a caller with stale authority data after a malformed replay
+	// frame.  Callers commonly inspect the object while logging a decode
+	// failure, so reset it before parsing rather than relying on the bool.
+	result = SessionSupervisorResult();
 	std::map<std::uint16_t, std::string> fields;
 	if (!DecodeFields(body, fields, reason)) return false;
+	for (std::map<std::uint16_t, std::string>::const_iterator it = fields.begin();
+		it != fields.end(); ++it)
+	{
+		if (!IsKnownResultField(it->first))
+		{
+			reason = "SUPERVISOR_SCHEMA_UNEXPECTED_FIELD";
+			return false;
+		}
+	}
 	const bool recoveryResult = fields.size() == 23;
 	const bool finalizationResult =
 		fields.find(PaperFinalizationState) != fields.end();
@@ -766,7 +1065,8 @@ bool SessionSupervisorProtocol::DecodeResult(
 		fields.find(Accepted) == fields.end() ||
 		fields.find(ReasonCode) == fields.end() ||
 		fields.find(LeaseGeneration) == fields.end() ||
-		(fields.find(Accepted)->second != "0" && fields.find(Accepted)->second != "1"))
+		!IsBooleanLiteral(fields.find(Accepted)->second) ||
+		!ValidateText(fields.find(ReasonCode)->second, kMaximumReasonBytes))
 	{
 		reason = "SUPERVISOR_INVALID_RESULT";
 		return false;
@@ -775,6 +1075,11 @@ bool SessionSupervisorProtocol::DecodeResult(
 	result.ReasonCode() = fields.find(ReasonCode)->second;
 	if (!ParseUnsigned(fields.find(LeaseGeneration)->second,
 		std::numeric_limits<std::uint64_t>::max(), result.leaseGeneration))
+	{
+		reason = "SUPERVISOR_INVALID_RESULT";
+		return false;
+	}
+	if (result.accepted && result.leaseGeneration == 0)
 	{
 		reason = "SUPERVISOR_INVALID_RESULT";
 		return false;
@@ -826,11 +1131,19 @@ bool SessionSupervisorProtocol::DecodeResult(
 			order == fields.end() ||
 			recovery == fields.end() || fenced == fields.end() ||
 			epoch == fields.end() || generation == fields.end() ||
-			(authoritative->second != "0" && authoritative->second != "1") ||
-			(recovery->second != "0" && recovery->second != "1") ||
-			(fenced->second != "0" && fenced->second != "1") ||
-			!ValidateText(target->second, 128) || status->second.empty() ||
-			commandReason->second.empty() || commandReason->second.size() > 256 ||
+			!IsBooleanLiteral(authoritative->second) ||
+			!IsBooleanLiteral(recovery->second) ||
+			!IsBooleanLiteral(fenced->second) ||
+			!ValidateText(target->second, 128) ||
+			!IsKnownRecoveryCommandStatus(status->second) ||
+			((authoritative->second == "0") &&
+				(status->second != "unavailable" ||
+				 commandReason->second != "unavailable")) ||
+			((authoritative->second == "1") &&
+				(status->second == "unavailable" || recovery->second != "1")) ||
+			!ValidateText(status->second, kMaximumStatusBytes) ||
+			!ValidateText(commandReason->second, kMaximumReasonBytes) ||
+			!ValidateText(epoch->second, kMaximumEpochBytes) ||
 			!ParseSignedLong(order->second, result.orderId) ||
 			recoveryExpiry == fields.end() ||
 			auditAuthoritative == fields.end() || auditComplete == fields.end() ||
@@ -839,11 +1152,9 @@ bool SessionSupervisorProtocol::DecodeResult(
 			terminalGeneration == fields.end() || ownerAccount == fields.end() ||
 			ownerDomain == fields.end() ||
 			finalizationRequired == fields.end() ||
-			(finalizationRequired->second != "0" &&
-			 finalizationRequired->second != "1") ||
-			(auditAuthoritative->second != "0" &&
-			 auditAuthoritative->second != "1") ||
-			(auditComplete->second != "0" && auditComplete->second != "1") ||
+			!IsBooleanLiteral(finalizationRequired->second) ||
+			!IsBooleanLiteral(auditAuthoritative->second) ||
+			!IsBooleanLiteral(auditComplete->second) ||
 			!ValidateText(ownerAccount->second, 128) ||
 			!ValidateText(ownerDomain->second, 128) ||
 			!ParseUnsigned(generation->second,
@@ -1070,35 +1381,45 @@ bool SessionSupervisorProtocol::DecodeResult(
 			!ValidateText(finalizationId->second, 128) ||
 			!ValidateSha256(ownerSet->second) ||
 			!ValidateSha256(ownerToken->second) ||
+			!ValidateOptionalText(account, fields.end(), 128) ||
+			!ValidateOptionalText(domain, fields.end(), 128) ||
+			!ValidateOptionalText(serviceEpoch, fields.end(), kMaximumEpochBytes) ||
+			(receipt->second.empty() ? false :
+				!ValidateReceiptText(receipt->second, 12288)) ||
+			!IsCanonicalDecimal(position->second, true) ||
+			!IsCanonicalNonnegativeDecimal(gross->second, true) ||
+			!ValidateOptionalSha256(preliminaryReceiptSha, fields.end()) ||
+			!ValidateOptionalText(terminalServiceEpoch, fields.end(), kMaximumEpochBytes) ||
+			!ValidateOptionalText(terminalProofKind, fields.end(), 128) ||
+			!ValidateOptionalSha256(terminalLatchSha, fields.end()) ||
+			!ValidateOptionalSha256(terminalExternalLatchSha, fields.end()) ||
+			!ValidateOptionalSha256(cutoffFileSha, fields.end()) ||
+			!ValidateOptionalSha256(cutoffBodySha, fields.end()) ||
+			!ValidateOptionalSha256(witnessFileSha, fields.end()) ||
+			!ValidateOptionalSha256(witnessBodySha, fields.end()) ||
+			!ValidateOptionalSha256(terminalEvidenceSha, fields.end()) ||
+			!ValidateOptionalSha256(terminalEvidenceBodySha, fields.end()) ||
+			!ValidateOptionalSha256(egressSha, fields.end()) ||
+			!ValidateOptionalSha256(providerTrustSha, fields.end()) ||
+			!ValidateOptionalSha256(signedAccountSignatureSha, fields.end()) ||
 			!ParseUnsigned(ownerCount->second, 4096,
 				result.expectedOwnerCount) || result.expectedOwnerCount == 0 ||
-			(auditAuth->second != "0" && auditAuth->second != "1") ||
-			(auditComplete->second != "0" && auditComplete->second != "1") ||
-			(postFill->second != "0" && postFill->second != "1") ||
-			(barrier->second != "0" && barrier->second != "1") ||
-			(newEpoch->second != "0" && newEpoch->second != "1") ||
-			(terminalMutationClosed->second != "0" &&
-			 terminalMutationClosed->second != "1") ||
-			(terminalTransportConnected->second != "0" &&
-			 terminalTransportConnected->second != "1") ||
-			(terminalIngressHalted->second != "0" &&
-			 terminalIngressHalted->second != "1") ||
-			(terminalQueueDrained->second != "0" &&
-			 terminalQueueDrained->second != "1") ||
-			(terminalReconnect->second != "0" &&
-			 terminalReconnect->second != "1") ||
-			(terminalDurable->second != "0" &&
-			 terminalDurable->second != "1") ||
-			(terminalLoaded->second != "0" &&
-			 terminalLoaded->second != "1") ||
-			(terminalVerified->second != "0" &&
-			 terminalVerified->second != "1") ||
-			(terminalReplay->second != "0" &&
-			 terminalReplay->second != "1") ||
-			(terminalExternalLoaded->second != "0" &&
-			 terminalExternalLoaded->second != "1") ||
-			(terminalCurrentVerified->second != "0" &&
-			 terminalCurrentVerified->second != "1") ||
+			!IsBooleanLiteral(auditAuth->second) ||
+			!IsBooleanLiteral(auditComplete->second) ||
+			!IsBooleanLiteral(postFill->second) ||
+			!IsBooleanLiteral(barrier->second) ||
+			!IsBooleanLiteral(newEpoch->second) ||
+			!IsBooleanLiteral(terminalMutationClosed->second) ||
+			!IsBooleanLiteral(terminalTransportConnected->second) ||
+			!IsBooleanLiteral(terminalIngressHalted->second) ||
+			!IsBooleanLiteral(terminalQueueDrained->second) ||
+			!IsBooleanLiteral(terminalReconnect->second) ||
+			!IsBooleanLiteral(terminalDurable->second) ||
+			!IsBooleanLiteral(terminalLoaded->second) ||
+			!IsBooleanLiteral(terminalVerified->second) ||
+			!IsBooleanLiteral(terminalReplay->second) ||
+			!IsBooleanLiteral(terminalExternalLoaded->second) ||
+			!IsBooleanLiteral(terminalCurrentVerified->second) ||
 			!ParseUnsigned(activeCount->second,
 				std::numeric_limits<std::uint64_t>::max(),
 				result.ownerActiveOrderCount) ||
@@ -1217,6 +1538,41 @@ bool SessionSupervisorProtocol::DecodeResult(
 			 terminalExternalLoaded->second == "0" &&
 			 terminalCurrentVerified->second == "0");
 		if (!terminalShape)
+		{
+			reason = "SUPERVISOR_INVALID_RESULT";
+			return false;
+		}
+		const bool completedFinalization =
+			state->second == "AUDIT_SEALED" ||
+			state->second == "TERMINAL_HALTED" ||
+			state->second == "ACKED";
+		const bool brokerAuditFinalization =
+			state->second == "AUDIT_SEALED" ||
+			state->second == "TERMINAL_HALTED";
+		if (completedFinalization &&
+			(account->second.empty() || domain->second.empty() ||
+			 serviceEpoch->second.empty() || position->second.empty() ||
+			 gross->second.empty() ||
+			 (brokerAuditFinalization &&
+			  (result.executionServiceFencingGeneration == 0 ||
+			   result.brokerConnectionEpoch == 0 ||
+			   result.brokerActiveGeneration == 0 ||
+			   result.brokerTerminalGeneration == 0 ||
+			   result.brokerRiskGeneration == 0 ||
+			   result.brokerAccountGeneration == 0 ||
+			   result.brokerPositionGeneration == 0 ||
+			   result.brokerFxCashGeneration == 0))))
+		{
+			reason = "SUPERVISOR_INVALID_RESULT";
+			return false;
+		}
+		// A supervisor result cannot claim a completed paper finalization while
+		// its durable state machine is still in a pending/fence phase.  ACKED and
+		// AUDIT_SEALED may legitimately be returned with accepted=false when a
+		// crash/replay hook reports the already-committed state.
+		if (result.accepted &&
+			(state->second == "NONE" || state->second == "FENCE_PENDING" ||
+			 state->second == "FENCE_COMPLETE"))
 		{
 			reason = "SUPERVISOR_INVALID_RESULT";
 			return false;

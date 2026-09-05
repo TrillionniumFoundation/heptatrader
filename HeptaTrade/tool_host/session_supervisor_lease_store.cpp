@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <locale>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <set>
@@ -45,9 +46,9 @@ void SnapshotTimes(const struct stat& metadata,
 
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum, std::uint64_t& parsed)
 {
-    if (value.empty()) return false;
-    char* end = nullptr;
-    errno = 0;
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it) if (*it < '0' || *it > '9') return false;
+    char* end = nullptr; errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
     if (errno != 0 || end == value.c_str() || *end != '\0' || number > maximum) return false;
     parsed = static_cast<std::uint64_t>(number);
@@ -1224,7 +1225,6 @@ private:
 };
 
 } // namespace
-
 const char* SessionSupervisorPaperFinalizationStateName(
     SessionSupervisorPaperFinalizationState state)
 {
@@ -1241,7 +1241,6 @@ const char* SessionSupervisorPaperFinalizationStateName(
     }
     return "INVALID";
 }
-
 SessionSupervisorLeaseStore::~SessionSupervisorLeaseStore()
 {
     if (m_cleanupLockFd >= 0)
@@ -1254,7 +1253,7 @@ SessionSupervisorLeaseStore::~SessionSupervisorLeaseStore()
 
 bool SessionSupervisorLeaseStore::Init(const std::string& path, std::string& reason)
 {
-    reason = "LEASE_STORE_ENCRYPTION_KEY_REQUIRED";
+    (void)path; reason = "LEASE_STORE_ENCRYPTION_KEY_REQUIRED";
     return false;
 }
 
@@ -2377,10 +2376,9 @@ bool SessionSupervisorLeaseStore::DecodeEncryptedPlaintext(
     reason.clear();
     return true;
 }
-
 std::string SessionSupervisorLeaseStore::SerializePlaintext() const
 {
-    std::ostringstream output;
+    std::ostringstream output; output.imbue(std::locale::classic());
     // The encrypted envelope remains HSL2-compatible. HSL8 retains the HSL7
     // tombstone records but upgrades the acknowledgement ledger so success is
     // bound to both the preliminary audit and the independently durable

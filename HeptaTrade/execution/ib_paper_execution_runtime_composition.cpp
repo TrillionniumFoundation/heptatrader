@@ -8,8 +8,8 @@
 #include <iostream>
 #include <iomanip>
 #include <limits>
+#include <locale>
 #include <openssl/evp.h>
-#include <cctype>
 #include <algorithm>
 #include <set>
 #include <sstream>
@@ -42,7 +42,7 @@ using namespace ib_paper_execution_runtime_internal;
 
 bool ParsePositiveUnsigned(const std::string& value, std::uint64_t& parsed)
 {
-    if (value.empty()) return false;
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
     std::uint64_t number = 0;
     for (std::size_t i = 0; i < value.size(); ++i)
     {
@@ -94,13 +94,10 @@ bool IsPersistedBrokerCallback(IBEventType type)
 
 bool ParseBrokerErrorCode(const std::string& value, int& code)
 {
-    if (value.empty()) return false;
-    char* end = nullptr;
-    errno = 0;
-    const long parsed = std::strtol(value.c_str(), &end, 10);
-    if (errno == ERANGE || end == value.c_str() || end == nullptr ||
-        *end != '\0' || parsed < std::numeric_limits<int>::min() ||
-        parsed > std::numeric_limits<int>::max()) return false;
+    std::uint64_t parsed = 0;
+    if (!ParsePositiveUnsigned(value, parsed) ||
+        parsed > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+        return false;
     code = static_cast<int>(parsed);
     return true;
 }
@@ -113,8 +110,14 @@ std::string StatusReasonCode(const std::string& status)
          it != status.end(); ++it)
     {
         const unsigned char value = static_cast<unsigned char>(*it);
-        normalized.push_back(std::isalnum(value) ?
-            static_cast<char>(std::toupper(value)) : '_');
+        const bool lower = value >= static_cast<unsigned char>('a') &&
+            value <= static_cast<unsigned char>('z');
+        const bool upper = value >= static_cast<unsigned char>('A') &&
+            value <= static_cast<unsigned char>('Z');
+        const bool digit = value >= static_cast<unsigned char>('0') &&
+            value <= static_cast<unsigned char>('9');
+        normalized.push_back(lower || upper || digit ?
+            static_cast<char>(lower ? value - 'a' + 'A' : value) : '_');
     }
     return normalized.empty() ? std::string("IB_ORDER_STATUS_UNKNOWN") :
         std::string("IB_ORDER_") + normalized;
@@ -146,6 +149,7 @@ std::string Sha256Text(const std::string& value)
     EVP_MD_CTX_free(context);
     if (!ok) return std::string();
     std::ostringstream output;
+    output.imbue(std::locale::classic());
     output << "sha256:" << std::hex << std::setfill('0');
     for (unsigned int i = 0; i < length; ++i)
         output << std::setw(2) << static_cast<unsigned int>(digest[i]);

@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AllocationPlanV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "plan_id",
+    "allocator_epoch",
+    "capital_pool",
+    "account_book",
+    "proposal_set_digest",
+    "snapshot_digest",
+    "solver",
+    "targets",
+    "accepted_candidates",
+    "rejected_proposals",
+    "created_at_ms",
+    "valid_until_ms",
+    "numeric_policy_version",
+    "plan_digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "hepta.allocation-plan.v1"
+    },
+    "plan_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "allocator_epoch": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "capital_pool": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "account_book": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "proposal_set_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "snapshot_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "solver": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "title": "SolverResultV1",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "status",
+        "objective_raw",
+        "primal_bound_raw",
+        "upper_bound_raw",
+        "absolute_gap_raw",
+        "combinations_explored",
+        "exact",
+        "digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "hepta.solver-result.v1"
+        },
+        "status": {
+          "enum": [
+            "optimal",
+            "feasible_not_proven"
+          ]
+        },
+        "objective_raw": {
+          "type": "integer"
+        },
+        "primal_bound_raw": {
+          "type": "integer"
+        },
+        "upper_bound_raw": {
+          "type": "integer"
+        },
+        "absolute_gap_raw": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "combinations_explored": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "exact": {
+          "type": "boolean"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "exact": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "optimal"
+              },
+              "absolute_gap_raw": {
+                "const": 0
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "exact": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "status": {
+                "const": "feasible_not_proven"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "targets": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "instrument",
+          "target_position_raw"
+        ],
+        "properties": {
+          "instrument": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9._:-]+$"
+          },
+          "target_position_raw": {
+            "type": "integer",
+            "minimum": -9000000000000000,
+            "maximum": 9000000000000000
+          }
+        }
+      }
+    },
+    "accepted_candidates": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._:-]+$"
+      }
+    },
+    "rejected_proposals": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9._:-]+$"
+      }
+    },
+    "created_at_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "valid_until_ms": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "numeric_policy_version": {
+      "const": "hepta.numeric.fixed-v1"
+    },
+    "plan_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

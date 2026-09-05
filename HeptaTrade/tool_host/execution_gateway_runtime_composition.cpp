@@ -1,7 +1,5 @@
 #include "execution_gateway_runtime_composition.h"
 
-#include <cctype>
-
 namespace
 {
 std::string OwnerKey(const AgentExecutionContext& owner)
@@ -70,7 +68,11 @@ bool IsPaperDomain(const std::string& value)
     {
         const unsigned char byte =
             static_cast<unsigned char>(suffix[i]);
-        if (!std::islower(byte) && !std::isdigit(byte) && byte != '-')
+        const bool lower = byte >= static_cast<unsigned char>('a') &&
+            byte <= static_cast<unsigned char>('z');
+        const bool digit = byte >= static_cast<unsigned char>('0') &&
+            byte <= static_cast<unsigned char>('9');
+        if (!lower && !digit && byte != '-')
             return false;
     }
     return true;
@@ -121,15 +123,17 @@ bool ExecutionGatewayRuntimeComposition::Enabled() const
 
 bool ExecutionGatewayRuntimeComposition::ProbeRemoteService(
     ExecutionServiceIdentity& identity,
-    std::string& reason)
+    std::string& reason,
+    std::uint64_t* eventWatermark)
 {
     identity = ExecutionServiceIdentity();
+    if (eventWatermark != nullptr) *eventWatermark = 0;
     if (!Enabled())
     {
         reason = "REMOTE_EXECUTION_DISABLED";
         return false;
     }
-    return ResolveRemoteIdentity(identity, reason);
+    return ResolveRemoteIdentity(identity, reason, eventWatermark);
 }
 
 const char* ExecutionGatewayRuntimeComposition::ModeName() const
@@ -270,10 +274,12 @@ ExecutionControlResult ExecutionGatewayRuntimeComposition::RemoteIdentityRejecte
 
 bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
     ExecutionServiceIdentity& identity,
-    std::string& reason)
+    std::string& reason,
+    std::uint64_t* eventWatermark)
 {
     std::lock_guard<std::mutex> identityLock(m_remoteIdentityMutex);
     identity = ExecutionServiceIdentity();
+    if (eventWatermark != nullptr) *eventWatermark = 0;
     if (!m_executionClient || !m_eventClient)
     {
         reason = "EXECUTION_GATEWAY_DAEMON_IDENTITY_UNAVAILABLE";
@@ -305,6 +311,8 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
     }
     m_remoteIdentity = mutationIdentity;
     identity = mutationIdentity;
+    if (eventWatermark != nullptr)
+        *eventWatermark = eventIdentity.latestSequence;
     reason.clear();
     return true;
 }

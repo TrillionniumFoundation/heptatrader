@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <iostream>
+#include <locale>
 #include <limits>
 #include <map>
 #include <unistd.h>
@@ -16,7 +17,9 @@ const char* kOperation = "terminal-cleanup-hsl5-paper";
 bool ParseUnsigned(const std::string& value, std::uint64_t maximum,
                    std::uint64_t& parsed)
 {
-    if (value.empty()) return false;
+    if (value.empty() || (value.size() > 1 && value[0] == '0')) return false;
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+        if (*it < '0' || *it > '9') return false;
     char* end = nullptr;
     errno = 0;
     const unsigned long long number = std::strtoull(value.c_str(), &end, 10);
@@ -207,6 +210,9 @@ int HeptaSessionCtlTerminalCleanup::Run(int argc, char** argv)
     request.expectedKeySha256 = command.expectedKeyFileSha256.substr(7);
     SessionSupervisorLegacyPaperCleanupResult result;
     SessionSupervisorLeaseStore store;
+    // The cleanup command writes a JSON response directly to stdout; avoid
+    // locale-dependent integer grouping in that wire-facing output.
+    std::cout.imbue(std::locale::classic());
     if (!store.MigrateHsl5PaperForTerminalCleanup(
             command.storePath, command.keyPath, request, result, reason))
     {

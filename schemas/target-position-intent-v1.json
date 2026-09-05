@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "TargetPositionIntentV1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema","instrument","target_position_units","max_slippage_bps","expires_at_ms","numeric_policy_version"],
+  "properties": {
+    "schema": {"const":"hepta.target-position-intent.v1"},
+    "instrument": {"type":"string"},
+    "target_position_units": {"type":"integer"},
+    "max_slippage_bps": {"type":"integer","minimum":0},
+    "expires_at_ms": {"type":"integer","minimum":0},
+    "numeric_policy_version": {"const":"hepta.numeric.fixed-v1"},
+    "preview_permit": {"type":"string"},
+    "mutation_command_id": {"type":"string"}
+  }
+}
