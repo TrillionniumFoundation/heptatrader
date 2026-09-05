@@ -94,57 +94,55 @@ bool ValidPolicy(const GlobalAllocationPolicy& policy)
     return true;
 }
 
-bool CandidateFeasible(
+// Partial portfolios may be infeasible and still be repaired by a later
+// offsetting proposal. Only structural/arithmetic failures are safe to prune.
+bool ProjectCandidate(
     const std::map<std::string, DecisionMicrounits>& current,
     const StrategyProposalCandidate& candidate,
     const GlobalAllocationPolicy& policy,
     std::map<std::string, DecisionMicrounits>& projected)
 {
     projected = current;
-    for (std::size_t i = 0; i < candidate.targets.size(); ++i)
+    for (const StrategyCandidateTarget& target : candidate.targets)
     {
-        const StrategyCandidateTarget& target = candidate.targets[i];
-        const std::map<std::string, DecisionMicrounits>::const_iterator limit =
-            policy.instrumentAbsoluteLimits.find(target.instrument);
-        if (limit == policy.instrumentAbsoluteLimits.end()) return false;
+        if (policy.instrumentAbsoluteLimits.find(target.instrument) ==
+            policy.instrumentAbsoluteLimits.end()) return false;
         DecisionMicrounits next = 0;
-        if (!CheckedAdd(projected[target.instrument],
-                        target.targetPosition, next))
-            return false;
-        DecisionMicrounits absolute = 0;
-        if (!CheckedAbsolute(next, absolute) || absolute > limit->second)
+        if (!CheckedAdd(projected[target.instrument], target.targetPosition, next))
             return false;
         projected[target.instrument] = next;
     }
-    std::size_t active = 0;
-    DecisionMicrounits gross = 0;
-    for (std::map<std::string, DecisionMicrounits>::const_iterator it =
-             projected.begin(); it != projected.end(); ++it)
-    {
-        if (it->second == 0) continue;
-        ++active;
-        DecisionMicrounits absolute = 0;
-        if (!CheckedAbsolute(it->second, absolute) ||
-            !CheckedAdd(gross, absolute, gross))
-            return false;
-    }
-    return active <= policy.maximumInstruments &&
-        gross <= policy.maximumGrossTarget;
+    return true;
 }
 
-std::string ChoiceKey(
-    const ProposalSet& proposalSet,
-    const std::vector<int>& choices)
+bool TargetsFeasible(
+    const std::map<std::string, DecisionMicrounits>& targets,
+    const GlobalAllocationPolicy& policy)
 {
-    std::string key;
-    for (std::size_t i = 0; i < choices.size(); ++i)
+    std::size_t active = 0;
+    DecisionMicrounits gross = 0;
+    for (const auto& target : targets)
     {
-        AppendField(key, "module", proposalSet.proposals[i].moduleId);
-        AppendField(key, "candidate", choices[i] < 0 ? "!" :
-            proposalSet.proposals[i].candidates[
-                static_cast<std::size_t>(choices[i])].candidateId);
+        const auto limit = policy.instrumentAbsoluteLimits.find(target.first);
+        if (limit == policy.instrumentAbsoluteLimits.end()) return false;
+        if (target.second == 0) continue;
+        ++active;
+        DecisionMicrounits absolute = 0;
+        if (!CheckedAbsolute(target.second, absolute) || absolute > limit->second ||
+            !CheckedAdd(gross, absolute, gross)) return false;
     }
-    return key;
+    return active <= policy.maximumInstruments && gross <= policy.maximumGrossTarget;
+}
+
+bool CandidateFeasible(
+    const std::map<std::string, DecisionMicrounits>& current,
+    const StrategyProposalCandidate& candidate,
+    const GlobalAllocationPolicy& policy,
+    std::map<std::string, DecisionMicrounits>& projected)
+{
+    // Greedy fallback keeps a feasible incumbent. It does not claim an optimum.
+    return ProjectCandidate(current, candidate, policy, projected) &&
+        TargetsFeasible(projected, policy);
 }
 
 GlobalAllocationResult Reject(const char* code)
@@ -217,7 +215,7 @@ std::string GlobalAllocator::PlanDigest(const AllocationPlan& plan)
 }
 
 GlobalAllocationResult GlobalAllocator::Allocate(
-    const ProposalSet& proposalSet,
+    const ProposalSet& suppliedSet,
     const GlobalAllocationPolicy& policy,
     std::uint64_t allocatorEpoch,
     std::uint64_t createdAtMs)
@@ -225,14 +223,30 @@ GlobalAllocationResult GlobalAllocator::Allocate(
     if (!ValidPolicy(policy)) return Reject("ALLOCATION_POLICY_INVALID");
     if (allocatorEpoch == 0 || createdAtMs == 0)
         return Reject("ALLOCATION_TIME_ENVELOPE_INVALID");
-    if (proposalSet.proposals.empty() || proposalSet.digest.empty() ||
-        ProposalSetBuilder::Digest(proposalSet) != proposalSet.digest)
+    if (suppliedSet.proposals.empty() || suppliedSet.proposals.size() > 256u ||
+        suppliedSet.digest.size() != 71u ||
+        ProposalSetBuilder::Digest(suppliedSet) != suppliedSet.digest)
         return Reject("ALLOCATION_PROPOSAL_SET_INVALID");
-    if (proposalSet.capturedAtMs == 0 || proposalSet.validUntilMs <= createdAtMs ||
-        createdAtMs < proposalSet.capturedAtMs ||
-        createdAtMs < proposalSet.validFromMs ||
-        proposalSet.validUntilMs > proposalSet.snapshotValidUntilMs)
+    if (suppliedSet.capturedAtMs == 0 || suppliedSet.validUntilMs <= createdAtMs ||
+        createdAtMs < suppliedSet.capturedAtMs ||
+        createdAtMs < suppliedSet.validFromMs ||
+        suppliedSet.validUntilMs > suppliedSet.snapshotValidUntilMs)
         return Reject("ALLOCATION_TIME_ENVELOPE_INVALID");
+
+    // The set digest contains claimed member digests, not their current bodies.
+    // Rebuild through the canonical validator before reading candidate data.
+    // Use the original capture time: revalidation must never renew a horizon.
+    std::vector<std::string> expectedModules;
+    for (const StrategyProposal& member : suppliedSet.proposals)
+        expectedModules.push_back(member.moduleId);
+    const ProposalSetBuildResult rebuilt = ProposalSetBuilder::Build(
+        suppliedSet.proposals, expectedModules, suppliedSet.capturedAtMs,
+        suppliedSet.snapshotValidUntilMs);
+    if (!rebuilt.accepted || rebuilt.proposalSet.digest != suppliedSet.digest)
+        return Reject("ALLOCATION_PROPOSAL_SET_INVALID");
+    const ProposalSet& proposalSet = rebuilt.proposalSet;
+    // This checks internal consistency, not an external expected-module policy
+    // or issuer authentication. Those admission decisions remain upstream.
 
     bool exact = true;
     std::uint64_t combinations = 1;
@@ -260,7 +274,6 @@ GlobalAllocationResult GlobalAllocator::Allocate(
     std::vector<int> bestChoices(proposalSet.proposals.size(), -1);
     std::map<std::string, DecisionMicrounits> bestTargets;
     DecisionMicrounits bestObjective = 0;
-    std::string bestKey = ChoiceKey(proposalSet, bestChoices);
     std::uint64_t explored = 0;
 
     if (exact)
@@ -275,14 +288,16 @@ GlobalAllocationResult GlobalAllocator::Allocate(
             if (index == proposalSet.proposals.size())
             {
                 ++explored;
-                const std::string key = ChoiceKey(proposalSet, choices);
+                // Limits constrain the complete net target, not each prefix.
+                if (!TargetsFeasible(targets, policy)) return;
+                // Rebuilt candidates are sorted by ID. Slot -1 (reject) sorts
+                // first; framing lengths must never decide an economic tie.
                 if (objective > bestObjective ||
-                    (objective == bestObjective && key < bestKey))
+                    (objective == bestObjective && choices < bestChoices))
                 {
                     bestObjective = objective;
                     bestChoices = choices;
                     bestTargets = targets;
-                    bestKey = key;
                 }
                 return;
             }
@@ -293,7 +308,7 @@ GlobalAllocationResult GlobalAllocator::Allocate(
                  candidateIndex < proposal.candidates.size(); ++candidateIndex)
             {
                 std::map<std::string, DecisionMicrounits> projected;
-                if (!CandidateFeasible(targets,
+                if (!ProjectCandidate(targets,
                         proposal.candidates[candidateIndex], policy, projected))
                     continue;
                 DecisionMicrounits nextObjective = 0;

@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.global.decision",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "lifecycle": "current",
   "kind": "solver-service",
   "trust_domain": "global-decision",
