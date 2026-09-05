@@ -94,6 +94,24 @@ class TeamCodeownersActivationTests(unittest.TestCase):
                 errors,
             )
 
+    def test_every_mapped_team_requires_an_explicit_codeowners_rule(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._fixture(directory)
+            document = self._mapping(root)
+            for rule in document["codeowners_rules"]:
+                rule["teams"] = [
+                    slug for slug in rule["teams"] if slug != "strategy-runtime"
+                ]
+            self._write_mapping(root, document)
+            errors = activation.validate(root)
+            self.assertTrue(
+                any(
+                    "team strategy-runtime has no CODEOWNERS rule" in error
+                    for error in errors
+                ),
+                errors,
+            )
+
     def test_single_team_rule_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self._fixture(directory)
