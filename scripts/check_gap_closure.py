@@ -192,7 +192,8 @@ def _source_identity(root: Path, expected: str | None, errors: list[str]) -> str
     # Inherited GIT_DIR/WORK_TREE/config overrides must not redirect identity.
     environment = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     def git(*arguments: str) -> str:
-        result = subprocess.run(["git", "-C", str(root), *arguments], env=environment,
+        result = subprocess.run(["git", "--no-optional-locks", "-c", "core.fsmonitor=false",
+                                 "-C", str(root), *arguments], env=environment,
                                 check=True, capture_output=True, text=True, timeout=5)
         return result.stdout.strip()
     try:
@@ -203,11 +204,19 @@ def _source_identity(root: Path, expected: str | None, errors: list[str]) -> str
         if expected and actual != expected:
             errors.append("receipt binding: expected source SHA does not match repository HEAD")
             return None
+        # Porcelain status can deliberately omit tracked changes hidden by
+        # assume-unchanged or skip-worktree. Qualification input must be a full,
+        # inspectable checkout; do not mutate index flags to make it pass.
+        indexed = git("ls-files", "--cached", "-v", "-z")
+        if ((indexed and not indexed.endswith("\0")) or
+                any(record and not record.startswith("H ") for record in indexed.split("\0"))):
+            errors.append("receipt binding: candidate index hides or incompletely stages tracked files")
+            return None
         if git("status", "--porcelain", "--untracked-files=normal"):
             errors.append("receipt binding: candidate worktree is not clean")
             return None
     except (OSError, subprocess.SubprocessError):
-        if (root / ".git").exists():
+        if (root / ".git").exists() or (root / ".git").is_symlink():
             errors.append("receipt binding: Git metadata unreadable; cannot treat checkout as archive")
             return None
         actual = None
@@ -255,16 +264,21 @@ def _verify_external_receipt(gate_id: str, gate: dict[str, Any], *, repository_r
                 errors.append(f"G-TEAM-001 receipt: {field} differs from canonical policy")
 
 
-def validate(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
+def evaluate(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
              module_registry_path: Path = DEFAULT_MODULE_REGISTRY,
              repository_root: Path | None = None, *, expected_source_sha: str | None = None,
              expected_merge_group_sha: str | None = None, expected_pull_number: int | None = None,
-             receipt_root: Path | None = None) -> list[str]:
+             receipt_root: Path | None = None) -> tuple[list[str], dict[str, Any] | None]:
+    """Validate and project the same private input snapshot; never reopen to report.
+
+    Errors have no successful projection. This is an integrity observation of
+    supplied registries/receipts, not issuer authentication or a deployment lease.
+    """
     errors: list[str] = []
     gap_doc = _load(gap_registry_path, "gap registry", errors)
     module_doc = _load(module_registry_path, "module registry", errors)
     if errors:
-        return errors
+        return errors, None
     if gap_doc.get("schema") != "heptatrader.gap-registry.v2":
         errors.append("gap registry: schema mismatch")
     if module_doc.get("schema") != "heptatrader.module-registry.v2":
@@ -291,7 +305,7 @@ def validate(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
         errors.append(f"module registry: protected external gate missing from policy: {gate_id}")
     gaps = gap_doc.get("gaps")
     if not isinstance(gaps, list):
-        return errors + ["gap registry: gaps must be an array"]
+        return errors + ["gap registry: gaps must be an array"], None
     root = repository_root.resolve() if repository_root is not None else _repository_root(module_registry_path)
     by_id: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(gaps):
@@ -310,6 +324,7 @@ def validate(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
             errors.append(f"gap {gap_id}: repository-executable gap must be closed; only registered external qualification gates may remain open")
     closed_external = any(by_id.get(g, {}).get("state") == "closed" for g in external)
     source_sha = _source_identity(root, expected_source_sha, errors) if closed_external else None
+    git_bound = closed_external and ((root / ".git").exists() or (root / ".git").is_symlink())
     for gate_id in external:
         gate = by_id.get(gate_id)
         if gate is None:
@@ -318,13 +333,20 @@ def validate(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
             _verify_external_receipt(gate_id, gate, repository_root=root, source_sha=source_sha,
                                      merge_group_sha=expected_merge_group_sha,
                                      pull_number=expected_pull_number, receipt_root=receipt_root or root, errors=errors)
-    return errors
+    # Receipt reads and policy validation must not leave a stale source check.
+    # Re-admit the initial source, never select a newly moved HEAD implicitly.
+    if closed_external and source_sha is not None and not errors:
+        if git_bound and not ((root / ".git").exists() or (root / ".git").is_symlink()):
+            errors.append("receipt binding: candidate Git metadata disappeared during validation")
+        elif _source_identity(root, source_sha, errors) != source_sha:
+            errors.append("receipt binding: candidate source changed during validation")
+    if errors:
+        return errors, None
+    return [], _summary_from_documents(gap_doc, module_doc)
 
 
-def summary(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
-            module_registry_path: Path = DEFAULT_MODULE_REGISTRY) -> dict[str, Any]:
-    gap_doc = decode_object(gap_registry_path.read_bytes())
-    module_doc = decode_object(module_registry_path.read_bytes())
+def _summary_from_documents(gap_doc: dict[str, Any], module_doc: dict[str, Any]) -> dict[str, Any]:
+    # Only evaluate's validated private documents reach this projection helper.
     external = set(module_doc["implementation_evidence_policy"]["external_gate_ids"])
     gaps = gap_doc["gaps"]
     return {
@@ -339,6 +361,37 @@ def summary(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
     }
 
 
+def validate(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
+             module_registry_path: Path = DEFAULT_MODULE_REGISTRY,
+             repository_root: Path | None = None, *, expected_source_sha: str | None = None,
+             expected_merge_group_sha: str | None = None, expected_pull_number: int | None = None,
+             receipt_root: Path | None = None) -> list[str]:
+    errors, _ = evaluate(gap_registry_path, module_registry_path, repository_root,
+                         expected_source_sha=expected_source_sha,
+                         expected_merge_group_sha=expected_merge_group_sha,
+                         expected_pull_number=expected_pull_number, receipt_root=receipt_root)
+    return errors
+
+
+def summary(gap_registry_path: Path = DEFAULT_GAP_REGISTRY,
+            module_registry_path: Path = DEFAULT_MODULE_REGISTRY,
+            repository_root: Path | None = None, *, expected_source_sha: str | None = None,
+            expected_merge_group_sha: str | None = None, expected_pull_number: int | None = None,
+            receipt_root: Path | None = None) -> dict[str, Any]:
+    """Return a newly validated projection, or raise ValueError on any rejection.
+
+    A prior validate call conveys no cached approval to a subsequent summary.
+    Closed external gates require the same independently selected identity inputs.
+    """
+    errors, result = evaluate(gap_registry_path, module_registry_path, repository_root,
+                             expected_source_sha=expected_source_sha,
+                             expected_merge_group_sha=expected_merge_group_sha,
+                             expected_pull_number=expected_pull_number, receipt_root=receipt_root)
+    if errors or result is None:
+        raise ValueError("; ".join(errors) or "gap closure produced no validated projection")
+    return result
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gap-registry", type=Path, default=DEFAULT_GAP_REGISTRY)
@@ -350,15 +403,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-pull-number", type=int)
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    errors = validate(args.gap_registry, args.module_registry, repository_root=args.repository_root,
+    errors, result = evaluate(args.gap_registry, args.module_registry, repository_root=args.repository_root,
                       expected_source_sha=args.expected_source_sha,
                       expected_merge_group_sha=args.expected_merge_group_sha,
                       expected_pull_number=args.expected_pull_number, receipt_root=args.receipt_root)
     for error in errors:
         print(f"[GAP-CLOSURE] {error}", file=sys.stderr)
-    if errors:
+    if errors or result is None:
         return 1
-    result = summary(args.gap_registry, args.module_registry)
     if args.json:
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     else:

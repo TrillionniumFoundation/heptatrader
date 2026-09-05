@@ -137,7 +137,8 @@ class GapClosureTests(unittest.TestCase):
     def test_ib_fixture_passes_only_integrity_and_binding_checks(self) -> None:
         self.install_ib()
         self.assertEqual([], self.validate())
-        result = CHECKER.summary(self.gap_path, self.module_path)
+        result = CHECKER.summary(self.gap_path, self.module_path,
+                                 repository_root=self.root, expected_source_sha=SOURCE)
         self.assertFalse(result["grants_qualification"])
         self.assertFalse(result["external_evidence_synthesized"])
 

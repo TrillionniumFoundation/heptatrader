@@ -52,6 +52,78 @@ When an external gate is represented as closed, the checker requires an independ
 
 Receipts are read through retained directory descriptors. Every path component is no-follow, the leaf must be a bounded regular file with one hard link and no world-write permission, and file/directory bindings are rechecked after reading. Unsupported secure-read primitives fail closed. Digest integrity is not a digital signature and never proves issuer identity.
 
+## Validated closure reporting and source re-admission
+
+Documentation Control module 1.2.1 makes the closure checker validate and report
+one private registry snapshot. `evaluate(...)` in `scripts/check_gap_closure.py`
+returns `(errors, report)`: a nonempty error list always accompanies `report=None`;
+a successful report is derived only from the same parsed gap and module objects
+that passed validation. The CLI uses this combined operation once. It does not
+validate one file revision and then reopen changed registry paths for its JSON or
+text summary. A path replaced or deleted after capture cannot introduce unverified
+closed states into that report. The report describes the captured observation,
+not a continuous promise about later filesystem contents.
+
+`validate(...)` retains its list-of-errors interface. Public `summary(...)` now
+performs its own complete evaluation and raises ValueError on rejection; it is
+not an unchecked rendering shortcut. It accepts the same repository/receipt roots
+and independently selected source, PR and merge-group identity arguments as
+validate. A prior validate call conveys no cached approval to a later summary.
+Callers requesting both errors and a report should use evaluate to avoid two
+independent observations. Existing open-external-gate calls need no new arguments;
+closed-gate archive callers must explicitly supply their source identity to
+summary as well as to any separate validation. The summary schema remains V2 and
+`grants_qualification` remains false in every successful result.
+
+For a closed external gate, `_source_identity` now rejects any tracked index entry
+that is not an ordinary complete `H` record in the NUL-delimited `git ls-files
+--cached -v -z` listing. In particular, assume-unchanged and skip-worktree can hide
+real tracked-file changes from ordinary porcelain status; neither is admitted,
+even when the underlying file happens to be unchanged. The checker never clears
+these flags, repairs a sparse checkout or refreshes the index to make it pass.
+Git commands disable fsmonitor and optional locks, and still ignore inherited
+GIT_* overrides. Broken Git metadata cannot be treated as an archive. After receipt
+and canonical-context checks, the original source SHA and clean-checkout conditions
+are checked again; a changed HEAD, dirty source or removed Git metadata rejects
+instead of silently rebinding the old receipt to the new source.
+
+These checks require a trusted Git executable/configuration and a quiescent
+candidate/evidence workspace supplied by the supervising workflow. They are not a
+filesystem transaction, a byte-by-byte attestation of ignored build outputs, a
+hostile-Git sandbox, an anti-rollback service or a lease against mutations after
+return. Archives continue to rely on the caller's independently verified source
+binding; this checker does not reconstruct a Git commit from archive bytes.
+Git's index flag definitions are specified in `https://git-scm.com/docs/git-ls-files`
+and `https://git-scm.com/docs/git-update-index`.
+
+`receipt_file_boundary.decode_object` rejects non-finite values from both special
+NaN/Infinity literals and numeric tokens that overflow Python's float parser, such
+as 1e999. Its parse_float handler tests finiteness at every nesting level, including
+otherwise unused metadata. Finite JSON numbers retain their existing Python types;
+this does not add arbitrary decimal precision or relax later integer/type checks.
+The same decoder applies to the gap/module registries, canonical required contexts
+and securely read receipt envelopes. File-read protections, receipt schema/context
+requirements and the independent issuer-verification boundary remain unchanged.
+
+Direct regressions in `tests/python/test_gap_closure_snapshot.py` cover replacing
+registry paths between capture and reporting, public-summary revalidation, no
+success projection on errors, no cached/mutable approval, nested numeric overflow,
+finite-number compatibility, real Git assume-unchanged/skip-worktree counterexamples,
+NUL-delimited names, disabled fsmonitor hooks, unchanged index bytes, broken or
+removed Git metadata, and source/HEAD movement during actual detached receipt reads.
+The existing tests in `test_gap_closure.py` retain their assertions; the closed
+fixture's direct summary call now supplies its independent source identity.
+Synthetic test envelopes are never uploaded as real qualification receipts.
+Run both suites with `python3 -m unittest discover -s tests/python -p
+"test_gap_closure*.py"` from the repository root.
+
+This repair changes no gap state or external permission. `external_closed_with_receipt`
+means the listed supplied envelope passed this structural/binding evaluation, not
+that a live organization, Broker or independent reviewer approved it. Counts cover
+the registered gaps only and do not erase the product exclusions or remaining work
+products above. Complete current-head CI, independent review and protected live
+verifier evidence are separate requirements.
+
 ## Detached evidence consumption
 
 Keep source, qualification evidence and release binding as separate immutable objects:

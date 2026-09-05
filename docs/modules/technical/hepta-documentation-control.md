@@ -1,7 +1,7 @@
 # Documentation Control Plane Technical Guide
 
 Status: generated current view
-Applies to: `hepta.documentation.control` version `1.2.0` (current)
+Applies to: `hepta.documentation.control` version `1.2.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-documentation-control.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -120,7 +120,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Policies are checked in and reviewed as code; environment-specific relaxation is forbidden.
 - Tool dependencies and schema versions are pinned by CI and repository contracts.
 
-The manifest version is `1.2.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.2.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

@@ -6,6 +6,7 @@ It must never turn an untrusted JSON document into qualification authority.
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import stat
@@ -27,9 +28,18 @@ def reject_constant(value: str) -> None:
     raise ValueError(f"non-finite JSON constant: {value}")
 
 
+def finite_float(value: str) -> float:
+    # parse_constant sees NaN/Infinity literals, not valid JSON exponent tokens
+    # that overflow the host float (for example 1e999). Reject both spellings.
+    number = float(value)
+    if not math.isfinite(number):
+        raise ValueError("non-finite JSON number")
+    return number
+
+
 def decode_object(data: bytes) -> dict[str, Any]:
     value = json.loads(data.decode("utf-8"), object_pairs_hook=unique_object,
-                       parse_constant=reject_constant)
+                       parse_constant=reject_constant, parse_float=finite_float)
     if not isinstance(value, dict):
         raise ValueError("receipt root must be an object")
     return value
