@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cstdarg>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -18,6 +19,12 @@
 
 namespace fault {
 thread_local long allocation = -1, calls = 0;
+thread_local int sealCalls = 0, sealMode = 0;
+thread_local long clockOffsetMs = 0;
+thread_local bool sealHookRan = false;
+thread_local StrategyRuntimeControl* sealController = nullptr;
+thread_local const std::string* sealModule = nullptr;
+thread_local std::atomic<bool>* sealCancellation = nullptr;
 std::atomic<int> forkCount{0};
 thread_local bool forkFail = false, stopChild = false, crashChild = false, setupFail = false;
 thread_local int notifyFd = -1, probeFd = -1;
@@ -33,8 +40,31 @@ __attribute__((noinline)) void operator delete[](void* p) noexcept { std::free(p
 __attribute__((noinline)) void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 __attribute__((noinline)) void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
 #endif
+// Preserve the C++ return ABI while naming the test-only libstdc++ symbols.
+// C linkage with a time_point return is rejected by Clang's strict warnings.
+std::chrono::steady_clock::time_point RealSteadyNow()
+    asm("__real__ZNSt6chrono3_V212steady_clock3nowEv");
+std::chrono::steady_clock::time_point WrappedSteadyNow()
+    asm("__wrap__ZNSt6chrono3_V212steady_clock3nowEv");
+std::chrono::steady_clock::time_point WrappedSteadyNow() {
+    return RealSteadyNow() + std::chrono::milliseconds(fault::clockOffsetMs);
+}
 extern "C" {
 pid_t __real_fork();
+int __real_EVP_DigestInit_ex(EVP_MD_CTX*, const EVP_MD*, ENGINE*);
+int __wrap_EVP_DigestInit_ex(EVP_MD_CTX* ctx, const EVP_MD* md, ENGINE* engine) {
+    // Run performs one context preflight seal and a second result seal. The
+    // hook changes authority/time *inside* that second allocating hash call.
+    if (fault::sealMode && ++fault::sealCalls == 2) {
+        const int mode = fault::sealMode; fault::sealMode = 0;
+        fault::sealHookRan = true;
+        if (mode == 1) fault::sealCancellation->store(true);
+        if (mode == 2 && !fault::sealController->Quarantine(
+                *fault::sealModule, 2, "POST_COMPUTE_FAULT", 600).accepted) std::abort();
+        if (mode == 3 || mode == 4) fault::clockOffsetMs = 2500;
+    }
+    return __real_EVP_DigestInit_ex(ctx, md, engine);
+}
 int __real_prctl(int, ...);
 pid_t __wrap_fork() {
     ++fault::forkCount;
@@ -329,12 +359,109 @@ void TestAllocationFailureLeavesControllerAndChildrenUntouched() {
     }
     REQUIRE(completed && failures>0);std::cout<<"vm_allocation_failure_positions="<<failures<<'\n';
 }
+
+StrategyBytecodeResult SealInterleaving(int mode) {
+    Fixture f; std::atomic<bool> cancelled{false};
+    fault::sealCalls = 0; fault::sealMode = mode; fault::sealHookRan = false;
+    fault::sealController = &f.control; fault::sealModule = &f.policy.moduleId;
+    fault::sealCancellation = &cancelled;
+    StrategyBytecodeLimits limits;
+    if (mode == 4) limits.wallTimeMs = 5000; // Horizon, not wall budget, expires.
+    const auto result = f.Run(limits, {}, 2, &cancelled);
+    fault::clockOffsetMs = 0; fault::sealMode = 0;
+    fault::sealController = nullptr; fault::sealModule = nullptr; fault::sealCancellation = nullptr;
+    REQUIRE(fault::sealHookRan); Reaped();
+    return result;
 }
-int main() {
+
+void TestSealingCannotPublishAfterCancellationGenerationOrExpiry() {
+    const char* reasons[] = {"STRATEGY_VM_CANCELLED", "STRATEGY_VM_GENERATION_CHANGED",
+                            "STRATEGY_VM_TIMEOUT", "STRATEGY_VM_RESULT_EXPIRED"};
+    for (int mode = 1; mode <= 4; ++mode) {
+        const auto result = SealInterleaving(mode);
+        Empty(result); REQUIRE(std::string(result.reasonCode) == reasons[mode - 1]);
+    }
+}
+
+std::string SnapshotFingerprint(const StrategyRuntimeSnapshot& s) {
+    std::ostringstream out;
+    const auto& d = s.descriptor;
+    out << s.found << '|' << static_cast<int>(s.phase) << '|' << s.generation << '|'
+        << s.updatedAtMs << '|' << s.checkpointSequence << '|' << s.checkpointDigest << '|'
+        << s.checkpointBytes << '|' << s.reasonCode << '|' << d.moduleId << '|'
+        << d.version << '|' << d.artifactDigest << '|' << d.configDigest << '|'
+        << d.modelDigest << '|' << d.budget.maxThreads << '|' << d.budget.maxFileDescriptors << '|'
+        << d.budget.maxMemoryBytes << '|' << d.budget.maxCheckpointBytes;
+    return out.str();
+}
+
+unsigned ProbeSnapshotReadFailures(bool requireAtomic) {
+    Fixture f; unsigned partial = 0, injected = 0;
+    StrategyRuntimeSnapshot registryBefore; REQUIRE(f.control.Get(f.policy.moduleId, registryBefore));
+    for (bool alias : {false, true}) {
+        bool completed = false;
+        for (long ordinal = 0; ordinal < 128; ++ordinal) {
+            StrategyRuntimeSnapshot out;
+            // Deliberately different output so a partial generated copy cannot
+            // be masked by comparing a source snapshot with itself.
+            out.descriptor.moduleId = f.policy.moduleId;
+            out.descriptor.version = "old"; out.descriptor.artifactDigest = "old";
+            out.descriptor.configDigest = "old"; out.descriptor.modelDigest = "old";
+            out.generation = 99; out.updatedAtMs = 99; out.reasonCode = "OLD_OUTPUT";
+            const auto before = SnapshotFingerprint(out);
+            bool threw = false, found = false;
+            fault::allocation = ordinal; fault::calls = 0;
+            try { found = f.control.Get(alias ? out.descriptor.moduleId : f.policy.moduleId, out); }
+            catch (const std::bad_alloc&) { threw = true; }
+            fault::allocation = -1;
+            if (threw) {
+                ++injected;
+                if (before != SnapshotFingerprint(out)) ++partial;
+                if (requireAtomic) REQUIRE(before == SnapshotFingerprint(out));
+            } else {
+                REQUIRE(found && SnapshotFingerprint(out) == SnapshotFingerprint(registryBefore));
+                completed = true; break;
+            }
+            StrategyRuntimeSnapshot after; REQUIRE(f.control.Get(f.policy.moduleId, after));
+            REQUIRE(SnapshotFingerprint(after) == SnapshotFingerprint(registryBefore));
+        }
+        REQUIRE(completed);
+    }
+    REQUIRE(injected > 0);
+    std::cout << "runtime_get_injected_failures=" << injected
+              << " partial_outputs=" << partial << '\n';
+    return partial;
+}
+
+void TestSnapshotReadIsExceptionAtomicWithAliasedKey() {
+    REQUIRE(ProbeSnapshotReadFailures(true) == 0);
+    Fixture f; StrategyRuntimeSnapshot out;
+    out.descriptor.moduleId = "hepta.missing";
+    REQUIRE(!f.control.Get(out.descriptor.moduleId, out));
+    REQUIRE(!out.found && out.descriptor.moduleId.empty());
+}
+
+int BoundaryProbe() {
+    unsigned acceptedInvalid = 0;
+    for (int mode = 1; mode <= 4; ++mode) {
+        const auto result = SealInterleaving(mode);
+        acceptedInvalid += result.accepted ? 1u : 0u;
+        std::cout << "post_seal_mode=" << mode << " accepted=" << result.accepted
+                  << " reason=" << result.reasonCode << '\n';
+    }
+    const auto partial = ProbeSnapshotReadFailures(false);
+    return acceptedInvalid || partial ? 1 : 0;
+}
+
+}
+int main(int argc, char** argv) {
+    if (argc == 2 && std::string(argv[1]) == "--boundary-probe") return BoundaryProbe();
     TestActualSignedExecutionAndCheckpointRecovery();TestBytecodeValidationIsClosedWorld();
     TestInterpreterArithmeticBranchesAndBudgets();TestEveryRuntimeFaultReturnsNoPartialState();
     TestAuthorityContextCheckpointAndInputRejections();TestKernelFilterDeniesHostCapabilities();
     TestLaunchFailuresAndTimeoutReapChildren();TestCancellationGenerationAndBusyAreDeterministic();
     TestMalformedStateNeverRestoresPartialResults();TestAllocationFailureLeavesControllerAndChildrenUntouched();
+    TestSealingCannotPublishAfterCancellationGenerationOrExpiry();
+    TestSnapshotReadIsExceptionAtomicWithAliasedKey();
     std::cout<<"vm_assertions="<<assertions<<'\n';
 }

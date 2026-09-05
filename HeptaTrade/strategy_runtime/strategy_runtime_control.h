@@ -273,7 +273,13 @@ public:
         // Resolve a key that may alias out.descriptor.moduleId before reset.
         const auto found = m_records.find(moduleId);
         if (found == m_records.end()) { out = StrategyRuntimeSnapshot(); return false; }
-        out = found->second;
+        // Prepare the whole copy before publishing to the caller. Generated
+        // memberwise assignment can change early fields before a later string
+        // allocation throws, including when the input key aliases the output.
+        StrategyRuntimeSnapshot snapshot = found->second;
+        static_assert(std::is_nothrow_move_assignable<StrategyRuntimeSnapshot>::value,
+                      "Strategy snapshot publication must not throw");
+        out = std::move(snapshot);
         return true;
     }
 

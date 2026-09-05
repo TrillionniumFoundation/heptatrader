@@ -136,10 +136,30 @@ StrategyProposalSealResult StrategyProposalContract::ValidateAndSeal(
         proposal.horizonMs == 0 ||
         proposal.horizonMs > proposal.expiresAtMs - proposal.validFromMs)
         return Reject("PROPOSAL_TIME_ENVELOPE_INVALID");
-    if (nowMs < proposal.validFromMs || nowMs > proposal.expiresAtMs)
+    if (nowMs < proposal.validFromMs || nowMs >= proposal.expiresAtMs)
         return Reject("PROPOSAL_NOT_CURRENT");
     if (proposal.candidates.empty() || proposal.candidates.size() > 256u)
         return Reject("PROPOSAL_CANDIDATE_COUNT_INVALID");
+
+    // Bound the current nested body before copying, sorting or allocating
+    // duplicate sets. Caller-provided values must not amplify a rejected
+    // proposal into an unbounded normalization allocation.
+    if (!proposal.proposalDigest.empty() && !CanonicalDigest(proposal.proposalDigest))
+        return Reject("PROPOSAL_DIGEST_MISMATCH");
+    std::size_t totalTargets = 0;
+    for (const StrategyProposalCandidate& candidate : proposal.candidates)
+    {
+        if (!CanonicalId(candidate.candidateId, 128u) || !InNumericRange(candidate.utility))
+            return Reject("PROPOSAL_CANDIDATE_INVALID");
+        if (candidate.targets.empty() || candidate.targets.size() > 256u)
+            return Reject("PROPOSAL_TARGET_COUNT_INVALID");
+        if (candidate.targets.size() > 4096u - totalTargets)
+            return Reject("PROPOSAL_TOTAL_TARGET_COUNT_LIMIT");
+        totalTargets += candidate.targets.size();
+        for (const StrategyCandidateTarget& target : candidate.targets)
+            if (!CanonicalId(target.instrument, 128u) || !InNumericRange(target.targetPosition))
+                return Reject("PROPOSAL_TARGET_INVALID");
+    }
 
     StrategyProposal normalized = proposal;
     std::sort(normalized.candidates.begin(), normalized.candidates.end(),

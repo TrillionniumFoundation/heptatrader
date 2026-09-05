@@ -1,7 +1,7 @@
 # Strategy Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.strategy.runtime` version `2.3.0` (current)
+Applies to: `hepta.strategy.runtime` version `2.3.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-strategy-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -41,7 +41,7 @@ Manifest: [`modules/manifests/hepta-strategy-runtime.json`](../manifests/hepta-s
 ### Direct implementation evidence
 
 - **Source evidence:** `HeptaTrade/strategy_runtime/`
-- **Test evidence:** `tests/strategy_proposal_tests.cpp`, `tests/python/test_bounded_runtime_components.py`, `tests/strategy_checkpoint_store_tests.cpp`, `tests/python/test_strategy_checkpoint_store.py`, `tests/strategy_artifact_verifier_tests.cpp`, `tests/python/test_strategy_artifact_verifier.py`, `tests/strategy_bytecode_runtime_tests.cpp`, `tests/python/test_strategy_bytecode_runtime.py`
+- **Test evidence:** `tests/strategy_proposal_tests.cpp`, `tests/python/test_bounded_runtime_components.py`, `tests/strategy_checkpoint_store_tests.cpp`, `tests/python/test_strategy_checkpoint_store.py`, `tests/strategy_artifact_verifier_tests.cpp`, `tests/python/test_strategy_artifact_verifier.py`, `tests/strategy_bytecode_runtime_tests.cpp`, `tests/python/test_strategy_bytecode_runtime.py`, `tests/strategy_proposal_admission_tests.cpp`, `tests/python/test_strategy_proposal_admission.py`
 
 This section is the current repository-scope capability ceiling. The target contract below may describe future or deployment-dependent behavior, but it cannot raise the evidence state, erase exclusions, close an external gate, or imply PAPER/LIVE/deployment qualification.
 
@@ -133,7 +133,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Strategy versions, parameters, resource budgets and enablement are canonical configuration.
 - Unknown or unapproved strategy versions cannot load.
 
-The manifest version is `2.3.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `2.3.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

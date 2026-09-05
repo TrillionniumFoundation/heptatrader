@@ -110,7 +110,8 @@ class StrategyBytecodeRuntimeTests(unittest.TestCase):
                 "HeptaTrade/strategy_runtime/strategy_bytecode_runtime.cpp",
                 "HeptaTrade/strategy_runtime/strategy_artifact_verifier.cpp",
                 "HeptaTrade/strategy_runtime/strategy_checkpoint_store.cpp",
-                "HeptaTrade/strategy_runtime/strategy_proposal.cpp"], ["-Wl,--wrap=fork,--wrap=prctl", "-lcrypto"])
+                "HeptaTrade/strategy_runtime/strategy_proposal.cpp"], ["-Wl,--wrap=fork,--wrap=prctl,--wrap=EVP_DigestInit_ex",
+                "-Wl,--wrap=_ZNSt6chrono3_V212steady_clock3nowEv", "-lcrypto"])
             run = subprocess.run([str(binary)], text=True, capture_output=True, timeout=60)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
             self.assertIn("vm_assertions=", run.stdout)

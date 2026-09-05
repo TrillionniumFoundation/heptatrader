@@ -20,7 +20,7 @@ starts a process, proves health or grants Execution authority.
 The inter-module contract remains `hepta.module-lifecycle.v1`. The native
 controller identifiers are independently versioned:
 `hepta.strategy-runtime-control.v2` and `hepta.durable-rollout-store.v2`.
-Strategy Runtime is module version 2.3.0; Management Control is 2.0.1
+Strategy Runtime is module version 2.3.1; Management Control is 2.0.1
 with the seven-state exception-safety correction below. Existing V2 native callers
 must still review the stricter admission rules and recompile native types. Wire
 schema V1 is unchanged; no ABI, automatic migration or deployment qualification
@@ -115,7 +115,10 @@ There is no inference that an absent checkpoint payload can be reconstructed.
 `checkpointBytes` binds metadata identity only: the controller does not load,
 hash, sign, persist or deserialize a payload. Snapshot copies do not convey
 permission to mutate controller state. `Get` supports an input key that aliases
-its output snapshot and clears the output on a miss.
+its output snapshot and clears the output on a miss. On a hit it first constructs
+a complete private snapshot, then publishes by a compile-time checked no-throw
+move. An allocation failure leaves the entire caller output unchanged, not just
+the registry. A memberwise copy assignment is not an exception-atomic read.
 
 All modifying operations construct the complete proposed snapshot and accepted
 result before publication. `Commit` uses a compile-time checked no-throw move
@@ -303,6 +306,41 @@ independent Python-integer interpreter against the test-only C++ oracle bridge f
 5,000 seeded programs/inputs/fuel values. It compares rejection, fault, steps,
 utility, target and all state slots. This is finite differential evidence, not a
 formal proof or a general-purpose native-sandbox certification.
+
+### 2.3.1 result-publication correction
+
+The last execution observation is not the result publication boundary. Proposal
+normalization, digest creation, checkpoint encoding and snapshot copying can
+allocate, block or run while a different thread cancels/quarantines the strategy.
+An earlier generation/time check must not authorize a result built afterward.
+
+The runner now prepares the full proposal and checkpoint payload while the local
+result remains unaccepted. Only after that preparation does it copy and revalidate
+the final controller snapshot, recompute monotonic elapsed time and artifact
+validity, and observe cancellation. A failed last check returns a fresh rejected
+object with no proposal or checkpoint payload. Wall/horizon budgets include this
+parent-side preparation, not merely child execution. Successful return uses a
+compile-time checked no-throw move; no further allocating success-path copy is
+permitted after the final checks.
+
+This final observation is still not a lease against later controller/policy/time
+changes or a real-time scheduling guarantee. Downstream consumers must revalidate
+on use; an immutable verifier does not discover future policy revocations.
+
+`TestSealingCannotPublishAfterCancellationGenerationOrExpiry` injects four events
+inside the second (result) proposal-digest call: cancellation, quarantine, elapsed
+wall-budget exhaustion, and horizon expiry within a larger wall budget. Each must
+return its typed rejection with empty output. Test-only linker interposition
+controls the digest boundary and libstdc++ steady-clock observation without a
+production clock hook, sleep or removed deadline. The baseline returned successful
+results for all four interleavings; the regression checks the actual result path.
+
+`TestSnapshotReadIsExceptionAtomicWithAliasedKey` walks allocation-failure ordinals
+for both ordinary and output-aliased controller reads, compares every snapshot
+field and verifies the registry is unchanged. The native file retains its ten
+prior functions and adds these two. The canonical Python wrapper links the extra
+test interposers. Existing independent VM oracle, process/syscall-fault and state
+recovery tests remain required; none of these tests authorizes deployment.
 
 Relevant kernel interface definitions, not deployment receipts:
 `https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html`,

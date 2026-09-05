@@ -200,16 +200,30 @@ StrategyBytecodeResult StrategyBytecodeRuntime::Run(StrategyRuntimeControl& cont
     if (finishedAt >= invocation.expiresAtMs || elapsed >= invocation.horizonMs ||
         !verifier.Authorizes(artifact, finishedAt)) return Reject("STRATEGY_VM_RESULT_EXPIRED");
     if (cancelled && cancelled->load()) return Reject("STRATEGY_VM_CANCELLED");
-    StrategyRuntimeSnapshot after;
-    if (!controller.Get(moduleId, after) || after.generation != expectedGeneration ||
-        after.phase != StrategyRuntimePhase::Running || !Same(after.descriptor, descriptor))
-        return Reject("STRATEGY_VM_GENERATION_CHANGED");
     proposal.candidates[0].utility = wire.utility; proposal.candidates[0].targets[0].targetPosition = wire.target;
     auto sealed = StrategyProposalContract::ValidateAndSeal(proposal, finishedAt);
     if (!sealed.accepted) return Reject("STRATEGY_VM_OUTPUT_INVALID");
     StrategyBytecodeResult result;
     result.proposal = std::move(sealed.proposal); result.checkpointPayload = EncodeState(wire);
-    result.steps = wire.steps; result.reasonCode = "STRATEGY_VM_COMPLETED"; result.accepted = true;
+    result.steps = wire.steps;
+    // Sealing, hashing, state encoding and snapshot copying can allocate or
+    // wait. Revalidate only after all of them, not just after the child exits.
+    // A discarded prepared result must never expose proposal/checkpoint bytes.
+    StrategyRuntimeSnapshot after;
+    if (!controller.Get(moduleId, after) || after.generation != expectedGeneration ||
+        after.phase != StrategyRuntimePhase::Running || !Same(after.descriptor, descriptor))
+        return Reject("STRATEGY_VM_GENERATION_CHANGED");
+    const auto publishElapsed = ElapsedMs(start);
+    if (publishElapsed >= limits.wallTimeMs ||
+        publishElapsed > std::numeric_limits<std::uint64_t>::max() - invocation.observedAtMs)
+        return Reject("STRATEGY_VM_TIMEOUT");
+    const auto publishedAt = invocation.observedAtMs + publishElapsed;
+    if (publishedAt >= proposal.expiresAtMs || publishElapsed >= invocation.horizonMs ||
+        !verifier.Authorizes(artifact, publishedAt)) return Reject("STRATEGY_VM_RESULT_EXPIRED");
+    if (cancelled && cancelled->load()) return Reject("STRATEGY_VM_CANCELLED");
+    static_assert(std::is_nothrow_move_constructible<StrategyBytecodeResult>::value,
+                  "Returning a completed VM result must not throw");
+    result.reasonCode = "STRATEGY_VM_COMPLETED"; result.accepted = true;
     return result;
 #endif
 }
