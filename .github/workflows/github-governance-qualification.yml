@@ -54,7 +54,7 @@ permissions:
 
 concurrency:
   group: heptatrader-github-governance-qualification-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   bootstrap-audit:
@@ -82,6 +82,7 @@ jobs:
         run: |
           set -euo pipefail
           git diff --check
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 -m py_compile \
@@ -92,12 +93,13 @@ jobs:
             scripts/verify_qualification_candidate.py \
             scripts/verify_team_codeowners_activation.py \
             scripts/check_qualification_trust_boundary.py
-          python3 scripts/check_qualification_trust_boundary.py --self-test
           python3 scripts/verify_team_codeowners_activation.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
           python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           python3 -m unittest discover -s tests/python -p 'test_team_codeowners_activation.py'
+          test -z "$(git status --porcelain=v1 --untracked-files=no)"
           printf '%s\n' \
             'Trusted qualification boundary and static team CODEOWNERS activation audits passed.' \
             'No secret, Broker credential or candidate mutation was used.' \
