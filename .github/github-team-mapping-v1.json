@@ -3,6 +3,14 @@
   "organization": "TrillionniumFoundation",
   "minimum_members_per_team": 2,
   "minimum_maintainers_per_team": 1,
+  "tracked_path_policy": {
+    "source": "git-ls-files",
+    "scope": "all-top-level-directories",
+    "require_match_per_rule": true,
+    "require_byte_sorted_root_rules": true,
+    "allow_future_only_patterns": false,
+    "wildcard_counts_for_team_qualification": false
+  },
   "teams": [
     {
       "slug": "architecture-contracts",
@@ -79,10 +87,59 @@
       ]
     },
     {
+      "pattern": "/.agents/",
+      "teams": [
+        "gateway-session-security",
+        "reliability-operations-research"
+      ]
+    },
+    {
       "pattern": "/.github/",
       "teams": [
         "gateway-session-security",
         "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/HeptaSimulator/",
+      "teams": [
+        "marketdata-feature",
+        "venue-adapters"
+      ]
+    },
+    {
+      "pattern": "/HeptaStrategy/",
+      "teams": [
+        "strategy-runtime",
+        "portfolio-risk"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/",
+      "teams": [
+        "execution-oms",
+        "portfolio-risk"
+      ]
+    },
+    {
+      "pattern": "/Interface/",
+      "teams": [
+        "venue-adapters",
+        "gateway-session-security"
+      ]
+    },
+    {
+      "pattern": "/Tools/",
+      "teams": [
+        "marketdata-feature",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/adapters/",
+      "teams": [
+        "venue-adapters",
+        "gateway-session-security"
       ]
     },
     {
@@ -93,80 +150,31 @@
       ]
     },
     {
-      "pattern": "/docs/governance/",
-      "teams": [
-        "architecture-contracts",
-        "gateway-session-security"
-      ]
-    },
-    {
-      "pattern": "/docs/modules/",
+      "pattern": "/doc/",
       "teams": [
         "architecture-contracts",
         "reliability-operations-research"
       ]
     },
     {
-      "pattern": "/docs/program/",
+      "pattern": "/docs/",
       "teams": [
         "architecture-contracts",
         "reliability-operations-research"
       ]
     },
     {
-      "pattern": "/docs/verification/",
+      "pattern": "/pic/",
       "teams": [
-        "execution-oms",
+        "architecture-contracts",
         "reliability-operations-research"
       ]
     },
     {
-      "pattern": "/HeptaTrade/marketdata/",
-      "teams": [
-        "marketdata-feature",
-        "venue-adapters"
-      ]
-    },
-    {
-      "pattern": "/HeptaTrade/features/",
-      "teams": [
-        "marketdata-feature",
-        "reliability-operations-research"
-      ]
-    },
-    {
-      "pattern": "/HeptaTrade/strategy_runtime/",
+      "pattern": "/plugins/",
       "teams": [
         "strategy-runtime",
-        "portfolio-risk"
-      ]
-    },
-    {
-      "pattern": "/HeptaTrade/execution/",
-      "teams": [
-        "execution-oms",
-        "portfolio-risk"
-      ]
-    },
-    {
-      "pattern": "/HeptaTrade/risk/",
-      "teams": [
-        "execution-oms",
-        "portfolio-risk"
-      ]
-    },
-    {
-      "pattern": "/HeptaTrade/tool_host/",
-      "teams": [
-        "execution-oms",
         "gateway-session-security"
-      ]
-    },
-    {
-      "pattern": "/HeptaTrade/adapter_ib/",
-      "teams": [
-        "execution-oms",
-        "venue-adapters"
       ]
     },
     {
@@ -177,7 +185,35 @@
       ]
     },
     {
+      "pattern": "/strategies/",
+      "teams": [
+        "strategy-runtime",
+        "portfolio-risk"
+      ]
+    },
+    {
       "pattern": "/systemd/",
+      "teams": [
+        "gateway-session-security",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/tests/",
+      "teams": [
+        "architecture-contracts",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/third_party/",
+      "teams": [
+        "gateway-session-security",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/tmpfiles.d/",
       "teams": [
         "gateway-session-security",
         "reliability-operations-research"
