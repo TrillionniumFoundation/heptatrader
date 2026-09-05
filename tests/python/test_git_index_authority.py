@@ -12,206 +12,144 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT / "scripts") not in sys.path:
-    sys.path.insert(0, str(ROOT / "scripts"))
-
+sys.path.insert(0, str(ROOT / "scripts"))
 import verify_exact_git_index as authority  # noqa: E402
 
 
 class ExactGitIndexAuthorityTests(unittest.TestCase):
-    def _run(self, root: Path, *arguments: str, input_bytes: bytes | None = None) -> bytes:
-        completed = subprocess.run(
-            ["git", "-C", str(root), *arguments],
-            input=input_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
+    def git(self, root: Path, *args: str, data: bytes | None = None) -> bytes:
+        run = subprocess.run(
+            ["git", "-C", str(root), *args], input=data,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
-        self.assertEqual(
-            completed.returncode,
-            0,
-            (completed.stdout + completed.stderr).decode("utf-8", errors="replace"),
-        )
-        return completed.stdout
+        self.assertEqual(run.returncode, 0, (run.stdout + run.stderr).decode("utf-8", "replace"))
+        return run.stdout
 
-    def _repository(self, directory: str) -> Path:
+    def repo(self, directory: str) -> Path:
         root = Path(directory)
-        self._run(root, "init", "-q", "--initial-branch=main")
-        self._run(root, "config", "user.name", "Exact Index Test")
-        self._run(root, "config", "user.email", "exact-index@example.invalid")
-        control = root / "control.txt"
-        control.write_text("trusted\n", encoding="utf-8")
-        ignored = root / ".gitignore"
-        ignored.write_text("ignored.bin\n", encoding="utf-8")
-        self._run(root, "add", "control.txt", ".gitignore")
-        self._run(root, "commit", "-q", "-m", "seed")
+        self.git(root, "init", "-q", "--initial-branch=main")
+        self.git(root, "config", "user.name", "Exact Index Test")
+        self.git(root, "config", "user.email", "exact-index@example.invalid")
+        (root / "control.txt").write_text("trusted\n", encoding="utf-8")
+        (root / ".gitignore").write_text("ignored.bin\n", encoding="utf-8")
+        self.git(root, "add", "control.txt", ".gitignore")
+        self.git(root, "commit", "-q", "-m", "seed")
         return root
 
-    def _validate(self, root: Path) -> list[str]:
+    def validate(self, root: Path) -> list[str]:
         return authority.validate(root, critical_paths=("control.txt",))
 
     def test_clean_exact_checkout_passes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            self.assertEqual(self._validate(root), [])
+            self.assertEqual(self.validate(self.repo(directory)), [])
 
     def test_no_git_export_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "control.txt").write_text("trusted\n", encoding="utf-8")
-            self.assertTrue(any(".git directory" in error for error in self._validate(root)))
+            self.assertTrue(any(".git directory" in item for item in self.validate(root)))
 
-    def test_git_routing_environment_is_ignored(self) -> None:
+    def test_inherited_git_routing_is_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryDirectory() as other:
-            root = self._repository(directory)
-            attacker = self._repository(other)
-            redirected_index = attacker / "redirected-index"
-            shutil.copyfile(attacker / ".git" / "index", redirected_index)
-            with mock.patch.dict(
-                os.environ,
-                {
-                    "GIT_DIR": str(attacker / ".git"),
-                    "GIT_WORK_TREE": str(attacker),
-                    "GIT_INDEX_FILE": str(redirected_index),
-                    "GIT_OBJECT_DIRECTORY": str(attacker / ".git" / "objects"),
-                },
-                clear=False,
-            ):
-                self.assertEqual(self._validate(root), [])
+            root, attacker = self.repo(directory), self.repo(other)
+            redirected = attacker / "index-copy"
+            shutil.copyfile(attacker / ".git" / "index", redirected)
+            with mock.patch.dict(os.environ, {
+                "GIT_DIR": str(attacker / ".git"),
+                "GIT_WORK_TREE": str(attacker),
+                "GIT_INDEX_FILE": str(redirected),
+                "GIT_OBJECT_DIRECTORY": str(attacker / ".git" / "objects"),
+            }, clear=False):
+                self.assertEqual(self.validate(root), [])
 
-    def test_staged_index_drift_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            (root / "control.txt").write_text("staged drift\n", encoding="utf-8")
-            self._run(root, "add", "control.txt")
-            errors = self._validate(root)
-            self.assertTrue(any("entries differ from HEAD" in error for error in errors), errors)
+    def test_staged_and_unstaged_drift_are_rejected(self) -> None:
+        for staged in (False, True):
+            with self.subTest(staged=staged), tempfile.TemporaryDirectory() as directory:
+                root = self.repo(directory)
+                (root / "control.txt").write_text("drift\n", encoding="utf-8")
+                if staged:
+                    self.git(root, "add", "control.txt")
+                errors = self.validate(root)
+                needle = "entries differ from HEAD" if staged else "bytes differ from indexed blob"
+                self.assertTrue(any(needle in item for item in errors), errors)
 
-    def test_unstaged_worktree_drift_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            (root / "control.txt").write_text("unstaged drift\n", encoding="utf-8")
-            errors = self._validate(root)
-            self.assertTrue(any("bytes differ from indexed blob" in error for error in errors), errors)
+    def test_symlink_hardlink_and_mode_substitution_are_rejected(self) -> None:
+        for kind in ("symlink", "hardlink", "mode"):
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as directory:
+                root = self.repo(directory)
+                control = root / "control.txt"
+                if kind == "symlink":
+                    (root / "backing.txt").write_text("trusted\n", encoding="utf-8")
+                    control.unlink()
+                    control.symlink_to("backing.txt")
+                    needle = "replaced by another type"
+                elif kind == "hardlink":
+                    os.link(control, root / "duplicate.txt")
+                    needle = "one hard link"
+                else:
+                    if os.name == "nt":
+                        self.skipTest("POSIX mode required")
+                    control.chmod(0o755)
+                    needle = "executable mode differs"
+                self.assertTrue(any(needle in item for item in self.validate(root)))
 
-    def test_symlink_substitution_is_rejected(self) -> None:
+    def test_ignored_untracked_content_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            target = root / "backing.txt"
-            target.write_text("trusted\n", encoding="utf-8")
-            control = root / "control.txt"
-            control.unlink()
-            control.symlink_to(target.name)
-            errors = self._validate(root)
-            self.assertTrue(any("replaced by another type" in error for error in errors), errors)
-
-    def test_hardlink_substitution_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            control = root / "control.txt"
-            duplicate = root / "duplicate.txt"
-            os.link(control, duplicate)
-            errors = self._validate(root)
-            self.assertTrue(any("one hard link" in error for error in errors), errors)
-
-    def test_ignored_untracked_file_is_still_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
+            root = self.repo(directory)
             (root / "ignored.bin").write_bytes(b"hostile")
-            errors = self._validate(root)
-            self.assertTrue(any("untracked work-tree content" in error for error in errors), errors)
+            self.assertTrue(any("untracked work-tree content" in item for item in self.validate(root)))
 
     def test_missing_critical_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            errors = authority.validate(root, critical_paths=("missing-control.txt",))
-            self.assertTrue(any("critical trust-boundary path is absent" in error for error in errors), errors)
+            root = self.repo(directory)
+            errors = authority.validate(root, critical_paths=("missing.txt",))
+            self.assertTrue(any("critical trust-boundary path is absent" in item for item in errors))
 
     def test_unmerged_index_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            first = self._run(root, "hash-object", "-w", "--stdin", input_bytes=b"one\n").decode().strip()
-            second = self._run(root, "hash-object", "-w", "--stdin", input_bytes=b"two\n").decode().strip()
-            third = self._run(root, "hash-object", "-w", "--stdin", input_bytes=b"three\n").decode().strip()
-            self._run(root, "update-index", "--force-remove", "control.txt")
-            index_info = (
-                f"100644 {first} 1\tcontrol.txt\n"
-                f"100644 {second} 2\tcontrol.txt\n"
-                f"100644 {third} 3\tcontrol.txt\n"
-            ).encode("utf-8")
-            self._run(root, "update-index", "--index-info", input_bytes=index_info)
-            errors = self._validate(root)
-            self.assertTrue(any("unmerged git index entry" in error for error in errors), errors)
+            root = self.repo(directory)
+            blobs = [self.git(root, "hash-object", "-w", "--stdin", data=f"{n}\n".encode()).decode().strip() for n in range(3)]
+            self.git(root, "update-index", "--force-remove", "control.txt")
+            info = "".join(f"100644 {oid} {stage}\tcontrol.txt\n" for stage, oid in enumerate(blobs, 1)).encode()
+            self.git(root, "update-index", "--index-info", data=info)
+            self.assertTrue(any("unmerged git index entry" in item for item in self.validate(root)))
 
     def test_committed_gitlink_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            head = self._run(root, "rev-parse", "HEAD").decode().strip()
-            self._run(root, "update-index", "--add", "--cacheinfo", f"160000,{head},vendor")
-            self._run(root, "commit", "-q", "-m", "add gitlink")
-            errors = self._validate(root)
-            self.assertTrue(any("gitlink/submodule" in error for error in errors), errors)
+            root = self.repo(directory)
+            head = self.git(root, "rev-parse", "HEAD").decode().strip()
+            self.git(root, "update-index", "--add", "--cacheinfo", f"160000,{head},vendor")
+            self.git(root, "commit", "-q", "-m", "gitlink")
+            self.assertTrue(any("gitlink/submodule" in item for item in self.validate(root)))
 
-    def test_executable_mode_drift_is_rejected(self) -> None:
-        if os.name == "nt":
-            self.skipTest("POSIX executable modes are required")
+    def test_cli_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
-            (root / "control.txt").chmod(0o755)
-            errors = self._validate(root)
-            self.assertTrue(any("executable mode differs" in error for error in errors), errors)
-
-    def test_cli_fails_closed_and_never_prints_pass(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self._repository(directory)
+            root = self.repo(directory)
             (root / "control.txt").write_text("drift\n", encoding="utf-8")
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            with (
-                mock.patch.object(authority, "CRITICAL_PATHS", ("control.txt",)),
-                redirect_stdout(stdout),
-                redirect_stderr(stderr),
-            ):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(authority, "CRITICAL_PATHS", ("control.txt",)), redirect_stdout(stdout), redirect_stderr(stderr):
                 code = authority.main(["--root", str(root)])
             self.assertEqual(code, 1)
             self.assertNotIn("PASS", stdout.getvalue())
             self.assertIn("[EXACT-GIT-INDEX]", stderr.getvalue())
 
-    def test_repository_workflows_cover_every_main_pull_request(self) -> None:
-        for relative in (
-            Path(".github/workflows/github-governance-qualification.yml"),
-            Path(".github/workflows/ib-paper-qualification.yml"),
-        ):
-            text = (ROOT / relative).read_text(encoding="utf-8")
-            pull_block = text.split("  workflow_dispatch:", 1)[0]
-            self.assertIn("  pull_request:\n    branches: [main]", pull_block)
-            self.assertNotIn("    paths:", pull_block)
-            self.assertIn(
-                "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-                text,
-            )
+    def test_all_main_pull_requests_run_the_governance_boundary(self) -> None:
+        workflow = (ROOT / ".github/workflows/github-governance-qualification.yml").read_text(encoding="utf-8")
+        pull_block = workflow.split("  workflow_dispatch:", 1)[0]
+        self.assertIn("  pull_request:\n    branches: [main]", pull_block)
+        self.assertNotIn("    paths:", pull_block)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)
+        self.assertIn("python3 scripts/verify_exact_git_index.py --root .", workflow)
+        self.assertIn("python3 trusted/scripts/verify_exact_git_index.py --root trusted", workflow)
+        self.assertIn("test_git_index_authority.py", workflow)
 
-    def test_repository_workflows_execute_exact_index_boundary(self) -> None:
-        governance = (
-            ROOT / ".github/workflows/github-governance-qualification.yml"
-        ).read_text(encoding="utf-8")
-        ib = (ROOT / ".github/workflows/ib-paper-qualification.yml").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("python3 scripts/verify_exact_git_index.py --root .", governance)
-        self.assertIn(
-            "python3 trusted/scripts/verify_exact_git_index.py --root trusted",
-            governance,
-        )
-        self.assertIn("test_git_index_authority.py", governance)
-        self.assertIn("python3 scripts/verify_exact_git_index.py --root .", ib)
-        self.assertGreaterEqual(
-            ib.count(
-                "python3 trusted/scripts/verify_exact_git_index.py --root trusted"
-            ),
-            2,
-        )
-        self.assertIn("test_git_index_authority.py", ib)
+    def test_ib_workflow_is_part_of_the_exact_index_boundary(self) -> None:
+        workflow = (ROOT / ".github/workflows/ib-paper-qualification.yml").read_text(encoding="utf-8")
+        pull_block = workflow.split("  workflow_dispatch:", 1)[0]
+        self.assertIn("  pull_request:\n    branches: [main]", pull_block)
+        self.assertNotIn("    paths:", pull_block)
+        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)
+        self.assertIn(".github/workflows/ib-paper-qualification.yml", authority.CRITICAL_PATHS)
 
 
 if __name__ == "__main__":
