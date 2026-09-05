@@ -20,7 +20,7 @@ starts a process, proves health or grants Execution authority.
 The inter-module contract remains `hepta.module-lifecycle.v1`. The native
 controller identifiers are independently versioned:
 `hepta.strategy-runtime-control.v2` and `hepta.durable-rollout-store.v2`.
-Strategy Runtime is module version 2.3.1; Management Control is 2.0.1
+Strategy Runtime is module version 2.4.0; Management Control is 2.0.1
 with the seven-state exception-safety correction below. Existing V2 native callers
 must still review the stricter admission rules and recompile native types. Wire
 schema V1 is unchanged; no ABI, automatic migration or deployment qualification
@@ -167,7 +167,8 @@ constants and supervisor-selected normalized inputs only. A different strategy
 configuration/model/budget cannot reuse a mismatched controller/checkpoint identity.
 
 One runner object admits at most one child at a time; contention returns
-`STRATEGY_VM_BUSY` without waiting. This is not a global worker limit across objects.
+`STRATEGY_VM_BUSY` without waiting. Shared invocation reservations additionally
+bound cooperating runner instances as specified in the 2.4.0 section below.
 No controller lock is held across process creation or waiting. Final controller
 revalidation rejects a generation/phase/identity change observed during execution;
 a result is a value, not a lease against changes after that final observation.
@@ -341,6 +342,69 @@ field and verifies the registry is unchanged. The native file retains its ten
 prior functions and adds these two. The canonical Python wrapper links the extra
 test interposers. Existing independent VM oracle, process/syscall-fault and state
 recovery tests remain required; none of these tests authorizes deployment.
+
+### Shared invocation admission (2.4.0)
+
+`StrategyBytecodeAdmission` in `strategy_bytecode_admission.h` supplies actual
+in-process reservations shared by `StrategyBytecodeRuntime` instances. Ordinary
+constructors use `StrategyBytecodeAdmission::Default()`, one shared object per
+linked runtime image. A trusted supervisor may explicitly supply a domain with
+immutable limits; all cooperating runners in that domain must receive the same
+object. A null injection fails with `STRATEGY_VM_ADMISSION_UNAVAILABLE`, never an
+unlimited fallback. Separate domains, processes and independently loaded runtime
+copies are not coordinated automatically.
+
+| Limit | Default | Admissible configured range |
+|---|---:|---:|
+| Active invocations | 8 | 1..64 |
+| Sum of reserved child address-space budgets | 512 MiB | 1 MiB..64 GiB |
+| Sum of reserved maximum instruction steps | 8,000,000 | 1..64,000,000 |
+
+The per-invocation limits remain 1 MiB..1 GiB and 1..1,000,000 steps. The reserved
+memory amount is the smaller of the requested child address-space bound and the
+signed descriptor memory budget; it must fit the shared remaining capacity.
+After initial authority/envelope checks and before decoding/spawning, `Run`
+acquires a move-only reservation for one invocation and those two amounts. All
+three counters are admitted/published together under one short-held mutex.
+Capacity exhaustion returns a typed concurrency, memory-reservation or
+fuel-reservation error without queueing or forking. Remaining-capacity subtraction
+avoids overflow. Invalid policy bounds never create a usable unlimited domain.
+
+Reservations keep their accounting state alive even if the public domain object
+is destroyed. Move construction transfers ownership; move assignment releases its
+previous charge; moved-from or repeatedly reset reservations cannot release twice.
+Acquisition, counter publication and release do not allocate. The runner declares
+the reservation before child/FD owners so exception, cancellation and timeout
+cleanup terminates/reaps the owned child before releasing its capacity. Normal
+success releases capacity after the child is reaped and the result is prepared.
+No admission mutex is held across file I/O, hashing, waiting for a process,
+controller locking or callbacks. Mutex scheduling itself is not a hard deadline.
+
+These are reservations, not measured resident memory, CPU time, a CPU-rate limiter
+or distributed scheduling. They do not charge parent allocator overhead, artifacts
+retained before invocation, inherited pages, or other runtime copies/processes.
+The library does not provision service-wide cgroups or infer an OS enforcement
+receipt. Explicitly creating separate domains requires independent supervisor
+admission and must not be presented as one shared quota.
+
+The existing 2.3.1 publication/snapshot and bounded-proposal-intake corrections
+remain intact. This integration does not replace or relax their final
+cancellation, generation, time, half-open expiry or pre-copy size checks. Four
+additional native functions extend the twelve existing runtime functions:
+
+| Requirement | Direct regression |
+|---|---|
+| Bounds, typed exhaustion, allocation-free/move-only release and domain lifetime | `TestSharedReservationsAreBoundedAndMoveSafe` |
+| Counters against a separate 2,000-operation admission model | `TestSharedAdmissionAgainstIndependentAccounting` |
+| 32 concurrent requests held open yield exactly 7 admissions at capacity 7 | `TestSharedCapacityContentionHasNoOversubscription` |
+| Distinct real runners share each cap; cancellation/reaping frees it for reuse | `TestDistinctRunnersShareReservationAndReleaseAfterReaping` |
+
+The default-domain test fills all eight reservations and confirms that an ordinary
+runner rejects without creating another child. Null-domain injection also rejects.
+Allocation-failure and child-fault tests remain enabled, with no production test
+hooks. Finite component tests and a shared C++ object do not establish global
+production isolation, independent approval, Broker/PAPER qualification or
+completion of the broader runtime/recovery plan.
 
 Relevant kernel interface definitions, not deployment receipts:
 `https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html`,
@@ -757,5 +821,5 @@ transaction wrappers; existing bounded-runtime CTests continue to exercise the p
 composition. Passing these fixtures is not real power-loss, network-filesystem,
 malicious same-UID, independent-review, production-SLO or Broker qualification.
 The current plan's remaining automatic checkpoint selection/process recovery,
-sandbox execution, deployment executor and external governance/PAPER gates remain
+general-purpose isolation, deployment executor and external governance/PAPER gates remain
 separate open work.

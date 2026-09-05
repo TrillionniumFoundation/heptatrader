@@ -1,7 +1,7 @@
 # Strategy Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.strategy.runtime` version `2.3.1` (current)
+Applies to: `hepta.strategy.runtime` version `2.4.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-strategy-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -27,12 +27,13 @@ Manifest: [`modules/manifests/hepta-strategy-runtime.json`](../manifests/hepta-s
 - policy- and lifetime-bound verified metadata admission and start
 - signed fixed-point bytecode execution in a kernel-restricted Linux x86-64 child
 - fuel-limited proposal generation and explicit VM-state checkpoint recovery
+- shared in-process invocation, address-space and instruction-budget reservations
 
 ### Excluded or not-current scope
 
 - arbitrary native or Python strategy code execution
 - general-purpose OS sandbox and inherited-address-space secrecy
-- whole-service CPU, resident-memory and global concurrency enforcement
+- whole-service CPU, resident-memory and cross-process concurrency enforcement
 - automatic checkpoint selection and supervised process restart policy
 - cross-host checkpoint replication and authenticated global anti-rollback
 - production signing-key provisioning, active-policy distribution and authenticated rollback protection
@@ -105,7 +106,7 @@ Contract definitions, providers, consumers and compatibility state are resolved 
 
 ### Concurrency contract
 
-- **model:** `per-runner-child-plus-separate-controller-and-store-mutexes`
+- **model:** `shared-admission-plus-per-runner-child-and-separate-controller-store-mutexes`
 - **shard key:** `strategy-agent-instance`
 - **blocking io:** `runner-and-verified-stores-only-never-under-controller-lock`
 - **cross module lock:** `forbidden`
@@ -133,7 +134,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Strategy versions, parameters, resource budgets and enablement are canonical configuration.
 - Unknown or unapproved strategy versions cannot load.
 
-The manifest version is `2.3.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `2.4.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

@@ -77,6 +77,7 @@ StrategyBytecodeResult StrategyBytecodeRuntime::Run(StrategyRuntimeControl& cont
     std::unique_lock<std::mutex> single(m_mutex, std::try_to_lock);
     if (!single.owns_lock()) return Reject("STRATEGY_VM_BUSY");
     const auto start = Clock::now();
+    if (!m_admission) return Reject("STRATEGY_VM_ADMISSION_UNAVAILABLE");
     if (cancelled && cancelled->load()) return Reject("STRATEGY_VM_CANCELLED");
     if (limits.maximumSteps == 0 || limits.maximumSteps > 1000000 || limits.wallTimeMs == 0 ||
         limits.wallTimeMs > 5000 || limits.childAddressSpaceBytes < (1u << 20) ||
@@ -96,6 +97,11 @@ StrategyBytecodeResult StrategyBytecodeRuntime::Run(StrategyRuntimeControl& cont
     for (const auto* text : {&invocation.proposalId, &invocation.candidateId, &invocation.capitalPool,
                             &invocation.accountBook, &invocation.instrument})
         if (text->empty() || text->size() > 128) return Reject("STRATEGY_VM_INPUT_INVALID");
+    const auto memory = std::min(limits.childAddressSpaceBytes, descriptor.budget.maxMemoryBytes);
+    // Declared before every child/FD owner: cleanup/reaping completes before
+    // its reservation is released, including exceptions and cancellation.
+    auto reservation = m_admission->TryAcquire(memory, limits.maximumSteps);
+    if (!reservation.IsValid()) return Reject(reservation.ReasonCode());
     Frame frame; frame.inputCount = invocation.inputs.size();
     for (std::size_t i = 0; i < invocation.inputs.size(); ++i) {
         if (!InRange(invocation.inputs[i])) return Reject("STRATEGY_VM_INPUT_INVALID");
@@ -128,7 +134,6 @@ StrategyBytecodeResult StrategyBytecodeRuntime::Run(StrategyRuntimeControl& cont
     if (::pipe2(fds, O_CLOEXEC | O_NONBLOCK) != 0) return Reject("STRATEGY_VM_PIPE_FAILED");
     Fd reader, writer; reader.value = fds[0]; writer.value = fds[1];
     if (ElapsedMs(start) >= limits.wallTimeMs) return Reject("STRATEGY_VM_TIMEOUT");
-    const auto memory = std::min(limits.childAddressSpaceBytes, descriptor.budget.maxMemoryBytes);
     const auto parent = ::getpid();
     Mask mask;
     if (!mask.Block()) return Reject("STRATEGY_VM_SIGNAL_SETUP_FAILED");

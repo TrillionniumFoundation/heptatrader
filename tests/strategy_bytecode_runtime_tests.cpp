@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdarg>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -453,6 +454,131 @@ int BoundaryProbe() {
     return acceptedInvalid || partial ? 1 : 0;
 }
 
+void TestSharedReservationsAreBoundedAndMoveSafe() {
+    using Admission=StrategyBytecodeAdmission;
+    StrategyBytecodeAdmissionLimits limits; limits.maximumInvocations=3;
+    limits.maximumReservedAddressSpaceBytes=4ULL<<20; limits.maximumReservedSteps=300;
+    auto pool=std::make_shared<Admission>(limits);
+    auto one=pool->TryAcquire(1ULL<<20,100); REQUIRE(one.IsValid());
+    auto two=pool->TryAcquire(2ULL<<20,100); REQUIRE(two.IsValid());
+    const auto memory=pool->TryAcquire(2ULL<<20,1);
+    REQUIRE(!memory.IsValid() && std::string(memory.ReasonCode())=="STRATEGY_VM_SHARED_MEMORY_EXHAUSTED");
+    const auto fuel=pool->TryAcquire(1ULL<<20,101);
+    REQUIRE(!fuel.IsValid() && std::string(fuel.ReasonCode())=="STRATEGY_VM_SHARED_FUEL_EXHAUSTED");
+    auto three=pool->TryAcquire(1ULL<<20,100); REQUIRE(three.IsValid());
+    REQUIRE(std::string(pool->TryAcquire(1ULL<<20,1).ReasonCode())=="STRATEGY_VM_SHARED_CAPACITY_EXHAUSTED");
+    auto used=pool->Snapshot(); REQUIRE(used.activeInvocations==3 && used.reservedAddressSpaceBytes==(4ULL<<20) && used.reservedSteps==300);
+    Admission::Reservation moved(std::move(two)); REQUIRE(moved.IsValid() && !two.IsValid());
+    one=std::move(moved); REQUIRE(one.IsValid() && !moved.IsValid());
+    used=pool->Snapshot(); REQUIRE(used.activeInvocations==2 && used.reservedAddressSpaceBytes==(3ULL<<20) && used.reservedSteps==200);
+    two.Reset(); moved.Reset(); one.Reset(); one.Reset(); three.Reset();
+    used=pool->Snapshot(); REQUIRE(used.activeInvocations==0 && used.reservedAddressSpaceBytes==0 && used.reservedSteps==0);
+    for(int field=0;field<6;++field) {
+        auto invalid=limits;
+        switch(field) {case 0: invalid.maximumInvocations=0; break; case 1: invalid.maximumInvocations=65; break;
+        case 2: invalid.maximumReservedAddressSpaceBytes=0; break; case 3: invalid.maximumReservedAddressSpaceBytes=std::uint64_t(-1); break;
+        case 4: invalid.maximumReservedSteps=0; break; case 5: invalid.maximumReservedSteps=std::uint64_t(-1); break;}
+        Admission wrong(invalid); REQUIRE(!wrong.Snapshot().configured);
+        REQUIRE(!wrong.TryAcquire(1ULL<<20,1).IsValid());
+    }
+    for(auto bytes:{std::uint64_t(0),std::uint64_t((1ULL<<30)+1),std::uint64_t(-1)})
+        REQUIRE(!pool->TryAcquire(bytes,1).IsValid());
+    for(auto steps:{std::uint64_t(0),std::uint64_t(1000001),std::uint64_t(-1)})
+        REQUIRE(!pool->TryAcquire(1ULL<<20,steps).IsValid());
+    fault::allocation=0; fault::calls=0; bool threw=false;
+    try { auto ticket=pool->TryAcquire(1ULL<<20,100); ticket.Reset(); }
+    catch(const std::bad_alloc&) { threw=true; }
+    fault::allocation=-1; REQUIRE(!threw && fault::calls==0);
+    Admission::Reservation surviving;
+    { auto ephemeral=std::make_shared<Admission>(limits); surviving=ephemeral->TryAcquire(1ULL<<20,100); }
+    REQUIRE(surviving.IsValid()); surviving.Reset(); REQUIRE(!surviving.IsValid());
+}
+
+void TestSharedAdmissionAgainstIndependentAccounting() {
+    StrategyBytecodeAdmissionLimits limits; limits.maximumInvocations=7;
+    limits.maximumReservedAddressSpaceBytes=9ULL<<20; limits.maximumReservedSteps=700;
+    StrategyBytecodeAdmission pool(limits);
+    struct Held { std::uint64_t bytes=0,steps=0; StrategyBytecodeAdmission::Reservation reservation; };
+    Held slots[16]; std::uint32_t rng=0x05092026;
+    const auto next=[&] { rng=rng*1664525u+1013904223u; return rng; };
+    for(unsigned int sample=0;sample<2000;++sample) {
+        const auto index=next()%16;
+        if(slots[index].reservation.IsValid()) { slots[index].reservation.Reset(); slots[index].bytes=slots[index].steps=0; }
+        else {
+            const auto bytes=(1ULL+(next()%4))<<20; const auto steps=1ULL+(next()%400);
+            unsigned count=0; std::uint64_t totalBytes=0,totalSteps=0;
+            for(const auto& slot:slots) { count+=slot.bytes!=0;totalBytes+=slot.bytes;totalSteps+=slot.steps; }
+            const bool expected=count<7 && totalBytes+bytes<=(9ULL<<20) && totalSteps+steps<=700;
+            auto ticket=pool.TryAcquire(bytes,steps); REQUIRE(ticket.IsValid()==expected);
+            if(ticket.IsValid()) { slots[index].bytes=bytes;slots[index].steps=steps;slots[index].reservation=std::move(ticket); }
+        }
+        unsigned count=0;std::uint64_t bytes=0,steps=0;
+        for(const auto& slot:slots){count+=slot.bytes!=0;bytes+=slot.bytes;steps+=slot.steps;}
+        const auto got=pool.Snapshot();
+        REQUIRE(got.activeInvocations==count && got.reservedAddressSpaceBytes==bytes && got.reservedSteps==steps);
+    }
+    for(auto& slot:slots)slot.reservation.Reset();
+    REQUIRE(pool.Snapshot().activeInvocations==0);
+    std::cout<<"shared_admission_model_operations=2000\n";
+}
+
+void TestSharedCapacityContentionHasNoOversubscription() {
+    StrategyBytecodeAdmissionLimits limits;limits.maximumInvocations=7;
+    limits.maximumReservedAddressSpaceBytes=7ULL<<20;limits.maximumReservedSteps=7;
+    StrategyBytecodeAdmission pool(limits);
+    std::mutex gate;std::condition_variable cv;unsigned completed=0;bool release=false;
+    std::atomic<unsigned> accepted{0};std::vector<std::thread> workers;
+    for(unsigned i=0;i<32;++i) workers.emplace_back([&] {
+        auto ticket=pool.TryAcquire(1ULL<<20,1);if(ticket.IsValid())++accepted;
+        std::unique_lock<std::mutex> lock(gate);++completed;cv.notify_all();cv.wait(lock,[&]{return release;});
+    });
+    {std::unique_lock<std::mutex> lock(gate);cv.wait(lock,[&]{return completed==32;});
+     const auto got=pool.Snapshot(); REQUIRE(accepted==7 && got.activeInvocations==7 &&
+        got.reservedAddressSpaceBytes==(7ULL<<20) && got.reservedSteps==7);
+     release=true;cv.notify_all();}
+    for(auto& worker:workers)worker.join();
+    REQUIRE(pool.Snapshot().activeInvocations==0);
+}
+
+void TestDistinctRunnersShareReservationAndReleaseAfterReaping() {
+    for(int exhausted=0;exhausted<3;++exhausted) {
+        Fixture f;StrategyBytecodeAdmissionLimits caps;
+        caps.maximumInvocations=exhausted==0?1:2;
+        caps.maximumReservedAddressSpaceBytes=exhausted==1?64ULL<<20:128ULL<<20;
+        caps.maximumReservedSteps=exhausted==2?100000:200000;
+        auto pool=std::make_shared<StrategyBytecodeAdmission>(caps);
+        StrategyBytecodeRuntime first(pool),second(pool);
+        int channel[2];REQUIRE(::pipe(channel)==0);std::atomic<bool> cancel{false};StrategyBytecodeResult result;
+        std::thread worker([&] {
+            fault::stopChild=true;fault::notifyFd=channel[1];
+            result=first.Run(f.control,f.policy.moduleId,2,f.artifact,*f.verifier,f.invocation,{}, {},&cancel);
+        });
+        pid_t child=0;REQUIRE(::read(channel[0],&child,sizeof(child))==sizeof(child));
+        siginfo_t info{};REQUIRE(::waitid(P_PID,static_cast<id_t>(child),&info,WSTOPPED|WNOWAIT)==0);
+        const auto held=pool->Snapshot();REQUIRE(held.activeInvocations==1 && held.reservedAddressSpaceBytes==(64ULL<<20));
+        const auto forks=fault::forkCount.load();
+        const auto refused=second.Run(f.control,f.policy.moduleId,2,f.artifact,*f.verifier,f.invocation);
+        Empty(refused);REQUIRE(fault::forkCount==forks);
+        const char* reason=exhausted==0?"STRATEGY_VM_SHARED_CAPACITY_EXHAUSTED":exhausted==1?
+            "STRATEGY_VM_SHARED_MEMORY_EXHAUSTED":"STRATEGY_VM_SHARED_FUEL_EXHAUSTED";
+        REQUIRE(std::string(refused.reasonCode)==reason);
+        cancel.store(true);worker.join();Empty(result);Reaped();
+        const auto released=pool->Snapshot();REQUIRE(released.activeInvocations==0 && released.reservedAddressSpaceBytes==0 && released.reservedSteps==0);
+        REQUIRE(::close(channel[0])==0 && ::close(channel[1])==0);
+        REQUIRE(second.Run(f.control,f.policy.moduleId,2,f.artifact,*f.verifier,f.invocation).accepted);
+        REQUIRE(pool->Snapshot().activeInvocations==0);
+    }
+    // The default constructor really shares its governor; a second ordinary
+    // object cannot silently create an unlimited private admission domain.
+    Fixture f; auto pool=StrategyBytecodeAdmission::Default();
+    std::vector<StrategyBytecodeAdmission::Reservation> held;
+    for(int i=0;i<8;++i) {auto ticket=pool->TryAcquire(64ULL<<20,1000000);REQUIRE(ticket.IsValid());held.push_back(std::move(ticket));}
+    const auto forks=fault::forkCount.load();Empty(f.Run());REQUIRE(fault::forkCount==forks);
+    held.clear();REQUIRE(f.Run().accepted);
+    StrategyBytecodeRuntime missing(nullptr);const auto refused=missing.Run(f.control,f.policy.moduleId,2,f.artifact,*f.verifier,f.invocation);
+    Empty(refused);REQUIRE(std::string(refused.reasonCode)=="STRATEGY_VM_ADMISSION_UNAVAILABLE");
+}
+
 }
 int main(int argc, char** argv) {
     if (argc == 2 && std::string(argv[1]) == "--boundary-probe") return BoundaryProbe();
@@ -463,5 +589,9 @@ int main(int argc, char** argv) {
     TestMalformedStateNeverRestoresPartialResults();TestAllocationFailureLeavesControllerAndChildrenUntouched();
     TestSealingCannotPublishAfterCancellationGenerationOrExpiry();
     TestSnapshotReadIsExceptionAtomicWithAliasedKey();
+    TestSharedReservationsAreBoundedAndMoveSafe();
+    TestSharedAdmissionAgainstIndependentAccounting();
+    TestSharedCapacityContentionHasNoOversubscription();
+    TestDistinctRunnersShareReservationAndReleaseAfterReaping();
     std::cout<<"vm_assertions="<<assertions<<'\n';
 }

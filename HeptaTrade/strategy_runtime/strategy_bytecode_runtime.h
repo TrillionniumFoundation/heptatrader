@@ -1,6 +1,7 @@
 #pragma once
 
 #include "strategy_artifact_verifier.h"
+#include "strategy_bytecode_admission.h"
 #include "strategy_checkpoint_store.h"
 #include "strategy_proposal.h"
 #include <atomic>
@@ -32,12 +33,15 @@ struct StrategyBytecodeResult
 };
 
 // Executes only the fixed Hepta integer bytecode ISA, never ELF/native/Python.
-// Linux x86-64 only. One concurrent child per object; no global scheduler.
+// Linux x86-64 only. One concurrent child per object plus shared reservations.
+// This is not a cross-process scheduler or an OS memory/CPU accounting service.
 // The supervisor must exclusively reap this runner's children and select the
 // current verifier, controller, trusted clock/context and checkpoint itself.
 class StrategyBytecodeRuntime
 {
 public:
+    explicit StrategyBytecodeRuntime(std::shared_ptr<StrategyBytecodeAdmission> admission =
+        StrategyBytecodeAdmission::Default()) : m_admission(std::move(admission)) {}
     static const char* Version() noexcept { return "hepta.strategy-bytecode.v1"; }
     StrategyBytecodeResult Run(StrategyRuntimeControl& controller,
         const std::string& moduleId, std::uint64_t expectedGeneration,
@@ -47,5 +51,6 @@ public:
         const StrategyBytecodeLimits& limits = StrategyBytecodeLimits(),
         const std::atomic<bool>* cancelled = nullptr);
 private:
+    const std::shared_ptr<StrategyBytecodeAdmission> m_admission;
     std::mutex m_mutex;
 };
