@@ -3,47 +3,49 @@ name: IB PAPER Qualification
 on:
   pull_request:
     branches: [main]
-    paths:
-      - '.github/workflows/github-governance-qualification.yml'
-      - '.github/workflows/ib-paper-qualification.yml'
-      - '.github/github-governance-policy-v1.json'
-      - '.github/required-check-contexts-v1.json'
-      - 'scripts/github_qualification_evidence.py'
-      - 'scripts/verify_github_governance.py'
-      - 'scripts/verify_ib_paper_qualification.py'
-      - 'scripts/verify_ib_candidate_artifact.py'
-      - 'scripts/verify_qualification_candidate.py'
-      - 'scripts/build_ib_candidate_artifact.sh'
-      - 'scripts/run_ib_paper_artifact_qualification.sh'
-      - 'scripts/check_qualification_trust_boundary.py'
-      - 'tests/python/test_github_governance.py'
-      - 'tests/python/test_ib_paper_qualification.py'
-      - 'tests/python/test_qualification_trust_boundary.py'
   workflow_dispatch:
     inputs:
       pull_number:
-        description: Pull request whose exact reviewed head may be qualified
+        description: Final pull request number targeting protected main
         required: true
         type: string
-      candidate_sha:
-        description: Exact candidate source SHA, used only as untrusted build data
+      expected_head_sha:
+        description: Exact unchanged source head to qualify, treated only as API data
+        required: true
+        type: string
+      merge_group_sha:
+        description: Exact live merge-queue revision for that PR/head/base
         required: true
         type: string
       mutation_mode:
-        description: Explicitly approve the bounded real PAPER campaign
+        description: Run the restricted external PAPER mutation campaign
+        required: true
+        type: boolean
+        default: false
+      acknowledge_paper_only:
+        description: Confirm the target account and credentials are PAPER-only
+        required: true
+        type: boolean
+        default: false
+      acknowledge_no_bypass:
+        description: Confirm this run did not use a governance bypass
         required: true
         type: boolean
         default: false
 
 permissions:
   actions: read
-  checks: read
   contents: read
-  pull-requests: read
 
 concurrency:
   group: heptatrader-ib-paper-qualification-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  HEPTA_IB_BUILDER_IMAGE: ghcr.io/trillionniumfoundation/heptatrader-ib-builder@sha256:7f847ed6aef58d39ab799417b16b24286a5b443f70154bdf03240eebbbfb49d9
+  HEPTA_IB_EXTERNAL_QUALIFIER_SHA256: 8b39cbf12c555f5d85bb9a418ce86cc6b39179b50ec637f78fe22710f0d89dae
+  HEPTA_IB_SDK_VERSION: '10.40.01'
+  HEPTA_IB_SDK_SHA256: 8413cf056a735d671f71b5c51905429aa35cc29bd5bfd49315e245c90c26f9f1
 
 jobs:
   bootstrap-audit:
@@ -67,51 +69,57 @@ jobs:
         run: |
           set -euo pipefail
           docker version
-      - name: Validate trusted harnesses and hostile candidate isolation
+      - name: Validate PAPER qualification harnesses and hostile isolation
         run: |
           set -euo pipefail
           git diff --check
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 -m py_compile \
-            scripts/github_qualification_evidence.py \
-            scripts/verify_github_governance.py \
             scripts/verify_ib_paper_qualification.py \
             scripts/verify_ib_candidate_artifact.py \
             scripts/verify_qualification_candidate.py \
             scripts/check_qualification_trust_boundary.py
           python3 scripts/check_qualification_trust_boundary.py --self-test
-          python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           printf '%s\n' \
-            'Trusted qualification boundary audit passed.' \
-            'No secret, Broker credential or candidate mutation was used.' \
+            'IB qualification workflow source and hostile trust-boundary tests passed.' \
+            'No Broker credential, candidate build or PAPER mutation was used.' \
             >> "$GITHUB_STEP_SUMMARY"
 
   build-candidate:
     if: github.event_name == 'workflow_dispatch'
-    name: ib-paper-candidate-artifact-build
+    name: ib-paper-candidate-builder
     runs-on: [self-hosted, linux, x64, heptatrader-ib-builder]
-    timeout-minutes: 100
-    env:
-      HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
-      HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
-      HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
+    environment: repository-governance
+    timeout-minutes: 45
+    outputs:
+      artifact_name: ${{ steps.metadata.outputs.artifact_name }}
+      artifact_sha256: ${{ steps.metadata.outputs.artifact_sha256 }}
+      candidate_head_sha: ${{ steps.metadata.outputs.candidate_head_sha }}
+      candidate_source_tree: ${{ steps.metadata.outputs.candidate_source_tree }}
+      trusted_harness_sha: ${{ steps.metadata.outputs.trusted_harness_sha }}
     steps:
-      - name: Require trusted main dispatch and canonical candidate identity
+      - name: Require trusted main dispatch and immutable data inputs
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          ACKNOWLEDGE_NO_BYPASS: ${{ inputs.acknowledge_no_bypass }}
+          ACKNOWLEDGE_PAPER_ONLY: ${{ inputs.acknowledge_paper_only }}
           DISPATCH_REF: ${{ github.ref }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          MERGE_GROUP_SHA: ${{ inputs.merge_group_sha }}
           MUTATION_MODE: ${{ inputs.mutation_mode }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
           test "$DISPATCH_REF" = 'refs/heads/main'
+          test "$ACKNOWLEDGE_NO_BYPASS" = 'true'
+          test "$ACKNOWLEDGE_PAPER_ONLY" = 'true'
           test "$MUTATION_MODE" = 'true'
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
-      - name: Checkout trusted default-branch builder
+      - name: Checkout only trusted main harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
@@ -119,73 +127,122 @@ jobs:
           path: trusted
           fetch-depth: 1
           persist-credentials: false
-      - name: Admit exact reviewed candidate with trusted code only
+      - name: Assert trusted harness identity and static boundary
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          GITHUB_TOKEN: ${{ github.token }}
+          DISPATCH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted rev-parse HEAD)" = "$DISPATCH_SHA"
+          python3 trusted/scripts/check_qualification_trust_boundary.py --root trusted
+      - name: Fetch candidate as untrusted source data
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
-          receipt="$RUNNER_TEMP/builder-admission.json"
-          python3 trusted/scripts/verify_qualification_candidate.py \
-            --pull-number "$PULL_NUMBER" \
-            --candidate-sha "$CANDIDATE_SHA" \
-            --output "$receipt"
-          test -s "$receipt"
-          test "$(stat -c '%a' "$receipt")" = '600'
-      - name: Checkout candidate as untrusted source input
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ inputs.candidate_sha }}
-          path: candidate
-          fetch-depth: 1
-          persist-credentials: false
-          submodules: false
-      - name: Build content-addressed binary in bounded digest-pinned OCI sandbox
+          git init candidate
+          git -C candidate remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git -C candidate -c protocol.version=2 fetch \
+            --no-tags --depth=1 origin \
+            "+refs/pull/${PULL_NUMBER}/head:refs/remotes/origin/candidate"
+          test "$(git -C candidate rev-parse refs/remotes/origin/candidate)" = "$EXPECTED_HEAD_SHA"
+          git -C candidate checkout --detach refs/remotes/origin/candidate
+          test "$(git -C candidate rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+      - name: Build immutable candidate inside pinned builder image
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          HEPTA_IB_SDK_ARCHIVE: ${{ vars.HEPTA_IB_SDK_ARCHIVE }}
+          HEPTA_IB_SDK_SHA256: ${{ env.HEPTA_IB_SDK_SHA256 }}
+          HEPTA_IB_SDK_VERSION: ${{ env.HEPTA_IB_SDK_VERSION }}
         run: |
           set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
-          test "$(git -C candidate rev-parse HEAD)" = "$CANDIDATE_SHA"
-          artifact="$RUNNER_TEMP/ib-paper-candidate-$CANDIDATE_SHA.tar"
-          trusted/scripts/build_ib_candidate_artifact.sh candidate "$CANDIDATE_SHA" "$artifact"
-          test -s "$artifact"
-          test ! -L "$artifact"
-      - name: Upload immutable no-secret candidate artifact
+          image="${HEPTA_IB_BUILDER_IMAGE}"
+          test -n "$image"
+          test -n "$HEPTA_IB_SDK_ARCHIVE"
+          case "$HEPTA_IB_SDK_ARCHIVE" in
+            /*) ;;
+            *) echo 'HEPTA_IB_SDK_ARCHIVE must be an absolute path on the isolated builder' >&2; exit 1 ;;
+          esac
+          test -f "$HEPTA_IB_SDK_ARCHIVE"
+          docker pull "$image"
+          docker inspect --format='{{index .RepoDigests 0}}' "$image" | grep -Fx "$image"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,noexec,size=64m \
+            --tmpfs /work/out:rw,nosuid,nodev,size=512m \
+            -u "$(id -u):$(id -g)" \
+            -e EXPECTED_HEAD_SHA="$EXPECTED_HEAD_SHA" \
+            -e HEPTA_IB_SDK_VERSION="$HEPTA_IB_SDK_VERSION" \
+            -e HEPTA_IB_SDK_SHA256="$HEPTA_IB_SDK_SHA256" \
+            -v "$GITHUB_WORKSPACE/trusted:/work/trusted:ro" \
+            -v "$GITHUB_WORKSPACE/candidate:/work/candidate:ro" \
+            -v "$HEPTA_IB_SDK_ARCHIVE:/work/ib-api.zip:ro" \
+            -v "$RUNNER_TEMP:/work/out" \
+            "$image" \
+            /work/trusted/scripts/build_ib_candidate_artifact.sh \
+            --candidate-root /work/candidate \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --ib-api-archive /work/ib-api.zip \
+            --ib-api-sha256 "$HEPTA_IB_SDK_SHA256" \
+            --ib-api-version "$HEPTA_IB_SDK_VERSION" \
+            --output /work/out/ib-paper-candidate.tar
+      - name: Verify candidate metadata and expose exact identities
+        id: metadata
+        env:
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/ib-paper-candidate.tar"
+          manifest="$RUNNER_TEMP/ib-paper-candidate-manifest.json"
+          test -s "$archive"
+          test -s "$manifest"
+          artifact_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          candidate_head_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["candidate_head_sha"])' "$manifest")"
+          candidate_source_tree="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["candidate_source_tree"])' "$manifest")"
+          trusted_harness_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["trusted_harness_sha"])' "$manifest")"
+          test "$candidate_head_sha" = "$EXPECTED_HEAD_SHA"
+          artifact_name="ib-paper-candidate-${candidate_head_sha}-${candidate_source_tree}-${trusted_harness_sha}-${artifact_sha256}"
+          {
+            echo "artifact_name=$artifact_name"
+            echo "artifact_sha256=$artifact_sha256"
+            echo "candidate_head_sha=$candidate_head_sha"
+            echo "candidate_source_tree=$candidate_source_tree"
+            echo "trusted_harness_sha=$trusted_harness_sha"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload exact immutable candidate artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ib-paper-candidate-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ib-paper-candidate-${{ inputs.candidate_sha }}.tar
+          name: ${{ steps.metadata.outputs.artifact_name }}
+          path: |
+            ${{ runner.temp }}/ib-paper-candidate.tar
+            ${{ runner.temp }}/ib-paper-candidate-manifest.json
           if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
+          retention-days: 30
 
-  qualify:
+  paper-qualification:
     if: github.event_name == 'workflow_dispatch'
     needs: build-candidate
-    name: ib-paper-exact-artifact-qualification
+    name: ib-paper-external-qualification
     runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
-    timeout-minutes: 90
-    env:
-      HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
+    timeout-minutes: 180
     steps:
-      - name: Require trusted main dispatch and explicit protected approval
+      - name: Require PAPER qualification inputs
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          DISPATCH_REF: ${{ github.ref }}
+          ACKNOWLEDGE_NO_BYPASS: ${{ inputs.acknowledge_no_bypass }}
+          ACKNOWLEDGE_PAPER_ONLY: ${{ inputs.acknowledge_paper_only }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          MERGE_GROUP_SHA: ${{ inputs.merge_group_sha }}
           MUTATION_MODE: ${{ inputs.mutation_mode }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
-          test "$DISPATCH_REF" = 'refs/heads/main'
+          test "$ACKNOWLEDGE_NO_BYPASS" = 'true'
+          test "$ACKNOWLEDGE_PAPER_ONLY" = 'true'
           test "$MUTATION_MODE" = 'true'
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$EXPECTED_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$MERGE_GROUP_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$PULL_NUMBER" =~ ^[1-9][0-9]*$ ]]
-      - name: Checkout only the trusted default-branch qualification harness
+      - name: Checkout only trusted main harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
@@ -193,92 +250,111 @@ jobs:
           path: trusted
           fetch-depth: 1
           persist-credentials: false
-      - name: Record pre-campaign exact admission
+      - name: Assert trusted harness identity and static boundary
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          GITHUB_TOKEN: ${{ github.token }}
-          PULL_NUMBER: ${{ inputs.pull_number }}
+          DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "${{ github.sha }}"
-          python3 trusted/scripts/verify_qualification_candidate.py \
-            --pull-number "$PULL_NUMBER" \
-            --candidate-sha "$CANDIDATE_SHA" \
-            --output "$RUNNER_TEMP/pre-campaign-admission.json"
-      - name: Download immutable candidate artifact from no-secret build job
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+          test "$(git -C trusted rev-parse HEAD)" = "$DISPATCH_SHA"
+          python3 trusted/scripts/check_qualification_trust_boundary.py --root trusted
+      - name: Download exact candidate artifact
+        uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16
         with:
-          name: ib-paper-candidate-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-download
-      - name: Verify and extract candidate as hostile data
+          name: ${{ needs.build-candidate.outputs.artifact_name }}
+          path: ${{ runner.temp }}/candidate
+      - name: Verify immutable candidate before Broker access
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          EXPECTED_ARTIFACT_SHA256: ${{ needs.build-candidate.outputs.artifact_sha256 }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_HARNESS_SHA: ${{ needs.build-candidate.outputs.trusted_harness_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.build-candidate.outputs.candidate_source_tree }}
         run: |
           set -euo pipefail
-          archive="$RUNNER_TEMP/candidate-download/ib-paper-candidate-$CANDIDATE_SHA.tar"
-          destination="$RUNNER_TEMP/verified-ib-candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$archive" \
-            --expected-candidate-sha "$CANDIDATE_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$destination"
-          printf '%s\n' "$destination" > "$RUNNER_TEMP/verified-ib-candidate-dir"
-      - name: Run controlled PAPER campaign through trusted external harness
+          python3 trusted/scripts/verify_ib_candidate_artifact.py \
+            --archive "$RUNNER_TEMP/candidate/ib-paper-candidate.tar" \
+            --manifest "$RUNNER_TEMP/candidate/ib-paper-candidate-manifest.json" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --expected-source-tree "$EXPECTED_SOURCE_TREE" \
+            --expected-trusted-harness-sha "$EXPECTED_HARNESS_SHA" \
+            --expected-artifact-sha256 "$EXPECTED_ARTIFACT_SHA256" \
+            --extract-to "$RUNNER_TEMP/verified-candidate"
+      - name: Run external PAPER campaign
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
-          HEPTA_QUALIFICATION_MUTATIONS: '1'
+          EXPECTED_ARTIFACT_SHA256: ${{ needs.build-candidate.outputs.artifact_sha256 }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.build-candidate.outputs.candidate_source_tree }}
+          HEPTA_IB_ACCOUNT_ID: ${{ secrets.HEPTA_IB_ACCOUNT_ID }}
+          HEPTA_IB_GATEWAY_HOST: ${{ secrets.HEPTA_IB_GATEWAY_HOST }}
+          HEPTA_IB_GATEWAY_PORT: ${{ secrets.HEPTA_IB_GATEWAY_PORT }}
+          HEPTA_IB_QUALIFIER_COMMAND: ${{ vars.HEPTA_IB_QUALIFIER_COMMAND }}
+          HEPTA_IB_QUALIFIER_SHA256: ${{ env.HEPTA_IB_EXTERNAL_QUALIFIER_SHA256 }}
         run: |
           set -euo pipefail
-          artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
-          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trusted/scripts/run_ib_paper_artifact_qualification.sh \
-            "$artifact_dir" "$CANDIDATE_SHA" "$evidence"
-          printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
-      - name: Re-admit unchanged candidate after Broker campaign
+          test -n "$HEPTA_IB_ACCOUNT_ID"
+          test -n "$HEPTA_IB_GATEWAY_HOST"
+          test -n "$HEPTA_IB_GATEWAY_PORT"
+          test -n "$HEPTA_IB_QUALIFIER_COMMAND"
+          case "$HEPTA_IB_QUALIFIER_COMMAND" in
+            /*) ;;
+            *) echo 'HEPTA_IB_QUALIFIER_COMMAND must be an absolute path' >&2; exit 1 ;;
+          esac
+          test -x "$HEPTA_IB_QUALIFIER_COMMAND"
+          actual_qualifier_sha256="$(sha256sum "$HEPTA_IB_QUALIFIER_COMMAND" | awk '{print $1}')"
+          test "$actual_qualifier_sha256" = "$HEPTA_IB_QUALIFIER_SHA256"
+          output="$RUNNER_TEMP/ib-paper-qualification-observation.json"
+          "$HEPTA_IB_QUALIFIER_COMMAND" \
+            --candidate-root "$RUNNER_TEMP/verified-candidate" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --expected-source-tree "$EXPECTED_SOURCE_TREE" \
+            --expected-artifact-sha256 "$EXPECTED_ARTIFACT_SHA256" \
+            --account-id "$HEPTA_IB_ACCOUNT_ID" \
+            --gateway-host "$HEPTA_IB_GATEWAY_HOST" \
+            --gateway-port "$HEPTA_IB_GATEWAY_PORT" \
+            --paper-only \
+            --output "$output"
+          test -s "$output"
+          test ! -L "$output"
+      - name: Revalidate source and artifact after Broker campaign
         env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          GITHUB_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_SHA256: ${{ needs.build-candidate.outputs.artifact_sha256 }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_HARNESS_SHA: ${{ needs.build-candidate.outputs.trusted_harness_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.build-candidate.outputs.candidate_source_tree }}
+        run: |
+          set -euo pipefail
+          python3 trusted/scripts/verify_ib_candidate_artifact.py \
+            --archive "$RUNNER_TEMP/candidate/ib-paper-candidate.tar" \
+            --manifest "$RUNNER_TEMP/candidate/ib-paper-candidate-manifest.json" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --expected-source-tree "$EXPECTED_SOURCE_TREE" \
+            --expected-trusted-harness-sha "$EXPECTED_HARNESS_SHA" \
+            --expected-artifact-sha256 "$EXPECTED_ARTIFACT_SHA256" \
+            --verify-extracted-root "$RUNNER_TEMP/verified-candidate"
+      - name: Verify PAPER observation and emit receipt
+        env:
+          EXPECTED_ARTIFACT_SHA256: ${{ needs.build-candidate.outputs.artifact_sha256 }}
+          EXPECTED_HEAD_SHA: ${{ inputs.expected_head_sha }}
+          EXPECTED_SOURCE_TREE: ${{ needs.build-candidate.outputs.candidate_source_tree }}
+          MERGE_GROUP_SHA: ${{ inputs.merge_group_sha }}
           PULL_NUMBER: ${{ inputs.pull_number }}
         run: |
           set -euo pipefail
-          python3 trusted/scripts/verify_qualification_candidate.py \
-            --pull-number "$PULL_NUMBER" \
-            --candidate-sha "$CANDIDATE_SHA" \
-            --output "$RUNNER_TEMP/post-campaign-admission.json"
-          python3 trusted/scripts/verify_qualification_candidate.py \
-            --compare-before "$RUNNER_TEMP/pre-campaign-admission.json" \
-            --compare-after "$RUNNER_TEMP/post-campaign-admission.json" \
-            --comparison-output "$RUNNER_TEMP/campaign-admission-pair.json"
-      - name: Issue final receipt only after stable post-campaign admission
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-        run: |
-          set -euo pipefail
-          artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
-          evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
-          test -s "$RUNNER_TEMP/campaign-admission-pair.json"
-          test ! -e "$evidence/qualification-verification.json"
+          receipt="$RUNNER_TEMP/ib-paper-qualification-receipt.json"
           python3 trusted/scripts/verify_ib_paper_qualification.py \
-            --result "$evidence/qualification-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "$CANDIDATE_SHA" \
-            --expected-binary "$artifact_dir/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
-            --receipt "$evidence/qualification-verification.json"
-          test -s "$evidence/qualification-verification.json"
-      - name: Upload immutable qualification and admission evidence
+            --observation "$RUNNER_TEMP/ib-paper-qualification-observation.json" \
+            --pull-number "$PULL_NUMBER" \
+            --expected-head-sha "$EXPECTED_HEAD_SHA" \
+            --expected-source-tree "$EXPECTED_SOURCE_TREE" \
+            --merge-group-sha "$MERGE_GROUP_SHA" \
+            --expected-artifact-sha256 "$EXPECTED_ARTIFACT_SHA256" \
+            --output "$receipt"
+          test -s "$receipt"
+          test ! -L "$receipt"
+          test "$(stat -c '%a' "$receipt")" = '600'
+      - name: Upload immutable PAPER qualification receipt
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
         with:
-          name: ib-paper-qualification-${{ github.sha }}-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
-            ${{ runner.temp }}/pre-campaign-admission.json
-            ${{ runner.temp }}/post-campaign-admission.json
-            ${{ runner.temp }}/campaign-admission-pair.json
+          name: ib-paper-qualification-${{ github.sha }}-${{ inputs.expected_head_sha }}-${{ needs.build-candidate.outputs.candidate_source_tree }}-${{ inputs.merge_group_sha }}-${{ needs.build-candidate.outputs.artifact_sha256 }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ib-paper-qualification-receipt.json
           if-no-files-found: error
           retention-days: 90
