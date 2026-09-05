@@ -185,6 +185,7 @@ def _render_template(
     ]
     patterns: list[str] = []
     known = set(team_slugs)
+    used_teams: set[str] = set()
     for position, item in enumerate(raw_rules):
         label = f"{MAPPING_REL}.codeowners_rules[{position}]"
         if not isinstance(item, dict):
@@ -211,8 +212,11 @@ def _render_template(
                 errors.append(f"{label}: unknown team slug {slug}")
             else:
                 rendered.append(f"@{organization}/{slug}")
+                used_teams.add(slug)
         if rendered:
             lines.append(pattern + " " + " ".join(rendered))
+    for slug in sorted(known - used_teams):
+        errors.append(f"{MAPPING_REL}: team {slug} has no CODEOWNERS rule")
     return "\n".join(lines) + "\n", patterns
 
 
