@@ -20,7 +20,7 @@ starts a process, proves health or grants Execution authority.
 The inter-module contract remains `hepta.module-lifecycle.v1`. The native
 controller identifiers are independently versioned:
 `hepta.strategy-runtime-control.v2` and `hepta.durable-rollout-store.v2`.
-Strategy Runtime is module version 2.2.0; Management Control is 2.0.1
+Strategy Runtime is module version 2.3.0; Management Control is 2.0.1
 with the seven-state exception-safety correction below. Existing V2 native callers
 must still review the stricter admission rules and recompile native types. Wire
 schema V1 is unchanged; no ABI, automatic migration or deployment qualification
@@ -126,6 +126,188 @@ is returned and no admission slot is consumed. A caller must catch failures at
 its supervisor boundary; this API does not claim it can allocate an error result
 under sustained memory exhaustion. Duplicate observations do not advance the
 committed timestamp, and failed observations do not create a clock-fault epoch.
+
+## Signed bounded bytecode execution profile
+
+Strategy Runtime module **2.3.0** adds `StrategyBytecodeRuntime::Run` in
+`strategy_bytecode_runtime.*`. This is a deliberately limited executable profile,
+`hepta.strategy-bytecode.v1`, not an ELF/Python/plugin loader. The signed artifact's
+bytes must be the exact bytecode format below. The runner performs real computation
+in a child and produces one validated `StrategyProposal` candidate for the single
+instrument selected by the supervisor. No venue, network, filesystem, pointer,
+native-call, dynamic-code or arbitrary-memory operation exists in the ISA.
+
+This closes only the bounded-bytecode execution mechanism. General native-code
+isolation, production scheduling/deployment, global quotas, trusted input selection
+and automatic recovery remain separate work. In particular, a forked child inherits
+the caller's address space. Seccomp and the VM's index checks are defense in depth,
+not proof of inherited-memory secrecy against native exploitation. Use a dedicated
+credential-free supervisor; do not place Broker credentials in this process and
+claim the fork makes them inaccessible. No native or unknown bytecode fallback exists.
+
+### Native invocation and authorization
+
+`Run` requires the current immutable verifier and its verified artifact, a live
+controller reference, module ID and exact generation, and a trusted invocation.
+It verifies current policy/time, full descriptor identity and Running metadata
+before spawning. Raw metadata Start alone cannot satisfy the separate artifact
+verification requirement. The input context supplies at most 32 already-normalized
+microunits, proposal/candidate IDs, capital pool/account book, instrument, snapshot
+digest, nonzero sequence, observation time, expiry and horizon. ID/shape/numeric
+validation is required, but a digest and input vector do not authenticate their
+market issuer or establish point-in-time availability. The upstream supervisor
+still owns that authority and proposal-sequence monotonicity.
+
+Configuration and model files are verified/bound by the existing artifact loader
+but are not deserialized or automatically made VM inputs. This profile uses signed
+constants and supervisor-selected normalized inputs only. A different strategy
+configuration/model/budget cannot reuse a mismatched controller/checkpoint identity.
+
+One runner object admits at most one child at a time; contention returns
+`STRATEGY_VM_BUSY` without waiting. This is not a global worker limit across objects.
+No controller lock is held across process creation or waiting. Final controller
+revalidation rejects a generation/phase/identity change observed during execution;
+a result is a value, not a lease against changes after that final observation.
+Downstream aggregation and Execution must independently revalidate their context.
+
+### Canonical program and instruction semantics
+
+The program starts with exact ASCII `HEPTA_STRATEGY_BYTECODE_V1\n`, followed by
+1..4,096 fixed-size instructions. Each instruction is one opcode byte followed by
+an eight-byte big-endian signed two's-complement operand. There is no native-endian
+field, padding, trailing extension, variable-length opcode or external include.
+The loader validates every instruction, including unreachable instructions, before
+spawning. The artifact signature covers the whole program through its digest.
+
+The interpreter has a 64-element operand stack and 16 signed persistent-state
+slots. Values must remain within +/-9,000,000,000,000,000 raw units; scale is
+1,000,000. Input/state indices and zero-based instruction-index jump destinations
+are validated. Instructions not using an operand require its value to be exactly
+zero. Stack underflow/overflow, a bad numeric result or falling off the program
+fails the invocation with no proposal and no checkpoint output.
+
+| Opcode | Operand / operation |
+|---|---|
+| 1 Constant; 2 Input; 3 LoadState | Push the in-range constant, input[index], or state[index]. |
+| 4 StoreState | Pop into state[index]; changes remain private until a successful result. |
+| 5 Add; 6 Subtract | Pop right then left; push checked left+right or left-right. |
+| 7 Multiply; 8 Divide | Compute left*right/scale or left*scale/right in signed 128-bit intermediate arithmetic. Division by zero fails; fractional remainder truncates toward zero; out-of-range output fails. |
+| 9 Less; 10 Equal | Pop right then left; push scale for true, zero for false. |
+| 11 Jump; 12 JumpZero | Jump to operand; JumpZero pops a condition and jumps only if it is zero. Backward branches are permitted but consume fuel. |
+| 13 Duplicate; 14 Drop | Duplicate or discard the top element, subject to stack bounds. |
+| 15 Emit | Require exactly two elements: bottom utility, top target. Return that pair and the private state; stop execution. |
+
+Every attempted instruction consumes one unit of fuel, including Emit and branch
+instructions. Default fuel is 100,000 and the hard cap is 1,000,000. Exhaustion is
+`STRATEGY_VM_FUEL_EXHAUSTED`, not a best-effort proposal. Raw integer arithmetic and
+branch behavior are deterministic for identical program/input/state/fuel. Elapsed
+time, cancellation, host scheduling and kernel setup success are not deterministic
+strategy inputs; they can reject a run without changing its successful numeric
+semantics. Rejection never supplies a partially updated checkpoint.
+
+Example program, written as opcode/operand pairs rather than production assembly:
+
+```text
+LoadState 0; Constant 1000000; Add 0; Duplicate 0; StoreState 0;
+Input 0; Emit 0
+```
+
+Starting at zero state and input 2,000,000, it emits utility 1,000,000 and target
+2,000,000, with state[0]=1,000,000. Repeating without committing a checkpoint yields
+the same result. Persisting/restoring the returned state makes the next utility
+2,000,000. These numbers are test semantics, not a profitable strategy claim.
+
+### Kernel-constrained child and supervisor behavior
+
+The implemented platform is Linux x86-64 with working `close_range`, pidfds,
+`no_new_privs` and seccomp-BPF. Missing primitives or rejected setup fail closed;
+no fallback executes without guards. The trusted supervisor must keep SIGCHLD at
+its default non-auto-reap disposition and exclusively own terminal reaping of this
+runner's children; another thread calling wait(-1) is outside the contract.
+
+The calling thread temporarily blocks signals around fork and restores its own
+mask. The child retains blocked signals, sets a parent-thread-death SIGKILL and
+non-dumpable status, retains only its result pipe at descriptor 3, and closes all
+other descriptors. It narrows inherited limits rather than raising them: core/file
+size zero, descriptor limit 4, process limit zero, CPU seconds rounded up from the
+wall budget, and the smaller of the signed memory declaration and selected child
+address-space budget. RLIMIT_NPROC alone is not relied on, especially for root:
+creation syscalls are denied independently by seccomp.
+
+The filter checks AUDIT_ARCH_X86_64 and rejects unknown/x32 syscall numbers. Only
+exit/exit_group and a write to descriptor 3 of at most one fixed result-frame size
+are permitted. Open/read/network/process creation/exec/ptrace/mmap and writes to
+other descriptors are denied with KILL_PROCESS. The interpreted program cannot
+request these operations in the first place. The VM uses preallocated arrays and
+performs no child heap allocation. It exits through a direct exit_group syscall,
+not C++ destructors or sanitizer/library exit cleanup requiring extra syscalls.
+
+The parent retains a pidfd, nonblocking result pipe and RAII child ownership.
+It checks cancellation and a monotonic wall budget (default 1,000 ms; admitted
+range 1..5,000 ms); timeout/error cleanup sends SIGKILL and reaps the owned child.
+No successful result is returned without a successful child exit and exactly one
+well-formed fixed frame. One result frame is currently 168 bytes on the supported
+platform; it is an internal same-build process message, not a stable external wire
+API. The decoded program is 65,544 bytes, frame 392 bytes, operand stack 512 bytes
+and state 128 bytes; fixed interpreter storage is bounded independently of fuel.
+
+The requested address-space budget is 1 MiB..1 GiB, further narrowed by the signed
+descriptor. RLIMIT_AS restricts growth and does not erase inherited mappings or
+prove a resident-memory ceiling. Parent objects, OpenSSL, allocator overhead,
+retained copies and fork page tables are not all charged to the VM's fixed arrays.
+The parent watchdog is not a hard-real-time scheduling guarantee, and kernel
+reaping can be delayed. Global cgroups, worker-pool admission, native-code secrecy
+and target-host latency/storage qualification remain excluded. No test mode or
+permission-reducing escape hatch is shipped in the production runner.
+
+### Output, lifetime and state persistence
+
+The parent rechecks numeric/state bounds, steps and frame shape. It measures
+elapsed monotonic time conservatively in ceiling milliseconds, adds it to the
+trusted starting observation without overflow, and rechecks artifact validity,
+cancellation, horizon and controller generation before publishing. Proposal expiry
+is capped at original observation+horizon; later aggregation cannot renew that
+horizon. Identity/book/snapshot/sequence/instrument fields come from the validated
+supervisor context, not executable output. `StrategyProposalContract::ValidateAndSeal`
+validates and hashes the final one-candidate proposal. This is proposal content
+validation, not global allocation acceptance or an Execution capability.
+
+Initial VM state is zero only when controller checkpoint metadata is empty.
+Otherwise an explicitly supplied verified checkpoint must match the full descriptor,
+sequence, payload digest, byte count and non-future saved time. Payload is exactly
+ASCII `HEPTA_STRATEGY_VM_STATE_V1\n` followed by sixteen eight-byte big-endian signed
+in-range integers; all truncated/extra/invalid state encodings are refused. The
+runner never invents a default state when a checkpoint is missing or invalid.
+
+On success the runner returns the encoded new state; it does not mutate controller
+metadata, persist the file, increment the controller generation or send an order.
+The supervisor can Save those bytes, then Checkpoint under its current generation.
+Those remain separate transactions with the previously specified uncertain-handoff
+semantics. A new controller can AdmitVerified, Load an independently selected
+checkpoint, RestoreCheckpoint, StartVerified and Run. Automatic latest-record
+selection, anti-rollback across restart, worker restart policy and rollout are not
+implemented by this explicit path.
+
+### Direct verification and platform references
+
+`tests/strategy_bytecode_runtime_tests.cpp` exercises actual signature loading,
+child execution, sealing, persistence and explicit restart recovery; all opcode
+values and bounded arithmetic pairs; fuel/stack/numeric/no-Emit failure; malformed
+context/checkpoint/limits; eleven forbidden kernel-call probes; setup/fork/crash,
+timeout/cancellation, busy runner and concurrent generation change; and allocation
+failure cleanup. Tests use stopped-child notifications and waitid observation,
+not sleep-based race guesses. Interposers exist only in the test executable.
+
+`tests/python/test_strategy_bytecode_runtime.py` runs that native test and a second
+independent Python-integer interpreter against the test-only C++ oracle bridge for
+5,000 seeded programs/inputs/fuel values. It compares rejection, fault, steps,
+utility, target and all state slots. This is finite differential evidence, not a
+formal proof or a general-purpose native-sandbox certification.
+
+Relevant kernel interface definitions, not deployment receipts:
+`https://www.kernel.org/doc/html/latest/userspace-api/seccomp_filter.html`,
+`https://man7.org/linux/man-pages/man2/close_range.2.html`, and
+`https://man7.org/linux/man-pages/man2/getrlimit.2.html`.
 
 ## Signed artifact bytes and verified metadata entry
 

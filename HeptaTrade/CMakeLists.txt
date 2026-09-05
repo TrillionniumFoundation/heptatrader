@@ -131,7 +131,8 @@ target_link_libraries(hepta_risk_core PUBLIC hepta_observability_core)
 add_library(hepta_strategy_runtime STATIC
     strategy_runtime/strategy_proposal.cpp
     strategy_runtime/strategy_checkpoint_store.cpp
-    strategy_runtime/strategy_artifact_verifier.cpp)
+    strategy_runtime/strategy_artifact_verifier.cpp
+    strategy_runtime/strategy_bytecode_runtime.cpp)
 hepta_runtime_target(hepta_strategy_runtime)
 target_link_libraries(hepta_strategy_runtime PUBLIC
     hepta_numeric_core
