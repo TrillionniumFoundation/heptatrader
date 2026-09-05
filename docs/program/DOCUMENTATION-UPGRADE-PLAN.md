@@ -124,6 +124,83 @@ the registered gaps only and do not erase the product exclusions or remaining wo
 products above. Complete current-head CI, independent review and protected live
 verifier evidence are separate requirements.
 
+## End-to-end receipt path and cleanup boundary
+
+Documentation Control module 1.2.2 tightens the existing
+`receipt_file_boundary.read_receipt(root, relative)` operation. Its returned
+object remains a historical, structurally decoded envelope, not issuer identity,
+external qualification, a filesystem lock or a deployment capability.
+
+The reader no longer calls `root.resolve()`: resolving first would erase a
+symlink in the selected root or its ancestors before no-follow opening could
+reject it. Instead, an absolute path is traversed one component at a time from
+`/`, retaining every directory descriptor through parsing and final validation.
+A relative root is anchored once to the supervising process's working directory;
+this does not follow root symlinks or reinterpret the selection after a later
+chdir. A Path may already have normalized dot/repeated-separator spelling before
+this function sees it; preserved parent components and double-root anchors are
+rejected. The receipt's relative string still requires canonical spelling.
+
+The selected root and every descendant directory must not be world-writable,
+even with the sticky bit. An ancestor outside that selected root may be shared
+only when sticky, allowing ordinary private temporary directories under `/tmp`.
+This exception never permits `/tmp` itself as a world-writable evidence root.
+Group ownership/permissions remain a trusted deployment-policy concern, not an
+issuer-identity check. The code does not create directories, adjust permissions,
+remove files or silently repair an unsafe layout.
+
+The complete path has a 4,096-byte ceiling, each encoded component at most 255
+bytes, and at most 64 directory components excluding filesystem `/`. These
+preflight checks precede descriptor acquisition. A read retains at most 66 owned
+descriptors (filesystem root, components, receipt). Missing directory-relative
+open/stat or no-follow metadata support rejects without a permissive fallback.
+The selected receipt remains a nonempty regular single-link file of at most
+4 MiB with no world-write bit; symlink/hardlink/FIFO and oversized files retain
+their previous rejection behavior.
+
+Directory ownership slots are allocated before any file is opened. Payload
+storage is preallocated to the captured size and filled with bounded short reads;
+interrupted reads retry. A one-byte probe detects growth beyond the captured
+size. Short reads cannot accumulate millions of retained per-read byte objects.
+This bounds transport buffers and descriptor count, not the decoded JSON object's
+full memory cost, total process RSS, I/O duration or the supervisor's other work.
+
+File metadata and all retained directory/name bindings are validated both before
+and after JSON decoding. File device/inode/mode/link count/UID/GID/size/mtime/ctime
+must be unchanged. Directory device/inode/mode/UID/GID must remain the same;
+changing an unrelated sibling is not falsely treated as a changed selected file.
+Replacing a selected root/ancestor or an identical-byte receipt during decoding
+rejects instead of returning the already decoded value. The returned value can
+still become historical immediately afterward: a trusted quiescent workspace,
+independent receipt authentication and live verifier remain necessary. Mount
+namespace manipulation, hostile same-identity processes, atomic multi-file
+snapshots and network-filesystem qualification are not established by this check.
+
+Cleanup attempts each successfully acquired descriptor exactly once in reverse
+order, including after open/stat/read/decode exceptions. A close I/O error does
+not stop cleanup of other descriptors and suppresses a successful return. No
+close is retried: on Linux, a retry after an error can close an unrelated reused
+file descriptor. The fault tests call the real close before injecting the I/O
+error, rather than claiming that a failed operation always leaves its descriptor
+open. Process termination and asynchronous interpreter failure are not converted
+into transactional cleanup guarantees.
+
+`tests/python/test_receipt_file_boundary.py` adds 28 regressions covering root
+and ancestor symlinks; writable root/descendant and sticky-ancestor distinctions;
+path/depth/payload endpoints; short/EINTR reads; growing/truncated input; file,
+root, ancestor and permission changes during parsing; acquisition/metadata/decode
+and every close-failure position; descriptor inheritance/cleanup; unchanged
+read-only inputs; and both external-gate envelope paths rejecting aliased roots.
+The existing 57 gap-closure tests are retained unchanged. Run the new suite with
+`python3 -m unittest discover -s tests/python -p "test_receipt_file_boundary.py"`
+and the existing suite with the gap-closure command above. Synthetic local
+fixtures never constitute live governance or Broker receipts.
+
+Interface references: `https://docs.python.org/3/library/os.html`,
+`https://man7.org/linux/man-pages/man2/open.2.html` and
+`https://man7.org/linux/man-pages/man2/close.2.html`. These describe APIs, not
+qualification of the selected source or the deployment environment.
+
 ## Detached evidence consumption
 
 Keep source, qualification evidence and release binding as separate immutable objects:
