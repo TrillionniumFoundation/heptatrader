@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Verify the static team-only CODEOWNERS activation contract.
 
-The verifier binds each qualification rule to the exact tracked Git tree.  It
-proves checked-in bytes and policy consistency only; live team existence,
-staffing, visibility, repository permission, rulesets and protected admission
-remain external governance facts.
+The verifier binds every qualifying CODEOWNERS rule to the exact stage-0 Git
+index of the repository root.  It proves checked-in bytes and policy
+consistency only; live team existence, staffing, visibility, repository
+permission, rulesets and protected admission remain external governance facts.
 """
 from __future__ import annotations
 
@@ -28,23 +28,22 @@ EXPECTED_ORGANIZATION = "TrillionniumFoundation"
 EXPECTED_DEFAULT_BRANCH = "main"
 MINIMUM_DISTINCT_TEAMS_FLOOR = 4
 TRACKED_PATH_POLICY: dict[str, Any] = {
-    "source": "git-ls-files",
+    "source": "git-ls-files-stage-zero",
     "scope": "all-top-level-directories",
     "require_match_per_rule": True,
     "require_byte_sorted_root_rules": True,
+    "require_git_repository_root": True,
+    "allow_filesystem_fallback": False,
     "allow_future_only_patterns": False,
     "wildcard_counts_for_team_qualification": False,
+    "reject_gitlinks": True,
+    "reject_unmerged_index": True,
 }
 TEAM_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
 LOGICAL_HANDLE_RE = re.compile(r"^@hepta/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 TEAM_OWNER_RE = re.compile(r"^@([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
-TRANSIENT_SCAN_PARTS = {
-    ".git",
-    ".mypy_cache",
-    ".pytest_cache",
-    ".ruff_cache",
-    "__pycache__",
-}
+OBJECT_ID_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
+ALLOWED_STAGE_ZERO_MODES = {"100644", "100755", "120000"}
 
 
 class ActivationError(ValueError):
@@ -190,65 +189,116 @@ def _normalize_tracked_path(raw: str, errors: list[str]) -> str | None:
     return raw
 
 
-def _scan_fixture_paths(root: Path, errors: list[str]) -> list[str]:
-    paths: list[str] = []
-    for current, directories, filenames in os.walk(root, followlinks=False):
-        directories[:] = sorted(
-            directory
-            for directory in directories
-            if directory not in TRANSIENT_SCAN_PARTS
-            and not (Path(current) / directory).is_symlink()
+def _git_environment() -> dict[str, str]:
+    # Caller-controlled Git redirection variables must not select a different
+    # repository, index or object store.  System/global config is unnecessary
+    # for the two read-only plumbing commands used below.
+    environment = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    environment.update(
+        {
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_OPTIONAL_LOCKS": "0",
+            "GIT_TERMINAL_PROMPT": "0",
+        }
+    )
+    return environment
+
+
+def _run_git(root: Path, arguments: list[str], errors: list[str], label: str) -> bytes | None:
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=20,
+            env=_git_environment(),
         )
-        for filename in sorted(filenames):
-            path = Path(current) / filename
-            relative = path.relative_to(root).as_posix()
-            try:
-                mode = path.lstat().st_mode
-            except OSError as exc:
-                errors.append(f"tracked-path fallback cannot stat {relative}: {exc}")
-                continue
-            if stat.S_ISREG(mode) or stat.S_ISLNK(mode):
-                normalized = _normalize_tracked_path(relative, errors)
-                if normalized is not None:
-                    paths.append(normalized)
-    return sorted(set(paths))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        errors.append(f"{label} failed: {exc}")
+        return None
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        errors.append(f"{label} failed with {completed.returncode}: {detail}")
+        return None
+    return completed.stdout
 
 
 def _collect_tracked_paths(root: Path, errors: list[str]) -> list[str]:
-    if (root / ".git").exists():
+    metadata = root / ".git"
+    try:
+        info = metadata.lstat()
+    except OSError as exc:
+        errors.append(f"Git metadata is required at repository root: {exc}")
+        return []
+    if metadata.is_symlink() or not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+        errors.append("Git metadata must be a non-symlink directory or worktree pointer file")
+        return []
+
+    top_level_raw = _run_git(root, ["rev-parse", "--show-toplevel"], errors, "git rev-parse")
+    if top_level_raw is None:
+        return []
+    try:
+        top_level = Path(top_level_raw.decode("utf-8").strip()).resolve()
+    except (UnicodeDecodeError, OSError) as exc:
+        errors.append(f"git repository root is invalid: {exc}")
+        return []
+    if top_level != root:
+        errors.append(f"validator root is not the Git repository root: {top_level}")
+        return []
+
+    index_raw = _run_git(
+        root,
+        ["ls-files", "--stage", "-z", "--"],
+        errors,
+        "git ls-files --stage",
+    )
+    if index_raw is None:
+        return []
+    try:
+        decoded = index_raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        errors.append(f"git index contains a non-UTF-8 path: {exc}")
+        return []
+
+    paths: list[str] = []
+    seen: set[str] = set()
+    for record in decoded.split("\0"):
+        if not record:
+            continue
         try:
-            completed = subprocess.run(
-                ["git", "-C", str(root), "ls-files", "-z"],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                check=False,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            errors.append(f"git ls-files failed: {exc}")
-            return []
-        if completed.returncode != 0:
-            detail = completed.stderr.decode("utf-8", errors="replace").strip()
-            errors.append(f"git ls-files failed with {completed.returncode}: {detail}")
-            return []
-        try:
-            decoded = completed.stdout.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            errors.append(f"git ls-files returned a non-UTF-8 path: {exc}")
-            return []
-        paths: list[str] = []
-        for raw in decoded.split("\0"):
-            if not raw:
-                continue
-            normalized = _normalize_tracked_path(raw, errors)
-            if normalized is not None:
-                paths.append(normalized)
-        result = sorted(set(paths))
-    else:
-        # Unit fixtures do not carry Git metadata.  The production path above is
-        # mandatory in a real checkout; this fallback only supplies a closed-world
-        # regular-file inventory for isolated hostile tests.
-        result = _scan_fixture_paths(root, errors)
+            metadata_text, raw_path = record.split("\t", 1)
+            mode, object_id, stage = metadata_text.split(" ")
+        except ValueError:
+            errors.append(f"malformed git index record: {record!r}")
+            continue
+        normalized = _normalize_tracked_path(raw_path, errors)
+        if normalized is None:
+            continue
+        if stage != "0":
+            errors.append(f"unmerged git index entry is not permitted: {normalized} (stage {stage})")
+            continue
+        if not OBJECT_ID_RE.fullmatch(object_id) or set(object_id) == {"0"}:
+            errors.append(f"git index object id is invalid for {normalized}")
+            continue
+        if mode == "160000":
+            errors.append(f"tracked gitlink/submodule is not permitted: {normalized}")
+            continue
+        if mode not in ALLOWED_STAGE_ZERO_MODES:
+            errors.append(f"unsupported git index mode {mode} for {normalized}")
+            continue
+        if normalized in seen:
+            errors.append(f"duplicate stage-zero git index path: {normalized}")
+            continue
+        seen.add(normalized)
+        paths.append(normalized)
+
+    result = sorted(paths)
     if not result:
         errors.append("tracked repository path inventory must not be empty")
     return result
@@ -349,9 +399,7 @@ def _validate_tree_binding(
         if prefix is None:
             continue
         if not any(path.startswith(prefix) for path in tracked_paths):
-            errors.append(
-                f"{MAPPING_REL}: qualification pattern {pattern} matches no tracked path"
-            )
+            errors.append(f"{MAPPING_REL}: qualification pattern {pattern} matches no tracked path")
             continue
         qualified_teams.update(owners_by_pattern.get(pattern, []))
 
