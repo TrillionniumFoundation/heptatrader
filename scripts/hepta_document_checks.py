@@ -11,6 +11,8 @@ import sys
 from typing import Any
 from urllib.parse import unquote
 
+from hepta_document_metadata import META, METADATA_LINE_LIMIT, missing_metadata
+
 try:
     from jsonschema import Draft202012Validator
     from jsonschema.exceptions import SchemaError
@@ -36,7 +38,6 @@ ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 DOCUMENT_REGISTRY = DOCS / "document-registry-v2.json"
 MODULE_SCHEMA = DOCS / "modules/module-manifest-schema-v3.json"
-META = ("Status:", "Applies to:", "Verification:", "Authority:")
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 SHA_RE = re.compile(r"(?<![0-9a-f])[0-9a-f]{40}(?![0-9a-f])")
 FORBIDDEN_DOC_DIRS = frozenset({"legacy", "proposals"})
@@ -143,12 +144,8 @@ def check_markdown(path: Path, document_class: str, errors: list[str]) -> None:
     except (OSError, UnicodeError) as exc:
         errors.append(f"{path.relative_to(ROOT)}: unreadable: {exc}")
         return
-    lines = text.splitlines()[:14]
-    for field in META:
-        if not any(
-            line.startswith(field) and line[len(field):].strip() for line in lines
-        ):
-            errors.append(f"{path.relative_to(ROOT)}: missing metadata {field}")
+    for field in missing_metadata(text):
+        errors.append(f"{path.relative_to(ROOT)}: missing metadata {field}")
     if "Status: current compatibility alias" in text or "Authority: none." in text:
         errors.append(f"{path.relative_to(ROOT)}: compatibility alias is forbidden")
     if document_class == "normative" and SHA_RE.search(text):
@@ -241,7 +238,7 @@ def _validate_repository_entrypoints(document_registry: dict[str, Any], errors: 
         except (OSError, UnicodeError) as exc:
             errors.append(f"{relative}: unreadable entrypoint: {exc}")
             continue
-        if "Authority: entrypoint only" not in "\n".join(text.splitlines()[:14]):
+        if "Authority: entrypoint only" not in "\n".join(text.splitlines()[:METADATA_LINE_LIMIT]):
             errors.append(f"{relative}: repository entrypoint must declare entrypoint-only authority")
         canonical = entry.get("canonical_target")
         try:

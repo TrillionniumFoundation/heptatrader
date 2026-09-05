@@ -1,7 +1,7 @@
 # Documentation Control Plane Technical Guide
 
 Status: generated current view
-Applies to: `hepta.documentation.control` version `1.3.0` (current)
+Applies to: `hepta.documentation.control` version `1.3.1` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-documentation-control.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -66,7 +66,7 @@ Authority is limited to the statement above. A dependency, public type or transp
 
 ## Physical Source and Build Boundaries
 
-- **Source roots:** `docs/`, `scripts/check_cmake_module_graph.py`, `scripts/check_documentation_control_plane.py`, `scripts/check_module_discipline.py`, `scripts/generate_documentation_views.py`, `scripts/hepta_document_checks.py`, `scripts/hepta_module_boundaries.py`, `scripts/hepta_registry_checks.py`
+- **Source roots:** `docs/`, `scripts/check_cmake_module_graph.py`, `scripts/check_documentation_control_plane.py`, `scripts/check_module_discipline.py`, `scripts/generate_documentation_views.py`, `scripts/hepta_document_checks.py`, `scripts/hepta_document_metadata.py`, `scripts/hepta_module_boundaries.py`, `scripts/hepta_registry_checks.py`
 - **Build targets:** none
 - **Allowed module dependencies:** none
 
@@ -120,7 +120,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Policies are checked in and reviewed as code; environment-specific relaxation is forbidden.
 - Tool dependencies and schema versions are pinned by CI and repository contracts.
 
-The manifest version is `1.3.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.3.1`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 

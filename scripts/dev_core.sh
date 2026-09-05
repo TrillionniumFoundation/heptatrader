@@ -94,8 +94,8 @@ fi
 bash -n "${ROOT_DIR}/scripts/run_ib_paper_qualification.sh"
 python3 -m py_compile "${ROOT_DIR}/scripts/verify_ib_paper_qualification.py"
 python3 "${ROOT_DIR}/scripts/generate_contract_bindings.py" --check
-python3 "${ROOT_DIR}/scripts/generate_documentation_views.py" --check
-python3 "${ROOT_DIR}/scripts/check_documentation_control_plane.py"
+# Repository integrity invokes documentation control, which checks generated
+# views. Run that chain once; keep all three standalone entrypoints available.
 python3 "${ROOT_DIR}/scripts/check_repository_integrity.py"
 python3 "${ROOT_DIR}/scripts/check_systemd_documentation.py"
 python3 "${ROOT_DIR}/scripts/check_workflow_check_contexts.py"

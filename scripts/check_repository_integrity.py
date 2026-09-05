@@ -8,6 +8,8 @@ import subprocess
 import sys
 from urllib.parse import unquote
 
+from hepta_document_metadata import META, missing_metadata
+
 ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = (
     "README.md", "docs/README.md", "docs/document-registry-v2.json",
@@ -41,7 +43,6 @@ TEXT_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp", ".py", ".cmake", ".json",
                  ".yml", ".yaml", ".service", ".socket", ".in", ".conf"}
 CPP_SUFFIXES = {".c", ".cc", ".cpp", ".h", ".hpp"}
 BUILD_SUFFIXES = {".cmake", ".in"}
-META = ("Status:", "Applies to:", "Verification:")
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 PERMISSION_SCOPES = ("actions","attestations","checks","contents","deployments","discussions",
                      "id-token","issues","packages","pages","pull-requests","repository-projects",
@@ -59,7 +60,13 @@ MUTATIONS = (
     (re.compile(r"(?:\brm\b[^\n]*\.github[\\/]workflows|\bfind\b[^\n]*\.github[\\/]workflows[^\n]*-delete|\.github[\\/]workflows[^\n]*(?:unlink|rmtree|remove)\s*\()", re.I), "workflow self-delete"),
     (re.compile(r"(?:(?:>|>>)\s*[^\n]*\.github[\\/]workflows|\.github[\\/]workflows[\s\S]{0,512}(?:write_text|write_bytes|writeFile(?:Sync)?|appendFile(?:Sync)?|open\s*\([^)]*['\"][wax])|(?:write_text|writeFile(?:Sync)?)[\s\S]{0,512}\.github[\\/]workflows)", re.I), "workflow file write"),
     (re.compile(r"(?:>|>>|\bsed\s+-i\b|\btee\b)[^\n]*(?:docs[\\/](?:development|program|verification)|PLAN\.md|EXACT-HEAD|gap-registry|evidence-index)", re.I), "evidence/plan mutation"),
-    (re.compile(r"(?:^|[^A-Za-z0-9])(?:finaliz(?:e|er|ation)?|close[-_]?gap|self[-_]?merge)(?:[^A-Za-z0-9]|$)", re.I), "closure/finalizer command"),
+    # Identify known finalizer invocations, not arbitrary prose such as
+    # `echo "finalize"`. Static name lint does not authenticate workflow code.
+    (re.compile(
+        r"(?:\b(?:python[23]?(?:\.\d+)?|bash|sh)\s+(?:-[A-Za-z]\s+)*|"
+        r"(?:^|[;&|]|\brun:)\s*)"
+        r"(?:[^\s\"';&|]*/)?(?:finaliz(?:e|er|ation)?|close[-_]?gap|self[-_]?merge)"
+        r"[A-Za-z0-9_.-]*(?:\s|$)", re.I | re.M), "closure/finalizer command"),
 )
 MUTATING_ACTION_RE = re.compile(r"(?:create[-_]pull[-_]request|create[-_]release|auto[-_]?merge|auto[-_]?approve|automerge|release[-_]please|release[-_]drafter|semantic[-_]release)", re.I)
 
@@ -174,8 +181,7 @@ def validate() -> list[str]:
     for rel in STALE_DOC_PATHS:
         if (ROOT/rel).exists(): errors.append(f"stale documentation path remains: {rel}")
     for path in _document_paths():
-        lines=_text(path).splitlines()[:12]
-        missing=[f for f in META if not any(line.startswith(f) and line[len(f):].strip() for line in lines)]
+        missing=missing_metadata(_text(path))
         if missing: errors.append(f"{path.relative_to(ROOT)}: missing document metadata: {', '.join(missing)}")
         _check_links(path,errors)
     for rel in ("CMakeLists.txt","CMakePresets.json","scripts/dev_core.sh"):

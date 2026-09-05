@@ -28,31 +28,36 @@ _REQUIRED_BUDGET_FIELDS = {
 }
 
 
-def _read_json(path: Path, errors: list[str]) -> dict[str, Any]:
+def _read_json(path: Path, errors: list[str], *, root: Path = ROOT) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        errors.append(f"{path.relative_to(ROOT)}: cannot load JSON: {exc}")
+        errors.append(f"{path.relative_to(root)}: cannot load JSON: {exc}")
         return {}
-    if not isinstance(value, dict):
-        errors.append(f"{path.relative_to(ROOT)}: top-level value must be an object")
+    if not isinstance(value, dict) or not value:
+        errors.append(f"{path.relative_to(root)}: top-level value must be a non-empty object")
         return {}
     return value
 
 
-def _safe_repo_path(raw: object, field: str, errors: list[str]) -> Path | None:
+def _safe_repo_path(
+    raw: object, field: str, errors: list[str], *, root: Path = ROOT
+) -> Path | None:
     if not isinstance(raw, str) or not raw.strip():
         errors.append(f"{field}: expected non-empty repository-relative path")
         return None
     path = Path(raw)
-    if path.is_absolute() or ".." in path.parts:
+    if path.is_absolute() or ".." in path.parts or not path.parts or "\x00" in raw:
         errors.append(f"{field}: unsafe path {raw!r}")
         return None
-    resolved = (ROOT / path).resolve()
     try:
-        resolved.relative_to(ROOT.resolve())
-    except ValueError:
-        errors.append(f"{field}: path escapes repository root: {raw!r}")
+        resolved = (root / path).resolve()
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        errors.append(f"{field}: path escapes repository root or cannot resolve: {raw!r}")
+        return None
+    if resolved == root:
+        errors.append(f"{field}: evidence must name a repository child: {raw!r}")
         return None
     if not resolved.exists():
         errors.append(f"{field}: evidence path does not exist: {raw}")
@@ -60,9 +65,12 @@ def _safe_repo_path(raw: object, field: str, errors: list[str]) -> Path | None:
     return resolved
 
 
-def _non_empty_strings(value: object, field: str, errors: list[str]) -> list[str]:
-    if not isinstance(value, list) or not value:
-        errors.append(f"{field}: expected a non-empty array")
+def _non_empty_strings(
+    value: object, field: str, errors: list[str], *, allow_empty: bool = False
+) -> list[str]:
+    if not isinstance(value, list) or (not value and not allow_empty):
+        description = "an array" if allow_empty else "a non-empty array"
+        errors.append(f"{field}: expected {description}")
         return []
     result: list[str] = []
     for index, item in enumerate(value):
@@ -76,15 +84,10 @@ def _non_empty_strings(value: object, field: str, errors: list[str]) -> list[str
 
 
 def validate(root: Path | None = None) -> list[str]:
-    global ROOT, REGISTRY_PATH, GAP_REGISTRY_PATH
-    if root is not None:
-        ROOT = root.resolve()
-        REGISTRY_PATH = ROOT / "docs/modules/module-registry-v2.json"
-        GAP_REGISTRY_PATH = ROOT / "docs/program/gap-registry-v2.json"
-
+    root = (ROOT if root is None else Path(root)).resolve()
     errors: list[str] = []
-    registry = _read_json(REGISTRY_PATH, errors)
-    gaps_document = _read_json(GAP_REGISTRY_PATH, errors)
+    registry = _read_json(root / "docs/modules/module-registry-v2.json", errors, root=root)
+    gaps_document = _read_json(root / "docs/program/gap-registry-v2.json", errors, root=root)
     if not registry or not gaps_document:
         return errors
 
@@ -106,8 +109,15 @@ def validate(root: Path | None = None) -> list[str]:
 
     manifests: dict[str, dict[str, Any]] = {}
     for index, relative in enumerate(manifest_paths):
-        manifest_path = ROOT / "docs" / relative
-        manifest = _read_json(manifest_path, errors)
+        if Path(relative).is_absolute():
+            errors.append(f"manifest_paths[{index}]: unsafe path {relative!r}")
+            continue
+        manifest_path = _safe_repo_path(
+            "docs/" + relative, f"manifest_paths[{index}]", errors, root=root
+        )
+        if manifest_path is None:
+            continue
+        manifest = _read_json(manifest_path, errors, root=root)
         module_id = manifest.get("id")
         if not isinstance(module_id, str) or not module_id:
             errors.append(f"manifest_paths[{index}]: manifest has no module id")
@@ -135,7 +145,8 @@ def validate(root: Path | None = None) -> list[str]:
                 f"resource_guardrail_profiles.{profile_id}.scope: "
                 "must remain explicitly non-SLO"
             )
-        if budget.get("enforcement") not in _ALLOWED_ENFORCEMENT:
+        enforcement = budget.get("enforcement")
+        if not isinstance(enforcement, str) or enforcement not in _ALLOWED_ENFORCEMENT:
             errors.append(
                 f"resource_guardrail_profiles.{profile_id}.enforcement: invalid value"
             )
@@ -183,11 +194,19 @@ def validate(root: Path | None = None) -> list[str]:
         "implementation_evidence_policy.external_gate_ids",
         errors,
     ))
-    gaps = {
-        item.get("id"): item
-        for item in gaps_document.get("gaps", [])
-        if isinstance(item, dict) and isinstance(item.get("id"), str)
-    }
+    raw_gaps = gaps_document.get("gaps")
+    if not isinstance(raw_gaps, list):
+        errors.append("gap registry: gaps must be an array")
+        raw_gaps = []
+    gaps: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(raw_gaps):
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
+            errors.append(f"gaps[{index}]: expected object with non-empty string id")
+            continue
+        if item["id"] in gaps:
+            errors.append(f"gaps[{index}]: duplicate gap id {item['id']}")
+            continue
+        gaps[item["id"]] = item
     for gate_id in sorted(external_gate_ids):
         gap = gaps.get(gate_id)
         if gap is None:
@@ -203,13 +222,13 @@ def validate(root: Path | None = None) -> list[str]:
                 _safe_repo_path(
                     receipt,
                     f"gap-registry.{gate_id}.qualification_receipt",
-                    errors,
+                    errors, root=root,
                 )
 
     for module_id in sorted(manifest_ids & evidence_ids):
         entry = entries[module_id]
         state = entry.get("state")
-        if state not in allowed_states:
+        if not isinstance(state, str) or state not in allowed_states:
             errors.append(f"{module_id}.state: invalid state {state!r}")
 
         expected = truth_floor.get(module_id)
@@ -223,18 +242,10 @@ def validate(root: Path | None = None) -> list[str]:
             f"{module_id}.implemented_scope",
             errors,
         )
-        excluded_scope = entry.get("excluded_scope")
-        if not isinstance(excluded_scope, list):
-            errors.append(f"{module_id}.excluded_scope: expected array")
-            excluded_scope = []
-        else:
-            for index, item in enumerate(excluded_scope):
-                if not isinstance(item, str) or not item.strip():
-                    errors.append(
-                        f"{module_id}.excluded_scope[{index}]: expected non-empty string"
-                    )
-            if len(set(excluded_scope)) != len(excluded_scope):
-                errors.append(f"{module_id}.excluded_scope: duplicate values forbidden")
+        excluded_scope = _non_empty_strings(
+            entry.get("excluded_scope"), f"{module_id}.excluded_scope", errors,
+            allow_empty=True,
+        )
 
         if state != "implemented" and not excluded_scope:
             errors.append(
@@ -255,11 +266,11 @@ def validate(root: Path | None = None) -> list[str]:
             )
             for index, raw_path in enumerate(paths):
                 resolved = _safe_repo_path(
-                    raw_path, f"{module_id}.{evidence_field}[{index}]", errors
+                    raw_path, f"{module_id}.{evidence_field}[{index}]", errors, root=root
                 )
                 if resolved is None:
                     continue
-                relative = resolved.relative_to(ROOT)
+                relative = resolved.relative_to(root)
                 if evidence_field == "test_evidence" and relative.parts[0] != "tests":
                     errors.append(
                         f"{module_id}.{evidence_field}[{index}]: "
@@ -271,10 +282,10 @@ def validate(root: Path | None = None) -> list[str]:
                         "source evidence cannot live under tests/"
                     )
 
-        gates = entry.get("external_gates")
-        if not isinstance(gates, list):
-            errors.append(f"{module_id}.external_gates: expected array")
-            gates = []
+        gates = _non_empty_strings(
+            entry.get("external_gates"), f"{module_id}.external_gates", errors,
+            allow_empty=True,
+        )
         for index, gate in enumerate(gates):
             if gate not in external_gate_ids:
                 errors.append(
