@@ -2,6 +2,8 @@
 #include "observability/runtime_telemetry.h"
 
 #include <chrono>
+#include <charconv>
+#include <string_view>
 #include <algorithm>
 #include <cerrno>
 #include <climits>
@@ -101,171 +103,303 @@ static bool HasPrivateRegularFileMetadata(const struct stat& metadata)
         (metadata.st_mode & 07777) == 0600 && metadata.st_nlink == 1;
 }
 
-class JsonSyntaxValidator
+// Decode the journal's flat scalar record, not arbitrary JSON documents.
+// Field lookup and conversion share one cursor: nested/string contents cannot
+// masquerade as top-level fields, and malformed values never become defaults.
+struct JournalStringField
+{
+    const char* name;
+    std::string OmsJournalEvent::* member;
+};
+
+constexpr JournalStringField kJournalStringFields[] = {
+    {"event", &OmsJournalEvent::eventType},
+    {"req_id", &OmsJournalEvent::reqId},
+    {"client_req_id", &OmsJournalEvent::clientReqId},
+    {"trace_id", &OmsJournalEvent::traceId},
+    {"event_id", &OmsJournalEvent::eventId},
+    {"risk_code", &OmsJournalEvent::riskCode},
+    {"venue", &OmsJournalEvent::venue},
+    {"strategy", &OmsJournalEvent::strategy},
+    {"account", &OmsJournalEvent::account},
+    {"execution_domain", &OmsJournalEvent::executionDomain},
+    {"request_hash", &OmsJournalEvent::requestHash},
+    {"venue_correlation_id", &OmsJournalEvent::venueCorrelationId},
+    {"broker_callback_type", &OmsJournalEvent::brokerCallbackType},
+    {"broker_service_epoch", &OmsJournalEvent::brokerServiceEpoch},
+    {"broker_message", &OmsJournalEvent::brokerMessage},
+    {"broker_advanced_order_reject_json", &OmsJournalEvent::brokerAdvancedOrderRejectJson},
+    {"broker_why_held", &OmsJournalEvent::brokerWhyHeld},
+    {"broker_execution_id", &OmsJournalEvent::brokerExecutionId},
+    {"instrument", &OmsJournalEvent::instrument},
+    {"side", &OmsJournalEvent::side},
+    {"status", &OmsJournalEvent::status},
+    {"reason", &OmsJournalEvent::reason},
+    {"source", &OmsJournalEvent::source},
+};
+
+bool ReadUtf8Scalar(const std::string& text, std::size_t& pos, std::uint32_t& value)
+{
+    if (pos == text.size()) return false;
+    const unsigned char first = static_cast<unsigned char>(text[pos++]);
+    if (first < 0x80) { value = first; return true; }
+    unsigned int remaining;
+    std::uint32_t minimum;
+    if (first >= 0xc2 && first <= 0xdf)
+        { remaining = 1; value = first & 0x1f; minimum = 0x80; }
+    else if (first >= 0xe0 && first <= 0xef)
+        { remaining = 2; value = first & 0x0f; minimum = 0x800; }
+    else if (first >= 0xf0 && first <= 0xf4)
+        { remaining = 3; value = first & 0x07; minimum = 0x10000; }
+    else return false;
+    if (text.size() - pos < remaining) return false;
+    while (remaining--)
+    {
+        const unsigned char next = static_cast<unsigned char>(text[pos++]);
+        if ((next & 0xc0) != 0x80) return false;
+        value = (value << 6) | (next & 0x3f);
+    }
+    return value >= minimum && value <= 0x10ffff &&
+        !(value >= 0xd800 && value <= 0xdfff);
+}
+
+bool ValidJournalStrings(const OmsJournalEvent& event)
+{
+    std::size_t total = 0;
+    for (const auto& field : kJournalStringFields)
+    {
+        const std::string& value = event.*(field.member);
+        if (value.size() > OmsJournal::kMaximumRecordBytes - total) return false;
+        total += value.size();
+        std::size_t pos = 0;
+        std::uint32_t scalar = 0;
+        while (pos < value.size())
+            if (!ReadUtf8Scalar(value, pos, scalar)) return false;
+    }
+    return true;
+}
+
+class JournalRecordReader
 {
 public:
-    explicit JsonSyntaxValidator(const std::string& input)
-        : m_input(input)
-    {
-    }
+    explicit JournalRecordReader(const std::string& input) : m_input(input) {}
 
-    bool IsValidObject()
+    bool Read(OmsJournalEvent& event)
     {
         SkipWhitespace();
-        if (!ParseObject(0)) return false;
+        if (!Consume('{')) return false;
         SkipWhitespace();
-        return m_pos == m_input.size();
+        if (Consume('}')) return false; // A nonempty event name is required.
+        for (;;)
+        {
+            std::string key;
+            if (!ReadString(key)) return false;
+            SkipWhitespace();
+            if (!Consume(':')) return false;
+            SkipWhitespace();
+            if (!ReadField(key, event)) return false;
+            SkipWhitespace();
+            if (Consume('}')) break;
+            if (!Consume(',')) return false;
+            SkipWhitespace();
+        }
+        SkipWhitespace();
+        return m_pos == m_input.size() && !event.eventType.empty() &&
+            event.schemaVersion >= 1 && event.schemaVersion <= OmsJournal::kSchemaVersion;
     }
 
 private:
-    static bool IsHexDigit(char value)
-    {
-        return (value >= '0' && value <= '9') ||
-            (value >= 'a' && value <= 'f') ||
-            (value >= 'A' && value <= 'F');
-    }
-
     void SkipWhitespace()
     {
-        while (m_pos < m_input.size())
-        {
-            const char value = m_input[m_pos];
-            if (value != ' ' && value != '\t' && value != '\r' && value != '\n') break;
-            ++m_pos;
-        }
+        while (m_pos < m_input.size() &&
+               (m_input[m_pos] == ' ' || m_input[m_pos] == '\t' ||
+                m_input[m_pos] == '\r' || m_input[m_pos] == '\n')) ++m_pos;
     }
 
-    bool Consume(char value)
+    bool Consume(char ch)
     {
-        if (m_pos >= m_input.size() || m_input[m_pos] != value) return false;
+        if (m_pos == m_input.size() || m_input[m_pos] != ch) return false;
         ++m_pos;
         return true;
     }
 
-    bool ConsumeLiteral(const char* literal)
+    bool Mark(std::size_t field)
     {
-        for (const char* cursor = literal; *cursor != '\0'; ++cursor)
+        const std::uint64_t bit = std::uint64_t{1} << field;
+        if (m_seen & bit) return false;
+        m_seen |= bit;
+        return true;
+    }
+
+    bool ReadHex(std::uint32_t& value)
+    {
+        if (m_input.size() - m_pos < 4) return false;
+        value = 0;
+        for (int digit = 0; digit < 4; ++digit)
         {
-            if (!Consume(*cursor)) return false;
+            const char ch = m_input[m_pos++];
+            unsigned int nibble;
+            if (ch >= '0' && ch <= '9') nibble = ch - '0';
+            else if (ch >= 'a' && ch <= 'f') nibble = ch - 'a' + 10;
+            else if (ch >= 'A' && ch <= 'F') nibble = ch - 'A' + 10;
+            else return false;
+            value = (value << 4) | nibble;
         }
         return true;
     }
 
-    bool ParseString()
+    static void AppendUtf8(std::uint32_t value, std::string& output)
+    {
+        if (value < 0x80) output.push_back(static_cast<char>(value));
+        else
+        {
+            if (value < 0x800) output.push_back(static_cast<char>(0xc0 | (value >> 6)));
+            else
+            {
+                if (value < 0x10000) output.push_back(static_cast<char>(0xe0 | (value >> 12)));
+                else
+                {
+                    output.push_back(static_cast<char>(0xf0 | (value >> 18)));
+                    output.push_back(static_cast<char>(0x80 | ((value >> 12) & 0x3f)));
+                }
+                output.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
+            }
+            output.push_back(static_cast<char>(0x80 | (value & 0x3f)));
+        }
+    }
+
+    bool ReadString(std::string& output)
     {
         if (!Consume('"')) return false;
         while (m_pos < m_input.size())
         {
-            const unsigned char value =
-                static_cast<unsigned char>(m_input[m_pos++]);
-            if (value == '"') return true;
-            if (value < 0x20) return false;
-            if (value != '\\') continue;
-            if (m_pos >= m_input.size()) return false;
-            const char escaped = m_input[m_pos++];
-            if (escaped == '"' || escaped == '\\' || escaped == '/' ||
-                escaped == 'b' || escaped == 'f' || escaped == 'n' ||
-                escaped == 'r' || escaped == 't') continue;
-            if (escaped != 'u' || m_input.size() - m_pos < 4) return false;
-            for (int digit = 0; digit < 4; ++digit)
-                if (!IsHexDigit(m_input[m_pos++])) return false;
+            if (Consume('"')) return true;
+            if (Consume('\\'))
+            {
+                if (m_pos == m_input.size()) return false;
+                const char escaped = m_input[m_pos++];
+                switch (escaped)
+                {
+                case '"': case '\\': case '/': output.push_back(escaped); break;
+                case 'b': output.push_back('\b'); break;
+                case 'f': output.push_back('\f'); break;
+                case 'n': output.push_back('\n'); break;
+                case 'r': output.push_back('\r'); break;
+                case 't': output.push_back('\t'); break;
+                case 'u':
+                {
+                    std::uint32_t value = 0;
+                    if (!ReadHex(value)) return false;
+                    if (value >= 0xd800 && value <= 0xdbff)
+                    {
+                        std::uint32_t low = 0;
+                        if (!Consume('\\') || !Consume('u') || !ReadHex(low) ||
+                            low < 0xdc00 || low > 0xdfff) return false;
+                        value = 0x10000 + ((value - 0xd800) << 10) + low - 0xdc00;
+                    }
+                    else if (value >= 0xdc00 && value <= 0xdfff) return false;
+                    AppendUtf8(value, output);
+                    break;
+                }
+                default: return false;
+                }
+            }
+            else
+            {
+                const std::size_t start = m_pos;
+                std::uint32_t value = 0;
+                if (!ReadUtf8Scalar(m_input, m_pos, value) || value < 0x20) return false;
+                output.append(m_input, start, m_pos - start);
+            }
         }
         return false;
     }
 
-    bool ParseNumber()
+    static bool Digit(char ch) { return ch >= '0' && ch <= '9'; }
+
+    bool NumberToken(std::string_view& token)
     {
-        if (m_pos < m_input.size() && m_input[m_pos] == '-') ++m_pos;
-        if (m_pos >= m_input.size()) return false;
-        if (m_input[m_pos] == '0')
+        const std::size_t start = m_pos;
+        Consume('-');
+        if (m_pos == m_input.size()) return false;
+        if (Consume('0'))
         {
-            ++m_pos;
-            if (m_pos < m_input.size() && m_input[m_pos] >= '0' &&
-                m_input[m_pos] <= '9') return false;
+            if (m_pos < m_input.size() && Digit(m_input[m_pos])) return false;
         }
         else
         {
             if (m_input[m_pos] < '1' || m_input[m_pos] > '9') return false;
-            do
-            {
-                ++m_pos;
-            } while (m_pos < m_input.size() && m_input[m_pos] >= '0' &&
-                     m_input[m_pos] <= '9');
+            while (m_pos < m_input.size() && Digit(m_input[m_pos])) ++m_pos;
         }
-        if (m_pos < m_input.size() && m_input[m_pos] == '.')
+        if (Consume('.'))
         {
-            ++m_pos;
-            const std::size_t digits = m_pos;
-            while (m_pos < m_input.size() && m_input[m_pos] >= '0' &&
-                   m_input[m_pos] <= '9') ++m_pos;
-            if (m_pos == digits) return false;
+            const std::size_t begin = m_pos;
+            while (m_pos < m_input.size() && Digit(m_input[m_pos])) ++m_pos;
+            if (begin == m_pos) return false;
         }
-        if (m_pos < m_input.size() &&
-            (m_input[m_pos] == 'e' || m_input[m_pos] == 'E'))
+        if (Consume('e') || Consume('E'))
         {
-            ++m_pos;
-            if (m_pos < m_input.size() &&
-                (m_input[m_pos] == '+' || m_input[m_pos] == '-')) ++m_pos;
-            const std::size_t digits = m_pos;
-            while (m_pos < m_input.size() && m_input[m_pos] >= '0' &&
-                   m_input[m_pos] <= '9') ++m_pos;
-            if (m_pos == digits) return false;
+            if (!Consume('+')) Consume('-');
+            const std::size_t begin = m_pos;
+            while (m_pos < m_input.size() && Digit(m_input[m_pos])) ++m_pos;
+            if (begin == m_pos) return false;
         }
+        token = std::string_view(m_input.data() + start, m_pos - start);
         return true;
     }
 
-    bool ParseArray(unsigned int depth)
+    template<typename Integer>
+    bool ReadInteger(Integer& value)
     {
-        if (depth >= 64 || !Consume('[')) return false;
-        SkipWhitespace();
-        if (Consume(']')) return true;
-        for (;;)
-        {
-            if (!ParseValue(depth + 1)) return false;
-            SkipWhitespace();
-            if (Consume(']')) return true;
-            if (!Consume(',')) return false;
-            SkipWhitespace();
-        }
+        std::string_view token;
+        if (!NumberToken(token)) return false;
+        const auto parsed = std::from_chars(token.data(), token.data() + token.size(), value);
+        return parsed.ec == std::errc{} && parsed.ptr == token.data() + token.size();
     }
 
-    bool ParseObject(unsigned int depth)
+    bool ReadDouble(double& value)
     {
-        if (depth >= 64 || !Consume('{')) return false;
-        SkipWhitespace();
-        if (Consume('}')) return true;
-        for (;;)
-        {
-            if (!ParseString()) return false;
-            SkipWhitespace();
-            if (!Consume(':')) return false;
-            SkipWhitespace();
-            if (!ParseValue(depth + 1)) return false;
-            SkipWhitespace();
-            if (Consume('}')) return true;
-            if (!Consume(',')) return false;
-            SkipWhitespace();
-        }
+        std::string_view token;
+        if (!NumberToken(token)) return false;
+        std::istringstream stream{std::string(token)};
+        stream.imbue(std::locale::classic());
+        stream >> std::noskipws >> value;
+        if (!stream || !stream.eof() || !std::isfinite(value)) return false;
+        // Some standard libraries silently round extreme underflow to zero.
+        // Absent optional fields may default; present nonzero values may not.
+        if (value == 0)
+            for (char ch : token)
+            {
+                if (ch == 'e' || ch == 'E') break;
+                if (ch >= '1' && ch <= '9') return false;
+            }
+        return true;
     }
 
-    bool ParseValue(unsigned int depth)
+    bool ReadField(const std::string& key, OmsJournalEvent& event)
     {
-        if (depth >= 64 || m_pos >= m_input.size()) return false;
-        switch (m_input[m_pos])
+        std::size_t index = 0;
+        for (const auto& field : kJournalStringFields)
         {
-        case '{': return ParseObject(depth);
-        case '[': return ParseArray(depth);
-        case '"': return ParseString();
-        case 't': return ConsumeLiteral("true");
-        case 'f': return ConsumeLiteral("false");
-        case 'n': return ConsumeLiteral("null");
-        default: return ParseNumber();
+            if (key == field.name) return Mark(index) && ReadString(event.*(field.member));
+            ++index;
         }
+        if (key == "schema_version") return Mark(index + 0) && ReadInteger(event.schemaVersion);
+        if (key == "ts_ms") return Mark(index + 1) && ReadInteger(event.tsMs);
+        if (key == "order_id") return Mark(index + 2) && ReadInteger(event.orderId);
+        if (key == "broker_connection_epoch") return Mark(index + 3) && ReadInteger(event.brokerConnectionEpoch);
+        if (key == "broker_request_id") return Mark(index + 4) && ReadInteger(event.brokerRequestId);
+        if (key == "broker_error_code") return Mark(index + 5) && ReadInteger(event.brokerErrorCode);
+        if (key == "qty") return Mark(index + 6) && ReadDouble(event.qty);
+        if (key == "price") return Mark(index + 7) && ReadDouble(event.price);
+        if (key == "broker_remaining_quantity") return Mark(index + 8) && ReadDouble(event.brokerRemainingQuantity);
+        if (key == "broker_market_cap_price") return Mark(index + 9) && ReadDouble(event.brokerMarketCapPrice);
+        return false; // Unknown fields require an explicit record-version change.
     }
 
-private:
     const std::string& m_input;
     std::size_t m_pos = 0;
+    std::uint64_t m_seen = 0;
 };
 
 } // namespace
@@ -639,13 +773,15 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
 
     std::lock_guard<std::mutex> lk(m_mtx);
     if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
-        evt.eventType.empty() || !std::isfinite(evt.qty) ||
+        evt.eventType.empty() || evt.schemaVersion > kSchemaVersion ||
+        !ValidJournalStrings(evt) || !std::isfinite(evt.qty) ||
         !std::isfinite(evt.price) ||
         !std::isfinite(evt.brokerRemainingQuantity) ||
         !std::isfinite(evt.brokerMarketCapPrice)) return false;
     if (!ValidatePinnedPathLocked()) return false;
 
     std::string line = BuildJsonLine(evt);
+    if (line.size() > kMaximumRecordBytes) return false;
     const bool critical = IsCriticalEventType(evt.eventType);
 
     if (critical)
@@ -780,13 +916,15 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
         std::size_t newline = std::string::npos;
         while ((newline = pending.find('\n')) != std::string::npos)
         {
+            if (newline > kMaximumRecordBytes) return -1;
             const std::string line = pending.substr(0, newline);
             pending.erase(0, newline + 1);
             if (line.empty()) return -1;
             OmsJournalEvent evt;
             if (!ParseJsonLine(line, evt)) return -1;
-            events.push_back(evt);
+            events.push_back(std::move(evt));
         }
+        if (pending.size() > kMaximumRecordBytes) return -1;
     }
     if (!pending.empty()) return -1;
     if (!self->ValidatePinnedPathLocked()) return -1;
@@ -876,137 +1014,18 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
     return oss.str();
 }
 
-std::string OmsJournal::JsonGetString(const std::string& json, const std::string& key)
-{
-    const std::string pat = "\"" + key + "\":\"";
-    std::size_t p = json.find(pat);
-    if (p == std::string::npos) return "";
-    p += pat.size();
-
-    std::string out;
-    bool esc = false;
-    for (; p < json.size(); ++p)
-    {
-        char c = json[p];
-        if (esc)
-        {
-            switch (c)
-            {
-            case 'n': out.push_back('\n'); break;
-            case 'r': out.push_back('\r'); break;
-            case 't': out.push_back('\t'); break;
-            default: out.push_back(c); break;
-            }
-            esc = false;
-            continue;
-        }
-        if (c == '\\') { esc = true; continue; }
-        if (c == '"') break;
-        out.push_back(c);
-    }
-    return out;
-}
-
-long long OmsJournal::JsonGetLong(const std::string& json, const std::string& key,
-                                  long long defVal)
-{
-    const std::string pat = "\"" + key + "\":";
-    std::size_t p = json.find(pat);
-    if (p == std::string::npos) return defVal;
-    p += pat.size();
-
-    std::size_t e = p;
-    while (e < json.size() && (json[e] == '-' || (json[e] >= '0' && json[e] <= '9'))) ++e;
-    if (e == p) return defVal;
-    const std::string token = json.substr(p, e - p);
-    char* parseEnd = nullptr;
-    errno = 0;
-    const long long value = std::strtoll(token.c_str(), &parseEnd, 10);
-    if (errno == ERANGE || parseEnd == nullptr || *parseEnd != '\0') return defVal;
-    return value;
-}
-
-double OmsJournal::JsonGetDouble(const std::string& json, const std::string& key, double defVal)
-{
-    const std::string pat = "\"" + key + "\":";
-    std::size_t p = json.find(pat);
-    if (p == std::string::npos) return defVal;
-    p += pat.size();
-
-    std::size_t e = p;
-    while (e < json.size())
-    {
-        char c = json[e];
-        if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') ++e;
-        else break;
-    }
-    if (e == p) return defVal;
-    const std::string token = json.substr(p, e - p);
-    std::istringstream input(token);
-    input.imbue(std::locale::classic());
-    input >> std::noskipws;
-    double value = 0.0;
-    input >> value;
-    if (!input || !input.eof() || !std::isfinite(value)) return defVal;
-    return value;
-}
-
 bool OmsJournal::ParseJsonLine(const std::string& line, OmsJournalEvent& out)
 {
     out = OmsJournalEvent{};
-    out.rawLine = line;
-    if (!JsonSyntaxValidator(line).IsValidObject()) return false;
-    const long long schemaVersion = JsonGetLong(line, "schema_version", 1);
-    if (schemaVersion < 1 || schemaVersion > INT_MAX) return false;
-    out.schemaVersion = static_cast<int>(schemaVersion);
-    out.eventType = JsonGetString(line, "event");
-    if (out.eventType.empty()) return false;
-    out.tsMs = JsonGetLong(line, "ts_ms", 0);
-    const long long orderId = JsonGetLong(line, "order_id", -1);
-    if (orderId < static_cast<long long>(LONG_MIN) ||
-        orderId > static_cast<long long>(LONG_MAX)) return false;
-    out.orderId = static_cast<long>(orderId);
-    out.reqId = JsonGetString(line, "req_id");
-    out.clientReqId = JsonGetString(line, "client_req_id");
-    if (out.reqId.empty()) out.reqId = out.clientReqId;
-    if (out.clientReqId.empty()) out.clientReqId = out.reqId;
-    out.traceId = JsonGetString(line, "trace_id");
-    out.eventId = JsonGetString(line, "event_id");
-    out.riskCode = JsonGetString(line, "risk_code");
-    out.venue = JsonGetString(line, "venue");
-    out.strategy = JsonGetString(line, "strategy");
-    out.account = JsonGetString(line, "account");
-    out.executionDomain = JsonGetString(line, "execution_domain");
-    out.requestHash = JsonGetString(line, "request_hash");
-    out.venueCorrelationId = JsonGetString(line, "venue_correlation_id");
-    out.brokerCallbackType = JsonGetString(line, "broker_callback_type");
-    out.brokerServiceEpoch = JsonGetString(line, "broker_service_epoch");
-    const long long brokerConnectionEpoch = JsonGetLong(
-        line, "broker_connection_epoch", 0);
-    if (brokerConnectionEpoch < 0) return false;
-    out.brokerConnectionEpoch =
-        static_cast<std::uint64_t>(brokerConnectionEpoch);
-    out.brokerRequestId = JsonGetLong(line, "broker_request_id", 0);
-    const long long brokerErrorCode = JsonGetLong(
-        line, "broker_error_code", 0);
-    if (brokerErrorCode < static_cast<long long>(INT_MIN) ||
-        brokerErrorCode > static_cast<long long>(INT_MAX)) return false;
-    out.brokerErrorCode = static_cast<int>(brokerErrorCode);
-    out.brokerMessage = JsonGetString(line, "broker_message");
-    out.brokerAdvancedOrderRejectJson = JsonGetString(
-        line, "broker_advanced_order_reject_json");
-    out.brokerWhyHeld = JsonGetString(line, "broker_why_held");
-    out.brokerExecutionId = JsonGetString(line, "broker_execution_id");
-    out.brokerRemainingQuantity = JsonGetDouble(
-        line, "broker_remaining_quantity", 0.0);
-    out.brokerMarketCapPrice = JsonGetDouble(
-        line, "broker_market_cap_price", 0.0);
-    out.instrument = JsonGetString(line, "instrument");
-    out.side = JsonGetString(line, "side");
-    out.qty = JsonGetDouble(line, "qty", 0.0);
-    out.price = JsonGetDouble(line, "price", 0.0);
-    out.status = JsonGetString(line, "status");
-    out.reason = JsonGetString(line, "reason");
-    out.source = JsonGetString(line, "source");
+    if (line.empty() || line.size() > kMaximumRecordBytes) return false;
+    OmsJournalEvent parsed;
+    parsed.schemaVersion = 1; // Pre-versioned historical records.
+    if (!JournalRecordReader(line).Read(parsed)) return false;
+    if (!parsed.reqId.empty() && !parsed.clientReqId.empty() &&
+        parsed.reqId != parsed.clientReqId) return false;
+    if (parsed.reqId.empty()) parsed.reqId = parsed.clientReqId;
+    if (parsed.clientReqId.empty()) parsed.clientReqId = parsed.reqId;
+    parsed.rawLine = line;
+    out = std::move(parsed);
     return true;
 }

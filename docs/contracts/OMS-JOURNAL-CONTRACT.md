@@ -79,7 +79,65 @@ Callbacks run in append order **after releasing the journal mutex**. This permit
 
 A missing final LF prevents `Init`; a blank line, malformed JSON object, missing event type or invalid parsed range makes replay fail. There is no automatic torn-tail truncation, skip-bad-record mode or online repair. Preserve the original file for diagnosis and recover using a separately reviewed backup/reconciliation procedure rather than editing the active journal until it parses.
 
-The current parser first validates JSON syntax and then uses compatibility field extraction. It is **not** a complete closed-world schema validator: do not claim duplicate-key rejection, arbitrary nested/whitespace/Unicode representation equivalence, rejection of every unknown future schema, or cryptographic detection of syntactically valid corruption. Broker messages, quantity fields and raw records must still cross their owning typed/domain validation boundary. Further parser hardening needs explicit legacy fixtures and negative assertions before it can be claimed complete.
+### Typed record decoding and compatibility
+
+Execution Runtime 1.1.0 replaces the syntax-check-plus-substring extraction with
+`JournalRecordReader`, a cursor-based decoder for the **33 registered scalar
+fields** above. It is a journal codec, not a general-purpose JSON library. The
+physical writer, its version-4 default, eight-digit floating representation and
+existing control-character normalization are unchanged.
+
+| Input condition | Reader behavior |
+|---|---|
+| Whitespace, ordering and escapes | Accept JSON spaces/tabs/CR around tokens and any field order. Decode standard string escapes and valid Unicode surrogate pairs; equivalent escaped keys map to the same field. LF still separates physical records, so multiline pretty-printed objects are not JSONL records. |
+| Duplicate keys | Reject, including duplicates revealed by escape decoding. A fixed field-bit mask tracks the known field set; no first/last-value rule is used. |
+| Numeric types | The six integer fields require integer tokens in their destination type's range, without fraction/exponent notation. `broker_connection_epoch` uses the full unsigned 64-bit range; signed fields retain their declared signed ranges. The four floating fields accept JSON decimal/exponent notation, use the classic locale and reject overflow, non-finite values and nonzero tokens rounded completely to zero by underflow. |
+| Missing versus invalid | An absent optional field retains its documented default. A present null, boolean, string-for-number, out-of-range or otherwise malformed field rejects the record; it is never replaced with zero or a sentinel. Domain-required fields are still enforced by Execution. |
+| Versions and aliases | Read the registered field union for versions 1 through 4. A missing version denotes historical version 1. Reject future/invalid versions. A missing or empty request alias is copied from the other; two nonempty unequal aliases reject. |
+| Nested/unknown fields | Reject unknown keys, objects and arrays. Embedded broker advanced-reject JSON remains a string. Data inside strings/nested objects cannot be extracted as top-level order identity. |
+| Unicode | Accept well-formed UTF-8 and valid escaped Unicode scalars, including escaped control characters. Reject malformed UTF-8, overlong encodings, out-of-range scalars, lone surrogates and raw unescaped controls. No Unicode normalization beyond escape decoding is applied. |
+
+`ParseJsonLine` builds a temporary event and publishes it only on complete record
+success. `Replay` retains its existing whole-batch validation before callbacks.
+The reader does not authenticate the producer, verify the economic meaning of
+quantities, or detect syntactically valid fraudulent/corrupted observations.
+
+### Single-record resource boundary
+
+`OmsJournal::kMaximumRecordBytes` is **1,048,576 JSON bytes excluding LF**.
+`Append` bounds the sum of the 23 supplied text fields before constructing the
+record and validates their UTF-8. It then checks the encoded record size before
+queueing, flushing older records or writing the new record. An over-limit,
+invalid-UTF-8 or future-version input returns false without discarding existing
+queued work or poisoning an otherwise healthy writer. The existing normalization
+of nonpositive caller-side schema versions to version 4 is retained.
+
+`Replay` checks each LF-delimited length before copying/decoding and rejects an
+unfinished line once it exceeds the same bound. Its incremental input string can
+transiently contain the limit plus one 8,192-byte read chunk. Rejection preserves
+the file and emits no callbacks, including for an earlier valid prefix. This is
+a record/decoder bound, **not a total queue, whole-replay, RSS, disk or latency
+limit**. Allocation failure is not turned into a hard process-memory guarantee.
+
+### Upgrade and rollback
+
+Current writer-generated records within the bound retain the same representation;
+`BuildJsonLine` and `EscapeJson` are unchanged. In particular, the existing writer
+still normalizes selected control characters rather than promising arbitrary
+byte-exact control-character round trips. The decoder now interprets valid
+escaped controls correctly when they occur in an input record.
+
+Logs containing formerly tolerated unknown fields, ambiguous aliases, invalid
+UTF-8, malformed numeric fields or oversized records require explicit
+classification and authoritative reconciliation before upgrading. Preserve their
+original bytes; this change supplies no automatic rewrite, skip or repair mode.
+Do not roll back to the old substring reader as a way to make rejected data pass:
+that reader may misinterpret whitespace, escapes and unsigned epoch values.
+Restoring an older binary requires its own compatible source/log/configuration
+selection and recovery review. No runtime promotion is implied by this codec
+repair. The JSON syntax reference is RFC 8259:
+`https://www.rfc-editor.org/rfc/rfc8259.html`.
+
 
 ## Verification and explicit limits
 
@@ -91,11 +149,17 @@ The current parser first validates JSON syntax and then uses compatibility field
 | Older queued records precede critical sync records | `Append`; `TestAsyncCriticalWritesPreserveAppendOrder`. |
 | Buffered append is not a durable acceptance | `Append`, `WriteLineDirect`; `TestBufferedAppendIsNotDurableUntilCriticalBarrier`. |
 | Record version and request-alias compatibility | `BuildJsonLine`, `ParseJsonLine`; `TestRecordVersionAndRequestAliasRoundTrip`. |
+| Whitespace, escaped fields and historical versions | `JournalRecordReader`, `ParseJsonLine`; `TestTypedWhitespaceUnicodeAndHistoricalVersions`. |
+| Invalid fields and valid-prefix callback isolation | `ReadInteger`, `ReadDouble`, `ReadString`, `Replay`; `TestInvalidFieldsNeverBecomeDefaults`. |
+| Every registered key rejects duplicates | `Mark`, `ReadField`; `TestEveryPhysicalFieldRejectsDuplicateKeys`. |
+| Full unsigned epoch and text-field mapping | `ReadInteger`, string-field bindings; `TestAllTextFieldsAndIntegerLimitsRoundTrip`. |
+| Record capacity and non-destructive append rejection | `ValidJournalStrings`, `Append`, `Replay`; `TestRecordSizeBoundariesAndRejectedAppendPreserveState`. |
+| Locale-independent numeric decoding and signed endpoints | `ReadInteger`, `ReadDouble`; `TestNumericTokensAreLocaleIndependent`. |
 | Generic replay does not implement command deduplication | `Replay`; `TestJournalReplayDoesNotInventCommandDeduplication`. |
 | Committed critical record survives process exit without destructors | `tests/oms_crash_replay_tests.cpp`, which synchronizes parent/child through a pipe and verifies the recovered record after `_exit`. This is not a power-cut storage test. |
 
 Command idempotency, venue mutation gating and uncertain outcome handling additionally require `tests/execution_coordinator_tests.cpp`; their success must be checked on the same revision rather than inferred from the journal tests.
 
-The generic journal currently has no explicit byte/record limit for its in-memory async queue or entire-file replay vector, no segment rotation/compaction protocol, and no authenticated remote backup or replication. Batch thresholds are not resource bounds. Deployment sizing, capacity enforcement, strict parser hardening, corruption recovery and target-storage fault qualification remain distinct engineering work; this document does not close them by describing the current implementation. Any future record reinterpretation or schema-major migration requires writer/reader compatibility rules, golden old/new records, restart/replay tests and a rollback procedure.
+The generic journal currently has no explicit byte/record limit for its in-memory async queue or entire-file replay vector, no segment rotation/compaction protocol, and no authenticated remote backup or replication. Batch thresholds are not resource bounds. Deployment sizing, total-capacity enforcement, corruption recovery and target-storage fault qualification remain distinct engineering work; this document does not close them by describing the current implementation. Any future record reinterpretation or schema-major migration requires writer/reader compatibility rules, golden old/new records, restart/replay tests and a rollback procedure.
 
 No journal test, generated document or hosted workflow grants IB PAPER or LIVE authority. The protected exact-artifact qualification requirements remain unchanged.

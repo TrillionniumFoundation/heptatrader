@@ -74,6 +74,8 @@ struct OmsJournalHealthSnapshot {
 class OmsJournal {
 public:
     static const int kSchemaVersion = 4;
+    // JSON bytes excluding the LF delimiter; shared by Append and Replay.
+    static constexpr std::size_t kMaximumRecordBytes = 1024 * 1024;
 
     OmsJournal() = default;
     ~OmsJournal() noexcept;
@@ -101,10 +103,6 @@ private:
     static std::string EscapeJson(const std::string& s);
     static std::string BuildJsonLine(const OmsJournalEvent& evt);
     static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
-    static std::string JsonGetString(const std::string& json, const std::string& key);
-    static long long JsonGetLong(const std::string& json, const std::string& key,
-                                 long long defVal);
-    static double JsonGetDouble(const std::string& json, const std::string& key, double defVal);
 
 private:
     std::string m_path;

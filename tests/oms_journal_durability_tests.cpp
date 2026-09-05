@@ -4,6 +4,8 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <limits>
+#include <locale>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -405,6 +407,277 @@ void TestUnsafePermissionsLinksAndTornFilesFailClosed()
     REQUIRE(::unlink(publicPath.c_str()) == 0);
     REQUIRE(::rmdir(directory.c_str()) == 0);
 }
+std::vector<OmsJournalEvent> ReplayRecords(const std::string& contents)
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    WritePrivateFile(path, contents);
+    std::vector<OmsJournalEvent> events;
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        const int count = journal.Replay([&](const OmsJournalEvent& event) {
+            events.push_back(event);
+        });
+        REQUIRE(count >= 0);
+        REQUIRE(static_cast<std::size_t>(count) == events.size());
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    return events;
+}
+
+void RequireRejectedRecord(const std::string& record)
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    // Even a valid prefix must not be published when a later record rejects.
+    const std::string contents = "{\"event\":\"prefix\"}\n" + record + "\n";
+    WritePrivateFile(path, contents);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        unsigned int callbacks = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent&) { ++callbacks; }) == -1);
+        REQUIRE(callbacks == 0);
+    }
+    std::ifstream saved(path, std::ios::binary);
+    REQUIRE(std::string(std::istreambuf_iterator<char>(saved), {}) == contents);
+    saved.close();
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestTypedWhitespaceUnicodeAndHistoricalVersions()
+{
+    const auto events = ReplayRecords(
+        "{\"event\":\"fill\",\"qty\":5.25,\"order_id\":123,\"req_id\":\"A\"}\n"
+        " { \"order_id\" :\t123 , \"qty\" : 5.25 , \"ev\\u0065nt\" : \"fill\","
+        " \"client_req_id\" : \"\\u0041\" } \r\n"
+        "{\"event\":\"fill\",\"broker_message\":\"\\u4ea4\\u6613 \\ud83d\\ude00\"}\n"
+        "{\"event\":\"fill\",\"broker_message\":\"交易 😀\"}\n");
+    REQUIRE(events.size() == 4);
+    for (std::size_t index = 0; index < 2; ++index)
+    {
+        REQUIRE(events[index].eventType == "fill");
+        REQUIRE(events[index].qty == 5.25);
+        REQUIRE(events[index].orderId == 123);
+        REQUIRE(events[index].reqId == "A");
+        REQUIRE(events[index].clientReqId == "A");
+        REQUIRE(events[index].schemaVersion == 1);
+    }
+    REQUIRE(events[2].brokerMessage == events[3].brokerMessage);
+    REQUIRE(events[2].brokerMessage == "交易 😀");
+    const auto controls = ReplayRecords(
+        "{\"event\":\"fill\",\"broker_message\":\"\\u0000\\b\\f\\n\\r\\t\\\\\\\"\\/\"}\n");
+    REQUIRE(controls[0].brokerMessage == std::string("\0\b\f\n\r\t\\\"/", 9));
+    for (int version = 1; version <= 4; ++version)
+    {
+        const auto old = ReplayRecords("{\"schema_version\":" + std::to_string(version) +
+            ",\"event\":\"status\",\"client_req_id\":\"legacy\"}\n");
+        REQUIRE(old[0].schemaVersion == version);
+        REQUIRE(old[0].qty == 0 && old[0].price == 0 && old[0].orderId == -1);
+        REQUIRE(old[0].reqId == "legacy" && old[0].clientReqId == "legacy");
+    }
+}
+
+void TestInvalidFieldsNeverBecomeDefaults()
+{
+    const std::vector<std::string> records = {
+        R"({"event":"fill","qty": 1e999})",
+        R"({"event":"fill","qty": 1e-999})",
+        R"({"event":"fill","qty": null})",
+        R"({"event":"fill","qty": "5"})",
+        R"({"event":"fill","qty": true})",
+        R"({"event":"fill","qty": [5]})",
+        R"({"event":"fill","qty": {"qty":5}})",
+        R"({"event":"fill","qty": 5,"qty":6})",
+        R"({"event":"fill","qty": 5,"q\u0074y":6})",
+        R"({"event":"fill","event":"other"})",
+        R"({"event": null})", R"({"event": ""})",
+        R"({"event":"fill","unknown":{"order_id":99}})",
+        R"({"event":"fill","quantitiy":5})",
+        R"({"event":"fill","order_id":9223372036854775808})",
+        R"({"event":"fill","order_id":-9223372036854775809})",
+        R"({"event":"fill","order_id":1.5})",
+        R"({"event":"fill","order_id":1e2})",
+        R"({"event":"fill","ts_ms":"123"})",
+        R"({"event":"fill","broker_connection_epoch":18446744073709551616})",
+        R"({"event":"fill","broker_connection_epoch":-1})",
+        R"({"event":"fill","broker_error_code":2147483648})",
+        R"({"event":"fill","schema_version":0})",
+        R"({"event":"fill","schema_version":5})",
+        R"({"event":"fill","schema_version":"4"})",
+        R"({"event":"fill","req_id":"first","client_req_id":"second"})",
+        R"({"event":"fill","broker_message":"\ud800"})",
+        R"({"event":"fill","broker_message":"\udc00"})",
+        R"({"event":"fill","broker_message":"\ud800\u0041"})",
+        R"({"event":"fill","qty":01})", R"({"event":"fill","qty":+1})",
+        R"({"event":"fill","qty":1.})", R"({"event":"fill","qty":1e})",
+        R"({"event":"fill","qty":NaN})", R"({"event":"fill","qty":Infinity})",
+        R"({"event":"fill"} trailing)", R"({"event":"fill",})",
+        R"([{"event":"fill"}])", R"({"event":"fill","broker_message":"\x41"})"
+    };
+    for (const auto& record : records) RequireRejectedRecord(record);
+    for (const std::string& bytes : {std::string("\xc0\xaf", 2), std::string("\xed\xa0\x80", 3),
+                                   std::string("\xf4\x90\x80\x80", 4), std::string("\xff", 1),
+                                   std::string("\xe2\x82", 2), std::string("\x01", 1)})
+        RequireRejectedRecord("{\"event\":\"fill\",\"broker_message\":\"" + bytes + "\"}");
+}
+
+void TestEveryPhysicalFieldRejectsDuplicateKeys()
+{
+    const char* const names[] = {
+        "event", "req_id", "client_req_id", "trace_id", "event_id", "risk_code", "venue",
+        "strategy", "account", "execution_domain", "request_hash", "venue_correlation_id",
+        "broker_callback_type", "broker_service_epoch", "broker_message",
+        "broker_advanced_order_reject_json", "broker_why_held", "broker_execution_id",
+        "instrument", "side", "status", "reason", "source"
+    };
+    for (const char* name : names)
+    {
+        const std::string first = std::string(name) == "event" ? "{" : "{\"event\":\"fill\",";
+        RequireRejectedRecord(first + "\"" + name + "\":\"x\",\"" + name + "\":\"x\"}");
+    }
+    for (const char* name : {"schema_version", "ts_ms", "order_id", "broker_connection_epoch",
+                            "broker_request_id", "broker_error_code", "qty", "price",
+                            "broker_remaining_quantity", "broker_market_cap_price"})
+        RequireRejectedRecord("{\"event\":\"fill\",\"" + std::string(name) +
+                              "\":1,\"" + name + "\":1}");
+}
+
+void TestAllTextFieldsAndIntegerLimitsRoundTrip()
+{
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    std::string allControls;
+    for (char value = 0; value < 32; ++value) allControls += value;
+    const std::string sample = allControls + "交易 😀 \\\" /";
+    OmsJournalEvent event = MakeCriticalEvent("identity");
+    std::string OmsJournalEvent::* const fields[] = {
+        &OmsJournalEvent::instrument, &OmsJournalEvent::side, &OmsJournalEvent::status,
+        &OmsJournalEvent::reason, &OmsJournalEvent::source, &OmsJournalEvent::traceId,
+        &OmsJournalEvent::riskCode, &OmsJournalEvent::venue, &OmsJournalEvent::strategy,
+        &OmsJournalEvent::account, &OmsJournalEvent::eventId, &OmsJournalEvent::executionDomain,
+        &OmsJournalEvent::requestHash, &OmsJournalEvent::venueCorrelationId,
+        &OmsJournalEvent::brokerCallbackType, &OmsJournalEvent::brokerServiceEpoch,
+        &OmsJournalEvent::brokerMessage, &OmsJournalEvent::brokerAdvancedOrderRejectJson,
+        &OmsJournalEvent::brokerWhyHeld, &OmsJournalEvent::brokerExecutionId
+    };
+    // Preserve the existing writer's explicit C0-to-space compatibility policy.
+    std::string normalizedControls(32, ' ');
+    normalizedControls[9] = '\t';
+    normalizedControls[10] = '\n';
+    normalizedControls[13] = '\r';
+    unsigned int index = 0;
+    for (auto field : fields) event.*field = std::to_string(index++) + sample;
+    event.tsMs = std::numeric_limits<long long>::min();
+    event.orderId = std::numeric_limits<long>::max();
+    event.brokerConnectionEpoch = std::numeric_limits<std::uint64_t>::max();
+    event.brokerRequestId = std::numeric_limits<long long>::max();
+    event.brokerErrorCode = std::numeric_limits<int>::min();
+    event.qty = 5.25;
+    event.price = -1.5;
+    event.brokerRemainingQuantity = 2.75;
+    event.brokerMarketCapPrice = 100.125;
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(event));
+    }
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& restored) {
+            unsigned int restoredIndex = 0;
+            for (auto field : fields)
+                REQUIRE(restored.*field == std::to_string(restoredIndex++) +
+                        normalizedControls + sample.substr(32));
+            REQUIRE(restored.eventType == event.eventType);
+            REQUIRE(restored.reqId == event.reqId && restored.clientReqId == event.reqId);
+            REQUIRE(restored.tsMs == event.tsMs && restored.orderId == event.orderId);
+            REQUIRE(restored.brokerConnectionEpoch == event.brokerConnectionEpoch);
+            REQUIRE(restored.brokerRequestId == event.brokerRequestId);
+            REQUIRE(restored.brokerErrorCode == event.brokerErrorCode);
+            REQUIRE(restored.qty == event.qty && restored.price == event.price);
+            REQUIRE(restored.brokerRemainingQuantity == event.brokerRemainingQuantity);
+            REQUIRE(restored.brokerMarketCapPrice == event.brokerMarketCapPrice);
+        }) == 1);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestRecordSizeBoundariesAndRejectedAppendPreserveState()
+{
+    const std::string prefix = "{\"event\":\"fill\",\"broker_message\":\"";
+    const std::size_t limit = OmsJournal::kMaximumRecordBytes;
+    const std::string exact = prefix + std::string(limit - prefix.size() - 2, 'x') + "\"}";
+    const auto events = ReplayRecords(exact + "\n");
+    REQUIRE(events.size() == 1 && events[0].rawLine.size() == limit);
+    RequireRejectedRecord(exact + " ");
+
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/journal.jsonl";
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
+    ::setenv("HEPTA_OMS_BATCH_SIZE", "64", 1);
+    ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "9223372036854775807", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        OmsJournalEvent before = MakeCriticalEvent("before");
+        before.eventType = "ack";
+        REQUIRE(journal.Append(before));
+        REQUIRE(journal.GetHealthSnapshot().bufferedDepth == 1);
+        OmsJournalEvent bad = MakeCriticalEvent("bad");
+        bad.brokerMessage.assign(limit + 1, 'x');
+        REQUIRE(!journal.Append(bad));
+        bad.brokerMessage = std::string("\xff", 1);
+        REQUIRE(!journal.Append(bad));
+        bad.brokerMessage.clear();
+        bad.schemaVersion = 5;
+        REQUIRE(!journal.Append(bad));
+        bad.schemaVersion = 4;
+        bad.qty = std::numeric_limits<double>::infinity();
+        REQUIRE(!journal.Append(bad));
+        const auto unchanged = journal.GetHealthSnapshot();
+        REQUIRE(unchanged.bufferedDepth == 1 && unchanged.flushedTotal == 0);
+        REQUIRE(!unchanged.writePoisoned && IsEmptyFile(path));
+        REQUIRE(journal.Append(MakeCriticalEvent("after")));
+        std::vector<std::string> ids;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& item) { ids.push_back(item.reqId); }) == 2);
+        REQUIRE(ids[0] == "before" && ids[1] == "after");
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ::setenv("HEPTA_OMS_BATCH_SIZE", "8", 1);
+    ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "250", 1);
+}
+
+void TestNumericTokensAreLocaleIndependent()
+{
+    struct CommaDecimal : std::numpunct<char>
+    {
+        char do_decimal_point() const override { return ','; }
+    };
+    const std::locale previous = std::locale();
+    std::locale::global(std::locale(previous, new CommaDecimal));
+    const auto values = ReplayRecords(
+        "{\"event\":\"fill\",\"qty\":5.25e1,\"price\":-0.125e+2,"
+        "\"broker_connection_epoch\":18446744073709551615}\n");
+    std::locale::global(previous);
+    REQUIRE(values[0].qty == 52.5 && values[0].price == -12.5);
+    REQUIRE(values[0].brokerConnectionEpoch == std::numeric_limits<std::uint64_t>::max());
+    const auto limits = ReplayRecords(
+        "{\"event\":\"fill\",\"broker_error_code\":2147483647,"
+        "\"ts_ms\":9223372036854775807,\"broker_request_id\":-9223372036854775808,"
+        "\"broker_connection_epoch\":0,\"qty\":-0.0,\"price\":1e-300}\n");
+    REQUIRE(limits[0].tsMs == std::numeric_limits<long long>::max());
+    REQUIRE(limits[0].brokerRequestId == std::numeric_limits<long long>::min());
+    REQUIRE(limits[0].brokerErrorCode == std::numeric_limits<int>::max());
+    REQUIRE(limits[0].qty == 0 && limits[0].price == 1e-300);
+}
+
 }
 
 int main()
@@ -420,5 +693,11 @@ int main()
     TestBufferedAppendIsNotDurableUntilCriticalBarrier();
     TestRecordVersionAndRequestAliasRoundTrip();
     TestJournalReplayDoesNotInventCommandDeduplication();
+    TestTypedWhitespaceUnicodeAndHistoricalVersions();
+    TestInvalidFieldsNeverBecomeDefaults();
+    TestEveryPhysicalFieldRejectsDuplicateKeys();
+    TestAllTextFieldsAndIntegerLimitsRoundTrip();
+    TestRecordSizeBoundariesAndRejectedAppendPreserveState();
+    TestNumericTokensAreLocaleIndependent();
     return 0;
 }

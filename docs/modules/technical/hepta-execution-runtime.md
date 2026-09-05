@@ -1,7 +1,7 @@
 # Execution Runtime Technical Guide
 
 Status: generated current view
-Applies to: `hepta.execution.runtime` version `1.0.0` (current)
+Applies to: `hepta.execution.runtime` version `1.1.0` (current)
 Verification: `python3 scripts/generate_documentation_views.py --check`
 Authority: generated from `modules/manifests/hepta-execution-runtime.json`, module-documentation-profiles-v1.json and canonical registries
 
@@ -122,7 +122,7 @@ Failures never authorize a weaker validation path. Recovery begins from authorit
 - Venue endpoints, account bindings, risk limits and enablement come from signed or canonical configuration.
 - LIVE is unsupported unless the capability registry and qualification policy explicitly change.
 
-The manifest version is `1.0.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
+The manifest version is `1.1.0`. Contract or behavior changes that alter authority, state, failure or compatibility semantics require a governed version and registry update.
 
 ## Observability and Resource Budgets
 
