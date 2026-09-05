@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from contextlib import redirect_stderr, redirect_stdout
+import io
 import json
 from pathlib import Path
 import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT / "scripts") not in sys.path:
@@ -36,6 +39,19 @@ class TeamCodeownersActivationTests(unittest.TestCase):
         (root / activation.MAPPING_REL).write_text(
             json.dumps(document, indent=2) + "\n", encoding="utf-8"
         )
+
+    def _assert_cli_rejects(self, root: Path) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(activation, "ROOT", root),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            exit_code = activation.main()
+        self.assertEqual(exit_code, 1)
+        self.assertNotIn("PASS", stdout.getvalue())
+        self.assertIn("[TEAM-CODEOWNERS-ACTIVATION]", stderr.getvalue())
 
     def test_repository_activation_contract_passes(self) -> None:
         self.assertEqual(activation.validate(ROOT), [])
@@ -105,6 +121,124 @@ class TeamCodeownersActivationTests(unittest.TestCase):
                 any("drift from deterministic team mapping" in error for error in errors),
                 errors,
             )
+
+    def test_non_object_json_is_fail_closed_for_mapping_and_policy(self) -> None:
+        payloads = {
+            "empty": b"",
+            "null": b"null\n",
+            "array": b"[]\n",
+            "string": b'"value"\n',
+            "integer": b"1\n",
+            "boolean": b"true\n",
+            "nan": b"NaN\n",
+            "positive-infinity": b"Infinity\n",
+            "negative-infinity": b"-Infinity\n",
+        }
+        for relative in (activation.MAPPING_REL, activation.POLICY_REL):
+            for label, payload in payloads.items():
+                with self.subTest(relative=relative.as_posix(), payload=label):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = self._fixture(directory)
+                        (root / relative).write_bytes(payload)
+                        (root / activation.ACTIVE_REL).write_text(
+                            "* @unapproved-individual\n", encoding="utf-8"
+                        )
+                        errors = activation.validate(root)
+                        self.assertTrue(errors)
+                        self._assert_cli_rejects(root)
+
+    def test_security_policy_downgrades_are_rejected(self) -> None:
+        mutations = (
+            ("minimum-distinct-bool", "policy", lambda m, p: p["codeowners"].__setitem__("minimum_distinct_teams", True)),
+            ("minimum-distinct-zero", "policy", lambda m, p: p["codeowners"].__setitem__("minimum_distinct_teams", 0)),
+            ("minimum-distinct-negative", "policy", lambda m, p: p["codeowners"].__setitem__("minimum_distinct_teams", -1)),
+            ("minimum-distinct-below-floor", "policy", lambda m, p: p["codeowners"].__setitem__("minimum_distinct_teams", 3)),
+            ("maintainer-bool", "both", lambda m, p: (m.__setitem__("minimum_maintainers_per_team", True), p["codeowners"].__setitem__("minimum_maintainers_per_team", True))),
+            ("allow-secret-teams", "policy", lambda m, p: p["codeowners"].__setitem__("require_non_secret_team", False)),
+            ("allow-read-only-teams", "policy", lambda m, p: p["codeowners"].__setitem__("require_write_access", False)),
+            ("foreign-repository", "policy", lambda m, p: p.__setitem__("repository", "OtherOrg/heptatrader")),
+            ("foreign-default-branch", "policy", lambda m, p: p.__setitem__("default_branch", "develop")),
+        )
+        for label, _, mutate in mutations:
+            with self.subTest(mutation=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = self._fixture(directory)
+                    mapping = self._mapping(root)
+                    policy = json.loads(
+                        (root / activation.POLICY_REL).read_text(encoding="utf-8")
+                    )
+                    mutate(mapping, policy)
+                    self._write_mapping(root, mapping)
+                    (root / activation.POLICY_REL).write_text(
+                        json.dumps(policy, indent=2) + "\n", encoding="utf-8"
+                    )
+                    errors = activation.validate(root)
+                    self.assertTrue(errors)
+
+    def test_foreign_organization_cannot_be_made_self_consistent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._fixture(directory)
+            mapping = self._mapping(root)
+            policy = json.loads(
+                (root / activation.POLICY_REL).read_text(encoding="utf-8")
+            )
+            organization = "OtherOrganization"
+            mapping["organization"] = organization
+            policy["organization"] = organization
+            policy["repository"] = f"{organization}/heptatrader"
+            policy["codeowners"]["required_team_prefix"] = f"@{organization}/"
+            self._write_mapping(root, mapping)
+            (root / activation.POLICY_REL).write_text(
+                json.dumps(policy, indent=2) + "\n", encoding="utf-8"
+            )
+            render_errors: list[str] = []
+            rendered, _ = activation._render_template(
+                mapping,
+                organization,
+                [item["slug"] for item in mapping["teams"]],
+                render_errors,
+            )
+            self.assertEqual(render_errors, [])
+            (root / activation.TEMPLATE_REL).write_text(rendered, encoding="utf-8")
+            (root / activation.ACTIVE_REL).write_text(rendered, encoding="utf-8")
+            errors = activation.validate(root)
+            self.assertTrue(
+                any("organization" in error or "repository" in error for error in errors),
+                errors,
+            )
+
+    def test_codeowners_byte_drift_is_not_normalized(self) -> None:
+        transforms = {
+            "utf8-bom": lambda data: b"\xef\xbb\xbf" + data,
+            "crlf": lambda data: data.replace(b"\n", b"\r\n"),
+        }
+        for relative in (activation.TEMPLATE_REL, activation.ACTIVE_REL):
+            for label, transform in transforms.items():
+                with self.subTest(relative=relative.as_posix(), transform=label):
+                    with tempfile.TemporaryDirectory() as directory:
+                        root = self._fixture(directory)
+                        path = root / relative
+                        path.write_bytes(transform(path.read_bytes()))
+                        errors = activation.validate(root)
+                        expected = (
+                            "drift from deterministic team mapping"
+                            if relative == activation.TEMPLATE_REL
+                            else "active bytes differ"
+                        )
+                        self.assertTrue(
+                            any(expected in error for error in errors), errors
+                        )
+
+    def test_invalid_utf8_is_rejected_before_codeowners_parsing(self) -> None:
+        for relative in (activation.TEMPLATE_REL, activation.ACTIVE_REL):
+            with self.subTest(relative=relative.as_posix()):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = self._fixture(directory)
+                    (root / relative).write_bytes(b"\xff\n")
+                    errors = activation.validate(root)
+                    self.assertTrue(
+                        any("invalid UTF-8" in error for error in errors), errors
+                    )
 
     def test_symlinked_activation_file_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
