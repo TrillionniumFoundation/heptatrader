@@ -1,25 +1,10 @@
 # Exact-head bootstrap audit trigger after temporary materialization removal.
+# Stable-head audit trigger after fail-closed CODEOWNERS verifier repair.
 name: GitHub Governance Qualification
 
 on:
   pull_request:
     branches: [main]
-    paths:
-      - '.github/workflows/github-governance-qualification.yml'
-      - '.github/workflows/ib-paper-qualification.yml'
-      - '.github/github-governance-policy-v1.json'
-      - '.github/required-check-contexts-v1.json'
-      - 'scripts/github_qualification_evidence.py'
-      - 'scripts/verify_github_governance.py'
-      - 'scripts/verify_ib_paper_qualification.py'
-      - 'scripts/verify_ib_candidate_artifact.py'
-      - 'scripts/verify_qualification_candidate.py'
-      - 'scripts/build_ib_candidate_artifact.sh'
-      - 'scripts/run_ib_paper_artifact_qualification.sh'
-      - 'scripts/check_qualification_trust_boundary.py'
-      - 'tests/python/test_github_governance.py'
-      - 'tests/python/test_ib_paper_qualification.py'
-      - 'tests/python/test_qualification_trust_boundary.py'
   workflow_dispatch:
     inputs:
       pull_number:
@@ -48,7 +33,7 @@ permissions:
 
 concurrency:
   group: heptatrader-github-governance-qualification-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   bootstrap-audit:
@@ -72,7 +57,7 @@ jobs:
         run: |
           set -euo pipefail
           docker version
-      - name: Validate trusted harnesses, provenance and hostile isolation
+      - name: Validate trusted harnesses, provenance, team activation and hostile isolation
         run: |
           set -euo pipefail
           git diff --check
@@ -84,14 +69,18 @@ jobs:
             scripts/verify_ib_paper_qualification.py \
             scripts/verify_ib_candidate_artifact.py \
             scripts/verify_qualification_candidate.py \
+            scripts/verify_team_codeowners_activation.py \
             scripts/check_qualification_trust_boundary.py
           python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 scripts/verify_team_codeowners_activation.py
           python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
+          python3 -m unittest discover -s tests/python -p 'test_team_codeowners_activation.py'
           printf '%s\n' \
-            'Trusted qualification boundary audit passed.' \
+            'Trusted qualification boundary and static team CODEOWNERS activation audits passed.' \
             'No secret, Broker credential or candidate mutation was used.' \
+            'Live team existence, staffing, visibility and repository permission remain external governance evidence.' \
             >> "$GITHUB_STEP_SUMMARY"
 
   qualify:
