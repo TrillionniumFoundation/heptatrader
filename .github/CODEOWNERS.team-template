@@ -8,6 +8,9 @@
 /docs/modules/ @TrillionniumFoundation/architecture-contracts @TrillionniumFoundation/reliability-operations-research
 /docs/program/ @TrillionniumFoundation/architecture-contracts @TrillionniumFoundation/reliability-operations-research
 /docs/verification/ @TrillionniumFoundation/execution-oms @TrillionniumFoundation/reliability-operations-research
+/HeptaTrade/marketdata/ @TrillionniumFoundation/marketdata-feature @TrillionniumFoundation/venue-adapters
+/HeptaTrade/features/ @TrillionniumFoundation/marketdata-feature @TrillionniumFoundation/reliability-operations-research
+/HeptaTrade/strategy_runtime/ @TrillionniumFoundation/strategy-runtime @TrillionniumFoundation/portfolio-risk
 /HeptaTrade/execution/ @TrillionniumFoundation/execution-oms @TrillionniumFoundation/portfolio-risk
 /HeptaTrade/risk/ @TrillionniumFoundation/execution-oms @TrillionniumFoundation/portfolio-risk
 /HeptaTrade/tool_host/ @TrillionniumFoundation/execution-oms @TrillionniumFoundation/gateway-session-security
