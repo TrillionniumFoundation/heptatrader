@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  EXPECTED_HELPER_PARENT: 538528ad585a59280ac6fc12c7c5ea6baff5d45f
+  EXPECTED_HELPER_PARENT: 67f5669fb32913a46da167331fe6804ce9b953ea
   EXPECTED_TARGET_PARENT: a4ed2c344aff3691da55846616a8ad65bb260477
   TARGET_BRANCH: codex/pr17-oms-segment-stage-20260905
   B64_SHA256: 1ffcb80fcdff0f15d0b6d5a6215f7e7e6ebc39472d8011a375cda2ee788edfac
@@ -23,16 +23,15 @@ jobs:
     if: >-
       github.repository == 'TrillionniumFoundation/heptatrader' &&
       github.ref == 'refs/heads/codex/pr17-oms-segment-publisher-20260905'
-    runs-on: [self-hosted, linux, x64]
-    timeout-minutes: 10
+    runs-on: macos-15
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - name: Require the designated trusted runner
+      - name: Require exact push event
         shell: bash
         run: |
           set -euo pipefail
-          test "$RUNNER_NAME" = x230
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_REF" = refs/heads/codex/pr17-oms-segment-publisher-20260905
       - name: Checkout immutable publisher payload without persisted credentials
@@ -48,12 +47,22 @@ jobs:
           set -euo pipefail
           test "$(git -C publisher rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C publisher rev-parse HEAD^)" = "$EXPECTED_HELPER_PARENT"
-          cat publisher/.publisher/pr17-oms-segment/patch.gz.b64.* > "$RUNNER_TEMP/patch.gz.b64"
-          printf '%s  %s\n' "$B64_SHA256" "$RUNNER_TEMP/patch.gz.b64" | sha256sum -c -
-          base64 --decode "$RUNNER_TEMP/patch.gz.b64" > "$RUNNER_TEMP/patch.gz"
-          printf '%s  %s\n' "$GZIP_SHA256" "$RUNNER_TEMP/patch.gz" | sha256sum -c -
-          gzip -dc "$RUNNER_TEMP/patch.gz" > "$RUNNER_TEMP/oms-segments.patch"
-          printf '%s  %s\n' "$PATCH_SHA256" "$RUNNER_TEMP/oms-segments.patch" | sha256sum -c -
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          import os
+          from pathlib import Path
+
+          root = Path("publisher/.publisher/pr17-oms-segment")
+          encoded = b"".join(path.read_bytes() for path in sorted(root.glob("patch.gz.b64.*")))
+          assert hashlib.sha256(encoded).hexdigest() == os.environ["B64_SHA256"]
+          compressed = base64.b64decode(encoded, validate=True)
+          assert hashlib.sha256(compressed).hexdigest() == os.environ["GZIP_SHA256"]
+          patch = gzip.decompress(compressed)
+          assert hashlib.sha256(patch).hexdigest() == os.environ["PATCH_SHA256"]
+          (Path(os.environ["RUNNER_TEMP"]) / "oms-segments.patch").write_bytes(patch)
+          PY
       - name: Checkout exact isolated staging branch with write credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -65,6 +74,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          patch="$RUNNER_TEMP/oms-segments.patch"
           test "$(git -C target rev-parse HEAD)" = "$EXPECTED_TARGET_PARENT"
           test -z "$(git -C target status --porcelain=v1 --untracked-files=all)"
           while read -r expected path; do
@@ -77,8 +87,8 @@ jobs:
           ad92ac4f54d8e097effd2555c95000893e7f6d4f docs/modules/manifests/hepta-execution-runtime.json
           50de4c33b0467c5283b0fed3c5f2e49f4d632f76 docs/modules/technical/hepta-execution-runtime.md
           EOF
-          git -C target apply --check --index "$RUNNER_TEMP/oms-segments.patch"
-          git -C target apply --index "$RUNNER_TEMP/oms-segments.patch"
+          git -C target apply --check --index "$patch"
+          git -C target apply --index "$patch"
           git -C target diff --cached --check
           git -C target diff --cached --name-only | LC_ALL=C sort > "$RUNNER_TEMP/actual-paths"
           cat > "$RUNNER_TEMP/expected-paths" <<'EOF'
@@ -111,8 +121,8 @@ jobs:
           restart recovery and bounded cross-segment atomic replay.
 
           Preserve the legacy single-file journal and physical record schema 4.
-          Execution Runtime advances to 1.3.0. The exact candidate was previously
-          verified by the retained package's 31-group source durability suite.
+          Execution Runtime advances to 1.3.0. The exact candidate is bound to
+          the retained 31-group source durability evidence package.
 
           This source commit does not claim power-loss qualification, deployed
           retention policy, governance, IB PAPER/LIVE, release or production
