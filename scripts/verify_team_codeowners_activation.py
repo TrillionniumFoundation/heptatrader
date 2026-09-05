@@ -19,6 +19,10 @@ MAPPING_REL = Path(".github/github-team-mapping-v1.json")
 POLICY_REL = Path(".github/github-governance-policy-v1.json")
 TEMPLATE_REL = Path(".github/CODEOWNERS.team-template")
 ACTIVE_REL = Path(".github/CODEOWNERS")
+EXPECTED_REPOSITORY = "TrillionniumFoundation/heptatrader"
+EXPECTED_ORGANIZATION = "TrillionniumFoundation"
+EXPECTED_DEFAULT_BRANCH = "main"
+MINIMUM_DISTINCT_TEAMS_FLOOR = 4
 TEAM_SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$")
 LOGICAL_HANDLE_RE = re.compile(r"^@hepta/[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 TEAM_OWNER_RE = re.compile(r"^@([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)$")
@@ -37,28 +41,61 @@ def _strict_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _read_regular(root: Path, relative: Path, errors: list[str]) -> str:
+def _read_regular(
+    root: Path, relative: Path, errors: list[str]
+) -> bytes | None:
     path = root / relative
     try:
         info = path.lstat()
         if path.is_symlink() or not path.is_file() or info.st_nlink != 1:
             errors.append(f"{relative}: must be a regular single-link file")
-            return ""
-        return path.read_text(encoding="utf-8-sig")
-    except (OSError, UnicodeError) as exc:
+            return None
+        data = path.read_bytes()
+        if not data:
+            errors.append(f"{relative}: must not be empty")
+            return None
+        return data
+    except OSError as exc:
         errors.append(f"{relative}: unreadable: {exc}")
-        return ""
+        return None
 
 
-def _load_json(root: Path, relative: Path, errors: list[str]) -> Any:
-    text = _read_regular(root, relative, errors)
-    if not text:
+def _decode_utf8(
+    data: bytes, relative: Path, errors: list[str]
+) -> str | None:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        errors.append(f"{relative}: invalid UTF-8: {exc}")
+        return None
+
+
+def _reject_nonfinite_json(token: str) -> Any:
+    raise ActivationError(f"non-finite JSON constant: {token}")
+
+
+def _load_json(
+    root: Path, relative: Path, errors: list[str]
+) -> dict[str, Any] | None:
+    data = _read_regular(root, relative, errors)
+    if data is None:
+        return None
+    text = _decode_utf8(data, relative, errors)
+    if text is None:
         return None
     try:
-        return json.loads(text, object_pairs_hook=_strict_object_pairs)
+        document = json.loads(
+            text,
+            object_pairs_hook=_strict_object_pairs,
+            parse_constant=_reject_nonfinite_json,
+        )
     except (ValueError, json.JSONDecodeError) as exc:
         errors.append(f"{relative}: invalid JSON: {exc}")
         return None
+    if not isinstance(document, dict):
+        errors.append(f"{relative}: top-level JSON value must be an object")
+        return None
+    return document
 
 
 def _unique_strings(
@@ -92,6 +129,10 @@ def _team_index(
     if not isinstance(organization, str) or not organization:
         errors.append(f"{MAPPING_REL}: organization must be non-empty")
         organization = ""
+    elif organization != EXPECTED_ORGANIZATION:
+        errors.append(
+            f"{MAPPING_REL}: organization must be {EXPECTED_ORGANIZATION}"
+        )
     raw_teams = mapping.get("teams")
     if not isinstance(raw_teams, list) or not raw_teams:
         errors.append(f"{MAPPING_REL}: teams must be a non-empty array")
@@ -228,30 +269,47 @@ def _parse_active_codeowners(
     return patterns
 
 
-def validate(root: Path = ROOT) -> list[str]:
-    root = Path(root).resolve()
+def validate(root: Path | None = None) -> list[str]:
+    root = Path(ROOT if root is None else root).resolve()
     errors: list[str] = []
     mapping = _load_json(root, MAPPING_REL, errors)
     policy = _load_json(root, POLICY_REL, errors)
-    template = _read_regular(root, TEMPLATE_REL, errors)
-    active = _read_regular(root, ACTIVE_REL, errors)
-    if not isinstance(mapping, dict) or not isinstance(policy, dict):
+    template_bytes = _read_regular(root, TEMPLATE_REL, errors)
+    active_bytes = _read_regular(root, ACTIVE_REL, errors)
+    if (
+        mapping is None
+        or policy is None
+        or template_bytes is None
+        or active_bytes is None
+    ):
+        return errors
+    template = _decode_utf8(template_bytes, TEMPLATE_REL, errors)
+    active = _decode_utf8(active_bytes, ACTIVE_REL, errors)
+    if template is None or active is None:
         return errors
     if mapping.get("schema") != "heptatrader.github-team-mapping.v1":
         errors.append(f"{MAPPING_REL}: schema mismatch")
     if policy.get("schema") != "heptatrader.github-governance-policy.v1":
         errors.append(f"{POLICY_REL}: schema mismatch")
+    if policy.get("repository") != EXPECTED_REPOSITORY:
+        errors.append(f"{POLICY_REL}: repository mismatch")
+    if policy.get("default_branch") != EXPECTED_DEFAULT_BRANCH:
+        errors.append(f"{POLICY_REL}: default_branch mismatch")
 
     organization, team_slugs, _ = _team_index(mapping, errors)
     if policy.get("organization") != organization:
         errors.append("team mapping and governance policy organization mismatch")
+    if policy.get("organization") != EXPECTED_ORGANIZATION:
+        errors.append(f"{POLICY_REL}: organization mismatch")
 
     minimum_members = mapping.get("minimum_members_per_team")
     minimum_maintainers = mapping.get("minimum_maintainers_per_team")
-    if not isinstance(minimum_members, int) or minimum_members < 2:
-        errors.append(f"{MAPPING_REL}: minimum_members_per_team must be >= 2")
-    if not isinstance(minimum_maintainers, int) or minimum_maintainers < 1:
-        errors.append(f"{MAPPING_REL}: minimum_maintainers_per_team must be >= 1")
+    if type(minimum_members) is not int or minimum_members < 2:
+        errors.append(f"{MAPPING_REL}: minimum_members_per_team must be integer >= 2")
+    if type(minimum_maintainers) is not int or minimum_maintainers < 1:
+        errors.append(
+            f"{MAPPING_REL}: minimum_maintainers_per_team must be integer >= 1"
+        )
 
     codeowners_policy = policy.get("codeowners")
     if not isinstance(codeowners_policy, dict):
@@ -265,9 +323,19 @@ def validate(root: Path = ROOT) -> list[str]:
         errors.append("team mapping/policy minimum_members_per_team mismatch")
     if codeowners_policy.get("minimum_maintainers_per_team") != minimum_maintainers:
         errors.append("team mapping/policy minimum_maintainers_per_team mismatch")
+    if codeowners_policy.get("require_non_secret_team") is not True:
+        errors.append("governance policy must require non-secret CODEOWNERS teams")
+    if codeowners_policy.get("require_write_access") is not True:
+        errors.append("governance policy must require repository write access")
     minimum_distinct = codeowners_policy.get("minimum_distinct_teams")
-    if not isinstance(minimum_distinct, int) or len(team_slugs) < minimum_distinct:
-        errors.append("team mapping does not satisfy policy minimum_distinct_teams")
+    if (
+        type(minimum_distinct) is not int
+        or minimum_distinct < MINIMUM_DISTINCT_TEAMS_FLOOR
+        or len(team_slugs) < minimum_distinct
+    ):
+        errors.append(
+            "team mapping does not satisfy the policy minimum_distinct_teams floor"
+        )
 
     if mapping.get("template_path") != TEMPLATE_REL.as_posix():
         errors.append(f"{MAPPING_REL}: template_path mismatch")
@@ -280,9 +348,10 @@ def validate(root: Path = ROOT) -> list[str]:
             "governance policy required_patterns must exactly match the ordered "
             "team CODEOWNERS mapping"
         )
-    if template != rendered:
+    rendered_bytes = rendered.encode("utf-8")
+    if template_bytes != rendered_bytes:
         errors.append(f"{TEMPLATE_REL}: drift from deterministic team mapping")
-    if active != template:
+    if active_bytes != template_bytes:
         errors.append(f"{ACTIVE_REL}: active bytes differ from reviewed team template")
     active_patterns = _parse_active_codeowners(
         active, organization, set(team_slugs), errors
