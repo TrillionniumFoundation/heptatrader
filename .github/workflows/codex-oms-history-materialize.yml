@@ -1,0 +1,149 @@
+name: Codex OMS history candidate materializer
+
+on:
+  push:
+    branches:
+      - codex/oms-history-staging-20260905
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-oms-history-staging-20260905
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact staging carrier
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+          ref: ${{ github.sha }}
+
+      - name: Verify carrier identity
+        env:
+          EXPECTED_PARENT: a4ed2c344aff3691da55846616a8ad65bb260477
+          WORKFLOW_PATH: .github/workflows/codex-oms-history-materialize.yml
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^)" = "$EXPECTED_PARENT"
+          test "$(git diff --name-only HEAD^ HEAD)" = "$WORKFLOW_PATH"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Reconstruct and verify exact patch
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          chunks = [
+              "b732e88c114a1f454a7505c4bd877d867ca88e0d",
+              "7965c68eb7066a851aee5c0a4adbfc3910e66a46",
+              "fd3ccea34ab1aba8e34ee17f6fcd3b7fc94a428f",
+              "d282846c8baa5adee1a11c0e0574ce94334c7210",
+          ]
+          api = os.environ["GITHUB_API_URL"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          encoded_parts = []
+          for sha in chunks:
+              request = urllib.request.Request(
+                  f"{api}/repos/{repo}/git/blobs/{sha}",
+                  headers={
+                      "Authorization": f"Bearer {token}",
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  blob = json.load(response)
+              if blob.get("sha") != sha or blob.get("encoding") != "base64":
+                  raise SystemExit(f"unexpected blob envelope for {sha}")
+              encoded_parts.append(base64.b64decode(blob["content"], validate=True))
+
+          encoded = b"".join(encoded_parts)
+          if len(encoded) != 15860:
+              raise SystemExit(f"wrong encoded length: {len(encoded)}")
+          if hashlib.sha256(encoded).hexdigest() != "6236a33642fc1e50b633b4a8424690e6c6dee636a4904e844420881f311f60f7":
+              raise SystemExit("encoded payload digest mismatch")
+          compressed = base64.b64decode(encoded, validate=True)
+          if len(compressed) != 11894:
+              raise SystemExit(f"wrong compressed length: {len(compressed)}")
+          if hashlib.sha256(compressed).hexdigest() != "e1cf12b6276e1a65b934347aacf927ebcdb0e296a6b94493566b81e47d44aacf":
+              raise SystemExit("compressed patch digest mismatch")
+          patch = gzip.decompress(compressed)
+          if hashlib.sha256(patch).hexdigest() != "8c5a02dbe70dc23d2079fce0baafbdc352e6fdb2853f1322251dc800ce60520d":
+              raise SystemExit("patch digest mismatch")
+          Path("/tmp/heptatrader-oms-history.patch").write_bytes(patch)
+          PY
+          git apply --check /tmp/heptatrader-oms-history.patch
+          git apply /tmp/heptatrader-oms-history.patch
+          git diff --check
+
+      - name: Verify candidate bytes and targeted behavior
+        run: |
+          set -euo pipefail
+          sha256sum -c <<'EOF'
+          8f42c169a22f790239cec32a25ae197c2798e0bec122f6c3ff829fcd13ab362b  HeptaTrade/oms_journal.cpp
+          653a6471728febb5bb9dcd16c21dd39de88a9df90b810d2ce660dc0822db6b30  HeptaTrade/oms_journal.h
+          5f8dfd2ff26b22400bdc081e777c9450b1673d375007fa45fb8c3edfd2f65a26  docs/contracts/OMS-JOURNAL-CONTRACT.md
+          3aa33fcf39414ba1b5dcade85e1f761af7e7dcb75f28a296c76ac9507d3e89fe  docs/modules/manifests/hepta-execution-runtime.json
+          c0ea154cad313200af4ff315da7d82f9b2065b70ef0033e459f0b47ab5c35a55  docs/modules/technical/hepta-execution-runtime.md
+          6c866844948b63384af6ecbd14136c99dbb8b37c06e377a242cf5484cf6bb33f  tests/oms_journal_durability_tests.cpp
+          EOF
+          mkdir -p /tmp/heptatrader-oms-build
+          g++ -std=c++17 -pthread -Wall -Wextra -Werror -O2 -DNDEBUG \
+            tests/oms_journal_durability_tests.cpp \
+            HeptaTrade/oms_journal.cpp \
+            HeptaTrade/observability/runtime_telemetry.cpp \
+            -o /tmp/heptatrader-oms-build/durability
+          timeout 180 /tmp/heptatrader-oms-build/durability
+          g++ -std=c++17 -pthread -Wall -Wextra -Werror -O2 -DNDEBUG \
+            tests/oms_crash_replay_tests.cpp \
+            HeptaTrade/oms_journal.cpp \
+            HeptaTrade/observability/runtime_telemetry.cpp \
+            -o /tmp/heptatrader-oms-build/crash-replay
+          timeout 180 /tmp/heptatrader-oms-build/crash-replay
+
+      - name: Publish disposable staging tree
+        env:
+          BRANCH: codex/oms-history-staging-20260905
+          WORKFLOW_PATH: .github/workflows/codex-oms-history-materialize.yml
+        run: |
+          set -euo pipefail
+          git rm "$WORKFLOW_PATH"
+          git add \
+            HeptaTrade/oms_journal.cpp \
+            HeptaTrade/oms_journal.h \
+            docs/contracts/OMS-JOURNAL-CONTRACT.md \
+            docs/modules/manifests/hepta-execution-runtime.json \
+            docs/modules/technical/hepta-execution-runtime.md \
+            tests/oms_journal_durability_tests.cpp
+          git diff --cached --check
+          actual="$(git diff --cached --name-only | LC_ALL=C sort)"
+          expected="$(printf '%s\n' \
+            .github/workflows/codex-oms-history-materialize.yml \
+            HeptaTrade/oms_journal.cpp \
+            HeptaTrade/oms_journal.h \
+            docs/contracts/OMS-JOURNAL-CONTRACT.md \
+            docs/modules/manifests/hepta-execution-runtime.json \
+            docs/modules/technical/hepta-execution-runtime.md \
+            tests/oms_journal_durability_tests.cpp | LC_ALL=C sort)"
+          test "$actual" = "$expected"
+          git config user.name "OpenAI Codex"
+          git config user.email "noreply@openai.com"
+          git commit -m "staging: materialize exact OMS history candidate"
+          git push origin "HEAD:refs/heads/$BRANCH"
