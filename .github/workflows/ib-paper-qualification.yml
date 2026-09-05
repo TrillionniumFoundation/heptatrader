@@ -43,7 +43,7 @@ permissions:
 
 concurrency:
   group: heptatrader-ib-paper-qualification-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   bootstrap-audit:
