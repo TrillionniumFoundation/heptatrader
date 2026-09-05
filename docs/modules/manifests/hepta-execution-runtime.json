@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.module-manifest.v3",
   "id": "hepta.execution.runtime",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "lifecycle": "current",
   "kind": "stateful-service",
   "trust_domain": "execution-authority",

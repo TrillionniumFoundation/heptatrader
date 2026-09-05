@@ -139,6 +139,98 @@ repair. The JSON syntax reference is RFC 8259:
 `https://www.rfc-editor.org/rfc/rfc8259.html`.
 
 
+### Per-object queue and replay budgets
+
+Execution Runtime 1.2.0 adds immutable `OmsJournalLimits`. Default construction
+uses the ceilings below; the explicit limits constructor may only narrow them.
+`Init` rejects zero or above-ceiling values before opening/creating a file.
+Changing the caller's limits object after construction does not change admission.
+These limits are not read from environment variables and cannot be disabled by a
+large legacy batch size. Consumers must rebuild against the changed class layout;
+this does not promise binary ABI compatibility with an older object file.
+
+| Limit | Default and hard ceiling | Accounting boundary |
+|---|---:|---|
+| `maximumQueuedRecords` | 65,536 | Combined async queue and writer-buffer records. |
+| `maximumQueuedBytes` | 268,435,456 | Combined encoded record sizes including each LF; not allocator capacity. |
+| `maximumReplayRecords` | 262,144 | Events admitted into one retained replay batch. |
+| `maximumReplayBytes` | 268,435,456 | Captured journal file size including LF, checked before reading that batch. |
+
+`AdmitQueuedLineLocked` checks both queue budgets before inserting, then charges
+bytes only after successful insertion. Queue-to-writer moves transfer the same
+reservation. Each successfully written complete record releases its byte/count
+reservation immediately. The writer buffer is a deque, so a later short write,
+error or exception cannot leave already-removed prefix records in an index-based
+buffer. A failed/partially written record remains fully charged; this is not a
+claim that its bytes were absent from disk. Credit release proves complete write
+transport only, not `fdatasync` durability. A critical synchronous barrier retains
+its existing separate durable-commit semantics.
+
+Capacity refusal returns `false`, increments `queueCapacityRejects`, and neither
+poisons the writer nor discards older queued records. It does not automatically
+retry the rejected event or claim it was persisted. The caller must stop or
+arrange a deliberate drain/retry according to its domain contract. In particular,
+a synchronous buffer with a batch threshold above its quota may require Replay
+or a critical barrier to drain; quota failure is not permission to drop events.
+Synchronous critical records drain old work and write directly without needing
+an extra queue slot, preserving that journal path even when the queue is full.
+This proves a journal property, not that every Broker safe-exit scenario is
+qualified. The existing `syncCritical=false` generic path remains inadmissible
+for venue-mutation authority.
+
+Replay rejects excess file bytes or record count with `-1`, increments
+`replayCapacityRejects`, and invokes no callback from the otherwise valid prefix.
+It never truncates the log or silently chooses a suffix. Existing queued records
+may first be flushed, as before; rejection is not a read-only promise about an
+object with pending writes. An atomic per-object reservation remains held until
+the batch and callbacks are finished. Overlapping or nested Replay returns `-1`
+and increments `replayBusyRejects`; it cannot allocate a second batch or recursively
+acquire a nonrecursive mutex. The reservation is released on ordinary errors and
+callback exceptions. Diagnostic access and Append remain possible while a callback
+runs outside the journal mutex. Destruction still requires external caller quiescence.
+
+Health now includes `retainedBytes`, the three rejection counters, and selected
+limits. These fields are diagnostics, not durable acceptance or financial truth.
+The single-record bound remains 1 MiB. Together the per-object bounds constrain
+retained encoded payload and event counts, not allocator overhead, complete process
+RSS, independent journal objects/processes, callback-owned copies or I/O duration.
+
+**Remaining recovery limitation:** these are memory/admission limits, not disk
+rotation or log compaction. Append can grow the on-disk journal past a later
+Replay limit. Init alone does not establish recoverability; startup must still
+complete Replay/reconciliation. Before such growth can occur in a deployed profile,
+operators need a separately implemented and tested segmentation/checkpoint/capacity
+procedure. Do not erase old records or raise/disable ceilings merely to pass startup.
+This increment does not close long-running storage/recovery qualification.
+
+### Terminal worker failure
+
+`WorkerLoop` now handles a `false` flush result as terminal, not only an exception.
+It marks the writer poisoned, records `workerStoppedOnFailure`, and stops instead
+of repeatedly attempting a failed queue while holding the journal mutex. Replay
+checks poisoned/unavailable state before flushing, and destruction does not retry
+a poisoned writer. Suspect data is retained for diagnosis, not reissued as commands.
+The flag records the worker's terminal decision, not an independent host-health or
+thread-join receipt. A healthy destructor still drains and joins normally.
+
+The worker caps each polling wait to 60 seconds to avoid duration overflow from
+an extreme legacy flush interval. It does not cap filesystem call duration or
+create a hard shutdown deadline. The batch threshold no longer causes eager
+reservation of that many string objects at Init.
+
+Direct new regressions use real file operations. `RLIMIT_FSIZE` and an ignored
+`SIGXFSZ` in isolated child processes create a real short-write/EFBIG boundary;
+these are not power-loss, physical-full-disk or target-storage qualification tests.
+A watchdog catches a hung test child and is not a runtime SLO. Queue-count/byte
+endpoints, pending-data preservation, critical drain, immutable limits, repeatable
+replay refusal, callback-exception cleanup, overlapping replay and four concurrent
+producers are exercised through public APIs.
+
+Interface references: `https://man7.org/linux/man-pages/man2/getrlimit.2.html`,
+`https://man7.org/linux/man-pages/man2/fsync.2.html`, and
+`https://eel.is/c++draft/thread.mutex.requirements.mutex`.
+
+
 ## Verification and explicit limits
 
 | Requirement | Direct implementation / assertion evidence |
@@ -147,7 +239,7 @@ repair. The JSON syntax reference is RFC 8259:
 | One-shot init and intact original journal | `Init`; `TestRepeatedInitFailsWithoutDisturbingOriginal`. |
 | Callback-atomic parse and reentrant diagnostics | `Replay`; `TestStrictReplayIsCallbackAtomicAndReentrant`. |
 | Older queued records precede critical sync records | `Append`; `TestAsyncCriticalWritesPreserveAppendOrder`. |
-| Buffered append is not a durable acceptance | `Append`, `WriteLineDirect`; `TestBufferedAppendIsNotDurableUntilCriticalBarrier`. |
+| Buffered append is not a durable acceptance | `Append`; `WriteLineDirect`; `TestBufferedAppendIsNotDurableUntilCriticalBarrier`. |
 | Record version and request-alias compatibility | `BuildJsonLine`, `ParseJsonLine`; `TestRecordVersionAndRequestAliasRoundTrip`. |
 | Whitespace, escaped fields and historical versions | `JournalRecordReader`, `ParseJsonLine`; `TestTypedWhitespaceUnicodeAndHistoricalVersions`. |
 | Invalid fields and valid-prefix callback isolation | `ReadInteger`, `ReadDouble`, `ReadString`, `Replay`; `TestInvalidFieldsNeverBecomeDefaults`. |
@@ -155,11 +247,16 @@ repair. The JSON syntax reference is RFC 8259:
 | Full unsigned epoch and text-field mapping | `ReadInteger`, string-field bindings; `TestAllTextFieldsAndIntegerLimitsRoundTrip`. |
 | Record capacity and non-destructive append rejection | `ValidJournalStrings`, `Append`, `Replay`; `TestRecordSizeBoundariesAndRejectedAppendPreserveState`. |
 | Locale-independent numeric decoding and signed endpoints | `ReadInteger`, `ReadDouble`; `TestNumericTokensAreLocaleIndependent`. |
+| Queue count/byte budgets and critical drain | `AdmitQueuedLineLocked`, `Append`; `TestQueueRecordBudgetAndCriticalDrain`, `TestQueueByteBudgetEndpointsAndAsyncRejection`. |
+| Invalid limits and legacy batch reservation | `Init`; `TestInvalidLimitsRejectBeforeFileCreationAndBatchCannotReserveUnbounded`. |
+| Replay byte/count limits and reservation lifecycle | `Replay`; `TestReplayBudgetsAndCallbackAtomicRejection`, `TestReplayReservationRejectsNestedAndOverlappingBatches`. |
+| Partial write ownership and terminal worker failure | `FlushBufferedLocked`, `WorkerLoop`; `TestPartialFlushRetainsOnlyUnconfirmedRecords`, `TestAsyncWriteFailureStopsWorkerWithoutLockSpin`. |
+| Concurrent producer accounting and accepted identities | `Append`, `Replay`; `TestConcurrentAsyncQueueAccounting`. |
 | Generic replay does not implement command deduplication | `Replay`; `TestJournalReplayDoesNotInventCommandDeduplication`. |
 | Committed critical record survives process exit without destructors | `tests/oms_crash_replay_tests.cpp`, which synchronizes parent/child through a pipe and verifies the recovered record after `_exit`. This is not a power-cut storage test. |
 
 Command idempotency, venue mutation gating and uncertain outcome handling additionally require `tests/execution_coordinator_tests.cpp`; their success must be checked on the same revision rather than inferred from the journal tests.
 
-The generic journal currently has no explicit byte/record limit for its in-memory async queue or entire-file replay vector, no segment rotation/compaction protocol, and no authenticated remote backup or replication. Batch thresholds are not resource bounds. Deployment sizing, total-capacity enforcement, corruption recovery and target-storage fault qualification remain distinct engineering work; this document does not close them by describing the current implementation. Any future record reinterpretation or schema-major migration requires writer/reader compatibility rules, golden old/new records, restart/replay tests and a rollback procedure.
+The journal now enforces the per-object queue/replay limits above, but has no segment rotation/compaction protocol or authenticated remote backup/replication. Batch thresholds are not capacity budgets. Deployment sizing, whole-service resource enforcement, long-running disk capacity, corruption recovery and target-storage fault qualification remain distinct engineering work; this document does not close them by describing the current implementation. Any future record reinterpretation or schema-major migration requires writer/reader compatibility rules, golden old/new records, restart/replay tests and a rollback procedure.
 
 No journal test, generated document or hosted workflow grants IB PAPER or LIVE authority. The protected exact-artifact qualification requirements remain unchanged.

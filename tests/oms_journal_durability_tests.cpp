@@ -1,5 +1,12 @@
 #include "../HeptaTrade/oms_journal.h"
 
+#include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <csignal>
+#include <stdexcept>
+#include <sys/resource.h>
+#include <sys/wait.h>
 #include <cstdlib>
 #include <fcntl.h>
 #include <fstream>
@@ -678,6 +685,377 @@ void TestNumericTokensAreLocaleIndependent()
     REQUIRE(limits[0].qty == 0 && limits[0].price == 1e-300);
 }
 
+void ResetBudgetTestEnvironment(bool async = false)
+{
+    REQUIRE(::setenv("HEPTA_OMS_ASYNC_FLUSH", async ? "1" : "0", 1) == 0);
+    REQUIRE(::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1) == 0);
+    REQUIRE(::setenv("HEPTA_OMS_BATCH_SIZE", "64", 1) == 0);
+    REQUIRE(::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "9223372036854775807", 1) == 0);
+}
+
+OmsJournalEvent BudgetEvent(const std::string& id)
+{
+    auto event = MakeCriticalEvent(id);
+    event.eventType = "ack";
+    event.tsMs = 100;
+    return event;
+}
+
+std::string ReadFileBytes(const std::string& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    REQUIRE(file.is_open());
+    return std::string(std::istreambuf_iterator<char>(file), {});
+}
+
+std::size_t EncodedBudgetEventBytes(const std::string& path)
+{
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(BudgetEvent("q0")));
+        REQUIRE(journal.Replay({}) == 1);
+    }
+    const auto result = ReadFileBytes(path).size();
+    REQUIRE(result > 0);
+    REQUIRE(::unlink(path.c_str()) == 0);
+    return result;
+}
+
+void TestQueueRecordBudgetAndCriticalDrain()
+{
+    ResetBudgetTestEnvironment();
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/records";
+    OmsJournalLimits limits;
+    limits.maximumQueuedRecords = 2;
+    {
+        OmsJournal journal(limits);
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(BudgetEvent("q0")));
+        REQUIRE(journal.Append(BudgetEvent("q1")));
+        const auto full = journal.GetHealthSnapshot();
+        REQUIRE(full.bufferedDepth == 2 && full.queueDepth == 0);
+        REQUIRE(full.retainedBytes > 0 && full.queueCapacityRejects == 0);
+        REQUIRE(!journal.Append(BudgetEvent("q2")));
+        const auto rejected = journal.GetHealthSnapshot();
+        REQUIRE(rejected.bufferedDepth == 2 && rejected.retainedBytes == full.retainedBytes);
+        REQUIRE(rejected.enqueuedTotal == 2 && rejected.flushedTotal == 0);
+        REQUIRE(rejected.queueCapacityRejects == 1 && !rejected.writePoisoned);
+        REQUIRE(IsEmptyFile(path));
+        // Critical synchronous records drain older work without needing a
+        // third queue slot. Queue saturation does not remove that path.
+        REQUIRE(journal.Append(MakeCriticalEvent("critical")));
+        const auto drained = journal.GetHealthSnapshot();
+        REQUIRE(drained.retainedBytes == 0 && drained.bufferedDepth == 0);
+        REQUIRE(drained.flushedTotal == 3 && drained.durableSyncWrites == 1);
+        REQUIRE(journal.Append(BudgetEvent("q3")));
+        std::vector<std::string> ids;
+        REQUIRE(journal.Replay([&](const auto& event) { ids.push_back(event.reqId); }) == 4);
+        REQUIRE((ids == std::vector<std::string>{"q0", "q1", "critical", "q3"}));
+        REQUIRE(journal.GetHealthSnapshot().retainedBytes == 0);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestQueueByteBudgetEndpointsAndAsyncRejection()
+{
+    ResetBudgetTestEnvironment();
+    const auto directory = MakeTempDirectory();
+    const auto bytes = EncodedBudgetEventBytes(directory + "/measure");
+    const auto path = directory + "/bytes";
+    for (std::size_t capacity : {bytes - 1, bytes, bytes * 2 - 1, bytes * 2})
+    {
+        OmsJournalLimits limits;
+        limits.maximumQueuedBytes = capacity;
+        {
+            OmsJournal journal(limits);
+            REQUIRE(journal.Init(path));
+            REQUIRE(journal.Append(BudgetEvent("q0")) == (capacity >= bytes));
+            REQUIRE(journal.Append(BudgetEvent("q1")) == (capacity >= bytes * 2));
+            const auto state = journal.GetHealthSnapshot();
+            REQUIRE(state.retainedBytes == (capacity / bytes) * bytes);
+            REQUIRE(state.queueCapacityRejects == 2 - capacity / bytes);
+            REQUIRE(state.retainedBytes <= state.limits.maximumQueuedBytes);
+            REQUIRE(journal.Replay({}) == static_cast<int>(capacity / bytes));
+            REQUIRE(journal.GetHealthSnapshot().retainedBytes == 0);
+        }
+        REQUIRE(::unlink(path.c_str()) == 0);
+    }
+    // This async rejection is deterministic: one record cannot fit even in
+    // an empty queue. No timing assumption about the worker is necessary.
+    ResetBudgetTestEnvironment(true);
+    {
+        OmsJournalLimits limits;
+        limits.maximumQueuedBytes = bytes - 1;
+        OmsJournal journal(limits);
+        REQUIRE(journal.Init(path));
+        REQUIRE(!journal.Append(BudgetEvent("q0")));
+        REQUIRE(journal.GetHealthSnapshot().retainedBytes == 0);
+        REQUIRE(journal.Append(MakeCriticalEvent("critical")));
+        REQUIRE(journal.Replay({}) == 1);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ResetBudgetTestEnvironment();
+}
+
+void TestInvalidLimitsRejectBeforeFileCreationAndBatchCannotReserveUnbounded()
+{
+    ResetBudgetTestEnvironment();
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/invalid";
+    std::size_t OmsJournalLimits::* const fields[] = {
+        &OmsJournalLimits::maximumQueuedRecords, &OmsJournalLimits::maximumQueuedBytes,
+        &OmsJournalLimits::maximumReplayRecords, &OmsJournalLimits::maximumReplayBytes
+    };
+    for (auto field : fields)
+        for (std::size_t value : {std::size_t{0}, OmsJournalLimits{}.*field + 1,
+                                  std::numeric_limits<std::size_t>::max()})
+        {
+            OmsJournalLimits limits;
+            limits.*field = value;
+            OmsJournal journal(limits);
+            REQUIRE(!journal.Init(path));
+            REQUIRE(::access(path.c_str(), F_OK) != 0);
+        }
+    REQUIRE(::setenv("HEPTA_OMS_BATCH_SIZE", "18446744073709551615", 1) == 0);
+    {
+        OmsJournalLimits limits;
+        limits.maximumQueuedRecords = 1;
+        OmsJournal journal(limits);
+        limits.maximumQueuedRecords = 0; // Construction takes an immutable copy.
+        // A legacy batch threshold must not request SIZE_MAX string slots.
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(BudgetEvent("q0")));
+        REQUIRE(!journal.Append(BudgetEvent("q1")));
+        REQUIRE(journal.Replay({}) == 1);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ResetBudgetTestEnvironment();
+}
+
+void TestReplayBudgetsAndCallbackAtomicRejection()
+{
+    ResetBudgetTestEnvironment();
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/replay";
+    const std::string record = "{\"event\":\"fill\"}\n";
+    const std::string contents = record + record + record;
+    WritePrivateFile(path, contents);
+    for (std::size_t records : {std::size_t{2}, std::size_t{3}})
+        for (std::size_t bytes : {contents.size() - 1, contents.size()})
+        {
+            OmsJournalLimits limits;
+            limits.maximumReplayRecords = records;
+            limits.maximumReplayBytes = bytes;
+            OmsJournal journal(limits);
+            REQUIRE(journal.Init(path));
+            int callbacks = 0;
+            const bool allowed = records == 3 && bytes == contents.size();
+            for (int repeat = 0; repeat < 2; ++repeat)
+            {
+                REQUIRE(journal.Replay([&](const auto&) { ++callbacks; }) == (allowed ? 3 : -1));
+                REQUIRE(callbacks == (allowed ? 3 * (repeat + 1) : 0));
+                const auto health = journal.GetHealthSnapshot();
+                REQUIRE(health.replayCapacityRejects == (allowed ? 0 : static_cast<unsigned>(repeat + 1)));
+                REQUIRE(!health.writePoisoned && health.replayBusyRejects == 0);
+            }
+            REQUIRE(ReadFileBytes(path) == contents);
+        }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestReplayReservationRejectsNestedAndOverlappingBatches()
+{
+    ResetBudgetTestEnvironment();
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/single-replay";
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(MakeCriticalEvent("before")));
+        bool entered = false;
+        bool release = false;
+        std::mutex mutex;
+        std::condition_variable condition;
+        std::thread reader([&]() {
+            REQUIRE(journal.Replay([&](const auto&) {
+                // Nested replay is rejected, while ordinary diagnostic
+                // access is still safe outside the journal mutex.
+                REQUIRE(journal.Replay({}) == -1);
+                REQUIRE(!journal.GetHealthSnapshot().writePoisoned);
+                std::unique_lock<std::mutex> lock(mutex);
+                entered = true;
+                condition.notify_all();
+                condition.wait(lock, [&]() { return release; });
+            }) == 1);
+        });
+        {
+            std::unique_lock<std::mutex> lock(mutex);
+            REQUIRE(condition.wait_for(lock, std::chrono::seconds(5), [&]() { return entered; }));
+        }
+        REQUIRE(journal.Replay({}) == -1);
+        REQUIRE(journal.Append(MakeCriticalEvent("after")));
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            release = true;
+            condition.notify_all();
+        }
+        reader.join();
+        REQUIRE(journal.Replay({}) == 2);
+        bool thrown = false;
+        try { journal.Replay([](const auto&) { throw std::runtime_error("callback failure"); }); }
+        catch (const std::runtime_error&) { thrown = true; }
+        REQUIRE(thrown);
+        REQUIRE(journal.Replay({}) == 2); // Reservation released on exception.
+        REQUIRE(journal.GetHealthSnapshot().replayBusyRejects == 2);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+// The watchdog detects a hung fixture; it is not a target-host latency SLA.
+void RequireChildCompletes(const std::function<void()>& body)
+{
+    const pid_t child = ::fork();
+    REQUIRE(child >= 0);
+    if (child == 0) { body(); ::_exit(0); }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    int status = 0;
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        const pid_t result = ::waitpid(child, &status, WNOHANG);
+        if (result == child)
+        {
+            REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+            return;
+        }
+        REQUIRE(result == 0 || (result == -1 && errno == EINTR));
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ::kill(child, SIGKILL);
+    ::waitpid(child, &status, 0);
+    REQUIRE(false);
+}
+
+void RestrictFileGrowth(rlim_t bytes)
+{
+    struct rlimit limits;
+    REQUIRE(::getrlimit(RLIMIT_FSIZE, &limits) == 0);
+    limits.rlim_cur = bytes;
+    REQUIRE(::setrlimit(RLIMIT_FSIZE, &limits) == 0);
+    REQUIRE(::signal(SIGXFSZ, SIG_IGN) != SIG_ERR);
+}
+
+void TestPartialFlushRetainsOnlyUnconfirmedRecords()
+{
+    ResetBudgetTestEnvironment();
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/partial";
+    const auto bytes = EncodedBudgetEventBytes(directory + "/measure");
+    RequireChildCompletes([&]() {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(BudgetEvent("q0")));
+        REQUIRE(journal.Append(BudgetEvent("q1")));
+        REQUIRE(journal.Append(BudgetEvent("q2")));
+        RestrictFileGrowth(bytes + bytes / 2);
+        REQUIRE(journal.Replay({}) == -1);
+        const auto health = journal.GetHealthSnapshot();
+        REQUIRE(health.writePoisoned && health.flushedTotal == 1);
+        REQUIRE(health.bufferedDepth == 2 && health.retainedBytes == 2 * bytes);
+        REQUIRE(!journal.Append(MakeCriticalEvent("must-not-retry")));
+    });
+    const auto contents = ReadFileBytes(path);
+    REQUIRE(contents.size() == bytes + bytes / 2);
+    REQUIRE(contents[bytes - 1] == '\n' && contents.back() != '\n');
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestAsyncWriteFailureStopsWorkerWithoutLockSpin()
+{
+    ResetBudgetTestEnvironment(true);
+    REQUIRE(::setenv("HEPTA_OMS_BATCH_SIZE", "1", 1) == 0);
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/worker-failed";
+    RequireChildCompletes([&]() {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        RestrictFileGrowth(1);
+        REQUIRE(journal.Append(BudgetEvent("q0")));
+        OmsJournalHealthSnapshot health;
+        do
+        {
+            health = journal.GetHealthSnapshot();
+            std::this_thread::yield();
+        } while (!health.workerStoppedOnFailure);
+        REQUIRE(health.writePoisoned && health.writeFailTotal == 1);
+        REQUIRE(health.queueDepth + health.bufferedDepth == 1 && health.retainedBytes > 1);
+        REQUIRE(!journal.Append(MakeCriticalEvent("no-retry")));
+        REQUIRE(journal.Replay({}) == -1);
+        REQUIRE(journal.GetHealthSnapshot().writeFailTotal == 1);
+        // The actual destructor runs before child exit and must join the worker.
+    });
+    REQUIRE(ReadFileBytes(path).size() == 1);
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ResetBudgetTestEnvironment();
+}
+
+void TestConcurrentAsyncQueueAccounting()
+{
+    ResetBudgetTestEnvironment(true);
+    const auto directory = MakeTempDirectory();
+    const auto path = directory + "/concurrent";
+    {
+        OmsJournalLimits limits;
+        limits.maximumQueuedRecords = 4;
+        limits.maximumQueuedBytes = 8192;
+        OmsJournal journal(limits);
+        REQUIRE(journal.Init(path));
+        std::atomic<unsigned int> accepted{0}, rejected{0};
+        std::vector<std::vector<std::string>> acceptedIds(4);
+        std::vector<std::thread> producers;
+        for (int worker = 0; worker < 4; ++worker)
+            producers.emplace_back([&, worker]() {
+                for (int index = 0; index < 200; ++index)
+                {
+                    const auto id = std::to_string(worker) + ":" + std::to_string(index);
+                    if (journal.Append(BudgetEvent(id)))
+                    {
+                        ++accepted;
+                        acceptedIds[worker].push_back(id);
+                    }
+                    else ++rejected;
+                    const auto health = journal.GetHealthSnapshot();
+                    REQUIRE(health.queueDepth + health.bufferedDepth <= 4);
+                    REQUIRE(health.retainedBytes <= 8192 && !health.writePoisoned);
+                }
+            });
+        for (auto& thread : producers) thread.join();
+        REQUIRE(accepted + rejected == 800);
+        std::vector<std::string> expected, replayed;
+        for (const auto& ids : acceptedIds) expected.insert(expected.end(), ids.begin(), ids.end());
+        REQUIRE(journal.Replay([&](const auto& event) { replayed.push_back(event.reqId); }) ==
+                static_cast<int>(accepted.load()));
+        std::sort(expected.begin(), expected.end());
+        std::sort(replayed.begin(), replayed.end());
+        REQUIRE(expected == replayed);
+        const auto health = journal.GetHealthSnapshot();
+        REQUIRE(health.retainedBytes == 0 && health.queueDepth == 0 && health.bufferedDepth == 0);
+        REQUIRE(health.enqueuedTotal == accepted && health.flushedTotal == accepted);
+        REQUIRE(health.queueCapacityRejects == rejected);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+    ResetBudgetTestEnvironment();
+}
+
 }
 
 int main()
@@ -699,5 +1077,13 @@ int main()
     TestAllTextFieldsAndIntegerLimitsRoundTrip();
     TestRecordSizeBoundariesAndRejectedAppendPreserveState();
     TestNumericTokensAreLocaleIndependent();
+    TestQueueRecordBudgetAndCriticalDrain();
+    TestQueueByteBudgetEndpointsAndAsyncRejection();
+    TestInvalidLimitsRejectBeforeFileCreationAndBatchCannotReserveUnbounded();
+    TestReplayBudgetsAndCallbackAtomicRejection();
+    TestReplayReservationRejectsNestedAndOverlappingBatches();
+    TestPartialFlushRetainsOnlyUnconfirmedRecords();
+    TestAsyncWriteFailureStopsWorkerWithoutLockSpin();
+    TestConcurrentAsyncQueueAccounting();
     return 0;
 }
