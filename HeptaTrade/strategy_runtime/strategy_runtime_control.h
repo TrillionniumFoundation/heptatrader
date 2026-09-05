@@ -61,6 +61,8 @@ struct StrategyRuntimeControlResult
 // must call after independently enforcing process, memory, CPU and FD limits.
 // Checkpoints here are metadata only, not persisted payloads. Observed time is
 // a trusted composition input; this object is not an independent clock authority.
+class VerifiedStrategyCheckpoint;
+
 class StrategyRuntimeControl
 {
 public:
@@ -272,6 +274,12 @@ public:
         out = found->second;
         return true;
     }
+
+    // Restore verified opaque checkpoint metadata before Start. Implemented
+    // with the payload store; does not deserialize or execute checkpoint bytes.
+    StrategyRuntimeControlResult RestoreCheckpoint(
+        const std::string& moduleId, std::uint64_t expectedGeneration,
+        const VerifiedStrategyCheckpoint& checkpoint, std::uint64_t observedAtMs);
 
 private:
     static bool CanonicalId(const std::string& value, std::size_t maximum)

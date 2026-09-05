@@ -20,7 +20,7 @@ starts a process, proves health or grants Execution authority.
 The inter-module contract remains `hepta.module-lifecycle.v1`. The native
 controller identifiers are independently versioned:
 `hepta.strategy-runtime-control.v2` and `hepta.durable-rollout-store.v2`.
-Strategy Runtime remains module version 2.0.0; Management Control is 2.0.1
+Strategy Runtime is module version 2.1.0; Management Control is 2.0.1
 with the seven-state exception-safety correction below. Existing V2 native callers
 must still review the stricter admission rules and recompile native types. Wire
 schema V1 is unchanged; no ABI, automatic migration or deployment qualification
@@ -127,6 +127,172 @@ its supervisor boundary; this API does not claim it can allocate an error result
 under sustained memory exhaustion. Duplicate observations do not advance the
 committed timestamp, and failed observations do not create a clock-fault epoch.
 
+## Bounded checkpoint payload persistence and explicit restore
+
+Strategy Runtime module **2.1.0** adds `StrategyCheckpointStore` and
+`VerifiedStrategyCheckpoint` in `HeptaTrade/strategy_runtime/strategy_checkpoint_store.*`.
+The library target is `hepta_strategy_runtime`; the native store identifier is
+`hepta.strategy-checkpoint-store.v1`. The four-state controller identifier remains
+V2 and gains an additive `RestoreCheckpoint` operation. This is Linux local
+payload persistence plus metadata restoration, not automatic process recovery,
+strategy code execution or an extension of trading authority.
+
+### Ownership and admission
+
+The trusted composition owns the store, private path, descriptor and independently
+retained checkpoint digest. An untrusted strategy may supply bounded opaque bytes;
+it must not own the filesystem directory, the store/controller objects or the
+selection of recovery evidence. The API's source-generation and timestamp inputs
+are provenance supplied by that composition, not authenticated worker evidence.
+The storage implementation does not itself establish this OS separation.
+
+A store is bound to the complete module/version/artifact/config/model identity
+and all four resource-budget fields. It requires an existing absolute directory
+owned by the effective UID with exact mode 0700. Files and the companion lock
+are effective-UID-owned, single-linked regular files with exact mode 0600; the
+lock is empty. Path components are opened without following symlinks, retained
+through each transaction and rechecked. The directory and lock inode identities
+are also retained logically across successful operations on the same handle.
+Replacement of either prevents further use of that handle, even with equal data.
+Relative paths, `..`, embedded NUL, more than 64 directory components, filenames
+outside the bounded identifier alphabet or over 96 bytes, symlinks, hardlinks,
+FIFOs and unsafe permissions are rejected. No permissions or directories are
+silently repaired. A first Load can create the private companion lock.
+
+`Load(expectedRecordDigest)` is mandatory before Save. An empty digest requires
+that the record is absent; it never means trust the first file found. Existing
+bytes require an exact canonical SHA-256 digest independently selected by the
+supervisor. Do not compute the expected digest from the same untrusted file and
+then describe the comparison as independent validation. Load reads only a bounded
+regular descriptor, checks extra bytes, size/time/inode/permission stability and
+named bindings, compares the record digest, and parses the entire envelope before
+publishing a verified immutable copy. Failed Load closes readiness.
+
+### Physical encoding and bounds
+
+The canonical V1 file has no JSON, native-endian integers or optional trailing
+fields. Its order is:
+
+```text
+ASCII "HEPTA_STRATEGY_CHECKPOINT_V1\n"
+five length-prefixed strings: moduleId, version, artifactDigest, configDigest, modelDigest
+four unsigned integers: maxThreads, maxFileDescriptors, maxMemoryBytes, maxCheckpointBytes
+four unsigned integers: checkpointSequence, sourceGeneration, savedAtMs, payloadLength
+exactly payloadLength opaque bytes, including arbitrary NUL/non-text bytes
+```
+
+Every integer and every string length is eight-byte unsigned big-endian. Strings
+must byte-match the canonical bound descriptor; a noncanonical or reinterpreted
+identity cannot be accepted. Sequence, source generation, saved time and payload
+length must be nonzero. Trailing bytes and all truncated prefixes are invalid.
+The externally retained `RecordDigest` covers the **whole** encoded record;
+`PayloadDigest` is separately computed over payload bytes and is the digest used
+by the controller's existing checkpoint-metadata API. They are different names
+for different byte domains, not interchangeable attestations.
+
+The default payload ceiling is 1 MiB; a constructor limit may be at most 16 MiB.
+The descriptor's checkpoint-byte budget is an additional upper bound. The whole
+file read is bounded by payload ceiling plus 1,024 envelope bytes; validated
+identity lengths fit that envelope. There is one latest record, one empty lock
+and at most one owned staging slot `.<filename>.pending` per store path. The
+staging file is created with O_EXCL and no-follow: an existing file or symlink
+is never truncated, reused or automatically deleted. A crashed writer's leftover
+therefore blocks new saves rather than accumulating unlimited random temporary
+files. Preserve and review that evidence offline before cleanup. Repeated writes
+do not append historical payloads or perform implicit rotation/replication.
+
+The implementation bounds its own per-operation buffers and one retained current
+receipt, not arbitrary copies retained by callers, the caller's input allocation,
+filesystem caches or total process memory. Up to 64 directory components plus
+root, lock and an active record/staging descriptor are admitted. This is not a
+hard latency deadline or an OS-level resource sandbox.
+
+### Save transaction and failure semantics
+
+A nonblocking private flock serializes cooperating local writers. Each Save reads
+and verifies the exact latest record previously loaded by that handle, including
+on a duplicate request. The next sequence must equal the loaded sequence plus
+one. A duplicate requires identical sequence, source generation, saved time and
+payload; it returns unchanged data. Older timestamps, gaps, conflicts and exhausted
+sequence arithmetic are rejected. All encoded bytes, digests, immutable payload
+and successful acknowledgement allocations are prepared before persistent mutation.
+
+```text
+revalidate directory/lock/current bytes
+  -> create exclusive staging slot
+  -> complete short/interrupted writes
+  -> fsync staging file and validate identity
+  -> recheck old target and renameat
+  -> fsync parent directory
+  -> validate resulting file/directory/lock, close file
+  -> publish immutable receipt and readiness
+```
+
+Before rename, failure preserves the prior record. After rename, directory-sync,
+close or binding failure can leave new bytes on disk without a successful
+acknowledgement. The result is rejected with `uncertain=true` and no verified
+checkpoint. `attemptedRecordDigest` identifies the attempted bytes for explicit
+reconciliation; it is not a success receipt. An exception after persistence
+starts also requires reconciliation, not blind retry. Save is disabled after
+I/O/rebinding/concurrent-write failure until a successful Load resolves the actual
+selected file. Only a staging inode created and still owned by that transaction
+is removed by normal error cleanup; a published record or prior orphan is never
+removed as cleanup. The filesystem must honor the requested synchronization;
+these tests do not establish actual power-cut durability for a deployment device.
+
+On a live handle, Load rejects missing history, a lower sequence/time and changed
+same-sequence bytes even when an older digest is supplied. A fresh process cannot
+know a global latest sequence: explicitly selecting an old valid digest can load
+an old checkpoint. Authentication, cross-restart anti-rollback and recovery
+selection therefore remain separate supervisor policies. SHA-256 is integrity
+binding, not a digital signature or proof of producer identity. Same-UID malicious
+writers, network filesystems, encrypted backups and distributed consensus are
+outside this cooperating-local-store guarantee.
+
+### Controller integration and recovery
+
+Normal checkpointing calls Save first, then the existing controller Checkpoint
+with the returned sequence, payload digest and byte count under the expected
+controller generation. No controller mutex is held during file I/O. The two
+operations are **not** one atomic transaction: a quarantine, replacement or crash
+between them can leave a durable checkpoint ahead of acknowledged metadata.
+Treat a rejected metadata handoff as a supervision/reconciliation event, not as
+permission to run, reuse a stale generation or erase the durable evidence.
+
+For recovery, the supervisor loads the independently selected exact record and
+admits the same full descriptor to a new controller. `RestoreCheckpoint` requires
+a valid construction-restricted checkpoint, exact local generation, non-regressing
+current time, a saved time not in the future and phase Admitted. It restores only
+sequence/payload-digest/byte-count metadata, incrementing the **new local** generation;
+it never transplants the old process generation. Duplicate restores must match
+all metadata and do not advance time/generation. Conflicting restores or a
+Running/Quarantined/Stopped phase are rejected. Complete proposed metadata and
+acknowledgement are prepared before no-throw publication, retaining exception
+atomicity. The controller remains Admitted: ordinary Start checks still apply.
+
+An issued checkpoint owns immutable verified bytes. Later file changes or saves
+do not mutate it; it denotes that historical content, not continuously attested
+latest state. The caller must independently validate payload-specific semantics
+before any deserialization and must establish a real process sandbox/rollout
+executor before running strategy code. No serialized copy of this C++ object is
+network authority; no checkpoint grants Broker, PAPER or LIVE access.
+
+### Direct executable evidence
+
+`tests/strategy_checkpoint_store_tests.cpp` contains thirteen test functions;
+`tests/python/test_strategy_checkpoint_store.py` builds and executes the real
+store/controller/OpenSSL/filesystem chain with always-active assertions. Tests
+cover binary round trips and all descriptor bindings; explicit pins and no
+trust-on-first-use; every truncated prefix and every single-byte corruption of
+the reference envelope; bounds and sequence exhaustion; unsafe files/paths/locks;
+stale writers and live-handle rollback; directory/lock replacement; short and
+interrupted I/O; failure before and after rename; committed bytes surviving
+`_exit` without destructor flush; a crash leaving a single blocking staging file;
+twelve simultaneous cooperating writers; and exhaustive allocation-failure
+ordinals for Save/Restore. The handoff test explicitly exercises durable bytes
+surviving a rejected metadata update. Fault interposers exist only in the test
+binary. This is finite component evidence, not a deployment or broker receipt.
+
 ## Durable local desired-state contract
 
 The implementation is `HeptaTrade/management/durable_rollout_store.h`; private
@@ -210,5 +376,6 @@ tests/python -p '*transactions.py'`. The canonical Python suite discovers all th
 transaction wrappers; existing bounded-runtime CTests continue to exercise the public
 composition. Passing these fixtures is not real power-loss, network-filesystem,
 malicious same-UID, independent-review, production-SLO or Broker qualification.
-The current plan's remaining payload persistence, sandbox execution, deployment
-executor and external governance/PAPER gates remain separate open work.
+The current plan's remaining automatic checkpoint selection/process recovery,
+sandbox execution, deployment executor and external governance/PAPER gates remain
+separate open work.
