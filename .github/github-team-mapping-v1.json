@@ -121,6 +121,27 @@
       ]
     },
     {
+      "pattern": "/HeptaTrade/marketdata/",
+      "teams": [
+        "marketdata-feature",
+        "venue-adapters"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/features/",
+      "teams": [
+        "marketdata-feature",
+        "reliability-operations-research"
+      ]
+    },
+    {
+      "pattern": "/HeptaTrade/strategy_runtime/",
+      "teams": [
+        "strategy-runtime",
+        "portfolio-risk"
+      ]
+    },
+    {
       "pattern": "/HeptaTrade/execution/",
       "teams": [
         "execution-oms",
