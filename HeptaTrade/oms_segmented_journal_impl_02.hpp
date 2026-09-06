@@ -132,6 +132,12 @@ bool OmsSegmentedJournal::ObserveActiveLocked(
 {
     if (!m_active || !ObserveJournal(*m_active, onDiskBytes, retainedBytes))
         return false;
+    if (onDiskBytes > m_limits.maximumActiveBytes ||
+        retainedBytes > m_limits.maximumActiveBytes - onDiskBytes)
+    {
+        IncrementSaturating(m_segmentIntegrityRejects);
+        return false;
+    }
     const bool logicalEmpty = onDiskBytes == 0 && retainedBytes == 0;
     if (logicalEmpty != (m_activeRecords == 0))
     {
