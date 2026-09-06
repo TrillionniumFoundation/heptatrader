@@ -61,6 +61,20 @@ jobs:
           set -euo pipefail
           export LC_ALL=C
 
+          expected_workflows=(
+            .github/workflows/github-governance-qualification.yml
+            .github/workflows/governance-bootstrap-admission.yml
+            .github/workflows/ib-paper-qualification.yml
+            .github/workflows/self-hosted-ib-availability.yml
+          )
+          mapfile -d '' -t actual_workflows < <(
+            git ls-tree -r -z --full-tree --name-only HEAD -- .github/workflows
+          )
+          test "${#actual_workflows[@]}" -eq "${#expected_workflows[@]}"
+          for index in "${!expected_workflows[@]}"; do
+            test "${actual_workflows[$index]}" = "${expected_workflows[$index]}"
+          done
+
           verify_regular_file() {
             local target="$1"
             local expected="$2"
