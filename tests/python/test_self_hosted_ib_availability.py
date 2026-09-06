@@ -15,6 +15,14 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.workflow = WORKFLOW.read_text(encoding="utf-8")
 
+    def test_workflow_is_dispatch_only(self) -> None:
+        self.assertIn("on:\n  workflow_dispatch:", self.workflow)
+        self.assertNotIn("pull_request", self.workflow)
+        self.assertNotIn("pull_request_target", self.workflow)
+        self.assertNotIn("repository_dispatch", self.workflow)
+        self.assertNotIn("schedule:", self.workflow)
+        self.assertNotIn("push:", self.workflow)
+
     def test_dispatch_input_is_only_transferred_through_environment(self) -> None:
         expression = "${{ inputs.reason }}"
         self.assertEqual(self.workflow.count(expression), 1)
@@ -22,14 +30,19 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
         self.assertNotIn(f"'{expression}'", self.workflow)
         self.assertNotIn(f'"{expression}"', self.workflow)
 
-    def test_broker_host_job_is_dispatch_only_and_tokenless(self) -> None:
+    def test_broker_host_job_is_group_bound_tokenless_and_checkout_free(self) -> None:
         section = self.workflow.split("  ib-runner-probe:\n", 1)[1]
         self.assertIn("if: github.event_name == 'workflow_dispatch'", section)
+        self.assertIn("group: trillionnium-ib-paper", section)
         self.assertIn("permissions: {}", section)
         self.assertIn('test "$GITHUB_REF" = refs/heads/main', section)
         self.assertIn('test "$RUNNER_NAME" = x230', section)
+        self.assertIn('test "$RUNNER_OS" = Linux', section)
+        self.assertIn('test "$RUNNER_ARCH" = X64', section)
         self.assertNotIn("actions/checkout", section)
+        self.assertNotIn("uses:", section)
         self.assertNotIn("secrets.", section)
+        self.assertNotIn("GITHUB_TOKEN", section)
 
     def test_reason_is_quoted_and_allowlisted_before_output(self) -> None:
         self.assertIn(
@@ -58,14 +71,12 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
             with self.subTest(value=value):
                 self.assertIsNone(REASON_PATTERN.fullmatch(value))
 
-    def test_pull_request_path_runs_only_hosted_static_audit(self) -> None:
-        section = self.workflow.split("  bootstrap-audit:\n", 1)[1].split(
-            "  ib-runner-probe:\n", 1
-        )[0]
-        self.assertIn("if: github.event_name == 'pull_request'", section)
-        self.assertIn("runs-on: ubuntu-24.04", section)
-        self.assertIn("persist-credentials: false", section)
-        self.assertIn("test_self_hosted_ib_availability.py", section)
+    def test_probe_is_read_only_and_local(self) -> None:
+        self.assertGreaterEqual(self.workflow.count("permissions: {}"), 2)
+        self.assertIn("127.0.0.1 4002", self.workflow)
+        self.assertNotIn("placeOrder", self.workflow)
+        self.assertNotIn("cancelOrder", self.workflow)
+        self.assertNotIn("HEPTA_QUALIFICATION_MUTATIONS", self.workflow)
 
 
 if __name__ == "__main__":

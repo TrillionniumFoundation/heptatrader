@@ -50,6 +50,23 @@ jobs:
               ;;
           esac
 
+      - name: Verify dispatch-only workflow as immutable data
+        shell: bash
+        env:
+          TARGET: .github/workflows/self-hosted-ib-availability.yml
+          EXPECTED_DISPATCH_WORKFLOW_SHA256: 9efc491558eb1af64930fbfc9d1ae8344214ab7680b9f026221ca0d7ddaabbf0
+        run: |
+          set -euo pipefail
+          test -f "$TARGET"
+          test ! -L "$TARGET"
+          test "$(git ls-tree HEAD -- "$TARGET" | awk '{print $1}')" = 100644
+          test "$(git ls-tree HEAD -- "$TARGET" | wc -l)" -eq 1
+          git cat-file blob "HEAD:$TARGET" | sha256sum --check <(
+            printf '%s  -\n' "$EXPECTED_DISPATCH_WORKFLOW_SHA256"
+          )
+          printf '%s  %s\n' "$EXPECTED_DISPATCH_WORKFLOW_SHA256" "$TARGET" |
+            sha256sum --check --strict
+
       - name: Validate bounded event subject without candidate execution
         shell: bash
         run: |
