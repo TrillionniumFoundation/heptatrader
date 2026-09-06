@@ -1,0 +1,76 @@
+name: Governance Bootstrap Admission
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-governance-bootstrap-admission-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  admission:
+    name: governance-bootstrap-admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact pull-request or merge-group identity
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              test "$EVENT_BASE_REF" = main
+              ;;
+            merge_group)
+              [[ "$EVENT_REF" == refs/heads/gh-readonly-queue/main/pr-* ]]
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Validate bounded bootstrap admission contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git ls-files --unmerged)"
+          python3 -m unittest discover \
+            -s tests/python \
+            -p 'test_governance_bootstrap_admission.py'
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Reassert immutable event subject
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
