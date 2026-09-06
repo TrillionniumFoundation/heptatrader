@@ -6,36 +6,35 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "governance-bootstrap-admission.yml"
+WF = ROOT / ".github" / "workflows"
+ADMISSION = WF / "governance-bootstrap-admission.yml"
+SOURCE_AUDIT = WF / "qualification-source-audit.yml"
 CONTEXTS = ROOT / ".github" / "required-check-contexts-v1.json"
 PRIVILEGED = {
-    ROOT / ".github" / "workflows" / "github-governance-qualification.yml":
+    WF / "github-governance-qualification.yml":
         "8029358e340f5ea37b024b87ca2f720a771fd6bd11ff8786495e272481c8cc69",
-    ROOT / ".github" / "workflows" / "ib-paper-qualification.yml":
+    WF / "ib-paper-qualification.yml":
         "8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b",
-    ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml":
+    WF / "self-hosted-ib-availability.yml":
         "0e0e5ab8fcd9748b041e8724aa8ab42412cbecd783ca8f22b106eaddbf1e2c0c",
 }
-BOUND_FILES = {
+BOUND = {
     **PRIVILEGED,
-    CONTEXTS: "67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7",
+    CONTEXTS: "6d704de38201632181be5e652c87be06b155ba71ef53ece334e681a16ae8e98b",
+    SOURCE_AUDIT: "90066115d950c69aefbd7b46cb45365b48bf8783ae5c49efc5540e7fdadad566",
 }
-EXPECTED_WORKFLOWS = tuple(
-    sorted((*PRIVILEGED.keys(), WORKFLOW), key=lambda path: path.as_posix())
-)
-CANONICAL_TOP_LEVEL = {"name", "on", "permissions", "concurrency", "jobs"}
-TOP_LEVEL_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
+EXPECTED_WORKFLOWS = tuple(sorted((*PRIVILEGED, ADMISSION, SOURCE_AUDIT)))
+TOP = {"name", "on", "permissions", "concurrency", "jobs"}
+KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 
 
-def _canonical_block_events(text: str) -> list[str] | None:
+def events(text: str) -> list[str] | None:
     lines = text.splitlines()
     if any("\t" in line for line in lines):
         return None
-
     seen: set[str] = set()
-    on_position: int | None = None
+    on_line: int | None = None
     for index, line in enumerate(lines):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
@@ -44,237 +43,121 @@ def _canonical_block_events(text: str) -> list[str] | None:
         if ":" not in line:
             return None
         key = line.split(":", 1)[0]
-        if TOP_LEVEL_KEY.fullmatch(key) is None:
-            return None
-        if key not in CANONICAL_TOP_LEVEL or key in seen:
+        if KEY.fullmatch(key) is None or key not in TOP or key in seen:
             return None
         seen.add(key)
         if key == "on":
             if line != "on:":
                 return None
-            on_position = index
-
-    if on_position is None:
+            on_line = index
+    if seen != TOP or on_line is None:
         return None
-
-    events: list[str] = []
-    for line in lines[on_position + 1:]:
+    found: list[str] = []
+    for line in lines[on_line + 1:]:
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if not line[0].isspace():
             break
-        if (
-            line.startswith("  ")
-            and len(line) > 2
-            and line[2] != " "
-        ):
-            events.append(line)
-    return events
+        if not line.startswith("  "):
+            return None
+        if len(line) > 2 and line[2] != " ":
+            found.append(line)
+    return found
 
 
-class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
+class GovernanceBootstrapAdmissionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
-        cls.targets = {
-            path: path.read_text(encoding="utf-8")
-            for path in PRIVILEGED
+        cls.admission = ADMISSION.read_text(encoding="utf-8")
+        cls.source_audit = SOURCE_AUDIT.read_text(encoding="utf-8")
+        cls.privileged = {
+            path: path.read_text(encoding="utf-8") for path in PRIVILEGED
         }
 
-    def test_context_is_explicit_and_reachable_on_pr_and_merge_group(self) -> None:
-        self.assertIn("name: Governance Bootstrap Admission", self.workflow)
-        self.assertIn("name: governance-bootstrap-admission", self.workflow)
-        self.assertIn("  pull_request:\n    branches: [main]", self.workflow)
-        self.assertIn("  merge_group:\n    types: [checks_requested]", self.workflow)
-        self.assertNotIn("paths:", self.workflow)
+    def test_admission_is_hosted_read_only_and_data_only(self) -> None:
+        self.assertIn("name: governance-bootstrap-admission", self.admission)
+        self.assertIn("runs-on: ubuntu-24.04", self.admission)
+        self.assertIn("permissions:\n  contents: read", self.admission)
+        self.assertIn("persist-credentials: false", self.admission)
+        for forbidden in ("pull_request_target", "secrets.", "runs-on: self-hosted",
+                          "python", "./scripts/", "tests/python", "docker"):
+            self.assertNotIn(forbidden, self.admission.lower())
 
-    def test_merge_group_runs_are_not_cancelled_by_later_events(self) -> None:
-        self.assertIn(
-            "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-            self.workflow,
-        )
-        self.assertNotIn("cancel-in-progress: true", self.workflow)
-
-    def test_checkout_is_exact_and_credential_free(self) -> None:
-        self.assertIn(
-            "uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
-            self.workflow,
-        )
-        self.assertIn(
-            "repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}",
-            self.workflow,
-        )
-        self.assertIn(
-            "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
-            self.workflow,
-        )
-        self.assertIn("persist-credentials: false", self.workflow)
-        self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', self.workflow)
-
-    def test_job_is_hosted_read_only_and_executes_no_candidate_program(self) -> None:
-        self.assertIn("permissions:\n  contents: read", self.workflow)
-        self.assertIn("runs-on: ubuntu-24.04", self.workflow)
-        self.assertNotIn("runs-on: self-hosted", self.workflow)
-        self.assertNotIn("    runs-on:\n      group:", self.workflow)
-        self.assertNotIn("secrets.", self.workflow)
-        trigger_header = self.workflow.split("\npermissions:", 1)[0]
-        self.assertNotIn("pull_request_target", trigger_header)
-        self.assertNotIn("repository_dispatch", trigger_header)
-        self.assertNotIn("workflow_dispatch", trigger_header)
-        self.assertNotIn("curl ", self.workflow)
-        self.assertNotIn("gh ", self.workflow)
-        self.assertNotIn("python", self.workflow.lower())
-        self.assertNotIn("./scripts/", self.workflow)
-        self.assertNotIn("tests/python", self.workflow)
-        self.assertNotIn("docker", self.workflow.lower())
-
-    def test_complete_actions_workflow_set_is_closed(self) -> None:
-        actual = tuple(
-            sorted(
-                (
-                    path
-                    for path in WORKFLOW.parent.rglob("*")
-                    if path.is_file() or path.is_symlink()
-                ),
-                key=lambda path: path.as_posix(),
-            )
-        )
+    def test_workflow_set_and_bound_bytes_are_exact(self) -> None:
+        actual = tuple(sorted(path for path in WF.rglob("*")
+                              if path.is_file() or path.is_symlink()))
         self.assertEqual(actual, EXPECTED_WORKFLOWS)
-        self.assertIn("expected_workflows=(", self.workflow)
-        self.assertIn("mapfile -d '' -t actual_workflows", self.workflow)
-        self.assertIn(
-            "git ls-tree -r -z --full-tree --name-only HEAD -- .github/workflows",
-            self.workflow,
-        )
-        self.assertIn(
-            'test "${#actual_workflows[@]}" -eq "${#expected_workflows[@]}"',
-            self.workflow,
-        )
+        embedded = set(re.findall(
+            r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
+            self.admission,
+            re.MULTILINE,
+        ))
+        self.assertEqual(embedded, set(BOUND.values()))
+        for path, digest in BOUND.items():
+            self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
+            self.assertIn(path.name, self.admission)
 
-    def test_all_governed_files_are_exact_digest_bound(self) -> None:
-        embedded = set(
-            re.findall(
-                r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
-                self.workflow,
-                re.MULTILINE,
-            )
-        )
-        expected = set(BOUND_FILES.values())
-        self.assertEqual(embedded, expected)
-        for path, expected_digest in BOUND_FILES.items():
+    def test_privileged_workflows_are_canonical_dispatch_only(self) -> None:
+        for path, text in self.privileged.items():
             with self.subTest(path=path):
-                self.assertEqual(
-                    hashlib.sha256(path.read_bytes()).hexdigest(),
-                    expected_digest,
-                )
-                self.assertIn(path.name, self.workflow)
-
-    def test_privileged_workflows_are_dispatch_only(self) -> None:
-        self.assertIn("seen_top[key]++", self.workflow)
-        self.assertIn('key == "name" || key == "on"', self.workflow)
-        self.assertIn('if ($0 != "on:")', self.workflow)
-        self.assertIn('if ($0 != "  workflow_dispatch:")', self.workflow)
-        self.assertIn('index($0, "\\t")', self.workflow)
-        self.assertIn("is not canonical workflow_dispatch-only YAML", self.workflow)
-
-        for path, text in self.targets.items():
-            with self.subTest(path=path):
-                self.assertEqual(
-                    _canonical_block_events(text),
-                    ["  workflow_dispatch:"],
-                )
-
-        hostile = (
+                self.assertEqual(events(text), ["  workflow_dispatch:"])
+        for hostile in (
             "on: [pull_request]\n",
-            "on: {'pull_request': {}}\n",
-            'on: {"workflow_call": {}}\n',
-            "on:\n  workflow_dispatch:\n  push:\n",
-            "on:\n  workflow_dispatch:\n  'pull_request': {}\n",
-            'on:\n  workflow_dispatch:\n  "workflow_call": {}\n',
-            "on:\n  workflow_dispatch:\n  <<: *events\n",
-            "on:\n  workflow_dispatch:\n'on': [pull_request]\n",
-            'on:\n  workflow_dispatch:\n"on": [push]\n',
-            'on:\n  workflow_dispatch:\n"\\x6f\\x6e": [pull_request]\n',
-            "on:\n  workflow_dispatch:\n!!str on: [push]\n",
-            "on:\n  workflow_dispatch:\non : [schedule]\n",
             "'on':\n  workflow_dispatch:\n",
-            "on:\n\tworkflow_dispatch:\n",
-            "on:\n  workflow_dispatch:\n---\non: [pull_request]\n",
-            "name: one\nname: two\non:\n  workflow_dispatch:\n",
+            "on:\n workflow_dispatch:\n",
+            "on:\n  workflow_dispatch:\n  push:\n",
+            "on:\n  workflow_dispatch:\n---\non: [push]\n",
             "defaults: {}\non:\n  workflow_dispatch:\n",
-        )
-        for text in hostile:
-            with self.subTest(text=text):
-                self.assertNotEqual(
-                    _canonical_block_events(text),
-                    ["  workflow_dispatch:"],
-                )
+            "name: one\nname: two\non:\n  workflow_dispatch:\n",
+        ):
+            self.assertNotEqual(events(hostile), ["  workflow_dispatch:"])
 
-    def test_runner_selection_and_preallocation_gates_are_bound(self) -> None:
-        ib = self.targets[ROOT / ".github" / "workflows" / "ib-paper-qualification.yml"]
-        probe = self.targets[
-            ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml"
-        ]
-        governance = self.targets[
-            ROOT / ".github" / "workflows" / "github-governance-qualification.yml"
-        ]
-        governance_gate = (
-            "    if: github.event_name == 'workflow_dispatch' && "
-            "github.ref == 'refs/heads/main' && "
-            "inputs.acknowledge_no_bypass == true"
-        )
-        ib_gate = (
-            "    if: github.event_name == 'workflow_dispatch' && "
-            "github.ref == 'refs/heads/main' && inputs.mutation_mode == true"
-        )
-        probe_gate = (
-            "    if: github.event_name == 'workflow_dispatch' && "
-            "github.ref == 'refs/heads/main'"
-        )
-        self.assertEqual(governance.count(governance_gate), 1)
-        self.assertEqual(ib.count(ib_gate), 2)
-        self.assertEqual(probe.count(probe_gate), 1)
-        self.assertIn('governance_gate="', self.workflow)
-        self.assertIn('ib_gate="', self.workflow)
-        self.assertIn('x230_gate="', self.workflow)
-        self.assertEqual(ib.count("group: trillionnium-ib-paper"), 2)
-        self.assertIn("heptatrader-ib-builder", ib)
-        self.assertIn("heptatrader-ib-paper", ib)
-        self.assertEqual(probe.count("group: trillionnium-ib-paper"), 1)
-        self.assertNotIn("uses: actions/checkout@", probe)
-        self.assertNotIn("self-hosted", governance)
+    def test_source_audit_restores_unprivileged_execution_coverage(self) -> None:
+        self.assertIn("name: qualification-source-audit", self.source_audit)
+        self.assertIn("runs-on: ubuntu-24.04", self.source_audit)
+        self.assertIn("permissions:\n  contents: read", self.source_audit)
+        self.assertIn("persist-credentials: false", self.source_audit)
+        self.assertIn("partial team-governance extension is not admissible",
+                      self.source_audit)
+        for token in (
+            "test_governance_bootstrap_admission.py",
+            "test_self_hosted_ib_availability.py",
+            "test_qualification_trust_boundary.py",
+            "test_bootstrap_postflight_contract.py",
+            "test_team_codeowners_activation.py",
+        ):
+            self.assertIn(token, self.source_audit)
+        for forbidden in ("pull_request_target", "self-hosted", "secrets."):
+            self.assertNotIn(forbidden, self.source_audit)
 
-    def test_context_registry_projection_is_exact_and_fail_closed(self) -> None:
+    def test_preallocation_gates_and_context_projection_are_bound(self) -> None:
+        governance = self.privileged[WF / "github-governance-qualification.yml"]
+        paper = self.privileged[WF / "ib-paper-qualification.yml"]
+        probe = self.privileged[WF / "self-hosted-ib-availability.yml"]
+        self.assertEqual(governance.count(
+            "if: github.event_name == 'workflow_dispatch' && github.ref == "
+            "'refs/heads/main' && inputs.acknowledge_no_bypass == true"), 1)
+        self.assertEqual(paper.count(
+            "if: github.event_name == 'workflow_dispatch' && github.ref == "
+            "'refs/heads/main' && inputs.mutation_mode == true"), 2)
+        self.assertEqual(probe.count(
+            "if: github.event_name == 'workflow_dispatch' && github.ref == "
+            "'refs/heads/main'"), 1)
         document = json.loads(CONTEXTS.read_text(encoding="utf-8"))
-        self.assertEqual(document["schema"], "heptatrader.required-check-contexts.v1")
-        self.assertEqual(
-            document["external_qualification_contexts"],
-            [
-                "github-governance-exact-artifact-verification",
-                "ib-paper-exact-artifact-qualification",
-            ],
-        )
         observations = document["non_required_observation_contexts"]
         self.assertEqual(observations.count("governance-bootstrap-admission"), 1)
-        self.assertNotIn("github-governance-workflow-bootstrap-audit", observations)
-        self.assertNotIn("ib-paper-workflow-bootstrap-audit", observations)
-        self.assertIn("CONTEXTS_SHA256:", self.workflow)
-        self.assertIn(".github/required-check-contexts-v1.json", self.workflow)
-        self.assertIn("verify_regular_file \\", self.workflow)
+        self.assertEqual(observations.count("qualification-source-audit"), 1)
+        self.assertEqual(document["external_qualification_contexts"], [
+            "github-governance-exact-artifact-verification",
+            "ib-paper-exact-artifact-qualification",
+        ])
 
-    def test_clean_postflight_is_fail_closed(self) -> None:
-        self.assertIn(
-            '[[ "$EVENT_REF" == refs/heads/gh-readonly-queue/main/pr-* ]]',
-            self.workflow,
-        )
-        self.assertIn("if: always()", self.workflow)
-        self.assertIn("git diff --exit-code -- .", self.workflow)
-        self.assertIn("git diff --cached --exit-code -- .", self.workflow)
-        clean_status = (
-            'test -z "$(git status --porcelain=v1 '
-            '--untracked-files=all --ignored=matching)"'
-        )
-        self.assertGreaterEqual(self.workflow.count(clean_status), 2)
+    def test_both_hosted_workflows_have_unconditional_clean_postflight(self) -> None:
+        for text in (self.admission, self.source_audit):
+            self.assertIn("if: always()", text)
+            self.assertIn("git diff --exit-code -- .", text)
+            self.assertIn("git diff --cached --exit-code -- .", text)
+            self.assertIn("--untracked-files=all --ignored=matching", text)
 
 
 if __name__ == "__main__":

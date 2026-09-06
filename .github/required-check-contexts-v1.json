@@ -75,6 +75,7 @@
   ],
   "non_required_observation_contexts": [
     "governance-bootstrap-admission",
+    "qualification-source-audit",
     "ib-paper-candidate-artifact-build",
     "reliability-runtime-sanitizers (g++)",
     "reliability-runtime-sanitizers (clang++)",

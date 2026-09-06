@@ -50,13 +50,14 @@ jobs:
               ;;
           esac
 
-      - name: Verify privileged workflows and context registry as immutable data
+      - name: Verify privileged workflows, source audit and context registry as immutable data
         shell: bash
         env:
           GOVERNANCE_SHA256: 8029358e340f5ea37b024b87ca2f720a771fd6bd11ff8786495e272481c8cc69
           IB_PAPER_SHA256: 8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b
           X230_PROBE_SHA256: 0e0e5ab8fcd9748b041e8724aa8ab42412cbecd783ca8f22b106eaddbf1e2c0c
-          CONTEXTS_SHA256: 67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7
+          CONTEXTS_SHA256: 6d704de38201632181be5e652c87be06b155ba71ef53ece334e681a16ae8e98b
+          SOURCE_AUDIT_SHA256: 90066115d950c69aefbd7b46cb45365b48bf8783ae5c49efc5540e7fdadad566
         run: |
           set -euo pipefail
           export LC_ALL=C
@@ -65,6 +66,7 @@ jobs:
             .github/workflows/github-governance-qualification.yml
             .github/workflows/governance-bootstrap-admission.yml
             .github/workflows/ib-paper-qualification.yml
+            .github/workflows/qualification-source-audit.yml
             .github/workflows/self-hosted-ib-availability.yml
           )
           mapfile -d '' -t actual_workflows < <(
@@ -97,6 +99,7 @@ jobs:
                 in_on = 0
                 seen_on = 0
                 event_count = 0
+                top_count = 0
               }
               index($0, "\t") { exit 10 }
               /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
@@ -109,6 +112,7 @@ jobs:
                       key == "permissions" || key == "concurrency" ||
                       key == "jobs")) exit 12
                 if (seen_top[key]++) exit 13
+                top_count++
                 if (key == "on") {
                   if ($0 != "on:") exit 14
                   seen_on = 1
@@ -117,14 +121,17 @@ jobs:
                 next
               }
               in_on {
+                if ($0 !~ /^  /) exit 15
                 if (substr($0, 1, 2) == "  " && substr($0, 3, 1) != " ") {
-                  if ($0 != "  workflow_dispatch:") exit 15
+                  if ($0 != "  workflow_dispatch:") exit 16
                   event_count++
                 }
                 next
               }
               END {
-                if (seen_on != 1 || event_count != 1) exit 16
+                if (seen_on != 1 || event_count != 1 || top_count != 5 ||
+                    !seen_top["name"] || !seen_top["permissions"] ||
+                    !seen_top["concurrency"] || !seen_top["jobs"]) exit 17
               }
             ' "$target"; then
               echo "$target is not canonical workflow_dispatch-only YAML" >&2
@@ -132,44 +139,40 @@ jobs:
             fi
           }
 
-          verify_dispatch_workflow \
-            .github/workflows/github-governance-qualification.yml \
-            "$GOVERNANCE_SHA256"
-          verify_dispatch_workflow \
-            .github/workflows/ib-paper-qualification.yml \
-            "$IB_PAPER_SHA256"
-          verify_dispatch_workflow \
-            .github/workflows/self-hosted-ib-availability.yml \
-            "$X230_PROBE_SHA256"
-          verify_regular_file \
-            .github/required-check-contexts-v1.json \
-            "$CONTEXTS_SHA256"
+          verify_dispatch_workflow             .github/workflows/github-governance-qualification.yml             "$GOVERNANCE_SHA256"
+          verify_dispatch_workflow             .github/workflows/ib-paper-qualification.yml             "$IB_PAPER_SHA256"
+          verify_dispatch_workflow             .github/workflows/self-hosted-ib-availability.yml             "$X230_PROBE_SHA256"
+          verify_regular_file             .github/required-check-contexts-v1.json             "$CONTEXTS_SHA256"
+          verify_regular_file             .github/workflows/qualification-source-audit.yml             "$SOURCE_AUDIT_SHA256"
+          verify_regular_file             .github/workflows/governance-bootstrap-admission.yml             "$(sha256sum .github/workflows/governance-bootstrap-admission.yml | awk '{print $1}')"
+
+          source_audit=.github/workflows/qualification-source-audit.yml
+          test "$(grep -Fxc '  pull_request:' "$source_audit")" -eq 1
+          test "$(grep -Fxc '  merge_group:' "$source_audit")" -eq 1
+          test "$(grep -Fxc '  contents: read' "$source_audit")" -eq 1
+          test "$(grep -Fxc '    runs-on: ubuntu-24.04' "$source_audit")" -eq 1
+          ! grep -Fq 'pull_request_target' "$source_audit"
+          ! grep -Fq 'self-hosted' "$source_audit"
+          ! grep -Fq 'secrets.' "$source_audit"
+          ! grep -Eq '^[[:space:]]+[A-Za-z-]+:[[:space:]]*write([[:space:]]|$)' "$source_audit"
 
           governance_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.acknowledge_no_bypass == true"
           ib_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true"
           x230_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
-          test "$(grep -Fxc -- "$governance_gate" \
-            .github/workflows/github-governance-qualification.yml)" -eq 1
-          test "$(grep -Fxc -- "$ib_gate" \
-            .github/workflows/ib-paper-qualification.yml)" -eq 2
-          test "$(grep -Fxc -- "$x230_gate" \
-            .github/workflows/self-hosted-ib-availability.yml)" -eq 1
+          test "$(grep -Fxc -- "$governance_gate"             .github/workflows/github-governance-qualification.yml)" -eq 1
+          test "$(grep -Fxc -- "$ib_gate"             .github/workflows/ib-paper-qualification.yml)" -eq 2
+          test "$(grep -Fxc -- "$x230_gate"             .github/workflows/self-hosted-ib-availability.yml)" -eq 1
 
-          test "$(grep -Fc 'group: trillionnium-ib-paper' \
-            .github/workflows/ib-paper-qualification.yml)" -eq 2
-          grep -Fq 'heptatrader-ib-builder' \
-            .github/workflows/ib-paper-qualification.yml
-          grep -Fq 'heptatrader-ib-paper' \
-            .github/workflows/ib-paper-qualification.yml
-          test "$(grep -Fc 'group: trillionnium-ib-paper' \
-            .github/workflows/self-hosted-ib-availability.yml)" -eq 1
-          ! grep -Fq 'uses: actions/checkout@' \
-            .github/workflows/self-hosted-ib-availability.yml
-          ! grep -Fq 'self-hosted' \
-            .github/workflows/github-governance-qualification.yml
+          test "$(grep -Fc 'group: trillionnium-ib-paper'             .github/workflows/ib-paper-qualification.yml)" -eq 2
+          grep -Fq 'heptatrader-ib-builder'             .github/workflows/ib-paper-qualification.yml
+          grep -Fq 'heptatrader-ib-paper'             .github/workflows/ib-paper-qualification.yml
+          test "$(grep -Fc 'group: trillionnium-ib-paper'             .github/workflows/self-hosted-ib-availability.yml)" -eq 1
+          ! grep -Fq 'uses: actions/checkout@'             .github/workflows/self-hosted-ib-availability.yml
+          ! grep -Fq 'self-hosted'             .github/workflows/github-governance-qualification.yml
 
           contexts=.github/required-check-contexts-v1.json
           test "$(grep -Fcx '    "governance-bootstrap-admission",' "$contexts")" -eq 1
+          test "$(grep -Fcx '    "qualification-source-audit",' "$contexts")" -eq 1
           test "$(grep -Fcx '    "github-governance-exact-artifact-verification",' "$contexts")" -eq 1
           test "$(grep -Fcx '    "ib-paper-exact-artifact-qualification"' "$contexts")" -eq 1
           ! grep -Fq '"github-governance-workflow-bootstrap-audit"' "$contexts"
