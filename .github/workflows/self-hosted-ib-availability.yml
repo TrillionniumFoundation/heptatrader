@@ -5,7 +5,10 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/self-hosted-ib-availability.yml'
+      - '.github/workflows/governance-bootstrap-admission.yml'
+      - '.github/required-check-contexts-v1.json'
       - 'tests/python/test_self_hosted_ib_availability.py'
+      - 'tests/python/test_governance_bootstrap_admission.py'
   workflow_dispatch:
     inputs:
       reason:
@@ -26,6 +29,8 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout exact pull-request head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -38,13 +43,26 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Validate dispatch-input isolation contract
+      - name: Validate dispatch and bootstrap-admission contracts
         run: |
           set -euo pipefail
           git diff --check
           python3 -m unittest discover \
             -s tests/python \
             -p 'test_self_hosted_ib_availability.py'
+          python3 -m unittest discover \
+            -s tests/python \
+            -p 'test_governance_bootstrap_admission.py'
+      - name: Reassert immutable pull-request source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"
 
   ib-runner-probe:
     if: github.event_name == 'workflow_dispatch'
