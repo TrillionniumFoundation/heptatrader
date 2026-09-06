@@ -23,22 +23,41 @@ BOUND_FILES = {
 }
 
 
-def _block_on_events(text: str) -> list[str] | None:
+def _canonical_block_events(text: str) -> list[str] | None:
     lines = text.splitlines()
+    if any("\t" in line for line in lines):
+        return None
+
     positions = [index for index, line in enumerate(lines) if line == "on:"]
     if len(positions) != 1:
         return None
+    position = positions[0]
+
+    for index, line in enumerate(lines):
+        if index == position or not line or line[0].isspace() or ":" not in line:
+            continue
+        key = line.split(":", 1)[0].strip()
+        if (
+            len(key) >= 2
+            and key[0] in {"'", '"'}
+            and key[-1] == key[0]
+        ):
+            key = key[1:-1]
+        if key == "on":
+            return None
+
     events: list[str] = []
-    for line in lines[positions[0] + 1:]:
+    for line in lines[position + 1:]:
         if line and not line[0].isspace():
             break
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
         if (
             line.startswith("  ")
             and len(line) > 2
-            and not line[2].isspace()
-            and ":" in line
+            and line[2] != " "
         ):
-            events.append(line[2:].split(":", 1)[0])
+            events.append(line)
     return events
 
 
@@ -100,6 +119,7 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
 
     def test_all_governed_files_are_exact_digest_bound(self) -> None:
         import re
+
         embedded = set(
             re.findall(
                 r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
@@ -118,22 +138,38 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
                 self.assertIn(path.name, self.workflow)
 
     def test_privileged_workflows_are_dispatch_only(self) -> None:
-        self.assertIn('test "$events" = workflow_dispatch', self.workflow)
-        self.assertIn('test "$(grep -Fxc \'on:\' "$target")" -eq 1', self.workflow)
+        self.assertIn('normalized == "on"', self.workflow)
+        self.assertIn('index($0, "\\t")', self.workflow)
+        self.assertIn('if ($0 != "  workflow_dispatch:")', self.workflow)
+        self.assertIn("is not canonical workflow_dispatch-only YAML", self.workflow)
+
         for path, text in self.targets.items():
             with self.subTest(path=path):
-                self.assertEqual(_block_on_events(text), ["workflow_dispatch"])
+                self.assertEqual(
+                    _canonical_block_events(text),
+                    ["  workflow_dispatch:"],
+                )
 
         hostile = (
             "on: [pull_request]\n",
             "on: {'pull_request': {}}\n",
             'on: {"workflow_call": {}}\n',
             "on:\n  workflow_dispatch:\n  push:\n",
+            "on:\n  workflow_dispatch:\n  'pull_request': {}\n",
+            'on:\n  workflow_dispatch:\n  "workflow_call": {}\n',
+            "on:\n  workflow_dispatch:\n  <<: *events\n",
+            "on:\n  workflow_dispatch:\n'on': [pull_request]\n",
+            'on:\n  workflow_dispatch:\n"on": [push]\n',
+            "on:\n  workflow_dispatch:\non : [schedule]\n",
             "'on':\n  workflow_dispatch:\n",
+            "on:\n\tworkflow_dispatch:\n",
         )
         for text in hostile:
             with self.subTest(text=text):
-                self.assertNotEqual(_block_on_events(text), ["workflow_dispatch"])
+                self.assertNotEqual(
+                    _canonical_block_events(text),
+                    ["  workflow_dispatch:"],
+                )
 
     def test_runner_selection_is_group_and_role_bound(self) -> None:
         ib = self.targets[ROOT / ".github" / "workflows" / "ib-paper-qualification.yml"]
