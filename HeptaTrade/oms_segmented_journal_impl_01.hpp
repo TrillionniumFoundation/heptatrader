@@ -8,13 +8,8 @@ bool ObserveJournal(const OmsJournal& journal, std::size_t& onDiskBytes,
                     std::size_t& retainedBytes)
 {
     const OmsJournalHealthSnapshot health = journal.GetHealthSnapshot();
-    if (health.writePoisoned) return false;
-    const std::string path = journal.GetPath();
-    struct stat metadata;
-    if (path.empty() || ::lstat(path.c_str(), &metadata) != 0 ||
-        !HasPrivateRegularFileMetadata(metadata) || metadata.st_size < 0)
-        return false;
-    onDiskBytes = static_cast<std::size_t>(metadata.st_size);
+    if (health.writePoisoned || !health.onDiskBytesValid) return false;
+    onDiskBytes = health.onDiskBytes;
     retainedBytes = health.retainedBytes;
     return true;
 }
