@@ -18,8 +18,6 @@ jobs:
     name: governance-bootstrap-admission
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout exact event subject without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -52,16 +50,13 @@ jobs:
               ;;
           esac
 
-      - name: Validate bounded bootstrap admission contract
+      - name: Validate bounded event subject without candidate execution
         shell: bash
         run: |
           set -euo pipefail
           git diff --check
           test -z "$(git ls-files --unmerged)"
-          python3 -m unittest discover \
-            -s tests/python \
-            -p 'test_governance_bootstrap_admission.py'
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"
 
       - name: Reassert immutable event subject
         if: always()
@@ -73,4 +68,4 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --exit-code -- .
           git diff --cached --exit-code -- .
-          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"
