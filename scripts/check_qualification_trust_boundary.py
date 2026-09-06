@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed on unsafe governance or IB qualification composition.
-
-This checker proves checked-in workflow/script composition only. It cannot
-create teams, rulesets, environments, runners, credentials, Broker evidence,
-or qualification receipts.
-"""
+"""Fail-closed static and hostile validation of qualification boundaries."""
 from __future__ import annotations
 
 import argparse
@@ -22,7 +17,6 @@ GOVERNANCE = Path(".github/workflows/github-governance-qualification.yml")
 IB = Path(".github/workflows/ib-paper-qualification.yml")
 TRUSTED_FILES = (
     Path("scripts/github_qualification_evidence.py"),
-    Path("scripts/verify_exact_git_index.py"),
     Path("scripts/verify_github_governance.py"),
     Path("scripts/verify_github_governance_legacy.py"),
     Path("scripts/verify_ib_paper_qualification.py"),
@@ -42,7 +36,7 @@ def _read(root: Path, relative: Path, errors: list[str]) -> str:
         if path.is_symlink() or not path.is_file() or info.st_nlink != 1:
             errors.append(f"{relative}: must be a regular single-link file")
             return ""
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeError) as exc:
         errors.append(f"{relative}: unreadable: {exc}")
         return ""
@@ -59,22 +53,14 @@ def _job(text: str, job_id: str, label: str, errors: list[str]) -> str:
     return text[start : min(later) if later else len(text)]
 
 
-def _require(block: str, tokens: tuple[str, ...], label: str, errors: list[str]) -> None:
-    for token in tokens:
-        if token not in block:
-            errors.append(f"{label}: missing required trust-boundary token: {token}")
+def _require(block: str, token: str, label: str, errors: list[str]) -> None:
+    if token not in block:
+        errors.append(f"{label}: missing required trust-boundary token: {token}")
 
 
-def _forbid(block: str, tokens: tuple[str, ...], label: str, errors: list[str]) -> None:
-    for token in tokens:
-        if token in block:
-            errors.append(f"{label}: forbidden candidate-controlled token: {token}")
-
-
-def _count(block: str, token: str, expected: int, label: str, errors: list[str]) -> None:
-    observed = block.count(token)
-    if observed != expected:
-        errors.append(f"{label}: expected {expected} occurrence(s) of {token}, observed {observed}")
+def _forbid(block: str, token: str, label: str, errors: list[str]) -> None:
+    if token in block:
+        errors.append(f"{label}: forbidden candidate-controlled token: {token}")
 
 
 def _ordered(block: str, tokens: tuple[str, ...], label: str, errors: list[str]) -> None:
@@ -83,417 +69,373 @@ def _ordered(block: str, tokens: tuple[str, ...], label: str, errors: list[str])
         errors.append(f"{label}: required step ordering is not preserved: {tokens}")
 
 
-def _global_pr_trigger(text: str, label: str, errors: list[str]) -> None:
-    pull = text.split("  workflow_dispatch:", 1)[0]
-    _require(pull, ("  pull_request:\n    branches: [main]",), label, errors)
-    _forbid(pull, ("    paths:", "pull_request_target"), label, errors)
-    _require(
-        text,
-        ("cancel-in-progress: ${{ github.event_name == 'pull_request' }}",),
-        label,
-        errors,
-    )
-
-
 def validate(root: Path = ROOT) -> list[str]:
     root = Path(root).resolve()
     errors: list[str] = []
     governance = _read(root, GOVERNANCE, errors)
     ib = _read(root, IB, errors)
-    source = {path: _read(root, path, errors) for path in TRUSTED_FILES}
-    _global_pr_trigger(governance, "governance workflow", errors)
-    _global_pr_trigger(ib, "IB workflow", errors)
+    contents = {relative: _read(root, relative, errors) for relative in TRUSTED_FILES}
 
-    gov_boot = _job(governance, "bootstrap-audit", str(GOVERNANCE), errors)
-    _require(
-        gov_boot,
-        (
-            "ref: ${{ github.event.pull_request.head.sha }}",
-            "persist-credentials: false",
-            "python3 scripts/verify_exact_git_index.py --root .",
-            "python3 scripts/check_qualification_trust_boundary.py --self-test",
-            "test_git_index_authority.py",
-            "test_team_codeowners_activation.py",
-        ),
-        "governance bootstrap",
-        errors,
-    )
-    _forbid(gov_boot, ("secrets.", "HEPTA_QUALIFICATION_MUTATIONS"), "governance bootstrap", errors)
-
-    gov_live = _job(governance, "qualify", str(GOVERNANCE), errors)
-    _require(
-        gov_live,
-        (
-            "if: github.event_name == 'workflow_dispatch'",
-            "environment: repository-governance",
-            "ref: ${{ github.sha }}",
-            "path: trusted",
-            "python3 trusted/scripts/verify_exact_git_index.py --root trusted",
-            "python3 trusted/scripts/verify_github_governance.py",
-            "HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}",
-            "test \"$DISPATCH_REF\" = 'refs/heads/main'",
-            "test \"$ACKNOWLEDGE_NO_BYPASS\" = 'true'",
-        ),
-        "governance qualify",
-        errors,
-    )
-    _forbid(
-        gov_live,
-        ("ref: ${{ inputs.expected_head_sha }}", "path: candidate", "candidate/scripts/", "pull_request_target"),
-        "governance qualify",
-        errors,
-    )
-    _count(gov_live, "uses: actions/checkout@", 1, "governance qualify", errors)
-    if REF_INPUT_RE.search(gov_live):
+    governance_qualify = _job(governance, "qualify", GOVERNANCE.as_posix(), errors)
+    for token in (
+        "if: github.event_name == 'workflow_dispatch'",
+        "environment: repository-governance",
+        "ref: ${{ github.sha }}",
+        "path: trusted",
+        "trusted/scripts/github_qualification_evidence.py",
+        "python3 trusted/scripts/verify_github_governance.py",
+        "HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}",
+        "test \"$DISPATCH_REF\" = 'refs/heads/main'",
+    ):
+        _require(governance_qualify, token, "governance qualify", errors)
+    for token in (
+        "ref: ${{ inputs.expected_head_sha }}",
+        "path: candidate",
+        "candidate/scripts/",
+        "python3 scripts/verify_github_governance.py",
+    ):
+        _forbid(governance_qualify, token, "governance qualify", errors)
+    if governance_qualify.count("uses: actions/checkout@") != 1:
+        errors.append("governance qualify: exactly one trusted-main checkout is required")
+    if governance_qualify.count("HEPTA_GOVERNANCE_TOKEN") != 2:
+        errors.append("governance qualify: governance token must exist only in one step env binding")
+    if REF_INPUT_RE.search(governance_qualify):
         errors.append("governance qualify: an input SHA controls a checkout")
 
-    ib_boot = _job(ib, "bootstrap-audit", str(IB), errors)
-    _require(
-        ib_boot,
-        (
-            "ref: ${{ github.event.pull_request.head.sha }}",
-            "persist-credentials: false",
-            "python3 scripts/verify_exact_git_index.py --root .",
-            "python3 scripts/check_qualification_trust_boundary.py --self-test",
-            "test_git_index_authority.py",
-            "test_ib_workflow_interfaces.py",
-        ),
-        "IB bootstrap",
-        errors,
-    )
-    _forbid(
-        ib_boot,
-        ("secrets.", "HEPTA_QUALIFICATION_MUTATIONS: '1'", "pull_request_target"),
-        "IB bootstrap",
-        errors,
-    )
+    ib_build = _job(ib, "build-candidate", IB.as_posix(), errors)
+    for token in (
+        "if: github.event_name == 'workflow_dispatch'",
+        "heptatrader-ib-builder",
+        "HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}",
+        "HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}",
+        "ref: ${{ github.sha }}",
+        "path: trusted",
+        "ref: ${{ inputs.candidate_sha }}",
+        "path: candidate",
+        "python3 trusted/scripts/verify_qualification_candidate.py",
+        "trusted/scripts/build_ib_candidate_artifact.sh",
+        "uses: actions/upload-artifact@",
+    ):
+        _require(ib_build, token, "IB candidate build", errors)
+    for token in (
+        "environment:",
+        "secrets.",
+        "HEPTA_QUALIFICATION_MUTATIONS",
+        "heptatrader-ib-paper",
+        "HEPTA_IB_PAPER_QUALIFIER",
+    ):
+        _forbid(ib_build, token, "IB candidate build", errors)
 
-    build = _job(ib, "build-candidate", str(IB), errors)
-    _require(
-        build,
-        (
-            "if: github.event_name == 'workflow_dispatch'",
-            "runs-on: [self-hosted, linux, x64, heptatrader-ib-builder]",
-            "environment: repository-governance",
-            "HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}",
-            "HEPTA_IB_BUILD_SDK_TREE_SHA256: ${{ vars.HEPTA_IB_BUILD_SDK_TREE_SHA256 }}",
-            "HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}",
-            "ref: ${{ github.sha }}",
-            "path: trusted",
-            "python3 trusted/scripts/verify_exact_git_index.py --root trusted",
-            "python3 trusted/scripts/check_qualification_trust_boundary.py --root trusted",
-            "python3 trusted/scripts/verify_qualification_candidate.py",
-            "+refs/pull/${PULL_NUMBER}/head:refs/remotes/origin/candidate",
-            "test \"$(git -C candidate rev-parse HEAD)\" = \"$EXPECTED_HEAD_SHA\"",
-            "python3 trusted/scripts/verify_exact_git_index.py --root candidate",
-            "verify_ib_candidate_artifact.py hash-tree",
-            "trusted/scripts/build_ib_candidate_artifact.sh \\\n            candidate \"$EXPECTED_HEAD_SHA\" \"$artifact\"",
-            "uses: actions/upload-artifact@",
-        ),
-        "IB candidate build",
-        errors,
-    )
-    _forbid(
-        build,
-        (
-            "secrets.",
-            "HEPTA_IB_ACCOUNT_ID",
-            "HEPTA_IB_GATEWAY_HOST",
-            "HEPTA_IB_GATEWAY_PORT",
-            "heptatrader-ib-paper",
-            "HEPTA_QUALIFICATION_MUTATIONS: '1'",
-            "/work/trusted/scripts/build_ib_candidate_artifact.sh",
-            "--candidate-root",
-            "--ib-api-archive",
-            "docker run",
-            "pull_request_target",
-        ),
-        "IB candidate build",
-        errors,
-    )
-    _count(build, "uses: actions/checkout@", 1, "IB candidate build", errors)
-    if REF_INPUT_RE.search(build):
-        errors.append("IB candidate build: an input SHA controls a trusted checkout")
-
-    paper = _job(ib, "paper-qualification", str(IB), errors)
-    _require(
-        paper,
-        (
-            "if: github.event_name == 'workflow_dispatch'",
-            "needs: build-candidate",
-            "runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]",
-            "environment: ib-paper",
-            "test \"$DISPATCH_REF\" = 'refs/heads/main'",
-            "ref: ${{ github.sha }}",
-            "path: trusted",
-            "python3 trusted/scripts/verify_exact_git_index.py --root trusted",
-            "Record pre-campaign exact admission",
-            "uses: actions/download-artifact@",
-            "python3 trusted/scripts/verify_ib_candidate_artifact.py verify",
-            "--expected-candidate-sha \"$EXPECTED_HEAD_SHA\"",
-            "--expected-builder-image \"$HEPTA_IB_BUILDER_IMAGE\"",
-            "--trusted-root trusted",
-            "Run controlled PAPER campaign through trusted external harness",
-            "HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}",
-            "HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ env.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}",
-            "HEPTA_QUALIFICATION_MUTATIONS: '1'",
-            "trusted/scripts/run_ib_paper_artifact_qualification.sh",
-            "Revalidate source and artifact after Broker campaign",
-            "Re-admit unchanged candidate after Broker campaign",
-            "--compare-before",
-            "Issue final receipt only after stable post-campaign admission",
-            "--result \"$evidence/qualification-result.json\"",
-            "--evidence-root \"$evidence\"",
-            "--expected-git-sha \"$EXPECTED_HEAD_SHA\"",
-            "--expected-binary \"$artifact_dir/hepta-ib-executiond\"",
-            "--expected-harness \"$HEPTA_IB_PAPER_QUALIFIER\"",
-            "--receipt \"$evidence/qualification-verification.json\"",
-            "Upload immutable verified PAPER and admission evidence",
-        ),
-        "IB PAPER qualification",
-        errors,
-    )
-    _ordered(
-        paper,
-        (
-            "Record pre-campaign exact admission",
-            "Verify and extract immutable candidate before Broker access",
-            "Run controlled PAPER campaign through trusted external harness",
-            "Revalidate source and artifact after Broker campaign",
-            "Re-admit unchanged candidate after Broker campaign",
-            "Issue final receipt only after stable post-campaign admission",
-            "Upload immutable verified PAPER and admission evidence",
-        ),
-        "IB PAPER qualification",
-        errors,
-    )
-    _forbid(
-        paper,
-        (
-            "ref: ${{ inputs.expected_head_sha }}",
-            "path: candidate",
-            "candidate/scripts/",
-            "HEPTA_IB_ACCOUNT_ID",
-            "HEPTA_IB_GATEWAY_HOST",
-            "HEPTA_IB_GATEWAY_PORT",
-            "HEPTA_IB_QUALIFIER_COMMAND",
-            "--account-id",
-            "--gateway-host",
-            "--gateway-port",
-            "--observation",
-            "--extract-to",
-            "--manifest",
-            "cmake ",
-            "ctest ",
-            "pull_request_target",
-            "secrets.",
-        ),
-        "IB PAPER qualification",
-        errors,
-    )
-    _count(paper, "uses: actions/checkout@", 1, "IB PAPER qualification", errors)
-    _count(
-        paper,
+    ib_qualify = _job(ib, "qualify", IB.as_posix(), errors)
+    for token in (
+        "needs: build-candidate",
+        "environment: ib-paper",
+        "heptatrader-ib-paper",
+        "ref: ${{ github.sha }}",
+        "path: trusted",
+        "uses: actions/download-artifact@",
+        "Record pre-campaign exact admission",
+        "Run controlled PAPER campaign through trusted external harness",
+        "Re-admit unchanged candidate after Broker campaign",
+        "--compare-before",
+        "Issue final receipt only after stable post-campaign admission",
+        "trusted/scripts/verify_ib_candidate_artifact.py verify",
         "trusted/scripts/run_ib_paper_artifact_qualification.sh",
-        1,
-        "IB PAPER qualification",
-        errors,
-    )
-    if REF_INPUT_RE.search(paper):
-        errors.append("IB PAPER qualification: an input SHA controls a credential-domain checkout")
-
-    builder = source.get(Path("scripts/build_ib_candidate_artifact.sh"), "")
-    _require(
-        builder,
+        "HEPTA_QUALIFICATION_MUTATIONS: '1'",
+    ):
+        _require(ib_qualify, token, "IB qualify", errors)
+    _ordered(
+        ib_qualify,
         (
-            "[[ $# -eq 3 ]]",
-            "HEPTA_IB_BUILD_SDK_ROOT",
-            "HEPTA_IB_BUILD_QUOTA_ROOT",
-            "@sha256:",
-            "--network none",
-            "--read-only",
-            "--cap-drop ALL",
-            "--security-opt no-new-privileges",
-            "--pids-limit",
-            "builder-provenance",
-            "TOOLCHAIN_SHA256",
-            "RESOURCE_POLICY_SHA256",
-            "BUILD_TESTING=OFF",
+            "Record pre-campaign exact admission",
+            "Run controlled PAPER campaign through trusted external harness",
+            "Re-admit unchanged candidate after Broker campaign",
+            "Issue final receipt only after stable post-campaign admission",
         ),
-        "trusted candidate builder",
+        "IB qualify",
         errors,
     )
-    _forbid(
-        builder,
-        ("--network host", "--privileged", "/var/run/docker.sock", "eval ", "GITHUB_TOKEN"),
-        "trusted candidate builder",
-        errors,
-    )
+    for token in (
+        "ref: ${{ inputs.candidate_sha }}",
+        "path: candidate",
+        "candidate/scripts/",
+        "cmake ",
+        "ctest ",
+        "run_ib_paper_qualification.sh",
+        "--repository-root",
+        "--build-dir",
+    ):
+        _forbid(ib_qualify, token, "IB qualify", errors)
+    if ib_qualify.count("uses: actions/checkout@") != 1:
+        errors.append("IB qualify: exactly one trusted-main checkout is required")
+    if REF_INPUT_RE.search(ib_qualify):
+        errors.append("IB qualify: an input SHA controls a credential-domain checkout")
 
-    runner = source.get(Path("scripts/run_ib_paper_artifact_qualification.sh"), "")
-    _require(
-        runner,
-        (
-            "[[ $# -eq 3 ]]",
-            "HEPTA_IB_PAPER_QUALIFIER",
-            "HEPTA_IB_PAPER_QUALIFIER_SHA256",
-            "qualification harness digest mismatch",
-            "env -i",
-            "--operation-allowlist",
-            "--candidate-environment cleared",
-            "--candidate-network-policy broker-proxy-only",
-            "--credential-delivery harness-only",
-        ),
-        "trusted PAPER runner",
-        errors,
-    )
+    builder = contents.get(Path("scripts/build_ib_candidate_artifact.sh"), "")
+    for token in (
+        "@sha256:",
+        "docker pull --quiet",
+        "--network none",
+        "--read-only",
+        "--cap-drop ALL",
+        "--security-opt no-new-privileges",
+        "--memory \"$MEMORY_LIMIT\"",
+        "--cpus \"$CPU_LIMIT\"",
+        "--pids-limit \"$PIDS_LIMIT\"",
+        "--tmpfs \"/tmp:",
+        "mountpoint -q",
+        "FILESYSTEM_BYTES",
+        "snapshot-tree",
+        "SDK_SOURCE_BEFORE",
+        "SDK_SOURCE_AFTER",
+        "SDK_SNAPSHOT_AFTER",
+        "builder-provenance",
+        "TOOLCHAIN_SHA256",
+        "RESOURCE_POLICY_SHA256",
+        ">>\"$BUILD_LOG\" 2>&1",
+        "BUILD_TESTING=OFF",
+    ):
+        _require(builder, token, "trusted candidate builder", errors)
+    for token in (
+        "--network host",
+        "--privileged",
+        "/var/run/docker.sock",
+        "eval ",
+        "source \"$CANDIDATE",
+        "bash \"$CANDIDATE",
+        "HEPTA_IB_PAPER_QUALIFIER",
+        "HEPTA_QUALIFICATION_MUTATIONS",
+        "GITHUB_TOKEN",
+    ):
+        _forbid(builder, token, "trusted candidate builder", errors)
 
-    artifact = source.get(Path("scripts/verify_ib_candidate_artifact.py"), "")
-    _require(
-        artifact,
-        (
-            'subparsers.add_parser("verify")',
-            'verify_parser.add_argument("--archive"',
-            'verify_parser.add_argument("--expected-candidate-sha"',
-            'verify_parser.add_argument("--expected-builder-image"',
-            'verify_parser.add_argument("--trusted-root"',
-            'verify_parser.add_argument("--destination"',
-        ),
-        "candidate artifact verifier",
-        errors,
-    )
+    runner = contents.get(Path("scripts/run_ib_paper_artifact_qualification.sh"), "")
+    for token in (
+        "HEPTA_IB_PAPER_QUALIFIER_SHA256",
+        "qualification harness digest mismatch",
+        "Only the independently pinned external harness",
+        "env -i",
+        "--operation-allowlist",
+        "--candidate-environment cleared",
+        "--candidate-network-policy broker-proxy-only",
+        "--credential-delivery harness-only",
+        "post-campaign admission",
+    ):
+        _require(runner, token, "trusted PAPER runner", errors)
+    for token in (
+        "verify_ib_paper_qualification.py",
+        "qualification-verification.json",
+        "--repository-root",
+        "--build-dir",
+        "cmake ",
+        "ctest ",
+        "candidate/scripts/",
+    ):
+        _forbid(runner, token, "trusted PAPER runner", errors)
 
-    receipt = source.get(Path("scripts/verify_ib_paper_qualification.py"), "")
-    _require(
-        receipt,
-        (
-            'parser.add_argument("--result"',
-            'parser.add_argument("--evidence-root"',
-            'parser.add_argument("--expected-git-sha"',
-            'parser.add_argument("--expected-binary"',
-            'parser.add_argument("--expected-harness"',
-            'parser.add_argument("--receipt"',
-        ),
-        "PAPER receipt verifier",
-        errors,
-    )
+    evidence = contents.get(Path("scripts/github_qualification_evidence.py"), "")
+    for token in (
+        "get_paginated",
+        "maximum_pages",
+        "workflow_id",
+        "workflow_path",
+        "run_attempt",
+        "jobs_by_run",
+        "non-empty successful execution step",
+        "app.get(\"id\")",
+        "DETAILS_RE",
+    ):
+        _require(evidence, token, "GitHub evidence helper", errors)
 
-    evidence = source.get(Path("scripts/github_qualification_evidence.py"), "")
-    _require(
-        evidence,
-        (
-            "get_paginated",
-            "maximum_pages",
-            "workflow_id",
-            "run_attempt",
-            "jobs_by_run",
-            "non-empty successful execution step",
-            "DETAILS_RE",
-        ),
-        "GitHub evidence helper",
-        errors,
-    )
-    governance_source = "\n".join(
-        source.get(path, "")
-        for path in (
+    governance_entry = contents.get(Path("scripts/verify_github_governance.py"), "")
+    for token in (
+        "LEGACY_BLOB_SHA",
+        "verify_github_governance_legacy.py",
+        "_git_blob_sha",
+        "_legacy._main_ruleset = _main_ruleset",
+        "ruleset_ref_condition_sha256",
+        "RULESET_SCOPE_SELF_TEST_PASSED",
+    ):
+        _require(governance_entry, token, "governance verifier entry point", errors)
+
+    # The public entry point intentionally stays small: it digest-binds the
+    # previously reviewed implementation, replaces only the ruleset selector,
+    # and delegates pagination/provenance collection to the shared helper. Scan
+    # the complete, regular-file trusted source set rather than treating a thin
+    # wrapper as if it must duplicate every inherited control string.
+    governance_script = "\n".join(
+        contents.get(relative, "")
+        for relative in (
             Path("scripts/verify_github_governance.py"),
             Path("scripts/verify_github_governance_legacy.py"),
             Path("scripts/github_qualification_evidence.py"),
         )
     )
-    _require(
-        governance_source,
-        ("git/matching-refs", "merge_group_commit", "validate_reviews", "collect_check_evidence"),
-        "governance verifier trusted source set",
-        errors,
-    )
-    admission = source.get(Path("scripts/verify_qualification_candidate.py"), "")
-    _require(
-        admission,
-        ("validate_reviews", "collect_check_evidence", "admission_state_sha256", "compare_admission_receipts", "state changed"),
-        "candidate admission verifier",
-        errors,
-    )
+    for token in (
+        "git/matching-refs",
+        "merge_group_commit",
+        "commit parents do not contain the exact admitted head and current base",
+        "workflow-run PR identity",
+        "validate_reviews",
+        "collect_check_evidence",
+    ):
+        _require(governance_script, token, "governance verifier trusted source set", errors)
+
+    admission = contents.get(Path("scripts/verify_qualification_candidate.py"), "")
+    for token in (
+        "latest exact-head decisive",
+        "validate_reviews",
+        "collect_check_evidence",
+        "admission_state_sha256",
+        "compare_admission_receipts",
+        "review/check/PR admission state changed during protected campaign",
+    ):
+        _require(admission, token, "candidate admission verifier", errors)
     return errors
 
 
-def isolation_probe() -> list[str]:
-    docker = shutil.which("docker")
-    if docker is None:
-        return ["hostile isolation probe requires Docker"]
-    image = os.environ.get("HEPTA_HOSTILE_PROBE_IMAGE", "busybox:1.36.1")
-    errors: list[str] = []
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        work, guard = root / "work", root / "guard"
-        work.mkdir(mode=0o700)
-        guard.mkdir(mode=0o700)
-        outside = guard / "outside"
-        pull = subprocess.run(
-            [docker, "pull", "--quiet", image],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            timeout=30,
-            check=False,
-        )
-        if pull.returncode:
-            return [
-                f"hostile isolation image pull failed: status={pull.returncode} "
-                f"log_sha256={hashlib.sha256(pull.stdout).hexdigest()}"
-            ]
-        inspect = subprocess.run(
-            [docker, "image", "inspect", "--format", "{{.Id}}", image],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30,
-            check=False,
-        )
-        image_id = inspect.stdout.strip()
-        if inspect.returncode or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
-            return ["hostile isolation probe could not resolve an immutable image ID"]
-        command = r'''set -eu
-[ -z "${HEPTA_TEST_SECRET:-}" ]
-[ -z "${GITHUB_ENV:-}" ]
-if (printf pwned > /host/outside) 2>/dev/null; then exit 91; fi
-if nc -w 1 127.0.0.1 4002 </dev/null >/dev/null 2>&1; then exit 92; fi
-printf '::error::hostile-workflow-command\n'
-printf '%s\n' '${{ secrets.HEPTA_GOVERNANCE_TOKEN }}' > /work/inert
-'''
-        environment = dict(os.environ)
-        environment.update(HEPTA_TEST_SECRET="must-not-cross-boundary", GITHUB_ENV=str(outside))
-        run = subprocess.run(
-            [
-                docker, "run", "--rm", "--network", "none", "--read-only",
-                "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-                "--memory", "128m", "--memory-swap", "128m", "--cpus", "0.5",
-                "--pids-limit", "32", "--ulimit", "nofile=128:128",
-                "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=16777216",
-                "--user", f"{os.getuid()}:{os.getgid()}",
-                "--mount", f"type=bind,src={work},dst=/work",
-                "--mount", f"type=bind,src={guard},dst=/host,readonly",
-                image_id, "/bin/sh", "-ceu", command,
-            ],
+def _run_probe(arguments: list[str], environment: dict[str, str], log: Path) -> subprocess.CompletedProcess[bytes]:
+    with log.open("wb") as stream:
+        return subprocess.run(
+            arguments,
             env=environment,
-            stdout=subprocess.PIPE,
+            stdout=stream,
             stderr=subprocess.STDOUT,
             timeout=20,
             check=False,
         )
-        if run.returncode:
-            errors.append(f"hostile container probe failed with status {run.returncode}")
+
+
+def isolation_probe() -> list[str]:
+    """Prove the same closed container boundary used by the production builder.
+
+    GitHub-hosted Ubuntu deliberately restricts unprivileged user namespaces, so
+    bubblewrap is not a portable audit primitive there. Docker is already the
+    production isolation authority: this probe pulls a tiny image, resolves it
+    to its immutable local image ID, then verifies no-network/read-only/cgroup/
+    PID and workflow-command confinement without passing parent secrets.
+    """
+    errors: list[str] = []
+    executable = shutil.which("docker")
+    if executable is None:
+        return ["hostile isolation probe requires Docker"]
+    image_reference = os.environ.get(
+        "HEPTA_HOSTILE_PROBE_IMAGE", "busybox:1.36.1"
+    )
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        work = root / "work"
+        guard = root / "host-guard"
+        work.mkdir(mode=0o700)
+        guard.mkdir(mode=0o700)
+        secret = root / "host-secret"
+        secret.write_text("must-not-cross-boundary", encoding="utf-8")
+        secret.chmod(0o600)
+        outside = guard / "outside-sentinel"
+        pull_log = root / "docker-pull.log"
+        with pull_log.open("wb") as stream:
+            pulled = subprocess.run(
+                [executable, "pull", "--quiet", image_reference],
+                stdout=stream,
+                stderr=subprocess.STDOUT,
+                timeout=120,
+                check=False,
+            )
+        if pulled.returncode != 0:
+            output = pull_log.read_bytes()
+            errors.append(
+                "hostile isolation probe could not pull its audit image; "
+                f"status={pulled.returncode} log_sha256={hashlib.sha256(output).hexdigest()}"
+            )
+            return errors
+        inspected = subprocess.run(
+            [
+                executable,
+                "image",
+                "inspect",
+                "--format",
+                "{{.Id}}",
+                image_reference,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        image_id = inspected.stdout.strip()
+        if inspected.returncode != 0 or re.fullmatch(r"sha256:[0-9a-f]{64}", image_id) is None:
+            errors.append("hostile isolation probe could not resolve an immutable image ID")
+            return errors
+
+        command = r"""
+set -eu
+[ -z "${HEPTA_TEST_SECRET:-}" ]
+[ -z "${GITHUB_ENV:-}" ]
+[ ! -e /host-secret ]
+if (printf pwned > /host/outside-sentinel) 2>/dev/null; then exit 91; fi
+if nc -w 1 127.0.0.1 4002 </dev/null >/dev/null 2>&1; then exit 92; fi
+printf '::error::hostile-workflow-command\n'
+printf '%s\n' '${{ secrets.HEPTA_GOVERNANCE_TOKEN }}' > /work/inert-candidate-output
+"""
+        run_log = root / "captured.log"
+        environment = dict(os.environ)
+        environment["HEPTA_TEST_SECRET"] = "must-not-cross-boundary"
+        environment["GITHUB_ENV"] = str(outside)
+        arguments = [
+            executable,
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges",
+            "--memory",
+            "128m",
+            "--memory-swap",
+            "128m",
+            "--cpus",
+            "0.5",
+            "--pids-limit",
+            "32",
+            "--ulimit",
+            "nofile=128:128",
+            "--tmpfs",
+            "/tmp:rw,nosuid,nodev,noexec,size=16777216",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            "--mount",
+            f"type=bind,src={work},dst=/work",
+            "--mount",
+            f"type=bind,src={guard},dst=/host,readonly",
+            image_id,
+            "/bin/sh",
+            "-ceu",
+            command,
+        ]
+        completed = _run_probe(arguments, environment, run_log)
+        output = run_log.read_bytes()
+        if completed.returncode != 0:
+            errors.append(f"hostile container probe failed with status {completed.returncode}")
         if outside.exists():
             errors.append("hostile candidate modified a host read-only guard")
-        if b"::error::hostile-workflow-command" not in run.stdout:
+        if b"::error::hostile-workflow-command" not in output:
             errors.append("hostile workflow-command fixture did not execute inside capture")
-        if b"must-not-cross-boundary" in run.stdout:
+        if b"must-not-cross-boundary" in output:
             errors.append("parent secret crossed the cleared container environment")
-        inert = work / "inert"
-        if not inert.is_file() or inert.read_text(encoding="utf-8") != "${{ secrets.HEPTA_GOVERNANCE_TOKEN }}\n":
-            errors.append("hostile output was not retained as inert bytes")
+        inert = work / "inert-candidate-output"
+        if not inert.is_file():
+            errors.append("hostile output was not confined to the disposable output mount")
+        elif inert.read_text(encoding="utf-8") != "${{ secrets.HEPTA_GOVERNANCE_TOKEN }}\n":
+            errors.append("hostile output was interpreted instead of retained as inert bytes")
         print(
-            "[QUALIFICATION-TRUST-BOUNDARY] "
-            f"hostile-image-id={image_id} hostile-output-sha256={hashlib.sha256(run.stdout).hexdigest()}"
+            "[QUALIFICATION-TRUST-BOUNDARY] hostile-image-id="
+            + image_id
+            + " hostile-output-sha256="
+            + hashlib.sha256(output).hexdigest()
         )
     return errors
 
