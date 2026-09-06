@@ -1,0 +1,78 @@
+name: IB Protected Environment Readback
+
+on:
+  push:
+    branches:
+      - codex/ib-protected-environment-readback-20260906
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-ib-protected-environment-readback
+  cancel-in-progress: false
+
+jobs:
+  readback:
+    name: ib-protected-environment-readback
+    runs-on: ubuntu-24.04
+    environment: ib-paper
+    timeout-minutes: 10
+    env:
+      HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
+      HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
+      HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
+      HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
+      HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
+    steps:
+      - name: Collect presence-only environment receipt
+        run: |
+          set -euo pipefail
+          receipt="$RUNNER_TEMP/ib-protected-environment-readback.json"
+          python3 - <<'PY' > "$receipt"
+          import json
+          import os
+
+          names = (
+              "HEPTA_IB_BUILD_SDK_ROOT",
+              "HEPTA_IB_BUILD_QUOTA_ROOT",
+              "HEPTA_IB_BUILDER_IMAGE",
+              "HEPTA_IB_PAPER_QUALIFIER",
+              "HEPTA_IB_PAPER_QUALIFIER_SHA256",
+          )
+          value = {
+              "schema": "heptatrader.ib-protected-environment-readback.v1",
+              "environment": "ib-paper",
+              "trigger_sha": os.environ.get("GITHUB_SHA", ""),
+              "runner": {
+                  "os": os.environ.get("RUNNER_OS", ""),
+                  "arch": os.environ.get("RUNNER_ARCH", ""),
+              },
+              "variables_present": {name: bool(os.environ.get(name, "")) for name in names},
+          }
+          print(json.dumps(value, sort_keys=True, separators=(",", ":")))
+          PY
+          chmod 0600 "$receipt"
+
+      - name: Upload sanitized environment receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ib-protected-environment-readback-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ib-protected-environment-readback.json
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Require complete declared environment metadata
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ["RUNNER_TEMP"]) / "ib-protected-environment-readback.json"
+          value = json.loads(path.read_text(encoding="utf-8"))
+          missing = sorted(name for name, present in value["variables_present"].items() if not present)
+          if missing:
+              raise SystemExit("missing declared ib-paper variables: " + ",".join(missing))
+          PY
