@@ -62,45 +62,45 @@ replace_once(
     'postflight hostile self-test',
 )
 postflight = r'''      - name: Reassert immutable exact source after candidate-controlled validation
-      if: always()
-      env:
-        BASH_ENV: /dev/null
-        ENV: /dev/null
-        EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        EXPECTED_TREE_SHA: ${{ steps.exact_source.outputs.head_tree }}
-        EXPECTED_VERIFIER_SHA256: ${{ steps.exact_source.outputs.verifier_sha256 }}
-        LD_LIBRARY_PATH: ''
-        LD_PRELOAD: ''
-        PATH: /usr/bin:/bin
-        POSTFLIGHT_VERIFIER: ${{ runner.temp }}/ib-paper-exact-index-postflight.py
-        PYTHONHOME: ''
-        PYTHONPATH: ''
-      run: |
-        set -euo pipefail
-        test -n "$EXPECTED_TREE_SHA"
-        test -n "$EXPECTED_VERIFIER_SHA256"
-        actual_verifier_sha256="$(/usr/bin/sha256sum "$POSTFLIGHT_VERIFIER" | /usr/bin/awk '{print $1}')"
-        test "$actual_verifier_sha256" = "$EXPECTED_VERIFIER_SHA256"
-        test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
-        test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE_SHA"
-        /usr/bin/env -i \
-          PATH=/usr/bin:/bin \
-          HOME="$RUNNER_TEMP/ib-paper-postflight-home" \
-          GIT_CONFIG_NOSYSTEM=1 \
-          GIT_CONFIG_GLOBAL=/dev/null \
-          GIT_NO_REPLACE_OBJECTS=1 \
-          PYTHONDONTWRITEBYTECODE=1 \
-          PYTHONPYCACHEPREFIX="$RUNNER_TEMP/ib-paper-postflight-pycache" \
-          /usr/bin/python3 "$POSTFLIGHT_VERIFIER" --root "$GITHUB_WORKSPACE"
-        clean_status="$(/usr/bin/env -i \
-          PATH=/usr/bin:/bin \
-          HOME="$RUNNER_TEMP/ib-paper-postflight-home" \
-          GIT_CONFIG_NOSYSTEM=1 \
-          GIT_CONFIG_GLOBAL=/dev/null \
-          GIT_NO_REPLACE_OBJECTS=1 \
-          /usr/bin/git -C "$GITHUB_WORKSPACE" status \
-            --porcelain=v2 --untracked-files=all --ignored=matching)"
-        test -z "$clean_status"
+        if: always()
+        env:
+          BASH_ENV: /dev/null
+          ENV: /dev/null
+          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EXPECTED_TREE_SHA: ${{ steps.exact_source.outputs.head_tree }}
+          EXPECTED_VERIFIER_SHA256: ${{ steps.exact_source.outputs.verifier_sha256 }}
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          PATH: /usr/bin:/bin
+          POSTFLIGHT_VERIFIER: ${{ runner.temp }}/ib-paper-exact-index-postflight.py
+          PYTHONHOME: ''
+          PYTHONPATH: ''
+        run: |
+          set -euo pipefail
+          test -n "$EXPECTED_TREE_SHA"
+          test -n "$EXPECTED_VERIFIER_SHA256"
+          actual_verifier_sha256="$(/usr/bin/sha256sum "$POSTFLIGHT_VERIFIER" | /usr/bin/awk '{print $1}')"
+          test "$actual_verifier_sha256" = "$EXPECTED_VERIFIER_SHA256"
+          test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
+          test "$(/usr/bin/git rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE_SHA"
+          /usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            HOME="$RUNNER_TEMP/ib-paper-postflight-home" \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONPYCACHEPREFIX="$RUNNER_TEMP/ib-paper-postflight-pycache" \
+            /usr/bin/python3 "$POSTFLIGHT_VERIFIER" --root "$GITHUB_WORKSPACE"
+          clean_status="$(/usr/bin/env -i \
+            PATH=/usr/bin:/bin \
+            HOME="$RUNNER_TEMP/ib-paper-postflight-home" \
+            GIT_CONFIG_NOSYSTEM=1 \
+            GIT_CONFIG_GLOBAL=/dev/null \
+            GIT_NO_REPLACE_OBJECTS=1 \
+            /usr/bin/git -C "$GITHUB_WORKSPACE" status \
+              --porcelain=v2 --untracked-files=all --ignored=matching)"
+          test -z "$clean_status"
 '''
 replace_once(
     "\n  build-candidate:\n",
