@@ -138,8 +138,8 @@ bool OmsSegmentedJournal::ObserveActiveLocked(
         IncrementSaturating(m_segmentIntegrityRejects);
         return false;
     }
-    const bool logicalEmpty = onDiskBytes == 0 && retainedBytes == 0;
-    if (logicalEmpty != (m_activeRecords == 0))
+    const std::size_t logicalActive = onDiskBytes + retainedBytes;
+    if (logicalActive != m_activeLogicalBytes)
     {
         IncrementSaturating(m_segmentIntegrityRejects);
         return false;
