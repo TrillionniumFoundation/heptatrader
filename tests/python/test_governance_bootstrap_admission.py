@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -21,6 +22,8 @@ BOUND_FILES = {
     **PRIVILEGED,
     CONTEXTS: "67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7",
 }
+CANONICAL_TOP_LEVEL = {"name", "on", "permissions", "concurrency", "jobs"}
+TOP_LEVEL_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 
 
 def _canonical_block_events(text: str) -> list[str] | None:
@@ -28,30 +31,35 @@ def _canonical_block_events(text: str) -> list[str] | None:
     if any("\t" in line for line in lines):
         return None
 
-    positions = [index for index, line in enumerate(lines) if line == "on:"]
-    if len(positions) != 1:
-        return None
-    position = positions[0]
-
+    seen: set[str] = set()
+    on_position: int | None = None
     for index, line in enumerate(lines):
-        if index == position or not line or line[0].isspace() or ":" not in line:
-            continue
-        key = line.split(":", 1)[0].strip()
-        if (
-            len(key) >= 2
-            and key[0] in {"'", '"'}
-            and key[-1] == key[0]
-        ):
-            key = key[1:-1]
-        if key == "on":
-            return None
-
-    events: list[str] = []
-    for line in lines[position + 1:]:
-        if line and not line[0].isspace():
-            break
         if not line.strip() or line.lstrip().startswith("#"):
             continue
+        if line[0].isspace():
+            continue
+        if ":" not in line:
+            return None
+        key = line.split(":", 1)[0]
+        if TOP_LEVEL_KEY.fullmatch(key) is None:
+            return None
+        if key not in CANONICAL_TOP_LEVEL or key in seen:
+            return None
+        seen.add(key)
+        if key == "on":
+            if line != "on:":
+                return None
+            on_position = index
+
+    if on_position is None:
+        return None
+
+    events: list[str] = []
+    for line in lines[on_position + 1:]:
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if not line[0].isspace():
+            break
         if (
             line.startswith("  ")
             and len(line) > 2
@@ -118,8 +126,6 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertNotIn("docker", self.workflow.lower())
 
     def test_all_governed_files_are_exact_digest_bound(self) -> None:
-        import re
-
         embedded = set(
             re.findall(
                 r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
@@ -138,9 +144,11 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
                 self.assertIn(path.name, self.workflow)
 
     def test_privileged_workflows_are_dispatch_only(self) -> None:
-        self.assertIn('normalized == "on"', self.workflow)
-        self.assertIn('index($0, "\\t")', self.workflow)
+        self.assertIn("seen_top[key]++", self.workflow)
+        self.assertIn('key == "name" || key == "on"', self.workflow)
+        self.assertIn('if ($0 != "on:")', self.workflow)
         self.assertIn('if ($0 != "  workflow_dispatch:")', self.workflow)
+        self.assertIn('index($0, "\\t")', self.workflow)
         self.assertIn("is not canonical workflow_dispatch-only YAML", self.workflow)
 
         for path, text in self.targets.items():
@@ -160,9 +168,14 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
             "on:\n  workflow_dispatch:\n  <<: *events\n",
             "on:\n  workflow_dispatch:\n'on': [pull_request]\n",
             'on:\n  workflow_dispatch:\n"on": [push]\n',
+            'on:\n  workflow_dispatch:\n"\\x6f\\x6e": [pull_request]\n',
+            "on:\n  workflow_dispatch:\n!!str on: [push]\n",
             "on:\n  workflow_dispatch:\non : [schedule]\n",
             "'on':\n  workflow_dispatch:\n",
             "on:\n\tworkflow_dispatch:\n",
+            "on:\n  workflow_dispatch:\n---\non: [pull_request]\n",
+            "name: one\nname: two\non:\n  workflow_dispatch:\n",
+            "defaults: {}\non:\n  workflow_dispatch:\n",
         )
         for text in hostile:
             with self.subTest(text=text):
