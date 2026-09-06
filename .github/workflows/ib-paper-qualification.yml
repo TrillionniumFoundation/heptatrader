@@ -109,6 +109,7 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_ib_workflow_interfaces.py'
 
       - name: Checkout independent exact-head postflight verifier
+        if: always()
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
@@ -117,6 +118,7 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
       - name: Rebind executed source to unchanged reviewed bytes
+        if: always()
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: |

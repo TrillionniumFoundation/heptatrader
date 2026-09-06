@@ -22,6 +22,8 @@ NEXT_JOBS = {
     WORKFLOWS[1]: 'build-candidate',
 }
 FINAL_NAME = 'Reassert immutable exact source after candidate-controlled validation'
+CHECKOUT_NAME = 'Checkout independent exact-head postflight verifier'
+REBIND_NAME = 'Rebind executed source to unchanged reviewed bytes'
 JOB_RE = re.compile(r'^  ([A-Za-z0-9_.-]+):\s*$', re.MULTILINE)
 FORBIDDEN_CLEANUP = (
     'git reset --hard', '/usr/bin/git reset --hard',
@@ -51,7 +53,7 @@ def _validate_one(relative: Path, text: str, errors: list[str]) -> None:
     prefix = 'github-governance' if relative == WORKFLOWS[0] else 'ib-paper'
     required = (
         "PYTHONDONTWRITEBYTECODE: '1'",
-        f'PYTHONPYCACHEPREFIX: ${{{{ runner.temp }}}}/{prefix}-bootstrap-pycache',
+        f'PYTHONPYCACHEPREFIX="$RUNNER_TEMP/{prefix}-final-postflight-pycache"',
         'id: exact_source',
         'working-directory: candidate',
         '/usr/bin/python3 scripts/verify_exact_git_index.py --root .',
@@ -62,8 +64,9 @@ def _validate_one(relative: Path, text: str, errors: list[str]) -> None:
         'scripts/verify_bootstrap_postflight_contract.py',
         'python3 scripts/verify_bootstrap_postflight_contract.py --self-test',
         "test_bootstrap_postflight_contract.py",
+        f'- name: {CHECKOUT_NAME}\n        if: always()',
+        f'- name: {REBIND_NAME}\n        if: always()',
         f'- name: {FINAL_NAME}',
-        'if: always()',
         'BASH_ENV: /dev/null',
         'ENV: /dev/null',
         'PATH: /usr/bin:/bin',
@@ -82,10 +85,13 @@ def _validate_one(relative: Path, text: str, errors: list[str]) -> None:
         if token not in block:
             errors.append(f'{label}: missing immutable final-postflight token: {token}')
 
+    if 'PYTHONPYCACHEPREFIX: ${{ runner.temp }}' in block:
+        errors.append(f'{label}: runner context is forbidden in job-level environment')
+
     positions = [
         block.find(VALIDATION_NAMES[relative]),
-        block.find('Checkout independent exact-head postflight verifier'),
-        block.find('Rebind executed source to unchanged reviewed bytes'),
+        block.find(CHECKOUT_NAME),
+        block.find(REBIND_NAME),
         block.find('Record successful source-only bootstrap audit'),
         block.find(f'- name: {FINAL_NAME}'),
     ]
@@ -134,11 +140,23 @@ def validate(root: Path | str = ROOT) -> list[str]:
 def self_test() -> None:
     mutations = (
         lambda text: text.replace(f'- name: {FINAL_NAME}', '- name: Removed immutable postflight', 1),
-        lambda text: text.replace('if: always()', 'if: success()', 1),
+        lambda text: text.replace(
+            f'- name: {CHECKOUT_NAME}\n        if: always()',
+            f'- name: {CHECKOUT_NAME}\n        if: success()', 1,
+        ),
+        lambda text: text.replace(
+            f'- name: {REBIND_NAME}\n        if: always()',
+            f'- name: {REBIND_NAME}\n        if: success()', 1,
+        ),
+        lambda text: text.replace(f'- name: {FINAL_NAME}\n        if: always()', f'- name: {FINAL_NAME}\n        if: success()', 1),
         lambda text: text.replace('--ignored=matching', '--ignored=no'),
         lambda text: text.replace('/usr/bin/python3 "$POSTFLIGHT_VERIFIER"', 'python3 candidate/scripts/verify_exact_git_index.py', 1),
         lambda text: text.replace('set -euo pipefail', 'set -euo pipefail\n          git clean -fdx', 1),
         lambda text: text.replace('PATH: /usr/bin:/bin', 'PATH: ${{ env.PATH }}', 1),
+        lambda text: text.replace(
+            "PYTHONDONTWRITEBYTECODE: '1'",
+            "PYTHONDONTWRITEBYTECODE: '1'\n      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/forbidden-job-cache", 1,
+        ),
     )
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -153,7 +171,10 @@ def self_test() -> None:
             path = root / relative
             original = path.read_text(encoding='utf-8')
             for mutation in mutations:
-                path.write_text(mutation(original), encoding='utf-8')
+                mutated = mutation(original)
+                if mutated == original:
+                    raise AssertionError(f'{relative}: mutation did not alter fixture')
+                path.write_text(mutated, encoding='utf-8')
                 if not validate(root):
                     raise AssertionError(f'{relative}: hostile mutation was accepted')
             path.write_text(original, encoding='utf-8')

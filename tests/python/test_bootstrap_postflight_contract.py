@@ -33,6 +33,12 @@ class BootstrapFinalPostflightContractTests(unittest.TestCase):
     def test_repository_contract_passes(self) -> None:
         self.assertEqual(contract.validate(ROOT), [])
 
+    def test_job_environment_does_not_reference_runner_context(self) -> None:
+        for relative in contract.WORKFLOWS:
+            text = (ROOT / relative).read_text(encoding='utf-8')
+            block = contract._job_block(text, 'bootstrap-audit', [], relative.as_posix())
+            self.assertNotIn('PYTHONPYCACHEPREFIX: ${{ runner.temp }}', block)
+
     def test_final_postflight_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
@@ -43,10 +49,28 @@ class BootstrapFinalPostflightContractTests(unittest.TestCase):
             )
             self.assertTrue(errors)
 
+    def test_independent_checkout_must_run_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            old = f'- name: {contract.CHECKOUT_NAME}\n        if: always()'
+            new = f'- name: {contract.CHECKOUT_NAME}\n        if: success()'
+            errors = self.mutate_once(root, contract.WORKFLOWS[0], old, new)
+            self.assertTrue(any('always()' in error for error in errors), errors)
+
+    def test_rebind_must_run_after_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            old = f'- name: {contract.REBIND_NAME}\n        if: always()'
+            new = f'- name: {contract.REBIND_NAME}\n        if: success()'
+            errors = self.mutate_once(root, contract.WORKFLOWS[1], old, new)
+            self.assertTrue(any('always()' in error for error in errors), errors)
+
     def test_final_postflight_must_run_after_failure(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
-            errors = self.mutate_once(root, contract.WORKFLOWS[1], 'if: always()', 'if: success()')
+            old = f'- name: {contract.FINAL_NAME}\n        if: always()'
+            new = f'- name: {contract.FINAL_NAME}\n        if: success()'
+            errors = self.mutate_once(root, contract.WORKFLOWS[1], old, new)
             self.assertTrue(any('always()' in error for error in errors), errors)
 
     def test_candidate_python_cannot_certify_final_state(self) -> None:
