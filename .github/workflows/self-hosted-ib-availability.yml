@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   ib-runner-probe:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
     name: X230 IB runner probe
     runs-on:
       group: trillionnium-ib-paper
