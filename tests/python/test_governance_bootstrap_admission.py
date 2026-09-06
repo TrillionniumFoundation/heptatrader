@@ -12,16 +12,19 @@ WORKFLOW = ROOT / ".github" / "workflows" / "governance-bootstrap-admission.yml"
 CONTEXTS = ROOT / ".github" / "required-check-contexts-v1.json"
 PRIVILEGED = {
     ROOT / ".github" / "workflows" / "github-governance-qualification.yml":
-        "0df855faa0345f81ce350e41f2fe860118b517cd68c0823ff2b4992415e58918",
+        "8029358e340f5ea37b024b87ca2f720a771fd6bd11ff8786495e272481c8cc69",
     ROOT / ".github" / "workflows" / "ib-paper-qualification.yml":
-        "b413e5e7cb5ca0a109937d3d54c6820efd1cd42406033306517d201801821a5c",
+        "8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b",
     ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml":
-        "9efc491558eb1af64930fbfc9d1ae8344214ab7680b9f026221ca0d7ddaabbf0",
+        "0e0e5ab8fcd9748b041e8724aa8ab42412cbecd783ca8f22b106eaddbf1e2c0c",
 }
 BOUND_FILES = {
     **PRIVILEGED,
     CONTEXTS: "67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7",
 }
+EXPECTED_WORKFLOWS = tuple(
+    sorted((*PRIVILEGED.keys(), WORKFLOW), key=lambda path: path.as_posix())
+)
 CANONICAL_TOP_LEVEL = {"name", "on", "permissions", "concurrency", "jobs"}
 TOP_LEVEL_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 
@@ -125,6 +128,29 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertNotIn("tests/python", self.workflow)
         self.assertNotIn("docker", self.workflow.lower())
 
+    def test_complete_actions_workflow_set_is_closed(self) -> None:
+        actual = tuple(
+            sorted(
+                (
+                    path
+                    for path in WORKFLOW.parent.rglob("*")
+                    if path.is_file() or path.is_symlink()
+                ),
+                key=lambda path: path.as_posix(),
+            )
+        )
+        self.assertEqual(actual, EXPECTED_WORKFLOWS)
+        self.assertIn("expected_workflows=(", self.workflow)
+        self.assertIn("mapfile -d '' -t actual_workflows", self.workflow)
+        self.assertIn(
+            "git ls-tree -r -z --full-tree --name-only HEAD -- .github/workflows",
+            self.workflow,
+        )
+        self.assertIn(
+            'test "${#actual_workflows[@]}" -eq "${#expected_workflows[@]}"',
+            self.workflow,
+        )
+
     def test_all_governed_files_are_exact_digest_bound(self) -> None:
         embedded = set(
             re.findall(
@@ -184,7 +210,7 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
                     ["  workflow_dispatch:"],
                 )
 
-    def test_runner_selection_is_group_and_role_bound(self) -> None:
+    def test_runner_selection_and_preallocation_gates_are_bound(self) -> None:
         ib = self.targets[ROOT / ".github" / "workflows" / "ib-paper-qualification.yml"]
         probe = self.targets[
             ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml"
@@ -192,6 +218,25 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         governance = self.targets[
             ROOT / ".github" / "workflows" / "github-governance-qualification.yml"
         ]
+        governance_gate = (
+            "    if: github.event_name == 'workflow_dispatch' && "
+            "github.ref == 'refs/heads/main' && "
+            "inputs.acknowledge_no_bypass == true"
+        )
+        ib_gate = (
+            "    if: github.event_name == 'workflow_dispatch' && "
+            "github.ref == 'refs/heads/main' && inputs.mutation_mode == true"
+        )
+        probe_gate = (
+            "    if: github.event_name == 'workflow_dispatch' && "
+            "github.ref == 'refs/heads/main'"
+        )
+        self.assertEqual(governance.count(governance_gate), 1)
+        self.assertEqual(ib.count(ib_gate), 2)
+        self.assertEqual(probe.count(probe_gate), 1)
+        self.assertIn('governance_gate="', self.workflow)
+        self.assertIn('ib_gate="', self.workflow)
+        self.assertIn('x230_gate="', self.workflow)
         self.assertEqual(ib.count("group: trillionnium-ib-paper"), 2)
         self.assertIn("heptatrader-ib-builder", ib)
         self.assertIn("heptatrader-ib-paper", ib)
