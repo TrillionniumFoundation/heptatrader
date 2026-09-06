@@ -33,7 +33,7 @@ concurrency:
 
 jobs:
   qualify:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.acknowledge_no_bypass == true
     name: github-governance-exact-artifact-verification
     runs-on: ubuntu-24.04
     environment: repository-governance
