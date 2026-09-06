@@ -53,9 +53,9 @@ jobs:
       - name: Verify privileged workflows and context registry as immutable data
         shell: bash
         env:
-          GOVERNANCE_SHA256: 0df855faa0345f81ce350e41f2fe860118b517cd68c0823ff2b4992415e58918
-          IB_PAPER_SHA256: b413e5e7cb5ca0a109937d3d54c6820efd1cd42406033306517d201801821a5c
-          X230_PROBE_SHA256: 9efc491558eb1af64930fbfc9d1ae8344214ab7680b9f026221ca0d7ddaabbf0
+          GOVERNANCE_SHA256: 8029358e340f5ea37b024b87ca2f720a771fd6bd11ff8786495e272481c8cc69
+          IB_PAPER_SHA256: 8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b
+          X230_PROBE_SHA256: 0e0e5ab8fcd9748b041e8724aa8ab42412cbecd783ca8f22b106eaddbf1e2c0c
           CONTEXTS_SHA256: 67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7
         run: |
           set -euo pipefail
@@ -130,6 +130,16 @@ jobs:
           verify_regular_file \
             .github/required-check-contexts-v1.json \
             "$CONTEXTS_SHA256"
+
+          governance_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.acknowledge_no_bypass == true"
+          ib_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true"
+          x230_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+          test "$(grep -Fxc -- "$governance_gate" \
+            .github/workflows/github-governance-qualification.yml)" -eq 1
+          test "$(grep -Fxc -- "$ib_gate" \
+            .github/workflows/ib-paper-qualification.yml)" -eq 2
+          test "$(grep -Fxc -- "$x230_gate" \
+            .github/workflows/self-hosted-ib-availability.yml)" -eq 1
 
           test "$(grep -Fc 'group: trillionnium-ib-paper' \
             .github/workflows/ib-paper-qualification.yml)" -eq 2
