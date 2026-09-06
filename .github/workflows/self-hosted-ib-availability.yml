@@ -9,8 +9,9 @@ on:
         default: operator-check
         type: string
 
-# Dispatch-only, tokenless and checkout-free. The dedicated runner group must
-# remain restricted to this exact workflow through GitHub organization policy.
+# Dispatch-only, tokenless and checkout-free. The runner group must remain
+# restricted to this exact trusted-main workflow, and only runner x230 may carry
+# the dedicated heptatrader-x230-probe routing label.
 permissions: {}
 
 concurrency:
@@ -23,6 +24,7 @@ jobs:
     name: X230 IB runner probe
     runs-on:
       group: trillionnium-ib-paper
+      labels: [self-hosted, linux, x64, heptatrader-x230-probe]
     permissions: {}
     timeout-minutes: 10
     steps:
