@@ -85,39 +85,32 @@ jobs:
                 event_count = 0
               }
               index($0, "\t") { exit 10 }
-              $0 == "on:" {
-                if (seen_on != 0) exit 11
-                seen_on = 1
-                in_on = 1
+              /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+              /^[^[:space:]]/ {
+                in_on = 0
+                if ($0 !~ /^[A-Za-z_][A-Za-z0-9_-]*:/) exit 11
+                key = $0
+                sub(/:.*/, "", key)
+                if (!(key == "name" || key == "on" ||
+                      key == "permissions" || key == "concurrency" ||
+                      key == "jobs")) exit 12
+                if (seen_top[key]++) exit 13
+                if (key == "on") {
+                  if ($0 != "on:") exit 14
+                  seen_on = 1
+                  in_on = 1
+                }
                 next
               }
-              in_on && /^[^[:space:]]/ { in_on = 0 }
               in_on {
-                if ($0 ~ /^[[:space:]]*$/ || $0 ~ /^[[:space:]]*#/) next
                 if (substr($0, 1, 2) == "  " && substr($0, 3, 1) != " ") {
-                  if ($0 != "  workflow_dispatch:") exit 12
+                  if ($0 != "  workflow_dispatch:") exit 15
                   event_count++
                 }
                 next
               }
-              /^[^[:space:]][^:]*:/ {
-                key = $0
-                sub(/:.*/, "", key)
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-                normalized = key
-                quote = sprintf("%c", 39)
-                if (length(normalized) >= 2) {
-                  first = substr(normalized, 1, 1)
-                  last = substr(normalized, length(normalized), 1)
-                  if ((first == "\"" && last == "\"") ||
-                      (first == quote && last == quote)) {
-                    normalized = substr(normalized, 2, length(normalized) - 2)
-                  }
-                }
-                if (normalized == "on") exit 13
-              }
               END {
-                if (seen_on != 1 || event_count != 1) exit 14
+                if (seen_on != 1 || event_count != 1) exit 16
               }
             ' "$target"; then
               echo "$target is not canonical workflow_dispatch-only YAML" >&2
