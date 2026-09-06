@@ -33,7 +33,15 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
     def test_broker_host_job_is_group_bound_tokenless_and_checkout_free(self) -> None:
         section = self.workflow.split("  ib-runner-probe:\n", 1)[1]
         self.assertIn("if: github.event_name == 'workflow_dispatch'", section)
-        self.assertIn("group: trillionnium-ib-paper", section)
+        selector = (
+            "runs-on:\n"
+            "      group: trillionnium-ib-paper\n"
+            "      labels: [self-hosted, linux, x64, heptatrader-x230-probe]"
+        )
+        self.assertEqual(section.count(selector), 1)
+        self.assertEqual(section.count("heptatrader-x230-probe"), 1)
+        self.assertNotIn("heptatrader-ib-builder", section)
+        self.assertNotIn("heptatrader-ib-paper", section)
         self.assertIn("permissions: {}", section)
         self.assertIn('test "$GITHUB_REF" = refs/heads/main', section)
         self.assertIn('test "$RUNNER_NAME" = x230', section)

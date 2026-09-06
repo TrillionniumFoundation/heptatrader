@@ -17,7 +17,7 @@ PRIVILEGED = {
     WF / "ib-paper-qualification.yml":
         "8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b",
     WF / "self-hosted-ib-availability.yml":
-        "0e0e5ab8fcd9748b041e8724aa8ab42412cbecd783ca8f22b106eaddbf1e2c0c",
+        "0386d801e409fa89cdb143df14610e64eb75819abdda7a13b7302a541fc55bb5",
 }
 BOUND = {
     **PRIVILEGED,
@@ -76,22 +76,40 @@ class GovernanceBootstrapAdmissionTests(unittest.TestCase):
 
     def test_admission_is_hosted_read_only_and_data_only(self) -> None:
         self.assertIn("name: governance-bootstrap-admission", self.admission)
-        self.assertIn("runs-on: ubuntu-24.04", self.admission)
+        job_header = self.admission.split("jobs:\n", 1)[1].split("\n    steps:", 1)[0]
+        self.assertEqual(job_header.count("runs-on: ubuntu-24.04"), 1)
         self.assertIn("permissions:\n  contents: read", self.admission)
         self.assertIn("persist-credentials: false", self.admission)
-        for forbidden in ("pull_request_target", "secrets.", "runs-on: self-hosted",
-                          "python", "./scripts/", "tests/python", "docker"):
-            self.assertNotIn(forbidden, self.admission.lower())
+
+        trigger_header = self.admission.split("\npermissions:", 1)[0]
+        self.assertNotIn("pull_request_target", trigger_header)
+        self.assertNotIn("runs-on:\n      group:", self.admission)
+        self.assertNotIn("runs-on: self-hosted", self.admission)
+        self.assertNotIn("${{ secrets.", self.admission)
+        for candidate_execution in (
+            "python3 ",
+            "./scripts/",
+            "tests/python",
+            "docker ",
+        ):
+            self.assertNotIn(candidate_execution, self.admission.lower())
 
     def test_workflow_set_and_bound_bytes_are_exact(self) -> None:
-        actual = tuple(sorted(path for path in WF.rglob("*")
-                              if path.is_file() or path.is_symlink()))
+        actual = tuple(
+            sorted(
+                path
+                for path in WF.rglob("*")
+                if path.is_file() or path.is_symlink()
+            )
+        )
         self.assertEqual(actual, EXPECTED_WORKFLOWS)
-        embedded = set(re.findall(
-            r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
-            self.admission,
-            re.MULTILINE,
-        ))
+        embedded = set(
+            re.findall(
+                r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
+                self.admission,
+                re.MULTILINE,
+            )
+        )
         self.assertEqual(embedded, set(BOUND.values()))
         for path, digest in BOUND.items():
             self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), digest)
@@ -117,8 +135,10 @@ class GovernanceBootstrapAdmissionTests(unittest.TestCase):
         self.assertIn("runs-on: ubuntu-24.04", self.source_audit)
         self.assertIn("permissions:\n  contents: read", self.source_audit)
         self.assertIn("persist-credentials: false", self.source_audit)
-        self.assertIn("partial team-governance extension is not admissible",
-                      self.source_audit)
+        self.assertIn(
+            "partial team-governance extension is not admissible",
+            self.source_audit,
+        )
         for token in (
             "test_governance_bootstrap_admission.py",
             "test_self_hosted_ib_availability.py",
@@ -130,27 +150,54 @@ class GovernanceBootstrapAdmissionTests(unittest.TestCase):
         for forbidden in ("pull_request_target", "self-hosted", "secrets."):
             self.assertNotIn(forbidden, self.source_audit)
 
-    def test_preallocation_gates_and_context_projection_are_bound(self) -> None:
+    def test_preallocation_gates_selectors_and_context_projection_are_bound(
+        self,
+    ) -> None:
         governance = self.privileged[WF / "github-governance-qualification.yml"]
         paper = self.privileged[WF / "ib-paper-qualification.yml"]
         probe = self.privileged[WF / "self-hosted-ib-availability.yml"]
-        self.assertEqual(governance.count(
-            "if: github.event_name == 'workflow_dispatch' && github.ref == "
-            "'refs/heads/main' && inputs.acknowledge_no_bypass == true"), 1)
-        self.assertEqual(paper.count(
-            "if: github.event_name == 'workflow_dispatch' && github.ref == "
-            "'refs/heads/main' && inputs.mutation_mode == true"), 2)
-        self.assertEqual(probe.count(
-            "if: github.event_name == 'workflow_dispatch' && github.ref == "
-            "'refs/heads/main'"), 1)
+        self.assertEqual(
+            governance.count(
+                "if: github.event_name == 'workflow_dispatch' && github.ref == "
+                "'refs/heads/main' && inputs.acknowledge_no_bypass == true"
+            ),
+            1,
+        )
+        self.assertEqual(
+            paper.count(
+                "if: github.event_name == 'workflow_dispatch' && github.ref == "
+                "'refs/heads/main' && inputs.mutation_mode == true"
+            ),
+            2,
+        )
+        self.assertEqual(
+            probe.count(
+                "if: github.event_name == 'workflow_dispatch' && github.ref == "
+                "'refs/heads/main'"
+            ),
+            1,
+        )
+        selector = (
+            "runs-on:\n"
+            "      group: trillionnium-ib-paper\n"
+            "      labels: [self-hosted, linux, x64, heptatrader-x230-probe]"
+        )
+        self.assertEqual(probe.count(selector), 1)
+        self.assertNotIn("heptatrader-ib-builder", probe)
+        self.assertNotIn("heptatrader-ib-paper", probe)
+        self.assertNotIn("heptatrader-x230-probe", paper)
+        self.assertIn('x230_selector="', self.admission)
         document = json.loads(CONTEXTS.read_text(encoding="utf-8"))
         observations = document["non_required_observation_contexts"]
         self.assertEqual(observations.count("governance-bootstrap-admission"), 1)
         self.assertEqual(observations.count("qualification-source-audit"), 1)
-        self.assertEqual(document["external_qualification_contexts"], [
-            "github-governance-exact-artifact-verification",
-            "ib-paper-exact-artifact-qualification",
-        ])
+        self.assertEqual(
+            document["external_qualification_contexts"],
+            [
+                "github-governance-exact-artifact-verification",
+                "ib-paper-exact-artifact-qualification",
+            ],
+        )
 
     def test_both_hosted_workflows_have_unconditional_clean_postflight(self) -> None:
         for text in (self.admission, self.source_audit):
