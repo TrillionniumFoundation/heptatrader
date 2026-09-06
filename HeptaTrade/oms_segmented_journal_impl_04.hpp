@@ -129,6 +129,7 @@ bool OmsSegmentedJournal::RotateLocked()
     m_sealedRecords += descriptor.records;
     m_segments.push_back(std::move(descriptor));
     m_activeRecords = 0;
+    m_activeLogicalBytes = 0;
     ++m_nextSequence;
     IncrementSaturating(m_rotations);
     if (!OpenActiveLocked())
@@ -188,6 +189,7 @@ bool OmsSegmentedJournal::Append(const OmsJournalEvent& event)
     }
     if (!m_active->Append(event)) return false;
     ++m_activeRecords;
+    m_activeLogicalBytes += bytes;
     return true;
 }
 
