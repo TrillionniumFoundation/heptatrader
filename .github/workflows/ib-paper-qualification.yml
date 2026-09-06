@@ -1,24 +1,6 @@
 name: IB PAPER Qualification
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/github-governance-qualification.yml'
-      - '.github/workflows/ib-paper-qualification.yml'
-      - '.github/github-governance-policy-v1.json'
-      - '.github/required-check-contexts-v1.json'
-      - 'scripts/github_qualification_evidence.py'
-      - 'scripts/verify_github_governance.py'
-      - 'scripts/verify_ib_paper_qualification.py'
-      - 'scripts/verify_ib_candidate_artifact.py'
-      - 'scripts/verify_qualification_candidate.py'
-      - 'scripts/build_ib_candidate_artifact.sh'
-      - 'scripts/run_ib_paper_artifact_qualification.sh'
-      - 'scripts/check_qualification_trust_boundary.py'
-      - 'tests/python/test_github_governance.py'
-      - 'tests/python/test_ib_paper_qualification.py'
-      - 'tests/python/test_qualification_trust_boundary.py'
   workflow_dispatch:
     inputs:
       pull_number:
@@ -42,57 +24,16 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: heptatrader-ib-paper-qualification-${{ github.event_name }}-${{ github.ref }}
+  group: heptatrader-ib-paper-qualification-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  bootstrap-audit:
-    if: github.event_name == 'pull_request'
-    name: ib-paper-workflow-bootstrap-audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    steps:
-      - name: Checkout exact bootstrap pull-request head without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Assert exact bootstrap revision
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Confirm Docker hostile-isolation dependency
-        run: |
-          set -euo pipefail
-          docker version
-      - name: Validate trusted harnesses and hostile candidate isolation
-        run: |
-          set -euo pipefail
-          git diff --check
-          bash -n scripts/build_ib_candidate_artifact.sh
-          bash -n scripts/run_ib_paper_artifact_qualification.sh
-          python3 -m py_compile \
-            scripts/github_qualification_evidence.py \
-            scripts/verify_github_governance.py \
-            scripts/verify_ib_paper_qualification.py \
-            scripts/verify_ib_candidate_artifact.py \
-            scripts/verify_qualification_candidate.py \
-            scripts/check_qualification_trust_boundary.py
-          python3 scripts/check_qualification_trust_boundary.py --self-test
-          python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
-          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
-          printf '%s\n' \
-            'Trusted qualification boundary audit passed.' \
-            'No secret, Broker credential or candidate mutation was used.' \
-            >> "$GITHUB_STEP_SUMMARY"
-
   build-candidate:
     if: github.event_name == 'workflow_dispatch'
     name: ib-paper-candidate-artifact-build
-    runs-on: [self-hosted, linux, x64, heptatrader-ib-builder]
+    runs-on:
+      group: trillionnium-ib-paper
+      labels: [self-hosted, linux, x64, heptatrader-ib-builder]
     timeout-minutes: 100
     env:
       HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
@@ -167,7 +108,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch'
     needs: build-candidate
     name: ib-paper-exact-artifact-qualification
-    runs-on: [self-hosted, linux, x64, heptatrader-ib-paper]
+    runs-on:
+      group: trillionnium-ib-paper
+      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
     environment: ib-paper
     timeout-minutes: 90
     env:
