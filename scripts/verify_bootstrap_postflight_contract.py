@@ -51,8 +51,10 @@ def _validate_one(relative: Path, text: str, errors: list[str]) -> None:
     if not block:
         return
     prefix = 'github-governance' if relative == WORKFLOWS[0] else 'ib-paper'
+    validation_cache = 'PYTHONPYCACHEPREFIX: ${{ runner.temp }}/' + prefix + '-bootstrap-pycache'
     required = (
         "PYTHONDONTWRITEBYTECODE: '1'",
+        validation_cache,
         f'PYTHONPYCACHEPREFIX="$RUNNER_TEMP/{prefix}-final-postflight-pycache"',
         'id: exact_source',
         'working-directory: candidate',
@@ -85,8 +87,11 @@ def _validate_one(relative: Path, text: str, errors: list[str]) -> None:
         if token not in block:
             errors.append(f'{label}: missing immutable final-postflight token: {token}')
 
-    if 'PYTHONPYCACHEPREFIX: ${{ runner.temp }}' in block:
+    job_header = block.split('    steps:\n', 1)[0]
+    if '${{ runner.' in job_header:
         errors.append(f'{label}: runner context is forbidden in job-level environment')
+    if block.count(validation_cache) != 1:
+        errors.append(f'{label}: candidate validation must redirect explicit bytecode output exactly once')
 
     positions = [
         block.find(VALIDATION_NAMES[relative]),
@@ -153,6 +158,7 @@ def self_test() -> None:
         lambda text: text.replace('/usr/bin/python3 "$POSTFLIGHT_VERIFIER"', 'python3 candidate/scripts/verify_exact_git_index.py', 1),
         lambda text: text.replace('set -euo pipefail', 'set -euo pipefail\n          git clean -fdx', 1),
         lambda text: text.replace('PATH: /usr/bin:/bin', 'PATH: ${{ env.PATH }}', 1),
+        lambda text: text.replace('-bootstrap-pycache', '-hostile-pycache', 1),
         lambda text: text.replace(
             "PYTHONDONTWRITEBYTECODE: '1'",
             "PYTHONDONTWRITEBYTECODE: '1'\n      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/forbidden-job-cache", 1,

@@ -37,7 +37,16 @@ class BootstrapFinalPostflightContractTests(unittest.TestCase):
         for relative in contract.WORKFLOWS:
             text = (ROOT / relative).read_text(encoding='utf-8')
             block = contract._job_block(text, 'bootstrap-audit', [], relative.as_posix())
-            self.assertNotIn('PYTHONPYCACHEPREFIX: ${{ runner.temp }}', block)
+            job_header = block.split('    steps:\n', 1)[0]
+            self.assertNotIn('${{ runner.', job_header)
+
+    def test_validation_redirects_explicit_bytecode_output(self) -> None:
+        for relative in contract.WORKFLOWS:
+            text = (ROOT / relative).read_text(encoding='utf-8')
+            block = contract._job_block(text, 'bootstrap-audit', [], relative.as_posix())
+            prefix = 'github-governance' if relative == contract.WORKFLOWS[0] else 'ib-paper'
+            token = 'PYTHONPYCACHEPREFIX: ${{ runner.temp }}/' + prefix + '-bootstrap-pycache'
+            self.assertEqual(block.count(token), 1)
 
     def test_final_postflight_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

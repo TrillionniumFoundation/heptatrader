@@ -70,6 +70,8 @@ jobs:
       - name: Confirm Docker hostile-isolation dependency
         run: docker version
       - name: Validate trusted harnesses, provenance, team activation and hostile isolation
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/github-governance-bootstrap-pycache
         working-directory: candidate
         run: |
           set -euo pipefail

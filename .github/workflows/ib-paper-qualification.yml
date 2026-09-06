@@ -84,6 +84,8 @@ jobs:
       - name: Confirm Docker hostile-isolation dependency
         run: docker version
       - name: Validate PAPER qualification harnesses and hostile isolation
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/ib-paper-bootstrap-pycache
         working-directory: candidate
         run: |
           set -euo pipefail
