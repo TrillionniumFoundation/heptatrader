@@ -50,16 +50,18 @@ jobs:
               ;;
           esac
 
-      - name: Verify privileged workflows as immutable data
+      - name: Verify privileged workflows and context registry as immutable data
         shell: bash
         env:
           GOVERNANCE_SHA256: 0df855faa0345f81ce350e41f2fe860118b517cd68c0823ff2b4992415e58918
           IB_PAPER_SHA256: b413e5e7cb5ca0a109937d3d54c6820efd1cd42406033306517d201801821a5c
           X230_PROBE_SHA256: 9efc491558eb1af64930fbfc9d1ae8344214ab7680b9f026221ca0d7ddaabbf0
+          CONTEXTS_SHA256: 67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7
         run: |
           set -euo pipefail
+          export LC_ALL=C
 
-          verify_file() {
+          verify_regular_file() {
             local target="$1"
             local expected="$2"
             test -f "$target"
@@ -70,22 +72,41 @@ jobs:
               sha256sum --check <(printf '%s  -\n' "$expected")
             printf '%s  %s\n' "$expected" "$target" |
               sha256sum --check --strict
-            grep -Fqx '  workflow_dispatch:' "$target"
-            if grep -Eq '^[[:space:]]{2}(pull_request|pull_request_target|push|schedule|repository_dispatch|merge_group):' "$target"; then
-              echo "$target has a non-dispatch trigger" >&2
-              return 1
-            fi
           }
 
-          verify_file \
+          verify_dispatch_workflow() {
+            local target="$1"
+            local expected="$2"
+            local events
+            verify_regular_file "$target" "$expected"
+            test "$(grep -Fxc 'on:' "$target")" -eq 1
+            events="$(
+              awk '
+                $0 == "on:" { in_on = 1; next }
+                in_on && /^[^[:space:]]/ { exit }
+                in_on && /^  [A-Za-z_][A-Za-z0-9_-]*:/ {
+                  key = $0
+                  sub(/^  /, "", key)
+                  sub(/:.*/, "", key)
+                  print key
+                }
+              ' "$target"
+            )"
+            test "$events" = workflow_dispatch
+          }
+
+          verify_dispatch_workflow \
             .github/workflows/github-governance-qualification.yml \
             "$GOVERNANCE_SHA256"
-          verify_file \
+          verify_dispatch_workflow \
             .github/workflows/ib-paper-qualification.yml \
             "$IB_PAPER_SHA256"
-          verify_file \
+          verify_dispatch_workflow \
             .github/workflows/self-hosted-ib-availability.yml \
             "$X230_PROBE_SHA256"
+          verify_regular_file \
+            .github/required-check-contexts-v1.json \
+            "$CONTEXTS_SHA256"
 
           test "$(grep -Fc 'group: trillionnium-ib-paper' \
             .github/workflows/ib-paper-qualification.yml)" -eq 2
@@ -99,6 +120,13 @@ jobs:
             .github/workflows/self-hosted-ib-availability.yml
           ! grep -Fq 'self-hosted' \
             .github/workflows/github-governance-qualification.yml
+
+          contexts=.github/required-check-contexts-v1.json
+          test "$(grep -Fcx '    "governance-bootstrap-admission",' "$contexts")" -eq 1
+          test "$(grep -Fcx '    "github-governance-exact-artifact-verification",' "$contexts")" -eq 1
+          test "$(grep -Fcx '    "ib-paper-exact-artifact-qualification"' "$contexts")" -eq 1
+          ! grep -Fq '"github-governance-workflow-bootstrap-audit"' "$contexts"
+          ! grep -Fq '"ib-paper-workflow-bootstrap-audit"' "$contexts"
 
       - name: Validate bounded event subject without candidate execution
         shell: bash

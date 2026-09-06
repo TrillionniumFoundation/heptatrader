@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import re
+import json
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github" / "workflows" / "governance-bootstrap-admission.yml"
+CONTEXTS = ROOT / ".github" / "required-check-contexts-v1.json"
 PRIVILEGED = {
     ROOT / ".github" / "workflows" / "github-governance-qualification.yml":
         "0df855faa0345f81ce350e41f2fe860118b517cd68c0823ff2b4992415e58918",
@@ -16,10 +17,29 @@ PRIVILEGED = {
     ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml":
         "9efc491558eb1af64930fbfc9d1ae8344214ab7680b9f026221ca0d7ddaabbf0",
 }
-NON_DISPATCH_TRIGGER = re.compile(
-    r"^  (pull_request|pull_request_target|push|schedule|repository_dispatch|merge_group):",
-    re.MULTILINE,
-)
+BOUND_FILES = {
+    **PRIVILEGED,
+    CONTEXTS: "67c82dac9d08c123133d47d94a8a4872a45b40bab461a2861c658861772d2cb7",
+}
+
+
+def _block_on_events(text: str) -> list[str] | None:
+    lines = text.splitlines()
+    positions = [index for index, line in enumerate(lines) if line == "on:"]
+    if len(positions) != 1:
+        return None
+    events: list[str] = []
+    for line in lines[positions[0] + 1:]:
+        if line and not line[0].isspace():
+            break
+        if (
+            line.startswith("  ")
+            and len(line) > 2
+            and not line[2].isspace()
+            and ":" in line
+        ):
+            events.append(line[2:].split(":", 1)[0])
+    return events
 
 
 class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
@@ -78,24 +98,42 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertNotIn("tests/python", self.workflow)
         self.assertNotIn("docker", self.workflow.lower())
 
-    def test_all_privileged_workflows_are_exact_digest_bound(self) -> None:
+    def test_all_governed_files_are_exact_digest_bound(self) -> None:
+        import re
         embedded = set(
-            re.findall(r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$", self.workflow, re.MULTILINE)
+            re.findall(
+                r"^\s+[A-Z0-9_]+_SHA256: ([0-9a-f]{64})$",
+                self.workflow,
+                re.MULTILINE,
+            )
         )
-        expected = set(PRIVILEGED.values())
+        expected = set(BOUND_FILES.values())
         self.assertEqual(embedded, expected)
-        for path, expected_digest in PRIVILEGED.items():
+        for path, expected_digest in BOUND_FILES.items():
             with self.subTest(path=path):
-                self.assertEqual(hashlib.sha256(path.read_bytes()).hexdigest(), expected_digest)
+                self.assertEqual(
+                    hashlib.sha256(path.read_bytes()).hexdigest(),
+                    expected_digest,
+                )
                 self.assertIn(path.name, self.workflow)
 
     def test_privileged_workflows_are_dispatch_only(self) -> None:
+        self.assertIn('test "$events" = workflow_dispatch', self.workflow)
+        self.assertIn('test "$(grep -Fxc \'on:\' "$target")" -eq 1', self.workflow)
         for path, text in self.targets.items():
             with self.subTest(path=path):
-                self.assertIn("on:\n  workflow_dispatch:", text)
-                self.assertIsNone(NON_DISPATCH_TRIGGER.search(text))
-                self.assertNotIn("pull_request_target", text)
-                self.assertNotIn("repository_dispatch", text)
+                self.assertEqual(_block_on_events(text), ["workflow_dispatch"])
+
+        hostile = (
+            "on: [pull_request]\n",
+            "on: {'pull_request': {}}\n",
+            'on: {"workflow_call": {}}\n',
+            "on:\n  workflow_dispatch:\n  push:\n",
+            "'on':\n  workflow_dispatch:\n",
+        )
+        for text in hostile:
+            with self.subTest(text=text):
+                self.assertNotEqual(_block_on_events(text), ["workflow_dispatch"])
 
     def test_runner_selection_is_group_and_role_bound(self) -> None:
         ib = self.targets[ROOT / ".github" / "workflows" / "ib-paper-qualification.yml"]
@@ -111,6 +149,24 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertEqual(probe.count("group: trillionnium-ib-paper"), 1)
         self.assertNotIn("uses: actions/checkout@", probe)
         self.assertNotIn("self-hosted", governance)
+
+    def test_context_registry_projection_is_exact_and_fail_closed(self) -> None:
+        document = json.loads(CONTEXTS.read_text(encoding="utf-8"))
+        self.assertEqual(document["schema"], "heptatrader.required-check-contexts.v1")
+        self.assertEqual(
+            document["external_qualification_contexts"],
+            [
+                "github-governance-exact-artifact-verification",
+                "ib-paper-exact-artifact-qualification",
+            ],
+        )
+        observations = document["non_required_observation_contexts"]
+        self.assertEqual(observations.count("governance-bootstrap-admission"), 1)
+        self.assertNotIn("github-governance-workflow-bootstrap-audit", observations)
+        self.assertNotIn("ib-paper-workflow-bootstrap-audit", observations)
+        self.assertIn("CONTEXTS_SHA256:", self.workflow)
+        self.assertIn(".github/required-check-contexts-v1.json", self.workflow)
+        self.assertIn("verify_regular_file \\", self.workflow)
 
     def test_clean_postflight_is_fail_closed(self) -> None:
         self.assertIn(
