@@ -14,6 +14,7 @@ namespace
 #include "oms_segmented_journal_tests_02b2.hpp"
 #include "oms_segmented_journal_tests_03.hpp"
 #include "oms_segmented_journal_tests_toctou.hpp"
+#include "oms_segmented_journal_tests_active_identity.hpp"
 
 }
 
@@ -28,5 +29,6 @@ int main()
     TestSegmentInvalidLimitsAndIndependentCapacityDimensions();
     TestSegmentReplayReservationAndConcurrentProducers();
     TestSegmentDirectoryOpenRejectsSymlinkTraversal();
+    TestSegmentActiveIdentityMismatchFailsClosed();
     return 0;
 }
