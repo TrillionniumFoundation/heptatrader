@@ -115,6 +115,7 @@ private:
     std::size_t m_sealedBytes = 0;
     std::size_t m_sealedRecords = 0;
     std::size_t m_activeRecords = 0;
+    std::size_t m_activeLogicalBytes = 0;
     std::uint64_t m_nextSequence = 1;
     std::uint64_t m_rotations = 0;
     std::uint64_t m_rotationCapacityRejects = 0;
