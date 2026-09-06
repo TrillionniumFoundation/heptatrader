@@ -1,6 +1,11 @@
 name: Self-hosted IB runner availability
 
 on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/self-hosted-ib-availability.yml'
+      - 'tests/python/test_self_hosted_ib_availability.py'
   workflow_dispatch:
     inputs:
       reason:
@@ -9,29 +14,61 @@ on:
         default: operator-check
         type: string
 
-# This probe intentionally does not check out repository code or touch IB
-# credentials. It only verifies the trusted X230 runner and local gateway port.
+# This workflow never checks out candidate code or reads IB credentials on the
+# X230 runner. Pull requests execute only the hosted static contract audit.
 permissions: {}
 
 jobs:
+  bootstrap-audit:
+    if: github.event_name == 'pull_request'
+    name: self-hosted-ib-availability-bootstrap-audit
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact pull-request head without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Assert exact pull-request revision
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Validate dispatch-input isolation contract
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 -m unittest discover \
+            -s tests/python \
+            -p 'test_self_hosted_ib_availability.py'
+
   ib-runner-probe:
+    if: github.event_name == 'workflow_dispatch'
     name: X230 IB runner probe
     runs-on:
       - self-hosted
       - linux
       - x64
+    permissions: {}
     timeout-minutes: 10
     steps:
       - name: Verify trusted manual main invocation
         shell: bash
+        env:
+          PROBE_REASON: ${{ inputs.reason }}
         run: |
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REF" = refs/heads/main
           test "$RUNNER_NAME" = x230
+          [[ "$PROBE_REASON" =~ ^[A-Za-z0-9._:-]{1,80}$ ]]
           printf 'runner=%s\nos=%s\narch=%s\nref=%s\nreason=%s\n' \
             "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_REF" \
-            '${{ inputs.reason }}'
+            "$PROBE_REASON"
       - name: Read-only IB Gateway reachability snapshot
         shell: bash
         run: |
