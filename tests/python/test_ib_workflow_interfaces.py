@@ -33,10 +33,8 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
             path = root / boundary.IB
             text = path.read_text(encoding="utf-8")
             text = text.replace(
-                'trusted/scripts/build_ib_candidate_artifact.sh \
-            candidate "$EXPECTED_HEAD_SHA" "$artifact"',
-                '/work/trusted/scripts/build_ib_candidate_artifact.sh \
-            --candidate-root /work/candidate --expected-head-sha "$EXPECTED_HEAD_SHA"',
+                'trusted/scripts/build_ib_candidate_artifact.sh \\\n            candidate "$EXPECTED_HEAD_SHA" "$artifact"',
+                '/work/trusted/scripts/build_ib_candidate_artifact.sh \\\n            --candidate-root /work/candidate --expected-head-sha "$EXPECTED_HEAD_SHA"',
                 1,
             )
             path.write_text(text, encoding="utf-8")
@@ -50,10 +48,8 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
             path = root / boundary.IB
             text = path.read_text(encoding="utf-8")
             text = text.replace(
-                'trusted/scripts/run_ib_paper_artifact_qualification.sh \
-            "$artifact_dir" "$EXPECTED_HEAD_SHA" "$evidence"',
-                '"$HEPTA_IB_QUALIFIER_COMMAND" \
-            --account-id "$HEPTA_IB_ACCOUNT_ID" --gateway-host "$HEPTA_IB_GATEWAY_HOST"',
+                'trusted/scripts/run_ib_paper_artifact_qualification.sh \\\n            "$artifact_dir" "$EXPECTED_HEAD_SHA" "$evidence"',
+                '"$HEPTA_IB_QUALIFIER_COMMAND" \\\n            --account-id "$HEPTA_IB_ACCOUNT_ID" --gateway-host "$HEPTA_IB_GATEWAY_HOST"',
                 1,
             )
             path.write_text(text, encoding="utf-8")
