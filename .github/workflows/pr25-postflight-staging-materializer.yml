@@ -1,0 +1,53 @@
+name: PR25 postflight staging materializer
+
+on:
+  push:
+    branches:
+      - codex/pr25-postflight-staging-20260906
+    paths:
+      - '.github/workflows/pr25-postflight-staging-materializer.yml'
+      - '.github/workflows/github-governance-qualification.yml'
+      - 'scripts/materialize_ib_postflight.py'
+      - 'scripts/verify_bootstrap_postflight_contract.py'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pr25-postflight-staging-materializer
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: ${{ !contains(github.event.head_commit.message, 'materialize exact IB postflight blob') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact staging head with push credential
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/pr25-postflight-staging-20260906
+          fetch-depth: 2
+          persist-credentials: true
+      - name: Patch only the exact reviewed IB bootstrap surface
+        env:
+          EXPECTED_GOVERNANCE_BLOB: 9ab8c7d7f81ffed84b2a3707dc71d568c4a9bfef
+          EXPECTED_IB_BASE_BLOB: 1ab812e5d963fdefc25fee2db0c3c28f382ed677
+          EXPECTED_STATIC_CHECK_BLOB: daa83d2b20088783c53a936c00b0f41f1517b07c
+        run: |
+          set -euo pipefail
+          test "$(git hash-object .github/workflows/ib-paper-qualification.yml)" = "$EXPECTED_IB_BASE_BLOB"
+          test "$(git hash-object .github/workflows/github-governance-qualification.yml)" = "$EXPECTED_GOVERNANCE_BLOB"
+          test "$(git hash-object scripts/verify_bootstrap_postflight_contract.py)" = "$EXPECTED_STATIC_CHECK_BLOB"
+          python3 scripts/materialize_ib_postflight.py
+          ruby -e "require 'yaml'; YAML.load_file('.github/workflows/ib-paper-qualification.yml')"
+          python3 -m py_compile scripts/verify_bootstrap_postflight_contract.py
+          python3 scripts/verify_bootstrap_postflight_contract.py --self-test
+          git diff --check
+          final_blob="$(git hash-object .github/workflows/ib-paper-qualification.yml)"
+          test "$final_blob" != "$EXPECTED_IB_BASE_BLOB"
+          git config user.name 'OpenAI Codex'
+          git config user.email 'noreply@openai.com'
+          git add .github/workflows/ib-paper-qualification.yml
+          git commit -s -m 'chore(ci): materialize exact IB postflight blob' -m "IB-WORKFLOW-BLOB: $final_blob"
+          git push origin HEAD:codex/pr25-postflight-staging-20260906
