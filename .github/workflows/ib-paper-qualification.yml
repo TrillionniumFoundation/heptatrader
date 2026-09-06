@@ -59,9 +59,11 @@ jobs:
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
+          path: candidate
           fetch-depth: 1
           persist-credentials: false
       - name: Assert exact bootstrap revision and clean Git authority
+        working-directory: candidate
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
@@ -71,6 +73,7 @@ jobs:
       - name: Confirm Docker hostile-isolation dependency
         run: docker version
       - name: Validate PAPER qualification harnesses and hostile isolation
+        working-directory: candidate
         run: |
           set -euo pipefail
           git diff --check
@@ -81,16 +84,40 @@ jobs:
             scripts/verify_ib_paper_qualification.py \
             scripts/verify_ib_candidate_artifact.py \
             scripts/verify_qualification_candidate.py \
-            scripts/check_qualification_trust_boundary.py
+            scripts/check_qualification_trust_boundary.py \
+            scripts/check_bootstrap_postflight.py
           python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 scripts/check_bootstrap_postflight.py
           python3 -m unittest discover -s tests/python -p 'test_git_index_authority.py'
+          python3 -m unittest discover -s tests/python -p 'test_bootstrap_postflight.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_workflow_interfaces.py'
+
+      - name: Checkout independent exact-head postflight verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name }}
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: postflight
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Rebind executed source to unchanged reviewed bytes
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git -C postflight rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 postflight/scripts/verify_exact_git_index.py --root postflight
+          python3 postflight/scripts/verify_exact_git_index.py --root candidate
+      - name: Record successful source-only bootstrap audit
+        run: |
           printf '%s\n' \
             'IB qualification workflow, exact-index and hostile trust-boundary tests passed.' \
+            'Independent postflight rebound the executed work tree to the unchanged reviewed head.' \
             'No Broker credential, candidate build or PAPER mutation was used.' \
             >> "$GITHUB_STEP_SUMMARY"
+
 
   build-candidate:
     if: github.event_name == 'workflow_dispatch'
