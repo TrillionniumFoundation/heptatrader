@@ -43,7 +43,7 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertIn("persist-credentials: false", self.workflow)
         self.assertIn('test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"', self.workflow)
 
-    def test_job_is_read_only_and_contains_no_secret_or_dispatch_surface(self) -> None:
+    def test_job_is_read_only_and_executes_no_candidate_program(self) -> None:
         self.assertIn("permissions:\n  contents: read", self.workflow)
         self.assertNotIn("secrets.", self.workflow)
         self.assertNotIn("workflow_dispatch", self.workflow)
@@ -51,6 +51,8 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertNotIn("repository_dispatch", self.workflow)
         self.assertNotIn("curl ", self.workflow)
         self.assertNotIn("gh ", self.workflow)
+        self.assertNotIn("python", self.workflow.lower())
+        self.assertNotIn("./scripts/", self.workflow)
 
     def test_merge_queue_identity_and_clean_postflight_are_fail_closed(self) -> None:
         self.assertIn(
@@ -60,12 +62,11 @@ class GovernanceBootstrapAdmissionWorkflowTests(unittest.TestCase):
         self.assertIn("if: always()", self.workflow)
         self.assertIn("git diff --exit-code -- .", self.workflow)
         self.assertIn("git diff --cached --exit-code -- .", self.workflow)
-        self.assertGreaterEqual(
-            self.workflow.count(
-                'test -z "$(git status --porcelain=v1 --untracked-files=all)"'
-            ),
-            2,
+        clean_status = (
+            'test -z "$(git status --porcelain=v1 '
+            '--untracked-files=all --ignored=matching)"'
         )
+        self.assertGreaterEqual(self.workflow.count(clean_status), 2)
 
 
 if __name__ == "__main__":
