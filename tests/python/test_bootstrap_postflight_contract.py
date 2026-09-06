@@ -125,15 +125,17 @@ class HostedAuditFinalPostflightContractTests(unittest.TestCase):
             )
             self.assertTrue(errors)
 
-    def test_ignored_artifact_check_is_mandatory(self) -> None:
+    def test_final_ignored_artifact_check_is_mandatory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
-            errors = self.mutate_once(
-                root,
-                contract.WORKFLOWS[0],
-                "--ignored=matching",
-                "--ignored=no",
+            path = root / contract.WORKFLOWS[0]
+            text = path.read_text(encoding="utf-8")
+            mutated = contract._replace_last(
+                text, "--ignored=matching", "--ignored=no"
             )
+            self.assertNotEqual(mutated, text)
+            path.write_text(mutated, encoding="utf-8")
+            errors = contract.validate(root)
             self.assertTrue(any("ignored" in error for error in errors), errors)
 
     def test_cleanup_cannot_erase_mutation_evidence(self) -> None:

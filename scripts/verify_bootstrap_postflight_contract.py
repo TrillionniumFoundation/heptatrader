@@ -21,6 +21,11 @@ def _job_block(text: str, job_id: str, errors: list[str], label: str) -> str:
     return postflight._job_block(text, job_id, errors, label)
 
 
+def _replace_last(text: str, old: str, new: str) -> str:
+    prefix, separator, suffix = text.rpartition(old)
+    return prefix + new + suffix if separator else text
+
+
 def validate(root: Path | str = ROOT) -> list[str]:
     root = Path(root).resolve()
     errors = postflight.validate(root)
@@ -66,34 +71,63 @@ def validate(root: Path | str = ROOT) -> list[str]:
 
 def self_test() -> None:
     mutations = (
-        lambda text: text.replace(
-            f"- name: {FINAL_NAME}", "- name: Removed immutable postflight", 1
+        (
+            "remove-final",
+            lambda text: text.replace(
+                f"- name: {FINAL_NAME}", "- name: Removed immutable postflight", 1
+            ),
         ),
-        lambda text: text.replace(
-            f"- name: {FINAL_NAME}\n        if: always()",
-            f"- name: {FINAL_NAME}\n        if: success()",
-            1,
+        (
+            "success-gate-final",
+            lambda text: text.replace(
+                f"- name: {FINAL_NAME}\n        if: always()",
+                f"- name: {FINAL_NAME}\n        if: success()",
+                1,
+            ),
         ),
-        lambda text: text.replace(
-            "persist-credentials: false", "persist-credentials: true", 1
+        (
+            "enable-checkout-credentials",
+            lambda text: text.replace(
+                "persist-credentials: false", "persist-credentials: true", 1
+            ),
         ),
-        lambda text: text.replace(
-            f"ref: {EXACT_SHA_EXPR}", "ref: ${{ github.sha }}", 1
+        (
+            "weaken-checkout-ref",
+            lambda text: text.replace(
+                f"ref: {EXACT_SHA_EXPR}", "ref: ${{ github.sha }}", 1
+            ),
         ),
-        lambda text: text.replace(
-            "runs-on: ubuntu-24.04", "runs-on: self-hosted", 1
+        (
+            "select-self-hosted",
+            lambda text: text.replace(
+                "runs-on: ubuntu-24.04", "runs-on: self-hosted", 1
+            ),
         ),
-        lambda text: text.replace("--ignored=matching", "--ignored=no", 1),
-        lambda text: text.replace(
-            "git diff --cached --exit-code -- .",
-            "git diff --cached --quiet -- .",
-            1,
+        (
+            "drop-final-ignored-scan",
+            lambda text: _replace_last(
+                text, "--ignored=matching", "--ignored=no"
+            ),
         ),
-        lambda text: text.replace(
-            "set -euo pipefail", "set -euo pipefail\n          git clean -fdx", 1
+        (
+            "weaken-index-diff",
+            lambda text: text.replace(
+                "git diff --cached --exit-code -- .",
+                "git diff --cached --quiet -- .",
+                1,
+            ),
         ),
-        lambda text: text.replace(
-            "  pull_request:", "  pull_request_target:", 1
+        (
+            "erase-evidence",
+            lambda text: text.replace(
+                "set -euo pipefail", "set -euo pipefail\n          git clean -fdx", 1
+            ),
+        ),
+        (
+            "use-pull-request-target",
+            lambda text: text.replace(
+                "  pull_request:", "  pull_request_target:", 1
+            ),
         ),
     )
     with tempfile.TemporaryDirectory() as directory:
@@ -110,13 +144,15 @@ def self_test() -> None:
         for relative in WORKFLOWS:
             path = root / relative
             original = path.read_text(encoding="utf-8")
-            for mutation in mutations:
+            for label, mutation in mutations:
                 mutated = mutation(original)
                 if mutated == original:
-                    raise AssertionError(f"{relative}: mutation did not alter fixture")
+                    raise AssertionError(f"{relative}: {label} did not alter fixture")
                 path.write_text(mutated, encoding="utf-8")
                 if not validate(root):
-                    raise AssertionError(f"{relative}: hostile mutation was accepted")
+                    raise AssertionError(
+                        f"{relative}: hostile mutation {label} was accepted"
+                    )
                 path.write_text(original, encoding="utf-8")
 
 
