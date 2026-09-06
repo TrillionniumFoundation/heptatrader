@@ -130,7 +130,15 @@ bool OmsSegmentedJournal::ValidateDirectoryLocked() const
 bool OmsSegmentedJournal::ObserveActiveLocked(
     std::size_t& onDiskBytes, std::size_t& retainedBytes) const
 {
-    return m_active && ObserveJournal(*m_active, onDiskBytes, retainedBytes);
+    if (!m_active || !ObserveJournal(*m_active, onDiskBytes, retainedBytes))
+        return false;
+    const bool logicalEmpty = onDiskBytes == 0 && retainedBytes == 0;
+    if (logicalEmpty != (m_activeRecords == 0))
+    {
+        IncrementSaturating(m_segmentIntegrityRejects);
+        return false;
+    }
+    return true;
 }
 
 bool OmsSegmentedJournal::ReadSegmentLocked(
