@@ -29,7 +29,7 @@ concurrency:
 
 jobs:
   build-candidate:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true
     name: ib-paper-candidate-artifact-build
     runs-on:
       group: trillionnium-ib-paper
@@ -105,7 +105,7 @@ jobs:
           compression-level: 0
 
   qualify:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true
     needs: build-candidate
     name: ib-paper-exact-artifact-qualification
     runs-on:
