@@ -230,6 +230,7 @@ bool OmsSegmentedJournal::OpenActiveLocked()
         return false;
     }
     m_activeRecords = static_cast<std::size_t>(activeRecords);
+    m_activeLogicalBytes = activeOnDisk;
     m_active = std::move(active);
     return true;
 }
