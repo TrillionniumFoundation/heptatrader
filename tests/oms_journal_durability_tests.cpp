@@ -13,6 +13,7 @@ namespace
 #include "oms_segmented_journal_tests_02b1.hpp"
 #include "oms_segmented_journal_tests_02b2.hpp"
 #include "oms_segmented_journal_tests_03.hpp"
+#include "oms_segmented_journal_tests_toctou.hpp"
 
 }
 
@@ -26,5 +27,6 @@ int main()
     TestSegmentCapacityAndCrossSegmentCallbackAtomicity();
     TestSegmentInvalidLimitsAndIndependentCapacityDimensions();
     TestSegmentReplayReservationAndConcurrentProducers();
+    TestSegmentDirectoryOpenRejectsSymlinkTraversal();
     return 0;
 }

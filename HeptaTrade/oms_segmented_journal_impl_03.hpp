@@ -4,6 +4,101 @@
     return valid;
 }
 
+namespace
+{
+int OpenPrivateDirectoryNoSymlinks(const std::string& directory,
+                                   struct stat& metadata)
+{
+#if !defined(O_DIRECTORY) || !defined(O_NOFOLLOW)
+    (void)directory;
+    (void)metadata;
+    errno = ENOTSUP;
+    return -1;
+#else
+    if (directory.empty() || directory.size() >= PATH_MAX ||
+        directory.find('\0') != std::string::npos)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    int flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW;
+#ifdef O_CLOEXEC
+    flags |= O_CLOEXEC;
+#endif
+    int current;
+    do
+    {
+        current = ::open(directory.front() == '/' ? "/" : ".", flags);
+    } while (current < 0 && errno == EINTR);
+    if (current < 0) return -1;
+#ifndef O_CLOEXEC
+    if (::fcntl(current, F_SETFD, FD_CLOEXEC) != 0)
+    {
+        const int saved = errno;
+        ::close(current);
+        errno = saved;
+        return -1;
+    }
+#endif
+
+    std::size_t cursor = 0;
+    while (cursor < directory.size())
+    {
+        while (cursor < directory.size() && directory[cursor] == '/') ++cursor;
+        if (cursor == directory.size()) break;
+        const std::size_t separator = directory.find('/', cursor);
+        const std::size_t length = separator == std::string::npos ?
+            directory.size() - cursor : separator - cursor;
+        const std::string component = directory.substr(cursor, length);
+        cursor = separator == std::string::npos ? directory.size() : separator + 1;
+        if (component == ".") continue;
+        if (component == "..")
+        {
+            ::close(current);
+            errno = EINVAL;
+            return -1;
+        }
+
+        int next;
+        do
+        {
+            next = ::openat(current, component.c_str(), flags);
+        } while (next < 0 && errno == EINTR);
+        if (next < 0)
+        {
+            const int saved = errno;
+            ::close(current);
+            errno = saved;
+            return -1;
+        }
+#ifndef O_CLOEXEC
+        if (::fcntl(next, F_SETFD, FD_CLOEXEC) != 0)
+        {
+            const int saved = errno;
+            ::close(next);
+            ::close(current);
+            errno = saved;
+            return -1;
+        }
+#endif
+        ::close(current);
+        current = next;
+    }
+
+    if (!StatFileDescriptor(current, metadata) ||
+        !PrivateDirectoryMetadata(metadata))
+    {
+        const int saved = errno == 0 ? EPERM : errno;
+        ::close(current);
+        errno = saved;
+        return -1;
+    }
+    return current;
+#endif
+}
+}
+
 bool OmsSegmentedJournal::ScanSegmentsLocked()
 {
     m_segments.clear();
@@ -147,33 +242,13 @@ bool OmsSegmentedJournal::Init(const std::string& directory,
         !ValidSegmentedLimits(m_limits) || !CanonicalSegmentBaseName(baseName))
         return false;
 
-    char resolved[PATH_MAX];
-    if (::realpath(directory.c_str(), resolved) == nullptr) return false;
-    struct stat pathMetadata;
-    if (::lstat(resolved, &pathMetadata) != 0 ||
-        !PrivateDirectoryMetadata(pathMetadata)) return false;
-    int directoryFlags = O_RDONLY;
-#ifdef O_CLOEXEC
-    directoryFlags |= O_CLOEXEC;
-#endif
-#ifdef O_DIRECTORY
-    directoryFlags |= O_DIRECTORY;
-#endif
-#ifdef O_NOFOLLOW
-    directoryFlags |= O_NOFOLLOW;
-#endif
-    m_directoryFd = ::open(resolved, directoryFlags);
     struct stat descriptorMetadata;
-    if (m_directoryFd < 0 || !StatFileDescriptor(m_directoryFd, descriptorMetadata) ||
-        !PrivateDirectoryMetadata(descriptorMetadata) ||
-        descriptorMetadata.st_dev != pathMetadata.st_dev ||
-        descriptorMetadata.st_ino != pathMetadata.st_ino)
-    {
-        if (m_directoryFd >= 0) ::close(m_directoryFd);
-        m_directoryFd = -1;
-        return false;
-    }
-    m_directory = resolved;
+    m_directoryFd = OpenPrivateDirectoryNoSymlinks(directory, descriptorMetadata);
+    if (m_directoryFd < 0) return false;
+    // The retained descriptor is authoritative. This procfs name continues
+    // to address the opened directory even if its pathname is renamed.
+    m_directory = std::string("/proc/self/fd/") +
+        std::to_string(m_directoryFd);
     m_baseName = baseName;
     m_activeName = baseName + ".active.jsonl";
     m_lockName = baseName + ".writer.lock";
