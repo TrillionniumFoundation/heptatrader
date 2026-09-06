@@ -55,7 +55,6 @@ jobs:
     timeout-minutes: 25
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      PYTHONPYCACHEPREFIX: ${{ runner.temp }}/ib-paper-bootstrap-pycache
     steps:
       - name: Checkout exact bootstrap pull-request head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
