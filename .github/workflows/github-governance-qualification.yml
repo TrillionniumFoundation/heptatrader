@@ -1,8 +1,6 @@
 name: GitHub Governance Qualification
 
 on:
-  pull_request:
-    branches: [main]
   workflow_dispatch:
     inputs:
       pull_number:
@@ -30,166 +28,12 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: heptatrader-github-governance-qualification-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: heptatrader-github-governance-qualification-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  bootstrap-audit:
-    if: github.event_name == 'pull_request'
-    name: github-governance-workflow-bootstrap-audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 25
-    env:
-      PYTHONDONTWRITEBYTECODE: '1'
-    steps:
-      - name: Checkout exact bootstrap pull-request head without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: candidate
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Assert exact bootstrap revision and capture immutable final verifier
-        id: exact_source
-        working-directory: candidate
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          test "$(/usr/bin/git rev-parse HEAD)" = "$EXPECTED_SHA"
-          /usr/bin/python3 scripts/verify_exact_git_index.py --root .
-          postflight="$RUNNER_TEMP/github-governance-exact-index-postflight.py"
-          /usr/bin/install -m 0500 scripts/verify_exact_git_index.py "$postflight"
-          verifier_sha256="$(/usr/bin/sha256sum "$postflight" | /usr/bin/awk '{print $1}')"
-          head_tree="$(/usr/bin/git rev-parse 'HEAD^{tree}')"
-          {
-            echo "verifier_sha256=$verifier_sha256"
-            echo "head_tree=$head_tree"
-          } >> "$GITHUB_OUTPUT"
-      - name: Confirm Docker hostile-isolation dependency
-        run: docker version
-      - name: Validate trusted harnesses, provenance, team activation and hostile isolation
-        env:
-          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/github-governance-bootstrap-pycache
-        working-directory: candidate
-        run: |
-          set -euo pipefail
-          git diff --check
-          bash -n scripts/build_ib_candidate_artifact.sh
-          bash -n scripts/run_ib_paper_artifact_qualification.sh
-          python3 -m py_compile \
-            scripts/github_qualification_evidence.py \
-            scripts/verify_exact_git_index.py \
-            scripts/verify_bootstrap_postflight_contract.py \
-            scripts/verify_github_governance.py \
-            scripts/verify_ib_paper_qualification.py \
-            scripts/verify_ib_candidate_artifact.py \
-            scripts/verify_qualification_candidate.py \
-            scripts/verify_team_codeowners_activation.py \
-            scripts/check_qualification_trust_boundary.py \
-            scripts/check_bootstrap_postflight.py
-          python3 scripts/verify_bootstrap_postflight_contract.py --self-test
-          python3 scripts/check_qualification_trust_boundary.py --self-test
-          python3 scripts/check_bootstrap_postflight.py
-          python3 scripts/verify_team_codeowners_activation.py
-          python3 -m unittest discover -s tests/python -p 'test_git_index_authority.py'
-          python3 -m unittest discover -s tests/python -p 'test_bootstrap_postflight.py'
-          python3 -m unittest discover -s tests/python -p 'test_bootstrap_postflight_contract.py'
-          python3 -m unittest discover -s tests/python -p 'test_github_governance.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
-          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
-          python3 -m unittest discover -s tests/python -p 'test_team_codeowners_activation.py'
-
-      - name: Checkout independent exact-head postflight verifier
-        if: always()
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
-          path: postflight
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Rebind executed source to unchanged reviewed bytes
-        if: always()
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git -C postflight rev-parse HEAD)" = "$EXPECTED_SHA"
-          python3 postflight/scripts/verify_exact_git_index.py --root postflight
-          python3 postflight/scripts/verify_exact_git_index.py --root candidate
-      - name: Record successful source-only bootstrap audit
-        run: |
-          printf '%s\n' \
-            'Trusted qualification, exact-index and team CODEOWNERS bootstrap audits passed.' \
-            'Independent postflight rebound the executed work tree to the unchanged reviewed head.' \
-            'No secret, Broker credential or PAPER mutation was used; live platform evidence remains external.' \
-            >> "$GITHUB_STEP_SUMMARY"
-      - name: Reassert immutable exact source after candidate-controlled validation
-        if: always()
-        env:
-          BASH_ENV: /dev/null
-          ENV: /dev/null
-          EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          EXPECTED_TREE_SHA: ${{ steps.exact_source.outputs.head_tree }}
-          EXPECTED_VERIFIER_SHA256: ${{ steps.exact_source.outputs.verifier_sha256 }}
-          LD_LIBRARY_PATH: ''
-          LD_PRELOAD: ''
-          PATH: /usr/bin:/bin
-          POSTFLIGHT_VERIFIER: ${{ runner.temp }}/github-governance-exact-index-postflight.py
-          PYTHONHOME: ''
-          PYTHONPATH: ''
-        run: |
-          set -euo pipefail
-          test -n "$EXPECTED_TREE_SHA"
-          test -n "$EXPECTED_VERIFIER_SHA256"
-          actual_verifier_sha256="$(/usr/bin/sha256sum "$POSTFLIGHT_VERIFIER" | /usr/bin/awk '{print $1}')"
-          test "$actual_verifier_sha256" = "$EXPECTED_VERIFIER_SHA256"
-          test "$(/usr/bin/git -C candidate rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
-          test "$(/usr/bin/git -C candidate rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE_SHA"
-          test "$(/usr/bin/git -C postflight rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
-          test "$(/usr/bin/git -C postflight rev-parse 'HEAD^{tree}')" = "$EXPECTED_TREE_SHA"
-          /usr/bin/env -i \
-            PATH=/usr/bin:/bin \
-            HOME="$RUNNER_TEMP/github-governance-final-postflight-home" \
-            GIT_CONFIG_NOSYSTEM=1 \
-            GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_NO_REPLACE_OBJECTS=1 \
-            PYTHONDONTWRITEBYTECODE=1 \
-            PYTHONPYCACHEPREFIX="$RUNNER_TEMP/github-governance-final-postflight-pycache" \
-            /usr/bin/python3 "$POSTFLIGHT_VERIFIER" --root "$GITHUB_WORKSPACE/candidate"
-          /usr/bin/env -i \
-            PATH=/usr/bin:/bin \
-            HOME="$RUNNER_TEMP/github-governance-final-postflight-home" \
-            GIT_CONFIG_NOSYSTEM=1 \
-            GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_NO_REPLACE_OBJECTS=1 \
-            PYTHONDONTWRITEBYTECODE=1 \
-            PYTHONPYCACHEPREFIX="$RUNNER_TEMP/github-governance-final-postflight-pycache" \
-            /usr/bin/python3 "$POSTFLIGHT_VERIFIER" --root "$GITHUB_WORKSPACE/postflight"
-          candidate_status="$(/usr/bin/env -i \
-            PATH=/usr/bin:/bin \
-            HOME="$RUNNER_TEMP/github-governance-final-postflight-home" \
-            GIT_CONFIG_NOSYSTEM=1 \
-            GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_NO_REPLACE_OBJECTS=1 \
-            /usr/bin/git -C "$GITHUB_WORKSPACE/candidate" status \
-              --porcelain=v2 --untracked-files=all --ignored=matching)"
-          postflight_status="$(/usr/bin/env -i \
-            PATH=/usr/bin:/bin \
-            HOME="$RUNNER_TEMP/github-governance-final-postflight-home" \
-            GIT_CONFIG_NOSYSTEM=1 \
-            GIT_CONFIG_GLOBAL=/dev/null \
-            GIT_NO_REPLACE_OBJECTS=1 \
-            /usr/bin/git -C "$GITHUB_WORKSPACE/postflight" status \
-              --porcelain=v2 --untracked-files=all --ignored=matching)"
-          test -z "$candidate_status"
-          test -z "$postflight_status"
-
-
   qualify:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.acknowledge_no_bypass == true
     name: github-governance-exact-artifact-verification
     runs-on: ubuntu-24.04
     environment: repository-governance
@@ -217,16 +61,14 @@ jobs:
           path: trusted
           fetch-depth: 1
           persist-credentials: false
-      - name: Assert trusted harness identity and exact Git authority
+      - name: Assert trusted harness identity and static boundary
         env:
           DISPATCH_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           test "$(git -C trusted rev-parse HEAD)" = "$DISPATCH_SHA"
-          python3 trusted/scripts/verify_exact_git_index.py --root trusted
           python3 -m py_compile \
             trusted/scripts/github_qualification_evidence.py \
-            trusted/scripts/verify_exact_git_index.py \
             trusted/scripts/verify_github_governance.py
           python3 trusted/scripts/check_qualification_trust_boundary.py --root trusted
       - name: Collect fully paginated live evidence with trusted code only

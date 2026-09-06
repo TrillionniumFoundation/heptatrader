@@ -74,8 +74,8 @@
     "ib-paper-exact-artifact-qualification"
   ],
   "non_required_observation_contexts": [
-    "github-governance-workflow-bootstrap-audit",
-    "ib-paper-workflow-bootstrap-audit",
+    "governance-bootstrap-admission",
+    "qualification-source-audit",
     "ib-paper-candidate-artifact-build",
     "reliability-runtime-sanitizers (g++)",
     "reliability-runtime-sanitizers (clang++)",

@@ -1,0 +1,199 @@
+name: Governance Bootstrap Admission
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-governance-bootstrap-admission-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  admission:
+    name: governance-bootstrap-admission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact pull-request or merge-group identity
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              test "$EVENT_BASE_REF" = main
+              ;;
+            merge_group)
+              [[ "$EVENT_REF" == refs/heads/gh-readonly-queue/main/pr-* ]]
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Verify privileged workflows, source audit and context registry as immutable data
+        shell: bash
+        env:
+          GOVERNANCE_SHA256: 8029358e340f5ea37b024b87ca2f720a771fd6bd11ff8786495e272481c8cc69
+          IB_PAPER_SHA256: 8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b
+          X230_PROBE_SHA256: 0e0e5ab8fcd9748b041e8724aa8ab42412cbecd783ca8f22b106eaddbf1e2c0c
+          CONTEXTS_SHA256: 6d704de38201632181be5e652c87be06b155ba71ef53ece334e681a16ae8e98b
+          SOURCE_AUDIT_SHA256: 90066115d950c69aefbd7b46cb45365b48bf8783ae5c49efc5540e7fdadad566
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+
+          expected_workflows=(
+            .github/workflows/github-governance-qualification.yml
+            .github/workflows/governance-bootstrap-admission.yml
+            .github/workflows/ib-paper-qualification.yml
+            .github/workflows/qualification-source-audit.yml
+            .github/workflows/self-hosted-ib-availability.yml
+          )
+          mapfile -d '' -t actual_workflows < <(
+            git ls-tree -r -z --full-tree --name-only HEAD -- .github/workflows
+          )
+          test "${#actual_workflows[@]}" -eq "${#expected_workflows[@]}"
+          for index in "${!expected_workflows[@]}"; do
+            test "${actual_workflows[$index]}" = "${expected_workflows[$index]}"
+          done
+
+          verify_regular_file() {
+            local target="$1"
+            local expected="$2"
+            test -f "$target"
+            test ! -L "$target"
+            test "$(git ls-tree HEAD -- "$target" | wc -l)" -eq 1
+            test "$(git ls-tree HEAD -- "$target" | awk '{print $1}')" = 100644
+            git cat-file blob "HEAD:$target" |
+              sha256sum --check <(printf '%s  -\n' "$expected")
+            printf '%s  %s\n' "$expected" "$target" |
+              sha256sum --check --strict
+          }
+
+          verify_dispatch_workflow() {
+            local target="$1"
+            local expected="$2"
+            verify_regular_file "$target" "$expected"
+            if ! awk '
+              BEGIN {
+                in_on = 0
+                seen_on = 0
+                event_count = 0
+                top_count = 0
+              }
+              index($0, "\t") { exit 10 }
+              /^[[:space:]]*$/ || /^[[:space:]]*#/ { next }
+              /^[^[:space:]]/ {
+                in_on = 0
+                if ($0 !~ /^[A-Za-z_][A-Za-z0-9_-]*:/) exit 11
+                key = $0
+                sub(/:.*/, "", key)
+                if (!(key == "name" || key == "on" ||
+                      key == "permissions" || key == "concurrency" ||
+                      key == "jobs")) exit 12
+                if (seen_top[key]++) exit 13
+                top_count++
+                if (key == "on") {
+                  if ($0 != "on:") exit 14
+                  seen_on = 1
+                  in_on = 1
+                }
+                next
+              }
+              in_on {
+                if ($0 !~ /^  /) exit 15
+                if (substr($0, 1, 2) == "  " && substr($0, 3, 1) != " ") {
+                  if ($0 != "  workflow_dispatch:") exit 16
+                  event_count++
+                }
+                next
+              }
+              END {
+                if (seen_on != 1 || event_count != 1 || top_count != 5 ||
+                    !seen_top["name"] || !seen_top["permissions"] ||
+                    !seen_top["concurrency"] || !seen_top["jobs"]) exit 17
+              }
+            ' "$target"; then
+              echo "$target is not canonical workflow_dispatch-only YAML" >&2
+              return 1
+            fi
+          }
+
+          verify_dispatch_workflow             .github/workflows/github-governance-qualification.yml             "$GOVERNANCE_SHA256"
+          verify_dispatch_workflow             .github/workflows/ib-paper-qualification.yml             "$IB_PAPER_SHA256"
+          verify_dispatch_workflow             .github/workflows/self-hosted-ib-availability.yml             "$X230_PROBE_SHA256"
+          verify_regular_file             .github/required-check-contexts-v1.json             "$CONTEXTS_SHA256"
+          verify_regular_file             .github/workflows/qualification-source-audit.yml             "$SOURCE_AUDIT_SHA256"
+          verify_regular_file             .github/workflows/governance-bootstrap-admission.yml             "$(sha256sum .github/workflows/governance-bootstrap-admission.yml | awk '{print $1}')"
+
+          source_audit=.github/workflows/qualification-source-audit.yml
+          test "$(grep -Fxc '  pull_request:' "$source_audit")" -eq 1
+          test "$(grep -Fxc '  merge_group:' "$source_audit")" -eq 1
+          test "$(grep -Fxc '  contents: read' "$source_audit")" -eq 1
+          test "$(grep -Fxc '    runs-on: ubuntu-24.04' "$source_audit")" -eq 1
+          ! grep -Fq 'pull_request_target' "$source_audit"
+          ! grep -Fq 'self-hosted' "$source_audit"
+          ! grep -Fq 'secrets.' "$source_audit"
+          ! grep -Eq '^[[:space:]]+[A-Za-z-]+:[[:space:]]*write([[:space:]]|$)' "$source_audit"
+
+          governance_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.acknowledge_no_bypass == true"
+          ib_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true"
+          x230_gate="    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'"
+          test "$(grep -Fxc -- "$governance_gate"             .github/workflows/github-governance-qualification.yml)" -eq 1
+          test "$(grep -Fxc -- "$ib_gate"             .github/workflows/ib-paper-qualification.yml)" -eq 2
+          test "$(grep -Fxc -- "$x230_gate"             .github/workflows/self-hosted-ib-availability.yml)" -eq 1
+
+          test "$(grep -Fc 'group: trillionnium-ib-paper'             .github/workflows/ib-paper-qualification.yml)" -eq 2
+          grep -Fq 'heptatrader-ib-builder'             .github/workflows/ib-paper-qualification.yml
+          grep -Fq 'heptatrader-ib-paper'             .github/workflows/ib-paper-qualification.yml
+          test "$(grep -Fc 'group: trillionnium-ib-paper'             .github/workflows/self-hosted-ib-availability.yml)" -eq 1
+          ! grep -Fq 'uses: actions/checkout@'             .github/workflows/self-hosted-ib-availability.yml
+          ! grep -Fq 'self-hosted'             .github/workflows/github-governance-qualification.yml
+
+          contexts=.github/required-check-contexts-v1.json
+          test "$(grep -Fcx '    "governance-bootstrap-admission",' "$contexts")" -eq 1
+          test "$(grep -Fcx '    "qualification-source-audit",' "$contexts")" -eq 1
+          test "$(grep -Fcx '    "github-governance-exact-artifact-verification",' "$contexts")" -eq 1
+          test "$(grep -Fcx '    "ib-paper-exact-artifact-qualification"' "$contexts")" -eq 1
+          ! grep -Fq '"github-governance-workflow-bootstrap-audit"' "$contexts"
+          ! grep -Fq '"ib-paper-workflow-bootstrap-audit"' "$contexts"
+
+      - name: Validate bounded event subject without candidate execution
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          test -z "$(git ls-files --unmerged)"
+          test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"
+
+      - name: Reassert immutable event subject
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"
