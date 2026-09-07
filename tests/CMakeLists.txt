@@ -165,6 +165,22 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests pthread)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+add_executable(hepta_ib_live_terminal_reconciliation_tests
+    ib_live_terminal_reconciliation_tests.cpp
+    ../HeptaTrade/adapter_ib/ib_api_wrapper.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp
+    ../HeptaTrade/adapter_ib/ib_order_lifecycle.cpp
+    ../HeptaTrade/adapter_ib/ib_venue_correlation.cpp
+    ../HeptaTrade/risk/pre_trade_risk_engine.cpp
+    ../HeptaTrade/state/ib_contract_identity.cpp)
+target_link_libraries(hepta_ib_live_terminal_reconciliation_tests
+    hepta_execution_core)
+hepta_register_core_test(hepta_ib_live_terminal_reconciliation_tests)
+
 add_executable(hepta_pre_trade_risk_engine_tests
     pre_trade_risk_engine_tests.cpp
     ../HeptaTrade/risk/pre_trade_risk_engine.cpp)

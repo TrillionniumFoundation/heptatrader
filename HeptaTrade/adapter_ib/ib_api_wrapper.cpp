@@ -24,6 +24,83 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+bool MatchesSubmittedIBContract(const IBContractLite& submitted,
+                                const IBContractLite& observed) {
+    // Broker enrichment of unspecified fields is permitted. Every field
+    // supplied in the actual send must continue identifying that contract.
+    return !submitted.symbol.empty() && !submitted.secType.empty() &&
+        !submitted.currency.empty() && !submitted.exchange.empty() &&
+        submitted.symbol == observed.symbol && submitted.secType == observed.secType &&
+        submitted.currency == observed.currency && submitted.exchange == observed.exchange &&
+        (submitted.primaryExchange.empty() || submitted.primaryExchange == observed.primaryExchange) &&
+        (submitted.localSymbol.empty() || submitted.localSymbol == observed.localSymbol) &&
+        (submitted.lastTradeDateOrContractMonth.empty() ||
+         submitted.lastTradeDateOrContractMonth == observed.lastTradeDateOrContractMonth) &&
+        (submitted.right.empty() || submitted.right == observed.right) &&
+        std::isfinite(submitted.strike) && std::isfinite(observed.strike) &&
+        (submitted.strike == 0.0 || submitted.strike == observed.strike) &&
+        (submitted.multiplier.empty() || submitted.multiplier == observed.multiplier) &&
+        (submitted.tradingClass.empty() || submitted.tradingClass == observed.tradingClass);
+}
+
+void IBSubmittedOrderQuantityTracker::Reset(
+    std::uint64_t connectionEpoch, int clientId, const std::string& account) {
+    m_connectionEpoch = connectionEpoch;
+    m_clientId = clientId;
+    m_account = account;
+    m_orders.clear();
+}
+
+void IBSubmittedOrderQuantityTracker::Record(
+    long orderId, const IBContractLite& contract, const IBOrderLite& order) {
+    if (m_connectionEpoch != 0 && m_clientId >= 0 && !m_account.empty() &&
+        orderId >= 0 && std::isfinite(order.totalQuantity) && order.totalQuantity > 0.0) {
+        SubmittedOrder submitted;submitted.contract = contract;submitted.order = order;
+        m_orders[orderId] = submitted;
+    }
+}
+
+void IBSubmittedOrderQuantityTracker::ObserveOrderStatus(
+    int clientId, long orderId, const std::string& status,
+    double filled, double remaining, double averagePrice) {
+    const auto found = m_orders.find(orderId);
+    if (clientId < 0 || clientId != m_clientId || found == m_orders.end()) return;
+    const double quantity = found->second.order.totalQuantity;
+    if (!std::isfinite(filled) || filled < 0.0 || filled > quantity ||
+        !std::isfinite(remaining) || remaining < 0.0 || remaining > quantity ||
+        filled + remaining > quantity ||
+        (filled > 0.0 && (!std::isfinite(averagePrice) || averagePrice <= 0.0)))
+        return;
+    if ((status == "Filled" && filled == quantity && remaining == 0.0) ||
+        status == "Cancelled" || status == "ApiCancelled" ||
+        status == "Inactive" || status == "Rejected")
+        m_orders.erase(found);
+}
+
+double IBSubmittedOrderQuantityTracker::ObserveExecution(const IBEvent& event) {
+    if (event.type != IBEventType::ExecutionDetails || event.requestId != -1 ||
+        event.connectionEpoch == 0 || event.connectionEpoch != m_connectionEpoch ||
+        event.brokerClientId < 0 || event.brokerClientId != m_clientId ||
+        m_account.empty() || event.account != m_account || event.id < 0 ||
+        event.id > std::numeric_limits<long>::max())
+        return 0.0;
+    const auto found = m_orders.find(static_cast<long>(event.id));
+    if (found == m_orders.end()) return 0.0;
+    const SubmittedOrder& submitted = found->second;
+    const std::string side = event.value == "BOT" ? "BUY" :
+        (event.value == "SLD" ? "SELL" : event.value);
+    if (event.key.empty() || side != submitted.order.action ||
+        event.order.orderRef != submitted.order.orderRef ||
+        !MatchesSubmittedIBContract(submitted.contract, event.contract) ||
+        !std::isfinite(event.number2) || event.number2 <= 0.0 ||
+        event.number2 > submitted.order.totalQuantity ||
+        !std::isfinite(event.number) || event.number <= 0.0)
+        return 0.0;
+    const double total = submitted.order.totalQuantity;
+    if (event.number2 == total) m_orders.erase(found);
+    return total;
+}
+
 IBAuthoritativeEventQueue::IBAuthoritativeEventQueue(std::size_t maxEvents)
     : m_maxEvents(maxEvents == 0 ? 1 : maxEvents) {
 }
@@ -861,6 +938,7 @@ public:
         m_eventIngressFarmMarker.Reset(
             m_connectionEpoch.load(std::memory_order_acquire));
         m_params = p;
+        m_orderQuantities.Reset(m_connectionEpoch.load(), p.clientId, p.account);
         m_gotNextValidId = false;
         m_lastValidOrderId = -1;
         m_status = "IB_CONNECTING";
@@ -990,7 +1068,7 @@ public:
         }
         m_gotNextValidId = false;
         m_lastValidOrderId = -1;
-        m_orderTotalQty.clear();
+        m_orderQuantities.Reset(0, -1, std::string());
         m_eventIngressAdmissionActive.store(false,
             std::memory_order_release);
         m_eventIngressFenceHeld.store(false,
@@ -1391,7 +1469,7 @@ public:
         od.orderRef = o.orderRef;
 
         Trace(BuildOrderTrace(localOrderId, ct, od));
-        m_orderTotalQty[localOrderId] = qty;
+        m_orderQuantities.Record(localOrderId, c, o);
         m_client.placeOrder(localOrderId, ct, od);
         return true;
     }
@@ -1496,61 +1574,54 @@ public:
     void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&, double, double) override {}
     void orderStatus(OrderId oid, const std::string& status, Decimal filled,
                      Decimal remaining, double avgFillPrice, int, int, double,
-                     int, const std::string& whyHeld,
+                     int clientId, const std::string& whyHeld,
                      double mktCapPrice) override {
         const double filledQuantity = DecimalFunctions::decimalToDouble(filled);
-        const bool economicFill = status == "Filled" && filledQuantity > 0.0 &&
-            std::isfinite(avgFillPrice) && avgFillPrice > 0.0;
-        if (economicFill || status == "Cancelled" ||
-            status == "ApiCancelled" || status == "Inactive" ||
-            status == "Rejected") {
-            m_orderTotalQty.erase(static_cast<long>(oid));
-        }
+        const double remainingQuantity = DecimalFunctions::decimalToDouble(remaining);
+        m_orderQuantities.ObserveOrderStatus(clientId, static_cast<long>(oid),
+            status, filledQuantity, remainingQuantity, avgFillPrice);
         IBEvent event = MakeIBEvent(IBEventType::OrderStatus,
             static_cast<long long>(oid),
             status,
             "",
             avgFillPrice,
             filledQuantity,
-            DecimalFunctions::decimalToDouble(remaining));
+            remainingQuantity);
         event.whyHeld = whyHeld;
+        event.brokerClientId = clientId;
         event.marketCapPrice = mktCapPrice;
         PushEvent(std::move(event));
     }
     void execDetails(int requestId, const Contract& contract, const Execution& execution) override {
-        const long orderId = static_cast<long>(execution.orderId);
-        const auto itQty = m_orderTotalQty.find(orderId);
-        const double totalQty = (itQty != m_orderTotalQty.end()) ? itQty->second : 0.0;
         const double cumQty = DecimalFunctions::decimalToDouble(execution.cumQty);
+        const double fillPx = (execution.avgPrice > 0.0 ? execution.avgPrice : execution.price);
+        IBEvent executionEvent = MakeIBEvent(
+            IBEventType::ExecutionDetails,
+            static_cast<long long>(execution.orderId),
+            execution.execId, execution.side, fillPx, cumQty, 0.0);
+        executionEvent.connectionEpoch = m_connectionEpoch.load();
+        executionEvent.account = execution.acctNumber;
+        executionEvent.requestId = requestId;
+        executionEvent.brokerClientId = execution.clientId;
+        executionEvent.contract = BuildContractLite(contract);
+        // Preserve the actual broker echo before consulting the send-bound
+        // quantity. Rejected identities cannot consume another order's total.
+        executionEvent.order.orderRef = execution.orderRef;
+        const double totalQty = m_orderQuantities.ObserveExecution(executionEvent);
         const bool totalQuantityKnown = totalQty > 0.0;
-        const bool looksFilled = totalQuantityKnown && cumQty > 0.0 &&
-            (cumQty + 1e-9) >= totalQty;
+        const bool looksFilled = totalQuantityKnown && cumQty == totalQty;
         const std::string synthStatus = looksFilled ? "Filled" :
             (totalQuantityKnown ? "PartiallyFilled" : "NotSynthesized");
-        const double fillPx = (execution.avgPrice > 0.0 ? execution.avgPrice : execution.price);
         Trace("execDetails orderId=" + std::to_string((long long)execution.orderId)
             + " cumQty=" + std::to_string(cumQty)
             + " totalQty=" + std::to_string(totalQty)
             + " avgPrice=" + std::to_string(fillPx)
             + " synthStatus=" + synthStatus);
-        if (looksFilled) {
-            m_orderTotalQty.erase(orderId);
-        }
         const double remainingQty = (totalQty > 0.0) ? std::max(0.0, totalQty - cumQty) : 0.0;
-        IBEvent executionEvent = MakeIBEvent(
-            IBEventType::ExecutionDetails,
-            static_cast<long long>(execution.orderId),
-            execution.execId,
-            execution.side,
-            fillPx,
-            cumQty,
-            remainingQty);
-        executionEvent.account = execution.acctNumber;
-        executionEvent.requestId = requestId;
-        executionEvent.contract = BuildContractLite(contract);
+        executionEvent.number3 = remainingQty;
         PushEvent(std::move(executionEvent));
         // execDetails does not carry the order's total quantity.  After a
-        // process restart m_orderTotalQty has no entry for historical fills,
+        // process restart m_orderQuantities has no entry for historical fills,
         // so emitting `PartiallyFilled, remaining=0` would manufacture a
         // contradictory broker status.  Preserve the economic execution and
         // let the complete active-order snapshot reconcile ownership; only
@@ -1564,11 +1635,12 @@ public:
                 fillPx,
                 cumQty,
                 remainingQty);
-            // Preserve the execution-query provenance on the synthetic
-            // status. A positive historical reqExecutions() replay is durable
-            // evidence, but it is not a new fill in this process and must
-            // never re-arm the live post-fill mutation gate during startup.
+            // Preserve the original live request provenance. Historical
+            // query responses cannot consume a live submitted quantity and
+            // therefore never reach this synthetic-status branch.
             syntheticStatus.requestId = requestId;
+            syntheticStatus.brokerClientId = execution.clientId;
+            syntheticStatus.account = execution.acctNumber;
             PushEvent(std::move(syntheticStatus));
         }
     }
@@ -2068,7 +2140,7 @@ private:
     bool m_positionsSubscribed = false;
     bool m_positionsInitialDownloadPending = false;
     IBPositionsRequestFence m_positionsRequestFence;
-    std::unordered_map<long, double> m_orderTotalQty;
+    IBSubmittedOrderQuantityTracker m_orderQuantities;
 };
 
 #else

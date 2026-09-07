@@ -3,7 +3,7 @@
 Status: QUALIFICATION_REQUIRED  
 Applies to: repository HEAD  
 Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `systemd/hepta-execution-ib-paper.service`, `docs/ib-paper-profile-policy-v1.json`  
-Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`
+Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`
 
 ## Scope
 
@@ -49,6 +49,8 @@ Broker API destination ports are restricted to the dedicated IB execution UID by
 - A quote is authoritative only after the exact subscription and freshness checks pass.
 - CASH quote startup accepts the exact trailing broker farm id `cashfarm` or regional `hfarm`, independent of localized message prose. Generic 2104 notices and lookalike names grant no readiness; account, position, epoch and fresh contract-bound quote barriers still apply.
 - Filled terminal orders require execution evidence.
+- After the initial terminal download completes, validated live executions and terminal callbacks supplement that snapshot in the same connection epoch. Evidence must match the submitted order's broker client, account, H1 correlation and contract binding. A Filled status alone cannot prove an execution; partial fills retain their cumulative quantity, and duplicate callbacks do not create a new generation.
+- A cancel queued before broker acknowledgement remains uncertain until positive terminal evidence resolves it. If the target traded, reconciliation records `AUTHORITATIVE_CANCEL_TARGET_FILLED`; it must not report successful cancellation or depend on a reconnect to observe that fill.
 - Reconnect invalidates affected snapshots and correlations.
 - A possibly sent command is reconciled by stable command and venue identities; it is not blindly resent.
 - Terminalization closes event ingress, drains callbacks, freezes one recovery snapshot, and commits a durable witness.
