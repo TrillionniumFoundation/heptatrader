@@ -34,11 +34,15 @@ jobs:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Validate module and capability truth sources
+      - name: Validate documentation, capability, gap and profile truth sources
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
           python3 -m unittest discover -s tests/python -p 'test_documentation_control_plane.py'
+          python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
+          python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
           python3 -m unittest discover -s tests/python -p 'test_research_contract_smoke.py'
 
       - name: Reassert clean exact source
