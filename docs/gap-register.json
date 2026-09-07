@@ -1,0 +1,146 @@
+{
+  "schema": "heptatrader.gap-register.v1",
+  "authorization": {
+    "source_state": "CANDIDATE",
+    "paper_authorized": false,
+    "live_authorized": false
+  },
+  "gaps": [
+    {
+      "id": "DOC-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Canonical module, capability and operations documentation exists and is machine-validated.",
+      "evidence": [
+        "README.md",
+        "docs/index.md",
+        "docs/module-catalog.json",
+        "docs/capabilities.json",
+        "scripts/check_documentation.py",
+        "tests/python/test_documentation_control_plane.py"
+      ],
+      "issue": null
+    },
+    {
+      "id": "CI-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Always-reachable documentation, core, merge-candidate and dual-compiler sanitizer checks are defined for PR, main and merge-group revisions.",
+      "evidence": [
+        ".github/workflows/documentation-control-plane.yml",
+        ".github/workflows/core-ci.yml",
+        ".github/workflows/canonical-full-suite.yml",
+        ".github/workflows/merge-candidate.yml",
+        ".github/required-check-contexts-v1.json"
+      ],
+      "issue": null
+    },
+    {
+      "id": "TEST-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Optimized test targets preserve assertion evaluation and the integrated supervisor regression has its missing standard dependency.",
+      "evidence": [
+        "tests/CMakeLists.txt",
+        "tests/unix_session_supervisor_test_prelude.h"
+      ],
+      "issue": null
+    },
+    {
+      "id": "RISK-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Generic pre-trade risk covers snapshot freshness, order/pending/worst-case notional, daily loss and drawdown with guarded exit semantics.",
+      "evidence": [
+        "HeptaTrade/risk/pre_trade_risk_engine.h",
+        "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+        "tests/pre_trade_risk_engine_tests.cpp",
+        "docs/modules/risk-engine.md"
+      ],
+      "issue": null
+    },
+    {
+      "id": "PENDING-EXPOSURE-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Until aggregate pending-order notional is authoritative, the qualifying IB PAPER source profile is restricted to one active order and one CASH contract.",
+      "evidence": [
+        "docs/ib-paper-profile-policy-v1.json",
+        "scripts/verify_canonical_ib_paper_profile.py",
+        "tests/python/test_canonical_ib_paper_profile.py",
+        "systemd/hepta-execution-ib-paper.env.example"
+      ],
+      "issue": null
+    },
+    {
+      "id": "VENUE-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "CTP and XT/QMT scaffolds reject connection, query and mutation instead of manufacturing broker-like success.",
+      "evidence": [
+        "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
+        "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
+        "tests/venue_capability_tests.cpp",
+        "docs/capabilities.json"
+      ],
+      "issue": null
+    },
+    {
+      "id": "OMS-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "The public OMS contract matches schema v4 and broker evidence fields have strict write/replay verification.",
+      "evidence": [
+        "docs/OMS-EVENT-SCHEMA.md",
+        "scripts/verify_oms_journal_replay.py",
+        "tests/oms_journal_schema_v4_tests.cpp"
+      ],
+      "issue": null
+    },
+    {
+      "id": "BUILD-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Typed tool protocol and session-supervisor core sources compile once through shared targets; global compiler-flag overrides are removed.",
+      "evidence": [
+        "HeptaTrade/CMakeLists.txt"
+      ],
+      "issue": null
+    },
+    {
+      "id": "G-TEAM-001",
+      "domain": "EXTERNAL",
+      "state": "OPEN_EXTERNAL",
+      "blocking_authorization": true,
+      "summary": "Organization teams, CODEOWNERS service readback, active no-bypass ruleset, Merge Queue and governance receipt must be materialized and verified live.",
+      "evidence": [
+        ".github/github-governance-policy-v1.json",
+        ".github/github-team-mapping-v1.json",
+        ".github/CODEOWNERS",
+        "scripts/verify_github_governance.py"
+      ],
+      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/32"
+    },
+    {
+      "id": "G-IB-001",
+      "domain": "EXTERNAL",
+      "state": "OPEN_EXTERNAL",
+      "blocking_authorization": true,
+      "summary": "Protected environment, distinct trusted runners, pinned IB SDK/harness, PAPER account/session and broker-observed qualification receipt must be materialized and verified live.",
+      "evidence": [
+        ".github/workflows/ib-paper-qualification.yml",
+        "scripts/verify_ib_paper_qualification.py",
+        "docs/ib-paper-profile-policy-v1.json"
+      ],
+      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/33"
+    }
+  ]
+}

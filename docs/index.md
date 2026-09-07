@@ -50,6 +50,8 @@ This index is the canonical entry point for current development documentation. A
 - [`RUNBOOK-KILLSWITCH.md`](RUNBOOK-KILLSWITCH.md)
 - [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md)
 - [`DOCUMENTATION-POLICY.md`](DOCUMENTATION-POLICY.md)
+- [`GAP-REGISTER.md`](GAP-REGISTER.md)
+- [`gap-register.json`](gap-register.json)
 - [`capabilities.json`](capabilities.json)
 - [`module-catalog.json`](module-catalog.json)
 
