@@ -1,0 +1,55 @@
+name: Temporary Refactor Materializer
+
+on:
+  push:
+    branches:
+      - codex/close-architecture-docs-ci-risk-gaps-20260907
+    paths:
+      - '.github/workflows/refactor-apply.yml'
+      - 'scripts/refactor_apply.py.gz.b64'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'chore: bootstrap remote refactor worktree'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout exact refactor bootstrap head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+      - name: Materialize reviewed refactor
+        run: |
+          base64 -d scripts/refactor_apply.py.gz.b64 | gzip -d > /tmp/refactor_apply.py
+          python3 /tmp/refactor_apply.py
+      - name: Validate complete source tree
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          cmake --build build/core --target hepta-executiond --parallel 2
+      - name: Commit tested refactor to candidate branch
+        env:
+          TARGET_BRANCH: codex/close-architecture-docs-ci-risk-gaps-20260907
+        run: |
+          set -euo pipefail
+          git config user.name 'heptatrader-refactor-bot'
+          git config user.email 'heptatrader-refactor-bot@users.noreply.github.com'
+          git add --all
+          git commit -m 'runtime: close simulator risk and strict reconciliation gaps'
+          git push origin "HEAD:${TARGET_BRANCH}"
