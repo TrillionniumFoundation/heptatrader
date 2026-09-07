@@ -1,0 +1,45 @@
+name: Temporary Source Snapshot
+
+on:
+  push:
+    branches:
+      - codex/close-architecture-docs-ci-risk-gaps-20260907
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    name: source-snapshot-temporary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact pushed commit without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert and archive public source
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          tar --exclude=.git -czf "$RUNNER_TEMP/heptatrader-source-${EXPECTED_SHA}.tar.gz" .
+          sha256sum "$RUNNER_TEMP/heptatrader-source-${EXPECTED_SHA}.tar.gz" > "$RUNNER_TEMP/heptatrader-source-${EXPECTED_SHA}.tar.gz.sha256"
+
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-source-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/heptatrader-source-${{ github.sha }}.tar.gz
+            ${{ runner.temp }}/heptatrader-source-${{ github.sha }}.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
