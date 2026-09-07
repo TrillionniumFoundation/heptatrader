@@ -69,7 +69,7 @@
       "status": "CURRENT",
       "document": "docs/modules/simulator.md",
       "implementation": ["HeptaTrade/simulator", "HeptaTrade/execution/hepta_executiond.cpp"],
-      "tests": ["tests/agent_simulator_e2e_tests.cpp"],
+      "tests": ["tests/agent_simulator_e2e_tests.cpp", "tests/simulator_risk_runtime_tests.cpp"],
       "broker_mutation": "LOCAL_ONLY",
       "production_authorized": false
     },

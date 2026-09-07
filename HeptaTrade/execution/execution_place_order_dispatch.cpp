@@ -77,7 +77,8 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
     const OmsJournalEvent sent = BuildEvent(
         context, "place_sent", orderId, dispatch.instrument,
         command.order.action, command.order.totalQuantity,
-        dispatch.eventPrice, "submitted", "", "", dispatch.requestHash,
+        dispatch.eventPrice, m_callbacks.activatePlacedOrder ? "activation_pending" : "submitted",
+        "", "", dispatch.requestHash,
         dispatch.venueCorrelationId);
     if (!AppendOrBlockLocked(sent, "OMS_PLACE_RECEIPT_WRITE_FAILED"))
     {
@@ -96,6 +97,9 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
     }
     if (!projectionOk)
     {
+        if (m_callbacks.activatePlacedOrder)
+            return UncertainPlaceOutcomeLocked(command, dispatch, orderId,
+                "reserved order projection failed before activation: " + projectionReason);
         const char* const code = "AUTHORITATIVE_ORDER_PROJECTION_FAILED";
         const OmsJournalEvent failure = BuildEvent(
             context, "execution_projection_failed", orderId,
@@ -119,6 +123,34 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
         result.reasonCode = code;
         result.detail = projectionReason;
         return result;
+    }
+    if (m_callbacks.activatePlacedOrder)
+    {
+        bool activated = false;
+        std::string activationReason;
+        try
+        {
+            activated = m_callbacks.activatePlacedOrder(orderId, &activationReason);
+        }
+        catch (const std::exception& error)
+        {
+            activationReason = error.what();
+        }
+        catch (...)
+        {
+            activationReason = "unknown venue activation exception";
+        }
+        if (!activated)
+            return UncertainPlaceOutcomeLocked(command, dispatch, orderId,
+                activationReason.empty() ? "venue activation failed" : activationReason);
+        const OmsJournalEvent activationReceipt = BuildEvent(
+            context, "place_activated", orderId, dispatch.instrument,
+            command.order.action, command.order.totalQuantity,
+            dispatch.eventPrice, "submitted", "", "", dispatch.requestHash,
+            dispatch.venueCorrelationId);
+        if (!AppendOrBlockLocked(activationReceipt, "OMS_PLACE_ACTIVATION_RECEIPT_WRITE_FAILED"))
+            return UncertainPlaceOutcomeLocked(command, dispatch, orderId,
+                "venue activated without a durable activation receipt");
     }
     RequestRecord& record = m_requests[dispatch.requestKey];
     record.status = ExecutionCommandStatus::Accepted;

@@ -73,7 +73,7 @@ The v4 writer emits all keys below. Optional strings are emitted as empty string
 | `status`, `reason`, `risk_code`, `source` | strings | Outcome, typed failure, and producer attribution. |
 | `broker_callback_type` | string | Original callback family such as `orderStatus`, `error`, or `execDetails`. |
 | `broker_service_epoch` | string | Broker-owning service lifetime identity. |
-| `broker_connection_epoch` | non-negative integer | Venue connection generation. |
+| `broker_connection_epoch` | unsigned 64-bit integer | Venue connection generation, from 0 through 18446744073709551615. |
 | `broker_request_id` | integer | Venue callback request ID where applicable. |
 | `broker_error_code`, `broker_message` | integer/string | Broker diagnostic evidence. |
 | `broker_advanced_order_reject_json` | string | Broker-supplied advanced reject payload retained as evidence text. |
@@ -82,7 +82,9 @@ The v4 writer emits all keys below. Optional strings are emitted as empty string
 | `broker_remaining_quantity` | finite number | Broker-reported remaining quantity. |
 | `broker_market_cap_price` | finite number | Broker-reported market-cap price when present. |
 
-All numeric fields must be finite. JSON syntax must be complete; corruption is never silently treated as a successful replay.
+Known numeric fields must be finite and fit their destination types. Integer fields require integer JSON tokens: fractional or exponent notation is rejected, including `1.0` and `1e4`. Overflow and nonzero floating-point values that underflow to zero are rejected. Missing historical fields retain their defaults; a present field with an invalid type or value never receives a default.
+
+JSON syntax must be complete. Only top-level fields populate the event; nested extension fields cannot supply or override event identity. Duplicate object keys are rejected at every depth after JSON escape decoding. Strings decode all JSON escapes and valid Unicode surrogate pairs into UTF-8; invalid UTF-8 and unpaired surrogates are rejected. The writer preserves control characters with JSON escapes and serializes finite doubles with round-trip precision using the locale-independent JSON decimal point.
 
 ## Event families
 
@@ -91,6 +93,7 @@ All numeric fields must be finite. JSON syntax must be complete; corruption is n
 - `order_intent`
 - `place_send_attempt`
 - `place_sent`
+- `place_activated` (two-phase simulator activation receipt)
 - `place_outcome_uncertain`
 - `cancel_send_attempt`
 - `cancel`
@@ -142,7 +145,7 @@ A command ID is the mutation idempotency key. `event_id` is an event deduplicati
 
 ## Replay and compatibility
 
-The current writer emits v4. The parser retains missing-field defaults for historical records and preserves the raw line for audit. Higher-level recovery code must use only fields it understands and must not promote an unresolved send attempt to rejection or success.
+The current writer emits v4. The parser retains missing-field defaults for historical records and preserves the raw line for audit. It validates the complete journal before invoking any consumer callback; a malformed later record causes replay to fail without publishing an earlier partial projection. Higher-level recovery code must use only fields it understands and must not promote an unresolved send attempt to rejection or success.
 
 The lightweight `OmsRecover` helper is retained for legacy v1/v2-style projections. Canonical Execution recovery uses the richer command journal, venue correlations, broker callback evidence, connection epochs, and authoritative barriers.
 

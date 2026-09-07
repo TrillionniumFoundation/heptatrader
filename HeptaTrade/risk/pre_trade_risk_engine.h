@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <set>
 #include <string>
 
 struct PreTradeRiskConfig {
@@ -25,7 +26,19 @@ struct PreTradeRiskConfig {
     bool liveKillSwitch = true;
 };
 
+// Supplied by the execution authority from its configured portfolio, never
+// inferred from an order or a numeric snapshot. Instrument ids must identify
+// full contracts (including expiry/strike where applicable), not root symbols.
+struct PreTradeRiskSubject {
+    std::string portfolioId;
+    std::string account;
+    std::string venue;
+    std::string baseCurrency;
+    std::set<std::string> instruments;
+};
+
 struct PreTradeRiskSnapshotIdentity {
+    PreTradeRiskSubject subject;
     bool present = false;
     bool complete = false;
     std::uint64_t connectionEpoch = 0;
@@ -35,7 +48,9 @@ struct PreTradeRiskSnapshotIdentity {
 };
 
 struct PreTradeRiskExposureSnapshot {
+    PreTradeRiskSubject subject;
     bool present = false;
+    std::uint64_t connectionEpoch = 0;
     std::uint64_t generation = 0;
     double currentGrossNotional = 0.0;
     double pendingBuyNotional = 0.0;
@@ -43,14 +58,18 @@ struct PreTradeRiskExposureSnapshot {
 };
 
 struct PreTradeRiskPnlSnapshot {
+    PreTradeRiskSubject subject;
     bool present = false;
+    std::uint64_t connectionEpoch = 0;
     std::uint64_t generation = 0;
     double realizedPnl = 0.0;
     double unrealizedPnl = 0.0;
 };
 
 struct PreTradeRiskEquitySnapshot {
+    PreTradeRiskSubject subject;
     bool present = false;
+    std::uint64_t connectionEpoch = 0;
     std::uint64_t generation = 0;
     double peakEquity = 0.0;
     double currentEquity = 0.0;
@@ -63,12 +82,69 @@ struct PreTradeRiskAuthoritativeSnapshot {
     PreTradeRiskEquitySnapshot equity;
 };
 
+enum class PreTradeRiskQuantityUnit { Unspecified, BaseCurrencyUnits, Shares, Contracts };
+enum class PreTradeRiskPriceUnit { Unspecified, QuoteCurrencyPerUnit };
+enum class PreTradeRiskInstrumentKind { Unspecified, CashFx, Stock, Future, Option };
+
+// Reviewed instrument metadata supplied independently of conversion evidence.
+// Options use quoted premium * contract multiplier; futures use quoted price
+// * contract multiplier. Other conventions require a new explicit contract.
+struct PreTradeRiskInstrumentContract {
+    std::string specificationId;
+    std::uint64_t specificationVersion = 0;
+    std::string instrument;
+    PreTradeRiskInstrumentKind kind = PreTradeRiskInstrumentKind::Unspecified;
+    PreTradeRiskQuantityUnit quantityUnit = PreTradeRiskQuantityUnit::Unspecified;
+    PreTradeRiskPriceUnit priceUnit = PreTradeRiskPriceUnit::Unspecified;
+    double multiplier = 0.0;
+    std::string quoteCurrency;
+};
+
+struct PreTradeRiskPriceEvidence {
+    std::string sourceId;
+    std::string instrument;
+    std::string currency;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::int64_t observedAtMs = 0;
+    double price = 0.0;
+};
+
+struct PreTradeRiskFxEvidence {
+    std::string sourceId;
+    std::string fromCurrency;
+    std::string toCurrency;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::int64_t observedAtMs = 0;
+    double rate = 0.0; // account base currency per quote currency unit
+};
+
+struct PreTradeRiskOrderNotionalEvidence {
+    bool present = false;
+    PreTradeRiskSubject subject;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    PreTradeRiskInstrumentContract contract;
+    double quantity = 0.0;
+    double baseCurrencyNotional = 0.0;
+    PreTradeRiskPriceEvidence quote;
+    PreTradeRiskFxEvidence fx;
+};
+
 struct PreTradeRiskContext {
     std::string venue;      // IB / CTP / ...
     std::string account;
     std::string symbol;
     std::string action;     // BUY / SELL
     std::string orderType;  // LMT / MKT
+
+    PreTradeRiskSubject authorizedSubject;
+    PreTradeRiskInstrumentContract instrumentContract;
+    std::string authorizedQuoteSourceId;
+    std::string authorizedFxSourceId;
+    // Execution-owned clock for this decision, independent of replayed data.
+    std::int64_t evaluatedAtMs = 0;
 
     double totalQuantity = 0.0;
     double limitPrice = 0.0;
@@ -81,10 +157,10 @@ struct PreTradeRiskContext {
     bool positionKnown = false;
     double netPosition = 0.0;
 
-    // Explicit presence prevents an omitted conversion from masquerading as
-    // a real zero. When absent, enabled notional limits may derive quantity *
-    // authoritative price only for instruments whose caller defines that as
-    // the base-currency notional contract.
+    PreTradeRiskOrderNotionalEvidence orderNotionalEvidence;
+
+    // Legacy unbound values are retained for source compatibility only. They
+    // never satisfy an enabled notional limit; use orderNotionalEvidence.
     bool baseCurrencyOrderNotionalPresent = false;
     double baseCurrencyOrderNotional = 0.0;
 

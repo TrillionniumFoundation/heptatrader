@@ -41,6 +41,10 @@ CANDIDATE_ROOT="$(realpath -e -- "$CANDIDATE_INPUT")"
 SDK_ROOT="$(realpath -e -- "$SDK_INPUT")"
 QUOTA_ROOT="$(realpath -e -- "$QUOTA_INPUT")"
 [[ -d "$CANDIDATE_ROOT" && -d "$SDK_ROOT" && -d "$QUOTA_ROOT" ]] || exit 66
+[[ -f "$SDK_ROOT/libbid.a" && ! -L "$SDK_ROOT/libbid.a" ]] || {
+  echo "pinned SDK tree must contain a regular Intel BID archive at libbid.a" >&2
+  exit 78
+}
 mountpoint -q -- "$QUOTA_ROOT" || {
   echo "builder quota root must be a dedicated mount point" >&2
   exit 78
@@ -192,6 +196,7 @@ if ! timeout --signal=TERM --kill-after=30s 45m \
     -DHEPTA_INSTALL_RUNTIME=OFF \
     -DHEPTA_ENABLE_IBAPI=ON \
     -DIBAPI_ROOT=/sdk \
+    -DIBAPI_DECIMAL_LIBRARY=/sdk/libbid.a \
     >>"$BUILD_LOG" 2>&1; then
   printf 'candidate configure failed; captured-log-sha256=%s\n' \
     "$(sha256sum -- "$BUILD_LOG" | awk '{print $1}')" >&2

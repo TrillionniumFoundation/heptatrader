@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <initializer_list>
+#include <algorithm>
+#include <limits>
 
 namespace {
 PreTradeRiskDecision Allow(double orderNotional = 0.0,
@@ -56,6 +58,113 @@ bool ValidSnapshotIdentity(const PreTradeRiskSnapshotIdentity& identity) {
 bool SameGeneration(std::uint64_t sectionGeneration,
                     const PreTradeRiskSnapshotIdentity& identity) {
     return sectionGeneration > 0 && sectionGeneration == identity.generation;
+}
+
+bool ValidSubject(const PreTradeRiskSubject& subject) {
+    return !subject.portfolioId.empty() && !subject.account.empty() &&
+        !subject.venue.empty() && !subject.baseCurrency.empty() &&
+        !subject.instruments.empty() && subject.instruments.count("") == 0;
+}
+
+bool SameSubject(const PreTradeRiskSubject& left,
+                 const PreTradeRiskSubject& right) {
+    return ValidSubject(left) && ValidSubject(right) &&
+        left.portfolioId == right.portfolioId && left.account == right.account &&
+        left.venue == right.venue && left.baseCurrency == right.baseCurrency &&
+        left.instruments == right.instruments;
+}
+
+bool ValidInstrumentContract(const PreTradeRiskInstrumentContract& contract) {
+    if (contract.specificationId.empty() || contract.specificationVersion == 0 ||
+        contract.instrument.empty() || contract.quoteCurrency.empty() ||
+        !std::isfinite(contract.multiplier) || contract.multiplier <= 0.0 ||
+        contract.priceUnit != PreTradeRiskPriceUnit::QuoteCurrencyPerUnit)
+        return false;
+    switch (contract.kind) {
+    case PreTradeRiskInstrumentKind::CashFx:
+        return contract.quantityUnit == PreTradeRiskQuantityUnit::BaseCurrencyUnits &&
+            contract.multiplier == 1.0;
+    case PreTradeRiskInstrumentKind::Stock:
+        return contract.quantityUnit == PreTradeRiskQuantityUnit::Shares &&
+            contract.multiplier == 1.0;
+    case PreTradeRiskInstrumentKind::Future:
+    case PreTradeRiskInstrumentKind::Option:
+        return contract.quantityUnit == PreTradeRiskQuantityUnit::Contracts;
+    default:
+        return false;
+    }
+}
+
+bool SameInstrumentContract(const PreTradeRiskInstrumentContract& left,
+                            const PreTradeRiskInstrumentContract& right) {
+    return ValidInstrumentContract(left) && ValidInstrumentContract(right) &&
+        left.specificationId == right.specificationId &&
+        left.specificationVersion == right.specificationVersion &&
+        left.instrument == right.instrument && left.kind == right.kind &&
+        left.quantityUnit == right.quantityUnit && left.priceUnit == right.priceUnit &&
+        left.multiplier == right.multiplier && left.quoteCurrency == right.quoteCurrency;
+}
+
+bool FreshEvidence(std::int64_t observedAtMs,
+                   const PreTradeRiskSnapshotIdentity& identity,
+                   std::int64_t maxAgeMs) {
+    return observedAtMs > 0 && observedAtMs <= identity.evaluatedAtMs &&
+        identity.evaluatedAtMs - observedAtMs <= maxAgeMs;
+}
+
+PreTradeRiskDecision ValidateOrderNotional(const PreTradeRiskConfig& cfg,
+                                          const PreTradeRiskContext& ctx) {
+    const PreTradeRiskOrderNotionalEvidence& evidence = ctx.orderNotionalEvidence;
+    const PreTradeRiskSnapshotIdentity& identity = ctx.authoritativeSnapshot.identity;
+    if (!evidence.present)
+        return Reject("RISK_ORDER_NOTIONAL_UNAVAILABLE", "bound converted notional evidence is required");
+    if (!SameSubject(evidence.subject, identity.subject))
+        return Reject("RISK_ORDER_NOTIONAL_SUBJECT_MISMATCH", "converted notional belongs to another risk subject");
+    if (evidence.connectionEpoch != identity.connectionEpoch ||
+        !SameGeneration(evidence.generation, identity))
+        return Reject("RISK_ORDER_NOTIONAL_GENERATION_MISMATCH", "converted notional belongs to another snapshot epoch/generation");
+    if (!SameInstrumentContract(ctx.instrumentContract, evidence.contract) ||
+        evidence.contract.instrument != ctx.symbol ||
+        evidence.quantity != ctx.totalQuantity)
+        return Reject("RISK_ORDER_NOTIONAL_UNIT_CONTRACT_INVALID", "converted notional must match the execution-owned instrument specification and quantity");
+
+    const PreTradeRiskPriceEvidence& quote = evidence.quote;
+    if (ctx.authorizedQuoteSourceId.empty() || quote.sourceId != ctx.authorizedQuoteSourceId ||
+        quote.instrument != ctx.symbol || quote.currency != evidence.contract.quoteCurrency ||
+        quote.connectionEpoch != identity.connectionEpoch ||
+        !SameGeneration(quote.generation, identity) ||
+        !std::isfinite(quote.price) || quote.price <= 0.0 ||
+        quote.price != ctx.referencePrice)
+        return Reject("RISK_ORDER_NOTIONAL_QUOTE_INVALID", "quote source, instrument, currency, generation and reference price must match");
+    if (!FreshEvidence(quote.observedAtMs, identity, cfg.maxSnapshotAgeMs))
+        return Reject("RISK_ORDER_NOTIONAL_QUOTE_STALE", "converted notional quote is stale or future dated");
+
+    const PreTradeRiskFxEvidence& fx = evidence.fx;
+    if (ctx.authorizedFxSourceId.empty() || fx.sourceId != ctx.authorizedFxSourceId ||
+        fx.fromCurrency != quote.currency || fx.toCurrency != identity.subject.baseCurrency ||
+        fx.connectionEpoch != identity.connectionEpoch ||
+        !SameGeneration(fx.generation, identity) ||
+        !std::isfinite(fx.rate) || fx.rate <= 0.0 ||
+        (fx.fromCurrency == fx.toCurrency && fx.rate != 1.0))
+        return Reject("RISK_ORDER_NOTIONAL_FX_INVALID", "explicit FX conversion source, currencies, rate and generation must match");
+    if (!FreshEvidence(fx.observedAtMs, identity, cfg.maxSnapshotAgeMs))
+        return Reject("RISK_ORDER_NOTIONAL_FX_STALE", "converted notional FX evidence is stale or future dated");
+
+    if (ctx.orderType != "LMT" && ctx.orderType != "MKT")
+        return Reject("RISK_ORDER_NOTIONAL_UNIT_CONTRACT_INVALID", "unsupported order price convention");
+    // A limit above the observed reference must not understate possible spend.
+    const double price = ctx.orderType == "LMT" ?
+        std::max(ctx.limitPrice, quote.price) : quote.price;
+    const double calculated = evidence.quantity * evidence.contract.multiplier * price * fx.rate;
+    if (!std::isfinite(evidence.baseCurrencyNotional) || evidence.baseCurrencyNotional <= 0.0 ||
+        !std::isfinite(calculated) || calculated <= 0.0)
+        return Reject("RISK_ORDER_NOTIONAL_INVALID", "converted notional and validated unit arithmetic must be finite and positive");
+    const double tolerance = std::numeric_limits<double>::epsilon() *
+        std::max(calculated, evidence.baseCurrencyNotional) * 8.0;
+    if (std::abs(calculated - evidence.baseCurrencyNotional) > tolerance)
+        return Reject("RISK_ORDER_NOTIONAL_CONVERSION_MISMATCH", "converted amount does not match quantity, multiplier, quote and FX evidence");
+    // Use the conservative value even within floating-point rounding tolerance.
+    return Allow(std::max(calculated, evidence.baseCurrencyNotional));
 }
 }
 
@@ -141,18 +250,31 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
     const bool needsPnl = !reducingExposure && LimitEnabled(cfg.maxDailyLoss);
     const bool needsEquity = !reducingExposure && LimitEnabled(cfg.maxDrawdown);
     const bool needsPortfolioSnapshot = needsExposure || needsPnl || needsEquity;
-    const bool needsSnapshot = needsPortfolioSnapshot || cfg.maxSnapshotAgeMs > 0;
+    const bool needsNotional = !reducingExposure &&
+        (LimitEnabled(cfg.maxOrderNotional) || needsExposure);
+    const bool needsSnapshot = needsPortfolioSnapshot || needsNotional || cfg.maxSnapshotAgeMs > 0;
     const PreTradeRiskSnapshotIdentity& identity =
         ctx.authoritativeSnapshot.identity;
 
-    if (needsPortfolioSnapshot && cfg.maxSnapshotAgeMs == 0) {
+    if ((needsPortfolioSnapshot || needsNotional) && cfg.maxSnapshotAgeMs == 0) {
         return Reject("RISK_SNAPSHOT_FRESHNESS_POLICY_REQUIRED",
-                      "portfolio limits require a positive maxSnapshotAgeMs");
+                      "portfolio and notional limits require a positive maxSnapshotAgeMs");
     }
     if (needsSnapshot) {
         if (!ValidSnapshotIdentity(identity)) {
             return Reject("RISK_SNAPSHOT_IDENTITY_REQUIRED",
                           "authoritative snapshot identity, completeness, epoch, generation and timestamps are required");
+        }
+        if (ctx.evaluatedAtMs <= 0 || identity.evaluatedAtMs != ctx.evaluatedAtMs) {
+            return Reject("RISK_SNAPSHOT_EVALUATION_TIME_MISMATCH",
+                          "snapshot evaluation must match the execution-owned clock for this decision");
+        }
+        if (!SameSubject(ctx.authorizedSubject, identity.subject) ||
+            ctx.authorizedSubject.account != ctx.account ||
+            ctx.authorizedSubject.venue != ctx.venue ||
+            ctx.authorizedSubject.instruments.count(ctx.symbol) != 1) {
+            return Reject("RISK_SNAPSHOT_SUBJECT_MISMATCH",
+                          "snapshot must match the authorized portfolio, account, venue, base currency and full instrument set");
         }
         if (identity.evaluatedAtMs - identity.observedAtMs >
             cfg.maxSnapshotAgeMs) {
@@ -172,7 +294,11 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
                           0.0, 0.0, identity.connectionEpoch,
                           identity.generation);
         }
-        if (!SameGeneration(exposure.generation, identity)) {
+        if (!SameSubject(exposure.subject, identity.subject)) {
+            return Reject("RISK_SNAPSHOT_SUBJECT_MISMATCH", "exposure belongs to another risk subject");
+        }
+        if (exposure.connectionEpoch != identity.connectionEpoch ||
+            !SameGeneration(exposure.generation, identity)) {
             return Reject("RISK_SNAPSHOT_GENERATION_MISMATCH",
                           "exposure does not belong to the authoritative snapshot generation",
                           0.0, 0.0, identity.connectionEpoch,
@@ -196,7 +322,11 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
                           0.0, 0.0, identity.connectionEpoch,
                           identity.generation);
         }
-        if (!SameGeneration(pnl.generation, identity)) {
+        if (!SameSubject(pnl.subject, identity.subject)) {
+            return Reject("RISK_SNAPSHOT_SUBJECT_MISMATCH", "PnL belongs to another risk subject");
+        }
+        if (pnl.connectionEpoch != identity.connectionEpoch ||
+            !SameGeneration(pnl.generation, identity)) {
             return Reject("RISK_SNAPSHOT_GENERATION_MISMATCH",
                           "PnL does not belong to the authoritative snapshot generation",
                           0.0, 0.0, identity.connectionEpoch,
@@ -220,7 +350,11 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
                           0.0, 0.0, identity.connectionEpoch,
                           identity.generation);
         }
-        if (!SameGeneration(equity.generation, identity)) {
+        if (!SameSubject(equity.subject, identity.subject)) {
+            return Reject("RISK_SNAPSHOT_SUBJECT_MISMATCH", "equity belongs to another risk subject");
+        }
+        if (equity.connectionEpoch != identity.connectionEpoch ||
+            !SameGeneration(equity.generation, identity)) {
             return Reject("RISK_SNAPSHOT_GENERATION_MISMATCH",
                           "equity does not belong to the authoritative snapshot generation",
                           0.0, 0.0, identity.connectionEpoch,
@@ -236,25 +370,14 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
     }
 
     double orderNotional = 0.0;
-    if (ctx.baseCurrencyOrderNotionalPresent) {
-        if (!std::isfinite(ctx.baseCurrencyOrderNotional) ||
-            ctx.baseCurrencyOrderNotional <= 0.0) {
-            return Reject("RISK_ORDER_NOTIONAL_INVALID",
-                          "present base-currency order notional must be finite and positive",
-                          0.0, 0.0, identity.connectionEpoch,
-                          identity.generation);
+    if (needsNotional) {
+        PreTradeRiskDecision notional = ValidateOrderNotional(cfg, ctx);
+        if (!notional.allow) {
+            notional.snapshotConnectionEpoch = identity.connectionEpoch;
+            notional.snapshotGeneration = identity.generation;
+            return notional;
         }
-        orderNotional = ctx.baseCurrencyOrderNotional;
-    } else if (LimitEnabled(cfg.maxOrderNotional) || needsExposure) {
-        const double price = ctx.referencePrice > 0.0 ?
-            ctx.referencePrice : ctx.limitPrice;
-        if (!std::isfinite(price) || price <= 0.0) {
-            return Reject("RISK_ORDER_NOTIONAL_UNAVAILABLE", "base-currency order notional requires a positive authoritative price");
-        }
-        orderNotional = ctx.totalQuantity * price;
-        if (!std::isfinite(orderNotional) || orderNotional <= 0.0) {
-            return Reject("RISK_ORDER_NOTIONAL_UNAVAILABLE", "calculated order notional is invalid");
-        }
+        orderNotional = notional.orderNotional;
     }
 
     double worstCaseGrossNotional = orderNotional;
@@ -293,7 +416,7 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
             const PreTradeRiskPnlSnapshot& pnl = ctx.authoritativeSnapshot.pnl;
             const double totalPnl = pnl.realizedPnl + pnl.unrealizedPnl;
             const double dailyLoss = totalPnl < 0.0 ? -totalPnl : 0.0;
-            if (!std::isfinite(dailyLoss)) {
+            if (!std::isfinite(totalPnl) || !std::isfinite(dailyLoss)) {
                 return Reject("RISK_DAILY_LOSS_INVALID", "daily loss calculation is invalid",
                               orderNotional, worstCaseGrossNotional,
                               identity.connectionEpoch, identity.generation);

@@ -49,6 +49,8 @@ The OMS journal is the durable mutation ledger. Startup replays it before accept
 
 Journal failure before send rejects the mutation. Journal failure after a possible send blocks further risk and requires command-status/reconciliation recovery.
 
+The simulator uses two-phase placement: reserve an inert order, establish its owner and projection, durably append `place_sent` with status `activation_pending`, then activate it and durably append `place_activated`. Reserved orders count toward pending risk but cannot submit or fill. A crash without the final activation receipt replays as uncertain. Activation failure or exception appends a later critical `place_outcome_uncertain`, fences mutations, and survives replay; the pending receipt cannot overwrite that uncertainty. Immediate broker adapters leave the optional activation callback unset.
+
 ## Concurrency
 
 The coordinator serializes command identity and durable state transitions. Venue callbacks may arrive concurrently and out of order; adapters normalize them into monotonic projections where possible and mark conflicts incomplete. No lock should be held across an unbounded broker call. Callback admission is explicitly closed and drained during terminal recovery.

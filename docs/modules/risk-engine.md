@@ -32,13 +32,31 @@ Portfolio controls do not accept default values, compatibility fields, or sentin
 - `present=true` and `complete=true`;
 - non-zero connection epoch and snapshot generation;
 - positive observation and evaluation timestamps;
+- an evaluation timestamp equal to the execution-owned context clock for the current decision, so replayed evidence cannot supply its own old freshness clock;
 - a positive configured maximum snapshot age;
 - every required section marked present;
-- every required section bound to exactly the same generation as the snapshot identity.
+- every required section bound to exactly the same connection epoch and generation as the snapshot identity;
+- an explicit subject containing portfolio ID, account, venue, account base currency and the complete authorized set of full contract identities;
+- the same subject on the snapshot and every required section, matching the execution authority's `authorizedSubject`; the order account/venue must match and its full instrument identity must belong to that set.
 
-Worst-case gross requires the exposure section, including current gross notional and both pending-buy and pending-sell notional. Daily-loss requires realized and unrealized PnL presence. Drawdown requires peak and current equity presence. A real observed value of zero is valid only when its section presence and generation are explicit. Missing identity, missing sections, stale data, or mixed generations reject risk increase.
+Worst-case gross requires the exposure section, including current gross notional and both pending-buy and pending-sell notional. Daily-loss requires realized and unrealized PnL presence. Drawdown requires peak and current equity presence. A real observed value of zero is valid only when its section presence, subject, epoch and generation are explicit. Missing identity, missing sections, stale data, mixed subjects or mixed generations reject risk increase. Matching numbers and timestamps never permit a snapshot from a different account, portfolio, venue, currency or instrument set.
 
-`baseCurrencyOrderNotionalPresent` distinguishes an explicitly converted notional from an omitted value. When it is absent, an enabled notional limit may derive quantity multiplied by the positive authoritative price only when that calculation is the caller's declared base-currency contract. A present zero, negative, non-finite, or unit-ambiguous notional is invalid.
+## Converted order-notional evidence
+
+An enabled per-order notional limit requires the same explicit fresh snapshot identity even when no portfolio limits are enabled. Per-order and gross-notional policies require `orderNotionalEvidence`; there is no generic quantity-times-price fallback. The legacy `baseCurrencyOrderNotionalPresent` and scalar amount do not satisfy either policy.
+
+The execution authority supplies trusted `instrumentContract`, `authorizedQuoteSourceId` and `authorizedFxSourceId` independently of the evidence. Instrument metadata contains a specification ID/version, full instrument identity, instrument kind, quantity unit, price unit, positive multiplier and quote currency. These fields are authoritative configuration or adapter metadata, never user order assertions. The evaluator supports only these explicit arithmetic contracts:
+
+- CASH FX quantities are base-instrument currency units, multiplier exactly one;
+- stock quantities are shares, multiplier exactly one;
+- futures quantities are contracts, with an explicit contract multiplier;
+- option quantities are contracts, with quoted option premium and an explicit contract multiplier.
+
+Prices are quote-currency amounts per underlying unit; other quotation conventions require a new supported contract. Full futures and option identities must include contract-specific attributes, not only root symbols.
+
+Converted evidence must bind the same subject, connection epoch, snapshot generation, exact instrument specification and order quantity. It includes an explicit positive base-currency amount, authoritative quote source/instrument/currency/price/epoch/generation/observation time, and FX source/source currency/account base currency/rate/epoch/generation/observation time. Quote and FX evidence must belong to the same connection epoch and assembled snapshot generation, match the execution-owned source identities and remain within the configured age at evaluation. Same-currency conversion still requires explicit identity-rate evidence with rate exactly one.
+
+The evaluator validates the supplied amount against quantity × multiplier × price × FX rate using those supported unit contracts. Limit orders use the greater of the limit and authoritative reference price; market orders use the authoritative reference. An understated amount, omitted conversion/multiplier, unsupported units, mismatched instrument/currency/source, stale or future-dated quote/FX evidence, numeric overflow or non-finite value rejects. Floating-point rounding tolerance never lowers the charged notional: the decision uses the greater of the validated supplied and calculated amounts.
 
 Compatibility fields retained in `PreTradeRiskContext` are not read as authoritative evidence for enabled portfolio limits. They exist only to keep non-canonical legacy sources buildable during migration.
 
@@ -74,4 +92,4 @@ Count decisions by reason code and instrument; record order notional, worst-case
 
 ## Test expectations
 
-Use table-driven boundary and hostile tests for zero, exact limit, above limit, NaN, infinity, stale snapshot, missing identity, missing epoch/generation, missing exposure/PnL/equity presence, mixed generation, explicit observed zero, missing reference price, pending exposure, daily loss/drawdown, flatten-only over-flatten, rate-window restart recovery, kill-switch uncertainty, and concurrent admission.
+Use table-driven boundary and hostile tests for zero, exact limit, above limit, NaN, infinity, stale snapshot, missing identity, missing epoch/generation, missing exposure/PnL/equity presence, mixed generation, cross-account/venue/currency/portfolio/instrument-set snapshots and mixed sections, explicit observed zero, futures and option multipliers, explicit FX conversion, omitted or stale quote/FX evidence, unsupported quantity/price units, pending exposure, daily loss/drawdown, flatten-only over-flatten, rate-window restart recovery, kill-switch uncertainty, and concurrent admission.

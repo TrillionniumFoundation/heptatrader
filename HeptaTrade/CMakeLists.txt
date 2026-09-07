@@ -16,6 +16,8 @@ set(IBAPI_ROOT "" CACHE PATH
     "Path to IB C++ API root (e.g. E:/trading/TWS API/source/cppclient)")
 set(IBAPI_BIN "" CACHE PATH
     "Path to IB API runtime DLL directory (optional; if empty, IBAPI_ROOT is used)")
+set(IBAPI_DECIMAL_LIBRARY "" CACHE FILEPATH
+    "Pinned Intel BID library with CALL_BY_REF=0 GLOBAL_RND=0 GLOBAL_FLAGS=0")
 
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -71,6 +73,36 @@ if(HEPTA_ENABLE_IBAPI)
             "HEPTA_ENABLE_IBAPI=ON requires -DIBAPI_ROOT=<IB C++ API root>")
     endif()
     get_filename_component(IBAPI_ROOT "${IBAPI_ROOT}" ABSOLUTE)
+    if(IBAPI_DECIMAL_LIBRARY STREQUAL "" OR NOT EXISTS "${IBAPI_DECIMAL_LIBRARY}")
+        message(FATAL_ERROR
+            "HEPTA_ENABLE_IBAPI=ON requires -DIBAPI_DECIMAL_LIBRARY=<pinned Intel libbid archive>. "
+            "Binary64 compatibility shims are not supported.")
+    endif()
+    if(CMAKE_CROSSCOMPILING)
+        message(FATAL_ERROR "IB Decimal ABI qualification requires a native build and executable probe")
+    endif()
+    get_filename_component(IBAPI_DECIMAL_LIBRARY "${IBAPI_DECIMAL_LIBRARY}" ABSOLUTE)
+    set(HEPTA_IB_DECIMAL_LINK_LIBRARIES "${IBAPI_DECIMAL_LIBRARY}")
+    if(UNIX)
+        list(APPEND HEPTA_IB_DECIMAL_LINK_LIBRARIES m)
+    endif()
+    # Validate the actual SDK/library ABI and BID interchange encoding before
+    # any broker-linked target can be built. Unset, wrong-ABI or binary64 shim
+    # libraries must fail configuration, not silently corrupt broker quantities.
+    unset(HEPTA_IB_DECIMAL_ABI_RUN CACHE)
+    unset(HEPTA_IB_DECIMAL_ABI_COMPILED CACHE)
+    try_run(HEPTA_IB_DECIMAL_ABI_RUN HEPTA_IB_DECIMAL_ABI_COMPILED
+        "${CMAKE_BINARY_DIR}/ib-decimal-abi"
+        SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../tests/ib_decimal_abi_tests.cpp"
+                "${IBAPI_ROOT}/Decimal.cpp"
+        CMAKE_FLAGS "-DINCLUDE_DIRECTORIES=${IBAPI_ROOT}" "-DCMAKE_CXX_STANDARD=11"
+        LINK_LIBRARIES ${HEPTA_IB_DECIMAL_LINK_LIBRARIES}
+        COMPILE_OUTPUT_VARIABLE HEPTA_IB_DECIMAL_ABI_COMPILE_OUTPUT
+        RUN_OUTPUT_VARIABLE HEPTA_IB_DECIMAL_ABI_RUN_OUTPUT)
+    if(NOT HEPTA_IB_DECIMAL_ABI_COMPILED OR NOT "${HEPTA_IB_DECIMAL_ABI_RUN}" STREQUAL "0")
+        message(FATAL_ERROR "IB Intel BID Decimal ABI verification failed: "
+            "${HEPTA_IB_DECIMAL_ABI_COMPILE_OUTPUT} ${HEPTA_IB_DECIMAL_ABI_RUN_OUTPUT}")
+    endif()
 
     set(HEPTA_IBAPI_CLIENT_SOURCE_NAMES
         ContractCondition.cpp
@@ -116,6 +148,13 @@ if(HEPTA_ENABLE_IBAPI)
     add_library(hepta_ibapi_client STATIC ${HEPTA_IBAPI_CLIENT_SOURCES})
     target_include_directories(hepta_ibapi_client PUBLIC "${IBAPI_ROOT}")
     target_compile_features(hepta_ibapi_client PUBLIC cxx_std_11)
+    target_link_libraries(hepta_ibapi_client PUBLIC ${HEPTA_IB_DECIMAL_LINK_LIBRARIES})
+    if(BUILD_TESTING)
+        add_executable(hepta_ib_decimal_abi_tests ../tests/ib_decimal_abi_tests.cpp)
+        target_link_libraries(hepta_ib_decimal_abi_tests PRIVATE hepta_ibapi_client)
+        add_test(NAME hepta_ib_decimal_abi_tests COMMAND hepta_ib_decimal_abi_tests)
+        set_tests_properties(hepta_ib_decimal_abi_tests PROPERTIES LABELS "ib;decimal")
+    endif()
 
     if(IBAPI_BIN STREQUAL "")
         if(EXISTS "${PROJECT_SOURCE_DIR}/../Interface/IBApi/bin")
@@ -164,7 +203,6 @@ set(DIR_SRC
     openclaw_0dte_bridge.cpp
     order_watchdog.cpp
     adapter_ib/ib_api_wrapper.cpp
-    adapter_ib/ib_decimal_compat.cpp
     ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
     adapter_ib/ib_order_lifecycle.cpp
     adapter_ib/ib_venue_correlation.cpp
@@ -483,18 +521,25 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         VERBATIM)
 endif()
 
-add_executable(hepta_executiond
-    execution/hepta_executiond.cpp
+add_library(hepta_simulator_runtime STATIC
+    simulator/deterministic_execution_venue.cpp
+    risk/pre_trade_risk_engine.cpp)
+target_include_directories(hepta_simulator_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_library(hepta_execution_service_runtime STATIC
     execution/execution_service_runtime_config.cpp
-    execution/execution_service_runtime_composition.cpp
-    simulator/deterministic_execution_venue.cpp)
+    execution/execution_service_runtime_composition.cpp)
+target_link_libraries(hepta_execution_service_runtime PUBLIC
+    hepta_execution_core hepta_simulator_runtime)
+
+add_executable(hepta_executiond execution/hepta_executiond.cpp)
 set_target_properties(hepta_executiond PROPERTIES
     OUTPUT_NAME "hepta-executiond"
     SKIP_BUILD_RPATH TRUE)
 target_include_directories(hepta_executiond PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
-target_link_libraries(hepta_executiond PRIVATE hepta_execution_core)
+target_link_libraries(hepta_executiond PRIVATE hepta_execution_service_runtime)
 
 add_executable(hepta_ib_executiond
     execution/hepta_ib_executiond.cpp
@@ -518,7 +563,6 @@ add_executable(hepta_ib_executiond
     execution/ib_paper_execution_flatten_guard.cpp
     execution/ib_paper_flatten_plan_binding.cpp
     adapter_ib/ib_api_wrapper.cpp
-    adapter_ib/ib_decimal_compat.cpp
     ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
     adapter_ib/ib_order_lifecycle.cpp
     adapter_ib/ib_venue_correlation.cpp

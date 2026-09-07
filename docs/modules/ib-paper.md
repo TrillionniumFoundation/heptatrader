@@ -25,6 +25,8 @@ Repository source does not by itself authorize a real PAPER campaign. The protec
 
 The Tool Gateway communicates over the typed Execution protocol and cannot link or call the IB API.
 
+The IB SDK uses IEEE decimal64 BID quantities and the real Intel Decimal Floating-Point Math Library. Native builds require an explicit library archive and pass the SDK/BID ABI probe at configure time. Binary64 bit-copy shims are unsupported. The qualifying builder packages `libbid.a` inside the pinned SDK tree, so its existing SDK digest and read-only snapshot also cover decimal arithmetic and wire conversion.
+
 ## Fixed profile
 
 The profile binds PAPER mode, `DU` account, loopback host, allowed port, client ID, state directory, control directory, authorization credential, allowed security/order types, order quantity/notional limits, order rate, active-order limit, gross-position limit, and quote freshness. The authorization credential is a digest of the reviewed profile.

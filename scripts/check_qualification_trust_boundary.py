@@ -194,8 +194,13 @@ def validate(root: Path = ROOT) -> list[str]:
         "RESOURCE_POLICY_SHA256",
         ">>\"$BUILD_LOG\" 2>&1",
         "BUILD_TESTING=OFF",
+        '-f "$SDK_ROOT/libbid.a" && ! -L "$SDK_ROOT/libbid.a"',
+        "-DIBAPI_DECIMAL_LIBRARY=/sdk/libbid.a",
     ):
         _require(builder, token, "trusted candidate builder", errors)
+    decimal_paths = re.findall(r"-DIBAPI_DECIMAL_LIBRARY=([^\s\\]+)", builder)
+    if decimal_paths != ["/sdk/libbid.a"]:
+        errors.append("trusted candidate builder: Intel BID archive must come only from the pinned /sdk/libbid.a snapshot")
     for token in (
         "--network host",
         "--privileged",

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../execution/trading_contract.h"
+#include "../risk/pre_trade_risk_engine.h"
 
 #include <functional>
 #include <map>
@@ -36,8 +37,13 @@ class DeterministicExecutionVenue
 {
 public:
     typedef std::function<void(const SimulatedOrderEvent&)> EventSink;
+    typedef std::function<std::uint64_t()> Clock;
 
-    DeterministicExecutionVenue();
+    explicit DeterministicExecutionVenue(const Clock& clock = Clock());
+    // Execution-owned configuration; never populated from an Agent order.
+    void SetRiskConfig(const PreTradeRiskConfig& config);
+    PreTradeRiskDecision PreviewRisk(const InstrumentRef& contract,
+                                     const OrderIntent& order) const;
     void SetEventSink(const EventSink& sink);
     void SetQuote(const std::string& instrument, double bid, double ask);
     void SetQuoteObserved(const std::string& instrument, double bid, double ask,
@@ -48,11 +54,15 @@ public:
 
     bool PlaceOrder(const InstrumentRef& contract, const OrderIntent& order, long* orderId);
     bool PlaceOrderCorrelated(const InstrumentRef& contract, const OrderIntent& order,
-                              const std::string& correlationId, long* orderId);
+                              const std::string& correlationId, long* orderId,
+                              bool activate = true);
+    bool ActivateOrder(long orderId, std::string* reason = nullptr);
     bool CanCancelOrder(long orderId, std::string* reason) const;
     bool CancelOrder(long orderId);
     std::string LastRejectReason() const;
     void RestoreNextOrderIdAtLeast(long nextOrderId);
+    bool RestoreRiskState(const std::map<std::string, double>& positions,
+                          std::uint64_t admittedOrderCount, std::string& reason);
     void Process();
     double Position(const std::string& instrument) const;
     std::map<std::string, double> Positions() const;
@@ -76,6 +86,7 @@ private:
         long id = -1;
         std::string instrument;
         OrderIntent request;
+        bool activated = true;
         bool submitted = false;
         bool cancelRequested = false;
         bool terminal = false;
@@ -83,10 +94,16 @@ private:
         std::string correlationId;
     };
     static std::string Instrument(const InstrumentRef& contract);
+    PreTradeRiskDecision EvaluateRiskLocked(const InstrumentRef& contract,
+                                            const OrderIntent& order,
+                                            std::uint64_t now) const;
 
 private:
     mutable std::mutex m_mutex;
+    Clock m_clock;
+    PreTradeRiskConfig m_riskConfig;
     long m_nextOrderId;
+    std::uint64_t m_admittedOrderCount;
     std::uint64_t m_generation;
     std::map<std::string, Quote> m_quotes;
     std::map<long, Order> m_orders;

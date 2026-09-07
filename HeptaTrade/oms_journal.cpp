@@ -9,6 +9,9 @@
 #include <fstream>
 #include <fcntl.h>
 #include <limits>
+#include <locale>
+#include <map>
+#include <set>
 #include <sstream>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -19,8 +22,8 @@ namespace {
 static std::string JsonNumber(double v)
 {
     std::ostringstream oss;
-    oss.setf(std::ios::fixed);
-    oss.precision(8);
+    oss.imbue(std::locale::classic());
+    oss.precision(std::numeric_limits<double>::max_digits10);
     oss << v;
     return oss.str();
 }
@@ -82,30 +85,32 @@ static bool HasPrivateRegularFileMetadata(const struct stat& metadata)
         (metadata.st_mode & 07777) == 0600 && metadata.st_nlink == 1;
 }
 
-class JsonSyntaxValidator
+struct JsonField
+{
+    enum Kind { String, Number, Other };
+    Kind kind = Other;
+    std::string value;
+};
+
+typedef std::map<std::string, JsonField> JsonFields;
+
+class JsonObjectParser
 {
 public:
-    explicit JsonSyntaxValidator(const std::string& input)
+    explicit JsonObjectParser(const std::string& input)
         : m_input(input)
     {
     }
 
-    bool IsValidObject()
+    bool Parse(JsonFields& fields)
     {
         SkipWhitespace();
-        if (!ParseObject(0)) return false;
+        if (!ParseObject(0, &fields)) return false;
         SkipWhitespace();
         return m_pos == m_input.size();
     }
 
 private:
-    static bool IsHexDigit(char value)
-    {
-        return (value >= '0' && value <= '9') ||
-            (value >= 'a' && value <= 'f') ||
-            (value >= 'A' && value <= 'F');
-    }
-
     void SkipWhitespace()
     {
         while (m_pos < m_input.size())
@@ -132,24 +137,147 @@ private:
         return true;
     }
 
-    bool ParseString()
+    bool ParseHexQuad(unsigned int& value)
     {
+        if (m_pos + 4 > m_input.size()) return false;
+        value = 0;
+        for (unsigned int i = 0; i < 4; ++i)
+        {
+            const unsigned char c = static_cast<unsigned char>(m_input[m_pos++]);
+            value <<= 4;
+            if (c >= '0' && c <= '9') value += c - '0';
+            else if (c >= 'a' && c <= 'f') value += c - 'a' + 10;
+            else if (c >= 'A' && c <= 'F') value += c - 'A' + 10;
+            else return false;
+        }
+        return true;
+    }
+
+    static void AppendCodePoint(unsigned int codePoint, std::string& value)
+    {
+        if (codePoint <= 0x7f)
+        {
+            value.push_back(static_cast<char>(codePoint));
+        }
+        else if (codePoint <= 0x7ff)
+        {
+            value.push_back(static_cast<char>(0xc0 | (codePoint >> 6)));
+            value.push_back(static_cast<char>(0x80 | (codePoint & 0x3f)));
+        }
+        else if (codePoint <= 0xffff)
+        {
+            value.push_back(static_cast<char>(0xe0 | (codePoint >> 12)));
+            value.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3f)));
+            value.push_back(static_cast<char>(0x80 | (codePoint & 0x3f)));
+        }
+        else
+        {
+            value.push_back(static_cast<char>(0xf0 | (codePoint >> 18)));
+            value.push_back(static_cast<char>(0x80 | ((codePoint >> 12) & 0x3f)));
+            value.push_back(static_cast<char>(0x80 | ((codePoint >> 6) & 0x3f)));
+            value.push_back(static_cast<char>(0x80 | (codePoint & 0x3f)));
+        }
+    }
+
+    bool ParseRawUtf8(std::string& value)
+    {
+        const std::size_t start = m_pos;
+        const unsigned char lead = static_cast<unsigned char>(m_input[m_pos]);
+        unsigned int length = 0;
+        unsigned int codePoint = 0;
+        if (lead >= 0xc2 && lead <= 0xdf)
+        {
+            length = 2;
+            codePoint = lead & 0x1f;
+        }
+        else if (lead >= 0xe0 && lead <= 0xef)
+        {
+            length = 3;
+            codePoint = lead & 0x0f;
+        }
+        else if (lead >= 0xf0 && lead <= 0xf4)
+        {
+            length = 4;
+            codePoint = lead & 0x07;
+        }
+        else
+        {
+            return false;
+        }
+        if (m_pos + length > m_input.size()) return false;
+        for (unsigned int i = 1; i < length; ++i)
+        {
+            const unsigned char next =
+                static_cast<unsigned char>(m_input[m_pos + i]);
+            if ((next & 0xc0) != 0x80) return false;
+            codePoint = (codePoint << 6) | (next & 0x3f);
+        }
+        if ((length == 2 && codePoint < 0x80) ||
+            (length == 3 && codePoint < 0x800) ||
+            (length == 4 && codePoint < 0x10000) ||
+            (codePoint >= 0xd800 && codePoint <= 0xdfff) ||
+            codePoint > 0x10ffff)
+            return false;
+        m_pos += length;
+        value.append(m_input, start, length);
+        return true;
+    }
+
+    bool ParseString(std::string& value)
+    {
+        value.clear();
         if (!Consume('"')) return false;
         while (m_pos < m_input.size())
         {
-            const unsigned char value =
-                static_cast<unsigned char>(m_input[m_pos++]);
-            if (value == '"') return true;
-            if (value < 0x20) return false;
-            if (value != '\\') continue;
+            const unsigned char c = static_cast<unsigned char>(m_input[m_pos++]);
+            if (c == '"') return true;
+            if (c < 0x20) return false;
+            if (c >= 0x80)
+            {
+                --m_pos;
+                if (!ParseRawUtf8(value)) return false;
+                continue;
+            }
+            if (c != '\\')
+            {
+                value.push_back(static_cast<char>(c));
+                continue;
+            }
             if (m_pos >= m_input.size()) return false;
             const char escaped = m_input[m_pos++];
-            if (escaped == '"' || escaped == '\\' || escaped == '/' ||
-                escaped == 'b' || escaped == 'f' || escaped == 'n' ||
-                escaped == 'r' || escaped == 't') continue;
-            if (escaped != 'u' || m_input.size() - m_pos < 4) return false;
-            for (int digit = 0; digit < 4; ++digit)
-                if (!IsHexDigit(m_input[m_pos++])) return false;
+            if (escaped == '"' || escaped == '\\' || escaped == '/')
+                value.push_back(escaped);
+            else if (escaped == 'b') value.push_back('\b');
+            else if (escaped == 'f') value.push_back('\f');
+            else if (escaped == 'n') value.push_back('\n');
+            else if (escaped == 'r') value.push_back('\r');
+            else if (escaped == 't') value.push_back('\t');
+            else if (escaped == 'u')
+            {
+                unsigned int codePoint = 0;
+                if (!ParseHexQuad(codePoint)) return false;
+                if (codePoint >= 0xd800 && codePoint <= 0xdbff)
+                {
+                    if (m_pos + 2 > m_input.size() ||
+                        m_input[m_pos] != '\\' || m_input[m_pos + 1] != 'u')
+                        return false;
+                    m_pos += 2;
+                    unsigned int low = 0;
+                    if (!ParseHexQuad(low) || low < 0xdc00 || low > 0xdfff)
+                        return false;
+                    codePoint = 0x10000 +
+                        ((codePoint - 0xd800) << 10) + (low - 0xdc00);
+                }
+                else if (codePoint >= 0xdc00 && codePoint <= 0xdfff)
+                {
+                    return false;
+                }
+                AppendCodePoint(codePoint, value);
+            }
+            else
+            {
+                return false;
+            }
         }
         return false;
     }
@@ -202,7 +330,8 @@ private:
         if (Consume(']')) return true;
         for (;;)
         {
-            if (!ParseValue(depth + 1)) return false;
+            JsonField ignored;
+            if (!ParseValue(depth + 1, ignored)) return false;
             SkipWhitespace();
             if (Consume(']')) return true;
             if (!Consume(',')) return false;
@@ -210,18 +339,22 @@ private:
         }
     }
 
-    bool ParseObject(unsigned int depth)
+    bool ParseObject(unsigned int depth, JsonFields* fields = nullptr)
     {
         if (depth >= 64 || !Consume('{')) return false;
         SkipWhitespace();
         if (Consume('}')) return true;
+        std::set<std::string> keys;
         for (;;)
         {
-            if (!ParseString()) return false;
+            std::string key;
+            if (!ParseString(key) || !keys.insert(key).second) return false;
             SkipWhitespace();
             if (!Consume(':')) return false;
             SkipWhitespace();
-            if (!ParseValue(depth + 1)) return false;
+            JsonField field;
+            if (!ParseValue(depth + 1, field)) return false;
+            if (fields != nullptr) fields->emplace(key, std::move(field));
             SkipWhitespace();
             if (Consume('}')) return true;
             if (!Consume(',')) return false;
@@ -229,18 +362,25 @@ private:
         }
     }
 
-    bool ParseValue(unsigned int depth)
+    bool ParseValue(unsigned int depth, JsonField& field)
     {
         if (depth >= 64 || m_pos >= m_input.size()) return false;
         switch (m_input[m_pos])
         {
         case '{': return ParseObject(depth);
         case '[': return ParseArray(depth);
-        case '"': return ParseString();
+        case '"':
+            field.kind = JsonField::String;
+            return ParseString(field.value);
         case 't': return ConsumeLiteral("true");
         case 'f': return ConsumeLiteral("false");
         case 'n': return ConsumeLiteral("null");
-        default: return ParseNumber();
+        default:
+            const std::size_t start = m_pos;
+            if (!ParseNumber()) return false;
+            field.kind = JsonField::Number;
+            field.value = m_input.substr(start, m_pos - start);
+            return true;
         }
     }
 
@@ -248,6 +388,63 @@ private:
     const std::string& m_input;
     std::size_t m_pos = 0;
 };
+
+static bool ReadString(const JsonFields& fields, const char* key, std::string& out)
+{
+    const JsonFields::const_iterator found = fields.find(key);
+    if (found == fields.end()) return true;
+    if (found->second.kind != JsonField::String) return false;
+    out = found->second.value;
+    return true;
+}
+
+template <typename Integer>
+bool ReadInteger(const JsonFields& fields, const char* key, Integer& out)
+{
+    const JsonFields::const_iterator found = fields.find(key);
+    if (found == fields.end()) return true;
+    const JsonField& field = found->second;
+    if (field.kind != JsonField::Number ||
+        field.value.find_first_of(".eE") != std::string::npos) return false;
+    const bool negative = field.value[0] == '-';
+    if (negative && !std::numeric_limits<Integer>::is_signed) return false;
+    const std::uint64_t maximum =
+        static_cast<std::uint64_t>(std::numeric_limits<Integer>::max());
+    const std::uint64_t limit = negative ? maximum + 1 : maximum;
+    std::uint64_t magnitude = 0;
+    for (std::size_t index = negative ? 1 : 0; index < field.value.size(); ++index)
+    {
+        const unsigned int digit = field.value[index] - '0';
+        if (digit > 9 || magnitude > (limit - digit) / 10) return false;
+        magnitude = magnitude * 10 + digit;
+    }
+    if (negative && magnitude == maximum + 1)
+        out = std::numeric_limits<Integer>::min();
+    else if (negative)
+        out = -static_cast<Integer>(magnitude);
+    else
+        out = static_cast<Integer>(magnitude);
+    return true;
+}
+
+static bool ReadDouble(const JsonFields& fields, const char* key, double& out)
+{
+    const JsonFields::const_iterator found = fields.find(key);
+    if (found == fields.end()) return true;
+    const JsonField& field = found->second;
+    if (field.kind != JsonField::Number) return false;
+    std::istringstream input(field.value);
+    input.imbue(std::locale::classic());
+    double value = 0.0;
+    input >> value;
+    if (input.fail() || !input.eof() || !std::isfinite(value)) return false;
+    // An unrepresentable nonzero value must not silently become an absent zero.
+    const std::string significand = field.value.substr(0, field.value.find_first_of("eE"));
+    if (value == 0.0 && significand.find_first_of("123456789") != std::string::npos)
+        return false;
+    out = value;
+    return true;
+}
 
 } // namespace
 
@@ -257,7 +454,7 @@ bool OmsJournal::IsCriticalEventType(const std::string& eventType)
            eventType == "flatten_intent" ||
            eventType == "flatten_send_attempt" ||
            eventType == "cancel_send_attempt" ||
-           eventType == "place_sent" || eventType == "flatten_sent" ||
+           eventType == "place_sent" || eventType == "place_activated" || eventType == "flatten_sent" ||
            eventType == "flatten_noop" ||
            eventType == "flatten_reject" ||
            eventType == "flatten_outcome_uncertain" ||
@@ -616,6 +813,8 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
     if (!ValidatePinnedPathLocked()) return false;
 
     std::string line = BuildJsonLine(evt);
+    OmsJournalEvent checked;
+    if (!ParseJsonLine(line, checked)) return false;
     const bool critical = IsCriticalEventType(evt.eventType);
 
     if (critical)
@@ -774,8 +973,16 @@ std::string OmsJournal::EscapeJson(const std::string& s)
         case '\n': out += "\\n"; break;
         case '\r': out += "\\r"; break;
         case '\t': out += "\\t"; break;
+        case '\b': out += "\\b"; break;
+        case '\f': out += "\\f"; break;
         default:
-            if ((unsigned char)ch < 0x20) out += ' ';
+            if (static_cast<unsigned char>(ch) < 0x20)
+            {
+                static const char digits[] = "0123456789abcdef";
+                out += "\\u00";
+                out += digits[(static_cast<unsigned char>(ch) >> 4) & 0xf];
+                out += digits[static_cast<unsigned char>(ch) & 0xf];
+            }
             else out += ch;
             break;
         }
@@ -787,6 +994,7 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
 {
     const std::string reqId = evt.reqId.empty() ? evt.clientReqId : evt.reqId;
     std::ostringstream oss;
+    oss.imbue(std::locale::classic());
     oss << "{"
         << "\"schema_version\":" << (evt.schemaVersion > 0 ? evt.schemaVersion : kSchemaVersion)
         << ",\"event\":\"" << EscapeJson(evt.eventType) << "\""
@@ -828,136 +1036,49 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
     return oss.str();
 }
 
-std::string OmsJournal::JsonGetString(const std::string& json, const std::string& key)
-{
-    const std::string pat = "\"" + key + "\":\"";
-    std::size_t p = json.find(pat);
-    if (p == std::string::npos) return "";
-    p += pat.size();
-
-    std::string out;
-    bool esc = false;
-    for (; p < json.size(); ++p)
-    {
-        char c = json[p];
-        if (esc)
-        {
-            switch (c)
-            {
-            case 'n': out.push_back('\n'); break;
-            case 'r': out.push_back('\r'); break;
-            case 't': out.push_back('\t'); break;
-            default: out.push_back(c); break;
-            }
-            esc = false;
-            continue;
-        }
-        if (c == '\\') { esc = true; continue; }
-        if (c == '"') break;
-        out.push_back(c);
-    }
-    return out;
-}
-
-long long OmsJournal::JsonGetLong(const std::string& json, const std::string& key,
-                                  long long defVal)
-{
-    const std::string pat = "\"" + key + "\":";
-    std::size_t p = json.find(pat);
-    if (p == std::string::npos) return defVal;
-    p += pat.size();
-
-    std::size_t e = p;
-    while (e < json.size() && (json[e] == '-' || (json[e] >= '0' && json[e] <= '9'))) ++e;
-    if (e == p) return defVal;
-    const std::string token = json.substr(p, e - p);
-    char* parseEnd = nullptr;
-    errno = 0;
-    const long long value = std::strtoll(token.c_str(), &parseEnd, 10);
-    if (errno == ERANGE || parseEnd == nullptr || *parseEnd != '\0') return defVal;
-    return value;
-}
-
-double OmsJournal::JsonGetDouble(const std::string& json, const std::string& key, double defVal)
-{
-    const std::string pat = "\"" + key + "\":";
-    std::size_t p = json.find(pat);
-    if (p == std::string::npos) return defVal;
-    p += pat.size();
-
-    std::size_t e = p;
-    while (e < json.size())
-    {
-        char c = json[e];
-        if ((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E') ++e;
-        else break;
-    }
-    if (e == p) return defVal;
-    const std::string token = json.substr(p, e - p);
-    char* parseEnd = nullptr;
-    errno = 0;
-    const double value = std::strtod(token.c_str(), &parseEnd);
-    if (errno == ERANGE || parseEnd == nullptr || *parseEnd != '\0' ||
-        !std::isfinite(value)) return defVal;
-    return value;
-}
-
 bool OmsJournal::ParseJsonLine(const std::string& line, OmsJournalEvent& out)
 {
     out = OmsJournalEvent{};
     out.rawLine = line;
-    if (!JsonSyntaxValidator(line).IsValidObject()) return false;
-    const long long schemaVersion = JsonGetLong(line, "schema_version", 1);
-    if (schemaVersion < 1 || schemaVersion > INT_MAX) return false;
-    out.schemaVersion = static_cast<int>(schemaVersion);
-    out.eventType = JsonGetString(line, "event");
+    out.schemaVersion = 1;
+    JsonFields fields;
+    if (!JsonObjectParser(line).Parse(fields)) return false;
+    if (!ReadInteger(fields, "schema_version", out.schemaVersion) ||
+        out.schemaVersion < 1 || out.schemaVersion > kSchemaVersion) return false;
+    if (!ReadString(fields, "event", out.eventType)) return false;
+    if (!ReadString(fields, "req_id", out.reqId)) return false;
+    if (!ReadString(fields, "client_req_id", out.clientReqId)) return false;
+    if (!ReadString(fields, "trace_id", out.traceId)) return false;
+    if (!ReadString(fields, "event_id", out.eventId)) return false;
+    if (!ReadString(fields, "risk_code", out.riskCode)) return false;
+    if (!ReadString(fields, "venue", out.venue)) return false;
+    if (!ReadString(fields, "strategy", out.strategy)) return false;
+    if (!ReadString(fields, "account", out.account)) return false;
+    if (!ReadString(fields, "execution_domain", out.executionDomain)) return false;
+    if (!ReadString(fields, "request_hash", out.requestHash)) return false;
+    if (!ReadString(fields, "venue_correlation_id", out.venueCorrelationId)) return false;
+    if (!ReadString(fields, "broker_callback_type", out.brokerCallbackType)) return false;
+    if (!ReadString(fields, "broker_service_epoch", out.brokerServiceEpoch)) return false;
+    if (!ReadString(fields, "broker_message", out.brokerMessage)) return false;
+    if (!ReadString(fields, "broker_advanced_order_reject_json", out.brokerAdvancedOrderRejectJson)) return false;
+    if (!ReadString(fields, "broker_why_held", out.brokerWhyHeld)) return false;
+    if (!ReadString(fields, "broker_execution_id", out.brokerExecutionId)) return false;
+    if (!ReadString(fields, "instrument", out.instrument)) return false;
+    if (!ReadString(fields, "side", out.side)) return false;
+    if (!ReadString(fields, "status", out.status)) return false;
+    if (!ReadString(fields, "reason", out.reason)) return false;
+    if (!ReadString(fields, "source", out.source)) return false;
+    if (!ReadInteger(fields, "ts_ms", out.tsMs)) return false;
+    if (!ReadInteger(fields, "order_id", out.orderId)) return false;
+    if (!ReadInteger(fields, "broker_connection_epoch", out.brokerConnectionEpoch)) return false;
+    if (!ReadInteger(fields, "broker_request_id", out.brokerRequestId)) return false;
+    if (!ReadInteger(fields, "broker_error_code", out.brokerErrorCode)) return false;
+    if (!ReadDouble(fields, "qty", out.qty)) return false;
+    if (!ReadDouble(fields, "price", out.price)) return false;
+    if (!ReadDouble(fields, "broker_remaining_quantity", out.brokerRemainingQuantity)) return false;
+    if (!ReadDouble(fields, "broker_market_cap_price", out.brokerMarketCapPrice)) return false;
     if (out.eventType.empty()) return false;
-    out.tsMs = JsonGetLong(line, "ts_ms", 0);
-    const long long orderId = JsonGetLong(line, "order_id", -1);
-    if (orderId < static_cast<long long>(LONG_MIN) ||
-        orderId > static_cast<long long>(LONG_MAX)) return false;
-    out.orderId = static_cast<long>(orderId);
-    out.reqId = JsonGetString(line, "req_id");
-    out.clientReqId = JsonGetString(line, "client_req_id");
     if (out.reqId.empty()) out.reqId = out.clientReqId;
     if (out.clientReqId.empty()) out.clientReqId = out.reqId;
-    out.traceId = JsonGetString(line, "trace_id");
-    out.eventId = JsonGetString(line, "event_id");
-    out.riskCode = JsonGetString(line, "risk_code");
-    out.venue = JsonGetString(line, "venue");
-    out.strategy = JsonGetString(line, "strategy");
-    out.account = JsonGetString(line, "account");
-    out.executionDomain = JsonGetString(line, "execution_domain");
-    out.requestHash = JsonGetString(line, "request_hash");
-    out.venueCorrelationId = JsonGetString(line, "venue_correlation_id");
-    out.brokerCallbackType = JsonGetString(line, "broker_callback_type");
-    out.brokerServiceEpoch = JsonGetString(line, "broker_service_epoch");
-    const long long brokerConnectionEpoch = JsonGetLong(
-        line, "broker_connection_epoch", 0);
-    if (brokerConnectionEpoch < 0) return false;
-    out.brokerConnectionEpoch =
-        static_cast<std::uint64_t>(brokerConnectionEpoch);
-    out.brokerRequestId = JsonGetLong(line, "broker_request_id", 0);
-    const long long brokerErrorCode = JsonGetLong(
-        line, "broker_error_code", 0);
-    if (brokerErrorCode < static_cast<long long>(INT_MIN) ||
-        brokerErrorCode > static_cast<long long>(INT_MAX)) return false;
-    out.brokerErrorCode = static_cast<int>(brokerErrorCode);
-    out.brokerMessage = JsonGetString(line, "broker_message");
-    out.brokerAdvancedOrderRejectJson = JsonGetString(
-        line, "broker_advanced_order_reject_json");
-    out.brokerWhyHeld = JsonGetString(line, "broker_why_held");
-    out.brokerExecutionId = JsonGetString(line, "broker_execution_id");
-    out.brokerRemainingQuantity = JsonGetDouble(
-        line, "broker_remaining_quantity", 0.0);
-    out.brokerMarketCapPrice = JsonGetDouble(
-        line, "broker_market_cap_price", 0.0);
-    out.instrument = JsonGetString(line, "instrument");
-    out.side = JsonGetString(line, "side");
-    out.qty = JsonGetDouble(line, "qty", 0.0);
-    out.price = JsonGetDouble(line, "price", 0.0);
-    out.status = JsonGetString(line, "status");
-    out.reason = JsonGetString(line, "reason");
-    out.source = JsonGetString(line, "source");
     return true;
 }

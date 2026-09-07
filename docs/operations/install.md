@@ -22,7 +22,9 @@ ctest --test-dir build/core --output-on-failure -L core
 
 ## IB build boundary
 
-IB integration requires a separately supplied, pinned IB C++ API source directory. Configure `HEPTA_ENABLE_IBAPI=ON` and `IBAPI_ROOT` only in an isolated builder. The SDK and credentials are not vendored and must not be committed.
+IB integration requires a separately supplied, pinned IB C++ API source directory and an Intel Decimal Floating-Point Math Library archive. Configure `HEPTA_ENABLE_IBAPI=ON`, `IBAPI_ROOT` and `IBAPI_DECIMAL_LIBRARY` only in an isolated builder. The Intel library must use the SDK's by-value/local-rounding/local-flags ABI: `CALL_BY_REF=0 GLOBAL_RND=0 GLOBAL_FLAGS=0`. Configuration executes a native SDK/decimal interoperability probe and fails if the library is missing, incompatible or represents BID decimal values as binary floating-point bits.
+
+For the qualifying artifact builder, package the native archive as the regular non-symlink file `libbid.a` directly inside `HEPTA_IB_BUILD_SDK_ROOT`. The builder always uses `/sdk/libbid.a` from its read-only SDK snapshot; the existing `sdk_tree_sha256` binds the archive contents along with all SDK sources. External mutable library paths are not qualifying inputs. The SDK/library and credentials are not vendored and must not be committed.
 
 A successful compilation does not authorize PAPER. Host identity, credential, network, kill-switch, profile, environment approval, and qualification receipt remain required.
 

@@ -58,6 +58,11 @@ struct ExecutionCoordinatorCallbacks
     // earlier observation.
     std::function<bool(const IbPlaceOrderCommand&, std::string*)>
         preVenuePlaceCheck;
+    // Optional two-phase venue activation. A reserving venue must keep the
+    // order inert until this callback runs after owner projection and the
+    // durable place_sent receipt. Called under the coordinator lock; must not
+    // re-enter the coordinator. Failure is a durable uncertain outcome.
+    std::function<bool(long, std::string*)> activatePlacedOrder;
     std::function<bool(const FlattenPositionCommand&,
                        const AuthoritativeFlattenPlan&, std::string*)>
         preVenueFlattenCheck;
@@ -140,6 +145,7 @@ public:
     void ResetMutationBlockAfterReconcile();
     bool ResolveProjectionBlockAfterAuthoritativeResync();
     void RecordOrderTerminal(long orderId);
+    bool RecordOrderTerminalDurably(long orderId, std::string* reason = nullptr);
     bool GetOrderOwner(long orderId, ExecutionOrderOwner& out) const;
     ExecutionOrderOwnerLookupStatus TryGetOrderOwner(
         long orderId, ExecutionOrderOwner& out) const;

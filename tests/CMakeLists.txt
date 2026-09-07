@@ -117,13 +117,18 @@ hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
 
 add_executable(hepta_agent_simulator_e2e_tests
     agent_simulator_e2e_tests.cpp
-    ../HeptaTrade/state/authoritative_trading_snapshot_store.cpp
-    ../HeptaTrade/simulator/deterministic_execution_venue.cpp)
+    ../HeptaTrade/state/authoritative_trading_snapshot_store.cpp)
 target_link_libraries(hepta_agent_simulator_e2e_tests
-    hepta_agent_os_core hepta_execution_core)
+    hepta_agent_os_core hepta_execution_core hepta_simulator_runtime)
 hepta_register_core_test(hepta_agent_simulator_e2e_tests)
 set_tests_properties(hepta_agent_simulator_e2e_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
+
+add_executable(hepta_simulator_risk_runtime_tests simulator_risk_runtime_tests.cpp)
+target_link_libraries(hepta_simulator_risk_runtime_tests hepta_execution_service_runtime)
+hepta_register_core_test(hepta_simulator_risk_runtime_tests)
+set_tests_properties(hepta_simulator_risk_runtime_tests PROPERTIES
+    RUN_SERIAL TRUE TIMEOUT 30)
 
 add_executable(hepta_decision_lease_manager_tests
     decision_lease_manager_tests.cpp
