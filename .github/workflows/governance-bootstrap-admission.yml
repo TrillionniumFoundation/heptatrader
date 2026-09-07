@@ -63,9 +63,13 @@ jobs:
           export LC_ALL=C
 
           expected_workflows=(
+            .github/workflows/canonical-full-suite.yml
+            .github/workflows/core-ci.yml
+            .github/workflows/documentation-control-plane.yml
             .github/workflows/github-governance-qualification.yml
             .github/workflows/governance-bootstrap-admission.yml
             .github/workflows/ib-paper-qualification.yml
+            .github/workflows/merge-candidate.yml
             .github/workflows/qualification-source-audit.yml
             .github/workflows/self-hosted-ib-availability.yml
           )

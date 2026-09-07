@@ -19,12 +19,20 @@ PRIVILEGED = {
     WF / "self-hosted-ib-availability.yml":
         "0386d801e409fa89cdb143df14610e64eb75819abdda7a13b7302a541fc55bb5",
 }
+ENGINEERING = {
+    WF / "canonical-full-suite.yml",
+    WF / "core-ci.yml",
+    WF / "documentation-control-plane.yml",
+    WF / "merge-candidate.yml",
+}
 BOUND = {
     **PRIVILEGED,
     CONTEXTS: "6d704de38201632181be5e652c87be06b155ba71ef53ece334e681a16ae8e98b",
     SOURCE_AUDIT: "90066115d950c69aefbd7b46cb45365b48bf8783ae5c49efc5540e7fdadad566",
 }
-EXPECTED_WORKFLOWS = tuple(sorted((*PRIVILEGED, ADMISSION, SOURCE_AUDIT)))
+EXPECTED_WORKFLOWS = tuple(
+    sorted((*PRIVILEGED, *ENGINEERING, ADMISSION, SOURCE_AUDIT))
+)
 TOP = {"name", "on", "permissions", "concurrency", "jobs"}
 KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_-]*\Z")
 
@@ -72,6 +80,9 @@ class GovernanceBootstrapAdmissionTests(unittest.TestCase):
         cls.source_audit = SOURCE_AUDIT.read_text(encoding="utf-8")
         cls.privileged = {
             path: path.read_text(encoding="utf-8") for path in PRIVILEGED
+        }
+        cls.engineering = {
+            path: path.read_text(encoding="utf-8") for path in ENGINEERING
         }
 
     def test_admission_is_hosted_read_only_and_data_only(self) -> None:
@@ -129,6 +140,32 @@ class GovernanceBootstrapAdmissionTests(unittest.TestCase):
             "name: one\nname: two\non:\n  workflow_dispatch:\n",
         ):
             self.assertNotEqual(events(hostile), ["  workflow_dispatch:"])
+
+    def test_engineering_workflows_are_unprivileged_and_always_reachable(self) -> None:
+        required_jobs = {
+            "canonical-full-suite.yml": (
+                "canonical-full-suite-core",
+                "canonical-full-suite-reliability (g++)",
+                "canonical-full-suite-reliability (clang++)",
+            ),
+            "core-ci.yml": ("core-runtime-exact-head",),
+            "documentation-control-plane.yml": (
+                "documentation-control-plane-exact-head",
+            ),
+            "merge-candidate.yml": ("exact-merge-candidate",),
+        }
+        for path, text in self.engineering.items():
+            with self.subTest(path=path):
+                self.assertIn("permissions:\n  contents: read", text)
+                self.assertIn("  pull_request:\n    branches: [main]", text)
+                self.assertIn("  push:\n    branches: [main]", text)
+                self.assertIn("  merge_group:\n    types: [checks_requested]", text)
+                self.assertNotIn("pull_request_target", text)
+                self.assertNotIn("secrets.", text)
+                self.assertNotIn("self-hosted", text)
+                self.assertIn("persist-credentials: false", text)
+                for job in required_jobs[path.name]:
+                    self.assertIn(f"name: {job}", text)
 
     def test_source_audit_restores_unprivileged_execution_coverage(self) -> None:
         self.assertIn("name: qualification-source-audit", self.source_audit)
