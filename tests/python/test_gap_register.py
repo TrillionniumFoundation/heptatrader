@@ -11,11 +11,15 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import check_gap_register as gap_register  # noqa: E402
+import verify_source_gap_closures as source_gaps  # noqa: E402
 
 
 class GapRegisterTests(unittest.TestCase):
     def test_repository_register_passes(self) -> None:
         self.assertEqual(gap_register.validate(ROOT), [])
+
+    def test_repository_source_gap_closures_execute(self) -> None:
+        self.assertEqual(source_gaps.validate(ROOT), [])
 
     def fixture(self, directory: str) -> Path:
         root = Path(directory)
@@ -93,6 +97,67 @@ class GapRegisterTests(unittest.TestCase):
             )
             errors = gap_register.validate(root)
             self.assertTrue(any("external issue binding is invalid" in error for error in errors), errors)
+
+    def test_external_gap_cannot_be_source_closed_in_executable_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir(parents=True)
+            shutil.copyfile(
+                ROOT / "docs/gap-register.json",
+                root / "docs/gap-register.json",
+            )
+            self.mutate(
+                root,
+                lambda value: next(
+                    gap for gap in value["gaps"] if gap["id"] == "G-TEAM-001"
+                ).update({"state": "CLOSED_SOURCE"}),
+            )
+            errors = source_gaps.validate_register_projection(root)
+            self.assertTrue(
+                any("G-TEAM-001: external evidence cannot be closed by source" in error for error in errors),
+                errors,
+            )
+
+    def test_unregistered_repository_gap_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir(parents=True)
+            shutil.copyfile(
+                ROOT / "docs/gap-register.json",
+                root / "docs/gap-register.json",
+            )
+            self.mutate(
+                root,
+                lambda value: value["gaps"].append(
+                    {
+                        "id": "UNVERIFIED-001",
+                        "domain": "REPOSITORY",
+                        "state": "CLOSED_SOURCE",
+                        "blocking_authorization": False,
+                        "summary": "must not self-certify",
+                        "evidence": ["README.md"],
+                        "issue": None,
+                    }
+                ),
+            )
+            errors = source_gaps.validate_register_projection(root)
+            self.assertTrue(
+                any("repository gap/verifier set mismatch" in error for error in errors),
+                errors,
+            )
+
+    def test_temporary_encoded_payload_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir(parents=True)
+            (root / "scripts/.hepta-gap-closure-payload-00.b64").write_text(
+                "H4sI", encoding="utf-8"
+            )
+            errors = source_gaps.validate_temporary_artifacts(root)
+            self.assertTrue(
+                any("temporary encoded gap-closure payload" in error for error in errors),
+                errors,
+            )
 
 
 if __name__ == "__main__":

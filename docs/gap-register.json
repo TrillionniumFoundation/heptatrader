@@ -11,14 +11,19 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Canonical module, capability and operations documentation exists and is machine-validated.",
+      "summary": "Canonical module, capability, build ownership and operations documentation exists and is machine-validated.",
       "evidence": [
         "README.md",
         "docs/index.md",
         "docs/module-catalog.json",
+        "docs/build-targets.json",
         "docs/capabilities.json",
         "scripts/check_documentation.py",
-        "tests/python/test_documentation_control_plane.py"
+        "scripts/verify_source_gap_closures.py",
+        "tests/python/test_documentation_control_plane.py",
+        "scripts/verify_build_ownership.py",
+        "tests/python/test_build_ownership.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
@@ -27,13 +32,16 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Always-reachable documentation, core, merge-candidate and dual-compiler sanitizer checks are defined for PR, main and merge-group revisions.",
+      "summary": "Always-reachable documentation, core, merge-candidate, qualification-boundary and dual-compiler sanitizer checks are defined for PR, main and merge-group revisions.",
       "evidence": [
         ".github/workflows/documentation-control-plane.yml",
         ".github/workflows/core-ci.yml",
         ".github/workflows/canonical-full-suite.yml",
         ".github/workflows/merge-candidate.yml",
-        ".github/required-check-contexts-v1.json"
+        ".github/required-check-contexts-v1.json",
+        "scripts/check_qualification_trust_boundary.py",
+        "scripts/verify_source_gap_closures.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
@@ -42,10 +50,15 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Optimized test targets preserve assertion evaluation and the integrated supervisor regression has its missing standard dependency.",
+      "summary": "Gap-critical test targets are explicitly inventoried, machine-owned and included in the integrated optimized test aggregate.",
       "evidence": [
         "tests/CMakeLists.txt",
-        "tests/unix_session_supervisor_test_prelude.h"
+        "tests/unix_session_supervisor_test_prelude.h",
+        "docs/build-targets.json",
+        "scripts/verify_source_gap_closures.py",
+        "scripts/verify_build_ownership.py",
+        "tests/python/test_build_ownership.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
@@ -54,12 +67,14 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Generic pre-trade risk covers snapshot freshness, order/pending/worst-case notional, daily loss and drawdown with guarded exit semantics.",
+      "summary": "Generic pre-trade risk binds subject, units, quotes and FX to a fresh authoritative generation and covers order/pending/worst-case notional, daily loss and drawdown with guarded exit semantics.",
       "evidence": [
         "HeptaTrade/risk/pre_trade_risk_engine.h",
         "HeptaTrade/risk/pre_trade_risk_engine.cpp",
         "tests/pre_trade_risk_engine_tests.cpp",
-        "docs/modules/risk-engine.md"
+        "docs/modules/risk-engine.md",
+        "scripts/verify_source_gap_closures.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
@@ -68,12 +83,16 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Until aggregate pending-order notional is authoritative, the qualifying IB PAPER source profile is restricted to one active order and one CASH contract.",
+      "summary": "Worst-case generic risk includes authoritative pending buy and sell notional; the qualifying IB PAPER profile additionally remains restricted to one active order and one CASH contract.",
       "evidence": [
+        "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+        "tests/pre_trade_risk_engine_tests.cpp",
         "docs/ib-paper-profile-policy-v1.json",
         "scripts/verify_canonical_ib_paper_profile.py",
         "tests/python/test_canonical_ib_paper_profile.py",
-        "systemd/hepta-execution-ib-paper.env.example"
+        "systemd/hepta-execution-ib-paper.env.example",
+        "scripts/verify_source_gap_closures.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
@@ -87,7 +106,9 @@
         "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
         "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
         "tests/venue_capability_tests.cpp",
-        "docs/capabilities.json"
+        "docs/capabilities.json",
+        "scripts/verify_source_gap_closures.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
@@ -96,11 +117,16 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "The public OMS contract matches schema v4 and broker evidence fields have strict write/replay verification.",
+      "summary": "The public OMS contract matches schema v4; a durable send-attempt precedes broker I/O and uncertain outcomes block mutation pending reconciliation.",
       "evidence": [
         "docs/OMS-EVENT-SCHEMA.md",
+        "HeptaTrade/execution/execution_place_order_dispatch.cpp",
         "scripts/verify_oms_journal_replay.py",
-        "tests/oms_journal_schema_v4_tests.cpp"
+        "scripts/verify_source_gap_closures.py",
+        "tests/oms_journal_durability_tests.cpp",
+        "tests/oms_journal_schema_v4_tests.cpp",
+        "tests/python/test_gap_register.py",
+        "tests/execution_coordinator_tests.cpp"
       ],
       "issue": null
     },
@@ -109,9 +135,15 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Typed tool protocol and session-supervisor core sources compile once through shared targets; global compiler-flag overrides are removed.",
+      "summary": "Every declared CMake target and every HeptaTrade translation unit has an exact maintained, qualification, experimental, test or legacy owner verified against the source tree.",
       "evidence": [
-        "HeptaTrade/CMakeLists.txt"
+        "HeptaTrade/CMakeLists.txt",
+        "tests/CMakeLists.txt",
+        "docs/build-targets.json",
+        "scripts/verify_source_gap_closures.py",
+        "scripts/verify_build_ownership.py",
+        "tests/python/test_build_ownership.py",
+        "tests/python/test_gap_register.py"
       ],
       "issue": null
     },
