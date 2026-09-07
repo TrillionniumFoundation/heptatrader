@@ -127,7 +127,7 @@
         ".github/CODEOWNERS",
         "scripts/verify_github_governance.py"
       ],
-      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/32"
+      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/8"
     },
     {
       "id": "G-IB-001",
@@ -140,7 +140,7 @@
         "scripts/verify_ib_paper_qualification.py",
         "docs/ib-paper-profile-policy-v1.json"
       ],
-      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/33"
+      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/9"
     }
   ]
 }
