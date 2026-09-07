@@ -1,4 +1,4 @@
-name: Temporary Refactor Materializer
+name: Temporary Exact Source Snapshot
 
 on:
   push:
@@ -6,55 +6,39 @@ on:
       - codex/close-architecture-docs-ci-risk-gaps-20260907
     paths:
       - '.github/workflows/refactor-apply.yml'
-      - 'scripts/refactor_apply.py.gz.b64'
 
 permissions:
   contents: read
 
 jobs:
-  materialize:
+  snapshot:
+    name: package-exact-source-head
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 15
     steps:
-      - name: Checkout exact refactor bootstrap head
+      - name: Checkout exact source head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
           persist-credentials: false
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
-      - name: Materialize reviewed refactor
-        run: |
-          base64 -d scripts/refactor_apply.py.gz.b64 | gzip -d > /tmp/refactor_apply.py
-          python3 /tmp/refactor_apply.py
-      - name: Validate complete source tree
+      - name: Assert exact source identity
         env:
-          HEPTA_JOBS: '2'
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+      - name: Package untouched exact worktree
         run: |
           set -euo pipefail
           git diff --check
-          python3 scripts/check_documentation.py
-          python3 scripts/check_gap_register.py
-          python3 scripts/verify_canonical_ib_paper_profile.py
-          python3 -m unittest discover -s tests/python -p 'test_*.py'
-          ./scripts/dev_core.sh
-          cmake --build build/core --target hepta-executiond --parallel 2
-      - name: Package materialized worktree
-        if: always()
-        run: |
-          set -euo pipefail
-          rm -f scripts/refactor_apply.py.gz.b64 .github/workflows/refactor-apply.yml
-          tar -czf "$RUNNER_TEMP/heptatrader-materialized.tgz" \
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          tar -czf "$RUNNER_TEMP/heptatrader-exact-source.tgz" \
             --exclude=.git --exclude=build .
-      - name: Upload materialized worktree
-        if: always()
+      - name: Upload exact source snapshot
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: heptatrader-materialized-${{ github.sha }}
-          path: ${{ runner.temp }}/heptatrader-materialized.tgz
+          name: heptatrader-exact-source-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-exact-source.tgz
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
