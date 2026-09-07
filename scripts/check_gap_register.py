@@ -33,8 +33,8 @@ REQUIRED_REPOSITORY_GAPS = {
     "BUILD-001",
 }
 REQUIRED_EXTERNAL_GAPS = {
-    "G-TEAM-001": "https://github.com/TrillionniumFoundation/heptatrader/issues/32",
-    "G-IB-001": "https://github.com/TrillionniumFoundation/heptatrader/issues/33",
+    "G-TEAM-001": "https://github.com/TrillionniumFoundation/heptatrader/issues/8",
+    "G-IB-001": "https://github.com/TrillionniumFoundation/heptatrader/issues/9",
 }
 ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
 
