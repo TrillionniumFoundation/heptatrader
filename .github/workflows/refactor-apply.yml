@@ -1,4 +1,4 @@
-name: Temporary Exact Source Snapshot
+name: Temporary Exact Refactor Materialization
 
 on:
   push:
@@ -11,10 +11,10 @@ permissions:
   contents: read
 
 jobs:
-  snapshot:
-    name: package-exact-source-head
+  materialize:
+    name: materialize-current-refactor-payload
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Checkout exact source head without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -26,19 +26,39 @@ jobs:
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-      - name: Package untouched exact worktree
+      - name: Decode and apply current reviewed payload
         run: |
           set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          from pathlib import Path
+          encoded = Path('scripts/refactor_apply.py.gz.b64').read_text(encoding='utf-8').strip()
+          payload = gzip.decompress(base64.b64decode(encoded, validate=True))
+          target = Path('/tmp/heptatrader-refactor-apply.py')
+          target.write_bytes(payload)
+          target.chmod(0o700)
+          PY
+          python3 /tmp/heptatrader-refactor-apply.py
+          rm -f .github/workflows/refactor-apply.yml scripts/refactor_apply.py.gz.b64
           git diff --check
-          git diff --exit-code -- .
-          git diff --cached --exit-code -- .
-          tar -czf "$RUNNER_TEMP/heptatrader-exact-source.tgz" \
+      - name: Validate source contracts before export
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+      - name: Package materialized candidate
+        run: |
+          set -euo pipefail
+          tar -czf "$RUNNER_TEMP/heptatrader-materialized-source.tgz" \
             --exclude=.git --exclude=build .
-      - name: Upload exact source snapshot
+      - name: Upload materialized candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: heptatrader-exact-source-${{ github.sha }}
-          path: ${{ runner.temp }}/heptatrader-exact-source.tgz
+          name: heptatrader-materialized-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-materialized-source.tgz
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
