@@ -9,11 +9,10 @@ on:
       - 'scripts/refactor_apply.py.gz.b64'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  apply:
-    if: github.event.head_commit.message == 'chore: bootstrap remote refactor worktree'
+  materialize:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -21,8 +20,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 0
-          persist-credentials: true
+          fetch-depth: 1
+          persist-credentials: false
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -43,13 +42,19 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_*.py'
           ./scripts/dev_core.sh
           cmake --build build/core --target hepta-executiond --parallel 2
-      - name: Commit tested refactor to candidate branch
-        env:
-          TARGET_BRANCH: codex/close-architecture-docs-ci-risk-gaps-20260907
+      - name: Package materialized worktree
+        if: always()
         run: |
           set -euo pipefail
-          git config user.name 'heptatrader-refactor-bot'
-          git config user.email 'heptatrader-refactor-bot@users.noreply.github.com'
-          git add --all
-          git commit -m 'runtime: close simulator risk and strict reconciliation gaps'
-          git push origin "HEAD:${TARGET_BRANCH}"
+          rm -f scripts/refactor_apply.py.gz.b64 .github/workflows/refactor-apply.yml
+          tar -czf "$RUNNER_TEMP/heptatrader-materialized.tgz" \
+            --exclude=.git --exclude=build .
+      - name: Upload materialized worktree
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-materialized-${{ github.sha }}
+          path: ${{ runner.temp }}/heptatrader-materialized.tgz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
