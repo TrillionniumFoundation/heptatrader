@@ -32,7 +32,7 @@
       "id": "execution-service",
       "status": "CURRENT",
       "document": "docs/modules/execution-service.md",
-      "implementation": ["HeptaTrade/execution", "HeptaTrade/oms_journal.cpp"],
+      "implementation": ["HeptaTrade/execution", "HeptaTrade/agent/decision_lease_manager.cpp", "HeptaTrade/events/execution_event_hub.cpp", "HeptaTrade/events/owner_scoped_health_publisher.cpp"],
       "tests": ["tests/execution_coordinator_tests.cpp", "tests/execution_event_feed_tests.cpp", "tests/execution_decision_lease_authority_tests.cpp"],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
@@ -78,7 +78,7 @@
       "status": "QUALIFICATION_REQUIRED",
       "document": "docs/modules/ib-paper.md",
       "implementation": ["HeptaTrade/adapter_ib", "HeptaTrade/execution/hepta_ib_executiond.cpp", "systemd/hepta-execution-ib-paper.service", "docs/ib-paper-profile-policy-v1.json", "scripts/verify_canonical_ib_paper_profile.py"],
-      "tests": ["tests/ib_order_lifecycle_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp", "tests/execution_coordinator_tests.cpp", "tests/python/test_canonical_ib_paper_profile.py"],
+      "tests": ["tests/ib_order_lifecycle_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp", "tests/ib_live_terminal_reconciliation_tests.cpp", "tests/execution_coordinator_tests.cpp", "tests/python/test_canonical_ib_paper_profile.py"],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
     },

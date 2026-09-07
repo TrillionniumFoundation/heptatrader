@@ -2,12 +2,14 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/execution/`, `HeptaTrade/oms_journal.cpp`  
+Implementation: `HeptaTrade/execution/`, `HeptaTrade/agent/decision_lease_manager.cpp`, `HeptaTrade/events/execution_event_hub.cpp`, `HeptaTrade/events/owner_scoped_health_publisher.cpp`
 Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`
 
 ## Responsibilities
 
 The Execution Service is the sole order authority. It validates execution context, applies broker-independent and venue-specific policy, allocates or verifies the stable command identity, commits mutation intent durably before external send, invokes the venue adapter, projects authoritative events, publishes execution events, supports command-status lookup, and coordinates recovery and reconciliation.
+
+Its shared support owns decision leases, execution-event delivery and owner-scoped health publication. The [OMS journal module](oms-journal.md) owns the journal implementation consumed by this service.
 
 No Agent, Gateway, strategy, bridge, or legacy component may send an order around this service.
 

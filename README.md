@@ -49,7 +49,7 @@ The machine-readable capability source of truth is [`docs/capabilities.json`](do
 
 ## Documentation
 
-Start with [`docs/index.md`](docs/index.md). Every current or experimental module must have a module-level design document covering responsibilities, public contracts, state, failure semantics, persistence, security boundaries, observability, and tests. Documentation consistency is enforced by `scripts/check_documentation.py`. Repository gap closure is separately verified by executable, gap-specific checks in `scripts/verify_source_gap_closures.py`; the presence of an evidence file alone cannot close a source gap.
+Start with [`docs/index.md`](docs/index.md). Every current or experimental module must have a module-level design document covering responsibilities, public contracts, state, failure semantics, persistence, security boundaries, observability, and tests. Documentation consistency is enforced by `scripts/check_documentation.py`. Build ownership is checked against CMake File API replies by `scripts/verify_build_ownership.py`. Registered gap status and external qualification requirements remain recorded in [`docs/gap-register.json`](docs/gap-register.json).
 
 ## Security invariants
 
