@@ -82,6 +82,8 @@ set_tests_properties(hepta_unix_tool_server_tests PROPERTIES
 
 add_executable(hepta_unix_session_supervisor_server_tests
     unix_session_supervisor_server_tests.cpp)
+target_precompile_headers(hepta_unix_session_supervisor_server_tests PRIVATE
+    unix_session_supervisor_test_prelude.h)
 target_link_libraries(hepta_unix_session_supervisor_server_tests
     hepta_agent_os_core hepta_execution_core)
 add_dependencies(hepta_unix_session_supervisor_server_tests hepta_sessionctl)
