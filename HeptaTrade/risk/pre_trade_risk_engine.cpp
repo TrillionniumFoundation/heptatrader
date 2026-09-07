@@ -5,24 +5,32 @@
 
 namespace {
 PreTradeRiskDecision Allow(double orderNotional = 0.0,
-                           double worstCaseGrossNotional = 0.0) {
+                           double worstCaseGrossNotional = 0.0,
+                           std::uint64_t snapshotConnectionEpoch = 0,
+                           std::uint64_t snapshotGeneration = 0) {
     PreTradeRiskDecision d;
     d.allow = true;
     d.reasonCode = "RISK_OK";
     d.orderNotional = orderNotional;
     d.worstCaseGrossNotional = worstCaseGrossNotional;
+    d.snapshotConnectionEpoch = snapshotConnectionEpoch;
+    d.snapshotGeneration = snapshotGeneration;
     return d;
 }
 
 PreTradeRiskDecision Reject(const char* code, const std::string& detail,
                             double orderNotional = 0.0,
-                            double worstCaseGrossNotional = 0.0) {
+                            double worstCaseGrossNotional = 0.0,
+                            std::uint64_t snapshotConnectionEpoch = 0,
+                            std::uint64_t snapshotGeneration = 0) {
     PreTradeRiskDecision d;
     d.allow = false;
     d.reasonCode = code ? code : "RISK_REJECTED";
     d.detail = detail;
     d.orderNotional = orderNotional;
     d.worstCaseGrossNotional = worstCaseGrossNotional;
+    d.snapshotConnectionEpoch = snapshotConnectionEpoch;
+    d.snapshotGeneration = snapshotGeneration;
     return d;
 }
 
@@ -36,6 +44,18 @@ bool LimitEnabled(double value) {
 
 bool ExceedsInclusiveLimit(double value, double limit) {
     return value > limit;
+}
+
+bool ValidSnapshotIdentity(const PreTradeRiskSnapshotIdentity& identity) {
+    return identity.present && identity.complete &&
+        identity.connectionEpoch > 0 && identity.generation > 0 &&
+        identity.observedAtMs > 0 && identity.evaluatedAtMs > 0 &&
+        identity.evaluatedAtMs >= identity.observedAtMs;
+}
+
+bool SameGeneration(std::uint64_t sectionGeneration,
+                    const PreTradeRiskSnapshotIdentity& identity) {
+    return sectionGeneration > 0 && sectionGeneration == identity.generation;
 }
 }
 
@@ -73,20 +93,6 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
         }
     }
 
-    if (!ctx.snapshotComplete) {
-        return Reject("RISK_SNAPSHOT_INCOMPLETE", "authoritative risk snapshot is incomplete");
-    }
-    if (cfg.maxSnapshotAgeMs < 0) {
-        return Reject("RISK_SNAPSHOT_POLICY_INVALID", "maxSnapshotAgeMs must be non-negative");
-    }
-    if (cfg.maxSnapshotAgeMs > 0) {
-        if (ctx.nowMs <= 0 || ctx.snapshotObservedAtMs <= 0 ||
-            ctx.nowMs < ctx.snapshotObservedAtMs ||
-            ctx.nowMs - ctx.snapshotObservedAtMs > cfg.maxSnapshotAgeMs) {
-            return Reject("RISK_SNAPSHOT_STALE", "authoritative risk snapshot is missing or stale");
-        }
-    }
-
     bool reducingExposure = false;
     if (cfg.flattenOnly) {
         if (!ctx.positionKnown || !std::isfinite(ctx.netPosition)) {
@@ -117,17 +123,6 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
         }
     }
 
-    if (!FiniteNonNegative(ctx.baseCurrencyOrderNotional) ||
-        !FiniteNonNegative(ctx.currentGrossNotional) ||
-        !FiniteNonNegative(ctx.pendingBuyNotional) ||
-        !FiniteNonNegative(ctx.pendingSellNotional) ||
-        !std::isfinite(ctx.realizedPnl) ||
-        !std::isfinite(ctx.unrealizedPnl) ||
-        !FiniteNonNegative(ctx.peakEquity) ||
-        !FiniteNonNegative(ctx.currentEquity)) {
-        return Reject("RISK_NUMERIC_CONTEXT_INVALID", "notional, PnL, or equity context is invalid");
-    }
-
     for (double limit : {
             cfg.maxOrderNotional,
             cfg.maxWorstCaseGrossNotional,
@@ -137,11 +132,120 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
             return Reject("RISK_LIMIT_POLICY_INVALID", "optional risk limits must be finite and non-negative");
         }
     }
+    if (cfg.maxSnapshotAgeMs < 0) {
+        return Reject("RISK_SNAPSHOT_POLICY_INVALID", "maxSnapshotAgeMs must be non-negative");
+    }
 
-    double orderNotional = ctx.baseCurrencyOrderNotional;
-    if (orderNotional == 0.0 &&
-        (LimitEnabled(cfg.maxOrderNotional) ||
-         LimitEnabled(cfg.maxWorstCaseGrossNotional))) {
+    const bool needsExposure =
+        !reducingExposure && LimitEnabled(cfg.maxWorstCaseGrossNotional);
+    const bool needsPnl = !reducingExposure && LimitEnabled(cfg.maxDailyLoss);
+    const bool needsEquity = !reducingExposure && LimitEnabled(cfg.maxDrawdown);
+    const bool needsPortfolioSnapshot = needsExposure || needsPnl || needsEquity;
+    const bool needsSnapshot = needsPortfolioSnapshot || cfg.maxSnapshotAgeMs > 0;
+    const PreTradeRiskSnapshotIdentity& identity =
+        ctx.authoritativeSnapshot.identity;
+
+    if (needsPortfolioSnapshot && cfg.maxSnapshotAgeMs == 0) {
+        return Reject("RISK_SNAPSHOT_FRESHNESS_POLICY_REQUIRED",
+                      "portfolio limits require a positive maxSnapshotAgeMs");
+    }
+    if (needsSnapshot) {
+        if (!ValidSnapshotIdentity(identity)) {
+            return Reject("RISK_SNAPSHOT_IDENTITY_REQUIRED",
+                          "authoritative snapshot identity, completeness, epoch, generation and timestamps are required");
+        }
+        if (identity.evaluatedAtMs - identity.observedAtMs >
+            cfg.maxSnapshotAgeMs) {
+            return Reject("RISK_SNAPSHOT_STALE",
+                          "authoritative risk snapshot is stale",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+    }
+
+    if (needsExposure) {
+        const PreTradeRiskExposureSnapshot& exposure =
+            ctx.authoritativeSnapshot.exposure;
+        if (!exposure.present) {
+            return Reject("RISK_SNAPSHOT_EXPOSURE_REQUIRED",
+                          "gross and pending exposure snapshot is required",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        if (!SameGeneration(exposure.generation, identity)) {
+            return Reject("RISK_SNAPSHOT_GENERATION_MISMATCH",
+                          "exposure does not belong to the authoritative snapshot generation",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        if (!FiniteNonNegative(exposure.currentGrossNotional) ||
+            !FiniteNonNegative(exposure.pendingBuyNotional) ||
+            !FiniteNonNegative(exposure.pendingSellNotional)) {
+            return Reject("RISK_NUMERIC_CONTEXT_INVALID",
+                          "gross or pending exposure context is invalid",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+    }
+
+    if (needsPnl) {
+        const PreTradeRiskPnlSnapshot& pnl = ctx.authoritativeSnapshot.pnl;
+        if (!pnl.present) {
+            return Reject("RISK_SNAPSHOT_PNL_REQUIRED",
+                          "realized and unrealized PnL snapshot is required",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        if (!SameGeneration(pnl.generation, identity)) {
+            return Reject("RISK_SNAPSHOT_GENERATION_MISMATCH",
+                          "PnL does not belong to the authoritative snapshot generation",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        if (!std::isfinite(pnl.realizedPnl) ||
+            !std::isfinite(pnl.unrealizedPnl)) {
+            return Reject("RISK_NUMERIC_CONTEXT_INVALID",
+                          "PnL context is invalid",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+    }
+
+    if (needsEquity) {
+        const PreTradeRiskEquitySnapshot& equity =
+            ctx.authoritativeSnapshot.equity;
+        if (!equity.present) {
+            return Reject("RISK_SNAPSHOT_EQUITY_REQUIRED",
+                          "peak and current equity snapshot is required",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        if (!SameGeneration(equity.generation, identity)) {
+            return Reject("RISK_SNAPSHOT_GENERATION_MISMATCH",
+                          "equity does not belong to the authoritative snapshot generation",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        if (!FiniteNonNegative(equity.peakEquity) ||
+            !FiniteNonNegative(equity.currentEquity)) {
+            return Reject("RISK_NUMERIC_CONTEXT_INVALID",
+                          "equity context is invalid",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+    }
+
+    double orderNotional = 0.0;
+    if (ctx.baseCurrencyOrderNotionalPresent) {
+        if (!std::isfinite(ctx.baseCurrencyOrderNotional) ||
+            ctx.baseCurrencyOrderNotional <= 0.0) {
+            return Reject("RISK_ORDER_NOTIONAL_INVALID",
+                          "present base-currency order notional must be finite and positive",
+                          0.0, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
+        orderNotional = ctx.baseCurrencyOrderNotional;
+    } else if (LimitEnabled(cfg.maxOrderNotional) || needsExposure) {
         const double price = ctx.referencePrice > 0.0 ?
             ctx.referencePrice : ctx.limitPrice;
         if (!std::isfinite(price) || price <= 0.0) {
@@ -153,10 +257,18 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
         }
     }
 
-    const double worstCaseGrossNotional = ctx.currentGrossNotional +
-        ctx.pendingBuyNotional + ctx.pendingSellNotional + orderNotional;
-    if (!std::isfinite(worstCaseGrossNotional)) {
-        return Reject("RISK_WORST_CASE_GROSS_INVALID", "worst-case gross notional overflowed");
+    double worstCaseGrossNotional = orderNotional;
+    if (needsExposure) {
+        const PreTradeRiskExposureSnapshot& exposure =
+            ctx.authoritativeSnapshot.exposure;
+        worstCaseGrossNotional = exposure.currentGrossNotional +
+            exposure.pendingBuyNotional + exposure.pendingSellNotional +
+            orderNotional;
+        if (!std::isfinite(worstCaseGrossNotional)) {
+            return Reject("RISK_WORST_CASE_GROSS_INVALID", "worst-case gross notional overflowed",
+                          orderNotional, 0.0, identity.connectionEpoch,
+                          identity.generation);
+        }
     }
 
     // A verified flatten-only order is an exit path. Portfolio loss/gross
@@ -166,41 +278,54 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
         if (LimitEnabled(cfg.maxOrderNotional) &&
             ExceedsInclusiveLimit(orderNotional, cfg.maxOrderNotional)) {
             return Reject("RISK_ORDER_NOTIONAL_LIMIT", "order notional exceeds maxOrderNotional",
-                          orderNotional, worstCaseGrossNotional);
+                          orderNotional, worstCaseGrossNotional,
+                          identity.connectionEpoch, identity.generation);
         }
-        if (LimitEnabled(cfg.maxWorstCaseGrossNotional) &&
+        if (needsExposure &&
             ExceedsInclusiveLimit(worstCaseGrossNotional,
                                   cfg.maxWorstCaseGrossNotional)) {
             return Reject("RISK_WORST_CASE_GROSS_LIMIT", "current plus pending plus candidate exposure exceeds maxWorstCaseGrossNotional",
-                          orderNotional, worstCaseGrossNotional);
+                          orderNotional, worstCaseGrossNotional,
+                          identity.connectionEpoch, identity.generation);
         }
 
-        const double totalPnl = ctx.realizedPnl + ctx.unrealizedPnl;
-        const double dailyLoss = totalPnl < 0.0 ? -totalPnl : 0.0;
-        if (!std::isfinite(dailyLoss)) {
-            return Reject("RISK_DAILY_LOSS_INVALID", "daily loss calculation is invalid",
-                          orderNotional, worstCaseGrossNotional);
-        }
-        if (LimitEnabled(cfg.maxDailyLoss) &&
-            ExceedsInclusiveLimit(dailyLoss, cfg.maxDailyLoss)) {
-            return Reject("RISK_DAILY_LOSS_LIMIT", "daily loss exceeds maxDailyLoss",
-                          orderNotional, worstCaseGrossNotional);
+        if (needsPnl) {
+            const PreTradeRiskPnlSnapshot& pnl = ctx.authoritativeSnapshot.pnl;
+            const double totalPnl = pnl.realizedPnl + pnl.unrealizedPnl;
+            const double dailyLoss = totalPnl < 0.0 ? -totalPnl : 0.0;
+            if (!std::isfinite(dailyLoss)) {
+                return Reject("RISK_DAILY_LOSS_INVALID", "daily loss calculation is invalid",
+                              orderNotional, worstCaseGrossNotional,
+                              identity.connectionEpoch, identity.generation);
+            }
+            if (ExceedsInclusiveLimit(dailyLoss, cfg.maxDailyLoss)) {
+                return Reject("RISK_DAILY_LOSS_LIMIT", "daily loss exceeds maxDailyLoss",
+                              orderNotional, worstCaseGrossNotional,
+                              identity.connectionEpoch, identity.generation);
+            }
         }
 
-        const double drawdown = ctx.peakEquity > ctx.currentEquity ?
-            ctx.peakEquity - ctx.currentEquity : 0.0;
-        if (!std::isfinite(drawdown)) {
-            return Reject("RISK_DRAWDOWN_INVALID", "drawdown calculation is invalid",
-                          orderNotional, worstCaseGrossNotional);
-        }
-        if (LimitEnabled(cfg.maxDrawdown) &&
-            ExceedsInclusiveLimit(drawdown, cfg.maxDrawdown)) {
-            return Reject("RISK_DRAWDOWN_LIMIT", "drawdown exceeds maxDrawdown",
-                          orderNotional, worstCaseGrossNotional);
+        if (needsEquity) {
+            const PreTradeRiskEquitySnapshot& equity =
+                ctx.authoritativeSnapshot.equity;
+            const double drawdown = equity.peakEquity > equity.currentEquity ?
+                equity.peakEquity - equity.currentEquity : 0.0;
+            if (!std::isfinite(drawdown)) {
+                return Reject("RISK_DRAWDOWN_INVALID", "drawdown calculation is invalid",
+                              orderNotional, worstCaseGrossNotional,
+                              identity.connectionEpoch, identity.generation);
+            }
+            if (ExceedsInclusiveLimit(drawdown, cfg.maxDrawdown)) {
+                return Reject("RISK_DRAWDOWN_LIMIT", "drawdown exceeds maxDrawdown",
+                              orderNotional, worstCaseGrossNotional,
+                              identity.connectionEpoch, identity.generation);
+            }
         }
     }
 
-    return Allow(orderNotional, worstCaseGrossNotional);
+    return Allow(orderNotional, worstCaseGrossNotional,
+                 needsSnapshot ? identity.connectionEpoch : 0,
+                 needsSnapshot ? identity.generation : 0);
 }
 
 bool PreTradeRiskEngine::IsFlatteningOrder(const PreTradeRiskContext& ctx) {

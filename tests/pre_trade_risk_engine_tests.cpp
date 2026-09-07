@@ -38,13 +38,29 @@ PreTradeRiskContext BaseContext() {
     ctx.positionKnown = true;
     return ctx;
 }
+
+void BindZeroSnapshot(PreTradeRiskContext& ctx, std::uint64_t generation = 7) {
+    ctx.authoritativeSnapshot.identity.present = true;
+    ctx.authoritativeSnapshot.identity.complete = true;
+    ctx.authoritativeSnapshot.identity.connectionEpoch = 3;
+    ctx.authoritativeSnapshot.identity.generation = generation;
+    ctx.authoritativeSnapshot.identity.observedAtMs = 4000;
+    ctx.authoritativeSnapshot.identity.evaluatedAtMs = 5000;
+
+    ctx.authoritativeSnapshot.exposure.present = true;
+    ctx.authoritativeSnapshot.exposure.generation = generation;
+    ctx.authoritativeSnapshot.pnl.present = true;
+    ctx.authoritativeSnapshot.pnl.generation = generation;
+    ctx.authoritativeSnapshot.equity.present = true;
+    ctx.authoritativeSnapshot.equity.generation = generation;
+}
 }
 
 int main() {
     {
         const PreTradeRiskDecision d =
             PreTradeRiskEngine::Evaluate(BaseConfig(), BaseContext());
-        Require(d.allow, "legacy-compatible baseline must pass");
+        Require(d.allow, "legacy-compatible baseline without portfolio limits must pass");
         Require(d.reasonCode == "RISK_OK", "baseline reason");
     }
     {
@@ -61,24 +77,34 @@ int main() {
         PreTradeRiskContext ctx = BaseContext();
         PreTradeRiskDecision d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(d.allow && d.orderNotional == 100.0,
-                "inclusive order-notional boundary must pass");
+                "inclusive derived order-notional boundary must pass");
+        ctx.baseCurrencyOrderNotionalPresent = true;
         ctx.baseCurrencyOrderNotional = 100.01;
         d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(!d.allow && d.reasonCode == "RISK_ORDER_NOTIONAL_LIMIT",
                 "above order-notional boundary must fail");
+        ctx.baseCurrencyOrderNotional = 0.0;
+        d = PreTradeRiskEngine::Evaluate(cfg, ctx);
+        Require(!d.allow && d.reasonCode == "RISK_ORDER_NOTIONAL_INVALID",
+                "present zero notional must not mean missing or safe");
     }
     {
         PreTradeRiskConfig cfg = BaseConfig();
         cfg.maxWorstCaseGrossNotional = 1000.0;
+        cfg.maxSnapshotAgeMs = 1000;
         PreTradeRiskContext ctx = BaseContext();
+        ctx.baseCurrencyOrderNotionalPresent = true;
         ctx.baseCurrencyOrderNotional = 100.0;
-        ctx.currentGrossNotional = 400.0;
-        ctx.pendingBuyNotional = 250.0;
-        ctx.pendingSellNotional = 250.0;
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.exposure.currentGrossNotional = 400.0;
+        ctx.authoritativeSnapshot.exposure.pendingBuyNotional = 250.0;
+        ctx.authoritativeSnapshot.exposure.pendingSellNotional = 250.0;
         PreTradeRiskDecision d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(d.allow && d.worstCaseGrossNotional == 1000.0,
                 "inclusive worst-case gross boundary must pass");
-        ctx.pendingSellNotional = 250.01;
+        Require(d.snapshotConnectionEpoch == 3 && d.snapshotGeneration == 7,
+                "accepted decision must retain snapshot identity");
+        ctx.authoritativeSnapshot.exposure.pendingSellNotional = 250.01;
         d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(!d.allow && d.reasonCode == "RISK_WORST_CASE_GROSS_LIMIT",
                 "pending exposure must count in worst-case gross");
@@ -87,36 +113,37 @@ int main() {
         PreTradeRiskConfig cfg = BaseConfig();
         cfg.maxSnapshotAgeMs = 1000;
         PreTradeRiskContext ctx = BaseContext();
-        ctx.nowMs = 5000;
-        ctx.snapshotObservedAtMs = 4000;
+        BindZeroSnapshot(ctx);
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
                 "inclusive snapshot-age boundary must pass");
-        ctx.snapshotObservedAtMs = 3999;
+        ctx.authoritativeSnapshot.identity.observedAtMs = 3999;
         const PreTradeRiskDecision d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(!d.allow && d.reasonCode == "RISK_SNAPSHOT_STALE",
                 "stale snapshot must fail");
-        ctx.snapshotComplete = false;
+        ctx.authoritativeSnapshot.identity.complete = false;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
-                    "RISK_SNAPSHOT_INCOMPLETE",
-                "incomplete snapshot must fail before age");
+                    "RISK_SNAPSHOT_IDENTITY_REQUIRED",
+                "incomplete snapshot identity must fail before age");
     }
     {
         PreTradeRiskConfig cfg = BaseConfig();
         cfg.maxDailyLoss = 50.0;
         cfg.maxDrawdown = 75.0;
+        cfg.maxSnapshotAgeMs = 1000;
         PreTradeRiskContext ctx = BaseContext();
-        ctx.realizedPnl = -30.0;
-        ctx.unrealizedPnl = -20.0;
-        ctx.peakEquity = 1000.0;
-        ctx.currentEquity = 925.0;
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.pnl.realizedPnl = -30.0;
+        ctx.authoritativeSnapshot.pnl.unrealizedPnl = -20.0;
+        ctx.authoritativeSnapshot.equity.peakEquity = 1000.0;
+        ctx.authoritativeSnapshot.equity.currentEquity = 925.0;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
                 "inclusive loss and drawdown limits must pass");
-        ctx.unrealizedPnl = -20.01;
+        ctx.authoritativeSnapshot.pnl.unrealizedPnl = -20.01;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
                     "RISK_DAILY_LOSS_LIMIT",
                 "daily loss breach must fail");
-        ctx.unrealizedPnl = -20.0;
-        ctx.currentEquity = 924.99;
+        ctx.authoritativeSnapshot.pnl.unrealizedPnl = -20.0;
+        ctx.authoritativeSnapshot.equity.currentEquity = 924.99;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
                     "RISK_DRAWDOWN_LIMIT",
                 "drawdown breach must fail");
@@ -130,8 +157,6 @@ int main() {
         ctx.action = "SELL";
         ctx.netPosition = 5.0;
         ctx.totalQuantity = 2.0;
-        ctx.currentGrossNotional = 10000.0;
-        ctx.realizedPnl = -10000.0;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
                 "partial long flatten must remain available during breaches");
         ctx.totalQuantity = 5.0;
@@ -183,6 +208,82 @@ int main() {
         const PreTradeRiskDecision d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(!d.allow && d.reasonCode == "RISK_PRICE_DEVIATION_TOO_LARGE",
                 "price deviation must fail");
+    }
+    {
+        PreTradeRiskConfig cfg = BaseConfig();
+        cfg.maxWorstCaseGrossNotional = 1000.0;
+        PreTradeRiskContext ctx = BaseContext();
+        ctx.snapshotComplete = true;
+        ctx.currentGrossNotional = 0.0;
+        ctx.pendingBuyNotional = 0.0;
+        ctx.pendingSellNotional = 0.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_FRESHNESS_POLICY_REQUIRED",
+                "portfolio policy without freshness policy must fail");
+        cfg.maxSnapshotAgeMs = 1000;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_IDENTITY_REQUIRED",
+                "legacy default fields must not masquerade as an authoritative snapshot");
+    }
+    {
+        PreTradeRiskConfig cfg = BaseConfig();
+        cfg.maxWorstCaseGrossNotional = 1000.0;
+        cfg.maxSnapshotAgeMs = 1000;
+        PreTradeRiskContext ctx = BaseContext();
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.exposure.present = false;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_EXPOSURE_REQUIRED",
+                "missing pending exposure must fail");
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.exposure.generation = 8;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_GENERATION_MISMATCH",
+                "mixed exposure generation must fail");
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.identity.connectionEpoch = 0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_IDENTITY_REQUIRED",
+                "missing connection epoch must fail");
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.identity.generation = 0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_IDENTITY_REQUIRED",
+                "missing snapshot generation must fail");
+    }
+    {
+        PreTradeRiskConfig cfg = BaseConfig();
+        cfg.maxDailyLoss = 10.0;
+        cfg.maxSnapshotAgeMs = 1000;
+        PreTradeRiskContext ctx = BaseContext();
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.pnl.present = false;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_PNL_REQUIRED",
+                "missing PnL presence must fail");
+    }
+    {
+        PreTradeRiskConfig cfg = BaseConfig();
+        cfg.maxDrawdown = 10.0;
+        cfg.maxSnapshotAgeMs = 1000;
+        PreTradeRiskContext ctx = BaseContext();
+        BindZeroSnapshot(ctx);
+        ctx.authoritativeSnapshot.equity.present = false;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_SNAPSHOT_EQUITY_REQUIRED",
+                "missing equity presence must fail");
+    }
+    {
+        PreTradeRiskConfig cfg = BaseConfig();
+        cfg.maxWorstCaseGrossNotional = 1000.0;
+        cfg.maxDailyLoss = 10.0;
+        cfg.maxDrawdown = 10.0;
+        cfg.maxSnapshotAgeMs = 1000;
+        PreTradeRiskContext ctx = BaseContext();
+        BindZeroSnapshot(ctx);
+        const PreTradeRiskDecision d = PreTradeRiskEngine::Evaluate(cfg, ctx);
+        Require(d.allow,
+                "explicit authoritative zero exposure, zero PnL and zero equity must pass");
     }
     std::cout << "pre_trade_risk_engine_tests: PASS" << std::endl;
     return 0;
