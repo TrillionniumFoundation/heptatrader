@@ -1,0 +1,41 @@
+{
+  "schema": "heptatrader.capabilities.v1",
+  "live_trading_authorized": false,
+  "capabilities": [
+    {
+      "id": "deterministic-simulator",
+      "status": "CURRENT",
+      "order_transport": "LOCAL_DETERMINISTIC",
+      "requires_external_qualification": false,
+      "advertise_as_real_venue": false
+    },
+    {
+      "id": "ib-paper",
+      "status": "QUALIFICATION_REQUIRED",
+      "order_transport": "IB_CPP_API",
+      "requires_external_qualification": true,
+      "advertise_as_real_venue": true
+    },
+    {
+      "id": "ctp",
+      "status": "EXPERIMENTAL",
+      "order_transport": "NONE",
+      "requires_external_qualification": true,
+      "advertise_as_real_venue": false
+    },
+    {
+      "id": "xt-qmt",
+      "status": "EXPERIMENTAL",
+      "order_transport": "NONE",
+      "requires_external_qualification": true,
+      "advertise_as_real_venue": false
+    },
+    {
+      "id": "live",
+      "status": "UNAVAILABLE",
+      "order_transport": "NONE",
+      "requires_external_qualification": true,
+      "advertise_as_real_venue": false
+    }
+  ]
+}
