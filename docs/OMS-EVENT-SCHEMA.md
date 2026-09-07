@@ -1,99 +1,171 @@
-# OMS Event Schema (v2)
+# OMS journal event schema v4
 
-本文件定义 `runtime-logs/oms_journal.jsonl` 的事件模型（W3-W5 阶段B）。
+Status: CURRENT  
+Applies to: `OmsJournal::kSchemaVersion == 4`  
+Implementation: `HeptaTrade/oms_journal.h`, `HeptaTrade/oms_journal.cpp`  
+Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`
 
-## 目标
+## Purpose
 
-- 支持下单生命周期事件持久化（intent/place/status/cancel/reject/risk）。
-- 支持重启后 replay 恢复订单状态。
-- 支持基础幂等去重（event_id 优先，fallback 指纹）。
-- 保持 CTP/IB 双接口兼容，不依赖 IB-only 字段。
+The OMS journal is the durable mutation and broker-callback evidence stream used for command idempotency, restart recovery, owner fencing, venue correlation, and incident reconstruction. It is append-only JSON Lines: one complete JSON object per line.
 
-## JSONL 记录格式
+Application logs, strategy state, CSV snapshots, and SHADOW receipts do not replace this journal.
 
-每行一个 JSON：
+## Current record
+
+The v4 writer emits all keys below. Optional strings are emitted as empty strings and optional numeric values as zero when no evidence exists.
 
 ```json
 {
-  "schema_version": 2,
-  "event": "status",
-  "ts_ms": 1760000000000,
+  "schema_version": 4,
+  "event": "broker_execution",
+  "ts_ms": 1800000000000,
   "order_id": 101,
-  "req_id": "req-xxx",
-  "client_req_id": "req-xxx",
-  "trace_id": "boot-1760000000000",
-  "event_id": "boot-1760000000000-1760000001000-9",
+  "client_req_id": "cmd-001",
+  "instrument": "EUR.USD",
+  "side": "BUY",
+  "qty": 1.0,
+  "price": 1.125,
+  "status": "Filled",
+  "reason": "",
+  "source": "ib.execDetails",
+  "trace_id": "session-001",
+  "req_id": "cmd-001",
   "risk_code": "",
   "venue": "IB",
-  "strategy": "heptaStrategyDemo",
-  "account": "DU1234567",
-  "instrument": "USD.CNH",
-  "side": "BUY",
-  "qty": 1000.00000000,
-  "price": 6.00000000,
-  "status": "Submitted",
-  "reason": "",
-  "source": "ib.main_loop"
+  "strategy": "",
+  "account": "DU000000",
+  "event_id": "event-001",
+  "execution_domain": "PAPER",
+  "request_hash": "sha256:...",
+  "venue_correlation_id": "hepta:cmd-001",
+  "broker_callback_type": "execDetails",
+  "broker_service_epoch": "ib-service-epoch-001",
+  "broker_connection_epoch": 7,
+  "broker_request_id": 55,
+  "broker_error_code": 0,
+  "broker_message": "",
+  "broker_advanced_order_reject_json": "",
+  "broker_why_held": "",
+  "broker_execution_id": "0001.0002.0003",
+  "broker_remaining_quantity": 0.0,
+  "broker_market_cap_price": 0.0
 }
 ```
 
-## 字段定义
+## Field contract
 
-- `schema_version`：当前为 `2`。旧日志（无该字段）默认按 v1 解析。
-- `event`：事件类型（见下）。
-- `ts_ms`：毫秒时间戳（epoch ms）。
-- `order_id`：交易端订单号；未知时可为 `-1`。
-- `req_id`：统一请求 id（推荐）。
-- `client_req_id`：兼容旧字段，读写时与 `req_id` 对齐。
-- `trace_id`：进程/会话追踪 id。
-- `event_id`：事件幂等键（推荐全局唯一）。
-- `risk_code`：风控拒绝/告警代码（如 `IB_PREFLIGHT`）。
-- `venue`：交易通道（`CTP` / `IB` / 空）。
-- `strategy`：策略名。
-- `account`：账户标识。
-- `instrument`：标的代码（如 `USD.CNH`）。
-- `side`：`BUY` / `SELL`。
-- `qty`/`price`：数量与价格。
-- `status`：状态字段（如 `submitted`/`Cancelled`/`blocked`）。
-- `reason`：失败/拒绝原因。
-- `source`：事件来源模块（如 `ib.main_loop`）。
+| Field | Type | Meaning |
+|---|---|---|
+| `schema_version` | integer | Writer schema; current value is 4. |
+| `event` | string | Typed lifecycle, control, projection, or broker-evidence event. |
+| `ts_ms` | integer | UTC Unix epoch milliseconds. |
+| `order_id` | integer | Service/broker-correlated order ID; `-1` when not applicable. |
+| `client_req_id` | string | Legacy alias retained for compatibility. |
+| `req_id` | string | Stable command/request ID used by current code. |
+| `trace_id` | string | Session or trace identity. |
+| `event_id` | string | Event-level deduplication identity when present. |
+| `request_hash` | string | Canonical normalized mutation hash when applicable. |
+| `venue_correlation_id` | string | Stable service-owned venue correlation. |
+| `venue`, `account`, `execution_domain` | strings | Authority scope. |
+| `strategy`, `instrument`, `side` | strings | Business attribution and normalized intent. |
+| `qty`, `price` | finite numbers | Event quantity and price semantics defined by event type. |
+| `status`, `reason`, `risk_code`, `source` | strings | Outcome, typed failure, and producer attribution. |
+| `broker_callback_type` | string | Original callback family such as `orderStatus`, `error`, or `execDetails`. |
+| `broker_service_epoch` | string | Broker-owning service lifetime identity. |
+| `broker_connection_epoch` | non-negative integer | Venue connection generation. |
+| `broker_request_id` | integer | Venue callback request ID where applicable. |
+| `broker_error_code`, `broker_message` | integer/string | Broker diagnostic evidence. |
+| `broker_advanced_order_reject_json` | string | Broker-supplied advanced reject payload retained as evidence text. |
+| `broker_why_held` | string | Broker hold explanation. |
+| `broker_execution_id` | string | Stable venue execution identity. |
+| `broker_remaining_quantity` | finite number | Broker-reported remaining quantity. |
+| `broker_market_cap_price` | finite number | Broker-reported market-cap price when present. |
 
-## 事件类型（推荐）
+All numeric fields must be finite. JSON syntax must be complete; corruption is never silently treated as a successful replay.
 
-- `app_boot`：进程启动并完成 journal 恢复。
-- `venue_connect`：通道连接结果。
-- `risk_check`：风控检查通过。
-- `risk_blocked`：风控阻断。
-- `order_intent`：策略产生下单意图。
-- `place_sent`：已发送下单请求。
-- `status`：成交回报/状态更新。
-- `cancel`：已发送撤单请求。
-- `reject`：下单/撤单被拒绝。
+## Event families
 
-## 回放恢复与幂等
+### Mutation lifecycle
 
-`oms_recover` 模块在 replay 时：
+- `order_intent`
+- `place_send_attempt`
+- `place_sent`
+- `place_outcome_uncertain`
+- `cancel_send_attempt`
+- `cancel`
+- `reject`
+- `risk_blocked`
+- `flatten_intent`
+- `flatten_send_attempt`
+- `flatten_sent`
+- `flatten_noop`
+- `flatten_reject`
+- `flatten_outcome_uncertain`
 
-1. 顺序读取 journal。
-2. 先做去重：
-   - 优先 `event_id`。
-   - 若无 `event_id`，使用 `(event, ts_ms, order_id, req_id, status, reason, source)` 组合指纹。
-3. 重建：
-   - 每个 `order_id` 的最新状态、是否 `place_sent`、是否 `cancel_sent`、是否 `rejected`。
-   - `req_id -> last_status` 索引。
+### Command, projection, and ownership
 
-## 最小回归
+- `execution_command_resolved`
+- `cancel_command_resolved`
+- `execution_projection_failed`
+- `execution_projection_resolved`
+- `session_owner_fenced`
+- `session_owner_fence_release`
+- `order_owner_reconciled_terminal`
 
-1) 生成样例日志：
+### Broker evidence
 
-```powershell
-python scripts/gen_oms_journal_sample.py
+- `broker_order_accepted`
+- `broker_order_status`
+- `broker_error`
+- `broker_execution`
+- `broker_completed_order`
+- `broker_completed_orders_end`
+- `broker_execution_details_end`
+
+Producers may add read-only diagnostic event types, but consumers must not infer a mutation or terminal economic fill from an unknown event. A filled status without the required execution evidence is not sufficient for economic reconciliation.
+
+## Durability and idempotency
+
+Risk-increasing mutations follow this order:
+
+1. normalize and bind owner/session/domain;
+2. bind stable command ID and canonical request hash;
+3. append and durably commit intent;
+4. append and durably commit the send attempt;
+5. call the venue;
+6. append the observed sent, rejected, callback, or uncertain result.
+
+Critical mutation, owner-fence, projection, and broker-evidence events are synchronously durable when the configured critical-sync policy is active. A write, path-identity, or synchronization failure poisons the writer and cannot be reported as success.
+
+A command ID is the mutation idempotency key. `event_id` is an event deduplication key. When historical records have no `event_id`, compatibility replay may use a bounded fingerprint, but that fingerprint is not a substitute for command identity.
+
+## Replay and compatibility
+
+The current writer emits v4. The parser retains missing-field defaults for historical records and preserves the raw line for audit. Higher-level recovery code must use only fields it understands and must not promote an unresolved send attempt to rejection or success.
+
+The lightweight `OmsRecover` helper is retained for legacy v1/v2-style projections. Canonical Execution recovery uses the richer command journal, venue correlations, broker callback evidence, connection epochs, and authoritative barriers.
+
+Schema changes must be additive or have an explicit migration. Every new field or event requires:
+
+- writer/parser round-trip coverage;
+- old-fixture replay coverage;
+- restart tests at affected durable boundaries;
+- module and protocol documentation updates;
+- qualification updates when broker evidence semantics change.
+
+## Verification
+
+Run the C++ durability and v4 round-trip tests through:
+
+```bash
+./scripts/dev_core.sh
 ```
 
-2) 校验回放字段完整性：
+For offline inspection of a JSONL journal:
 
-```powershell
-python scripts/verify_oms_journal_replay.py --journal runtime-logs/oms_journal.sample.jsonl
+```bash
+python3 scripts/verify_oms_journal_replay.py \
+  --journal runtime-logs/oms_journal.jsonl \
+  --minimum-schema 1
 ```
-
-3)（可选）运行主程序并观察 `runtime-logs/oms_journal.jsonl` 中 `schema_version=2`、`trace_id`、`req_id`、`risk_code`。

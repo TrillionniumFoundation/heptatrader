@@ -49,6 +49,12 @@ add_executable(hepta_oms_journal_durability_tests
 target_link_libraries(hepta_oms_journal_durability_tests pthread)
 hepta_register_core_test(hepta_oms_journal_durability_tests)
 
+add_executable(hepta_oms_journal_schema_v4_tests
+    oms_journal_schema_v4_tests.cpp
+    ../HeptaTrade/oms_journal.cpp)
+target_link_libraries(hepta_oms_journal_schema_v4_tests pthread)
+hepta_register_core_test(hepta_oms_journal_schema_v4_tests)
+
 add_executable(hepta_trading_tool_registry_tests
     trading_tool_registry_tests.cpp)
 target_link_libraries(hepta_trading_tool_registry_tests

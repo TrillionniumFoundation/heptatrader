@@ -42,7 +42,7 @@
       "status": "CURRENT",
       "document": "docs/modules/oms-journal.md",
       "implementation": ["HeptaTrade/oms_journal.cpp", "HeptaTrade/oms_recover.cpp"],
-      "tests": ["tests/oms_journal_durability_tests.cpp", "tests/execution_coordinator_tests.cpp"],
+      "tests": ["tests/oms_journal_durability_tests.cpp", "tests/oms_journal_schema_v4_tests.cpp", "tests/execution_coordinator_tests.cpp"],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
