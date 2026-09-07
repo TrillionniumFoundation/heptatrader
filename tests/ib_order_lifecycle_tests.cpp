@@ -1,4 +1,5 @@
 #include "adapter_ib/ib_order_lifecycle.h"
+#include "adapter_ib/ib_market_data_farm.h"
 
 #include <cassert>
 #include <string>
@@ -160,6 +161,13 @@ void TestPartialAndPendingCancelStatusesAcknowledgeBrokerOrder()
 
 int main()
 {
+    for (const auto& description : {"Market data farm connection is OK:cashfarm",
+            "市场数据场连接正常:hfarm", "Localized notice: HFaRm \r\n"})
+        assert(IsSupportedIbCashMarketDataFarm(description));
+    for (const auto& description : {"Market data farm connection is OK", "cashfarm",
+            "notice:notcashfarm", "notice:hfarm-extra", "notice:usfarm",
+            "cashfarm is mentioned:other", "notice:", "notice:cashfarm,other"})
+        assert(!IsSupportedIbCashMarketDataFarm(description));
     TestLocalSendRequiresBrokerAcknowledgement();
     TestEveryTerminalStatusSuppressesCancel();
     TestAuthoritativeOpenOrderRestoresCancelAuthority();

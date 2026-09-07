@@ -1,6 +1,7 @@
 ﻿#include "ib_api_wrapper.h"
 
 #include <algorithm>
+#include "ib_market_data_farm.h"
 #include <atomic>
 #include <thread>
 #include <chrono>
@@ -1985,12 +1986,7 @@ private:
     static bool IsCashFarmReadyEvent(const IBEvent& event) {
         if (event.type != IBEventType::Error || event.key != "2104")
             return false;
-        std::string description = event.value;
-        std::transform(description.begin(), description.end(),
-                       description.begin(), [](unsigned char value) {
-            return static_cast<char>(std::tolower(value));
-        });
-        return description.find("cashfarm") != std::string::npos;
+        return IsSupportedIbCashMarketDataFarm(event.value);
     }
 
     void FlushDeferredIngress() {

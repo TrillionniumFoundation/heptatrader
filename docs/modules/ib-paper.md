@@ -47,6 +47,7 @@ Broker API destination ports are restricted to the dedicated IB execution UID by
 
 - `nextValidId` and connection epoch must be established before order admission.
 - A quote is authoritative only after the exact subscription and freshness checks pass.
+- CASH quote startup accepts the exact trailing broker farm id `cashfarm` or regional `hfarm`, independent of localized message prose. Generic 2104 notices and lookalike names grant no readiness; account, position, epoch and fresh contract-bound quote barriers still apply.
 - Filled terminal orders require execution evidence.
 - Reconnect invalidates affected snapshots and correlations.
 - A possibly sent command is reconciled by stable command and venue identities; it is not blindly resent.
