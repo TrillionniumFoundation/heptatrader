@@ -129,15 +129,51 @@ int main() {
         PreTradeRiskContext ctx = BaseContext();
         ctx.action = "SELL";
         ctx.netPosition = 5.0;
-        ctx.totalQuantity = 5.0;
+        ctx.totalQuantity = 2.0;
         ctx.currentGrossNotional = 10000.0;
         ctx.realizedPnl = -10000.0;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
-                "verified flatten exit must remain available during breaches");
+                "partial long flatten must remain available during breaches");
+        ctx.totalQuantity = 5.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
+                "exact long flatten to zero must pass");
+        ctx.totalQuantity = 6.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_FLATTEN_ONLY_BLOCK",
+                "small long-to-short crossing must be blocked");
         ctx.totalQuantity = 10.0;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
                     "RISK_FLATTEN_ONLY_BLOCK",
-                "over-flatten/crossing exposure must be blocked");
+                "large long-to-short crossing must be blocked");
+        ctx.action = "BUY";
+        ctx.totalQuantity = 1.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_FLATTEN_ONLY_BLOCK",
+                "same-direction long increase must be blocked");
+
+        ctx.netPosition = -5.0;
+        ctx.action = "BUY";
+        ctx.totalQuantity = 2.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
+                "partial short flatten must pass");
+        ctx.totalQuantity = 5.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).allow,
+                "exact short flatten to zero must pass");
+        ctx.totalQuantity = 6.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_FLATTEN_ONLY_BLOCK",
+                "small short-to-long crossing must be blocked");
+        ctx.action = "SELL";
+        ctx.totalQuantity = 1.0;
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_FLATTEN_ONLY_BLOCK",
+                "same-direction short increase must be blocked");
+
+        ctx.netPosition = 0.0;
+        ctx.action = "BUY";
+        Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
+                    "RISK_FLATTEN_ONLY_BLOCK",
+                "zero position cannot be flattened into new exposure");
     }
     {
         PreTradeRiskConfig cfg = BaseConfig();
