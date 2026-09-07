@@ -1,0 +1,50 @@
+name: Temporary Gap Payload Recovery
+
+on:
+  push:
+    branches:
+      - codex/recover-gap-payload-20260908
+
+permissions:
+  contents: read
+
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact recovery head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Decode exact payload without executing it
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          import hashlib
+          from pathlib import Path
+
+          source = Path('scripts/.hepta-gap-closure-payload-00.b64')
+          encoded = ''.join(source.read_text(encoding='utf-8').split())
+          compressed = base64.b64decode(encoded, validate=True)
+          decoded = gzip.decompress(compressed)
+          target = Path('/tmp/hepta-gap-closure-payload.decoded')
+          target.write_bytes(decoded)
+          print('encoded_chars=', len(encoded))
+          print('compressed_bytes=', len(compressed))
+          print('decoded_bytes=', len(decoded))
+          print('decoded_sha256=', hashlib.sha256(decoded).hexdigest())
+          print('decoded_prefix=', repr(decoded[:160]))
+          PY
+      - name: Upload decoded payload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-gap-payload-decoded-${{ github.sha }}
+          path: /tmp/hepta-gap-closure-payload.decoded
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
