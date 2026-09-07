@@ -1,13 +1,11 @@
-﻿#pragma once
+#pragma once
 
-#include <string>
-#include <queue>
-#include <unordered_map>
 #include <cstdint>
+#include <queue>
+#include <string>
+#include <unordered_map>
 
-// XT (MiniQMT/xtquant) adapter scaffold.
-// Stage-2 goal: stable event semantics for future real SDK binding.
-
+// XT (MiniQMT/xtquant) event-shape scaffold. No real XT transport is present.
 enum class XTEventType {
     None = 0,
     Connected,
@@ -42,7 +40,7 @@ struct HeptaXTRiskConfig {
 
 struct HeptaXTConfig {
     std::string mode = "XT";
-    std::string path;         // miniqmt userdata_mini path
+    std::string path;
     long long sessionId = 88888;
     std::string account;
     std::string accountType = "STOCK";
@@ -73,35 +71,45 @@ public:
     bool CancelOrder(long long orderId);
 
     const char* GetStatusString() const;
+    const char* CapabilityStatus() const;
+    const std::string& LastRejectReason() const { return m_lastRejectReason; }
     bool RunPreflightChecks(std::string& reason) const;
 
-    // Stage-2 callback bridge API (to be called by real XT transport binding)
+    // Callback-shape API retained for a future reviewed transport binding.
+    // Calling these methods does not enable query or mutation methods while
+    // TransportImplemented() is false.
     void OnXtConnected();
     void OnXtDisconnected(const std::string& reason = "");
     void OnXtAccountStatus(const std::string& status);
     void OnXtAsset(double totalAsset, double cash);
     void OnXtPosition(const std::string& instrument, double volume);
-    void OnXtOrderStatus(long long orderId, const std::string& status, const std::string& detail = "");
-    void OnXtTrade(long long orderId, const std::string& instrument, const std::string& side, double qty, double price);
-    void OnXtOrderError(long long orderId, const std::string& errorCode, const std::string& detail);
-    void OnXtCancelError(long long orderId, const std::string& errorCode, const std::string& detail);
-    void OnXtAsyncOrderResponse(long long orderId, bool ok, const std::string& detail = "");
-    void OnXtAsyncCancelResponse(long long orderId, bool ok, const std::string& detail = "");
+    void OnXtOrderStatus(long long orderId, const std::string& status,
+                         const std::string& detail = "");
+    void OnXtTrade(long long orderId, const std::string& instrument,
+                   const std::string& side, double qty, double price);
+    void OnXtOrderError(long long orderId, const std::string& errorCode,
+                        const std::string& detail);
+    void OnXtCancelError(long long orderId, const std::string& errorCode,
+                         const std::string& detail);
+    void OnXtAsyncOrderResponse(long long orderId, bool ok,
+                                const std::string& detail = "");
+    void OnXtAsyncCancelResponse(long long orderId, bool ok,
+                                 const std::string& detail = "");
 
 private:
+    static bool TransportImplemented() { return false; }
+    bool RejectUnsupported(const char* operation, long long id = 0);
     void PushEvent(const XTEvent& e);
     XTEvent MakeEvent(XTEventType type, long long id, const std::string& key,
-                      const std::string& value, double number, const std::string& source) const;
+                      const std::string& value, double number,
+                      const std::string& source) const;
 
     HeptaXTConfig m_cfg;
     bool m_inited = false;
     bool m_connected = false;
     std::string m_status = "XT_NOT_INIT";
     mutable std::string m_lastRejectReason;
-    long long m_localOrderSeed = 100000;
     std::queue<XTEvent> m_events;
-
-    // request correlation for event enrichment
     std::unordered_map<long long, std::string> m_orderSymbol;
     std::unordered_map<long long, std::string> m_orderSide;
 };

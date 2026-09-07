@@ -142,5 +142,16 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests pthread)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+add_executable(hepta_pre_trade_risk_engine_tests
+    pre_trade_risk_engine_tests.cpp
+    ../HeptaTrade/risk/pre_trade_risk_engine.cpp)
+hepta_register_core_test(hepta_pre_trade_risk_engine_tests)
+
+add_executable(hepta_venue_capability_tests
+    venue_capability_tests.cpp
+    ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
+    ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
+hepta_register_core_test(hepta_venue_capability_tests)
+
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS})
