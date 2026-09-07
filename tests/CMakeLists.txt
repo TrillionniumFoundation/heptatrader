@@ -177,4 +177,15 @@ add_executable(hepta_venue_capability_tests
 hepta_register_core_test(hepta_venue_capability_tests)
 
 add_custom_target(hepta_core_test_binaries
-    DEPENDS ${HEPTA_CORE_TEST_TARGETS})
+    DEPENDS ${HEPTA_CORE_TEST_TARGETS}
+        hepta_tool_gatewayd
+        hepta_executiond
+        hepta_ib_executiond
+        heptactl
+        hepta_sessionctl)
+# The validation target must link the actual production entry points, not
+# merely the libraries also used by tests. This executes the Gateway's
+# post-link privilege boundary in both ordinary and instrumented CI builds.
+if(TARGET hepta_paper_terminal_latch_committer)
+    add_dependencies(hepta_core_test_binaries hepta_paper_terminal_latch_committer)
+endif()

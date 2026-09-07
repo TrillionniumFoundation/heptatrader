@@ -163,7 +163,6 @@ if(HEPTA_ENABLE_IBAPI)
             set(IBAPI_BIN "${IBAPI_ROOT}")
         endif()
     endif()
-    add_compile_definitions(HEPTA_ENABLE_IBAPI)
     message(STATUS
         "HeptaTrade IB enabled. IBAPI_ROOT=${IBAPI_ROOT} IBAPI_BIN=${IBAPI_BIN}")
 endif()
@@ -515,7 +514,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMAND ${CMAKE_COMMAND}
             -DHEPTA_GATEWAY_BINARY=$<TARGET_FILE:hepta_tool_gatewayd>
             -DHEPTA_NM_EXECUTABLE=${CMAKE_NM}
-            -DHEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET=$<IF:$<CONFIG:Release>,ON,OFF>
+            -DHEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET=$<IF:$<AND:$<CONFIG:Release>,$<NOT:$<BOOL:${HEPTA_INSTRUMENTED_BUILD}>>>,ON,OFF>
             -P ${CMAKE_CURRENT_LIST_DIR}/../cmake/verify_gateway_forbidden_symbols.cmake
         COMMENT "Verifying Agent Gateway privileged-symbol boundary"
         VERBATIM)
@@ -575,6 +574,9 @@ target_include_directories(hepta_ib_executiond PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
 target_link_libraries(hepta_ib_executiond PRIVATE hepta_execution_core)
 if(HEPTA_ENABLE_IBAPI)
+    # Only broker-owning targets select the native SDK implementation. Agent
+    # contracts, clients, Gateway and simulator never inherit this definition.
+    target_compile_definitions(hepta_ib_executiond PRIVATE HEPTA_ENABLE_IBAPI)
     target_link_libraries(hepta_ib_executiond PRIVATE hepta_ibapi_client)
 endif()
 set_target_properties(hepta_ib_executiond PROPERTIES SKIP_BUILD_RPATH TRUE)
@@ -611,6 +613,7 @@ if(HEPTA_BUILD_LEGACY_MONOLITH)
         CTPTradeLIB
         CTPMdLIB)
     if(HEPTA_ENABLE_IBAPI)
+        target_compile_definitions(HeptaTrader PRIVATE HEPTA_ENABLE_IBAPI)
         target_link_libraries(HeptaTrader PRIVATE hepta_ibapi_client)
     endif()
 endif()
