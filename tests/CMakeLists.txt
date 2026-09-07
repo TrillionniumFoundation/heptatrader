@@ -10,6 +10,16 @@ function(hepta_register_core_test target)
         CXX_STANDARD 11
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
+    # The historical tests intentionally use assert() as both an invariant and
+    # an expression-evaluation boundary (for example assert(server.Start())).
+    # Release/RelWithDebInfo define NDEBUG globally, which would erase those
+    # calls and turn the suite into undefined follow-on behavior. Keep test
+    # semantics independent of the production optimization configuration.
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES LABELS "core")
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
