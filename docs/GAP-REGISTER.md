@@ -26,8 +26,8 @@ The register separates repository-controlled closure from controls that only org
 
 | Gap | State | Tracking issue | Required result |
 |---|---|---|---|
-| G-TEAM-001 | OPEN_EXTERNAL | [#32](https://github.com/TrillionniumFoundation/heptatrader/issues/32) | Live organization teams/grants, zero-error CODEOWNERS readback, active no-bypass ruleset, required checks, genuine Merge Queue revision and verifier-issued governance receipt. |
-| G-IB-001 | OPEN_EXTERNAL | [#33](https://github.com/TrillionniumFoundation/heptatrader/issues/33) | Protected environment, distinct restricted runners, pinned builder/SDK/harness, host identity/network/kill-switch controls, exact bounded IB PAPER campaign and verifier-issued broker receipt. |
+| G-TEAM-001 | OPEN_EXTERNAL | [#8](https://github.com/TrillionniumFoundation/heptatrader/issues/8) | Live organization teams/grants, zero-error CODEOWNERS readback, active no-bypass ruleset, required checks, genuine Merge Queue revision and verifier-issued governance receipt. |
+| G-IB-001 | OPEN_EXTERNAL | [#9](https://github.com/TrillionniumFoundation/heptatrader/issues/9) | Protected environment, distinct restricted runners, pinned builder/SDK/harness, host identity/network/kill-switch controls, exact bounded IB PAPER campaign and verifier-issued broker receipt. |
 
 While either external blocker remains open:
 
