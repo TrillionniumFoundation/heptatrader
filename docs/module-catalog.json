@@ -77,8 +77,8 @@
       "id": "ib-paper",
       "status": "QUALIFICATION_REQUIRED",
       "document": "docs/modules/ib-paper.md",
-      "implementation": ["HeptaTrade/adapter_ib", "HeptaTrade/execution/hepta_ib_executiond.cpp", "systemd/hepta-execution-ib-paper.service"],
-      "tests": ["tests/ib_order_lifecycle_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp", "tests/execution_coordinator_tests.cpp"],
+      "implementation": ["HeptaTrade/adapter_ib", "HeptaTrade/execution/hepta_ib_executiond.cpp", "systemd/hepta-execution-ib-paper.service", "docs/ib-paper-profile-policy-v1.json", "scripts/verify_canonical_ib_paper_profile.py"],
+      "tests": ["tests/ib_order_lifecycle_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp", "tests/execution_coordinator_tests.cpp", "tests/python/test_canonical_ib_paper_profile.py"],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
     },
