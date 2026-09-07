@@ -204,15 +204,24 @@ PreTradeRiskDecision PreTradeRiskEngine::Evaluate(
 }
 
 bool PreTradeRiskEngine::IsFlatteningOrder(const PreTradeRiskContext& ctx) {
-    if (!std::isfinite(ctx.totalQuantity) || !std::isfinite(ctx.netPosition)) {
+    if (!std::isfinite(ctx.totalQuantity) || !std::isfinite(ctx.netPosition) ||
+        ctx.totalQuantity <= 0.0) {
         return false;
     }
-    double signedQty = 0.0;
-    if (ctx.action == "BUY") signedQty = ctx.totalQuantity;
-    else if (ctx.action == "SELL") signedQty = -ctx.totalQuantity;
-    else return false;
 
-    const double currentAbs = std::abs(ctx.netPosition);
-    const double afterAbs = std::abs(ctx.netPosition + signedQty);
-    return afterAbs < currentAbs;
+    if (ctx.netPosition > 0.0) {
+        if (ctx.action != "SELL") return false;
+        const double afterPosition = ctx.netPosition - ctx.totalQuantity;
+        return std::isfinite(afterPosition) && afterPosition >= 0.0 &&
+            afterPosition < ctx.netPosition;
+    }
+
+    if (ctx.netPosition < 0.0) {
+        if (ctx.action != "BUY") return false;
+        const double afterPosition = ctx.netPosition + ctx.totalQuantity;
+        return std::isfinite(afterPosition) && afterPosition <= 0.0 &&
+            afterPosition > ctx.netPosition;
+    }
+
+    return false;
 }
