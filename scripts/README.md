@@ -1,25 +1,25 @@
-# Runtime and research scripts
+# Runtime, research, validation, and qualification scripts
 
-`scripts/` 只保留直接服务于核心 OS 的小型入口。
+Status: CURRENT
 
-## 开发
+## Development and documentation
 
-- `dev_core.sh`：配置、构建并运行核心测试。
-- `resolve_hepta_config.py`：解析运行配置。
-- `validate_sim_data.py`：校验 simulator 数据。
-- `verify_oms_journal_replay.py`：校验 OMS journal replay。
+- `dev_core.sh` configures, builds, and runs the canonical core CTest label.
+- `check_documentation.py` validates module/capability truth and documentation links.
+- `resolve_hepta_config.py`, `validate_sim_data.py`, and `verify_oms_journal_replay.py` support legacy/configuration checks where still applicable.
 
-## Agent runtime
+## Agent and host runtime
 
-- `hepta_agent_mcp_launcher.py`：固定身份和环境下启动 MCP bridge。
-- `hepta_agent_trust_domain.py`：严格读取 trust-domain 配置。
-- `hepta_broker_egress_policy.py`：加载固定 UID/端口的最小 nftables 边界。
+- `hepta_agent_mcp_launcher.py` launches the MCP bridge under the expected identity.
+- `hepta_agent_trust_domain.py` validates the Agent trust-domain configuration.
+- `hepta_broker_egress_policy.py` applies the fixed UID/port broker boundary.
 
-## Research and strategy
+## SHADOW research
 
-- `hepta_market_*`、`hepta_official_source_capture.py`：市场上下文与数据规范化。
-- `hepta_strategy_*`：策略契约、shadow runner 和 replay evaluation。
-- `hepta_eurusd_confirmed_momentum_strategy.py`：当前 EURUSD 策略实现。
-- `validate_hepta_strategy_decision_receipt.py`：验证有界 shadow 决策 receipt。
+`hepta_market_*`, `hepta_official_source_capture.py`, `hepta_strategy_*`, `hepta_eurusd_confirmed_momentum_strategy.py`, and `validate_hepta_strategy_decision_receipt.py` implement read-only evidence and replay components. The repository does not currently contain a canonical bounded observer/controller and does not install these scripts automatically.
 
-本目录不再包含发布打包、质量门禁、P1/round、动态 PAPER campaign、repair/renew/supervisor、attestation、terminal witness、Windows 一键上线或硬编码用户工作区脚本。
+## Trusted qualification
+
+`github_qualification_evidence.py`, `verify_github_governance*.py`, `verify_qualification_candidate.py`, `build_ib_candidate_artifact.sh`, `verify_ib_candidate_artifact.py`, `run_ib_paper_artifact_qualification.sh`, and `verify_ib_paper_qualification.py` are trusted-main qualification components. They do not make external teams, rulesets, runners, credentials, broker sessions, or receipts exist; the verifiers fail when those controls are absent.
+
+Do not add developer-specific paths, untrusted `eval`/`source`, broker secrets, or an alternate order path to this directory.

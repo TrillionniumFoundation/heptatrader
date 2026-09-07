@@ -1,45 +1,38 @@
-# Alert Rules Baseline (W11 / 阶段F)
+# Alert rules baseline
 
-## 1. 严重级别
+Status: CURRENT  
+Applies to: canonical runtime
 
-- **P1（立即处理）**：可能导致无法交易、风险失控、状态不一致。
-- **P2（尽快处理）**：交易能力下降或出现异常趋势。
-- **P3（观察）**：暂不影响交易，仅需跟踪。
+## P1 — stop risk increase
 
-## 2. 最小告警规则
+Trigger on any of:
 
-### P1
-1. `ci_gate_overall != PASS`
-   - 动作：阻断合并/发布；查看 `ci_gate_summary.json`。
-2. `ib_next_valid_id_count == 0`
-   - 动作：判定 IB 会话未建立；执行 `RUNBOOK-INCIDENT` 的“连接失败”流程。
-3. `ib_error_code_201 > 0`（示例：下单拒绝）
-   - 动作：暂停策略下单，核查合约与权限。
+- kill switch `Uncertain`, unsafe control path, or inability to observe the marker;
+- journal durability failure after a possible send;
+- unresolved/duplicate broker order, execution correlation conflict, or position mismatch;
+- stale/incomplete authoritative risk state while mutation admission is open;
+- broker API access observed from an Agent or Gateway identity;
+- credential/token disclosure;
+- terminal recovery or owner-fence ambiguity;
+- required Core/Documentation/Merge Candidate check missing or failed on an admitted revision.
 
-### P2
-1. `ib_tick_price_count == 0`（在应有行情订阅前提下）
-2. `ib_error_total` 在单轮回归明显上升（与近 7 日均值比较）
+Action: engage the operator kill switch, fence sessions, preserve evidence, use read-only status/reconciliation, and follow [`operations/incident.md`](operations/incident.md).
 
-### P3
-1. 单个非关键错误码偶发（可恢复）
+## P2 — degraded but bounded
 
-## 3. 告警输出格式（本仓库最小实现）
+- repeated reconnect or refresh timeout;
+- callback/event-feed lag above the declared SLO;
+- rapidly rising risk rejects or order/cancel errors;
+- session stuck in recovery-only, expiring, or terminalizing state;
+- disk/journal latency or space approaching a safety threshold;
+- protected qualification runner unavailable.
 
-`summarize_ib_logs.ps1` 会生成 `alerts.json`：
+## P3 — investigate trend
 
-```json
-[
-  {
-    "severity": "P1",
-    "rule": "NO_NEXT_VALID_ID",
-    "message": "No nextValidId detected",
-    "value": 0
-  }
-]
-```
+- isolated recoverable read or market-data error;
+- non-critical observability exporter failure when local safety state remains visible;
+- deterministic simulator or research fixture drift.
 
-## 4. 升级路径
+## Rule requirements
 
-- V1：本地 JSON 告警 + 人工查看
-- V2：接入 CI Job Summary/通知
-- V3：接入 Prometheus + Alertmanager + 值班轮值
+Each alert has a stable rule ID, severity, service/venue, observed value, threshold, first/last time, exact reason code, and runbook link. Missing or unknown values are distinct from zero. Thresholds must be configured in deployment policy and tested; this file does not invent universal latency or loss limits.

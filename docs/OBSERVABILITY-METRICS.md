@@ -1,35 +1,43 @@
-# Observability Metrics Baseline (W11 / 阶段F)
+# Observability contract
 
-本文定义当前版本最小可落地指标，优先服务 paper/准生产阶段排障与门禁。
+Status: CURRENT  
+Applies to: canonical runtime
 
-## 1. 指标范围（最小集）
+## Required metric groups
 
-| 指标 | 来源 | 含义 | 建议阈值 |
-|---|---|---|---|
-| `ib_next_valid_id_count` | `summarize_ib_logs.ps1` | 会话中 nextValidId 出现次数 | `>=1` |
-| `ib_tick_price_count` | `summarize_ib_logs.ps1` | 行情 tickPrice 事件数量 | `>=1`（有订阅时） |
-| `ib_error_total` | `summarize_ib_logs.ps1` | 错误总数 | 关注趋势 |
-| `ib_error_code_<code>` | `summarize_ib_logs.ps1` | 按错误码聚合 | 关键错误触发告警 |
-| `ci_gate_overall` | `scripts/ci_gate.ps1` | 门禁结果（PASS/FAIL） | 必须 PASS |
-| `ci_gate_exit_code` | `scripts/ci_gate.ps1` | 失败分层退出码 | 0 才允许进入 soak/live 准备 |
+### Gateway
 
-> 说明：当前为日志派生指标（log-derived metrics），后续可升级为 Prometheus exporter。
+- requests and results by tool, effect, status, reason code, and execution domain;
+- authentication, session, capability, schema, frame, timeout, and transport failures;
+- request latency and worker/queue saturation;
+- active, recovery-only, fenced, expiring, and uncertain sessions.
 
-## 2. 产物与路径
+### Execution and journal
 
-- CI 门禁：`runtime-logs/ci-gate-*/ci_gate_summary.json`
-- IB 日志汇总：`runtime-logs/ib-log-summary-*/summary.md`
-- 机器可读汇总（新增）：`runtime-logs/ib-log-summary-*/summary.json`
-- 告警判定（新增）：`runtime-logs/ib-log-summary-*/alerts.json`
+- commands by lifecycle state, duplicate/conflict/uncertain outcome, and venue;
+- journal append/fsync latency, replay duration, last durable sequence, corruption, and unresolved send attempts;
+- send, cancel, flatten, reconciliation, recovery, reconnect, and terminalization duration;
+- event-feed sequence, subscriber lag, dropped/disconnected consumers.
 
-## 3. 采集建议
+### Authoritative state and risk
 
-1. 每次执行 `run_ib_regression_round.ps1` 后调用 `summarize_ib_logs.ps1`。
-2. 每次夜间 soak 结束后归档 `summary.json + alerts.json`。
-3. 将最近 7 天 error code 直方图做对比，重点观察 1100/1101/1102/201 类连接/下单异常。
+- snapshot epoch/generation/completeness/age and invalidation reason;
+- quote subscription identity, quote age, spread, and callback lag;
+- active/terminal order correlations and unresolved execution IDs;
+- order notional, pending buy/sell notional, worst-case gross notional, PnL/drawdown, rate-window utilization, and risk decision reason;
+- kill-switch state and broker-egress-policy state.
 
-## 4. 与运行手册联动
+### IB PAPER qualification
 
-- 启动流程：见 `RUNBOOK-STARTUP.md`
-- 事故处置：见 `RUNBOOK-INCIDENT.md`
-- 上线清单：见 `PROD-GO-LIVE-CHECKLIST.md`
+- candidate/source/binary/harness digests;
+- pre/post admission identity;
+- builder, runner, protected-environment, broker-session, and receipt verification outcomes;
+- no metric may represent source-only success as PAPER authorization.
+
+## Output requirements
+
+Runtime metrics should be structured and monotonic where possible. Logs must contain UTC time, service identity, execution epoch, session/command identity where relevant, typed reason code, and correlation fields without secret/token values. A future Prometheus exporter may expose these metrics, but plain log-grep counters are not the canonical contract.
+
+## Alerts
+
+See [`ALERT-RULES-BASELINE.md`](ALERT-RULES-BASELINE.md) and [`operations/incident.md`](operations/incident.md). Missing telemetry on a safety-critical state is itself an alert; it does not imply a healthy zero value.

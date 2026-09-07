@@ -1,55 +1,19 @@
-﻿# XTQMT as First-class Venue (parallel to CTP / IB)
+# XT/QMT venue plan
 
-Status: Stage-1 scaffold committed.
+Status: EXPERIMENTAL  
+Applies to: `HeptaTrade/adapter_xt/`
 
-## What is done now
+The current adapter is an event-shape scaffold with **no transport**. It fails connection, query, place, and cancel operations with `XT_TRANSPORT_NOT_IMPLEMENTED`; it must not emit synthetic broker acknowledgements or local submitted order IDs.
 
-1. Added new adapter folder and scaffold class:
-   - `HeptaTrade/adapter_xt/xt_gateway_adapter.h`
-   - `HeptaTrade/adapter_xt/xt_gateway_adapter.cpp`
+Before status promotion, implement and review:
 
-2. Added build entry:
-   - `HeptaTrade/HeptaTrader.vcxproj` now includes `adapter_xt/xt_gateway_adapter.cpp`
+- a pinned SDK or a versioned Python sidecar protocol;
+- process/credential/network isolation from Agent and Gateway;
+- connection and account-subscription state machine;
+- asset, position, order, trade, quote, order-error, and cancel-error barriers;
+- stable order/trade/cancel correlation and uncertain-send recovery;
+- exchange price type, lot size, market hours, short-sale, and account semantics;
+- journal, risk, authoritative snapshot, reconciliation, and fault-injection tests;
+- broker-observed PAPER qualification.
 
-3. Added config example fields:
-   - `HeptaTrade/HeptaTraderConfig.xml.example`
-   - new `<XTServer ... />`, `<XTRisk ... />`, and `<Runtime Venue="AUTO" />`
-
-## Design target
-
-Unify venue runtime as:
-- `CTP`
-- `IB`
-- `XT`
-
-and keep one OMS/risk/reconcile pipeline.
-
-## Next implementation steps (Stage-2)
-
-1. Main runtime routing
-   - Extend `NormalizeVenue`/selector in `HeptaDemoStrategyTrader.cpp` to accept `XT`.
-   - Add XT startup branch (`Init/Connect/ReqAccountSummary/ReqPositions`).
-
-2. Config loading
-   - Parse `<XTServer>` and `<XTRisk>` into `HeptaXTConfig`.
-   - Keep env override style aligned with CTP/IB (`HEPTA_ALLOW_XT_ORDERS`, etc.).
-
-3. Event normalization
-   - Map xtquant callback events to OMS events:
-     - `venue_connect`
-     - `order_intent/place_sent/status/cancel/reject`
-     - account/position snapshots for reconcile.
-
-4. Risk gating
-   - Reuse pre-trade risk semantics before XT place/cancel.
-   - Global kill switch + flatten-only must behave same as IB/CTP.
-
-5. Smoke tests
-   - `HEPTA_VENUE=XT` startup smoke
-   - XT order loop smoke (paper/sim)
-   - OMS schema validation on XT path.
-
-## Notes
-
-Current XT adapter is a scaffold (stub events), intended to lock API shape and build integration first.
-It does NOT place real XT orders yet.
+The common Execution Service remains the sole mutation authority. A sidecar may translate XT semantics but may not become a second order path. See [`modules/xt-adapter.md`](modules/xt-adapter.md).

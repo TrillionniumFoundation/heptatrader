@@ -1,7 +1,7 @@
 #include "pre_trade_risk_engine.h"
 
 #include <cmath>
-#include <limits>
+#include <initializer_list>
 
 namespace {
 PreTradeRiskDecision Allow(double orderNotional = 0.0,
