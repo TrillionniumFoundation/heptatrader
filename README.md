@@ -45,11 +45,11 @@ The default build keeps the legacy monolith, legacy simulator, IB SDK integratio
 | XT/QMT adapter | EXPERIMENTAL | fail-closed; no real transport |
 | LIVE | UNAVAILABLE | none |
 
-The machine-readable source of truth is [`docs/capabilities.json`](docs/capabilities.json). The complete module map is [`docs/module-catalog.json`](docs/module-catalog.json).
+The machine-readable capability source of truth is [`docs/capabilities.json`](docs/capabilities.json). The module map is [`docs/module-catalog.json`](docs/module-catalog.json), and the exact CMake-target/translation-unit ownership inventory is [`docs/build-targets.json`](docs/build-targets.json).
 
 ## Documentation
 
-Start with [`docs/index.md`](docs/index.md). Every current or experimental module must have a module-level design document covering responsibilities, public contracts, state, failure semantics, persistence, security boundaries, observability, and tests. Documentation consistency is enforced by `scripts/check_documentation.py`.
+Start with [`docs/index.md`](docs/index.md). Every current or experimental module must have a module-level design document covering responsibilities, public contracts, state, failure semantics, persistence, security boundaries, observability, and tests. Documentation consistency is enforced by `scripts/check_documentation.py`. Repository gap closure is separately verified by executable, gap-specific checks in `scripts/verify_source_gap_closures.py`; the presence of an evidence file alone cannot close a source gap.
 
 ## Security invariants
 
