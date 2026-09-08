@@ -39,7 +39,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
 
-      - name: Validate documentation, build ownership, capability, gap and profile truth sources
+      - name: Validate documentation, build ownership, release, capability and gap truth sources
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
@@ -51,6 +51,8 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
           python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
           python3 -m unittest discover -s tests/python -p 'test_research_contract_smoke.py'
+          python3 -m unittest discover -s tests/python -p 'test_release_package.py'
+          python3 -m unittest discover -s tests/python -p 'test_hepta_preflight.py'
 
       - name: Reassert clean exact source
         if: always()
