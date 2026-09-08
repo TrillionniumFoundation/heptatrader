@@ -1,0 +1,304 @@
+name: One-shot XT unsupported-scaffold cleanup
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-xt-scaffold-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Reduce XT to an explicit unsupported adapter
+        run: |
+          cat > HeptaTrade/adapter_xt/xt_gateway_adapter.cpp <<'CPP'
+          #include "xt_gateway_adapter.h"
+
+          #include <chrono>
+          #include <cmath>
+
+          namespace {
+          std::int64_t NowMs()
+          {
+              return std::chrono::duration_cast<std::chrono::milliseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count();
+          }
+          }
+
+          HeptaXTGatewayAdapter::HeptaXTGatewayAdapter() = default;
+          HeptaXTGatewayAdapter::~HeptaXTGatewayAdapter() = default;
+
+          bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
+          {
+              m_cfg = cfg;
+              m_connected = false;
+              if (m_cfg.mode != "XT")
+              {
+                  m_inited = false;
+                  m_status = "XT_MODE_INVALID";
+                  m_lastRejectReason = m_status;
+                  return false;
+              }
+              m_inited = true;
+              m_status = "XT_EXPERIMENTAL_NO_TRANSPORT";
+              m_lastRejectReason = "XT_TRANSPORT_NOT_IMPLEMENTED";
+              return true;
+          }
+
+          bool HeptaXTGatewayAdapter::Connect()
+          {
+              return RejectUnsupported(m_inited ? "connect" : "connect_not_initialized");
+          }
+
+          void HeptaXTGatewayAdapter::Disconnect()
+          {
+              m_connected = false;
+              m_status = m_inited ? "XT_EXPERIMENTAL_NO_TRANSPORT" : "XT_NOT_INIT";
+          }
+
+          bool HeptaXTGatewayAdapter::PollOnce(int /*timeoutMs*/)
+          {
+              return false;
+          }
+
+          bool HeptaXTGatewayAdapter::TryDequeueEvent(XTEvent& outEvent)
+          {
+              if (m_events.empty()) return false;
+              outEvent = m_events.front();
+              m_events.pop();
+              return true;
+          }
+
+          bool HeptaXTGatewayAdapter::ReqAccountSummary()
+          {
+              return RejectUnsupported("account_summary");
+          }
+
+          bool HeptaXTGatewayAdapter::ReqPositions()
+          {
+              return RejectUnsupported("positions");
+          }
+
+          bool HeptaXTGatewayAdapter::ReqMktData(const std::string& /*instrument*/)
+          {
+              return RejectUnsupported("market_data");
+          }
+
+          bool HeptaXTGatewayAdapter::PlaceOrder(
+              const std::string& /*instrument*/, const std::string& /*side*/,
+              double qty, double price, long long* outOrderId)
+          {
+              if (outOrderId) *outOrderId = 0;
+              if (!std::isfinite(qty) || qty <= 0.0 ||
+                  !std::isfinite(price) || price < 0.0)
+              {
+                  m_connected = false;
+                  m_status = "XT_TRANSPORT_NOT_IMPLEMENTED";
+                  m_lastRejectReason = "XT_ORDER_ARGUMENT_INVALID";
+                  PushEvent(MakeEvent(
+                      XTEventType::Error, 0, "place_order",
+                      m_lastRejectReason, 0.0, "xt.unsupported"));
+                  return false;
+              }
+              return RejectUnsupported("place_order");
+          }
+
+          bool HeptaXTGatewayAdapter::CancelOrder(long long orderId)
+          {
+              if (orderId < 0)
+              {
+                  m_connected = false;
+                  m_status = "XT_TRANSPORT_NOT_IMPLEMENTED";
+                  m_lastRejectReason = "XT_ORDER_ID_INVALID";
+                  return false;
+              }
+              return RejectUnsupported("cancel_order", orderId);
+          }
+
+          const char* HeptaXTGatewayAdapter::GetStatusString() const
+          {
+              return m_status.c_str();
+          }
+
+          const char* HeptaXTGatewayAdapter::CapabilityStatus() const
+          {
+              return "EXPERIMENTAL_NO_TRANSPORT";
+          }
+
+          bool HeptaXTGatewayAdapter::RunPreflightChecks(std::string& reason) const
+          {
+              reason = "XT_TRANSPORT_NOT_IMPLEMENTED";
+              return false;
+          }
+
+          bool HeptaXTGatewayAdapter::RejectUnsupported(
+              const char* operation, long long id)
+          {
+              m_connected = false;
+              m_status = "XT_TRANSPORT_NOT_IMPLEMENTED";
+              m_lastRejectReason = "XT_TRANSPORT_NOT_IMPLEMENTED";
+              PushEvent(MakeEvent(
+                  XTEventType::Error, id,
+                  operation ? operation : "operation",
+                  m_lastRejectReason, 0.0, "xt.unsupported"));
+              return false;
+          }
+
+          // These callbacks remain source-compatible with prospective SDK
+          // research, but cannot project broker-like state while the transport
+          // capability is absent. Every attempted callback fails closed.
+          void HeptaXTGatewayAdapter::OnXtConnected()
+          {
+              RejectUnsupported("callback_connected");
+          }
+
+          void HeptaXTGatewayAdapter::OnXtDisconnected(const std::string& /*reason*/)
+          {
+              RejectUnsupported("callback_disconnected");
+          }
+
+          void HeptaXTGatewayAdapter::OnXtAccountStatus(const std::string& /*status*/)
+          {
+              RejectUnsupported("callback_account_status");
+          }
+
+          void HeptaXTGatewayAdapter::OnXtAsset(double /*totalAsset*/, double /*cash*/)
+          {
+              RejectUnsupported("callback_asset");
+          }
+
+          void HeptaXTGatewayAdapter::OnXtPosition(
+              const std::string& /*instrument*/, double /*volume*/)
+          {
+              RejectUnsupported("callback_position");
+          }
+
+          void HeptaXTGatewayAdapter::OnXtOrderStatus(
+              long long orderId, const std::string& /*status*/,
+              const std::string& /*detail*/)
+          {
+              RejectUnsupported("callback_order_status", orderId);
+          }
+
+          void HeptaXTGatewayAdapter::OnXtTrade(
+              long long orderId, const std::string& /*instrument*/,
+              const std::string& /*side*/, double /*qty*/, double /*price*/)
+          {
+              RejectUnsupported("callback_trade", orderId);
+          }
+
+          void HeptaXTGatewayAdapter::OnXtOrderError(
+              long long orderId, const std::string& /*errorCode*/,
+              const std::string& /*detail*/)
+          {
+              RejectUnsupported("callback_order_error", orderId);
+          }
+
+          void HeptaXTGatewayAdapter::OnXtCancelError(
+              long long orderId, const std::string& /*errorCode*/,
+              const std::string& /*detail*/)
+          {
+              RejectUnsupported("callback_cancel_error", orderId);
+          }
+
+          void HeptaXTGatewayAdapter::OnXtAsyncOrderResponse(
+              long long orderId, bool /*ok*/, const std::string& /*detail*/)
+          {
+              RejectUnsupported("callback_async_order", orderId);
+          }
+
+          void HeptaXTGatewayAdapter::OnXtAsyncCancelResponse(
+              long long orderId, bool /*ok*/, const std::string& /*detail*/)
+          {
+              RejectUnsupported("callback_async_cancel", orderId);
+          }
+
+          void HeptaXTGatewayAdapter::PushEvent(const XTEvent& event)
+          {
+              m_events.push(event);
+          }
+
+          XTEvent HeptaXTGatewayAdapter::MakeEvent(
+              XTEventType type, long long id, const std::string& key,
+              const std::string& value, double number,
+              const std::string& source) const
+          {
+              XTEvent event;
+              event.type = type;
+              event.id = id;
+              event.key = key;
+              event.value = value;
+              event.number = number;
+              event.tsMs = NowMs();
+              event.source = source;
+              return event;
+          }
+          CPP
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          doc = Path('docs/modules/xt-adapter.md')
+          text = doc.read_text(encoding='utf-8')
+          anchor = '## Intended responsibilities\n'
+          paragraph = (
+              'The current source intentionally implements only a narrow '
+              'unsupported adapter. Prospective SDK callback signatures remain '
+              'source-compatible research seams, but every callback fails '
+              'closed and cannot project account, position, order, trade or '
+              'accepted-event state while `TransportImplemented()` is false. '
+              'Venue-specific pre-trade logic belongs in a future qualified '
+              'transport, not in the unsupported scaffold.\n\n'
+          )
+          if paragraph not in text:
+              if anchor not in text:
+                  raise SystemExit('XT documentation anchor changed')
+              text = text.replace(anchor, paragraph + anchor, 1)
+          doc.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate unsupported capability boundary
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          git diff --check
+          ! grep -q 'm_connected = true' HeptaTrade/adapter_xt/xt_gateway_adapter.cpp
+          ! grep -q 'XT_CONNECTED' HeptaTrade/adapter_xt/xt_gateway_adapter.cpp
+          ! grep -q 'xt.cb.on_stock_' HeptaTrade/adapter_xt/xt_gateway_adapter.cpp
+
+      - name: Commit verified cleanup and remove controller
+        run: |
+          set -euo pipefail
+          rm .github/workflows/xt-scaffold-cleanup-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor: reduce XT to explicit unsupported adapter'
+          git push origin HEAD:codex/full-blocker-closure-20260908
