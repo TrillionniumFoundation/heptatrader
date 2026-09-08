@@ -1,0 +1,353 @@
+name: One-shot catalog and source cleanup repair
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: heptatrader-catalog-source-cleanup-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout latest remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Install build and package dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build make g++ libssl-dev dpkg-dev file
+
+      - name: Materialize canonical catalog and documentation policy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          root = Path('.')
+          catalog_path = root / 'docs/module-catalog.json'
+          catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+          modules = catalog['modules']
+          by_id = {item['id']: item for item in modules}
+          desired = [
+              {
+                  'id': 'protocol-contract',
+                  'status': 'CURRENT',
+                  'document': 'docs/modules/protocol-contract.md',
+                  'implementation': [
+                      'protocol/hepta_tool_fields.def',
+                      'scripts/generate_tool_protocol_fields.py',
+                      'adapters/mcp/hepta_tool_protocol_fields.py',
+                      'HeptaTrade/tool_host/typed_tool_protocol.cpp',
+                      'HeptaTrade/tool_host/typed_tool_protocol.h',
+                  ],
+                  'tests': [
+                      'tests/python/test_tool_protocol_field_source.py',
+                      'tests/native_tool_client_tests.cpp',
+                      'tests/unix_tool_server_tests.cpp',
+                      'tests/python/test_protocol_fuzz_properties.py',
+                  ],
+                  'broker_mutation': 'NONE',
+                  'production_authorized': False,
+              },
+              {
+                  'id': 'source-status',
+                  'status': 'CURRENT',
+                  'document': 'docs/modules/source-status.md',
+                  'implementation': [
+                      'scripts/derive_source_status.py',
+                      '.github/workflows/source-status.yml',
+                      'docs/SOURCE-STATUS.md',
+                  ],
+                  'tests': ['tests/python/test_source_status.py'],
+                  'broker_mutation': 'NONE',
+                  'production_authorized': False,
+              },
+          ]
+          for item in desired:
+              if item['id'] in by_id:
+                  by_id[item['id']].clear()
+                  by_id[item['id']].update(item)
+              else:
+                  modules.append(item)
+                  by_id[item['id']] = item
+          by_id['deployment']['implementation'] = [
+              'systemd', 'tmpfiles.d', 'cmake/HeptaInstall.cmake'
+          ]
+          by_id['deployment']['tests'] = [
+              'tests/python/test_documentation_control_plane.py',
+              '.github/workflows/install-package-smoke.yml',
+          ]
+          catalog_path.write_text(
+              json.dumps(catalog, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          index_path = root / 'docs/index.md'
+          index = index_path.read_text(encoding='utf-8')
+          anchor = '| Governance and qualification | QUALIFICATION_REQUIRED | [`modules/governance-qualification.md`](modules/governance-qualification.md) |'
+          rows = [
+              '| Tool protocol contract and generated bindings | CURRENT | [`modules/protocol-contract.md`](modules/protocol-contract.md) |',
+              '| Exact-SHA source status derivation | CURRENT | [`modules/source-status.md`](modules/source-status.md) |',
+          ]
+          if anchor not in index:
+              raise SystemExit('module-table anchor missing')
+          for row in rows:
+              if row not in index:
+                  index = index.replace(anchor, anchor + '\n' + row, 1)
+          index_path.write_text(index, encoding='utf-8')
+
+          policy_path = root / 'docs/DOCUMENTATION-POLICY.md'
+          policy = policy_path.read_text(encoding='utf-8')
+          old_metadata = (
+              'Implementation: `scripts/check_documentation.py`  \n'
+              'Tests: `tests/python/test_documentation_control_plane.py`'
+          )
+          new_metadata = (
+              'Implementation: `scripts/check_documentation.py`, '
+              '`scripts/check_module_documentation_depth.py`, '
+              '`scripts/derive_source_status.py`  \n'
+              'Tests: `tests/python/test_documentation_control_plane.py`, '
+              '`tests/python/test_module_documentation_depth.py`, '
+              '`tests/python/test_source_status.py`'
+          )
+          if old_metadata in policy:
+              policy = policy.replace(old_metadata, new_metadata, 1)
+          if '## Implementation-depth validation' not in policy:
+              policy += (
+                  '\n## Implementation-depth validation\n\n'
+                  'Path and heading existence is necessary but not sufficient. '
+                  '`scripts/check_module_documentation_depth.py` requires '
+                  'maintained modules to document responsibilities, contracts, '
+                  'state and persistence, failure and recovery, security and trust, '
+                  'operations and observability, verification, and limitations. '
+                  'Catalogued implementation and test paths must appear in the '
+                  'same module document.\n\n'
+                  'Source closure is derived at an exact clean Git revision by '
+                  '`scripts/derive_source_status.py`; an editable gap-register '
+                  'state cannot overrule a failed validator. External governance, '
+                  'runner and broker gaps remain open until authenticated external '
+                  'receipts exist.\n'
+              )
+          policy_path.write_text(policy, encoding='utf-8')
+
+          gap_doc = root / 'docs/GAP-REGISTER.md'
+          text = gap_doc.read_text(encoding='utf-8')
+          if '## Exact-revision source status' not in text:
+              text += (
+                  '\n## Exact-revision source status\n\n'
+                  'This register defines predicates and evidence inventory; it is '
+                  'not proof that the checked revision passes. '
+                  '`scripts/derive_source_status.py` derives repository closure '
+                  'from validators executed at one clean exact SHA. External gaps '
+                  'cannot be closed by editing this file. See '
+                  '[`SOURCE-STATUS.md`](SOURCE-STATUS.md).\n'
+              )
+          gap_doc.write_text(text, encoding='utf-8')
+
+          checker = root / 'scripts/check_documentation.py'
+          check_text = checker.read_text(encoding='utf-8')
+          anchor = '    Path(".github/workflows/merge-candidate.yml"),'
+          additions = [
+              '    Path(".github/workflows/source-status.yml"),',
+              '    Path(".github/workflows/install-package-smoke.yml"),',
+              '    Path(".github/workflows/thread-sanitizer.yml"),',
+          ]
+          if anchor not in check_text:
+              raise SystemExit('required-workflow anchor missing')
+          for line in additions:
+              if line not in check_text:
+                  check_text = check_text.replace(anchor, anchor + '\n' + line, 1)
+          checker.write_text(check_text, encoding='utf-8')
+
+          closure = root / 'scripts/verify_source_gap_closures.py'
+          closure_text = closure.read_text(encoding='utf-8')
+          target = '    "hepta_risk_property_tests",\n'
+          if target not in closure_text:
+              anchor = '    "hepta_pre_trade_risk_engine_tests",\n'
+              if anchor not in closure_text:
+                  raise SystemExit('required test-target anchor missing')
+              closure_text = closure_text.replace(anchor, anchor + target, 1)
+          closure.write_text(closure_text, encoding='utf-8')
+
+          gap_path = root / 'docs/gap-register.json'
+          register = json.loads(gap_path.read_text(encoding='utf-8'))
+          gaps = {item['id']: item for item in register['gaps']}
+          additions = {
+              'DOC-001': [
+                  'scripts/check_module_documentation_depth.py',
+                  'tests/python/test_module_documentation_depth.py',
+                  'docs/SOURCE-STATUS.md',
+                  'scripts/derive_source_status.py',
+                  'tests/python/test_source_status.py',
+              ],
+              'CI-001': [
+                  '.github/workflows/source-status.yml',
+                  '.github/workflows/install-package-smoke.yml',
+                  '.github/workflows/thread-sanitizer.yml',
+              ],
+              'TEST-001': [
+                  'tests/risk_property_tests.cpp',
+                  'tests/python/test_protocol_fuzz_properties.py',
+                  '.github/workflows/thread-sanitizer.yml',
+              ],
+              'BUILD-001': [
+                  'cmake/HeptaInstall.cmake',
+                  '.github/workflows/install-package-smoke.yml',
+              ],
+          }
+          for gap_id, values in additions.items():
+              evidence = gaps[gap_id]['evidence']
+              for value in values:
+                  if value not in evidence:
+                      evidence.append(value)
+          gap_path.write_text(
+              json.dumps(register, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Regenerate fresh Core CMake inventory and project new target into IB profile
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import sys
+
+          root = Path('.').resolve()
+          sys.path.insert(0, str(root / 'scripts'))
+          import verify_build_ownership as ownership
+
+          inventory_path = root / 'docs/build-targets.json'
+          inventory = ownership.load_json(inventory_path)
+          observed_core = ownership.observe(root, 'core')
+          inventory['profiles']['core'] = observed_core
+
+          core_by_name = {target['name']: target for target in observed_core['targets']}
+          new_name = 'hepta_risk_property_tests'
+          if new_name not in core_by_name:
+              raise SystemExit(f'fresh CMake model misses {new_name}')
+          ib_targets = inventory['profiles']['ib']['targets']
+          ib_by_name = {target['name']: target for target in ib_targets}
+          if new_name not in ib_by_name:
+              ib_targets.append(json.loads(json.dumps(core_by_name[new_name])))
+          aggregate = ib_by_name.get('hepta_core_test_binaries')
+          if aggregate is None:
+              aggregate = next(
+                  target for target in ib_targets
+                  if target['name'] == 'hepta_core_test_binaries'
+              )
+          if new_name not in aggregate['dependencies']:
+              aggregate['dependencies'].append(new_name)
+              aggregate['dependencies'].sort()
+
+          modules = ownership.module_paths(root)
+          for profile in inventory['profiles'].values():
+              profile['targets'].sort(key=lambda item: item['name'])
+              for target in profile['targets']:
+                  for unit in target['translation_units']:
+                      if unit['kind'] == 'implementation':
+                          unit['owner'] = ownership.owner_for(unit['path'], modules)
+                  target['translation_units'].sort(
+                      key=lambda item: (item['kind'], item['path'])
+                  )
+
+          ownership.validate_inventory(root, inventory)
+          inventory_path.write_text(
+              json.dumps(inventory, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          ownership.verify(root, inventory, 'core')
+          PY
+
+      - name: Remove all temporary migration artifacts
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/CODEOWNERS.team-template \
+            docs/administration-probe.md \
+            .github/workflows/source-snapshot-export.yml \
+            .github/workflows/assert-migration-controller.yml \
+            .github/workflows/risk-context-migration-controller.yml \
+            .github/workflows/governance-verifier-migration-controller.yml \
+            .github/workflows/xt-scaffold-cleanup-controller.yml \
+            .github/workflows/protocol-field-source-controller.yml \
+            .github/workflows/risk-property-test-controller.yml \
+            .github/workflows/risk-property-test-repair-controller.yml \
+            .github/workflows/catalog-source-cleanup-controller.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          for raw in subprocess.check_output(['git', 'ls-files', '-z']).split(b'\0'):
+              if not raw:
+                  continue
+              path = Path(raw.decode('utf-8'))
+              name = path.name.lower()
+              if ('source-snapshot' in name and 'trigger' in name) or 'snapshot-trigger' in name:
+                  path.unlink(missing_ok=True)
+          PY
+
+      - name: Validate source controls and full core suite
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_tool_protocol_fields.py --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+
+      - name: Validate install and package path
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/package-repair -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          cmake --build build/package-repair --parallel 2
+          root="$RUNNER_TEMP/install-root"
+          cmake --install build/package-repair --prefix "$root"
+          test -x "$root/bin/hepta_tool_gatewayd"
+          test -x "$root/bin/hepta_executiond"
+          test ! -e "$root/bin/hepta_ib_executiond"
+          test -f "$root/libexec/heptatrader/hepta_tool_protocol_fields.py"
+          find "$root" -type l -print -quit | (! grep .)
+          (cd build/package-repair && cpack -G TGZ)
+          for archive in build/package-repair/heptatrader-*.tar.gz; do
+            tar -tzf "$archive" >/dev/null
+          done
+          git diff --check
+
+      - name: Commit repaired inventory and cleanup
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/catalog-source-cleanup-repair-controller.yml \
+            .github/workflows/catalog-source-cleanup-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: regenerate catalog and fresh build ownership'
+          git pull --rebase origin codex/full-blocker-closure-20260908
+          git push origin HEAD:codex/full-blocker-closure-20260908
