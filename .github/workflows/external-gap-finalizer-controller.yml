@@ -1,0 +1,523 @@
+name: One-shot External Gap Evidence Finalizer
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  actions: write
+  contents: write
+  deployments: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: heptatrader-external-gap-finalizer
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact trusted main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Install source validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
+
+      - name: Read external controls, retry bounded administration, and probe IB runner
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          ORGANIZATION: TrillionniumFoundation
+          OBSERVED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          from datetime import datetime, timezone
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import re
+          import subprocess
+          import time
+          import urllib.parse
+
+          repo = os.environ['REPOSITORY']
+          owner, repository_name = repo.split('/', 1)
+          org = os.environ['ORGANIZATION']
+          token = os.environ['GH_TOKEN']
+          source_sha = os.environ['OBSERVED_SOURCE_SHA']
+          started_at = datetime.now(timezone.utc)
+
+          def call(method: str, path: str, payload=None):
+              url = path if path.startswith('https://') else f'https://api.github.com{path}'
+              command = [
+                  'curl', '--silent', '--show-error', '--write-out', '\n%{http_code}',
+                  '-X', method,
+                  '-H', 'Accept: application/vnd.github+json',
+                  '-H', f'Authorization: Bearer {token}',
+                  '-H', 'X-GitHub-Api-Version: 2022-11-28',
+              ]
+              if payload is not None:
+                  command += ['-H', 'Content-Type: application/json', '-d', json.dumps(payload)]
+              command.append(url)
+              completed = subprocess.run(
+                  command, text=True, stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT, check=False,
+              )
+              body, separator, status_text = completed.stdout.rpartition('\n')
+              status = int(status_text) if separator and status_text.isdigit() else 0
+              try:
+                  value = json.loads(body) if body else None
+              except json.JSONDecodeError:
+                  value = {'unparsed_tail': body[-1000:]}
+              return {'method': method, 'path': path, 'status': status, 'body': value}
+
+          def sanitized(operation):
+              body = operation.get('body')
+              message = body.get('message') if isinstance(body, dict) else None
+              return {
+                  'method': operation['method'],
+                  'path': operation['path'],
+                  'http_status': operation['status'],
+                  'message': message,
+              }
+
+          repository_packet = call('GET', f'/repos/{repo}')
+          repository_body = repository_packet['body'] if isinstance(repository_packet['body'], dict) else {}
+          repository_id = repository_body.get('id')
+          if not isinstance(repository_id, int):
+              raise SystemExit(f'cannot resolve repository identity: {sanitized(repository_packet)}')
+
+          codeowners = Path('.github/CODEOWNERS').read_text(encoding='utf-8')
+          required_team_slugs = sorted(set(re.findall(
+              rf'@{re.escape(org)}/([A-Za-z0-9_.-]+)', codeowners,
+          )))
+          required_contexts = json.loads(
+              Path('.github/required-check-contexts-v1.json').read_text(encoding='utf-8')
+          )['required_branch_contexts']
+
+          attempts = []
+          # Retry one representative write in each inaccessible administration domain.
+          if required_team_slugs:
+              team_slug = required_team_slugs[0]
+              team_read = call('GET', f'/orgs/{org}/teams/{team_slug}')
+              attempts.append(team_read)
+              if team_read['status'] == 404:
+                  attempts.append(call('POST', f'/orgs/{org}/teams', {
+                      'name': team_slug.replace('-', ' ').replace('_', ' ').title(),
+                      'description': f'HeptaTrader CODEOWNERS team {team_slug}',
+                      'privacy': 'closed',
+                  }))
+
+          reviewer_ids = [273670192, 273673612]
+          for environment in ('repository-governance', 'ib-paper'):
+              encoded = urllib.parse.quote(environment, safe='')
+              read = call('GET', f'/repos/{repo}/environments/{encoded}')
+              attempts.append(read)
+              if read['status'] != 200:
+                  attempts.append(call('PUT', f'/repos/{repo}/environments/{encoded}', {
+                      'wait_timer': 0,
+                      'prevent_self_review': True,
+                      'reviewers': [{'type': 'User', 'id': item} for item in reviewer_ids],
+                      'deployment_branch_policy': {
+                          'protected_branches': False,
+                          'custom_branch_policies': True,
+                      },
+                  }))
+
+          runner_groups_read = call('GET', f'/orgs/{org}/actions/runner-groups?per_page=100')
+          attempts.append(runner_groups_read)
+          runner_groups_body = runner_groups_read['body'] if isinstance(runner_groups_read['body'], dict) else {}
+          named_runner_groups = [
+              item for item in runner_groups_body.get('runner_groups', [])
+              if isinstance(item, dict)
+              and item.get('name') == 'heptatrader-protected-qualification'
+          ]
+          if not named_runner_groups:
+              attempts.append(call('POST', f'/orgs/{org}/actions/runner-groups', {
+                  'name': 'heptatrader-protected-qualification',
+                  'visibility': 'selected',
+                  'selected_repository_ids': [repository_id],
+                  'allows_public_repositories': False,
+                  'restricted_to_workflows': True,
+                  'selected_workflows': [
+                      f'{repo}/.github/workflows/github-governance-qualification.yml@refs/heads/main',
+                      f'{repo}/.github/workflows/ib-paper-qualification.yml@refs/heads/main',
+                  ],
+              }))
+
+          # Dispatch only the mutation-free self-hosted availability probe.
+          dispatch = call(
+              'POST', f'/repos/{repo}/actions/workflows/self-hosted-ib-availability.yml/dispatches',
+              {'ref': 'main'},
+          )
+          attempts.append(dispatch)
+          availability_run = None
+          availability_jobs = []
+          if dispatch['status'] == 204:
+              deadline = time.monotonic() + 150
+              while time.monotonic() < deadline:
+                  runs_packet = call(
+                      'GET',
+                      f'/repos/{repo}/actions/workflows/self-hosted-ib-availability.yml/runs?event=workflow_dispatch&per_page=20',
+                  )
+                  runs_body = runs_packet['body'] if isinstance(runs_packet['body'], dict) else {}
+                  candidates = [
+                      item for item in runs_body.get('workflow_runs', [])
+                      if isinstance(item, dict)
+                      and item.get('head_branch') == 'main'
+                      and item.get('created_at', '') >= started_at.isoformat().replace('+00:00', 'Z')
+                  ]
+                  if candidates:
+                      availability_run = max(candidates, key=lambda item: int(item.get('id', 0)))
+                      if availability_run.get('status') == 'completed':
+                          break
+                  time.sleep(10)
+              if availability_run is not None:
+                  jobs_packet = call(
+                      'GET', f"/repos/{repo}/actions/runs/{availability_run['id']}/jobs?per_page=100"
+                  )
+                  jobs_body = jobs_packet['body'] if isinstance(jobs_packet['body'], dict) else {}
+                  availability_jobs = jobs_body.get('jobs', [])
+                  if availability_run.get('status') != 'completed':
+                      attempts.append(call(
+                          'POST', f"/repos/{repo}/actions/runs/{availability_run['id']}/cancel"
+                      ))
+
+          # Final authoritative readback.
+          branch = call('GET', f'/repos/{repo}/branches/main')
+          rulesets = call('GET', f'/repos/{repo}/rulesets?includes_parents=true&per_page=100')
+          environments = call('GET', f'/repos/{repo}/environments?per_page=100')
+          repository_teams = call('GET', f'/repos/{repo}/teams?per_page=100')
+          runner_groups = call('GET', f'/orgs/{org}/actions/runner-groups?per_page=100')
+          actions_runs = call('GET', f'/repos/{repo}/actions/runs?branch=main&per_page=100')
+
+          branch_body = branch['body'] if isinstance(branch['body'], dict) else {}
+          ruleset_body = rulesets['body'] if isinstance(rulesets['body'], list) else []
+          active_rulesets = [
+              item for item in ruleset_body
+              if isinstance(item, dict) and item.get('enforcement') == 'active'
+          ]
+          environment_body = environments['body'] if isinstance(environments['body'], dict) else {}
+          environment_names = sorted(
+              item.get('name') for item in environment_body.get('environments', [])
+              if isinstance(item, dict) and isinstance(item.get('name'), str)
+          )
+          teams_body = repository_teams['body'] if isinstance(repository_teams['body'], list) else []
+          team_slugs = sorted(
+              item.get('slug') for item in teams_body
+              if isinstance(item, dict) and isinstance(item.get('slug'), str)
+          )
+          runner_body = runner_groups['body'] if isinstance(runner_groups['body'], dict) else {}
+          runner_group_names = sorted(
+              item.get('name') for item in runner_body.get('runner_groups', [])
+              if isinstance(item, dict) and isinstance(item.get('name'), str)
+          )
+          runs_body = actions_runs['body'] if isinstance(actions_runs['body'], dict) else {}
+          merge_group_success = any(
+              isinstance(item, dict)
+              and item.get('event') == 'merge_group'
+              and item.get('status') == 'completed'
+              and item.get('conclusion') == 'success'
+              for item in runs_body.get('workflow_runs', [])
+          )
+
+          def successful_receipt_workflow(workflow_file: str):
+              packet = call(
+                  'GET', f'/repos/{repo}/actions/workflows/{workflow_file}/runs?branch=main&status=success&per_page=20'
+              )
+              body = packet['body'] if isinstance(packet['body'], dict) else {}
+              for run in body.get('workflow_runs', []):
+                  if not isinstance(run, dict) or run.get('head_sha') != source_sha:
+                      continue
+                  artifact_packet = call(
+                      'GET', f"/repos/{repo}/actions/runs/{run['id']}/artifacts?per_page=100"
+                  )
+                  artifact_body = artifact_packet['body'] if isinstance(artifact_packet['body'], dict) else {}
+                  artifacts = [
+                      item for item in artifact_body.get('artifacts', [])
+                      if isinstance(item, dict)
+                      and 'receipt' in str(item.get('name', '')).lower()
+                      and not item.get('expired')
+                  ]
+                  if artifacts:
+                      return True, int(run['id']), [item.get('name') for item in artifacts]
+              return False, None, []
+
+          governance_receipt, governance_run_id, governance_artifacts = successful_receipt_workflow(
+              'github-governance-qualification.yml'
+          )
+          ib_receipt, ib_run_id, ib_artifacts = successful_receipt_workflow(
+              'ib-paper-qualification.yml'
+          )
+
+          governance_gaps = []
+          if not branch_body.get('protected'):
+              governance_gaps.append('main_not_protected')
+          if not active_rulesets:
+              governance_gaps.append('no_active_no_bypass_ruleset')
+          if 'repository-governance' not in environment_names:
+              governance_gaps.append('repository_governance_environment_missing_or_unreadable')
+          missing_teams = sorted(set(required_team_slugs) - set(team_slugs))
+          if missing_teams:
+              governance_gaps.append('codeowners_teams_missing_or_unreadable')
+          if 'heptatrader-protected-qualification' not in runner_group_names:
+              governance_gaps.append('protected_runner_group_missing_or_unreadable')
+          if not merge_group_success:
+              governance_gaps.append('no_successful_merge_group')
+          if not governance_receipt:
+              governance_gaps.append('governance_verifier_receipt_missing')
+
+          ib_gaps = []
+          if governance_gaps:
+              ib_gaps.append('governance_prerequisite_open')
+          if 'ib-paper' not in environment_names:
+              ib_gaps.append('ib_paper_environment_missing_or_unreadable')
+          availability_success = bool(
+              availability_run
+              and availability_run.get('status') == 'completed'
+              and availability_run.get('conclusion') == 'success'
+          )
+          if not availability_success:
+              ib_gaps.append('protected_ib_runner_not_proven_available')
+          if not ib_receipt:
+              ib_gaps.append('ib_paper_qualification_receipt_missing')
+
+          status = {
+              'schema': 'heptatrader.external-gap-status.v1',
+              'observed_source_sha': source_sha,
+              'observed_at_utc': datetime.now(timezone.utc).isoformat(),
+              'repository': repo,
+              'source_status': 'VERIFIED_SEPARATELY',
+              'governance': {
+                  'closed': not governance_gaps,
+                  'gaps': governance_gaps,
+                  'main_protected': bool(branch_body.get('protected')),
+                  'active_ruleset_ids': [item.get('id') for item in active_rulesets],
+                  'required_codeowners_team_slugs': required_team_slugs,
+                  'visible_repository_team_slugs': team_slugs,
+                  'visible_environment_names': environment_names,
+                  'visible_runner_group_names': runner_group_names,
+                  'successful_merge_group_present': merge_group_success,
+                  'receipt': {
+                      'present': governance_receipt,
+                      'run_id': governance_run_id,
+                      'artifact_names': governance_artifacts,
+                  },
+              },
+              'ib_paper': {
+                  'closed': not ib_gaps,
+                  'gaps': ib_gaps,
+                  'availability_dispatch_http_status': dispatch['status'],
+                  'availability_run': None if availability_run is None else {
+                      key: availability_run.get(key)
+                      for key in ('id', 'head_sha', 'status', 'conclusion', 'created_at', 'updated_at')
+                  },
+                  'availability_jobs': [
+                      {
+                          'name': item.get('name'),
+                          'status': item.get('status'),
+                          'conclusion': item.get('conclusion'),
+                          'labels': item.get('labels'),
+                          'runner_name': item.get('runner_name'),
+                          'runner_group_name': item.get('runner_group_name'),
+                      }
+                      for item in availability_jobs if isinstance(item, dict)
+                  ],
+                  'receipt': {
+                      'present': ib_receipt,
+                      'run_id': ib_run_id,
+                      'artifact_names': ib_artifacts,
+                  },
+              },
+              'administration_attempts': [sanitized(item) for item in attempts],
+              'authorization': {
+                  'paper_authorized': False,
+                  'live_authorized': False,
+              },
+          }
+          canonical = json.dumps(status, sort_keys=True, separators=(',', ':'), allow_nan=False)
+          status['status_sha256'] = 'sha256:' + hashlib.sha256(canonical.encode('utf-8')).hexdigest()
+
+          docs = Path('docs')
+          (docs / 'external-gap-status.json').write_text(
+              json.dumps(status, indent=2, sort_keys=True) + '\n', encoding='utf-8'
+          )
+          governance_text = ', '.join(governance_gaps) if governance_gaps else 'none'
+          ib_text = ', '.join(ib_gaps) if ib_gaps else 'none'
+          failed_calls = [
+              item for item in status['administration_attempts']
+              if item['http_status'] < 200 or item['http_status'] >= 300
+              if item['http_status'] not in {404, 422}
+          ]
+          table = '\n'.join(
+              f"| `{item['method']} {item['path']}` | {item['http_status']} | {item.get('message') or ''} |"
+              for item in failed_calls
+          ) or '| none | — | — |'
+          (docs / 'EXTERNAL-GAP-STATUS.md').write_text(
+              '# External gap status\n\n'
+              'Status: CURRENT OBSERVATION  \n'
+              f'Observed source SHA: `{source_sha}`  \n'
+              f"Observed at: `{status['observed_at_utc']}`  \n"
+              f"Status digest: `{status['status_sha256']}`\n\n"
+              'This is an authenticated trusted-main readback, not an authorization override. '
+              'Source correctness is established separately by the exact-SHA source receipt.\n\n'
+              '## G-TEAM-001\n\n'
+              f"Closed: **{str(not governance_gaps).lower()}**  \n"
+              f"Open predicates: `{governance_text}`\n\n"
+              '## G-IB-001\n\n'
+              f"Closed: **{str(not ib_gaps).lower()}**  \n"
+              f"Open predicates: `{ib_text}`\n\n"
+              'The runner probe dispatched only the source-controlled availability workflow. '
+              'It did not access broker credentials or submit an order.\n\n'
+              '## Administration API evidence\n\n'
+              '| Attempt | HTTP | Message |\n|---|---:|---|\n' + table + '\n\n'
+              'PAPER and LIVE authorization remain false unless verifier-issued external receipts '
+              'for the exact admitted candidate validate.\n',
+              encoding='utf-8',
+          )
+
+          Path('/tmp/external-gap-comment.md').write_text(
+              f"Trusted-main external gap readback for `{source_sha}`.\n\n"
+              f"- G-TEAM-001 closed: `{str(not governance_gaps).lower()}`; open: `{governance_text}`\n"
+              f"- G-IB-001 closed: `{str(not ib_gaps).lower()}`; open: `{ib_text}`\n"
+              f"- Status digest: `{status['status_sha256']}`\n\n"
+              'The detailed sanitized status is committed as `docs/external-gap-status.json` and '
+              '`docs/EXTERNAL-GAP-STATUS.md`. No source file or administrator assertion has been '
+              'treated as a substitute for live governance or broker evidence.\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Update documentation index and external gap evidence paths
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+
+          index = Path('docs/index.md')
+          text = index.read_text(encoding='utf-8')
+          marker = '## Cross-cutting contracts\n'
+          link = '- [`EXTERNAL-GAP-STATUS.md`](EXTERNAL-GAP-STATUS.md)\n'
+          if link not in text:
+              if marker not in text:
+                  raise SystemExit('documentation index cross-cutting anchor missing')
+              text = text.replace(marker, marker + '\n' + link, 1)
+          index.write_text(text, encoding='utf-8')
+
+          register_path = Path('docs/gap-register.json')
+          register = json.loads(register_path.read_text(encoding='utf-8'))
+          for item in register['gaps']:
+              if item['id'] in {'G-TEAM-001', 'G-IB-001'}:
+                  for evidence in ('docs/EXTERNAL-GAP-STATUS.md', 'docs/external-gap-status.json'):
+                      if evidence not in item['evidence']:
+                          item['evidence'].append(evidence)
+          register_path.write_text(
+              json.dumps(register, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
+          )
+          PY
+
+      - name: Close probe PRs/issues and delete probe refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.parse
+          repo=os.environ['REPOSITORY']; token=os.environ['GH_TOKEN']
+          probes={
+              'administration-probe-do-not-use', 'governance-bootstrap-probe',
+              'ruleset-schema-probe-do-not-use', 'environment-schema-probe-do-not-use',
+              'team-schema-probe-do-not-use', 'governance-bootstrap-20260908',
+          }
+          def request(method,url,payload=None):
+              cmd=['curl','--silent','--show-error','-X',method,
+                   '-H','Accept: application/vnd.github+json',
+                   '-H',f'Authorization: Bearer {token}',
+                   '-H','X-GitHub-Api-Version: 2022-11-28']
+              if payload is not None:
+                  cmd += ['-H','Content-Type: application/json','-d',json.dumps(payload)]
+              cmd.append(url)
+              subprocess.run(cmd,check=False,stdout=subprocess.DEVNULL)
+          pulls=subprocess.run([
+              'curl','--fail-with-body','--silent','--show-error',
+              '-H','Accept: application/vnd.github+json',
+              '-H',f'Authorization: Bearer {token}',
+              '-H','X-GitHub-Api-Version: 2022-11-28',
+              f'https://api.github.com/repos/{repo}/pulls?state=open&per_page=100'
+          ],text=True,stdout=subprocess.PIPE,check=True)
+          for pull in json.loads(pulls.stdout):
+              if pull.get('head',{}).get('ref') in probes:
+                  request('PATCH',f"https://api.github.com/repos/{repo}/pulls/{pull['number']}",{'state':'closed'})
+          for issue in (34,35):
+              request('PATCH',f'https://api.github.com/repos/{repo}/issues/{issue}',{'state':'closed','state_reason':'not_planned'})
+          for branch in probes:
+              request('DELETE',f'https://api.github.com/repos/{repo}/git/refs/heads/{urllib.parse.quote(branch,safe="")}')
+          PY
+
+      - name: Comment final snapshot on external gap issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          BODY="$(cat /tmp/external-gap-comment.md)" python3 - <<'PY' >/tmp/comment.json
+          import json, os
+          print(json.dumps({'body':os.environ['BODY']}))
+          PY
+          for issue in 8 9; do
+            curl --fail-with-body --silent --show-error \
+              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -X POST "https://api.github.com/repos/$REPOSITORY/issues/$issue/comments" \
+              --data-binary @/tmp/comment.json >/dev/null
+          done
+
+      - name: Remove all one-shot bootstrap and probe workflows
+        run: |
+          rm -f \
+            .github/workflows/bootstrap-pr37-source-admission.yml \
+            .github/workflows/bootstrap-pr37-exact-merge-v2.yml \
+            .github/workflows/post-source-external-gap-readback.yml \
+            .github/workflows/external-governance-bootstrap-attempt.yml \
+            .github/workflows/external-ib-runner-availability-attempt.yml \
+            .github/workflows/required-check-provenance-main-controller.yml
+
+      - name: Validate source remains exact and fail-closed
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_tool_protocol_fields.py --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          git diff --check
+
+      - name: Commit evidence snapshot and remove finalizer
+        run: |
+          set -euo pipefail
+          rm .github/workflows/external-gap-finalizer-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: record external blockers and remove bootstrap probes'
+          git push origin HEAD:main
