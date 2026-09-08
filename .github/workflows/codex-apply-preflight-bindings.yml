@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   apply:
-    if: "${{ github.event.head_commit.message == 'chore: rerun remaining preflight bindings after generator repair' }}"
+    if: "${{ github.event.head_commit.message == 'chore: publish verified non-workflow preflight fixes' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -44,11 +44,15 @@ jobs:
           python3 scripts/check_documentation.py
           git diff --check
 
-      - name: Commit verified final source and remove staging controls
+      - name: Publish only verified non-workflow source
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf .codex .github/workflows/codex-apply-preflight-bindings.yml
+          # The GitHub Actions token cannot update workflow files. Restore the
+          # validated merge workflow for a separate workflows:write connector
+          # commit, and leave this temporary workflow unchanged until cleanup.
+          git checkout -- .github/workflows/merge-candidate.yml
+          rm -rf .codex
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
