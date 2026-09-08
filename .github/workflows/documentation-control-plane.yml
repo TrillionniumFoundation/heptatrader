@@ -43,10 +43,12 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
           python3 scripts/verify_build_ownership.py
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 -m unittest discover -s tests/python -p 'test_documentation_control_plane.py'
+          python3 -m unittest discover -s tests/python -p 'test_module_documentation_depth.py'
           python3 -m unittest discover -s tests/python -p 'test_build_ownership.py'
           python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
           python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
