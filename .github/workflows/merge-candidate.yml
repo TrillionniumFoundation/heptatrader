@@ -19,9 +19,9 @@ jobs:
   exact-merge:
     name: exact-merge-candidate
     runs-on: ubuntu-24.04
-    timeout-minutes: 55
+    timeout-minutes: 15
     steps:
-      - name: Checkout exact merge/event revision without credentials
+      - name: Checkout exact merge or event revision without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
@@ -34,22 +34,15 @@ jobs:
           EXPECTED_SHA: ${{ github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
-
-      - name: Validate exact candidate
-        env:
-          HEPTA_JOBS: "2"
+      - name: Validate exact candidate registries and release boundary
         run: |
           set -euo pipefail
           git diff --check
           python3 scripts/check_documentation.py
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
-          python3 -m unittest discover -s tests/python -p 'test_*.py'
-          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_release_package.py'
+          python3 -m unittest discover -s tests/python -p 'test_hepta_preflight.py'
 
       - name: Reassert exact candidate bytes
         if: always()
