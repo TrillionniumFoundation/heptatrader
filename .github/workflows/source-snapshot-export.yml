@@ -1,0 +1,49 @@
+name: Source Snapshot Export
+
+on:
+  push:
+    branches:
+      - codex/full-blocker-closure-20260908
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-source-snapshot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  export:
+    name: source-snapshot-export
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch revision without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert and package exact source tree
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          archive="$RUNNER_TEMP/heptatrader-source-$EXPECTED_SHA.tar.gz"
+          manifest="$RUNNER_TEMP/heptatrader-source-$EXPECTED_SHA.sha256"
+          tar --exclude=.git --exclude='build*' -czf "$archive" .
+          sha256sum "$archive" > "$manifest"
+          test -s "$archive"
+          test -s "$manifest"
+
+      - name: Upload exact source snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-source-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/heptatrader-source-${{ github.sha }}.tar.gz
+            ${{ runner.temp }}/heptatrader-source-${{ github.sha }}.sha256
+          if-no-files-found: error
+          retention-days: 1
