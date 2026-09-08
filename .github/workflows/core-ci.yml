@@ -45,6 +45,11 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
+      - name: Verify registered CMake install inventory under fresh DESTDIR
+        env:
+          HEPTA_RELEASE_INTEGRATION_BUILD_DIR: ${{ github.workspace }}/build/core
+        run: python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py'
+
       - name: Package and preflight the exact tested install tree
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}

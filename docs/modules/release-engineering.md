@@ -3,7 +3,7 @@
 Status: CURRENT  
 Applies to: repository HEAD  
 Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `docs/preflight-policy-v1.json`  
-Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`
+Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_cmake_install_integration.py`
 
 ## Responsibilities
 
@@ -13,7 +13,7 @@ The package boundary exists to prevent source SHA, rebuild, staging directory, P
 
 ## Install contract
 
-The top-level CMake project owns the canonical install rules. A core install contains the simulator Execution daemon, Tool Gateway, session control, CLI, preflight command, runtime helpers, systemd and tmpfiles assets, capability policy, build metadata, and current documentation. An IB PAPER install additionally contains the actual IB-linked Execution daemon and fixed PAPER policy.
+The top-level CMake project owns and explicitly registers the canonical install rules after every referenced runtime target exists. A core install contains the simulator Execution daemon, Tool Gateway, session control, CLI, preflight command, runtime helpers, systemd and tmpfiles assets, capability policy, build metadata, and current documentation. An IB PAPER install additionally contains the actual IB-linked Execution daemon and fixed PAPER policy.
 
 Files ending in `.example` remain non-secret templates. Broker credentials, Agent session tokens, authorization markers, private keys, live environment files, journal state, and host-generated receipts are never package inputs.
 
@@ -55,7 +55,7 @@ Build and preflight receipts are evidence inputs. They are not mutable runtime s
 
 ## Failure semantics
 
-Any path escape, symlink, hard link, special file, unexpected authorization claim, invalid digest, manifest mismatch, missing required file, unsafe kill-switch marker, missing host identity, unsupported Broker endpoint, malformed JSON, non-finite number, size overflow, or output replacement attempt fails closed.
+Any path escape, symlink, hard link, special file, unexpected authorization claim, invalid digest, manifest mismatch, missing required file, unsafe kill-switch marker, missing host identity, unsupported Broker endpoint, malformed JSON, non-finite number, size overflow, output replacement attempt, unregistered install module, or incomplete installed inventory fails closed.
 
 A failed preflight leaves the host and package unchanged. A successful artifact-only preflight does not imply the host is installed. A successful static-host preflight does not imply PAPER qualification. LIVE remains unavailable.
 
@@ -65,9 +65,11 @@ Receipts expose release label, source SHA, source epoch, package and manifest di
 
 ## Test expectations
 
-Tests cover reproducible archive bytes, sorted manifests, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys and forged LIVE claims.
+Unit tests cover reproducible archive bytes, sorted manifests, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys and forged LIVE claims.
 
-A release workflow must also build the canonical CMake targets, install into an empty staging root, package that root, run artifact-only preflight, and retain the package, digest and receipts as one immutable evidence set.
+The install integration test consumes the same already-built canonical `build/core` directory, verifies its exact CMake profile, executes `cmake --install` under a fresh `DESTDIR`, asserts every policy-required regular file, rejects an IB-enabled daemon in the core profile, and checks installed build metadata. This prevents an install module that exists in source but is never registered from passing CI.
+
+A release workflow must build the canonical CMake targets, install into an empty staging root, package that root, run artifact-only preflight, and retain the package, digest and receipts as one immutable evidence set.
 
 ## Known limitations
 

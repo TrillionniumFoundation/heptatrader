@@ -114,7 +114,7 @@
       "status": "CURRENT",
       "document": "docs/modules/release-engineering.md",
       "implementation": ["CMakeLists.txt", "cmake/HeptaInstall.cmake", "scripts/build_release_package.py", "scripts/hepta_preflight.py", "docs/preflight-policy-v1.json"],
-      "tests": ["tests/python/test_release_package.py", "tests/python/test_hepta_preflight.py"],
+      "tests": ["tests/python/test_release_package.py", "tests/python/test_hepta_preflight.py", "tests/python/test_cmake_install_integration.py"],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
