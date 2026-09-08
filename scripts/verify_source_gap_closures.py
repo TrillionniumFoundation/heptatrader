@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Execute gap-specific repository-source closure checks.
+"""Check the source-gap registry and supplemental static source contracts.
 
-This verifier deliberately does not close live GitHub governance or broker
-qualification gaps. It rejects CLOSED_SOURCE claims whose executable/static
-contracts no longer hold and keeps PAPER/LIVE authorization fail-closed.
+Documentation, fresh CMake ownership, qualification-boundary and profile
+validators are executed. Risk, venue and OMS token checks are static guards,
+not behavioral proof. C++ behavior is established by the separately built and
+executed core test suites. This script neither runs those suites nor grants
+PAPER/LIVE authorization or closes external qualification gaps.
 """
 from __future__ import annotations
 
@@ -26,6 +28,16 @@ EXPECTED_REPOSITORY_GAPS = {
     "BUILD-001",
 }
 EXPECTED_EXTERNAL_GAPS = {"G-TEAM-001", "G-IB-001"}
+REQUIRED_TEST_TARGETS = {
+    "hepta_pre_trade_risk_engine_tests",
+    "hepta_venue_capability_tests",
+    "hepta_oms_journal_durability_tests",
+    "hepta_oms_journal_schema_v4_tests",
+    "hepta_simulator_risk_runtime_tests",
+    "hepta_execution_coordinator_tests",
+    "hepta_unix_session_supervisor_server_tests",
+    "hepta_ib_live_terminal_reconciliation_tests",
+}
 
 
 class SourceClosureError(ValueError):
@@ -127,40 +139,35 @@ def validate_ci_boundary(root: Path) -> list[str]:
 
 
 def validate_test_inventory(root: Path) -> list[str]:
+    import verify_build_ownership
+
     errors: list[str] = []
     try:
-        manifest = load_json(root / "docs/build-targets.json")
-        profiles = manifest.get("profiles", {}) if isinstance(manifest, dict) else {}
-        core = profiles.get("core", {}) if isinstance(profiles, dict) else {}
-        names = {
-            item.get("name")
-            for item in core.get("targets", [])
-            if isinstance(item, dict)
-        }
-    except (SourceClosureError, AttributeError) as error:
+        manifest = verify_build_ownership.load_json(root / "docs/build-targets.json")
+        # A source token or a hand-edited JSON dependency is not a build edge.
+        # Even when this function is used alone, compare with a fresh codemodel.
+        verify_build_ownership.verify(root, manifest, "core")
+        targets = {item["name"]: item for item in manifest["profiles"]["core"]["targets"]}
+    except (verify_build_ownership.OwnershipError, OSError) as error:
         return [str(error)]
-    required = {
-        "hepta_pre_trade_risk_engine_tests",
-        "hepta_venue_capability_tests",
-        "hepta_oms_journal_durability_tests",
-        "hepta_oms_journal_schema_v4_tests",
-        "hepta_simulator_risk_runtime_tests",
-        "hepta_core_test_binaries",
-    }
-    missing = sorted(required - names)
+    missing = sorted((REQUIRED_TEST_TARGETS | {"hepta_core_test_binaries"}) - set(targets))
     if missing:
         errors.append("missing gap-critical test targets: " + ", ".join(missing))
-    tests_cmake = require_tokens(
-        root,
-        "tests/CMakeLists.txt",
-        tuple(sorted(required)),
-        "TEST-001",
-        errors,
-    )
-    if "add_dependencies(hepta_core_test_binaries" not in tests_cmake:
-        errors.append(
-            "TEST-001: tests/CMakeLists.txt: core test aggregate has no explicit dependencies"
-        )
+        return errors
+    for name in sorted(REQUIRED_TEST_TARGETS):
+        if targets[name]["type"] != "EXECUTABLE":
+            errors.append(f"gap-critical test is not an executable target: {name}")
+    reachable: set[str] = set()
+    pending = list(targets["hepta_core_test_binaries"]["dependencies"])
+    while pending:
+        name = pending.pop()
+        if name in reachable:
+            continue
+        reachable.add(name)
+        pending.extend(targets[name]["dependencies"])
+    absent = sorted(REQUIRED_TEST_TARGETS - reachable)
+    if absent:
+        errors.append("core test aggregate does not build gap-critical targets: " + ", ".join(absent))
     return errors
 
 
@@ -284,7 +291,9 @@ def validate_venue(root: Path) -> list[str]:
 
 def validate_oms(root: Path) -> list[str]:
     errors: list[str] = []
-    dispatch = require_tokens(
+    # Presence checks only. Textual ordering cannot establish control flow or
+    # durability; coordinator/durability tests provide that separate evidence.
+    require_tokens(
         root,
         "HeptaTrade/execution/execution_place_order_dispatch.cpp",
         (
@@ -298,20 +307,6 @@ def validate_oms(root: Path) -> list[str]:
         "OMS-001",
         errors,
     )
-    marker = dispatch.find('"place_send_attempt"')
-    send_candidates = [
-        index
-        for index in (
-            dispatch.find("placeIbOrderCommandCorrelated", marker + 1),
-            dispatch.find("placeIbOrderCorrelated", marker + 1),
-            dispatch.find("placeIbOrder(", marker + 1),
-        )
-        if index >= 0
-    ]
-    if marker < 0 or not send_candidates or marker > min(send_candidates):
-        errors.append(
-            "OMS-001: durable place_send_attempt must precede every broker-send branch"
-        )
     require_tokens(
         root,
         "tests/execution_coordinator_tests.cpp",
@@ -361,7 +356,11 @@ def validate_profile(root: Path) -> list[str]:
 
 
 def validate_register_projection(root: Path) -> list[str]:
-    errors: list[str] = []
+    import check_gap_register
+
+    # Keep external issue/authorization/evidence rules in the canonical
+    # validator instead of maintaining a weaker second implementation here.
+    errors = [f"canonical registry: {item}" for item in check_gap_register.validate(root)]
     try:
         register = load_json(root / "docs/gap-register.json")
     except SourceClosureError as error:
@@ -432,11 +431,15 @@ def validate_temporary_artifacts(root: Path | str = ROOT) -> list[str]:
         ".github/workflows/refactor-apply.yml",
         ".github/workflows/source-snapshot-temporary.yml",
         ".github/workflows/recover-gap-payload.yml",
+        ".github/workflows/flatten-capacity-materialize.yml",
     ):
         if (root / relative).exists():
             errors.append(
                 f"CI-001: temporary workflow remains in the product tree: {relative}"
             )
+    applicator = "scripts/apply_flatten_capacity_fix.py"
+    if (root / applicator).exists():
+        errors.append(f"BUILD-001: temporary source applicator remains in the product tree: {applicator}")
     return errors
 
 
@@ -451,7 +454,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
         errors.extend(validate_risk(root))
         errors.extend(validate_venue(root))
         errors.extend(validate_oms(root))
-        errors.extend(f"BUILD-001: {item}" for item in validate_profile(root))
+        errors.extend(f"PENDING-EXPOSURE-001: {item}" for item in validate_profile(root))
         errors.extend(validate_register_projection(root))
     except (SourceClosureError, OSError, UnicodeError) as error:
         errors.append(str(error))
@@ -467,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[SOURCE-GAPS] {error}", file=sys.stderr)
     if errors:
         return 1
-    print("[SOURCE-GAPS] PASS")
+    print("[SOURCE-GAPS] PASS registry/static contracts and delegated validators; no C++ behavioral tests executed")
     return 0
 
 

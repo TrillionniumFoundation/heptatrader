@@ -90,6 +90,9 @@ private:
         bool submitted = false;
         bool cancelRequested = false;
         bool terminal = false;
+        // Admission under flatten-only keeps its zero boundary even if the
+        // policy later changes. Unactivated/cancel-pending orders retain it.
+        bool flattenCapacityReserved = false;
         std::string terminalStatus;
         std::string correlationId;
     };

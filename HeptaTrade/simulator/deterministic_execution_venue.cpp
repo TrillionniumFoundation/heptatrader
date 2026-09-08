@@ -88,6 +88,32 @@ PreTradeRiskDecision DeterministicExecutionVenue::EvaluateRiskLocked(
     context.positionKnown = true;
     const auto position = m_positions.find(context.symbol);
     if (position != m_positions.end()) context.netPosition = position->second;
+    if (m_riskConfig.flattenOnly && std::isfinite(context.netPosition))
+    {
+        // Flatten orders may bypass monetary exposure limits, so reserve the
+        // reducible quantity separately. Ordinary orders admitted before a
+        // policy change can consume it too. Do not borrow capacity from an
+        // opposite-side order that has not filled, or refund a cancel request.
+        double remaining = std::fabs(context.netPosition);
+        for (const auto& pending : m_orders)
+        {
+            const Order& reserved = pending.second;
+            if (reserved.terminal || reserved.instrument != context.symbol)
+                continue;
+            if (!std::isfinite(reserved.request.totalQuantity) ||
+                reserved.request.totalQuantity <= 0.0)
+                return reject("SIM_FLATTEN_RESERVATION_INCONSISTENT");
+            const bool reducesCurrentPosition =
+                (context.netPosition > 0.0 && reserved.request.action == "SELL") ||
+                (context.netPosition < 0.0 && reserved.request.action == "BUY");
+            if (reducesCurrentPosition)
+                remaining = reserved.request.totalQuantity >= remaining ?
+                    0.0 : remaining - reserved.request.totalQuantity;
+        }
+        // Use the same strict double subtraction as fills; no tolerance may
+        // authorize a small crossing or fabricate an exact-zero position.
+        context.netPosition = std::copysign(remaining, context.netPosition);
+    }
     // This cumulative conservative budget also includes admitted orders
     // recovered from the journal, so restart cannot reset the order limit.
     context.todayOrderCount = static_cast<int>(std::min<std::uint64_t>(
@@ -296,6 +322,7 @@ bool DeterministicExecutionVenue::PlaceOrderCorrelated(
     stored.request = order;
     stored.correlationId = correlationId;
     stored.activated = activate;
+    stored.flattenCapacityReserved = m_riskConfig.flattenOnly;
     m_orders[stored.id] = stored;
     ++m_admittedOrderCount;
     ++m_generation;
@@ -475,12 +502,41 @@ void DeterministicExecutionVenue::Process()
                 (order.request.action == "BUY" && order.request.lmtPrice >= quote.ask) ||
                 (order.request.action == "SELL" && order.request.lmtPrice <= quote.bid);
             if (!marketable) continue;
+            const double currentPosition = m_positions[order.instrument];
+            const double afterPosition = currentPosition +
+                (order.request.action == "BUY" ?
+                    order.request.totalQuantity : -order.request.totalQuantity);
+            if (order.flattenCapacityReserved || m_riskConfig.flattenOnly)
+            {
+                // Recheck actual fill-time capacity after activation/policy
+                // changes or another fill. The current flatten policy also
+                // constrains ordinary orders admitted before it was enabled.
+                const bool reducesWithoutCrossing =
+                    std::isfinite(currentPosition) && std::isfinite(afterPosition) &&
+                    ((order.request.action == "SELL" && currentPosition > 0.0 &&
+                      afterPosition >= 0.0 && afterPosition < currentPosition) ||
+                     (order.request.action == "BUY" && currentPosition < 0.0 &&
+                      afterPosition <= 0.0 && afterPosition > currentPosition));
+                if (!reducesWithoutCrossing)
+                {
+                    order.terminal = true;
+                    order.terminalStatus = "Rejected";
+                    ++m_generation;
+                    SimulatedOrderEvent rejected;
+                    rejected.orderId = order.id;
+                    rejected.instrument = order.instrument;
+                    rejected.side = order.request.action;
+                    rejected.status = "Rejected";
+                    rejected.remainingQuantity = order.request.totalQuantity;
+                    events.push_back(rejected);
+                    continue;
+                }
+            }
             order.terminal = true;
             order.terminalStatus = "Filled";
             ++m_generation;
             const double fillPrice = order.request.action == "BUY" ? quote.ask : quote.bid;
-            m_positions[order.instrument] += order.request.action == "BUY" ?
-                order.request.totalQuantity : -order.request.totalQuantity;
+            m_positions[order.instrument] = afterPosition;
             SimulatedOrderEvent filled;
             filled.orderId = order.id;
             filled.instrument = order.instrument;

@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cassert>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -112,6 +113,223 @@ void TestDeterministicRiskReservationAndActivation()
     venue.SetRiskConfig(cfg);
     now += 1001;
     assert(!venue.PreviewRisk(contract, reverse).allow);
+}
+
+struct FlattenFixture
+{
+    std::uint64_t now = 10000;
+    DeterministicExecutionVenue venue;
+    PreTradeRiskConfig risk;
+    explicit FlattenFixture(double position, bool monetary = true)
+        : venue([this]() { return now; }), risk(Risk())
+    {
+        risk.flattenOnly = true;
+        risk.maxOrderQuantity = 20.0;
+        risk.maxOrderNotional = monetary ? 500.0 : 0.0;
+        risk.maxWorstCaseGrossNotional = monetary ? 1000.0 : 0.0;
+        risk.maxSnapshotAgeMs = monetary ? 1000 : 0;
+        venue.SetRiskConfig(risk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", position}}, 0, reason));
+    }
+    OrderIntent Exit(const char* side, double quantity) const
+    {
+        OrderIntent order = Order(quantity);
+        order.action = side;
+        return order;
+    }
+    long Admit(const char* side, double quantity, bool activate = false)
+    {
+        long id = -1;
+        const bool admitted = venue.PlaceOrderCorrelated(Contract(), Exit(side, quantity),
+            "capacity-" + std::to_string(++sequence), &id, activate);
+        if (!admitted)
+            std::cerr << "capacity fixture rejected " << side << ' ' << quantity
+                      << " position=" << venue.Position("EUR.USD")
+                      << " reason=" << venue.LastRejectReason() << '\n';
+        assert(admitted);
+        return id;
+    }
+    void Block(const char* side, double quantity)
+    {
+        const auto order = Exit(side, quantity);
+        const auto preview = venue.PreviewRisk(Contract(), order);
+        assert(!preview.allow && preview.reasonCode == "RISK_FLATTEN_ONLY_BLOCK");
+        long id = -1;
+        assert(!venue.PlaceOrderCorrelated(Contract(), order, "blocked", &id, false));
+        assert(id == -1 && venue.LastRejectReason() == preview.reasonCode);
+    }
+    unsigned sequence = 0;
+};
+
+void TestFlattenCapacityReservations()
+{
+    for (const bool monetary : {false, true})
+    {
+        for (const double sign : {1.0, -1.0})
+        {
+            FlattenFixture f(sign * 10.0, monetary);
+            const char* side = sign > 0 ? "SELL" : "BUY";
+            const long four = f.Admit(side, 4.0);
+            const long six = f.Admit(side, 6.0);
+            f.Block(side, 0.01); // Inactive reservations share the same quantity.
+            f.venue.Process();
+            assert(f.venue.Position("EUR.USD") == sign * 10.0);
+            assert(f.venue.ActivateOrder(four));
+            f.venue.Process();
+            assert(f.venue.Position("EUR.USD") == sign * 6.0);
+            f.Block(side, 0.01); // The remaining reservation still consumes six.
+            assert(f.venue.ActivateOrder(six));
+            f.venue.Process();
+            assert(f.venue.Position("EUR.USD") == 0.0);
+            assert(f.venue.ExecutionOrderIds() == std::set<long>({four, six}));
+            assert(f.venue.ActiveOrderIds().empty());
+        }
+    }
+
+    FlattenFixture f(10.0);
+    std::atomic<bool> start(false);
+    std::atomic<int> admitted(0);
+    long ids[2] = {-1, -1};
+    auto submit = [&](int index) {
+        while (!start.load()) std::this_thread::yield();
+        if (f.venue.PlaceOrderCorrelated(Contract(), f.Exit("SELL", 10.0),
+                "concurrent-exit-" + std::to_string(index), &ids[index], false))
+            ++admitted;
+    };
+    std::thread first(submit, 0), second(submit, 1);
+    start.store(true);
+    first.join(); second.join();
+    assert(admitted.load() == 1 && "two exact exits must not both reserve ten units");
+    assert(f.venue.ActiveOrderIds().size() == 1);
+    assert(f.venue.ActivateOrder(ids[0] >= 0 ? ids[0] : ids[1]));
+    f.venue.Process();
+    assert(f.venue.Position("EUR.USD") == 0.0);
+    assert(f.venue.ExecutionOrderIds().size() == 1);
+
+    FlattenFixture separate(10.0);
+    std::string reason;
+    assert(separate.venue.RestoreRiskState(
+        {{"EUR.USD", 10.0}, {"GBP.USD", 10.0}}, 0, reason));
+    separate.venue.SetQuote("GBP.USD", 1.2500, 1.2502);
+    separate.Admit("SELL", 10.0, true);
+    auto sterling = Contract();
+    sterling.symbol = "GBP";
+    long sterlingId = -1;
+    assert(separate.venue.PlaceOrder(sterling, separate.Exit("SELL", 10.0), &sterlingId));
+    separate.venue.Process();
+    assert(separate.venue.Position("EUR.USD") == 0.0);
+    assert(separate.venue.Position("GBP.USD") == 0.0);
+}
+
+void TestFlattenCancellationAndStrictRemainder()
+{
+    FlattenFixture f(10.0);
+    const long held = f.Admit("SELL", 10.0);
+    assert(f.venue.CancelOrder(held));
+    f.venue.Process(); // Unactivated cancel request is still unresolved.
+    f.Block("SELL", 1.0);
+    assert(f.venue.TerminalOrderStatuses().empty());
+    std::string reason;
+    assert(!f.venue.RestoreRiskState({{"EUR.USD", 100.0}}, 0, reason));
+    assert(reason == "SIM_RISK_RESTORE_AFTER_ADMISSION");
+    assert(f.venue.ActivateOrder(held));
+    f.venue.Process();
+    assert(f.venue.TerminalOrderStatuses().at(held) == "Cancelled");
+    assert(f.venue.Position("EUR.USD") == 10.0);
+    const long replacement = f.Admit("SELL", 10.0, true);
+    f.venue.Process();
+    assert(f.venue.Position("EUR.USD") == 0.0);
+    assert(f.venue.ExecutionOrderIds() == std::set<long>({replacement}));
+
+    // No tolerance grants 0.2 against the binary remainder of 0.3 - 0.1.
+    // Admit the actual representable remainder; never normalize cash to zero.
+    FlattenFixture fractional(0.3);
+    const long first = fractional.Admit("SELL", 0.1);
+    fractional.Block("SELL", 0.2);
+    const long remainder = fractional.Admit("SELL", 0.3 - 0.1);
+    assert(fractional.venue.ActivateOrder(first));
+    assert(fractional.venue.ActivateOrder(remainder));
+    fractional.venue.Process();
+    assert(fractional.venue.Position("EUR.USD") == 0.0);
+    assert(fractional.venue.ExecutionOrderIds().size() == 2);
+}
+
+void TestFlattenPolicyTransitionsAndFillBoundary()
+{
+    {
+        FlattenFixture f(10.0);
+        auto ordinary = f.risk;
+        ordinary.flattenOnly = false;
+        f.venue.SetRiskConfig(ordinary);
+        const long existing = f.Admit("SELL", 6.0);
+        f.venue.SetRiskConfig(f.risk);
+        f.Block("SELL", 5.0); // Pre-policy ordinary orders consume capacity too.
+        const long remaining = f.Admit("SELL", 4.0);
+        f.venue.SetRiskConfig(ordinary);
+        f.venue.SetRiskConfig(f.risk);
+        f.Block("SELL", 0.01);
+        assert(f.venue.ActivateOrder(existing));
+        assert(f.venue.ActivateOrder(remaining));
+        f.venue.Process();
+        assert(f.venue.Position("EUR.USD") == 0.0);
+    }
+    {
+        FlattenFixture f(10.0);
+        const long reserved = f.Admit("SELL", 10.0);
+        auto ordinary = f.risk;
+        ordinary.flattenOnly = false;
+        f.venue.SetRiskConfig(ordinary);
+        const long consumed = f.Admit("SELL", 10.0, true);
+        f.venue.Process();
+        assert(f.venue.Position("EUR.USD") == 0.0);
+        std::vector<SimulatedOrderEvent> events;
+        f.venue.SetEventSink([&](const SimulatedOrderEvent& event) {
+            assert(f.venue.Position("EUR.USD") == 0.0); // Sink remains reentrant.
+            events.push_back(event);
+        });
+        const auto before = f.venue.RecoveryAuditSnapshot().generation;
+        assert(f.venue.ActivateOrder(reserved));
+        f.venue.Process();
+        assert(f.venue.Position("EUR.USD") == 0.0);
+        assert(events.size() == 2 && events[0].status == "Submitted" && events[1].status == "Rejected");
+        assert(events[1].filledQuantity == 0.0 && events[1].remainingQuantity == 10.0);
+        const auto audit = f.venue.RecoveryAuditSnapshot();
+        assert(audit.complete && audit.generation > before && audit.activeOrderIds.empty());
+        assert(audit.terminalStatuses.at(reserved) == "Rejected");
+        assert(audit.executionOrderIds == std::set<long>({consumed}));
+        f.venue.Process();
+        assert(events.size() == 2); // No duplicate terminal event or economic fill.
+    }
+    {
+        FlattenFixture f(10.0);
+        auto ordinary = f.risk;
+        ordinary.flattenOnly = false;
+        f.venue.SetRiskConfig(ordinary);
+        const long first = f.Admit("SELL", 10.0);
+        const long duplicate = f.Admit("SELL", 10.0);
+        const long increasing = f.Admit("BUY", 10.0);
+        f.venue.SetRiskConfig(f.risk);
+        assert(f.venue.ActivateOrder(first));
+        assert(f.venue.ActivateOrder(duplicate));
+        assert(f.venue.ActivateOrder(increasing));
+        f.venue.Process();
+        assert(f.venue.Position("EUR.USD") == 0.0);
+        assert(f.venue.TerminalOrderStatuses().at(duplicate) == "Rejected");
+        assert(f.venue.TerminalOrderStatuses().at(increasing) == "Rejected");
+        assert(f.venue.ExecutionOrderIds() == std::set<long>({first}));
+    }
+    {
+        FlattenFixture f(-10.0);
+        auto ordinary = f.risk;
+        ordinary.flattenOnly = false;
+        f.venue.SetRiskConfig(ordinary);
+        f.Admit("SELL", 10.0); // An unfilled short increase grants no exit capacity.
+        f.venue.SetRiskConfig(f.risk);
+        f.Block("BUY", 11.0);
+        f.Admit("BUY", 10.0);
+    }
 }
 
 void TestPreviewAndFinalAdmissionRejectSameRisk()
@@ -371,6 +589,9 @@ void TestProductionRuntimePumpsAndJournalsEvents()
 int main()
 {
     TestDeterministicRiskReservationAndActivation();
+    TestFlattenCapacityReservations();
+    TestFlattenCancellationAndStrictRemainder();
+    TestFlattenPolicyTransitionsAndFillBoundary();
     TestPreviewAndFinalAdmissionRejectSameRisk();
     TestProductionRuntimePumpsAndJournalsEvents();
     std::cout << "simulator risk, reservation, activation and production runtime tests passed\n";

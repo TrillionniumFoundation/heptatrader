@@ -135,7 +135,7 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Every declared CMake target and every HeptaTrade translation unit has an exact maintained, qualification, experimental, test or legacy owner verified against the source tree.",
+      "summary": "Canonical Linux Core and IB SDK target membership and unique module ownership of their compiled implementation translation units are verified from fresh CMake File API data; excluded legacy/probe profiles and non-exposed imported/interface targets are not claimed.",
       "evidence": [
         "HeptaTrade/CMakeLists.txt",
         "tests/CMakeLists.txt",

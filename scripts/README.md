@@ -7,7 +7,7 @@ Status: CURRENT
 - `dev_core.sh` configures, builds, and runs the canonical core CTest label.
 - `check_documentation.py` validates module/capability truth and documentation links.
 - `verify_build_ownership.py` compares fresh CMake file-api target and translation-unit models with `docs/build-targets.json`; additions fail closed until they have an explicit canonical owner.
-- `verify_source_gap_closures.py` executes the gap-specific repository checks behind every `CLOSED_SOURCE` claim while refusing to source-close live governance or broker qualification.
+- `verify_source_gap_closures.py` checks the gap registry and supplemental static risk/venue/OMS contracts, and executes documentation, fresh build-ownership, qualification-boundary and profile validators. It does not execute C++ behavioral tests or prove broker-send ordering; those are checked by the separately built core suites. Its result cannot close external governance or broker qualification.
 - `resolve_hepta_config.py`, `validate_sim_data.py`, and `verify_oms_journal_replay.py` support legacy/configuration checks where still applicable.
 
 ## Agent and host runtime

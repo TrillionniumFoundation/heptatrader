@@ -25,6 +25,10 @@ The shared `hepta_simulator_runtime` target supplies the venue and generic risk 
 
 Preview and final order reservation evaluate the same risk function. Final evaluation and reservation hold the venue mutex, so concurrent orders see all earlier pending reservations. Before commit, owner projection emits only `order.reserved`, never accepted evidence. The coordinator activates a reservation only after durable `place_sent` and owner creation; event processing skips unactivated reservations. The final command result requires the durable activation receipt. Event sinks run outside the venue mutex. The lock order is coordinator then venue during reservation and activation; event publication releases the venue mutex before calling the coordinator.
 
+Flatten-only admission reserves reducible quantity separately from monetary exposure. Every unresolved order on the same instrument in the reduction direction consumes capacity, including ordinary orders admitted before a policy change, unactivated reservations and cancellation requests awaiting a terminal outcome. Opposite-side pending orders cannot increase that capacity. Thus a position of ten permits exits of four and six, but not two exits of ten. Partial or exact exits use strict floating-point subtraction; a nominal decimal sum that exceeds the representable remainder is rejected without a tolerance that could authorize crossing zero.
+
+An order admitted under flatten-only retains its zero boundary if the policy is later disabled. At fill time, both those orders and any order subject to the current flatten-only policy must strictly reduce the actual position without crossing zero. If another fill consumed the capacity, the venue emits one terminal `Rejected` event with no economic fill. This also protects ordinary orders admitted before flatten-only was enabled.
+
 The production fixture accepts only the reviewed EUR.USD and GBP.USD CASH contracts in USD. Its limits are 1,000 units per order, USD 2,500 per order, USD 10,000 worst-case gross notional and 10,000 admitted orders per retained journal. Holdings and pending buys/sells participate in the gross calculation. Quote observations, unit metadata and identity-bound notional evidence come from the venue; Agent reference values cannot supply their authority. Unsupported instruments and unavailable marks fail closed. The journal-backed order count is conservative across day boundaries; restarting does not reset that budget.
 
 The simulator has no broker credential, broker port, or PAPER/LIVE authorization. Its Unix identities and sockets must not inherit the IB execution service's network or credential permissions.
@@ -34,6 +38,8 @@ The simulator has no broker credential, broker port, or PAPER/LIVE authorization
 Execution mutations use the same durable journal contract as broker-backed execution. Simulator venue state may be reconstructed from deterministic fixtures and the journal, but command idempotency and owner fences remain authoritative in the journal.
 
 Startup restores positions from durable simulated fill records and the admitted-order count from unique `place_sent` order IDs. Exact duplicate fills are applied once; conflicting side, quantity, instrument or price and fills without a matching admission reject startup. Active orders are not revived after restart: the existing complete empty active-order reconciliation durably terminalizes their owners while preserved fills and admission counts continue to constrain risk.
+
+Quantity reservations belong to those in-memory active orders and are not replayed as fictitious live orders. Within a running venue, `RestoreRiskState` refuses to replace positions or admission counts after any order has been admitted, so restoring a baseline cannot erase an active reservation.
 
 Fixtures should declare instruments, initial positions, quote sequence, fill policy, timing, and injected failures. The venue constructor accepts a clock provider; deterministic risk, freshness and activation tests use a controlled clock.
 
@@ -59,7 +65,7 @@ Record the fixture identity, deterministic seed/configuration, command ID, venue
 
 The end-to-end suite verifies tool discovery, preview, place, duplicate replay, status, cancel, events, snapshots, owner fencing, and fault recovery. New Execution states must first be made reproducible in the simulator before broker qualification.
 
-The risk/runtime suite verifies concurrent pending-order admission, preview/final parity, unsupported units, stale evidence, activation ordering and reentrant event sinks. It also starts the actual runtime composition, places and cancels through authenticated local IPC, observes automatically pumped events after quote TTL rollover, and replays terminal owner records. The production IPC portion requires a non-root Gateway identity, matching the daemon policy.
+The risk/runtime suite verifies concurrent monetary and flatten-quantity admission, long and short partial exits, strict fractional remainders, pending cancellation, policy transitions, fill-time rejection without execution evidence, preview/final parity, unsupported units, stale evidence, activation ordering and reentrant event sinks. It also starts the actual runtime composition, places and cancels through authenticated local IPC, observes automatically pumped events after quote TTL rollover, and replays terminal owner records. The production IPC portion requires a non-root Gateway identity, matching the daemon policy.
 
 ## Known limitations
 
