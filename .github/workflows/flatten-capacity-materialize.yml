@@ -35,6 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/apply_flatten_capacity_fix.py
+          python3 scripts/fix_flatten_verifier.py
           git diff --check
 
       - name: Execute source and runtime verification
