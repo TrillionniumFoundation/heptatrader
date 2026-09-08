@@ -13,9 +13,9 @@ SOURCE_AUDIT = WF / "qualification-source-audit.yml"
 CONTEXTS = ROOT / ".github" / "required-check-contexts-v1.json"
 PRIVILEGED = {
     WF / "github-governance-qualification.yml":
-        "8029358e340f5ea37b024b87ca2f720a771fd6bd11ff8786495e272481c8cc69",
+        "eb379a0327b3f9c556e24b388f59d7144e2da57f9bc4b51d6c7e49c65ac518af",
     WF / "ib-paper-qualification.yml":
-        "8e589bbc5ced02f9c5d4e6ff3aa76743eff993c8d94d661b5675d439878b3e3b",
+        "709c6d02505e31399b106b48ebeb053d7a221205822008ed5ecbe510b0d9355d",
     WF / "self-hosted-ib-availability.yml":
         "0386d801e409fa89cdb143df14610e64eb75819abdda7a13b7302a541fc55bb5",
 }

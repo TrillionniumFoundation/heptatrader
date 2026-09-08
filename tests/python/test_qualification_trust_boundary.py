@@ -312,6 +312,46 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
             )
             self.assertTrue(any("input SHA controls a checkout" in item for item in boundary.validate(fixture)))
 
+    def test_attested_receipt_steps_are_mandatory_and_pinned(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            for relative in boundary.TRUSTED_FILES:
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            for relative in (boundary.GOVERNANCE, boundary.IB):
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            governance = fixture / boundary.GOVERNANCE
+            governance.write_text(
+                governance.read_text().replace(boundary.ATTEST_ACTION, "actions/attest@v4", 1),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                any("pinned receipt attestation" in item or "missing required" in item
+                    for item in boundary.validate(fixture))
+            )
+
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            for relative in boundary.TRUSTED_FILES:
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            for relative in (boundary.GOVERNANCE, boundary.IB):
+                target = fixture / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(ROOT / relative, target)
+            ib = fixture / boundary.IB
+            text = ib.read_text()
+            start = text.index("      - name: Attest final exact-artifact PAPER receipt")
+            end = text.index("      - name: Upload immutable qualification, admission and attestation evidence")
+            ib.write_text(text[:start] + text[end:], encoding="utf-8")
+            self.assertTrue(
+                any("attestation" in item.lower() for item in boundary.validate(fixture))
+            )
+
     def test_final_receipt_must_follow_post_campaign_admission(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory)
