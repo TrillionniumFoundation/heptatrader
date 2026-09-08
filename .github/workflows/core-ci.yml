@@ -41,11 +41,46 @@ jobs:
 
       - name: Build and run canonical core tests
         env:
+          HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
+      - name: Package and preflight the exact tested install tree
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
+          package="dist/heptatrader-0.1.0-beta.1-core-${EXPECTED_SHA}.tar.gz"
+          python3 scripts/build_release_package.py \
+            --build-dir build/core \
+            --output "$package" \
+            --version 0.1.0-beta.1 \
+            --profile core \
+            --source-sha "$EXPECTED_SHA" \
+            --source-date-epoch "$epoch"
+          digest="$(cut -d' ' -f1 "$package.sha256")"
+          python3 scripts/hepta_preflight.py \
+            --artifact "$package" \
+            --expected-sha256 "$digest" \
+            --profile core \
+            --policy docs/preflight-policy-v1.json \
+            --artifact-only \
+            --output "dist/core-preflight-${EXPECTED_SHA}.json"
+
       - name: Run Python contract tests
         run: python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Upload immutable main-branch core package evidence
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-core-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
 
       - name: Reassert clean exact source
         if: always()
