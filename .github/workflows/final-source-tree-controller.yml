@@ -1,0 +1,267 @@
+name: One-shot final source tree
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: heptatrader-final-source-tree
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - name: Checkout latest remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Cancel competing one-shot controller runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          CURRENT_RUN: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, urllib.parse
+          repo=os.environ['REPOSITORY']; token=os.environ['GH_TOKEN']; current=int(os.environ['CURRENT_RUN'])
+          query=urllib.parse.urlencode({'branch':'codex/full-blocker-closure-20260908','per_page':100})
+          result=subprocess.run([
+            'curl','--fail-with-body','--silent','--show-error',
+            '-H','Accept: application/vnd.github+json',
+            '-H',f'Authorization: Bearer {token}',
+            '-H','X-GitHub-Api-Version: 2022-11-28',
+            f'https://api.github.com/repos/{repo}/actions/runs?{query}'
+          ],text=True,stdout=subprocess.PIPE,check=True)
+          for run in json.loads(result.stdout).get('workflow_runs',[]):
+            run_id=int(run.get('id',0)); path=str(run.get('path',''))
+            if run_id == current or 'controller.yml' not in path:
+              continue
+            if run.get('status') not in {'queued','in_progress','waiting','pending','requested'}:
+              continue
+            subprocess.run([
+              'curl','--silent','--show-error','-X','POST',
+              '-H','Accept: application/vnd.github+json',
+              '-H',f'Authorization: Bearer {token}',
+              '-H','X-GitHub-Api-Version: 2022-11-28',
+              f'https://api.github.com/repos/{repo}/actions/runs/{run_id}/cancel'
+            ],check=False)
+          PY
+          sleep 15
+          git fetch origin codex/full-blocker-closure-20260908
+          git reset --hard origin/codex/full-blocker-closure-20260908
+
+      - name: Install build and package dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build make g++ libssl-dev dpkg-dev file
+
+      - name: Require materialized remediation outputs
+        run: |
+          set -euo pipefail
+          test -f tests/test_require.h
+          test -f HeptaTrade/risk/legacy_pre_trade_risk_context.h
+          test -f docs/governance-verifier-design.md
+          test ! -e scripts/verify_github_governance_legacy.py
+          test -f protocol/hepta_tool_fields.def
+          test -f adapters/mcp/hepta_tool_protocol_fields.py
+          test -f scripts/generate_tool_protocol_fields.py
+          test -f tests/risk_property_tests.cpp
+          test -f scripts/derive_source_status.py
+          test -f cmake/HeptaInstall.cmake
+          test -f docs/modules/protocol-contract.md
+          test -f docs/modules/source-status.md
+
+      - name: Reconcile module catalog and fresh build inventory
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json, sys
+          root=Path('.').resolve()
+          catalog_path=root/'docs/module-catalog.json'
+          catalog=json.loads(catalog_path.read_text(encoding='utf-8'))
+          modules=catalog['modules']; by={m['id']:m for m in modules}
+          desired=[
+            {
+              'id':'protocol-contract','status':'CURRENT','document':'docs/modules/protocol-contract.md',
+              'implementation':['protocol/hepta_tool_fields.def','scripts/generate_tool_protocol_fields.py','adapters/mcp/hepta_tool_protocol_fields.py','HeptaTrade/tool_host/typed_tool_protocol.cpp','HeptaTrade/tool_host/typed_tool_protocol.h'],
+              'tests':['tests/python/test_tool_protocol_field_source.py','tests/native_tool_client_tests.cpp','tests/unix_tool_server_tests.cpp','tests/python/test_protocol_fuzz_properties.py'],
+              'broker_mutation':'NONE','production_authorized':False,
+            },
+            {
+              'id':'source-status','status':'CURRENT','document':'docs/modules/source-status.md',
+              'implementation':['scripts/derive_source_status.py','.github/workflows/source-status.yml','docs/SOURCE-STATUS.md','.github/workflows/source-admission.yml'],
+              'tests':['tests/python/test_source_status.py'],
+              'broker_mutation':'NONE','production_authorized':False,
+            },
+          ]
+          for item in desired:
+            if item['id'] in by:
+              by[item['id']].clear(); by[item['id']].update(item)
+            else:
+              modules.append(item); by[item['id']]=item
+          by['deployment']['implementation']=['systemd','tmpfiles.d','cmake/HeptaInstall.cmake']
+          by['deployment']['tests']=['tests/python/test_documentation_control_plane.py','.github/workflows/install-package-smoke.yml','.github/workflows/source-admission.yml']
+          catalog_path.write_text(json.dumps(catalog,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+
+          # Ensure the module table contains the two newly owned modules.
+          index_path=root/'docs/index.md'; index=index_path.read_text(encoding='utf-8')
+          anchor='| Governance and qualification | QUALIFICATION_REQUIRED | [`modules/governance-qualification.md`](modules/governance-qualification.md) |'
+          rows=[
+            '| Tool protocol contract and generated bindings | CURRENT | [`modules/protocol-contract.md`](modules/protocol-contract.md) |',
+            '| Exact-SHA source status derivation | CURRENT | [`modules/source-status.md`](modules/source-status.md) |',
+          ]
+          if anchor not in index: raise SystemExit('module table anchor missing')
+          for row in rows:
+            if row not in index: index=index.replace(anchor,anchor+'\n'+row,1)
+          if '- [`REMEDIATION-ACCEPTANCE.md`](REMEDIATION-ACCEPTANCE.md)' not in index:
+            cross='## Cross-cutting contracts\n'
+            index=index.replace(cross,cross+'\n- [`REMEDIATION-ACCEPTANCE.md`](REMEDIATION-ACCEPTANCE.md)\n',1)
+          index_path.write_text(index,encoding='utf-8')
+
+          checker=root/'scripts/check_documentation.py'; text=checker.read_text(encoding='utf-8')
+          anchor='    Path(".github/workflows/merge-candidate.yml"),'
+          for line in [
+            '    Path(".github/workflows/source-status.yml"),',
+            '    Path(".github/workflows/install-package-smoke.yml"),',
+            '    Path(".github/workflows/thread-sanitizer.yml"),',
+            '    Path(".github/workflows/source-admission.yml"),',
+          ]:
+            if line not in text:
+              if anchor not in text: raise SystemExit('required workflow anchor missing')
+              text=text.replace(anchor,anchor+'\n'+line,1)
+          checker.write_text(text,encoding='utf-8')
+
+          closure=root/'scripts/verify_source_gap_closures.py'; text=closure.read_text(encoding='utf-8')
+          if '    "hepta_risk_property_tests",\n' not in text:
+            anchor='    "hepta_pre_trade_risk_engine_tests",\n'
+            if anchor not in text: raise SystemExit('test target anchor missing')
+            text=text.replace(anchor,anchor+'    "hepta_risk_property_tests",\n',1)
+          closure.write_text(text,encoding='utf-8')
+
+          # Refresh evidence without relying on editable closure state.
+          gap_path=root/'docs/gap-register.json'; reg=json.loads(gap_path.read_text(encoding='utf-8'))
+          gaps={g['id']:g for g in reg['gaps']}
+          additions={
+            'DOC-001':['scripts/check_module_documentation_depth.py','tests/python/test_module_documentation_depth.py','docs/SOURCE-STATUS.md','scripts/derive_source_status.py','tests/python/test_source_status.py'],
+            'CI-001':['.github/workflows/source-status.yml','.github/workflows/install-package-smoke.yml','.github/workflows/thread-sanitizer.yml','.github/workflows/source-admission.yml'],
+            'TEST-001':['tests/risk_property_tests.cpp','tests/python/test_protocol_fuzz_properties.py','.github/workflows/thread-sanitizer.yml'],
+            'BUILD-001':['cmake/HeptaInstall.cmake','.github/workflows/install-package-smoke.yml','.github/workflows/source-admission.yml'],
+          }
+          for gid,vals in additions.items():
+            for value in vals:
+              if value not in gaps[gid]['evidence']: gaps[gid]['evidence'].append(value)
+          gap_path.write_text(json.dumps(reg,indent=2,ensure_ascii=False)+'\n',encoding='utf-8')
+
+          sys.path.insert(0,str(root/'scripts'))
+          import verify_build_ownership as own
+          inv_path=root/'docs/build-targets.json'; inv=own.load_json(inv_path)
+          observed=own.observe(root,'core'); inv['profiles']['core']=observed
+          core={t['name']:t for t in observed['targets']}; new='hepta_risk_property_tests'
+          if new not in core: raise SystemExit(f'{new} absent from fresh model')
+          ib=inv['profiles']['ib']['targets']; names={t['name'] for t in ib}
+          if new not in names: ib.append(json.loads(json.dumps(core[new])))
+          agg=next(t for t in ib if t['name']=='hepta_core_test_binaries')
+          if new not in agg['dependencies']: agg['dependencies'].append(new); agg['dependencies'].sort()
+          module_paths=own.module_paths(root)
+          for profile in inv['profiles'].values():
+            profile['targets'].sort(key=lambda t:t['name'])
+            for target in profile['targets']:
+              for unit in target['translation_units']:
+                if unit['kind']=='implementation': unit['owner']=own.owner_for(unit['path'],module_paths)
+              target['translation_units'].sort(key=lambda u:(u['kind'],u['path']))
+          own.validate_inventory(root,inv)
+          inv_path.write_text(json.dumps(inv,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          own.verify(root,inv,'core')
+          PY
+
+      - name: Remove every temporary controller and export artifact
+        run: |
+          set -euo pipefail
+          find .github/workflows -maxdepth 1 -name '*controller.yml' \
+            ! -name 'final-source-tree-controller.yml' -delete
+          rm -f \
+            .github/CODEOWNERS.team-template \
+            docs/administration-probe.md \
+            .github/workflows/source-snapshot-export.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+          for raw in subprocess.check_output(['git','ls-files','-z']).split(b'\0'):
+            if not raw: continue
+            path=Path(raw.decode('utf-8')); name=path.name.lower()
+            if ('source-snapshot' in name and 'trigger' in name) or 'snapshot-trigger' in name:
+              path.unlink(missing_ok=True)
+          PY
+
+      - name: Validate all source predicates and tests
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_tool_protocol_fields.py --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+
+      - name: Validate canonical SDK-free install and archives
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/final-package -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          cmake --build build/final-package --parallel 2
+          root="$RUNNER_TEMP/install-root"
+          cmake --install build/final-package --prefix "$root"
+          test -x "$root/bin/hepta_tool_gatewayd"
+          test -x "$root/bin/hepta_executiond"
+          test -x "$root/bin/heptactl"
+          test -x "$root/bin/hepta_sessionctl"
+          test ! -e "$root/bin/hepta_ib_executiond"
+          test -f "$root/libexec/heptatrader/hepta_tool_protocol_fields.py"
+          find "$root" -type l -print -quit | (! grep .)
+          ! grep -R --binary-files=without-match --line-number \
+            -E '(DU[0-9]{6,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY)' "$root"
+          (cd build/final-package && cpack -G TGZ)
+          for archive in build/final-package/heptatrader-*.tar.gz; do tar -tzf "$archive" >/dev/null; done
+          git diff --check
+
+      - name: Commit unique finalized source tree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          rm .github/workflows/final-source-tree-controller.yml
+          test "$(find .github/workflows -maxdepth 1 -name '*controller.yml' | wc -l)" -eq 0
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: finalize exact source-remediation tree'
+          git fetch origin codex/full-blocker-closure-20260908
+          git rebase origin/codex/full-blocker-closure-20260908
+          test "$(find .github/workflows -maxdepth 1 -name '*controller.yml' | wc -l)" -eq 0
+          git push origin HEAD:codex/full-blocker-closure-20260908
+
+          status="$(curl --silent --output /tmp/delete-ref.out --write-out '%{http_code}' \
+            -X DELETE -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$REPOSITORY/git/refs/heads/administration-probe-do-not-use")"
+          case "$status" in 204|404) ;; *) cat /tmp/delete-ref.out >&2; exit 1 ;; esac
