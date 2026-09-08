@@ -1,0 +1,143 @@
+name: One-shot test assertion migration
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-assert-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Replace side-effecting assert calls with an always-on test primitive
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          header = root / 'tests/test_require.h'
+          header.write_text(r'''#pragma once
+
+#include <cstdlib>
+#include <iostream>
+
+inline void HeptaTestRequireFailure(
+    const char* expression, const char* file, int line)
+{
+    std::cerr << file << ':' << line
+              << ": test requirement failed: " << expression << std::endl;
+    std::abort();
+}
+
+#define HEPTA_REQUIRE(expression)                                      \
+    do {                                                               \
+        if (!(expression))                                             \
+            HeptaTestRequireFailure(#expression, __FILE__, __LINE__);  \
+    } while (false)
+''', encoding='utf-8')
+
+          replacements = 0
+          touched = []
+          for path in sorted((root / 'tests').rglob('*')):
+              if not path.is_file() or path.suffix not in {'.cpp', '.h'}:
+                  continue
+              if path == header:
+                  continue
+              text = path.read_text(encoding='utf-8')
+              count = text.count('assert(')
+              if not count:
+                  continue
+              path.write_text(text.replace('assert(', 'HEPTA_REQUIRE('), encoding='utf-8')
+              replacements += count
+              touched.append(path.as_posix())
+
+          if replacements < 20:
+              raise SystemExit(
+                  f'expected at least 20 historical assert calls, found {replacements}'
+              )
+
+          cmake = root / 'tests/CMakeLists.txt'
+          text = cmake.read_text(encoding='utf-8')
+          old = '''    # The historical tests intentionally use assert() as both an invariant and
+    # an expression-evaluation boundary (for example assert(server.Start())).
+    # Release/RelWithDebInfo define NDEBUG globally, which would erase those
+    # calls and turn the suite into undefined follow-on behavior. Keep test
+    # semantics independent of the production optimization configuration.
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
+'''
+          new = '''    # Test requirements are always evaluated, independent of NDEBUG.  Force the
+    # tiny local primitive into every test translation unit so an assertion can
+    # never erase a function call in optimized builds.
+    if(MSVC)
+        target_compile_options(${target} PRIVATE
+            /FI${CMAKE_CURRENT_SOURCE_DIR}/test_require.h)
+    else()
+        target_compile_options(${target} PRIVATE
+            -include ${CMAKE_CURRENT_SOURCE_DIR}/test_require.h)
+    endif()
+'''
+          if old not in text:
+              raise SystemExit('tests/CMakeLists.txt assertion block changed unexpectedly')
+          cmake.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          report = root / 'docs/test-assertion-migration.md'
+          report.write_text(
+              '# Always-on test requirements\n\n'
+              'Status: CURRENT  \n'
+              'Applies to: canonical C++ test targets\n\n'
+              '`HEPTA_REQUIRE` replaces historical uses of C `assert` in tests. '
+              'The expression is evaluated in Debug and optimized builds, so '
+              'calls such as server startup cannot disappear under `NDEBUG`. '
+              'The primitive aborts with the expression, file, and line and is '
+              'force-included only for test targets. Production targets do not '
+              'link or include it.\n\n'
+              f'Migration replaced {replacements} calls across {len(touched)} files.\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Validate migrated test suite
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          git diff --check
+
+      - name: Commit verified migration and remove controller
+        run: |
+          set -euo pipefail
+          rm .github/workflows/assert-migration-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test: make every C++ assertion expression always-on'
+          git push origin HEAD:codex/full-blocker-closure-20260908
