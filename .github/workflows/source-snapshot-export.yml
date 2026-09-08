@@ -33,7 +33,13 @@ jobs:
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           archive="$RUNNER_TEMP/heptatrader-source-$EXPECTED_SHA.tar.gz"
           manifest="$RUNNER_TEMP/heptatrader-source-$EXPECTED_SHA.sha256"
-          tar --exclude=.git --exclude='build*' -czf "$archive" .
+          tar \
+            --exclude='./.git' \
+            --exclude='./build' \
+            --exclude='./build/**' \
+            --exclude='./build-*' \
+            --exclude='./build-*/**' \
+            -czf "$archive" .
           sha256sum "$archive" > "$manifest"
           test -s "$archive"
           test -s "$manifest"
