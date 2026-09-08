@@ -45,6 +45,12 @@ Broker `Filled` text alone is not economic fill proof when the venue contract re
 
 `OmsRecover` is a lightweight compatibility projection used by legacy reconciliation and selected tests. It is not the complete canonical PAPER recovery authority.
 
+## Security and trust boundary
+
+Only the broker-owning Execution identity may append canonical mutation and broker-evidence records. Agent, Gateway, strategy and research processes may refer to command or journal sequence identities, but they may not open, replace, truncate or reinterpret the journal. The state directory, journal file and temporary replacement paths must preserve expected owner, mode, link count and inode identity across every write.
+
+Journal evidence is necessary but not sufficient for broker truth. A syntactically valid record cannot manufacture an execution, a protected qualification receipt or a complete authoritative venue snapshot. Recovery combines the durable ledger with independently refreshed venue state, and any disagreement remains uncertain or blocked rather than choosing the more permissive interpretation.
+
 ## Failure semantics
 
 - Append/open/fsync failure before external send: reject and close mutation admission if durability is no longer trustworthy.
@@ -60,3 +66,7 @@ Expose append latency, fsync latency, file size, replay duration, records read, 
 ## Test expectations
 
 Tests inject path replacement and I/O failure, verify synchronous critical durability, callback-atomic replay, same-command replay, conflicting-command rejection, malformed records, restart recovery, and complete v4 broker-field round trips. New schema fields require both old-fixture and current-writer tests.
+
+## Known limitations
+
+The append-only JSONL journal is optimized for correctness and auditability, not high-volume market-data storage or arbitrary analytics. Retention, archival, compaction and disaster-recovery policy remain deployment responsibilities and must preserve command identity and unresolved-send evidence. `OmsRecover` remains a legacy compatibility projection and should not be expanded into a second canonical recovery authority.
