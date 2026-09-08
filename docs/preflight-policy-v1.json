@@ -8,9 +8,9 @@
     "core": {
       "required_package_paths": [
         "bin/hepta-executiond",
+        "bin/hepta-preflight",
         "bin/hepta-sessionctl",
         "bin/hepta-tool-gatewayd",
-        "bin/hepta-preflight",
         "bin/heptactl",
         "lib/systemd/system/hepta-execution-simulator.service",
         "share/doc/heptatrader/index.md",
@@ -22,9 +22,9 @@
     "ib-paper": {
       "required_package_paths": [
         "bin/hepta-ib-executiond",
+        "bin/hepta-preflight",
         "bin/hepta-sessionctl",
         "bin/hepta-tool-gatewayd",
-        "bin/hepta-preflight",
         "bin/heptactl",
         "lib/systemd/system/hepta-broker-egress-policy.service",
         "lib/systemd/system/hepta-execution-ib-paper.service",
