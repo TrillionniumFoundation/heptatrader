@@ -1,0 +1,99 @@
+name: Codex Apply Source Remediation
+
+on:
+  push:
+    branches: [codex/close-source-blockers-2026-09-08]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-apply-heptatrader-source-remediation
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: "${{ github.event.head_commit.message == 'chore: stage source blocker payload' }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact staging commit without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Verify and apply the content-addressed overlay
+        env:
+          EXPECTED_ARCHIVE_SHA256: 867e7116af14a5b379276bab3f3496ddeeb5506b254b35261b7ab33e458b3385
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_NAME" = 'codex/close-source-blockers-2026-09-08'
+          mapfile -t parts < <(find .codex/remediation-v2 -maxdepth 1 -type f -name 'part-*' -print | sort)
+          test "${#parts[@]}" -eq 40
+          cat "${parts[@]}" | base64 --decode > "$RUNNER_TEMP/remediation.tar.gz"
+          printf '%s  %s\n' "$EXPECTED_ARCHIVE_SHA256" "$RUNNER_TEMP/remediation.tar.gz" | sha256sum --check --strict
+          mkdir "$RUNNER_TEMP/remediation-overlay"
+          python3 - "$RUNNER_TEMP/remediation.tar.gz" "$RUNNER_TEMP/remediation-overlay" <<'PY'
+          from pathlib import Path, PurePosixPath
+          import sys
+          import tarfile
+
+          archive = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+          with tarfile.open(archive, "r:gz") as stream:
+              members = stream.getmembers()
+              if not members:
+                  raise SystemExit("empty remediation archive")
+              names = set()
+              for member in members:
+                  name = member.name[2:] if member.name.startswith("./") else member.name
+                  path = PurePosixPath(name)
+                  if (not name or path.is_absolute() or ".." in path.parts or
+                          not member.isfile() or name in names):
+                      raise SystemExit(f"unsafe remediation member: {member.name}")
+                  names.add(name)
+              stream.extractall(destination, filter="data")
+          PY
+          cp -a "$RUNNER_TEMP/remediation-overlay/." .
+          rm -rf .codex .github/workflows/codex-apply-remediation.yml
+          chmod 0755 scripts/build_release_bundle.sh scripts/hepta_preflight.py scripts/verify_release_bundle.py
+          git diff --check
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Run structural, Python and canonical core validation
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          bash -n scripts/build_release_bundle.sh
+          python3 scripts/hepta_preflight.py --self-test
+          python3 scripts/verify_release_bundle.py --self-test
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+
+      - name: Commit verified remediation
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git status --porcelain=v1)"
+          git commit -m 'release: add immutable bundle and machine-readable preflight'
+
+      - name: Push only the verified branch result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
