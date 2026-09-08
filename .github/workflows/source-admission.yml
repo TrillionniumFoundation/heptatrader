@@ -1,0 +1,123 @@
+name: Exact Source Admission
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-source-admission-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  source-admission:
+    name: source-admission-exact-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install validation and package dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build make g++ libssl-dev dpkg-dev file
+
+      - name: Reject migration and export scaffolding
+        run: |
+          set -euo pipefail
+          test "$(find .github/workflows -maxdepth 1 -name '*controller.yml' | wc -l)" -eq 0
+          test ! -e .github/workflows/source-snapshot-export.yml
+          test ! -e .github/CODEOWNERS.team-template
+          test ! -e docs/administration-probe.md
+          test ! -e scripts/verify_github_governance_legacy.py
+          test "$(python3 - <<'PY'
+          import json
+          print(len(json.load(open('docs/module-catalog.json'))['modules']))
+          PY
+          )" -eq 16
+
+      - name: Validate source truth and generated bindings
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_tool_protocol_fields.py --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Build and run canonical core
+        env:
+          HEPTA_JOBS: '2'
+        run: ./scripts/dev_core.sh
+
+      - name: Validate SDK-free install and packages
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/admission-package -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          cmake --build build/admission-package --parallel 2
+          root="$RUNNER_TEMP/install-root"
+          cmake --install build/admission-package --prefix "$root"
+          test -x "$root/bin/hepta_tool_gatewayd"
+          test -x "$root/bin/hepta_executiond"
+          test -x "$root/bin/heptactl"
+          test -x "$root/bin/hepta_sessionctl"
+          test ! -e "$root/bin/hepta_ib_executiond"
+          test -f "$root/libexec/heptatrader/hepta_tool_protocol_fields.py"
+          find "$root" -type l -print -quit | (! grep .)
+          ! grep -R --binary-files=without-match --line-number \
+            -E '(DU[0-9]{6,}|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY)' "$root"
+          (cd build/admission-package && cpack -G TGZ)
+          for archive in build/admission-package/heptatrader-*.tar.gz; do
+            tar -tzf "$archive" >/dev/null
+          done
+
+      - name: Derive exact-SHA source receipt
+        run: |
+          python3 scripts/derive_source_status.py \
+            --output "$RUNNER_TEMP/source-admission.json"
+
+      - name: Upload source-admission receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-admission-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/source-admission.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Reassert clean exact source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
