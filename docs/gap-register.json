@@ -83,7 +83,7 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Worst-case generic risk includes authoritative pending buy and sell notional; the qualifying IB PAPER profile additionally remains restricted to one active order and one CASH contract.",
+      "summary": "Worst-case generic risk includes authoritative pending buy and sell notional. Simulator flatten-only admission also reserves reducible quantity across unresolved same-direction orders, including inactive and cancel-pending orders, with a fill-time zero-boundary check across policy changes; the qualifying IB PAPER profile remains restricted to one active order and one CASH contract.",
       "evidence": [
         "HeptaTrade/risk/pre_trade_risk_engine.cpp",
         "tests/pre_trade_risk_engine_tests.cpp",
@@ -92,7 +92,10 @@
         "tests/python/test_canonical_ib_paper_profile.py",
         "systemd/hepta-execution-ib-paper.env.example",
         "scripts/verify_source_gap_closures.py",
-        "tests/python/test_gap_register.py"
+        "tests/python/test_gap_register.py",
+        "HeptaTrade/simulator/deterministic_execution_venue.cpp",
+        "tests/simulator_risk_runtime_tests.cpp",
+        "docs/modules/simulator.md"
       ],
       "issue": null
     },

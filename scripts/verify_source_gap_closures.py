@@ -216,6 +216,18 @@ def validate_risk(root: Path) -> list[str]:
         "RISK-001",
         errors,
     )
+    require_tokens(
+        root,
+        "HeptaTrade/simulator/deterministic_execution_venue.cpp",
+        (
+            "flattenCapacityReserved",
+            "SIM_FLATTEN_RESERVATION_INCONSISTENT",
+            "reducesWithoutCrossing",
+            'order.terminalStatus = "Rejected"',
+        ),
+        "RISK-001",
+        errors,
+    )
     tests = require_tokens(
         root,
         "tests/pre_trade_risk_engine_tests.cpp",
@@ -237,6 +249,18 @@ def validate_risk(root: Path) -> list[str]:
         errors.append(
             "PENDING-EXPOSURE-001: pending exposure hostile regression is missing"
         )
+    require_tokens(
+        root,
+        "tests/simulator_risk_runtime_tests.cpp",
+        (
+            "TestFlattenCapacityReservations",
+            "TestFlattenCancellationAndStrictRemainder",
+            "TestFlattenPolicyTransitionsAndFillBoundary",
+            "two exact exits must not both reserve ten units",
+        ),
+        "RISK-001",
+        errors,
+    )
     return errors
 
 
