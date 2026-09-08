@@ -1,0 +1,236 @@
+name: One-shot risk property-test repair
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-risk-property-test-repair
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Materialize corrected deterministic properties
+        run: |
+          cat > tests/risk_property_tests.cpp <<'CPP'
+          #include "risk/pre_trade_risk_engine.h"
+
+          #include <cmath>
+          #include <cstdint>
+          #include <limits>
+          #include <random>
+          #include <string>
+
+          namespace {
+          PreTradeRiskConfig Config()
+          {
+              PreTradeRiskConfig config;
+              config.enableOrderSubmission = true;
+              config.flattenOnly = true;
+              config.maxOrderQuantity = 1000000.0;
+              config.maxDailyOrders = 1000000;
+              config.maxPriceDeviationBps = 0.0;
+              return config;
+          }
+
+          PreTradeRiskContext Context(double position, double quantity,
+                                      const std::string& action)
+          {
+              PreTradeRiskContext context;
+              context.venue = "SIM";
+              context.account = "PROPERTY";
+              context.symbol = "EUR.USD";
+              context.action = action;
+              context.orderType = "MKT";
+              context.totalQuantity = quantity;
+              context.limitPrice = 0.0;
+              context.referencePrice = 1.0;
+              context.todayOrderCount = 0;
+              context.accountWhitelisted = true;
+              context.paperAccount = true;
+              context.positionKnown = true;
+              context.netPosition = position;
+              return context;
+          }
+
+          void CheckLongProperties(std::mt19937_64& random)
+          {
+              std::uniform_int_distribution<std::uint64_t> units(1, 1000000000ULL);
+              for (int iteration = 0; iteration < 20000; ++iteration)
+              {
+                  const std::uint64_t positionUnits = units(random);
+                  const double position = static_cast<double>(positionUnits) / 1000.0;
+                  std::uniform_int_distribution<std::uint64_t> reducible(1, positionUnits);
+                  const double quantity = static_cast<double>(reducible(random)) / 1000.0;
+                  const PreTradeRiskDecision decision =
+                      PreTradeRiskEngine::Evaluate(
+                          Config(), Context(position, quantity, "SELL"));
+                  HEPTA_REQUIRE(decision.allow);
+                  const double after = position - quantity;
+                  HEPTA_REQUIRE(std::isfinite(after));
+                  HEPTA_REQUIRE(after >= 0.0);
+                  HEPTA_REQUIRE(after < position);
+
+                  const double crossing = position +
+                      static_cast<double>((units(random) % 1000ULL) + 1ULL) / 1000.0;
+                  const PreTradeRiskDecision rejected =
+                      PreTradeRiskEngine::Evaluate(
+                          Config(), Context(position, crossing, "SELL"));
+                  HEPTA_REQUIRE(!rejected.allow);
+                  HEPTA_REQUIRE(rejected.reasonCode == "RISK_FLATTEN_ONLY_BLOCK");
+              }
+          }
+
+          void CheckShortProperties(std::mt19937_64& random)
+          {
+              std::uniform_int_distribution<std::uint64_t> units(1, 1000000000ULL);
+              for (int iteration = 0; iteration < 20000; ++iteration)
+              {
+                  const std::uint64_t positionUnits = units(random);
+                  const double magnitude = static_cast<double>(positionUnits) / 1000.0;
+                  const double position = -magnitude;
+                  std::uniform_int_distribution<std::uint64_t> reducible(1, positionUnits);
+                  const double quantity = static_cast<double>(reducible(random)) / 1000.0;
+                  const PreTradeRiskDecision decision =
+                      PreTradeRiskEngine::Evaluate(
+                          Config(), Context(position, quantity, "BUY"));
+                  HEPTA_REQUIRE(decision.allow);
+                  const double after = position + quantity;
+                  HEPTA_REQUIRE(std::isfinite(after));
+                  HEPTA_REQUIRE(after <= 0.0);
+                  HEPTA_REQUIRE(after > position);
+
+                  const double crossing = magnitude +
+                      static_cast<double>((units(random) % 1000ULL) + 1ULL) / 1000.0;
+                  const PreTradeRiskDecision rejected =
+                      PreTradeRiskEngine::Evaluate(
+                          Config(), Context(position, crossing, "BUY"));
+                  HEPTA_REQUIRE(!rejected.allow);
+                  HEPTA_REQUIRE(rejected.reasonCode == "RISK_FLATTEN_ONLY_BLOCK");
+              }
+          }
+
+          void CheckInvalidNumerics()
+          {
+              const double nan = std::numeric_limits<double>::quiet_NaN();
+              const double infinity = std::numeric_limits<double>::infinity();
+              for (double value : {nan, infinity, -infinity})
+              {
+                  HEPTA_REQUIRE(!PreTradeRiskEngine::Evaluate(
+                      Config(), Context(10.0, value, "SELL")).allow);
+                  HEPTA_REQUIRE(!PreTradeRiskEngine::Evaluate(
+                      Config(), Context(value, 1.0, "SELL")).allow);
+              }
+          }
+
+          void CheckInclusiveMaximum()
+          {
+              PreTradeRiskConfig config = Config();
+              config.flattenOnly = false;
+              config.maxOrderQuantity = 10.0;
+              PreTradeRiskContext context = Context(0.0, 10.0, "BUY");
+              context.positionKnown = false;
+              const PreTradeRiskDecision atLimit =
+                  PreTradeRiskEngine::Evaluate(config, context);
+              HEPTA_REQUIRE(atLimit.allow);
+              context.totalQuantity = std::nextafter(
+                  10.0, std::numeric_limits<double>::infinity());
+              const PreTradeRiskDecision aboveLimit =
+                  PreTradeRiskEngine::Evaluate(config, context);
+              HEPTA_REQUIRE(!aboveLimit.allow);
+              HEPTA_REQUIRE(aboveLimit.reasonCode == "RISK_QTY_OUT_OF_RANGE");
+          }
+          }
+
+          int main()
+          {
+              std::mt19937_64 random(0x4845505441524953ULL);
+              CheckLongProperties(random);
+              CheckShortProperties(random);
+              CheckInvalidNumerics();
+              CheckInclusiveMaximum();
+              return 0;
+          }
+          CPP
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cmake = Path('tests/CMakeLists.txt')
+          text = cmake.read_text(encoding='utf-8')
+          target = '''add_executable(hepta_risk_property_tests
+    risk_property_tests.cpp
+    ../HeptaTrade/risk/pre_trade_risk_engine.cpp)
+hepta_register_core_test(hepta_risk_property_tests)
+set_tests_properties(hepta_risk_property_tests PROPERTIES TIMEOUT 30)
+'''
+          if target not in text:
+              anchor = '''add_executable(hepta_venue_capability_tests
+    venue_capability_tests.cpp
+    ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
+    ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
+hepta_register_core_test(hepta_venue_capability_tests)
+'''
+              if anchor not in text:
+                  raise SystemExit('venue capability target anchor changed')
+              text = text.replace(anchor, anchor + '\n' + target, 1)
+              cmake.write_text(text, encoding='utf-8')
+
+          doc = Path('docs/modules/risk-engine.md')
+          text = doc.read_text(encoding='utf-8')
+          note = (
+              'A deterministic property suite samples 20,000 long and 20,000 '
+              'short reductions, proves every admitted flatten remains on the '
+              'original side of zero, rejects every sampled crossing, checks '
+              'non-finite values, and verifies inclusive maximum semantics.\n\n'
+          )
+          if note not in text:
+              marker = '## Test expectations\n'
+              if marker not in text:
+                  raise SystemExit('risk documentation test anchor changed')
+              text = text.replace(marker, marker + '\n' + note, 1)
+              doc.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Validate corrected property suite
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          git diff --check
+
+      - name: Commit verified suite and remove both controllers
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/risk-property-test-controller.yml \
+            .github/workflows/risk-property-test-repair-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'test: add deterministic pre-trade risk properties'
+          git push origin HEAD:codex/full-blocker-closure-20260908
