@@ -1,0 +1,336 @@
+name: One-shot governance verifier consolidation
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-governance-verifier-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Consolidate verifier into one auditable module
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+          legacy_path = root / 'scripts/verify_github_governance_legacy.py'
+          entry_path = root / 'scripts/verify_github_governance.py'
+          legacy = legacy_path.read_text(encoding='utf-8')
+
+          # Remove only the legacy command-line epilogue. All public parsing,
+          # validation and receipt helpers remain in the canonical module.
+          legacy, count = re.subn(
+              r'\nif __name__ == ["\']__main__["\']:\n\s+raise SystemExit\(main\(\)\)\s*\Z',
+              '\n', legacy, count=1,
+          )
+          if count != 1:
+              raise SystemExit('legacy verifier epilogue changed unexpectedly')
+
+          hardened = r'''
+
+# Hardened default-branch ruleset scope validation.  This lives in the same
+# module as the complete verifier so source review, type checking and coverage
+# follow ordinary Python control flow; no immutable sibling load or monkey
+# patch is involved.
+from fnmatch import fnmatchcase as _scope_fnmatchcase
+import tempfile as _scope_tempfile
+
+_LAST_RULESET_SCOPE: dict[str, Any] | None = None
+
+
+def _canonical_ref_patterns(
+    value: Any,
+    label: str,
+    errors: list[str],
+    *,
+    allow_empty: bool,
+) -> list[str] | None:
+    if not isinstance(value, list):
+        errors.append(f"{label}: expected array")
+        return None
+    if not value and not allow_empty:
+        errors.append(f"{label}: must not be empty")
+        return None
+    result: list[str] = []
+    for position, item in enumerate(value):
+        if not isinstance(item, str) or not item:
+            errors.append(f"{label}[{position}]: expected non-empty string")
+        elif item in result:
+            errors.append(f"{label}: duplicate ref pattern {item}")
+        else:
+            result.append(item)
+    return result
+
+
+def _ref_pattern_excludes_default(pattern: str, default_branch: str) -> bool:
+    """Conservatively reject every exclusion that can remove the default ref."""
+    full_ref = f"refs/heads/{default_branch}"
+    if pattern in {"~ALL", "~DEFAULT_BRANCH", full_ref, default_branch}:
+        return True
+    if pattern == "~NON_DEFAULT_BRANCH":
+        return False
+    if pattern.startswith("~"):
+        return True
+    return _scope_fnmatchcase(full_ref, pattern) or _scope_fnmatchcase(
+        default_branch, pattern
+    )
+
+
+def _ruleset_ref_condition_projection(
+    ruleset: dict[str, Any], default_branch: str
+) -> dict[str, Any]:
+    ref_name = ruleset["conditions"]["ref_name"]
+    return {
+        "effective_default_ref": f"refs/heads/{default_branch}",
+        "include": sorted(ref_name["include"]),
+        "exclude": sorted(ref_name["exclude"]),
+        "default_branch_effectively_included": True,
+    }
+
+
+def _main_ruleset(
+    policy: dict[str, Any], rulesets: Any, errors: list[str]
+) -> dict[str, Any] | None:
+    global _LAST_RULESET_SCOPE
+    _LAST_RULESET_SCOPE = None
+    if not isinstance(rulesets, list):
+        errors.append("rulesets: expected array")
+        return None
+    expected = policy["ruleset"]
+    default_branch = policy.get("default_branch")
+    if not isinstance(default_branch, str) or not default_branch:
+        errors.append("policy.default_branch: expected non-empty string")
+        return None
+    accepted_refs = set(expected["accepted_ref_includes"])
+    candidates: list[dict[str, Any]] = []
+    for position, item in enumerate(rulesets):
+        if not isinstance(item, dict):
+            errors.append(f"rulesets[{position}]: expected object")
+            continue
+        if (
+            item.get("target") != expected["target"]
+            or item.get("enforcement") != expected["enforcement"]
+        ):
+            continue
+        ruleset_id = item.get("id", position)
+        conditions = item.get("conditions")
+        ref_name = conditions.get("ref_name") if isinstance(conditions, dict) else None
+        if not isinstance(ref_name, dict):
+            errors.append(f"ruleset {ruleset_id}: conditions.ref_name must be an object")
+            continue
+        includes = _canonical_ref_patterns(
+            ref_name.get("include"),
+            f"ruleset {ruleset_id}.conditions.ref_name.include",
+            errors,
+            allow_empty=False,
+        )
+        excludes = _canonical_ref_patterns(
+            ref_name.get("exclude"),
+            f"ruleset {ruleset_id}.conditions.ref_name.exclude",
+            errors,
+            allow_empty=True,
+        )
+        if includes is None or excludes is None:
+            continue
+        if not accepted_refs.intersection(includes):
+            continue
+        matching = sorted(
+            pattern
+            for pattern in excludes
+            if _ref_pattern_excludes_default(pattern, default_branch)
+        )
+        if matching:
+            errors.append(
+                f"ruleset {ruleset_id}: ref condition excludes protected default branch "
+                f"refs/heads/{default_branch}: {matching}"
+            )
+            continue
+        candidates.append(item)
+    if len(candidates) != 1:
+        errors.append(
+            "rulesets: expected exactly one active branch ruleset effectively targeting "
+            f"main/default; found {len(candidates)}"
+        )
+        return None
+    selected = candidates[0]
+    _LAST_RULESET_SCOPE = _ruleset_ref_condition_projection(selected, default_branch)
+    return selected
+
+
+def _self_test_ruleset_scope() -> bool:
+    policy = {
+        "default_branch": "main",
+        "ruleset": {
+            "target": "branch",
+            "enforcement": "active",
+            "accepted_ref_includes": ["~DEFAULT_BRANCH", "refs/heads/main"],
+        },
+    }
+    base = {
+        "id": 42,
+        "target": "branch",
+        "enforcement": "active",
+        "conditions": {"ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}},
+    }
+    for pattern in (
+        "refs/heads/main", "~DEFAULT_BRANCH", "~ALL", "main",
+        "refs/heads/m*", "refs/heads/**", "**/main", "~UNKNOWN_SELECTOR",
+    ):
+        candidate = json.loads(json.dumps(base))
+        candidate["conditions"]["ref_name"]["exclude"] = [pattern]
+        errors: list[str] = []
+        if _main_ruleset(policy, [candidate], errors) is not None:
+            raise AssertionError(f"default-branch exclusion was accepted: {pattern}")
+        if not any("excludes protected default branch" in error for error in errors):
+            raise AssertionError(f"default-branch exclusion lacked a hard error: {pattern}")
+    candidate = json.loads(json.dumps(base))
+    candidate["conditions"]["ref_name"]["exclude"] = ["refs/heads/release/**"]
+    errors = []
+    if _main_ruleset(policy, [candidate], errors) is None or errors:
+        raise AssertionError(f"nonmatching exclusion was rejected: {errors}")
+    return True
+
+
+RULESET_SCOPE_SELF_TEST_PASSED = _self_test_ruleset_scope()
+_LEGACY_MAIN = main
+
+
+def _rewrite_output_argument(argv: list[str], replacement: str) -> tuple[list[str], Path]:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--output", required=True, type=Path)
+    known, _ = parser.parse_known_args(argv)
+    rewritten = list(argv)
+    index = rewritten.index("--output")
+    rewritten[index + 1] = replacement
+    return rewritten, known.output
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _LAST_RULESET_SCOPE
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments == ["--self-test"]:
+        _self_test_ruleset_scope()
+        print("[GITHUB-GOVERNANCE-SCOPE] PASS")
+        return 0
+    with _scope_tempfile.TemporaryDirectory(
+        prefix="hepta-governance-scope-"
+    ) as directory:
+        temporary_receipt = Path(directory) / "core-receipt.json"
+        rewritten, output = _rewrite_output_argument(arguments, str(temporary_receipt))
+        _LAST_RULESET_SCOPE = None
+        result = _LEGACY_MAIN(rewritten)
+        if result != 0:
+            return result
+        scope = _LAST_RULESET_SCOPE
+        if scope is None:
+            print(
+                "[GITHUB-GOVERNANCE] effective ruleset scope was not retained",
+                file=sys.stderr,
+            )
+            return 1
+        receipt = json.loads(
+            temporary_receipt.read_text(encoding="utf-8"),
+            object_pairs_hook=strict_object_pairs,
+        )
+        body = receipt.get("body") if isinstance(receipt, dict) else None
+        if not isinstance(body, dict):
+            print("[GITHUB-GOVERNANCE] receipt body is invalid", file=sys.stderr)
+            return 1
+        body["ruleset_ref_condition"] = scope
+        body["ruleset_ref_condition_sha256"] = canonical_digest(scope)
+        receipt["receipt_sha256"] = canonical_digest(body)
+        _write_receipt(output, receipt)
+    print("[GITHUB-GOVERNANCE-SCOPE] receipt bound to effective default-branch condition")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+
+          merged = legacy.rstrip() + hardened
+          forbidden = (
+              'LEGACY_BLOB_SHA', 'importlib.util', 'spec_from_file_location',
+              '_legacy._main_ruleset', 'for _name in dir(_legacy)',
+          )
+          for token in forbidden:
+              if token in merged:
+                  raise SystemExit(f'formalistic loader token survived: {token}')
+          entry_path.write_text(merged, encoding='utf-8')
+          legacy_path.unlink()
+
+          doc = root / 'docs/modules/governance-qualification.md'
+          text = doc.read_text(encoding='utf-8')
+          marker = '## Workflow trust boundary\n'
+          note = (
+              'The live verifier is one directly importable module. Its ruleset '
+              'scope evaluator and receipt binding execute through ordinary '
+              'Python calls; no immutable sibling source blob, wildcard export '
+              'or runtime monkey patch participates in qualification.\n\n'
+          )
+          if note not in text:
+              if marker not in text:
+                  raise SystemExit('governance documentation anchor changed')
+              text = text.replace(marker, marker + '\n' + note, 1)
+          doc.write_text(text, encoding='utf-8')
+
+          design = root / 'docs/governance-verifier-design.md'
+          design.write_text(
+              '# GitHub governance verifier design\n\n'
+              'Status: CURRENT  \n'
+              'Applies to: `scripts/verify_github_governance.py`\n\n'
+              'The verifier parses authenticated GitHub readback, selects '
+              'exactly one active ruleset that effectively includes the '
+              'default branch, rejects every matching or unknown exclusion, '
+              'validates reviews/check provenance/queue policy, and emits one '
+              'digest-bound receipt. The hardened ruleset selector is defined '
+              'in the same module as the complete verifier. Tests import the '
+              'same functions used by the command-line entry point. Historical '
+              'receipt fixtures remain compatibility evidence; historical '
+              'source is not loaded at runtime.\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Validate consolidated verifier
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_github_governance.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_github_governance*.py'
+          python3 -m unittest discover -s tests/python -p 'test_team_codeowners_activation.py'
+          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          git diff --check
+          ! test -e scripts/verify_github_governance_legacy.py
+          ! grep -R --line-number --fixed-strings 'LEGACY_BLOB_SHA' scripts tests
+          ! grep -R --line-number --fixed-strings '_legacy._main_ruleset' scripts tests
+
+      - name: Commit verified consolidation and remove controller
+        run: |
+          set -euo pipefail
+          rm .github/workflows/governance-verifier-migration-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor: consolidate GitHub governance verifier'
+          git push origin HEAD:codex/full-blocker-closure-20260908
