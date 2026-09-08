@@ -57,7 +57,8 @@ jobs:
               stream.extractall(destination, filter="data")
           PY
           cp -a "$RUNNER_TEMP/remediation-overlay/." .
-          rm -rf .codex .github/workflows/codex-apply-remediation.yml
+          sed -i 's/[[:space:]]\+$//' docs/modules/deployment.md
+          rm -rf .codex .github/workflows/codex-apply-remediation.yml .github/workflows/codex-diagnose-remediation.yml
           chmod 0755 scripts/build_release_bundle.sh scripts/hepta_preflight.py scripts/verify_release_bundle.py
           git diff --check
 
