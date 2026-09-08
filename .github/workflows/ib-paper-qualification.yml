@@ -108,6 +108,13 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true
     needs: build-candidate
     name: ib-paper-exact-artifact-qualification
+    permissions:
+      actions: read
+      attestations: write
+      checks: read
+      contents: read
+      id-token: write
+      pull-requests: read
     runs-on:
       group: trillionnium-ib-paper
       labels: [self-hosted, linux, x64, heptatrader-ib-paper]
@@ -213,7 +220,13 @@ jobs:
             --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
             --receipt "$evidence/qualification-verification.json"
           test -s "$evidence/qualification-verification.json"
-      - name: Upload immutable qualification and admission evidence
+      - name: Attest final exact-artifact PAPER receipt
+        id: attest-ib-paper-receipt
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        with:
+          subject-path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/qualification-verification.json
+          show-summary: false
+      - name: Upload immutable qualification, admission and attestation evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -223,5 +236,6 @@ jobs:
             ${{ runner.temp }}/pre-campaign-admission.json
             ${{ runner.temp }}/post-campaign-admission.json
             ${{ runner.temp }}/campaign-admission-pair.json
+            ${{ steps.attest-ib-paper-receipt.outputs.bundle-path }}
           if-no-files-found: error
           retention-days: 90

@@ -27,6 +27,7 @@ TRUSTED_FILES = (
 )
 JOB_RE = re.compile(r"^  ([A-Za-z0-9_.-]+):\s*(?:#.*)?$", re.MULTILINE)
 REF_INPUT_RE = re.compile(r"^\s*ref:\s*\$\{\{\s*inputs\.", re.MULTILINE)
+ATTEST_ACTION = "actions/attest@a1948c3f048ba23858d222213b7c278aabede763"
 
 
 def _read(root: Path, relative: Path, errors: list[str]) -> str:
@@ -86,8 +87,27 @@ def validate(root: Path = ROOT) -> list[str]:
         "python3 trusted/scripts/verify_github_governance.py",
         "HEPTA_GOVERNANCE_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}",
         "test \"$DISPATCH_REF\" = 'refs/heads/main'",
+        "attestations: write",
+        "id-token: write",
+        "Attest immutable governance receipt",
+        ATTEST_ACTION,
+        "subject-path: ${{ runner.temp }}/github-governance-receipt.json",
+        "${{ steps.attest-governance-receipt.outputs.bundle-path }}",
     ):
         _require(governance_qualify, token, "governance qualify", errors)
+    _ordered(
+        governance_qualify,
+        (
+            "Collect fully paginated live evidence with trusted code only",
+            "Attest immutable governance receipt",
+            "Upload immutable governance receipt and attestation bundle",
+        ),
+        "governance qualify",
+        errors,
+    )
+    if governance_qualify.count(ATTEST_ACTION) != 1:
+        errors.append("governance qualify: exactly one pinned receipt attestation is required")
+
     for token in (
         "ref: ${{ inputs.expected_head_sha }}",
         "path: candidate",
@@ -123,6 +143,9 @@ def validate(root: Path = ROOT) -> list[str]:
         "HEPTA_QUALIFICATION_MUTATIONS",
         "heptatrader-ib-paper",
         "HEPTA_IB_PAPER_QUALIFIER",
+        "attestations: write",
+        "id-token: write",
+        ATTEST_ACTION,
     ):
         _forbid(ib_build, token, "IB candidate build", errors)
 
@@ -142,6 +165,12 @@ def validate(root: Path = ROOT) -> list[str]:
         "trusted/scripts/verify_ib_candidate_artifact.py verify",
         "trusted/scripts/run_ib_paper_artifact_qualification.sh",
         "HEPTA_QUALIFICATION_MUTATIONS: '1'",
+        "attestations: write",
+        "id-token: write",
+        "Attest final exact-artifact PAPER receipt",
+        ATTEST_ACTION,
+        "qualification-verification.json",
+        "${{ steps.attest-ib-paper-receipt.outputs.bundle-path }}",
     ):
         _require(ib_qualify, token, "IB qualify", errors)
     _ordered(
@@ -151,6 +180,8 @@ def validate(root: Path = ROOT) -> list[str]:
             "Run controlled PAPER campaign through trusted external harness",
             "Re-admit unchanged candidate after Broker campaign",
             "Issue final receipt only after stable post-campaign admission",
+            "Attest final exact-artifact PAPER receipt",
+            "Upload immutable qualification, admission and attestation evidence",
         ),
         "IB qualify",
         errors,
@@ -166,6 +197,8 @@ def validate(root: Path = ROOT) -> list[str]:
         "--build-dir",
     ):
         _forbid(ib_qualify, token, "IB qualify", errors)
+    if ib_qualify.count(ATTEST_ACTION) != 1:
+        errors.append("IB qualify: exactly one pinned final receipt attestation is required")
     if ib_qualify.count("uses: actions/checkout@") != 1:
         errors.append("IB qualify: exactly one trusted-main checkout is required")
     if REF_INPUT_RE.search(ib_qualify):
