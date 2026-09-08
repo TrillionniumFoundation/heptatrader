@@ -324,12 +324,10 @@ def install_from_build(build_dir: Path) -> Path:
     if not build_dir.is_dir() or build_dir.is_symlink():
         raise PackageError("build directory must be a real directory")
     temporary = Path(tempfile.mkdtemp(prefix="heptatrader-release-stage-"))
-    environment = dict(os.environ)
-    environment["DESTDIR"] = str(temporary)
-    command = ["cmake", "--install", str(build_dir), "--prefix", "/usr"]
+    install_root = temporary / "usr"
+    command = ["cmake", "--install", str(build_dir), "--prefix", str(install_root)]
     result = subprocess.run(
         command,
-        env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -339,10 +337,12 @@ def install_from_build(build_dir: Path) -> Path:
     if result.returncode:
         shutil.rmtree(temporary, ignore_errors=True)
         raise PackageError(f"cmake install failed ({result.returncode}):\n{result.stdout[-4000:]}")
-    install_root = temporary / "usr"
     if not install_root.is_dir():
         shutil.rmtree(temporary, ignore_errors=True)
-        raise PackageError("cmake install did not create the expected /usr tree")
+        raise PackageError(
+            "cmake install did not create the expected staging tree:\n"
+            + result.stdout[-4000:]
+        )
     return install_root
 
 
