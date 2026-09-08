@@ -54,6 +54,12 @@ For multi-asset risk, the snapshot must expose both native quantity and base-cur
 
 Recovery coordinates a fresh broker barrier, journal replay, active and terminal correlations, position/account state, and owner fences. Any unresolved send attempt, unknown broker order, missing execution, or epoch transition keeps mutation blocked. Terminal recovery closes callback admission, drains in-flight callbacks, freezes one audit snapshot, and durably commits the terminal witness.
 
+## Security and trust boundary
+
+Only the venue-owning runtime may advance an authoritative epoch or publish a complete refresh generation. Agent, Gateway, strategy and research inputs are consumers or requested intents; they cannot mark a snapshot complete, choose its freshness clock, inject a broker correlation or substitute an account/instrument identity. Every published view must preserve the provenance and exact subject established by the adapter and refresh coordinator.
+
+The state store is an in-process consistency boundary rather than a durable source of execution truth. Restart, reconnect, callback conflict or an unproven generation invalidates the affected view. Consumers must combine it with durable OMS evidence under the Execution authority and must never cache a permissive projection across an epoch transition.
+
 ## Failure semantics
 
 Timeout, callback conflict, duplicate correlation, missing barrier, invalid contract identity, unsupported unit conversion, or I/O failure produces an incomplete snapshot with a typed reason. Consumers must check completeness and epoch/generation before reading values.
@@ -65,3 +71,7 @@ Expose current epoch/generation, completeness, snapshot age, refresh duration, c
 ## Test expectations
 
 Tests cover coherent publication, stale/invalid views, generation rollover, reconnect, out-of-order callbacks, duplicate/colliding correlations, refresh timeout, quote freshness, post-fill refresh, terminal freeze, and concurrent readers.
+
+## Known limitations
+
+The current layer supplies coherent in-memory snapshots and recovery barriers, not a general historical state database. Cross-venue aggregation, portfolio-wide margin, corporate actions, exchange calendars and durable market-data history require separate explicit contracts. The IB PAPER profile remains intentionally narrow until aggregate pending exposure and multi-contract conversion provenance are available.
