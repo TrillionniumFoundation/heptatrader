@@ -1,0 +1,66 @@
+name: Exact Source Status
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-source-status-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  source-status:
+    name: source-status-exact-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install source-validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
+
+      - name: Derive source status from exact-SHA predicates
+        run: |
+          set -euo pipefail
+          python3 scripts/derive_source_status.py \
+            --output "$RUNNER_TEMP/source-status.json"
+          cat "$RUNNER_TEMP/source-status.json"
+
+      - name: Upload derived receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: source-status-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/source-status.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Reassert clean exact source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
