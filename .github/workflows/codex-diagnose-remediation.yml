@@ -1,0 +1,48 @@
+name: Codex Diagnose Remediation Payload
+
+on:
+  push:
+    branches: [codex/close-source-blockers-2026-09-08]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: "${{ github.event.head_commit.message == 'chore: stage source blocker payload' }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Validate every payload chunk and concatenation
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64
+          import hashlib
+          import re
+
+          parts = sorted(Path('.codex/remediation-v2').glob('part-*'))
+          if len(parts) != 40:
+              raise SystemExit(f'expected 40 parts, found {len(parts)}')
+          combined = bytearray()
+          allowed = re.compile(br'^[A-Za-z0-9+/=]*$')
+          for part in parts:
+              data = part.read_bytes()
+              print(part, len(data), hashlib.sha256(data).hexdigest())
+              if not allowed.fullmatch(data):
+                  bad = [(i, value) for i, value in enumerate(data) if value not in b'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=']
+                  raise SystemExit(f'{part}: invalid bytes {bad[:20]}')
+              combined.extend(data)
+          try:
+              decoded = base64.b64decode(bytes(combined), validate=True)
+          except Exception as exc:
+              raise SystemExit(f'combined base64 invalid: {exc}') from exc
+          print('combined-length', len(combined))
+          print('archive-sha256', hashlib.sha256(decoded).hexdigest())
+          PY
