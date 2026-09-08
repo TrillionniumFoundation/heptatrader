@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   apply:
-    if: "${{ github.event.head_commit.message == 'chore: run remaining preflight and merge-gate fixes' }}"
+    if: "${{ github.event.head_commit.message == 'chore: rerun remaining preflight bindings after generator repair' }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -28,6 +28,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          python3 -m py_compile \
+            .codex/fix_generator_indent.py \
+            .codex/fix_preflight_bindings.py
+          python3 .codex/fix_generator_indent.py
           python3 -m py_compile .codex/fix_preflight_bindings.py
           python3 .codex/fix_preflight_bindings.py
           python3 -m py_compile \
