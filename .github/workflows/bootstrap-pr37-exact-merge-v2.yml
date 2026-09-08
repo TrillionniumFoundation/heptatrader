@@ -1,0 +1,144 @@
+name: Bootstrap PR37 Exact Merge V2
+
+on:
+  pull_request_target:
+    types: [synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: heptatrader-bootstrap-pr37-exact-merge-v2
+  cancel-in-progress: true
+
+jobs:
+  merge:
+    if: >-
+      github.event.pull_request.number == 37 &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'codex/full-blocker-closure-20260908'
+    name: bootstrap-pr37-provenance-locked-merge
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Wait for exact candidate validation and sanitizers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from __future__ import annotations
+          import json, os, subprocess, time, urllib.parse
+          repo=os.environ['REPOSITORY']; token=os.environ['GH_TOKEN']; number=os.environ['PR_NUMBER']; expected=os.environ['EXPECTED_SHA']
+          required={
+            'bootstrap-pr37-readonly-validation': '.github/workflows/bootstrap-pr37-source-admission.yml',
+            'source-admission-exact-head': '.github/workflows/source-admission.yml',
+            'canonical-full-suite-reliability (g++)': '.github/workflows/canonical-full-suite.yml',
+            'canonical-full-suite-reliability (clang++)': '.github/workflows/canonical-full-suite.yml',
+            'thread-sanitizer-core': '.github/workflows/thread-sanitizer.yml',
+          }
+          def api(path):
+            result=subprocess.run([
+              'curl','--fail-with-body','--silent','--show-error',
+              '-H','Accept: application/vnd.github+json',
+              '-H',f'Authorization: Bearer {token}',
+              '-H','X-GitHub-Api-Version: 2022-11-28',
+              f'https://api.github.com/repos/{repo}/{path}'
+            ],text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,check=False)
+            if result.returncode: raise RuntimeError(result.stdout[-4000:])
+            return json.loads(result.stdout)
+          deadline=time.monotonic()+60*60; last={}
+          while time.monotonic()<deadline:
+            pr=api(f'pulls/{number}')
+            if pr.get('state')!='open':
+              if pr.get('merged') is True: raise SystemExit(0)
+              raise RuntimeError('PR is no longer open')
+            if pr.get('head',{}).get('sha')!=expected:
+              raise RuntimeError('PR exact head changed while waiting')
+            query=urllib.parse.urlencode({'head_sha':expected,'per_page':100})
+            runs=api(f'actions/runs?{query}').get('workflow_runs',[])
+            latest={}
+            for run in runs:
+              path=run.get('path')
+              if path not in set(required.values()): continue
+              key=(path,run.get('event'))
+              current=latest.get(key)
+              if current is None or int(run.get('id',0))>int(current.get('id',0)): latest[key]=run
+            success=set(); failures=[]; last={}
+            for (path,event),run in latest.items():
+              last[f'{path}:{event}']={'id':run.get('id'),'status':run.get('status'),'conclusion':run.get('conclusion')}
+              if run.get('status')=='completed' and run.get('conclusion') not in {'success','skipped'}:
+                failures.append((path,event,run.get('conclusion')))
+              if run.get('status')!='completed' or run.get('conclusion')!='success': continue
+              jobs=api(f"actions/runs/{run['id']}/jobs?per_page=100").get('jobs',[])
+              for job in jobs:
+                name=job.get('name')
+                if name in required and required[name]==path and job.get('status')=='completed' and job.get('conclusion')=='success':
+                  success.add(name)
+            if failures: raise RuntimeError(f'candidate check failed: {failures}; runs={last}')
+            if success==set(required): break
+            time.sleep(20)
+          else: raise RuntimeError(f'timed out waiting for candidate checks: {last}')
+          print(json.dumps({'head':expected,'successful':sorted(success),'runs':last},indent=2))
+          PY
+
+      - name: Idempotently mark ready and merge exact head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NODE_ID: ${{ github.event.pull_request.node_id }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          curl --fail-with-body --silent --show-error \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/$REPOSITORY/pulls/$PR_NUMBER" >/tmp/pr.json
+          python3 - <<'PY' >/tmp/is-draft
+          import json
+          print('true' if json.load(open('/tmp/pr.json')).get('draft') else 'false')
+          PY
+          if test "$(cat /tmp/is-draft)" = true; then
+            curl --fail-with-body --silent --show-error \
+              -H 'Accept: application/vnd.github+json' \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'X-GitHub-Api-Version: 2022-11-28' \
+              -X POST https://api.github.com/graphql \
+              -d "$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({'query':'mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}','variables':{'id':os.environ['PR_NODE_ID']}}))
+          PY
+          )" >/tmp/ready.json
+            python3 - <<'PY'
+          import json
+          value=json.load(open('/tmp/ready.json'))
+          if value.get('errors'): raise SystemExit(value['errors'])
+          PY
+          fi
+          curl --fail-with-body --silent --show-error \
+            -H 'Accept: application/vnd.github+json' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            -X PUT "https://api.github.com/repos/$REPOSITORY/pulls/$PR_NUMBER/merge" \
+            -d "$(python3 - <<'PY'
+          import json, os
+          print(json.dumps({
+            'sha':os.environ['EXPECTED_SHA'],
+            'merge_method':'squash',
+            'commit_title':'refactor: close source blockers and harden HeptaTrader delivery (#37)',
+            'commit_message':'Trusted default-branch validation and independent source, ASan/UBSan, package and ThreadSanitizer checks admitted this exact head. PAPER and LIVE remain false pending external receipts.'
+          }))
+          PY
+          )" >/tmp/merge.json
+          python3 - <<'PY'
+          import json
+          value=json.load(open('/tmp/merge.json'))
+          if value.get('merged') is not True: raise SystemExit(value)
+          print(value)
+          PY
