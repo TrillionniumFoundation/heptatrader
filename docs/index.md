@@ -46,6 +46,7 @@ This index is the canonical entry point for current development documentation. A
 ## Cross-cutting contracts
 
 - [`AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md)
+- [`SOURCE-STATUS.md`](SOURCE-STATUS.md)
 - [`OMS-EVENT-SCHEMA.md`](OMS-EVENT-SCHEMA.md)
 - [`RUNBOOK-KILLSWITCH.md`](RUNBOOK-KILLSWITCH.md)
 - [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md)
