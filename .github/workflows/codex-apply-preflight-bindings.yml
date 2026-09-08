@@ -1,0 +1,54 @@
+name: Codex Apply Remaining Preflight Bindings
+
+on:
+  push:
+    branches: [codex/close-source-blockers-v2-2026-09-08]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-apply-preflight-bindings
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: "${{ github.event.head_commit.message == 'chore: run remaining preflight and merge-gate fixes' }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact staging revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Apply and validate remaining source fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile .codex/fix_preflight_bindings.py
+          python3 .codex/fix_preflight_bindings.py
+          python3 -m py_compile \
+            scripts/hepta_preflight.py \
+            tests/python/test_hepta_preflight.py
+          ruby -e 'require "yaml"; YAML.load_file(ARGV[0])' \
+            .github/workflows/merge-candidate.yml
+          python3 -m unittest discover -s tests/python -p 'test_release_package.py'
+          python3 -m unittest discover -s tests/python -p 'test_hepta_preflight.py'
+          python3 scripts/check_documentation.py
+          git diff --check
+
+      - name: Commit verified final source and remove staging controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .codex .github/workflows/codex-apply-preflight-bindings.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix(preflight): bind policy and installed host to approved artifact'
+          git push "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
