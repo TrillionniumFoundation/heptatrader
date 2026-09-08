@@ -1,0 +1,322 @@
+name: One-shot protocol field source migration
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-protocol-field-source
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Extract one wire-field source and regenerate bindings
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import ast
+          import os
+          import re
+
+          root = Path('.')
+          mcp = root / 'adapters/mcp/hepta_mcp_server.py'
+          python_source = mcp.read_text(encoding='utf-8')
+          tree = ast.parse(python_source)
+          field_assignment = None
+          python_fields = None
+          for node in tree.body:
+              if isinstance(node, ast.Assign) and any(
+                  isinstance(target, ast.Name) and target.id == 'FIELD_IDS'
+                  for target in node.targets
+              ):
+                  field_assignment = node
+                  python_fields = ast.literal_eval(node.value)
+                  break
+          if field_assignment is None or not isinstance(python_fields, dict):
+              raise SystemExit('Python FIELD_IDS literal was not found')
+          if set(python_fields.values()) != set(range(1, 27)):
+              raise SystemExit(f'unexpected Python field id set: {python_fields}')
+
+          candidates = []
+          enum_re = re.compile(
+              r'enum\s+(?:class\s+)?(?P<name>[A-Za-z_][A-Za-z0-9_]*)'
+              r'(?P<underlying>\s*:\s*[^\{]+)?\s*\{(?P<body>.*?)\};',
+              re.DOTALL,
+          )
+          assignment_re = re.compile(
+              r'\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([0-9]+)\b'
+          )
+          for path in sorted((root / 'HeptaTrade').rglob('*.h')):
+              text = path.read_text(encoding='utf-8')
+              for match in enum_re.finditer(text):
+                  pairs = [(name, int(value)) for name, value in assignment_re.findall(match.group('body'))]
+                  values = {value for _, value in pairs}
+                  if set(range(1, 27)).issubset(values):
+                      candidates.append((path, text, match, pairs))
+          if len(candidates) != 1:
+              details = [f'{path}:{match.group("name")}' for path, _, match, _ in candidates]
+              raise SystemExit(f'expected one C++ wire-field enum, found {details}')
+
+          path, cpp_source, enum_match, pairs = candidates[0]
+          by_value = {value: name for name, value in pairs if value in range(1, 27)}
+          if set(by_value) != set(range(1, 27)):
+              raise SystemExit('C++ wire-field enum is incomplete')
+          if len(by_value) != len([value for _, value in pairs if value in range(1, 27)]):
+              raise SystemExit('C++ wire-field enum has duplicate ids')
+          python_by_value = {value: name for name, value in python_fields.items()}
+
+          protocol_dir = root / 'protocol'
+          protocol_dir.mkdir(exist_ok=True)
+          definition = protocol_dir / 'hepta_tool_fields.def'
+          lines = [
+              '// Single source for hepta.agent-tools protocol v1 field IDs.\n',
+              '// HEPTA_TOOL_FIELD(python_name, CppEnumerator, numeric_id)\n',
+          ]
+          for value in range(1, 27):
+              lines.append(
+                  f'HEPTA_TOOL_FIELD({python_by_value[value]}, {by_value[value]}, {value})\n'
+              )
+          definition.write_text(''.join(lines), encoding='utf-8')
+
+          relative_include = os.path.relpath(definition, path.parent).replace(os.sep, '/')
+          replacement = (
+              f'enum class {enum_match.group("name")}'
+              f'{enum_match.group("underlying") or ""}\n{{\n'
+              '#define HEPTA_TOOL_FIELD(python_name, cpp_name, numeric_id) '
+              'cpp_name = numeric_id,\n'
+              f'#include "{relative_include}"\n'
+              '#undef HEPTA_TOOL_FIELD\n'
+              '};'
+          )
+          cpp_source = (
+              cpp_source[:enum_match.start()] + replacement + cpp_source[enum_match.end():]
+          )
+          path.write_text(cpp_source, encoding='utf-8')
+
+          source_lines = python_source.splitlines(keepends=True)
+          start = field_assignment.lineno - 1
+          end = field_assignment.end_lineno
+          import_block = (
+              'try:\n'
+              '    from hepta_tool_protocol_fields import FIELD_IDS\n'
+              'except ModuleNotFoundError:\n'
+              '    from adapters.mcp.hepta_tool_protocol_fields import FIELD_IDS\n'
+          )
+          source_lines[start:end] = [import_block]
+          mcp.write_text(''.join(source_lines), encoding='utf-8')
+
+          generator = root / 'scripts/generate_tool_protocol_fields.py'
+          generator.write_text(r'''#!/usr/bin/env python3
+"""Generate/check Python bindings from protocol/hepta_tool_fields.def."""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFINITION = ROOT / "protocol/hepta_tool_fields.def"
+OUTPUT = ROOT / "adapters/mcp/hepta_tool_protocol_fields.py"
+LINE_RE = re.compile(
+    r"^HEPTA_TOOL_FIELD\(([a-z][a-z0-9_]*),\s*"
+    r"([A-Za-z_][A-Za-z0-9_]*),\s*([0-9]+)\)$"
+)
+
+
+def parse_definition() -> list[tuple[str, str, int]]:
+    result: list[tuple[str, str, int]] = []
+    for number, raw in enumerate(DEFINITION.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line or line.startswith("//"):
+            continue
+        match = LINE_RE.fullmatch(line)
+        if match is None:
+            raise ValueError(f"{DEFINITION}:{number}: invalid field definition")
+        result.append((match.group(1), match.group(2), int(match.group(3))))
+    python_names = [item[0] for item in result]
+    cpp_names = [item[1] for item in result]
+    ids = [item[2] for item in result]
+    if len(result) != 26 or ids != list(range(1, 27)):
+        raise ValueError("protocol v1 requires exactly the contiguous field IDs 1..26")
+    if len(set(python_names)) != len(result) or len(set(cpp_names)) != len(result):
+        raise ValueError("field names must be unique")
+    return result
+
+
+def render(fields: list[tuple[str, str, int]]) -> str:
+    lines = [
+        '"""Generated from protocol/hepta_tool_fields.def; do not edit."""\n\n',
+        'FIELD_IDS = {\n',
+    ]
+    for python_name, _, numeric_id in fields:
+        lines.append(f'    "{python_name}": {numeric_id},\n')
+    lines.extend([
+        '}\n\n',
+        'ID_TO_FIELD = {numeric_id: name for name, numeric_id in FIELD_IDS.items()}\n',
+    ])
+    return ''.join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args()
+    try:
+        expected = render(parse_definition())
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"[TOOL-FIELDS] {error}", file=sys.stderr)
+        return 1
+    if args.check:
+        try:
+            actual = OUTPUT.read_text(encoding="utf-8")
+        except (OSError, UnicodeError) as error:
+            print(f"[TOOL-FIELDS] cannot read generated binding: {error}", file=sys.stderr)
+            return 1
+        if actual != expected:
+            print("[TOOL-FIELDS] generated Python binding is stale", file=sys.stderr)
+            return 1
+    else:
+        OUTPUT.write_text(expected, encoding="utf-8")
+    print("[TOOL-FIELDS] PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+''', encoding='utf-8')
+          generator.chmod(0o755)
+          PY
+
+          python3 scripts/generate_tool_protocol_fields.py
+
+          cat > tests/python/test_tool_protocol_field_source.py <<'PY'
+          #!/usr/bin/env python3
+          from __future__ import annotations
+
+          import importlib.util
+          from pathlib import Path
+          import subprocess
+          import sys
+          import unittest
+
+          ROOT = Path(__file__).resolve().parents[2]
+
+
+          class ToolProtocolFieldSourceTests(unittest.TestCase):
+              def test_generated_python_binding_is_current(self) -> None:
+                  result = subprocess.run(
+                      [sys.executable, "scripts/generate_tool_protocol_fields.py", "--check"],
+                      cwd=ROOT,
+                      text=True,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      check=False,
+                  )
+                  self.assertEqual(0, result.returncode, result.stdout)
+
+              def test_cpp_consumes_same_definition(self) -> None:
+                  definition = (ROOT / "protocol/hepta_tool_fields.def").resolve()
+                  consumers = []
+                  for path in (ROOT / "HeptaTrade").rglob("*.h"):
+                      text = path.read_text(encoding="utf-8")
+                      if "hepta_tool_fields.def" in text:
+                          consumers.append(path)
+                  self.assertEqual(1, len(consumers), consumers)
+                  self.assertIn("HEPTA_TOOL_FIELD", consumers[0].read_text(encoding="utf-8"))
+                  self.assertTrue(definition.is_file())
+
+              def test_binding_contains_exact_v1_ids(self) -> None:
+                  path = ROOT / "adapters/mcp/hepta_tool_protocol_fields.py"
+                  spec = importlib.util.spec_from_file_location("hepta_tool_protocol_fields", path)
+                  self.assertIsNotNone(spec)
+                  self.assertIsNotNone(spec.loader if spec else None)
+                  module = importlib.util.module_from_spec(spec)
+                  assert spec is not None and spec.loader is not None
+                  spec.loader.exec_module(module)
+                  self.assertEqual(set(range(1, 27)), set(module.FIELD_IDS.values()))
+                  self.assertEqual(26, len(module.FIELD_IDS))
+
+
+          if __name__ == "__main__":
+              unittest.main()
+          PY
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          doc = Path('docs/modules/agent-entry.md')
+          text = doc.read_text(encoding='utf-8')
+          anchor = '## Public contracts\n'
+          note = (
+              'Protocol-v1 field IDs have one source in '
+              '`protocol/hepta_tool_fields.def`. The C++ wire enum includes '
+              'that definition directly, while '
+              '`scripts/generate_tool_protocol_fields.py` produces the Python '
+              'binding used by the MCP bridge. CI rejects a stale generated '
+              'binding or a second C++ field definition.\n\n'
+          )
+          if note not in text:
+              if anchor not in text:
+                  raise SystemExit('agent-entry documentation anchor changed')
+              text = text.replace(anchor, anchor + '\n' + note, 1)
+          doc.write_text(text, encoding='utf-8')
+
+          cmake = Path('cmake/HeptaInstall.cmake')
+          text = cmake.read_text(encoding='utf-8')
+          old = '''install(PROGRAMS
+    adapters/mcp/hepta_mcp_server.py
+'''
+          new = '''install(PROGRAMS
+    adapters/mcp/hepta_mcp_server.py
+    adapters/mcp/hepta_tool_protocol_fields.py
+'''
+          if old not in text:
+              raise SystemExit('install program list anchor changed')
+          cmake.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+      - name: Validate generated bindings and runtime compatibility
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_tool_protocol_fields.py --check
+          python3 -m py_compile \
+            adapters/mcp/hepta_mcp_server.py \
+            adapters/mcp/hepta_tool_protocol_fields.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          git diff --check
+
+      - name: Commit verified migration and remove controller
+        run: |
+          set -euo pipefail
+          rm .github/workflows/protocol-field-source-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor: single-source tool protocol field IDs'
+          git push origin HEAD:codex/full-blocker-closure-20260908
