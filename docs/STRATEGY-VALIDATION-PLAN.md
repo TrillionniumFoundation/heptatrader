@@ -1,36 +1,14 @@
-# Hepta 策略验证路线（固定回放 -> 一致性 -> 小规模仿真实盘）
+# Strategy validation plan
 
-## Phase A: 固定数据回放（可复现）
-1. 固定输入数据目录：`D:\quant\dat\replay-set-001`
-2. 固定索引：`HisMarketDataIndex.xml`
-3. 固定配置：`HeptaSimulatorConfig.xml`（只读）
-4. 每次回放输出：
-   - `runtime-logs/simulator-*.out.log`
-   - 账户权益轨迹
-   - 成交/委托统计
+Status: EXPERIMENTAL  
+Applies to: deterministic simulator and SHADOW research
 
-验收：同一数据+同一参数重复运行，核心指标差异 < 1e-6（或逐笔一致）。
+## Stages
 
-## Phase B: 回测一致性
-对比三组结果：
-- A1: 当前基线版本
-- A2: 重构后版本
-- A3: 参数微调版本
+1. **Deterministic fixtures:** identical source, configuration, clock, and seed produce identical events, positions, PnL, and receipts.
+2. **Regression equivalence:** compare baseline and refactor at the event/fill level before comparing aggregate performance.
+3. **Walk-forward research:** use no-lookahead train/validation/test windows with realistic spread, fee, slippage, delay, rejection, and missing-data models.
+4. **SHADOW:** consume fresh authoritative read-only evidence; track completeness, decision counts, missed intervals, regime stability, drawdown, and transaction-cost sensitivity.
+5. **Bounded PAPER candidate:** only after separate risk challenge, protected approval, execution preview, small hard limits, operator kill switch, reconciliation, and broker-observed qualification.
 
-关键指标：
-- 总收益、最大回撤、夏普、胜率、成交次数、滑点成本
-
-验收：A1/A2 在同参数下差异可解释；任何偏差必须有日志证据。
-
-## Phase C: 小规模仿真实盘
-1. 仅 1-2 个品种，低频低风险
-2. 开启全量日志与错误码落盘
-3. 先观察 3-5 个交易日
-
-验收：
-- 无异常退出
-- 连接稳定
-- 交易/风控日志闭环可追踪
-
-## 失败回滚
-- 任何阶段异常，回滚到上一个稳定配置+稳定二进制。
+Return, Sharpe, win rate, and drawdown are insufficient without sample size, turnover, capacity, tail loss, parameter stability, data provenance, and failure-mode evidence. Strategy validation never authorizes LIVE, which remains unavailable.

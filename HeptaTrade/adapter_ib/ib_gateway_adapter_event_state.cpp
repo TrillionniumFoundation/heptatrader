@@ -1,4 +1,5 @@
 #include "ib_gateway_adapter.h"
+#include "../state/ib_contract_identity.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -116,6 +117,7 @@ bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
 
 void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
     const std::string& reason) {
+    m_liveTerminalBindings.clear();
     m_completedOrdersRefreshPending = false;
     m_executionsRefreshPending = false;
     m_terminalCorrelationRefreshConflict = false;
@@ -182,6 +184,11 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
     m_pendingTerminalStatuses.clear();
     m_pendingTerminalCorrelationsByOrderId.clear();
     m_pendingExecutionOrderIds.clear();
+    // A live callback may race the initial End markers. Preserve its proof
+    // without ever promoting an incomplete bootstrap snapshot.
+    std::vector<long> liveOrderIds;
+    for (const auto& item : m_liveTerminalBindings) liveOrderIds.push_back(item.first);
+    for (long orderId : liveOrderIds) PublishLiveTerminalEvidence(orderId);
 }
 
 IBAuthoritativeTerminalCorrelationSnapshot
@@ -533,6 +540,13 @@ void HeptaIBGatewayAdapter::ApplyEventQueueOverflow(
 
 void HeptaIBGatewayAdapter::ApplyEventStateTransition(
     const IBEvent& event) {
+    // A numeric IB order id is only unique within its broker client. Do not
+    // let another client's terminal status remove a locally submitted active
+    // order before the stricter live terminal-evidence path can reject it.
+    if (event.type == IBEventType::OrderStatus &&
+        m_liveTerminalBindings.count(static_cast<long>(event.id)) != 0 &&
+        !IsConsistentBoundOrderStatus(event))
+        return;
     if (m_recoveryAuditBarrierComplete &&
         (event.type == IBEventType::OpenOrder ||
          event.type == IBEventType::OrderStatus ||
@@ -589,7 +603,36 @@ void HeptaIBGatewayAdapter::ApplyEventStateTransition(
 }
 bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
-    if (!m_api || !DequeueCurrentEpochEvent(outEvent)) return false;
+    if (!m_api) return false;
+    for (;;) {
+        if (!DequeueCurrentEpochEvent(outEvent)) return false;
+        if ((outEvent.type != IBEventType::OrderStatus &&
+             outEvent.type != IBEventType::ExecutionDetails) ||
+            m_liveTerminalBindings.count(static_cast<long>(outEvent.id)) == 0)
+            break;
+        // Historical execution-query responses retain their existing explicit
+        // request/end path. They cannot supplement the live terminal view.
+        if ((outEvent.type == IBEventType::ExecutionDetails ||
+             IsHistoricalSyntheticExecutionStatus(outEvent)) && outEvent.requestId >= 0)
+            break;
+        const bool consistent = outEvent.type == IBEventType::OrderStatus ?
+            IsConsistentBoundOrderStatus(outEvent) :
+            IsConsistentBoundLiveExecution(outEvent);
+        if (consistent) break;
+        // Quarantine before both adapter projections and downstream runtime
+        // consumers can mistake another client's same numeric id for ours.
+        // A rejected event is still a late broker observation: it must not
+        // leave a previously completed recovery barrier authoritative. An
+        // economic callback for this account can indicate other-client
+        // activity, so also require a fresh risk snapshot without attributing
+        // that fill to this service's order.
+        InvalidateRecoveryAuditBarrier("IB_RECOVERY_AUDIT_UNTRUSTED_BOUND_ORDER_EVENT");
+        if ((outEvent.account.empty() || outEvent.account == m_cfg.account) &&
+            HasEconomicFillEvidence(outEvent))
+            InvalidateRiskSnapshot("IB_RISK_UNTRUSTED_BOUND_ORDER_EVENT");
+        EmitObsEvent("callback.bound_order_identity_rejected",
+            "\"order_id\":" + std::to_string(outEvent.id));
+    }
     const bool acceptedBrokerOpenOrder = CorrelateOpenOrderEvent(outEvent);
 
     if (outEvent.type == IBEventType::OrderStatus) {
@@ -1014,7 +1057,154 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
     }
 }
 
+bool HeptaIBGatewayAdapter::IsConsistentBoundOrderStatus(const IBEvent& event) const {
+    const auto found = m_liveTerminalBindings.find(static_cast<long>(event.id));
+    if (found == m_liveTerminalBindings.end()) return false;
+    const LiveTerminalBinding& binding = found->second;
+    // A wrapper-derived status may drive the economic lifecycle only after
+    // its exact cumulative fill was validated from the broker's execution.
+    // It remains synthetic and never supplies a native terminal ACK below.
+    const bool supportedStatusSource = event.value.empty() ||
+        (event.value == "execDetails" && event.requestId == -1 &&
+         (event.key == "Filled" || event.key == "PartiallyFilled") &&
+         binding.executionQuantity > 0.0 &&
+         event.number2 == binding.executionQuantity &&
+         event.number == binding.executionAveragePrice &&
+         event.number3 == binding.quantity - binding.executionQuantity);
+    return event.type == IBEventType::OrderStatus && event.id > 0 &&
+        event.id <= LONG_MAX && event.connectionEpoch != 0 &&
+        event.connectionEpoch == m_connectionEpoch &&
+        binding.connectionEpoch == m_connectionEpoch &&
+        event.brokerClientId >= 0 && event.brokerClientId == m_cfg.clientId &&
+        (event.account.empty() || event.account == m_cfg.account) &&
+        supportedStatusSource &&
+        std::isfinite(binding.quantity) && binding.quantity > 0.0 &&
+        std::isfinite(event.number2) && event.number2 >= 0.0 &&
+        event.number2 <= binding.quantity &&
+        std::isfinite(event.number3) && event.number3 >= 0.0 &&
+        event.number3 <= binding.quantity &&
+        event.number2 + event.number3 <= binding.quantity &&
+        (event.number2 == 0.0 || HasEconomicFillEvidence(event)) &&
+        (event.key != "Filled" ||
+         (event.number2 == binding.quantity && event.number3 == 0.0));
+}
+
+bool HeptaIBGatewayAdapter::IsConsistentBoundLiveExecution(const IBEvent& event) const {
+    const auto found = m_liveTerminalBindings.find(static_cast<long>(event.id));
+    if (found == m_liveTerminalBindings.end()) return false;
+    const LiveTerminalBinding& binding = found->second;
+    std::string correlation, reason;
+    const std::string side = event.value == "BOT" ? "BUY" :
+        (event.value == "SLD" ? "SELL" : event.value);
+    const std::string expectedInstrument =
+        BuildIBAuthoritativeInstrumentIdentity(binding.contract, "");
+    return event.type == IBEventType::ExecutionDetails &&
+        event.requestId == -1 && event.id > 0 && event.id <= LONG_MAX &&
+        event.connectionEpoch != 0 && event.connectionEpoch == m_connectionEpoch &&
+        binding.connectionEpoch == m_connectionEpoch &&
+        event.brokerClientId >= 0 && event.brokerClientId == m_cfg.clientId &&
+        !event.key.empty() && !m_cfg.account.empty() && event.account == m_cfg.account &&
+        side == binding.side && HasEconomicFillEvidence(event) &&
+        std::isfinite(binding.quantity) && binding.quantity > 0.0 &&
+        event.number2 <= binding.quantity &&
+        MatchesSubmittedIBContract(binding.contract, event.contract) &&
+        !expectedInstrument.empty() &&
+        DecodeVenueOrderRef(event.order.orderRef, correlation, reason) &&
+        correlation == binding.correlationId;
+}
+
+void HeptaIBGatewayAdapter::ApplyLiveTerminalEvidence(const IBEvent& event) {
+    if ((event.type != IBEventType::ExecutionDetails &&
+         event.type != IBEventType::OrderStatus) ||
+        event.connectionEpoch == 0 || event.connectionEpoch != m_connectionEpoch ||
+        event.brokerClientId < 0 || event.brokerClientId != m_cfg.clientId ||
+        event.id <= 0 || event.id > LONG_MAX || !m_eventStreamAuthoritative)
+        return;
+    const long orderId = static_cast<long>(event.id);
+    const auto found = m_liveTerminalBindings.find(orderId);
+    if (found == m_liveTerminalBindings.end()) return;
+    LiveTerminalBinding& binding = found->second;
+    if (binding.connectionEpoch != m_connectionEpoch ||
+        !std::isfinite(binding.quantity) || binding.quantity <= 0.0 ||
+        !std::isfinite(event.number2) || event.number2 < 0.0 ||
+        event.number2 > binding.quantity)
+        return;
+    if (event.type == IBEventType::ExecutionDetails) {
+        if (!IsConsistentBoundLiveExecution(event)) return;
+        // Cumulative execution quantity is monotonic. Duplicate callbacks do
+        // not create a new terminal generation or reopen a completed proof.
+        if (event.number2 >= binding.executionQuantity) {
+            binding.executionQuantity = event.number2;
+            binding.executionAveragePrice = event.number;
+        }
+    } else {
+        if (event.value == "execDetails" ||
+            !IsConsistentBoundOrderStatus(event) || !IsIbFinalStatus(event.key))
+            return;
+        binding.terminalStatus = event.key;
+        binding.terminalFilledQuantity = event.number2;
+    }
+    PublishLiveTerminalEvidence(orderId);
+}
+
+void HeptaIBGatewayAdapter::PublishLiveTerminalEvidence(long orderId) {
+    const auto found = m_liveTerminalBindings.find(orderId);
+    if (found == m_liveTerminalBindings.end() ||
+        !m_terminalCorrelationSnapshot.complete ||
+        m_completedOrdersRefreshPending || m_executionsRefreshPending ||
+        !m_eventStreamAuthoritative || m_connectionEpoch == 0 ||
+        m_terminalCorrelationSnapshot.connectionEpoch != m_connectionEpoch ||
+        found->second.connectionEpoch != m_connectionEpoch)
+        return;
+    LiveTerminalBinding& binding = found->second;
+    const bool executed = binding.executionQuantity > 0.0;
+    const bool terminal = !binding.terminalStatus.empty() &&
+        binding.terminalFilledQuantity == binding.executionQuantity &&
+        (binding.terminalStatus != "Filled" ||
+         binding.executionQuantity == binding.quantity);
+    if (!executed && !terminal) return;
+    const auto existing = m_terminalCorrelationSnapshot.
+        terminalOrderIdsByCorrelation.find(binding.correlationId);
+    if (terminal) {
+        bool conflict = existing != m_terminalCorrelationSnapshot.
+            terminalOrderIdsByCorrelation.end() && existing->second != orderId;
+        for (const auto& item : m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation)
+            if (item.second == orderId && item.first != binding.correlationId)
+                conflict = true;
+        if (conflict) {
+            InvalidateTerminalCorrelationSnapshot("IB_LIVE_TERMINAL_CORRELATION_CONFLICT");
+            return;
+        }
+    }
+    const auto priorStatus = m_terminalCorrelationSnapshot.
+        terminalStatusesByCorrelation.find(binding.correlationId);
+    const bool changed = (executed &&
+        (m_terminalCorrelationSnapshot.executionOrderIds.count(orderId) == 0 ||
+         binding.executionQuantity > binding.publishedExecutionQuantity)) ||
+        (terminal && (existing == m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.end() ||
+         priorStatus == m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.end() ||
+         priorStatus->second != binding.terminalStatus));
+    if (!changed) return;
+    if (m_terminalCorrelationGeneration >=
+        static_cast<std::uint64_t>(std::numeric_limits<int>::max())) {
+        InvalidateTerminalCorrelationSnapshot("IB_TERMINAL_CORRELATION_GENERATION_EXHAUSTED");
+        return;
+    }
+    ++m_terminalCorrelationGeneration;
+    m_terminalCorrelationSnapshot.generation = m_terminalCorrelationGeneration;
+    m_terminalCorrelationSnapshot.exposureGeneration = m_exposureGeneration;
+    if (executed) {
+        m_terminalCorrelationSnapshot.executionOrderIds.insert(orderId);
+        binding.publishedExecutionQuantity = binding.executionQuantity;
+    }
+    if (terminal) {
+        m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation[binding.correlationId] = orderId;
+        m_terminalCorrelationSnapshot.terminalStatusesByCorrelation[binding.correlationId] = binding.terminalStatus;
+    }
+}
+
 void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEvent) {
+    ApplyLiveTerminalEvidence(outEvent);
     if (outEvent.type == IBEventType::CompletedOrder &&
                m_completedOrdersRefreshPending) {
         if (m_cfg.account.empty() || outEvent.account != m_cfg.account)

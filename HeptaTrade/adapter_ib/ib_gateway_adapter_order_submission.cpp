@@ -313,6 +313,21 @@ bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
         if (outOrderId) *outOrderId = orderId;
         m_orderSubmitTs[orderId] = std::chrono::steady_clock::now();
         m_orderLifecycle.BeginLocalOrderGeneration(orderId);
+        // The broker must echo this service-owned H1 identity on a live
+        // execution before it may supplement the bootstrap terminal query.
+        // A raw/uncorrelated submission cannot create that authority.
+        m_liveTerminalBindings.erase(orderId);
+        std::string correlation, correlationReason;
+        if (orderId > 0 && m_connectionEpoch != 0 &&
+            DecodeVenueOrderRef(order.orderRef, correlation, correlationReason)) {
+            LiveTerminalBinding binding;
+            binding.connectionEpoch = m_connectionEpoch;
+            binding.correlationId = correlation;
+            binding.contract = contract;
+            binding.side = order.action;
+            binding.quantity = order.totalQuantity;
+            m_liveTerminalBindings[orderId] = binding;
+        }
         if (baseline) m_orderRiskBaselines[orderId] = *baseline;
         m_lastRejectReason.clear();
     } else {

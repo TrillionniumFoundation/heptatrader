@@ -514,12 +514,16 @@ bool ExecutionCoordinator::ApplyRecoveredPlaceReceiptLocked(
     const std::string& agentId)
 {
     if (event.eventType != "place_sent" &&
+        event.eventType != "place_activated" &&
         event.eventType != "flatten_sent")
         return false;
     record.operation = event.eventType == "flatten_sent" ?
         "flatten" : "place";
-    record.status = ExecutionCommandStatus::Accepted;
-    record.reasonCode.clear();
+    const bool activationPending = event.eventType == "place_sent" &&
+        event.status == "activation_pending";
+    record.status = activationPending ? ExecutionCommandStatus::Uncertain :
+        ExecutionCommandStatus::Accepted;
+    record.reasonCode = activationPending ? "RECOVERY_RECONCILE_REQUIRED" : "";
     ExecutionOrderOwner owner;
     owner.agentId = agentId;
     owner.sessionId = event.traceId;
@@ -1037,6 +1041,35 @@ void ExecutionCoordinator::RecordOrderTerminal(long orderId)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_orderOwners.erase(orderId);
+}
+
+bool ExecutionCoordinator::RecordOrderTerminalDurably(long orderId, std::string* reason)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto owner = m_orderOwners.find(orderId);
+    if (owner == m_orderOwners.end())
+    {
+        if (reason) reason->clear();
+        return true;
+    }
+    AgentExecutionContext context;
+    context.agentId = owner->second.agentId;
+    context.sessionId = owner->second.sessionId;
+    context.strategy = owner->second.strategy;
+    context.account = owner->second.account;
+    context.executionDomain = owner->second.executionDomain;
+    context.toolCallId = "order-terminal-" + std::to_string(orderId);
+    if (!AppendOrBlockLocked(BuildEvent(context, "order_owner_reconciled_terminal",
+            orderId, owner->second.instrument, owner->second.side, 0.0, 0.0,
+            "terminal", "authoritative venue terminal callback",
+            "ORDER_OWNER_RECONCILED_TERMINAL"), "OMS_OWNER_RECONCILE_JOURNAL_FAILED"))
+    {
+        if (reason) *reason = "OMS_OWNER_RECONCILE_JOURNAL_FAILED";
+        return false;
+    }
+    m_orderOwners.erase(owner);
+    if (reason) reason->clear();
+    return true;
 }
 
 bool ExecutionCoordinator::GetOrderOwner(long orderId, ExecutionOrderOwner& out) const

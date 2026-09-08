@@ -10,6 +10,16 @@ function(hepta_register_core_test target)
         CXX_STANDARD 11
         CXX_STANDARD_REQUIRED ON
         CXX_EXTENSIONS OFF)
+    # The historical tests intentionally use assert() as both an invariant and
+    # an expression-evaluation boundary (for example assert(server.Start())).
+    # Release/RelWithDebInfo define NDEBUG globally, which would erase those
+    # calls and turn the suite into undefined follow-on behavior. Keep test
+    # semantics independent of the production optimization configuration.
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(${target} PRIVATE -UNDEBUG)
+    endif()
     add_test(NAME ${target} COMMAND ${target})
     set_tests_properties(${target} PROPERTIES LABELS "core")
     list(APPEND HEPTA_CORE_TEST_TARGETS ${target})
@@ -38,6 +48,12 @@ add_executable(hepta_oms_journal_durability_tests
     ../HeptaTrade/oms_journal.cpp)
 target_link_libraries(hepta_oms_journal_durability_tests pthread)
 hepta_register_core_test(hepta_oms_journal_durability_tests)
+
+add_executable(hepta_oms_journal_schema_v4_tests
+    oms_journal_schema_v4_tests.cpp
+    ../HeptaTrade/oms_journal.cpp)
+target_link_libraries(hepta_oms_journal_schema_v4_tests pthread)
+hepta_register_core_test(hepta_oms_journal_schema_v4_tests)
 
 add_executable(hepta_trading_tool_registry_tests
     trading_tool_registry_tests.cpp)
@@ -82,6 +98,8 @@ set_tests_properties(hepta_unix_tool_server_tests PROPERTIES
 
 add_executable(hepta_unix_session_supervisor_server_tests
     unix_session_supervisor_server_tests.cpp)
+target_precompile_headers(hepta_unix_session_supervisor_server_tests PRIVATE
+    unix_session_supervisor_test_prelude.h)
 target_link_libraries(hepta_unix_session_supervisor_server_tests
     hepta_agent_os_core hepta_execution_core)
 add_dependencies(hepta_unix_session_supervisor_server_tests hepta_sessionctl)
@@ -99,13 +117,18 @@ hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
 
 add_executable(hepta_agent_simulator_e2e_tests
     agent_simulator_e2e_tests.cpp
-    ../HeptaTrade/state/authoritative_trading_snapshot_store.cpp
-    ../HeptaTrade/simulator/deterministic_execution_venue.cpp)
+    ../HeptaTrade/state/authoritative_trading_snapshot_store.cpp)
 target_link_libraries(hepta_agent_simulator_e2e_tests
-    hepta_agent_os_core hepta_execution_core)
+    hepta_agent_os_core hepta_execution_core hepta_simulator_runtime)
 hepta_register_core_test(hepta_agent_simulator_e2e_tests)
 set_tests_properties(hepta_agent_simulator_e2e_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
+
+add_executable(hepta_simulator_risk_runtime_tests simulator_risk_runtime_tests.cpp)
+target_link_libraries(hepta_simulator_risk_runtime_tests hepta_execution_service_runtime)
+hepta_register_core_test(hepta_simulator_risk_runtime_tests)
+set_tests_properties(hepta_simulator_risk_runtime_tests PROPERTIES
+    RUN_SERIAL TRUE TIMEOUT 30)
 
 add_executable(hepta_decision_lease_manager_tests
     decision_lease_manager_tests.cpp
@@ -142,5 +165,43 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests pthread)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+add_executable(hepta_ib_live_terminal_reconciliation_tests
+    ib_live_terminal_reconciliation_tests.cpp
+    ../HeptaTrade/adapter_ib/ib_api_wrapper.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp
+    ../HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp
+    ../HeptaTrade/adapter_ib/ib_order_lifecycle.cpp
+    ../HeptaTrade/adapter_ib/ib_venue_correlation.cpp
+    ../HeptaTrade/risk/pre_trade_risk_engine.cpp
+    ../HeptaTrade/state/ib_contract_identity.cpp)
+target_link_libraries(hepta_ib_live_terminal_reconciliation_tests
+    hepta_execution_core)
+hepta_register_core_test(hepta_ib_live_terminal_reconciliation_tests)
+
+add_executable(hepta_pre_trade_risk_engine_tests
+    pre_trade_risk_engine_tests.cpp
+    ../HeptaTrade/risk/pre_trade_risk_engine.cpp)
+hepta_register_core_test(hepta_pre_trade_risk_engine_tests)
+
+add_executable(hepta_venue_capability_tests
+    venue_capability_tests.cpp
+    ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
+    ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
+hepta_register_core_test(hepta_venue_capability_tests)
+
 add_custom_target(hepta_core_test_binaries
-    DEPENDS ${HEPTA_CORE_TEST_TARGETS})
+    DEPENDS ${HEPTA_CORE_TEST_TARGETS}
+        hepta_tool_gatewayd
+        hepta_executiond
+        hepta_ib_executiond
+        heptactl
+        hepta_sessionctl)
+# The validation target must link the actual production entry points, not
+# merely the libraries also used by tests. This executes the Gateway's
+# post-link privilege boundary in both ordinary and instrumented CI builds.
+if(TARGET hepta_paper_terminal_latch_committer)
+    add_dependencies(hepta_core_test_binaries hepta_paper_terminal_latch_committer)
+endif()

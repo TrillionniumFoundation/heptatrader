@@ -1,0 +1,3532 @@
+{
+  "schema": "heptatrader.build-targets.v1",
+  "coverage": {
+    "platform": "Linux",
+    "configuration": "Release",
+    "scope": "Targets and translation units exposed by CMake file-api codemodel for canonical core and IB SDK profiles. Imported/interface targets are not generally exposed; legacy monolith, legacy simulator, legacy bridge and IB probe are excluded.",
+    "ownership": "Implementation TUs use the most specific module-catalog implementation path; test TUs and generated CMake PCH TUs belong to their compiling target; external IB SDK TUs have no repository module owner."
+  },
+  "profiles": {
+    "core": {
+      "requires_ib_sdk": false,
+      "options": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "BUILD_IB_PROBE": "OFF",
+        "HEPTA_BUILD_LEGACY_MONOLITH": "OFF",
+        "HEPTA_BUILD_LEGACY_SIMULATOR": "OFF",
+        "HEPTA_ENABLE_LEGACY_0DTE_BRIDGE": "OFF",
+        "HEPTA_ENABLE_IBAPI": "OFF"
+      },
+      "targets": [
+        {
+          "name": "hepta_agent_execution_support",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/agent/decision_lease_manager.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/events/execution_event_hub.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_agent_os_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/agent_os_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/agent_os_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/execution_event_relay.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/execution_gateway_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/execution_gateway_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/session_supervisor_audit_journal.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/tool_decision_audit.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/tool_gateway_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/tool_gateway_session_policy.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_host.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_host_terminal.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_catalog.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_control_plane.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_recovery.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_watch_transaction.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_session_supervisor_server.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_tool_server.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_agent_simulator_e2e_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_simulator_runtime",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/agent_simulator_e2e_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_agent_simulator_e2e_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_authoritative_trading_snapshot_store_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/authoritative_trading_snapshot_store_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_authoritative_trading_snapshot_store_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_core_test_binaries",
+          "type": "UTILITY",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_simulator_e2e_tests",
+            "hepta_authoritative_trading_snapshot_store_tests",
+            "hepta_decision_lease_manager_tests",
+            "hepta_execution_coordinator_tests",
+            "hepta_execution_decision_lease_authority_tests",
+            "hepta_execution_event_feed_tests",
+            "hepta_execution_event_hub_tests",
+            "hepta_execution_gateway_runtime_composition_tests",
+            "hepta_executiond",
+            "hepta_ib_executiond",
+            "hepta_ib_live_terminal_reconciliation_tests",
+            "hepta_ib_order_lifecycle_tests",
+            "hepta_ib_paper_kill_switch_tests",
+            "hepta_native_tool_client_tests",
+            "hepta_oms_journal_durability_tests",
+            "hepta_oms_journal_schema_v4_tests",
+            "hepta_paper_terminal_latch_committer",
+            "hepta_pre_trade_risk_engine_tests",
+            "hepta_session_supervisor_lease_store_migration_tests",
+            "hepta_sessionctl",
+            "hepta_simulator_risk_runtime_tests",
+            "hepta_snapshot_refresh_coordinator_tests",
+            "hepta_tool_gatewayd",
+            "hepta_trading_contract_tests",
+            "hepta_trading_tool_host_tests",
+            "hepta_trading_tool_registry_tests",
+            "hepta_unix_session_supervisor_server_tests",
+            "hepta_unix_tool_server_tests",
+            "hepta_venue_capability_tests",
+            "heptactl"
+          ],
+          "translation_units": []
+        },
+        {
+          "name": "hepta_decision_lease_manager_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/agent/decision_lease_manager.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/decision_lease_manager_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_decision_lease_manager_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_execution_contract",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_event_feed_client.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_client.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_flatten_client.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_contract",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_event_feed.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_service_protocol.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_coordinator_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/oms_recover.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/execution_coordinator_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_coordinator_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_authoritative_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_authoritative_flatten_dispatch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_cancel.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_reconnect.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_recovery.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/paper_terminal_mutation_manifest.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/oms_journal.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_decision_lease_authority_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/execution_decision_lease_authority_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_decision_lease_authority_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_event_feed_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/execution_event_relay.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/execution_event_feed_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_event_feed_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_event_hub_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/events/owner_scoped_health_publisher.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/execution_event_hub_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_event_hub_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_gateway_runtime_composition_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/execution_gateway_runtime_composition_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_gateway_runtime_composition_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_server",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_execution_contract",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_decision_lease_authority.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_event_feed_server.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_flatten_permit.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_service_runtime",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_simulator_runtime"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_service_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_service_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_transport",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_event_feed_transport.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_transport.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_executiond",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_service_runtime",
+            "hepta_execution_transport",
+            "hepta_simulator_runtime"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/hepta_executiond.cpp",
+              "kind": "implementation",
+              "owner": "simulator",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_executiond",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ib/ib_api_wrapper.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_venue_correlation.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/hepta_ib_executiond.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_hook_authority.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_broker.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_event_drain.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_events.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_policy.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_quote_admission.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_recent_orders.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_startup.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_state.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/ib_authoritative_quote_subscription_set.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/ib_contract_identity.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_live_terminal_reconciliation_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ib/ib_api_wrapper.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_venue_correlation.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/ib_contract_identity.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_live_terminal_reconciliation_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_live_terminal_reconciliation_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_order_lifecycle_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_order_lifecycle_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_order_lifecycle_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_paper_kill_switch_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_paper_kill_switch_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_paper_kill_switch_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_native_tool_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/client/native_tool_client.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/client/native_tool_discovery_contract.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_tool_client.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_native_tool_client_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_native_tool_client",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/native_tool_client_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_native_tool_client_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_oms_journal_durability_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/oms_journal.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/oms_journal_durability_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_oms_journal_durability_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_oms_journal_schema_v4_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/oms_journal.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/oms_journal_schema_v4_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_oms_journal_schema_v4_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_paper_terminal_latch_committer",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/cli/hepta_paper_terminal_latch_committer.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/paper_terminal_external_latch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_pre_trade_risk_engine_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/pre_trade_risk_engine_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_pre_trade_risk_engine_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_session_supervisor_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/session_supervisor_lease_store.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/session_supervisor_protocol.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_session_supervisor_lease_store_migration_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/session_supervisor_lease_store_migration_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_session_supervisor_lease_store_migration_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_sessionctl",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_session_supervisor_core"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/cli/hepta_sessionctl.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/hepta_sessionctl_command.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/hepta_sessionctl_terminal_cleanup.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_session_supervisor_client.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_simulator_risk_runtime_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_service_runtime",
+            "hepta_execution_transport",
+            "hepta_simulator_runtime"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/simulator_risk_runtime_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_simulator_risk_runtime_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_simulator_runtime",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/simulator/deterministic_execution_venue.cpp",
+              "kind": "implementation",
+              "owner": "simulator",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_snapshot_refresh_coordinator_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/snapshot_refresh_coordinator.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/snapshot_refresh_coordinator_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_snapshot_refresh_coordinator_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_tool_gatewayd",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/hepta_tool_gatewayd.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_contract_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "tests/trading_contract_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_trading_contract_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_tool_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/ib_contract_identity.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tools/trading_tool_registry.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_tool_host_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/trading_tool_host_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_trading_tool_host_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_tool_registry_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_trading_tool_core"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/trading_tool_registry_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_trading_tool_registry_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_typed_tool_protocol",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/typed_tool_framing.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/typed_tool_protocol.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/typed_tool_result_codec.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_unix_session_supervisor_server_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [
+            "tests/unix_session_supervisor_test_prelude.h"
+          ],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_sessionctl",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/CMakeFiles/hepta_unix_session_supervisor_server_tests.dir/cmake_pch.hxx.cxx",
+              "kind": "generated_cmake_pch",
+              "owner": "hepta_unix_session_supervisor_server_tests",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/unix_session_supervisor_server_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_unix_session_supervisor_server_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_unix_tool_server_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_native_tool_client",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/unix_tool_client.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/unix_tool_server_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_unix_tool_server_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_venue_capability_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "ctp-adapter",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "xt-adapter",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/venue_capability_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_venue_capability_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "heptactl",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_native_tool_client",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/cli/heptactl.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/heptactl_command.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/heptactl_exit_codes.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        }
+      ]
+    },
+    "ib": {
+      "requires_ib_sdk": true,
+      "options": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BUILD_TESTING": "ON",
+        "BUILD_IB_PROBE": "OFF",
+        "HEPTA_BUILD_LEGACY_MONOLITH": "OFF",
+        "HEPTA_BUILD_LEGACY_SIMULATOR": "OFF",
+        "HEPTA_ENABLE_LEGACY_0DTE_BRIDGE": "OFF",
+        "HEPTA_ENABLE_IBAPI": "ON"
+      },
+      "targets": [
+        {
+          "name": "hepta_agent_execution_support",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/agent/decision_lease_manager.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/events/execution_event_hub.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_agent_os_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/agent_os_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/agent_os_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/execution_event_relay.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/execution_gateway_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/execution_gateway_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/session_supervisor_audit_journal.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/tool_decision_audit.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/tool_gateway_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/tool_gateway_session_policy.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_host.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_host_terminal.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_catalog.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_control_plane.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_session_recovery.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/trading_tool_watch_transaction.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_session_supervisor_server.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_tool_server.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_agent_simulator_e2e_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_simulator_runtime",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/agent_simulator_e2e_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_agent_simulator_e2e_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_authoritative_trading_snapshot_store_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/authoritative_trading_snapshot_store_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_authoritative_trading_snapshot_store_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_core_test_binaries",
+          "type": "UTILITY",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_simulator_e2e_tests",
+            "hepta_authoritative_trading_snapshot_store_tests",
+            "hepta_decision_lease_manager_tests",
+            "hepta_execution_coordinator_tests",
+            "hepta_execution_decision_lease_authority_tests",
+            "hepta_execution_event_feed_tests",
+            "hepta_execution_event_hub_tests",
+            "hepta_execution_gateway_runtime_composition_tests",
+            "hepta_executiond",
+            "hepta_ib_executiond",
+            "hepta_ib_live_terminal_reconciliation_tests",
+            "hepta_ib_order_lifecycle_tests",
+            "hepta_ib_paper_kill_switch_tests",
+            "hepta_native_tool_client_tests",
+            "hepta_oms_journal_durability_tests",
+            "hepta_oms_journal_schema_v4_tests",
+            "hepta_paper_terminal_latch_committer",
+            "hepta_pre_trade_risk_engine_tests",
+            "hepta_session_supervisor_lease_store_migration_tests",
+            "hepta_sessionctl",
+            "hepta_simulator_risk_runtime_tests",
+            "hepta_snapshot_refresh_coordinator_tests",
+            "hepta_tool_gatewayd",
+            "hepta_trading_contract_tests",
+            "hepta_trading_tool_host_tests",
+            "hepta_trading_tool_registry_tests",
+            "hepta_unix_session_supervisor_server_tests",
+            "hepta_unix_tool_server_tests",
+            "hepta_venue_capability_tests",
+            "heptactl"
+          ],
+          "translation_units": []
+        },
+        {
+          "name": "hepta_decision_lease_manager_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/agent/decision_lease_manager.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/decision_lease_manager_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_decision_lease_manager_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_execution_contract",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_event_feed_client.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_client.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_flatten_client.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_contract",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_event_feed.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_service_protocol.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_coordinator_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/oms_recover.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/execution_coordinator_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_coordinator_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_authoritative_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_authoritative_flatten_dispatch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_cancel.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_reconnect.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_recovery.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/paper_terminal_mutation_manifest.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/oms_journal.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_decision_lease_authority_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/execution_decision_lease_authority_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_decision_lease_authority_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_event_feed_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/execution_event_relay.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/execution_event_feed_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_event_feed_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_event_hub_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/events/owner_scoped_health_publisher.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/execution_event_hub_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_event_hub_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_gateway_runtime_composition_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/execution_gateway_runtime_composition_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_gateway_runtime_composition_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_server",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_execution_contract",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_decision_lease_authority.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_event_feed_server.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_flatten_permit.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_service_runtime",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_simulator_runtime"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_service_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_service_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_execution_transport",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/execution_event_feed_transport.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/unix_execution_service_transport.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_executiond",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_service_runtime",
+            "hepta_execution_transport",
+            "hepta_simulator_runtime"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/hepta_executiond.cpp",
+              "kind": "implementation",
+              "owner": "simulator",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_decimal_abi_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_ibapi_client"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/ib_decimal_abi_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_decimal_abi_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_executiond",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_ibapi_client"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ib/ib_api_wrapper.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_venue_correlation.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/hepta_ib_executiond.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_hook_authority.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_broker.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_composition.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_config.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_event_drain.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_events.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_policy.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_quote_admission.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_recent_orders.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_startup.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_state.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/ib_authoritative_quote_subscription_set.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/ib_contract_identity.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_live_terminal_reconciliation_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ib/ib_api_wrapper.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_venue_correlation.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/state/ib_contract_identity.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_live_terminal_reconciliation_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_live_terminal_reconciliation_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_order_lifecycle_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ib/ib_order_lifecycle.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_order_lifecycle_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_order_lifecycle_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_paper_kill_switch_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_paper_kill_switch_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_paper_kill_switch_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ibapi_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "ContractCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "Decimal.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "DefaultEWrapper.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EClient.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EClientSocket.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EDecoder.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EMessage.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EMutex.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EOrderDecoder.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EReader.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "EReaderOSSignal.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "ESocket.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "MarginCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "OperatorCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "OrderCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "PercentChangeCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "PriceCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "SoftDollarTier.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "StdAfx.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "TimeCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "Utils.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "VolumeCondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "executioncondition.cpp",
+              "kind": "external_ib_sdk",
+              "owner": null,
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_native_tool_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/client/native_tool_client.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/client/native_tool_discovery_contract.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_tool_client.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_native_tool_client_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_native_tool_client",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/native_tool_client_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_native_tool_client_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_oms_journal_durability_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/oms_journal.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/oms_journal_durability_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_oms_journal_durability_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_oms_journal_schema_v4_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/oms_journal.cpp",
+              "kind": "implementation",
+              "owner": "oms-journal",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/oms_journal_schema_v4_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_oms_journal_schema_v4_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_paper_terminal_latch_committer",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/cli/hepta_paper_terminal_latch_committer.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/paper_terminal_external_latch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_pre_trade_risk_engine_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/pre_trade_risk_engine_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_pre_trade_risk_engine_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_session_supervisor_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/session_supervisor_lease_store.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/session_supervisor_protocol.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_session_supervisor_lease_store_migration_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/session_supervisor_lease_store_migration_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_session_supervisor_lease_store_migration_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_sessionctl",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_session_supervisor_core"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/cli/hepta_sessionctl.cpp",
+              "kind": "implementation",
+              "owner": "session-supervisor",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/hepta_sessionctl_command.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/hepta_sessionctl_terminal_cleanup.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/unix_session_supervisor_client.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_simulator_risk_runtime_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_service_runtime",
+            "hepta_execution_transport",
+            "hepta_simulator_runtime"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/simulator_risk_runtime_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_simulator_risk_runtime_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_simulator_runtime",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/simulator/deterministic_execution_venue.cpp",
+              "kind": "implementation",
+              "owner": "simulator",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_snapshot_refresh_coordinator_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/snapshot_refresh_coordinator.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/snapshot_refresh_coordinator_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_snapshot_refresh_coordinator_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_tool_gatewayd",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/hepta_tool_gatewayd.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_contract_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "tests/trading_contract_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_trading_contract_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_tool_core",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/state/ib_contract_identity.cpp",
+              "kind": "implementation",
+              "owner": "authoritative-state",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tools/trading_tool_registry.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_tool_host_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/trading_tool_host_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_trading_tool_host_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_trading_tool_registry_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_trading_tool_core"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/trading_tool_registry_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_trading_tool_registry_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_typed_tool_protocol",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/typed_tool_framing.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/typed_tool_protocol.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/tool_host/typed_tool_result_codec.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_unix_session_supervisor_server_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [
+            "tests/unix_session_supervisor_test_prelude.h"
+          ],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_session_supervisor_core",
+            "hepta_sessionctl",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/CMakeFiles/hepta_unix_session_supervisor_server_tests.dir/cmake_pch.hxx.cxx",
+              "kind": "generated_cmake_pch",
+              "owner": "hepta_unix_session_supervisor_server_tests",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/unix_session_supervisor_server_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_unix_session_supervisor_server_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_unix_tool_server_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport",
+            "hepta_native_tool_client",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/tool_host/unix_tool_client.cpp",
+              "kind": "implementation",
+              "owner": "tool-gateway",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/unix_tool_server_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_unix_tool_server_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_venue_capability_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "ctp-adapter",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
+              "kind": "implementation",
+              "owner": "xt-adapter",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/venue_capability_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_venue_capability_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "heptactl",
+          "type": "EXECUTABLE",
+          "declared_in": "HeptaTrade/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_native_tool_client",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/cli/heptactl.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/heptactl_command.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/cli/heptactl_exit_codes.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

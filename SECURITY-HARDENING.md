@@ -1,39 +1,28 @@
-# Hepta 安全加固（Step 1：Secrets 外置）
+# HeptaTrader security hardening
 
-本步骤目标：**彻底避免账号/密码/AuthCode 明文进入仓库**。
+Status: CURRENT  
+Applies to: canonical runtime
 
-## 1) 原则
-- 仓库中只保留 `*Config.xml.example` 模板。
-- 实际凭据从本机环境变量注入（或启动前生成本地私有配置）。
-- 真实配置文件不提交版本库。
+## Secret boundary
 
-## 2) 建议环境变量
-- `HEPTA_MD_FRONT`
-- `HEPTA_TD_FRONT`
-- `HEPTA_BROKER_ID`
-- `HEPTA_USER_ID`
-- `HEPTA_PASSWORD`
-- `HEPTA_APP_ID`
-- `HEPTA_AUTH_CODE`
-- `HEPTA_PRODUCT_INFO`
+The repository contains templates only. Broker login material, Agent session tokens, authorization credentials, operator keys, and GitHub governance tokens are delivered by protected deployment or CI credential facilities and are never committed, logged, placed in ordinary artifacts, or passed to untrusted candidate code.
 
-## 3) 本机生成配置（推荐）
-使用 `scripts/render_hepta_config.ps1` 从 `HeptaTraderConfig.xml.example` 生成本机私有 `HeptaTraderConfig.xml`。
-脚本会强制校验必填环境变量、拒绝写回 `.example`，并采用临时文件原子替换，避免半写入配置。
+Each untrusted Agent uses a distinct OS identity, token, socket, session, and trust domain. The Tool Gateway and Agent cannot read broker credentials or connect to protected broker API ports. Only the dedicated IB PAPER Execution identity may receive those capabilities.
 
-示例：
-```powershell
-pwsh -File scripts/render_hepta_config.ps1 \
-  -Template ".\HeptaTrade\HeptaTraderConfig.xml.example" \
-  -Output ".\HeptaTrade\HeptaTraderConfig.xml"
-```
+## Filesystem boundary
 
-## 4) 发布前检查
-- 确认仓库内 `HeptaTraderConfig.xml` 不含真实凭据。
-- 执行关键词扫描：`UserID=`, `PassWord=`, `AuthCode=`。
-- 运行 `scripts/hepta_secrets_check.ps1 -StrictEnv`，在发布/CI 场景将缺失环境变量视为失败。
-- CI 中加入 secrets 扫描（建议）。
+Security-sensitive readers reject symlinks, unsafe hard links, unexpected owner/mode/type/size, metadata changes during read, and non-canonical paths. Durable state uses file synchronization, atomic replacement, and directory synchronization where applicable. Uncertainty fails closed.
 
-## 5) 你当前状态（已完成）
-- 明文凭据已清空。
-- `.gitignore` 已增强，避免配置与构建垃圾误提交。
+## Runtime boundary
+
+- Execution is the sole order authority.
+- Risk-increasing mutations are journaled before send and idempotent by command ID.
+- Authoritative quote/state, owner generation, kill switch, profile credential, and venue correlation are revalidated at the final authority.
+- Cancel/reduce/flatten are explicit guarded exit paths.
+- CTP and XT have no transport; LIVE is unavailable.
+
+## Qualification boundary
+
+Source correctness, live GitHub governance, runner/environment trust, and broker-observed PAPER evidence are separate claims. Candidate source is treated as hostile data inside privileged workflows. Missing live controls or receipts never becomes an implicit pass.
+
+See [`docs/index.md`](docs/index.md), [`docs/modules/ib-paper.md`](docs/modules/ib-paper.md), and [`docs/BROKER-NETWORK-ISOLATION.md`](docs/BROKER-NETWORK-ISOLATION.md).

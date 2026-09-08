@@ -1813,11 +1813,113 @@ void TestRecoveryOnlySessionOwnerIsDurableAndAllowsOwnedCancel()
     std::remove(path.c_str());
 }
 
+void TestTwoPhaseActivationDurabilityAndRecovery()
+{
+    for (int outcome = 0; outcome < 6; ++outcome)
+    {
+        const std::string path = TempJournalPath();
+        OmsJournal journal;
+        assert(journal.Init(path));
+        int reservations = 0;
+        int activations = 0;
+        bool projected = false;
+        ExecutionCoordinatorCallbacks callbacks;
+        callbacks.placeIbOrder = [&](const InstrumentRef&, const OrderIntent&, long* id) {
+            ++reservations;
+            *id = 1701;
+            return true;
+        };
+        callbacks.onIbOrderPlaced = [&](const IbPlaceOrderCommand&, long, std::string*) {
+            projected = true;
+            // Fail before activation, once at projection and once at receipt IO.
+            if (outcome == 4) assert(::unlink(path.c_str()) == 0);
+            return outcome != 3;
+        };
+        callbacks.activatePlacedOrder = [&](long id, std::string* reason) {
+            ++activations;
+            assert(id == 1701 && projected);
+            int receipts = 0;
+            assert(journal.Replay([&](const OmsJournalEvent& event) {
+                if (event.eventType == "place_sent" && event.orderId == id) ++receipts;
+            }) >= 0);
+            assert(receipts == 1);
+            assert(journal.GetHealthSnapshot().durableSyncWrites >= 3);
+            // The durable prefix is exactly what a process crash before or
+            // during activation leaves behind. It must never replay accepted.
+            ExecutionCoordinator interrupted(journal, callbacks);
+            std::string recoveryReason;
+            assert(!interrupted.RecoverFromJournal(recoveryReason));
+            assert(interrupted.IsMutationBlocked());
+            ExecutionCommandResult interruptedStatus;
+            assert(interrupted.GetCommandStatus("agent-a", "session-1", "two-phase", interruptedStatus));
+            assert(interruptedStatus.status == ExecutionCommandStatus::Uncertain);
+            if (outcome == 2) throw std::runtime_error("activation threw");
+            if (outcome == 1) *reason = "activation rejected";
+            if (outcome == 5) assert(::unlink(path.c_str()) == 0);
+            return outcome == 0 || outcome == 5;
+        };
+        ExecutionCoordinator coordinator(journal, callbacks);
+        const IbPlaceOrderCommand command = MakePlace("two-phase");
+        const ExecutionCommandResult result = coordinator.PlaceIbOrder(command);
+        assert(reservations == 1);
+        assert(activations == (outcome == 3 || outcome == 4 ? 0 : 1));
+        if (outcome == 0)
+        {
+            assert(result.status == ExecutionCommandStatus::Accepted);
+            assert(coordinator.PlaceIbOrder(command).status == ExecutionCommandStatus::Duplicate);
+            assert(reservations == 1 && activations == 1);
+            ExecutionCoordinator recovered(journal, callbacks);
+            std::string reason;
+            assert(recovered.RecoverFromJournal(reason));
+            ExecutionOrderOwner owner;
+            assert(recovered.GetOrderOwner(1701, owner));
+            assert(recovered.PlaceIbOrder(command).status == ExecutionCommandStatus::Duplicate);
+            assert(recovered.RecordOrderTerminalDurably(1701, &reason));
+            assert(!recovered.GetOrderOwner(1701, owner));
+            assert(recovered.RecordOrderTerminalDurably(1701, &reason));
+            int terminalEvents = 0;
+            assert(journal.Replay([&](const OmsJournalEvent& event) {
+                if (event.eventType == "order_owner_reconciled_terminal") ++terminalEvents;
+            }) >= 0);
+            assert(terminalEvents == 1);
+            ExecutionCoordinator terminalReplay(journal, callbacks);
+            assert(terminalReplay.RecoverFromJournal(reason));
+            assert(!terminalReplay.GetOrderOwner(1701, owner));
+        }
+        else
+        {
+            assert(result.status == ExecutionCommandStatus::Uncertain);
+            assert(coordinator.IsMutationBlocked());
+            assert(coordinator.PlaceIbOrder(command).status == ExecutionCommandStatus::Uncertain);
+            assert(reservations == 1);
+        }
+        if (outcome == 1 || outcome == 2)
+        {
+            std::vector<std::string> events;
+            assert(journal.Replay([&](const OmsJournalEvent& event) {
+                events.push_back(event.eventType);
+            }) == 4);
+            assert(events[2] == "place_sent");
+            assert(events[3] == "place_outcome_uncertain");
+            ExecutionCoordinator recovered(journal, callbacks);
+            std::string reason;
+            assert(!recovered.RecoverFromJournal(reason));
+            assert(recovered.IsMutationBlocked());
+            const ExecutionCommandResult retry = recovered.PlaceIbOrder(command);
+            assert(retry.status == ExecutionCommandStatus::Uncertain);
+            assert(retry.reasonCode == "IB_PLACE_OUTCOME_UNCERTAIN");
+            assert(reservations == 1 && activations == 1);
+        }
+        std::remove(path.c_str());
+    }
+}
+
 } // namespace
 
 int main()
 {
     TestJournalBeforeSendAndDuplicate();
+    TestTwoPhaseActivationDurabilityAndRecovery();
     TestJournalFailurePreventsBrokerSend();
     TestVenueCorrelationBindsCommandIdentity();
     TestPlaceCallbackUncertaintyAndReliableReject();

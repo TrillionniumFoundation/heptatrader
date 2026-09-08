@@ -10,10 +10,16 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
+TESTS = Path(__file__).resolve().parent
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+if str(TESTS) not in sys.path:
+    sys.path.insert(0, str(TESTS))
 
 import check_qualification_trust_boundary as boundary  # noqa: E402
+from test_team_codeowners_activation import (  # noqa: E402,F401
+    TeamCodeownersActivationTests,
+)
 import verify_ib_candidate_artifact as artifact  # noqa: E402
 import verify_qualification_candidate as admission  # noqa: E402
 
@@ -24,6 +30,37 @@ IMAGE_ID = "sha256:" + "b" * 64
 
 
 class QualificationTrustBoundaryTests(unittest.TestCase):
+    def test_decimal_archive_is_bound_by_sdk_tree_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "sdk"
+            source.mkdir()
+            (source / "Decimal.h").write_text("SDK fixture\n", encoding="utf-8")
+            archive = source / "libbid.a"
+            archive.write_bytes(b"!<arch>\nreviewed decimal archive\n")
+            before = artifact.hash_tree(source)
+            snapshot = root / "snapshot"
+            self.assertEqual(artifact.snapshot_tree(source, snapshot), before)
+            self.assertEqual(artifact.hash_tree(snapshot), before)
+            archive.write_bytes(b"!<arch>\nsubstituted decimal archive\n")
+            self.assertNotEqual(artifact.hash_tree(source), before)
+            self.assertEqual(artifact.hash_tree(snapshot), before)
+
+    def test_decimal_dependency_cannot_escape_pinned_sdk_snapshot(self) -> None:
+        for replacement in ("", "-DIBAPI_DECIMAL_LIBRARY=/tmp/libbid.a",
+                            "-DIBAPI_DECIMAL_LIBRARY=$HOST_LIBRARY",
+                            "-DIBAPI_DECIMAL_LIBRARY=/sdk/libbid.a -DIBAPI_DECIMAL_LIBRARY=/tmp/override.a"):
+            with self.subTest(replacement=replacement), tempfile.TemporaryDirectory() as directory:
+                fixture = Path(directory)
+                for relative in (*boundary.TRUSTED_FILES, boundary.GOVERNANCE, boundary.IB):
+                    target = fixture / relative
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(ROOT / relative, target)
+                path = fixture / "scripts/build_ib_candidate_artifact.sh"
+                path.write_text(path.read_text(encoding="utf-8").replace(
+                    "-DIBAPI_DECIMAL_LIBRARY=/sdk/libbid.a", replacement), encoding="utf-8")
+                self.assertTrue(any("Intel BID archive" in error for error in boundary.validate(fixture)))
+
     def test_repository_workflows_keep_candidate_code_out_of_privileged_jobs(self) -> None:
         self.assertEqual(boundary.validate(ROOT), [])
 

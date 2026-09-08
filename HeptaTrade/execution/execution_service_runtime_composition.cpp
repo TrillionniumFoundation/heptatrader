@@ -3,6 +3,7 @@
 #include "execution_decision_lease_authority.h"
 #include "execution_event_feed_server.h"
 #include "unix_execution_service_server.h"
+#include <algorithm>
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -450,6 +451,8 @@ private:
             return Reject(command.context, "TOOL_CALL_EXPIRED",
                 "order command expired before authoritative preview/place", -1);
         if (command.instrument.empty() || command.contract.symbol.empty() ||
+            command.instrument != (command.contract.currency.empty() ?
+                command.contract.symbol : command.contract.symbol + "." + command.contract.currency) ||
             command.timeInForce != "DAY" ||
             (command.order.action != "BUY" && command.order.action != "SELL") ||
             (command.order.orderType != "MKT" &&
@@ -479,6 +482,9 @@ private:
         if (!quote.IsFresh(now))
             return Reject(command.context, "AUTHORITATIVE_QUOTE_STALE",
                 "Execution-owned quote is not fresh", -1);
+        const PreTradeRiskDecision risk = m_venue.PreviewRisk(command.contract, command.order);
+        if (!risk.allow)
+            return Reject(command.context, risk.reasonCode, risk.detail, -1);
         ExecutionCommandResult accepted;
         accepted.status = ExecutionCommandStatus::Accepted;
         accepted.commandId = command.context.toolCallId;
@@ -594,8 +600,42 @@ bool ExecutionServiceRuntimeComposition::LoadFenceCredential(std::string& reason
 bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reason)
 {
     long maximumOrderId = 999999;
-    const int replayed = m_journal.Replay([&maximumOrderId](const OmsJournalEvent& event) {
+    std::map<long, OmsJournalEvent> admitted;
+    std::map<long, OmsJournalEvent> fills;
+    bool valid = true;
+    const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
         if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
+        const bool fill = event.eventType == "status" && event.status == "Filled";
+        if (event.eventType != "place_sent" && !fill) return;
+        if (event.orderId < 0 || event.venue != "SIMULATOR" || event.account != "SIM" ||
+            event.instrument.empty() || (event.side != "BUY" && event.side != "SELL") ||
+            !std::isfinite(event.qty) || event.qty <= 0.0)
+        {
+            valid = false;
+            return;
+        }
+        if (!fill)
+        {
+            const auto prior = admitted.find(event.orderId);
+            if (prior != admitted.end() &&
+                (prior->second.instrument != event.instrument || prior->second.side != event.side ||
+                 prior->second.qty != event.qty || prior->second.reqId != event.reqId ||
+                 prior->second.requestHash != event.requestHash))
+                valid = false;
+            admitted[event.orderId] = event;
+            return;
+        }
+        const auto owner = admitted.find(event.orderId);
+        if (!std::isfinite(event.price) || event.price <= 0.0 ||
+            owner == admitted.end() || owner->second.instrument != event.instrument ||
+            owner->second.side != event.side || owner->second.qty != event.qty)
+            valid = false;
+        const auto prior = fills.find(event.orderId);
+        if (prior != fills.end() &&
+            (prior->second.instrument != event.instrument || prior->second.side != event.side ||
+             prior->second.qty != event.qty || prior->second.price != event.price))
+            valid = false;
+        fills[event.orderId] = event;
     });
     if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
     {
@@ -603,6 +643,24 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
             "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
         return false;
     }
+    if (!valid)
+    {
+        reason = "EXECUTION_SIMULATOR_RISK_REPLAY_CONFLICT";
+        return false;
+    }
+    std::map<std::string, double> positions;
+    for (const auto& fill : fills)
+    {
+        const auto& event = fill.second;
+        positions[event.instrument] += event.side == "BUY" ? event.qty : -event.qty;
+        if (!std::isfinite(positions[event.instrument]))
+        {
+            reason = "EXECUTION_SIMULATOR_POSITION_REPLAY_OVERFLOW";
+            return false;
+        }
+    }
+    if (!m_venue.RestoreRiskState(positions, static_cast<std::uint64_t>(admitted.size()), reason))
+        return false;
     m_venue.RestoreNextOrderIdAtLeast(maximumOrderId + 1);
     reason.clear();
     return true;
@@ -623,16 +681,26 @@ void ExecutionServiceRuntimeComposition::RefreshSimulatorQuotes()
 }
 void ExecutionServiceRuntimeComposition::SimulatorQuoteFeedLoop()
 {
+    auto nextQuote = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(m_config.simulatorQuoteRefreshIntervalMs);
     std::unique_lock<std::mutex> lock(m_quoteFeedMutex);
     while (!m_quoteFeedStop)
     {
         if (m_quoteFeedChanged.wait_for(lock,
                 std::chrono::milliseconds(
-                    m_config.simulatorQuoteRefreshIntervalMs),
+                    std::min<std::uint64_t>(20, m_config.simulatorQuoteRefreshIntervalMs)),
                 [this]() { return m_quoteFeedStop; }))
             break;
         lock.unlock();
-        RefreshSimulatorQuotes();
+        if (std::chrono::steady_clock::now() >= nextQuote)
+        {
+            RefreshSimulatorQuotes();
+            nextQuote = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(m_config.simulatorQuoteRefreshIntervalMs);
+        }
+        // Process runs in production too. Reserved orders cannot emit events
+        // until their owner and place_sent marker have committed durably.
+        if (m_lifecycleGate->ready.load()) m_venue.Process();
         lock.lock();
     }
     m_quoteFeedRunning.store(false);
@@ -721,12 +789,24 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         CloseUnconsumedListenFd();
         return false;
     }
+    PreTradeRiskConfig simulatorRisk;
+    simulatorRisk.enableOrderSubmission = true;
+    simulatorRisk.maxOrderQuantity = 1000.0;
+    simulatorRisk.maxDailyOrders = 10000;
+    simulatorRisk.maxPriceDeviationBps = 0.0;
+    simulatorRisk.maxOrderNotional = 2500.0;
+    simulatorRisk.maxWorstCaseGrossNotional = 10000.0;
+    simulatorRisk.maxSnapshotAgeMs = static_cast<std::int64_t>(m_config.simulatorQuoteTtlMs);
+    m_venue.SetRiskConfig(simulatorRisk);
     ExecutionCoordinatorCallbacks callbacks;
     callbacks.placeIbOrderCorrelated = [this](const InstrumentRef& contract,
                                               const OrderIntent& order,
                                               const std::string& correlationId,
                                               long* orderId) {
-        return m_venue.PlaceOrderCorrelated(contract, order, correlationId, orderId);
+        return m_venue.PlaceOrderCorrelated(contract, order, correlationId, orderId, false);
+    };
+    callbacks.activatePlacedOrder = [this](long orderId, std::string* detail) {
+        return m_venue.ActivateOrder(orderId, detail);
     };
     callbacks.cancelIbOrder = [this](long orderId) { return m_venue.CancelOrder(orderId); };
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
@@ -739,12 +819,14 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         event.executionDomain = command.context.executionDomain;
         event.agentId = command.context.agentId;
         event.sessionId = command.context.sessionId;
-        event.type = "order.accepted";
+        // The owner projection precedes its durable commit and activation.
+        // This observation is a reservation, never accepted/fill evidence.
+        event.type = "order.reserved";
         event.venue = "SIMULATOR";
         event.orderId = orderId;
         event.instrument = command.instrument;
         event.side = command.order.action;
-        event.status = "Accepted";
+        event.status = "Reserved";
         event.remainingQuantity = command.order.totalQuantity;
         return m_eventHub->Publish(event) != 0;
     };
@@ -767,6 +849,63 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         return m_decisionLeases->Validate(context, instrument, detail);
     };
     m_coordinator.reset(new ExecutionCoordinator(m_journal, callbacks));
+    m_venue.SetEventSink([this](const SimulatedOrderEvent& simulated) {
+        auto failClosed = [this]() {
+            m_lifecycleGate->ready.store(false);
+            std::string ignored;
+            m_coordinator->BeginBrokerReconnectFence(ignored);
+        };
+        ExecutionOrderOwner owner;
+        if (!m_coordinator->GetOrderOwner(simulated.orderId, owner))
+        {
+            failClosed();
+            return;
+        }
+        OmsJournalEvent record;
+        record.eventType = "status";
+        record.tsMs = OmsJournal::NowEpochMs();
+        record.orderId = simulated.orderId;
+        record.source = "agent:" + owner.agentId;
+        record.traceId = owner.sessionId;
+        record.account = owner.account;
+        record.executionDomain = owner.executionDomain;
+        record.instrument = simulated.instrument;
+        record.side = simulated.side;
+        record.status = simulated.status;
+        record.qty = simulated.filledQuantity;
+        record.price = simulated.averageFillPrice;
+        record.venue = "SIMULATOR";
+        record.reqId = "sim-status-" + std::to_string(simulated.orderId) + "-" + simulated.status;
+        if (!m_journal.Append(record))
+        {
+            failClosed();
+            return;
+        }
+        ExecutionEvent event;
+        event.executionDomain = owner.executionDomain;
+        event.agentId = owner.agentId;
+        event.sessionId = owner.sessionId;
+        event.type = simulated.status == "Filled" ? "order.fill" : "order.status";
+        event.venue = "SIMULATOR";
+        event.orderId = simulated.orderId;
+        event.instrument = simulated.instrument;
+        event.side = simulated.side;
+        event.status = simulated.status;
+        event.filledQuantity = simulated.filledQuantity;
+        event.remainingQuantity = simulated.remainingQuantity;
+        event.averageFillPrice = simulated.averageFillPrice;
+        if (m_eventHub->Publish(event) == 0)
+        {
+            failClosed();
+            return;
+        }
+        if (simulated.status == "Filled" || simulated.status == "Cancelled")
+        {
+            std::string terminalReason;
+            if (!m_coordinator->RecordOrderTerminalDurably(simulated.orderId, &terminalReason))
+                failClosed();
+        }
+    });
     std::string recoveryReason;
     if (!m_coordinator->RecoverFromJournal(recoveryReason)) m_recoveryReason = recoveryReason;
     else m_recoveryReason.clear();

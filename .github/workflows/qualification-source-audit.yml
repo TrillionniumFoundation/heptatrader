@@ -1,0 +1,140 @@
+name: Qualification Source Audit
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-qualification-source-audit-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  audit:
+    name: qualification-source-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact pull-request or merge-group identity
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EVENT_REF: ${{ github.ref }}
+          EVENT_BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          case "$EVENT_NAME" in
+            pull_request)
+              test "$EVENT_BASE_REF" = main
+              ;;
+            merge_group)
+              [[ "$EVENT_REF" == refs/heads/gh-readonly-queue/main/pr-* ]]
+              ;;
+            *)
+              echo "unsupported event: $EVENT_NAME" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Validate base qualification source on an unprivileged hosted runner
+        shell: bash
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/qualification-source-audit-pycache
+          XDG_CACHE_HOME: ${{ runner.temp }}/qualification-source-audit-cache
+        run: |
+          set -euo pipefail
+          git diff --check
+          docker version
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
+          python3 -m py_compile \
+            scripts/github_qualification_evidence.py \
+            scripts/verify_github_governance.py \
+            scripts/verify_ib_paper_qualification.py \
+            scripts/verify_ib_candidate_artifact.py \
+            scripts/verify_qualification_candidate.py \
+            scripts/check_qualification_trust_boundary.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          for pattern in \
+            test_governance_bootstrap_admission.py \
+            test_self_hosted_ib_availability.py \
+            test_github_governance.py \
+            test_ib_paper_qualification.py \
+            test_qualification_trust_boundary.py; do
+            python3 -m unittest discover -s tests/python -p "$pattern"
+          done
+
+      - name: Validate team-governance extension when present
+        shell: bash
+        env:
+          PYTHONPYCACHEPREFIX: ${{ runner.temp }}/qualification-source-extension-pycache
+          XDG_CACHE_HOME: ${{ runner.temp }}/qualification-source-extension-cache
+        run: |
+          set -euo pipefail
+          extension_files=(
+            .github/CODEOWNERS.team-template
+            .github/github-team-mapping-v1.json
+            scripts/check_bootstrap_postflight.py
+            scripts/verify_bootstrap_postflight_contract.py
+            scripts/verify_exact_git_index.py
+            scripts/verify_team_codeowners_activation.py
+            tests/python/test_bootstrap_postflight.py
+            tests/python/test_bootstrap_postflight_contract.py
+            tests/python/test_git_index_authority.py
+            tests/python/test_ib_workflow_interfaces.py
+            tests/python/test_team_codeowners_activation.py
+          )
+          present=0
+          for path in "${extension_files[@]}"; do
+            if [[ -e "$path" || -L "$path" ]]; then
+              present=$((present + 1))
+            fi
+          done
+          if (( present != 0 && present != ${#extension_files[@]} )); then
+            echo "partial team-governance extension is not admissible" >&2
+            exit 3
+          fi
+          if (( present == ${#extension_files[@]} )); then
+            python3 -m py_compile \
+              scripts/check_bootstrap_postflight.py \
+              scripts/verify_bootstrap_postflight_contract.py \
+              scripts/verify_exact_git_index.py \
+              scripts/verify_team_codeowners_activation.py
+            python3 scripts/verify_bootstrap_postflight_contract.py --self-test
+            python3 scripts/check_bootstrap_postflight.py
+            python3 scripts/verify_team_codeowners_activation.py
+            for pattern in \
+              test_bootstrap_postflight.py \
+              test_bootstrap_postflight_contract.py \
+              test_git_index_authority.py \
+              test_ib_workflow_interfaces.py \
+              test_team_codeowners_activation.py; do
+              python3 -m unittest discover -s tests/python -p "$pattern"
+            done
+          fi
+
+      - name: Reassert immutable event subject
+        if: always()
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          test -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)"

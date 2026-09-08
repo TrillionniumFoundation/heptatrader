@@ -1,4 +1,5 @@
 #include "ib_paper_execution_runtime_internal.h"
+#include "../adapter_ib/ib_market_data_farm.h"
 
 #include <algorithm>
 #include <chrono>
@@ -330,13 +331,8 @@ IbPaperExecutionRuntimeComposition::HandleAdapterControlEvent(
     int controlErrorCode = 0;
     const bool brokerControlError = event.type == IBEventType::Error &&
         ParseBrokerErrorCode(event.key, controlErrorCode);
-    std::string farmDescription = event.value;
-    std::transform(farmDescription.begin(), farmDescription.end(),
-                   farmDescription.begin(), [](unsigned char value) {
-        return static_cast<char>(std::tolower(value));
-    });
     const bool cashMarketDataFarm =
-        farmDescription.find("cashfarm") != std::string::npos;
+        IsSupportedIbCashMarketDataFarm(event.value);
     const bool currentBrokerEpoch =
         IsCurrentBrokerEpoch(m_adapter.get(), event.connectionEpoch);
     if (brokerControlError && currentBrokerEpoch &&

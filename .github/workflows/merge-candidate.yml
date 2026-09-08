@@ -1,0 +1,62 @@
+name: Exact Merge Candidate
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-merge-candidate-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  exact-merge:
+    name: exact-merge-candidate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout exact merge/event revision without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Assert exact event revision
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Validate exact candidate
+        env:
+          HEPTA_JOBS: "2"
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+
+      - name: Reassert exact candidate bytes
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .

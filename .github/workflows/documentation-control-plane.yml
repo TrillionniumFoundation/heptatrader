@@ -1,0 +1,64 @@
+name: Documentation Control Plane
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-documentation-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  documentation:
+    name: documentation-control-plane-exact-head
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install build-model validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
+
+      - name: Validate documentation, build ownership, capability, gap and profile truth sources
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_documentation_control_plane.py'
+          python3 -m unittest discover -s tests/python -p 'test_build_ownership.py'
+          python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
+          python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
+          python3 -m unittest discover -s tests/python -p 'test_research_contract_smoke.py'
+
+      - name: Reassert clean exact source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .

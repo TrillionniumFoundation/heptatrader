@@ -372,6 +372,10 @@ private:
     void ApplyActiveCorrelationEvent(const IBEvent& event,
                                      bool acceptedBrokerOpenOrder);
     void ApplyTerminalCorrelationEvent(const IBEvent& event);
+    void ApplyLiveTerminalEvidence(const IBEvent& event);
+    void PublishLiveTerminalEvidence(long orderId);
+    bool IsConsistentBoundOrderStatus(const IBEvent& event) const;
+    bool IsConsistentBoundLiveExecution(const IBEvent& event) const;
     void PublishPositionEvent(const IBEvent& event);
     bool MergeIncrementalActiveOrder(long orderId,
                                      const std::string& correlationId);
@@ -459,6 +463,21 @@ private:
     std::map<std::string, std::string> m_pendingTerminalStatuses;
     std::map<long, std::string> m_pendingTerminalCorrelationsByOrderId;
     std::set<long> m_pendingExecutionOrderIds;
+    // Live execution/terminal proof for orders actually submitted by this
+    // adapter incarnation. Never reconstruct these bindings from orderStatus.
+    struct LiveTerminalBinding {
+        std::uint64_t connectionEpoch = 0;
+        std::string correlationId;
+        IBContractLite contract;
+        std::string side;
+        double quantity = 0.0;
+        double executionQuantity = 0.0;
+        double executionAveragePrice = 0.0;
+        double publishedExecutionQuantity = 0.0;
+        std::string terminalStatus;
+        double terminalFilledQuantity = 0.0;
+    };
+    std::map<long, LiveTerminalBinding> m_liveTerminalBindings;
     std::uint64_t m_exposureGeneration = 0;
     std::uint64_t m_riskGeneration = 0;
     bool m_coherentRiskRefreshDispatching = false;

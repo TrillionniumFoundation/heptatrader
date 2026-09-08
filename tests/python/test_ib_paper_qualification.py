@@ -33,7 +33,13 @@ def sha256(data: bytes) -> str:
 
 
 def write_private(path: Path, data: bytes, executable: bool = False) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    missing_parents = []
+    parent = path.parent
+    while not parent.exists():
+        missing_parents.append(parent)
+        parent = parent.parent
+    for parent in reversed(missing_parents):
+        parent.mkdir(mode=0o700)
     path.write_bytes(data)
     path.chmod(0o700 if executable else 0o600)
 
@@ -160,6 +166,26 @@ class QualificationFixture:
 
 
 class IbPaperQualificationTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "posix", "qualification metadata requires POSIX")
+    def test_private_evidence_is_accepted_under_permissive_umask(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            previous_umask = os.umask(0)
+            try:
+                fixture = QualificationFixture(Path(directory))
+            finally:
+                os.umask(previous_umask)
+            result = fixture.verify()
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+    @unittest.skipUnless(os.name == "posix", "qualification metadata requires POSIX")
+    def test_group_writable_evidence_parent_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = QualificationFixture(Path(directory))
+            (fixture.root / "scenarios").chmod(0o770)
+            result = fixture.verify()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("group/world writable", result.stderr)
+
     @unittest.skipUnless(os.name == "posix", "qualification metadata requires POSIX")
     def test_valid_complete_evidence_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

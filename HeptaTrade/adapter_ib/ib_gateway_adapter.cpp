@@ -244,6 +244,7 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_postFillExposureGenerationByOrderId.clear();
     m_observedEconomicFillQuantityByOrderId.clear();
     m_orderRiskBaselines.clear();
+    m_liveTerminalBindings.clear();
     m_terminalCorrelationGeneration = 0;
     m_terminalCorrelationRequestIssuedForEpoch = false;
     m_terminalExecutionRequestId = 0;

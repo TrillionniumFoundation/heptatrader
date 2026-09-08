@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <queue>
+#include <unordered_map>
 
 struct IBConnectParams {
     std::string host = "127.0.0.1";
@@ -21,6 +22,35 @@ struct IBConnectParams {
     // FX balances cannot be aggregated across accounts.
     std::string account;
     bool readOnly = false;
+};
+
+// The SDK's numeric order id is client-scoped. Keep the quantity used for
+// synthetic execution statuses separate from callbacks for another client or
+// account; otherwise an unrelated terminal callback can erase our send.
+struct IBEvent;
+bool MatchesSubmittedIBContract(const IBContractLite& submitted,
+                                const IBContractLite& observed);
+class IBSubmittedOrderQuantityTracker {
+public:
+    void Reset(std::uint64_t connectionEpoch, int clientId,
+               const std::string& account);
+    void Record(long orderId, const IBContractLite& contract,
+                const IBOrderLite& order);
+    void ObserveOrderStatus(int clientId, long orderId,
+                            const std::string& status, double filled,
+                            double remaining, double averagePrice);
+    // Returns the actual submitted total only for a matching economic
+    // execution. A full fill consumes it after returning that total.
+    double ObserveExecution(const IBEvent& event);
+private:
+    struct SubmittedOrder {
+        IBContractLite contract;
+        IBOrderLite order;
+    };
+    std::uint64_t m_connectionEpoch = 0;
+    int m_clientId = -1;
+    std::string m_account;
+    std::unordered_map<long, SubmittedOrder> m_orders;
 };
 
 enum class IBEventType {
@@ -47,8 +77,8 @@ enum class IBEventType {
     OpenOrderEnd,
     // Broker-owned terminal evidence. CompletedOrder carries the original
     // Order.orderRef so it can be joined to the service-owned correlation;
-    // ExecutionDetails carries the broker order id but never invents a
-    // correlation on its own.
+    // ExecutionDetails also preserves Execution.orderRef exactly as echoed
+    // by the broker; it never invents a correlation from the numeric order id.
     CompletedOrder,
     CompletedOrdersEnd,
     ExecutionDetails,
@@ -64,6 +94,9 @@ struct IBEvent {
     // broker order id in `id`.
     long long requestId = 0;
     std::uint64_t connectionEpoch = 0;
+    // Broker-supplied API client identity. Unknown must never authorize
+    // incremental terminal evidence for an order submitted by this client.
+    int brokerClientId = -1;
     std::string account;
     std::string key;
     std::string value;

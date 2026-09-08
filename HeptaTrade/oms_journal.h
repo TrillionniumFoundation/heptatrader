@@ -101,10 +101,6 @@ private:
     static std::string EscapeJson(const std::string& s);
     static std::string BuildJsonLine(const OmsJournalEvent& evt);
     static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
-    static std::string JsonGetString(const std::string& json, const std::string& key);
-    static long long JsonGetLong(const std::string& json, const std::string& key,
-                                 long long defVal);
-    static double JsonGetDouble(const std::string& json, const std::string& key, double defVal);
 
 private:
     std::string m_path;

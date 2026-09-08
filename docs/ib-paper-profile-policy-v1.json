@@ -1,0 +1,13 @@
+{
+  "schema": "heptatrader.ib-paper-profile-policy.v1",
+  "execution_mode": "PAPER",
+  "allowed_hosts": ["127.0.0.1", "::1"],
+  "allowed_ports": [4002, 7497],
+  "maximum_active_orders": 1,
+  "maximum_quote_contracts": 1,
+  "allowed_security_types": ["CASH"],
+  "require_primary_quote_contract": true,
+  "require_order_quantity_not_above_gross_position": true,
+  "live_authorized": false,
+  "rationale": "Until the authoritative snapshot accounts for aggregate pending-order notional across contracts, the canonical profile admits only one active order and one CASH quote contract."
+}
