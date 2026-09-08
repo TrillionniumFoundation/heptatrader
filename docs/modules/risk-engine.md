@@ -76,6 +76,12 @@ The current IB adapter retains venue-specific quantity exposure for its bounded 
 
 Every decision returns an allow flag, stable reason code, detail, calculated order notional, calculated worst-case gross notional, and the epoch/generation used when a snapshot-bound policy is active. Accepted decisions should record the risk-policy digest, snapshot identity, quote identity, and calculated values in the execution journal.
 
+## Security and trust boundary
+
+The risk engine evaluates evidence assembled by the Execution authority; it does not authenticate Agent assertions or fetch broker state itself. Subjects, contract metadata, quote/FX source identities, snapshot epoch/generation and the evaluation clock must originate from independently controlled runtime state. Callers cannot gain authority by setting permissive defaults, copying values from another account or supplying numerically plausible but unbound evidence.
+
+The Gateway's limits are defense in depth and never replace final execution-side evaluation. Risk results authorize only the exact normalized command and snapshot binding that was evaluated. Preview is advisory, LIVE remains unavailable, and an exception, missing section, unsupported unit or uncertain kill-switch state is a rejection for risk increase rather than an implicit allow.
+
 ## Failure semantics
 
 Missing, non-finite, negative, stale, unit-ambiguous, generation-mixed, or internally inconsistent inputs reject risk increase. A risk callback exception or unavailable kill-switch reader is not an implicit allow. Limit equality is permitted only where the configured contract explicitly defines an inclusive maximum.
@@ -93,3 +99,7 @@ Count decisions by reason code and instrument; record order notional, worst-case
 ## Test expectations
 
 Use table-driven boundary and hostile tests for zero, exact limit, above limit, NaN, infinity, stale snapshot, missing identity, missing epoch/generation, missing exposure/PnL/equity presence, mixed generation, cross-account/venue/currency/portfolio/instrument-set snapshots and mixed sections, explicit observed zero, futures and option multipliers, explicit FX conversion, omitted or stale quote/FX evidence, unsupported quantity/price units, pending exposure, daily loss/drawdown, flatten-only over-flatten, rate-window restart recovery, kill-switch uncertainty, and concurrent admission.
+
+## Known limitations
+
+The generic engine currently represents quantities and monetary calculations with binary floating-point values and therefore relies on explicitly tested conservative comparisons and evidence validation. A future multi-asset expansion should introduce declared decimal/fixed-point scales and rounding rules before increasing authorization scope. Legacy compatibility members remain temporarily present in `PreTradeRiskContext`; they are not authoritative and should be removed after non-canonical callers migrate. Margin models, portfolio Greeks, borrow availability and venue-specific liquidation constraints are outside the current generic contract.
