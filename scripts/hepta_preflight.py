@@ -8,6 +8,7 @@ rules, kill switches, users, directories, or Broker orders.
 from __future__ import annotations
 
 import argparse
+import contextlib
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -16,6 +17,7 @@ from pathlib import Path, PurePosixPath
 import platform
 import pwd
 import re
+import secrets
 import shutil
 import socket
 import stat
@@ -70,12 +72,107 @@ def canonical_json(value: Any) -> bytes:
     ).encode("utf-8")
 
 
-def sha256_file(path: Path) -> str:
+def _absolute_path(path: Path) -> Path:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    if absolute.name in {"", ".", ".."}:
+        raise PreflightError(f"invalid path: {path}")
+    return absolute
+
+
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return _file_identity(left) == _file_identity(right)
+
+
+@contextlib.contextmanager
+def _open_pinned_regular(path: Path, label: str) -> Any:
+    absolute = _absolute_path(path)
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory = os.open(absolute.parent, directory_flags)
+    descriptor = -1
+    stream: BinaryIO | None = None
+    try:
+        descriptor = os.open(absolute.name, file_flags, dir_fd=directory)
+        pinned = os.fstat(descriptor)
+        current = os.stat(
+            absolute.name, dir_fd=directory, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(pinned.st_mode)
+            or pinned.st_nlink != 1
+            or not _same_file(pinned, current)
+        ):
+            raise PreflightError(
+                f"{label} must be a stable regular single-link file"
+            )
+        stream = os.fdopen(descriptor, "rb", closefd=True)
+        descriptor = -1
+        yield stream, pinned, directory, absolute.name
+    finally:
+        if stream is not None:
+            stream.close()
+        elif descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory)
+
+
+def _assert_stable_file(
+    stream: BinaryIO,
+    pinned: os.stat_result,
+    directory: int,
+    name: str,
+    label: str,
+) -> None:
+    try:
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OSError as error:
+        raise PreflightError(f"{label} path changed while being read: {error}") from error
+    after = os.fstat(stream.fileno())
+    if not _same_file(pinned, after) or not _same_file(pinned, current):
+        raise PreflightError(f"{label} identity changed while being read")
+
+
+def _hash_stream(stream: BinaryIO) -> str:
+    stream.seek(0)
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    with _open_pinned_regular(path, "file") as (
+        stream,
+        pinned,
+        directory,
+        name,
+    ):
+        digest = _hash_stream(stream)
+        _assert_stable_file(stream, pinned, directory, name, "file")
+        return digest
 
 
 def _read_bounded(stream: BinaryIO, maximum: int, label: str) -> bytes:
@@ -93,10 +190,17 @@ def _read_bounded(stream: BinaryIO, maximum: int, label: str) -> bytes:
 
 
 def _load_policy(path: Path) -> dict[str, Any]:
-    metadata = path.lstat()
-    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise PreflightError("policy must be a regular single-link file")
-    value = parse_json_bytes(path.read_bytes(), str(path))
+    with _open_pinned_regular(path, "policy") as (
+        stream,
+        pinned,
+        directory,
+        name,
+    ):
+        value = parse_json_bytes(
+            _read_bounded(stream, 4 * 1024 * 1024, str(path)),
+            str(path),
+        )
+        _assert_stable_file(stream, pinned, directory, name, "policy")
     if not isinstance(value, dict) or value.get("schema") != POLICY_SCHEMA:
         raise PreflightError("unsupported preflight policy")
     profiles = value.get("profiles")
@@ -113,7 +217,10 @@ def _load_policy(path: Path) -> dict[str, Any]:
     suffixes = value.get("private_key_suffixes")
     if (
         not isinstance(suffixes, list)
-        or any(not isinstance(item, str) or not item.startswith(".") for item in suffixes)
+        or any(
+            not isinstance(item, str) or not item.startswith(".")
+            for item in suffixes
+        )
     ):
         raise PreflightError("private-key suffix policy is invalid")
     return value
@@ -225,135 +332,147 @@ def _private_path(path: str, suffixes: set[str]) -> bool:
 def inspect_archive(
     artifact: Path, expected_sha256: str, policy: dict[str, Any], profile: str
 ) -> tuple[dict[str, Any], str, str]:
-    metadata = artifact.lstat()
-    if artifact.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        raise PreflightError("artifact must be a regular single-link file")
     if SHA256_RE.fullmatch(expected_sha256) is None:
         raise PreflightError("expected artifact SHA-256 is not canonical")
-    actual_sha256 = sha256_file(artifact)
-    if actual_sha256 != expected_sha256:
-        raise PreflightError("artifact SHA-256 mismatch")
-
     maximum_members = policy["maximum_archive_members"]
     maximum_member = policy["maximum_member_bytes"]
     maximum_total = policy["maximum_total_unpacked_bytes"]
-    try:
-        archive = tarfile.open(artifact, mode="r:gz")
-    except (tarfile.TarError, OSError) as error:
-        raise PreflightError(f"artifact is not a valid gzip tar archive: {error}") from error
 
-    with archive:
-        members = archive.getmembers()
-        if not members or len(members) > maximum_members:
-            raise PreflightError("archive member count is outside policy")
-        seen: set[str] = set()
-        roots: set[str] = set()
-        files_by_relative: dict[str, tarfile.TarInfo] = {}
-        manifest_member: tarfile.TarInfo | None = None
-        total = 0
-        root_name = ""
-        for member in members:
-            parts = _canonical_member_name(member.name)
-            roots.add(parts[0])
-            if member.name in seen:
-                raise PreflightError(f"duplicate archive member: {member.name}")
-            seen.add(member.name)
-            if not (member.isdir() or member.isreg()):
-                raise PreflightError(f"links and special archive entries are forbidden: {member.name}")
-            if member.uid != 0 or member.gid != 0:
-                raise PreflightError(f"archive ownership is not normalized: {member.name}")
-            if member.mtime <= 0:
-                raise PreflightError(f"archive timestamp is invalid: {member.name}")
-            if member.isreg():
-                if member.size < 0 or member.size > maximum_member:
-                    raise PreflightError(f"archive member size is outside policy: {member.name}")
-                total += member.size
-                if total > maximum_total:
-                    raise PreflightError("archive unpacked size exceeds policy")
-        if len(roots) != 1:
-            raise PreflightError("archive must have exactly one top-level directory")
-        root_name = next(iter(roots))
-        expected_prefix = f"heptatrader-"
-        if not root_name.startswith(expected_prefix):
-            raise PreflightError("archive root name is not canonical")
+    with _open_pinned_regular(artifact, "artifact") as (
+        artifact_stream,
+        metadata,
+        directory,
+        name,
+    ):
+        actual_sha256 = _hash_stream(artifact_stream)
+        if actual_sha256 != expected_sha256:
+            raise PreflightError("artifact SHA-256 mismatch")
+        artifact_stream.seek(0)
+        try:
+            archive = tarfile.open(fileobj=artifact_stream, mode="r:gz")
+        except (tarfile.TarError, OSError) as error:
+            raise PreflightError(
+                f"artifact is not a valid gzip tar archive: {error}"
+            ) from error
+        with archive:
+            members = archive.getmembers()
+            if not members or len(members) > maximum_members:
+                raise PreflightError("archive member count is outside policy")
+            seen: set[str] = set()
+            roots: set[str] = set()
+            files_by_relative: dict[str, tarfile.TarInfo] = {}
+            manifest_member: tarfile.TarInfo | None = None
+            total = 0
+            root_name = ""
+            for member in members:
+                parts = _canonical_member_name(member.name)
+                roots.add(parts[0])
+                if member.name in seen:
+                    raise PreflightError(f"duplicate archive member: {member.name}")
+                seen.add(member.name)
+                if not (member.isdir() or member.isreg()):
+                    raise PreflightError(f"links and special archive entries are forbidden: {member.name}")
+                if member.uid != 0 or member.gid != 0:
+                    raise PreflightError(f"archive ownership is not normalized: {member.name}")
+                if member.mtime <= 0:
+                    raise PreflightError(f"archive timestamp is invalid: {member.name}")
+                if member.isreg():
+                    if member.size < 0 or member.size > maximum_member:
+                        raise PreflightError(f"archive member size is outside policy: {member.name}")
+                    total += member.size
+                    if total > maximum_total:
+                        raise PreflightError("archive unpacked size exceeds policy")
+            if len(roots) != 1:
+                raise PreflightError("archive must have exactly one top-level directory")
+            root_name = next(iter(roots))
+            expected_prefix = f"heptatrader-"
+            if not root_name.startswith(expected_prefix):
+                raise PreflightError("archive root name is not canonical")
 
-        for member in members:
-            if not member.isreg():
-                continue
-            prefix = root_name + "/"
-            if not member.name.startswith(prefix):
-                raise PreflightError("archive member escaped the package root")
-            relative = member.name[len(prefix):]
-            if relative == "manifest.json":
-                if manifest_member is not None:
-                    raise PreflightError("archive contains multiple manifests")
-                manifest_member = member
-            else:
-                files_by_relative[relative] = member
-        if manifest_member is None:
-            raise PreflightError("release manifest is missing")
-        manifest_stream = archive.extractfile(manifest_member)
-        if manifest_stream is None:
-            raise PreflightError("release manifest is unreadable")
-        with manifest_stream:
-            manifest_bytes = _read_bounded(manifest_stream, 4 * 1024 * 1024, "manifest")
-        manifest = parse_json_bytes(manifest_bytes, "manifest")
-        manifest_files = _check_manifest_shape(manifest, profile)
-        if manifest["source_date_epoch"] != manifest_member.mtime:
-            raise PreflightError("manifest and archive timestamp identity mismatch")
+            for member in members:
+                if not member.isreg():
+                    continue
+                prefix = root_name + "/"
+                if not member.name.startswith(prefix):
+                    raise PreflightError("archive member escaped the package root")
+                relative = member.name[len(prefix):]
+                if relative == "manifest.json":
+                    if manifest_member is not None:
+                        raise PreflightError("archive contains multiple manifests")
+                    manifest_member = member
+                else:
+                    files_by_relative[relative] = member
+            if manifest_member is None:
+                raise PreflightError("release manifest is missing")
+            manifest_stream = archive.extractfile(manifest_member)
+            if manifest_stream is None:
+                raise PreflightError("release manifest is unreadable")
+            with manifest_stream:
+                manifest_bytes = _read_bounded(manifest_stream, 4 * 1024 * 1024, "manifest")
+            manifest = parse_json_bytes(manifest_bytes, "manifest")
+            manifest_files = _check_manifest_shape(manifest, profile)
+            if manifest["source_date_epoch"] != manifest_member.mtime:
+                raise PreflightError("manifest and archive timestamp identity mismatch")
 
-        expected_paths = {item["path"] for item in manifest_files}
-        if set(files_by_relative) != expected_paths:
-            missing = sorted(expected_paths - set(files_by_relative))
-            extra = sorted(set(files_by_relative) - expected_paths)
-            raise PreflightError(f"archive payload differs from manifest: missing={missing}, extra={extra}")
-        suffixes = {item.lower() for item in policy["private_key_suffixes"]}
-        for item in manifest_files:
-            path = item["path"]
-            if _private_path(path, suffixes):
-                raise PreflightError(f"private-key or secret-like path is forbidden: {path}")
-            member = files_by_relative[path]
-            if member.size != item["size"]:
-                raise PreflightError(f"payload size mismatch: {path}")
-            if member.mode & 0o777 != item["mode"]:
-                raise PreflightError(f"payload mode mismatch: {path}")
-            if member.mtime != manifest["source_date_epoch"]:
-                raise PreflightError(f"payload timestamp mismatch: {path}")
-            if _hash_member(archive, member, maximum_member) != item["sha256"]:
-                raise PreflightError(f"payload digest mismatch: {path}")
+            expected_paths = {item["path"] for item in manifest_files}
+            if set(files_by_relative) != expected_paths:
+                missing = sorted(expected_paths - set(files_by_relative))
+                extra = sorted(set(files_by_relative) - expected_paths)
+                raise PreflightError(f"archive payload differs from manifest: missing={missing}, extra={extra}")
+            suffixes = {item.lower() for item in policy["private_key_suffixes"]}
+            for item in manifest_files:
+                path = item["path"]
+                if _private_path(path, suffixes):
+                    raise PreflightError(f"private-key or secret-like path is forbidden: {path}")
+                member = files_by_relative[path]
+                if member.size != item["size"]:
+                    raise PreflightError(f"payload size mismatch: {path}")
+                if member.mode & 0o777 != item["mode"]:
+                    raise PreflightError(f"payload mode mismatch: {path}")
+                if member.mtime != manifest["source_date_epoch"]:
+                    raise PreflightError(f"payload timestamp mismatch: {path}")
+                if _hash_member(archive, member, maximum_member) != item["sha256"]:
+                    raise PreflightError(f"payload digest mismatch: {path}")
 
-        selected = policy["profiles"].get(profile)
-        if not isinstance(selected, dict):
-            raise PreflightError(f"profile is absent from preflight policy: {profile}")
-        required = selected.get("required_package_paths")
-        if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
-            raise PreflightError("required package path policy is invalid")
-        absent = sorted(set(required) - expected_paths)
-        if absent:
-            raise PreflightError("required package files are missing: " + ", ".join(absent))
+            selected = policy["profiles"].get(profile)
+            if not isinstance(selected, dict):
+                raise PreflightError(f"profile is absent from preflight policy: {profile}")
+            required = selected.get("required_package_paths")
+            if not isinstance(required, list) or any(not isinstance(item, str) for item in required):
+                raise PreflightError("required package path policy is invalid")
+            absent = sorted(set(required) - expected_paths)
+            if absent:
+                raise PreflightError("required package files are missing: " + ", ".join(absent))
 
-        build_info_path = "share/heptatrader/heptatrader-build-info.json"
-        build_info_member = files_by_relative.get(build_info_path)
-        if build_info_member is None:
-            raise PreflightError("installed build metadata is missing")
-        build_info_stream = archive.extractfile(build_info_member)
-        if build_info_stream is None:
-            raise PreflightError("installed build metadata is unreadable")
-        with build_info_stream:
-            build_info = parse_json_bytes(
-                _read_bounded(build_info_stream, 64 * 1024, "installed build metadata"),
-                "installed build metadata",
-            )
-        if not isinstance(build_info, dict):
-            raise PreflightError("installed build metadata must be an object")
-        if build_info.get("paper_authorized") is not False or build_info.get("live_authorized") is not False:
-            raise PreflightError("installed build metadata attempted to claim authorization")
-        if profile == "ib-paper" and build_info.get("ib_api_compiled") is not True:
-            raise PreflightError("IB PAPER package was not built with the IB API")
-        if profile == "core" and build_info.get("ib_api_compiled") is not False:
-            raise PreflightError("core package unexpectedly contains an IB-enabled build")
+            build_info_path = "share/heptatrader/heptatrader-build-info.json"
+            build_info_member = files_by_relative.get(build_info_path)
+            if build_info_member is None:
+                raise PreflightError("installed build metadata is missing")
+            build_info_stream = archive.extractfile(build_info_member)
+            if build_info_stream is None:
+                raise PreflightError("installed build metadata is unreadable")
+            with build_info_stream:
+                build_info = parse_json_bytes(
+                    _read_bounded(build_info_stream, 64 * 1024, "installed build metadata"),
+                    "installed build metadata",
+                )
+            if not isinstance(build_info, dict):
+                raise PreflightError("installed build metadata must be an object")
+            if build_info.get("paper_authorized") is not False or build_info.get("live_authorized") is not False:
+                raise PreflightError("installed build metadata attempted to claim authorization")
+            if profile == "ib-paper" and build_info.get("ib_api_compiled") is not True:
+                raise PreflightError("IB PAPER package was not built with the IB API")
+            if profile == "core" and build_info.get("ib_api_compiled") is not False:
+                raise PreflightError("core package unexpectedly contains an IB-enabled build")
 
-    return manifest, actual_sha256, hashlib.sha256(manifest_bytes).hexdigest()
+        _assert_stable_file(
+            artifact_stream, metadata, directory, name, "artifact"
+        )
+    return (
+        manifest,
+        actual_sha256,
+        hashlib.sha256(manifest_bytes).hexdigest(),
+    )
 
 
 def _machine_id_digest(root: Path) -> str:
@@ -401,34 +520,76 @@ def _safe_kill_switch(path: Path) -> str | None:
     return None
 
 
+def _publish_noreplace(
+    directory: int, temporary_name: str, final_name: str
+) -> None:
+    os.link(
+        temporary_name,
+        final_name,
+        src_dir_fd=directory,
+        dst_dir_fd=directory,
+        follow_symlinks=False,
+    )
+
+
 def _write_private_receipt(path: Path, value: dict[str, Any]) -> None:
-    path = path.resolve()
-    if path.exists() or path.is_symlink():
-        raise PreflightError(f"refusing to replace existing receipt: {path}")
+    path = _absolute_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
+    directory = os.open(
+        path.parent,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    descriptor = -1
+    temporary_name = ""
     try:
+        for _ in range(32):
+            candidate = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=directory,
+                )
+                temporary_name = candidate
+                break
+            except FileExistsError:
+                continue
+        if descriptor < 0:
+            raise PreflightError(
+                "could not allocate a private receipt staging file"
+            )
         os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb") as stream:
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = -1
             stream.write(canonical_json(value))
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except Exception:
+            _publish_noreplace(directory, temporary_name, path.name)
+        except FileExistsError as error:
+            raise PreflightError(
+                f"refusing to replace concurrently created receipt: {path}"
+            ) from error
+        os.unlink(temporary_name, dir_fd=directory)
+        temporary_name = ""
+        os.fsync(directory)
+    finally:
         if descriptor >= 0:
             os.close(descriptor)
-        try:
-            temporary_path.unlink()
-        except OSError:
-            pass
-        raise
+        if temporary_name:
+            try:
+                os.unlink(temporary_name, dir_fd=directory)
+            except OSError:
+                pass
+        os.close(directory)
 
 
 def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
@@ -440,10 +601,10 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
     manifest: dict[str, Any] = {}
     package_sha256 = ""
     manifest_sha256 = ""
-    policy = _load_policy(args.policy.resolve(strict=True))
+    policy = _load_policy(_absolute_path(args.policy))
     try:
         manifest, package_sha256, manifest_sha256 = inspect_archive(
-            args.artifact.resolve(strict=True), args.expected_sha256, policy, args.profile
+            _absolute_path(args.artifact), args.expected_sha256, policy, args.profile
         )
         record("artifact.integrity", "PASS", "digest, archive, manifest and payload verified")
     except (OSError, PreflightError, tarfile.TarError) as error:

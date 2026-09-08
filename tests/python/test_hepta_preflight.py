@@ -369,6 +369,79 @@ class HeptaPreflightTests(unittest.TestCase):
                 preflight._write_private_receipt(output, {"result": "PASS"})
             self.assertEqual(output.read_text(encoding="utf-8"), "sentinel\n")
 
+    def test_artifact_path_swap_during_inspection_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            artifact, package = self.valid_package(work / "first")
+            other_root = fixture_tree(work / "other-root")
+            (other_root / "share/doc/heptatrader/index.md").write_text(
+                "different package\n", encoding="utf-8"
+            )
+            replacement = work / "replacement.tar.gz"
+            release.package_install_root(
+                other_root,
+                replacement,
+                version=VERSION,
+                profile="core",
+                source_sha="3" * 40,
+                source_date_epoch=EPOCH,
+            )
+            original_open = preflight.tarfile.open
+            swapped = False
+
+            def swapping_open(*args, **kwargs):
+                nonlocal swapped
+                if not swapped and kwargs.get("fileobj") is not None:
+                    swapped = True
+                    os.replace(replacement, artifact)
+                return original_open(*args, **kwargs)
+
+            with mock.patch.object(
+                preflight.tarfile, "open", side_effect=swapping_open
+            ):
+                receipt = preflight.run_preflight(
+                    args_for(artifact, package["package_sha256"])
+                )
+            self.assertTrue(swapped)
+            self.assertEqual(receipt["result"], "FAIL")
+            self.assertIn(
+                "identity changed",
+                check(receipt, "artifact.integrity")["detail"],
+            )
+
+    def test_concurrent_receipt_creation_is_never_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "receipt.json"
+            sentinel = b"concurrent-receipt\n"
+            original_publish = preflight._publish_noreplace
+
+            def competing_publish(
+                directory_fd: int, temporary_name: str, final_name: str
+            ) -> None:
+                descriptor = os.open(
+                    final_name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    os.write(descriptor, sentinel)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                original_publish(directory_fd, temporary_name, final_name)
+
+            with mock.patch.object(
+                preflight,
+                "_publish_noreplace",
+                side_effect=competing_publish,
+            ):
+                with self.assertRaises(preflight.PreflightError):
+                    preflight._write_private_receipt(
+                        output, {"result": "PASS"}
+                    )
+            self.assertEqual(output.read_bytes(), sentinel)
+
 
 if __name__ == "__main__":
     unittest.main()

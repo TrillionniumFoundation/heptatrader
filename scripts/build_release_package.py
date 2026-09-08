@@ -15,13 +15,14 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
-from typing import Any, Iterable
+from typing import Any, BinaryIO, Iterable
 
 MANIFEST_SCHEMA = "heptatrader.release-manifest.v1"
 RECEIPT_SCHEMA = "heptatrader.release-package-receipt.v1"
@@ -40,7 +41,7 @@ class PackageError(ValueError):
 @dataclass(frozen=True)
 class PayloadFile:
     path: str
-    source: Path
+    snapshot: BinaryIO
     size: int
     mode: int
     sha256: str
@@ -57,12 +58,102 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
-def sha256_file(path: Path) -> str:
+def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_nlink,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+        metadata.st_ctime_ns,
+    )
+
+
+def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+    return _file_identity(left) == _file_identity(right)
+
+
+def _hash_stream(stream: BinaryIO) -> str:
+    stream.seek(0)
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
+    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+        digest.update(chunk)
     return digest.hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    with path.open("rb") as stream:
+        return _hash_stream(stream)
+
+
+def _snapshot_source(
+    source: Path, observed: os.stat_result, relative: str
+) -> tuple[BinaryIO, os.stat_result, str]:
+    directory_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    file_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory = os.open(source.parent, directory_flags)
+    descriptor = -1
+    snapshot: BinaryIO | None = None
+    try:
+        descriptor = os.open(source.name, file_flags, dir_fd=directory)
+        pinned = os.fstat(descriptor)
+        if not _same_file(observed, pinned):
+            raise PackageError(f"file identity changed before snapshot: {relative}")
+        if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
+            raise PackageError(f"payload is not a regular single-link file: {relative}")
+        if pinned.st_mode & (stat.S_ISUID | stat.S_ISGID):
+            raise PackageError(f"setuid/setgid file is forbidden: {relative}")
+        if pinned.st_size > MAX_FILE_BYTES:
+            raise PackageError(f"file exceeds release size bound: {relative}")
+
+        snapshot = tempfile.TemporaryFile(mode="w+b")
+        digest = hashlib.sha256()
+        total = 0
+        with os.fdopen(descriptor, "rb", closefd=True) as source_stream:
+            descriptor = -1
+            while True:
+                chunk = source_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_FILE_BYTES:
+                    raise PackageError(f"file exceeds release size bound: {relative}")
+                digest.update(chunk)
+                snapshot.write(chunk)
+            after = os.fstat(source_stream.fileno())
+        if not _same_file(pinned, after) or total != pinned.st_size:
+            raise PackageError(f"file changed while being snapshotted: {relative}")
+        snapshot.flush()
+        snapshot.seek(0)
+        return snapshot, pinned, digest.hexdigest()
+    except Exception:
+        if snapshot is not None:
+            snapshot.close()
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory)
+
+
+def close_payload(payload: Iterable[PayloadFile]) -> None:
+    for item in payload:
+        try:
+            item.snapshot.close()
+        except OSError:
+            pass
 
 
 def validate_identity(version: str, profile: str, source_sha: str, epoch: int) -> None:
@@ -119,46 +210,52 @@ def collect_payload(root: Path) -> list[PayloadFile]:
 
     payload: list[PayloadFile] = []
     total = 0
-    for directory, names, files in os.walk(root, topdown=True, followlinks=False):
-        directory_path = Path(directory)
-        for name in list(names):
-            child = directory_path / name
-            metadata = child.lstat()
-            if stat.S_ISLNK(metadata.st_mode):
-                raise PackageError(f"symlinked directory is forbidden: {child}")
-            if not stat.S_ISDIR(metadata.st_mode):
-                raise PackageError(f"special directory entry is forbidden: {child}")
-        names.sort()
-        files.sort()
-        for name in files:
-            source = directory_path / name
-            metadata = source.lstat()
-            relative = canonical_relative(source, root)
-            if _looks_private(relative):
-                raise PackageError(f"private-key or secret-like path is forbidden: {relative}")
-            if not stat.S_ISREG(metadata.st_mode) or source.is_symlink():
-                raise PackageError(f"only regular files may be packaged: {relative}")
-            if metadata.st_nlink != 1:
-                raise PackageError(f"hard-linked file is forbidden: {relative}")
-            if metadata.st_mode & (stat.S_ISUID | stat.S_ISGID):
-                raise PackageError(f"setuid/setgid file is forbidden: {relative}")
-            if metadata.st_size > MAX_FILE_BYTES:
-                raise PackageError(f"file exceeds release size bound: {relative}")
-            total += metadata.st_size
-            if total > MAX_TOTAL_BYTES:
-                raise PackageError("release payload exceeds total size bound")
-            payload.append(
-                PayloadFile(
-                    path=relative,
-                    source=source,
-                    size=metadata.st_size,
-                    mode=_file_mode(metadata),
-                    sha256=sha256_file(source),
+    try:
+        for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+            directory_path = Path(directory)
+            for name in list(names):
+                child = directory_path / name
+                metadata = child.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise PackageError(f"symlinked directory is forbidden: {child}")
+                if not stat.S_ISDIR(metadata.st_mode):
+                    raise PackageError(f"special directory entry is forbidden: {child}")
+            names.sort()
+            files.sort()
+            for name in files:
+                source = directory_path / name
+                observed = source.lstat()
+                relative = canonical_relative(source, root)
+                if _looks_private(relative):
+                    raise PackageError(
+                        f"private-key or secret-like path is forbidden: {relative}"
+                    )
+                if not stat.S_ISREG(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
+                    raise PackageError(f"only regular files may be packaged: {relative}")
+                if observed.st_nlink != 1:
+                    raise PackageError(f"hard-linked file is forbidden: {relative}")
+                snapshot, pinned, digest = _snapshot_source(
+                    source, observed, relative
                 )
-            )
-    if not payload:
-        raise PackageError("install root is empty")
-    return sorted(payload, key=lambda item: item.path)
+                total += pinned.st_size
+                if total > MAX_TOTAL_BYTES:
+                    snapshot.close()
+                    raise PackageError("release payload exceeds total size bound")
+                payload.append(
+                    PayloadFile(
+                        path=relative,
+                        snapshot=snapshot,
+                        size=pinned.st_size,
+                        mode=_file_mode(pinned),
+                        sha256=digest,
+                    )
+                )
+        if not payload:
+            raise PackageError("install root is empty")
+        return sorted(payload, key=lambda item: item.path)
+    except Exception:
+        close_payload(payload)
+        raise
 
 
 def build_manifest(
@@ -213,11 +310,22 @@ def archive_bytes(
             io.BytesIO(manifest_bytes),
         )
         for item in payload:
-            with item.source.open("rb") as stream:
-                archive.addfile(
-                    _tar_info(f"{root_name}/{item.path}", item.size, item.mode, epoch),
-                    stream,
-                )
+            before = os.fstat(item.snapshot.fileno())
+            if before.st_size != item.size or _hash_stream(item.snapshot) != item.sha256:
+                raise PackageError(f"payload snapshot changed before archive: {item.path}")
+            item.snapshot.seek(0)
+            archive.addfile(
+                _tar_info(f"{root_name}/{item.path}", item.size, item.mode, epoch),
+                item.snapshot,
+            )
+            after = os.fstat(item.snapshot.fileno())
+            if (
+                not _same_file(before, after)
+                or after.st_size != item.size
+                or _hash_stream(item.snapshot) != item.sha256
+            ):
+                raise PackageError(f"payload snapshot changed during archive: {item.path}")
+            item.snapshot.seek(0)
     compressed = io.BytesIO()
     with gzip.GzipFile(
         filename="", mode="wb", compresslevel=9, fileobj=compressed, mtime=epoch
@@ -226,37 +334,98 @@ def archive_bytes(
     return compressed.getvalue(), sha256_bytes(manifest_bytes)
 
 
+def _absolute_output(path: Path) -> Path:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    if absolute.name in {"", ".", ".."}:
+        raise PackageError(f"invalid output path: {path}")
+    return absolute
+
+
+def _open_output_directory(path: Path) -> int:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    directory = os.open(path.parent, flags)
+    if not stat.S_ISDIR(os.fstat(directory).st_mode):
+        os.close(directory)
+        raise PackageError(f"output parent is not a directory: {path.parent}")
+    return directory
+
+
+def _publish_noreplace(directory: int, temporary_name: str, final_name: str) -> None:
+    os.link(
+        temporary_name,
+        final_name,
+        src_dir_fd=directory,
+        dst_dir_fd=directory,
+        follow_symlinks=False,
+    )
+
+
 def _ensure_new_outputs(paths: Iterable[Path]) -> None:
-    for path in paths:
-        if path.exists() or path.is_symlink():
-            raise PackageError(f"refusing to replace existing output: {path}")
+    for candidate in paths:
+        path = _absolute_output(candidate)
         path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        raise PackageError(f"refusing to replace existing output: {path}")
 
 
 def _write_atomic(path: Path, content: bytes, mode: int) -> None:
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temporary_path = Path(temporary)
+    path = _absolute_output(path)
+    directory = _open_output_directory(path)
+    descriptor = -1
+    temporary_name = ""
     try:
+        for _ in range(32):
+            candidate = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
+            try:
+                descriptor = os.open(
+                    candidate,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    mode,
+                    dir_fd=directory,
+                )
+                temporary_name = candidate
+                break
+            except FileExistsError:
+                continue
+        if descriptor < 0:
+            raise PackageError("could not allocate a private output staging file")
         os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "wb") as stream:
+        with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = -1
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary_path, path)
-        directory = os.open(path.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-    except Exception:
+            _publish_noreplace(directory, temporary_name, path.name)
+        except FileExistsError as error:
+            raise PackageError(
+                f"refusing to replace concurrently created output: {path}"
+            ) from error
+        os.unlink(temporary_name, dir_fd=directory)
+        temporary_name = ""
+        os.fsync(directory)
+    finally:
         if descriptor >= 0:
             os.close(descriptor)
-        try:
-            temporary_path.unlink()
-        except OSError:
-            pass
-        raise
+        if temporary_name:
+            try:
+                os.unlink(temporary_name, dir_fd=directory)
+            except OSError:
+                pass
+        os.close(directory)
 
 
 def package_install_root(
@@ -269,19 +438,27 @@ def package_install_root(
     source_date_epoch: int,
 ) -> dict[str, Any]:
     validate_identity(version, profile, source_sha, source_date_epoch)
-    output = output.resolve()
+    output = _absolute_output(output)
     if output.suffix not in {".gz", ".tgz"}:
         raise PackageError("release output must end in .tar.gz or .tgz")
     digest_path = Path(str(output) + ".sha256")
     receipt_path = Path(str(output) + ".receipt.json")
     _ensure_new_outputs((output, digest_path, receipt_path))
 
-    payload = collect_payload(install_root)
-    manifest = build_manifest(payload, version, profile, source_sha, source_date_epoch)
-    archive, manifest_sha256 = archive_bytes(
-        payload, manifest, version, profile, source_date_epoch
-    )
+    payload: list[PayloadFile] = []
+    try:
+        payload = collect_payload(install_root)
+        manifest = build_manifest(
+            payload, version, profile, source_sha, source_date_epoch
+        )
+        archive, manifest_sha256 = archive_bytes(
+            payload, manifest, version, profile, source_date_epoch
+        )
+    finally:
+        close_payload(payload)
+
     package_sha256 = sha256_bytes(archive)
+    digest_bytes = f"{package_sha256}  {output.name}\n".encode("ascii")
     receipt = {
         "schema": RECEIPT_SCHEMA,
         "version": version,
@@ -291,31 +468,18 @@ def package_install_root(
         "package_file": output.name,
         "package_sha256": package_sha256,
         "manifest_sha256": manifest_sha256,
-        "file_count": len(payload),
+        "file_count": len(manifest["files"]),
         "authorization_effect": "NONE",
         "paper_authorized": False,
         "live_authorized": False,
     }
 
-    written: list[Path] = []
-    try:
-        _write_atomic(output, archive, 0o644)
-        written.append(output)
-        _write_atomic(
-            digest_path,
-            f"{package_sha256}  {output.name}\n".encode("ascii"),
-            0o644,
-        )
-        written.append(digest_path)
-        _write_atomic(receipt_path, canonical_json(receipt), 0o600)
-        written.append(receipt_path)
-    except Exception:
-        for path in reversed(written):
-            try:
-                path.unlink()
-            except OSError:
-                pass
-        raise
+    # Publish each immutable output with an atomic no-replace link. If a later
+    # publication loses a race, retain earlier outputs rather than performing
+    # an unsafe pathname-based rollback that could delete another writer's file.
+    _write_atomic(output, archive, 0o644)
+    _write_atomic(digest_path, digest_bytes, 0o644)
+    _write_atomic(receipt_path, canonical_json(receipt), 0o600)
     return receipt
 
 

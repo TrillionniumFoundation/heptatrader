@@ -7,6 +7,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -152,6 +153,83 @@ class ReleasePackageTests(unittest.TestCase):
             with self.assertRaises(release.PackageError):
                 self.package(root, output)
             self.assertEqual(output.read_bytes(), b"sentinel")
+
+    def test_concurrent_output_creation_is_never_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            output = work / "release.tar.gz"
+            original_publish = release._publish_noreplace
+            sentinel = b"concurrent-writer\n"
+
+            def competing_publish(
+                directory_fd: int, temporary_name: str, final_name: str
+            ) -> None:
+                if final_name == output.name:
+                    descriptor = os.open(
+                        final_name,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        os.write(descriptor, sentinel)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                original_publish(directory_fd, temporary_name, final_name)
+
+            with mock.patch.object(
+                release, "_publish_noreplace", side_effect=competing_publish
+            ):
+                with self.assertRaises(release.PackageError):
+                    self.package(root, output)
+            self.assertEqual(output.read_bytes(), sentinel)
+
+    def test_source_mutation_after_snapshot_cannot_change_archive_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            target = root / "bin/heptactl"
+            original_bytes = target.read_bytes()
+            output = work / "release.tar.gz"
+            original_build_manifest = release.build_manifest
+
+            def mutating_manifest(*args, **kwargs):
+                manifest = original_build_manifest(*args, **kwargs)
+                target.write_bytes(b"mutated-after-snapshot\n")
+                return manifest
+
+            with mock.patch.object(
+                release, "build_manifest", side_effect=mutating_manifest
+            ):
+                self.package(root, output)
+
+            with tarfile.open(output, "r:gz") as archive:
+                payload_member = next(
+                    item
+                    for item in archive.getmembers()
+                    if item.name.endswith("/bin/heptactl")
+                )
+                payload_stream = archive.extractfile(payload_member)
+                self.assertIsNotNone(payload_stream)
+                archived_bytes = payload_stream.read()
+                manifest_member = next(
+                    item
+                    for item in archive.getmembers()
+                    if item.name.endswith("/manifest.json")
+                )
+                manifest_stream = archive.extractfile(manifest_member)
+                self.assertIsNotNone(manifest_stream)
+                manifest = json.loads(manifest_stream.read())
+            self.assertEqual(archived_bytes, original_bytes)
+            entry = next(
+                item for item in manifest["files"] if item["path"] == "bin/heptactl"
+            )
+            self.assertEqual(
+                entry["sha256"], release.sha256_bytes(original_bytes)
+            )
+            self.assertNotEqual(target.read_bytes(), original_bytes)
 
 
 if __name__ == "__main__":
