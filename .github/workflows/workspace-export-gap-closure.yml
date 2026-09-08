@@ -1,0 +1,38 @@
+name: Temporary Gap Closure Workspace Export
+
+on:
+  push:
+    branches:
+      - codex/workspace-export-gap-closure-20260908
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact branch head without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Build source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          tar --exclude='./.git' --exclude='./heptatrader-source.tar.gz' \
+            -czf heptatrader-source.tar.gz .
+          sha256sum heptatrader-source.tar.gz > heptatrader-source.tar.gz.sha256
+      - name: Upload exact source archive
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-gap-closure-workspace-${{ github.sha }}
+          path: |
+            heptatrader-source.tar.gz
+            heptatrader-source.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
