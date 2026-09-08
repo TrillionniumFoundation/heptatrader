@@ -1,0 +1,934 @@
+name: Codex Fix Release Publication Races
+
+on:
+  push:
+    branches: [codex/close-source-blockers-v2-2026-09-08]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-fix-release-publication-races
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: "${{ github.event.head_commit.message == 'chore: stage release publication race fixes' }}"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact staging revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Apply descriptor-pinned input and no-replace publication fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              if text.count(old) != 1:
+                  raise SystemExit(f"{label}: expected one match, found {text.count(old)}")
+              return text.replace(old, new, 1)
+          
+          def replace_region(text: str, start_marker: str, end_marker: str, replacement: str, label: str) -> str:
+              start = text.index(start_marker)
+              end = text.index(end_marker, start)
+              return text[:start] + replacement + text[end:]
+          
+          builder_path = Path("scripts/build_release_package.py")
+          builder = builder_path.read_text(encoding="utf-8")
+          builder = replace_once(
+              builder,
+              "import re\nimport shutil\n",
+              "import re\nimport secrets\nimport shutil\n",
+              "builder secrets import",
+          )
+          builder = replace_once(
+              builder,
+              "from typing import Any, Iterable\n",
+              "from typing import Any, BinaryIO, Iterable\n",
+              "builder typing",
+          )
+          builder = replace_once(
+              builder,
+              "class PayloadFile:\n    path: str\n    source: Path\n    size: int\n    mode: int\n    sha256: str\n",
+              "class PayloadFile:\n    path: str\n    snapshot: BinaryIO\n    size: int\n    mode: int\n    sha256: str\n",
+              "payload descriptor",
+          )
+          old_hash = '''def sha256_file(path: Path) -> str:
+              digest = hashlib.sha256()
+              with path.open("rb") as stream:
+                  for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              return digest.hexdigest()
+          '''
+          new_hash = r'''def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+              return (
+                  metadata.st_dev,
+                  metadata.st_ino,
+                  metadata.st_mode,
+                  metadata.st_nlink,
+                  metadata.st_uid,
+                  metadata.st_gid,
+                  metadata.st_size,
+                  metadata.st_mtime_ns,
+                  metadata.st_ctime_ns,
+              )
+          
+          
+          def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+              return _file_identity(left) == _file_identity(right)
+          
+          
+          def _hash_stream(stream: BinaryIO) -> str:
+              stream.seek(0)
+              digest = hashlib.sha256()
+              for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                  digest.update(chunk)
+              return digest.hexdigest()
+          
+          
+          def sha256_file(path: Path) -> str:
+              with path.open("rb") as stream:
+                  return _hash_stream(stream)
+          
+          
+          def _snapshot_source(
+              source: Path, observed: os.stat_result, relative: str
+          ) -> tuple[BinaryIO, os.stat_result, str]:
+              directory_flags = (
+                  os.O_RDONLY
+                  | getattr(os, "O_DIRECTORY", 0)
+                  | getattr(os, "O_CLOEXEC", 0)
+                  | getattr(os, "O_NOFOLLOW", 0)
+              )
+              file_flags = (
+                  os.O_RDONLY
+                  | getattr(os, "O_CLOEXEC", 0)
+                  | getattr(os, "O_NOFOLLOW", 0)
+              )
+              directory = os.open(source.parent, directory_flags)
+              descriptor = -1
+              snapshot: BinaryIO | None = None
+              try:
+                  descriptor = os.open(source.name, file_flags, dir_fd=directory)
+                  pinned = os.fstat(descriptor)
+                  if not _same_file(observed, pinned):
+                      raise PackageError(f"file identity changed before snapshot: {relative}")
+                  if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
+                      raise PackageError(f"payload is not a regular single-link file: {relative}")
+                  if pinned.st_mode & (stat.S_ISUID | stat.S_ISGID):
+                      raise PackageError(f"setuid/setgid file is forbidden: {relative}")
+                  if pinned.st_size > MAX_FILE_BYTES:
+                      raise PackageError(f"file exceeds release size bound: {relative}")
+          
+                  snapshot = tempfile.TemporaryFile(mode="w+b")
+                  digest = hashlib.sha256()
+                  total = 0
+                  with os.fdopen(descriptor, "rb", closefd=True) as source_stream:
+                      descriptor = -1
+                      while True:
+                          chunk = source_stream.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          total += len(chunk)
+                          if total > MAX_FILE_BYTES:
+                              raise PackageError(f"file exceeds release size bound: {relative}")
+                          digest.update(chunk)
+                          snapshot.write(chunk)
+                      after = os.fstat(source_stream.fileno())
+                  if not _same_file(pinned, after) or total != pinned.st_size:
+                      raise PackageError(f"file changed while being snapshotted: {relative}")
+                  snapshot.flush()
+                  snapshot.seek(0)
+                  return snapshot, pinned, digest.hexdigest()
+              except Exception:
+                  if snapshot is not None:
+                      snapshot.close()
+                  raise
+              finally:
+                  if descriptor >= 0:
+                      os.close(descriptor)
+                  os.close(directory)
+          
+          
+          def close_payload(payload: Iterable[PayloadFile]) -> None:
+              for item in payload:
+                  try:
+                      item.snapshot.close()
+                  except OSError:
+                      pass
+          '''
+          builder = replace_once(builder, old_hash, new_hash, "builder pinned input helpers")
+          
+          new_collect = r'''def collect_payload(root: Path) -> list[PayloadFile]:
+              root = root.resolve(strict=True)
+              if not root.is_dir() or root.is_symlink():
+                  raise PackageError("install root must be a real directory")
+          
+              payload: list[PayloadFile] = []
+              total = 0
+              try:
+                  for directory, names, files in os.walk(root, topdown=True, followlinks=False):
+                      directory_path = Path(directory)
+                      for name in list(names):
+                          child = directory_path / name
+                          metadata = child.lstat()
+                          if stat.S_ISLNK(metadata.st_mode):
+                              raise PackageError(f"symlinked directory is forbidden: {child}")
+                          if not stat.S_ISDIR(metadata.st_mode):
+                              raise PackageError(f"special directory entry is forbidden: {child}")
+                      names.sort()
+                      files.sort()
+                      for name in files:
+                          source = directory_path / name
+                          observed = source.lstat()
+                          relative = canonical_relative(source, root)
+                          if _looks_private(relative):
+                              raise PackageError(
+                                  f"private-key or secret-like path is forbidden: {relative}"
+                              )
+                          if not stat.S_ISREG(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
+                              raise PackageError(f"only regular files may be packaged: {relative}")
+                          if observed.st_nlink != 1:
+                              raise PackageError(f"hard-linked file is forbidden: {relative}")
+                          snapshot, pinned, digest = _snapshot_source(
+                              source, observed, relative
+                          )
+                          total += pinned.st_size
+                          if total > MAX_TOTAL_BYTES:
+                              snapshot.close()
+                              raise PackageError("release payload exceeds total size bound")
+                          payload.append(
+                              PayloadFile(
+                                  path=relative,
+                                  snapshot=snapshot,
+                                  size=pinned.st_size,
+                                  mode=_file_mode(pinned),
+                                  sha256=digest,
+                              )
+                          )
+                  if not payload:
+                      raise PackageError("install root is empty")
+                  return sorted(payload, key=lambda item: item.path)
+              except Exception:
+                  close_payload(payload)
+                  raise
+          
+          
+          '''
+          builder = replace_region(
+              builder,
+              "def collect_payload(root: Path) -> list[PayloadFile]:\n",
+              "def build_manifest(\n",
+              new_collect,
+              "collect_payload",
+          )
+          
+          old_archive_start = builder.index("def archive_bytes(\n")
+          old_archive_end = builder.index("def _ensure_new_outputs(", old_archive_start)
+          new_archive = r'''def archive_bytes(
+              payload: list[PayloadFile], manifest: dict[str, Any], version: str, profile: str, epoch: int
+          ) -> tuple[bytes, str]:
+              root_name = f"heptatrader-{version}-{profile}"
+              manifest_bytes = canonical_json(manifest)
+              raw_tar = io.BytesIO()
+              with tarfile.open(fileobj=raw_tar, mode="w", format=tarfile.GNU_FORMAT) as archive:
+                  archive.addfile(
+                      _tar_info(f"{root_name}/manifest.json", len(manifest_bytes), 0o644, epoch),
+                      io.BytesIO(manifest_bytes),
+                  )
+                  for item in payload:
+                      before = os.fstat(item.snapshot.fileno())
+                      if before.st_size != item.size or _hash_stream(item.snapshot) != item.sha256:
+                          raise PackageError(f"payload snapshot changed before archive: {item.path}")
+                      item.snapshot.seek(0)
+                      archive.addfile(
+                          _tar_info(f"{root_name}/{item.path}", item.size, item.mode, epoch),
+                          item.snapshot,
+                      )
+                      after = os.fstat(item.snapshot.fileno())
+                      if (
+                          not _same_file(before, after)
+                          or after.st_size != item.size
+                          or _hash_stream(item.snapshot) != item.sha256
+                      ):
+                          raise PackageError(f"payload snapshot changed during archive: {item.path}")
+                      item.snapshot.seek(0)
+              compressed = io.BytesIO()
+              with gzip.GzipFile(
+                  filename="", mode="wb", compresslevel=9, fileobj=compressed, mtime=epoch
+              ) as output:
+                  output.write(raw_tar.getvalue())
+              return compressed.getvalue(), sha256_bytes(manifest_bytes)
+          
+          
+          def _absolute_output(path: Path) -> Path:
+              absolute = Path(os.path.abspath(os.fspath(path)))
+              if absolute.name in {"", ".", ".."}:
+                  raise PackageError(f"invalid output path: {path}")
+              return absolute
+          
+          
+          def _open_output_directory(path: Path) -> int:
+              path.parent.mkdir(parents=True, exist_ok=True)
+              flags = (
+                  os.O_RDONLY
+                  | getattr(os, "O_DIRECTORY", 0)
+                  | getattr(os, "O_CLOEXEC", 0)
+                  | getattr(os, "O_NOFOLLOW", 0)
+              )
+              directory = os.open(path.parent, flags)
+              if not stat.S_ISDIR(os.fstat(directory).st_mode):
+                  os.close(directory)
+                  raise PackageError(f"output parent is not a directory: {path.parent}")
+              return directory
+          
+          
+          def _publish_noreplace(directory: int, temporary_name: str, final_name: str) -> None:
+              os.link(
+                  temporary_name,
+                  final_name,
+                  src_dir_fd=directory,
+                  dst_dir_fd=directory,
+                  follow_symlinks=False,
+              )
+          
+          
+          def _ensure_new_outputs(paths: Iterable[Path]) -> None:
+              for candidate in paths:
+                  path = _absolute_output(candidate)
+                  path.parent.mkdir(parents=True, exist_ok=True)
+                  try:
+                      path.lstat()
+                  except FileNotFoundError:
+                      continue
+                  raise PackageError(f"refusing to replace existing output: {path}")
+          
+          
+          def _write_atomic(path: Path, content: bytes, mode: int) -> None:
+              path = _absolute_output(path)
+              directory = _open_output_directory(path)
+              descriptor = -1
+              temporary_name = ""
+              try:
+                  for _ in range(32):
+                      candidate = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
+                      try:
+                          descriptor = os.open(
+                              candidate,
+                              os.O_WRONLY
+                              | os.O_CREAT
+                              | os.O_EXCL
+                              | getattr(os, "O_CLOEXEC", 0)
+                              | getattr(os, "O_NOFOLLOW", 0),
+                              mode,
+                              dir_fd=directory,
+                          )
+                          temporary_name = candidate
+                          break
+                      except FileExistsError:
+                          continue
+                  if descriptor < 0:
+                      raise PackageError("could not allocate a private output staging file")
+                  os.fchmod(descriptor, mode)
+                  with os.fdopen(descriptor, "wb", closefd=True) as stream:
+                      descriptor = -1
+                      stream.write(content)
+                      stream.flush()
+                      os.fsync(stream.fileno())
+                  try:
+                      _publish_noreplace(directory, temporary_name, path.name)
+                  except FileExistsError as error:
+                      raise PackageError(
+                          f"refusing to replace concurrently created output: {path}"
+                      ) from error
+                  os.unlink(temporary_name, dir_fd=directory)
+                  temporary_name = ""
+                  os.fsync(directory)
+              finally:
+                  if descriptor >= 0:
+                      os.close(descriptor)
+                  if temporary_name:
+                      try:
+                          os.unlink(temporary_name, dir_fd=directory)
+                      except OSError:
+                          pass
+                  os.close(directory)
+          
+          
+          '''
+          builder = builder[:old_archive_start] + new_archive + builder[old_archive_end:]
+          
+          package_start = builder.index("def package_install_root(\n")
+          package_end = builder.index("def install_from_build(", package_start)
+          new_package = r'''def package_install_root(
+              install_root: Path,
+              output: Path,
+              *,
+              version: str,
+              profile: str,
+              source_sha: str,
+              source_date_epoch: int,
+          ) -> dict[str, Any]:
+              validate_identity(version, profile, source_sha, source_date_epoch)
+              output = _absolute_output(output)
+              if output.suffix not in {".gz", ".tgz"}:
+                  raise PackageError("release output must end in .tar.gz or .tgz")
+              digest_path = Path(str(output) + ".sha256")
+              receipt_path = Path(str(output) + ".receipt.json")
+              _ensure_new_outputs((output, digest_path, receipt_path))
+          
+              payload: list[PayloadFile] = []
+              try:
+                  payload = collect_payload(install_root)
+                  manifest = build_manifest(
+                      payload, version, profile, source_sha, source_date_epoch
+                  )
+                  archive, manifest_sha256 = archive_bytes(
+                      payload, manifest, version, profile, source_date_epoch
+                  )
+              finally:
+                  close_payload(payload)
+          
+              package_sha256 = sha256_bytes(archive)
+              digest_bytes = f"{package_sha256}  {output.name}\n".encode("ascii")
+              receipt = {
+                  "schema": RECEIPT_SCHEMA,
+                  "version": version,
+                  "profile": profile,
+                  "source_sha": source_sha,
+                  "source_date_epoch": source_date_epoch,
+                  "package_file": output.name,
+                  "package_sha256": package_sha256,
+                  "manifest_sha256": manifest_sha256,
+                  "file_count": len(manifest["files"]),
+                  "authorization_effect": "NONE",
+                  "paper_authorized": False,
+                  "live_authorized": False,
+              }
+          
+              # Publish each immutable output with an atomic no-replace link. If a later
+              # publication loses a race, retain earlier outputs rather than performing
+              # an unsafe pathname-based rollback that could delete another writer's file.
+              _write_atomic(output, archive, 0o644)
+              _write_atomic(digest_path, digest_bytes, 0o644)
+              _write_atomic(receipt_path, canonical_json(receipt), 0o600)
+              return receipt
+          
+          
+          '''
+          builder = builder[:package_start] + new_package + builder[package_end:]
+          builder_path.write_text(builder, encoding="utf-8")
+          
+          preflight_path = Path("scripts/hepta_preflight.py")
+          preflight = preflight_path.read_text(encoding="utf-8")
+          preflight = replace_once(
+              preflight,
+              "import argparse\nfrom datetime",
+              "import argparse\nimport contextlib\nfrom datetime",
+              "preflight contextlib import",
+          )
+          preflight = replace_once(
+              preflight,
+              "import re\nimport shutil\n",
+              "import re\nimport secrets\nimport shutil\n",
+              "preflight secrets import",
+          )
+          
+          hash_start = preflight.index("def sha256_file(path: Path) -> str:\n")
+          hash_end = preflight.index("def _read_bounded(", hash_start)
+          new_pinned_helpers = r'''def _absolute_path(path: Path) -> Path:
+              absolute = Path(os.path.abspath(os.fspath(path)))
+              if absolute.name in {"", ".", ".."}:
+                  raise PreflightError(f"invalid path: {path}")
+              return absolute
+          
+          
+          def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
+              return (
+                  metadata.st_dev,
+                  metadata.st_ino,
+                  metadata.st_mode,
+                  metadata.st_nlink,
+                  metadata.st_uid,
+                  metadata.st_gid,
+                  metadata.st_size,
+                  metadata.st_mtime_ns,
+                  metadata.st_ctime_ns,
+              )
+          
+          
+          def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
+              return _file_identity(left) == _file_identity(right)
+          
+          
+          @contextlib.contextmanager
+          def _open_pinned_regular(path: Path, label: str) -> Any:
+              absolute = _absolute_path(path)
+              directory_flags = (
+                  os.O_RDONLY
+                  | getattr(os, "O_DIRECTORY", 0)
+                  | getattr(os, "O_CLOEXEC", 0)
+                  | getattr(os, "O_NOFOLLOW", 0)
+              )
+              file_flags = (
+                  os.O_RDONLY
+                  | getattr(os, "O_CLOEXEC", 0)
+                  | getattr(os, "O_NOFOLLOW", 0)
+              )
+              directory = os.open(absolute.parent, directory_flags)
+              descriptor = -1
+              stream: BinaryIO | None = None
+              try:
+                  descriptor = os.open(absolute.name, file_flags, dir_fd=directory)
+                  pinned = os.fstat(descriptor)
+                  current = os.stat(
+                      absolute.name, dir_fd=directory, follow_symlinks=False
+                  )
+                  if (
+                      not stat.S_ISREG(pinned.st_mode)
+                      or pinned.st_nlink != 1
+                      or not _same_file(pinned, current)
+                  ):
+                      raise PreflightError(
+                          f"{label} must be a stable regular single-link file"
+                      )
+                  stream = os.fdopen(descriptor, "rb", closefd=True)
+                  descriptor = -1
+                  yield stream, pinned, directory, absolute.name
+              finally:
+                  if stream is not None:
+                      stream.close()
+                  elif descriptor >= 0:
+                      os.close(descriptor)
+                  os.close(directory)
+          
+          
+          def _assert_stable_file(
+              stream: BinaryIO,
+              pinned: os.stat_result,
+              directory: int,
+              name: str,
+              label: str,
+          ) -> None:
+              try:
+                  current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+              except OSError as error:
+                  raise PreflightError(f"{label} path changed while being read: {error}") from error
+              after = os.fstat(stream.fileno())
+              if not _same_file(pinned, after) or not _same_file(pinned, current):
+                  raise PreflightError(f"{label} identity changed while being read")
+          
+          
+          def _hash_stream(stream: BinaryIO) -> str:
+              stream.seek(0)
+              digest = hashlib.sha256()
+              for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                  digest.update(chunk)
+              return digest.hexdigest()
+          
+          
+          def sha256_file(path: Path) -> str:
+              with _open_pinned_regular(path, "file") as (
+                  stream,
+                  pinned,
+                  directory,
+                  name,
+              ):
+                  digest = _hash_stream(stream)
+                  _assert_stable_file(stream, pinned, directory, name, "file")
+                  return digest
+          
+          
+          '''
+          preflight = preflight[:hash_start] + new_pinned_helpers + preflight[hash_end:]
+          
+          load_start = preflight.index("def _load_policy(path: Path) -> dict[str, Any]:\n")
+          load_end = preflight.index("def _canonical_member_name(", load_start)
+          new_load = r'''def _load_policy(path: Path) -> dict[str, Any]:
+              with _open_pinned_regular(path, "policy") as (
+                  stream,
+                  pinned,
+                  directory,
+                  name,
+              ):
+                  value = parse_json_bytes(
+                      _read_bounded(stream, 4 * 1024 * 1024, str(path)),
+                      str(path),
+                  )
+                  _assert_stable_file(stream, pinned, directory, name, "policy")
+              if not isinstance(value, dict) or value.get("schema") != POLICY_SCHEMA:
+                  raise PreflightError("unsupported preflight policy")
+              profiles = value.get("profiles")
+              if not isinstance(profiles, dict) or not profiles:
+                  raise PreflightError("preflight policy profiles are missing")
+              for key in (
+                  "maximum_archive_members",
+                  "maximum_member_bytes",
+                  "maximum_total_unpacked_bytes",
+              ):
+                  item = value.get(key)
+                  if not isinstance(item, int) or isinstance(item, bool) or item <= 0:
+                      raise PreflightError(f"invalid policy bound: {key}")
+              suffixes = value.get("private_key_suffixes")
+              if (
+                  not isinstance(suffixes, list)
+                  or any(
+                      not isinstance(item, str) or not item.startswith(".")
+                      for item in suffixes
+                  )
+              ):
+                  raise PreflightError("private-key suffix policy is invalid")
+              return value
+          
+          
+          '''
+          preflight = preflight[:load_start] + new_load + preflight[load_end:]
+          
+          inspect_start = preflight.index("def inspect_archive(\n")
+          inspect_end = preflight.index("def _machine_id_digest(", inspect_start)
+          old_inspect = preflight[inspect_start:inspect_end]
+          archive_block_start = old_inspect.index("    with archive:\n")
+          return_start = old_inspect.index(
+              "    return manifest, actual_sha256, hashlib.sha256(manifest_bytes).hexdigest()\n"
+          )
+          archive_block = old_inspect[archive_block_start:return_start]
+          indented_archive_block = "".join(
+              ("    " + line if line.strip() else line)
+              for line in archive_block.splitlines(keepends=True)
+          )
+          new_inspect = r'''def inspect_archive(
+              artifact: Path, expected_sha256: str, policy: dict[str, Any], profile: str
+          ) -> tuple[dict[str, Any], str, str]:
+              if SHA256_RE.fullmatch(expected_sha256) is None:
+                  raise PreflightError("expected artifact SHA-256 is not canonical")
+              maximum_members = policy["maximum_archive_members"]
+              maximum_member = policy["maximum_member_bytes"]
+              maximum_total = policy["maximum_total_unpacked_bytes"]
+          
+              with _open_pinned_regular(artifact, "artifact") as (
+                  artifact_stream,
+                  metadata,
+                  directory,
+                  name,
+              ):
+                  actual_sha256 = _hash_stream(artifact_stream)
+                  if actual_sha256 != expected_sha256:
+                      raise PreflightError("artifact SHA-256 mismatch")
+                  artifact_stream.seek(0)
+                  try:
+                      archive = tarfile.open(fileobj=artifact_stream, mode="r:gz")
+                  except (tarfile.TarError, OSError) as error:
+                      raise PreflightError(
+                          f"artifact is not a valid gzip tar archive: {error}"
+                      ) from error
+          ''' + indented_archive_block + r'''        _assert_stable_file(
+                      artifact_stream, metadata, directory, name, "artifact"
+                  )
+              return (
+                  manifest,
+                  actual_sha256,
+                  hashlib.sha256(manifest_bytes).hexdigest(),
+              )
+          
+          
+          '''
+          preflight = preflight[:inspect_start] + new_inspect + preflight[inspect_end:]
+          
+          receipt_start = preflight.index(
+              "def _write_private_receipt(path: Path, value: dict[str, Any]) -> None:\n"
+          )
+          receipt_end = preflight.index("def run_preflight(", receipt_start)
+          new_receipt = r'''def _publish_noreplace(
+              directory: int, temporary_name: str, final_name: str
+          ) -> None:
+              os.link(
+                  temporary_name,
+                  final_name,
+                  src_dir_fd=directory,
+                  dst_dir_fd=directory,
+                  follow_symlinks=False,
+              )
+          
+          
+          def _write_private_receipt(path: Path, value: dict[str, Any]) -> None:
+              path = _absolute_path(path)
+              path.parent.mkdir(parents=True, exist_ok=True)
+              directory = os.open(
+                  path.parent,
+                  os.O_RDONLY
+                  | getattr(os, "O_DIRECTORY", 0)
+                  | getattr(os, "O_CLOEXEC", 0)
+                  | getattr(os, "O_NOFOLLOW", 0),
+              )
+              descriptor = -1
+              temporary_name = ""
+              try:
+                  for _ in range(32):
+                      candidate = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
+                      try:
+                          descriptor = os.open(
+                              candidate,
+                              os.O_WRONLY
+                              | os.O_CREAT
+                              | os.O_EXCL
+                              | getattr(os, "O_CLOEXEC", 0)
+                              | getattr(os, "O_NOFOLLOW", 0),
+                              0o600,
+                              dir_fd=directory,
+                          )
+                          temporary_name = candidate
+                          break
+                      except FileExistsError:
+                          continue
+                  if descriptor < 0:
+                      raise PreflightError(
+                          "could not allocate a private receipt staging file"
+                      )
+                  os.fchmod(descriptor, 0o600)
+                  with os.fdopen(descriptor, "wb", closefd=True) as stream:
+                      descriptor = -1
+                      stream.write(canonical_json(value))
+                      stream.flush()
+                      os.fsync(stream.fileno())
+                  try:
+                      _publish_noreplace(directory, temporary_name, path.name)
+                  except FileExistsError as error:
+                      raise PreflightError(
+                          f"refusing to replace concurrently created receipt: {path}"
+                      ) from error
+                  os.unlink(temporary_name, dir_fd=directory)
+                  temporary_name = ""
+                  os.fsync(directory)
+              finally:
+                  if descriptor >= 0:
+                      os.close(descriptor)
+                  if temporary_name:
+                      try:
+                          os.unlink(temporary_name, dir_fd=directory)
+                      except OSError:
+                          pass
+                  os.close(directory)
+          
+          
+          '''
+          preflight = preflight[:receipt_start] + new_receipt + preflight[receipt_end:]
+          preflight = replace_once(
+              preflight,
+              "policy = _load_policy(args.policy.resolve(strict=True))",
+              "policy = _load_policy(_absolute_path(args.policy))",
+              "policy no-resolve",
+          )
+          preflight = replace_once(
+              preflight,
+              "args.artifact.resolve(strict=True), args.expected_sha256, policy, args.profile",
+              "_absolute_path(args.artifact), args.expected_sha256, policy, args.profile",
+              "artifact no-resolve",
+          )
+          preflight_path.write_text(preflight, encoding="utf-8")
+          
+          release_test_path = Path("tests/python/test_release_package.py")
+          release_tests = release_test_path.read_text(encoding="utf-8")
+          release_tests = replace_once(
+              release_tests,
+              "import unittest\n",
+              "import unittest\nfrom unittest import mock\n",
+              "release test mock import",
+          )
+          new_release_tests = r'''
+              def test_concurrent_output_creation_is_never_replaced(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      work = Path(directory)
+                      root = fixture_tree(work / "root")
+                      output = work / "release.tar.gz"
+                      original_publish = release._publish_noreplace
+                      sentinel = b"concurrent-writer\n"
+          
+                      def competing_publish(
+                          directory_fd: int, temporary_name: str, final_name: str
+                      ) -> None:
+                          if final_name == output.name:
+                              descriptor = os.open(
+                                  final_name,
+                                  os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                                  0o600,
+                                  dir_fd=directory_fd,
+                              )
+                              try:
+                                  os.write(descriptor, sentinel)
+                                  os.fsync(descriptor)
+                              finally:
+                                  os.close(descriptor)
+                          original_publish(directory_fd, temporary_name, final_name)
+          
+                      with mock.patch.object(
+                          release, "_publish_noreplace", side_effect=competing_publish
+                      ):
+                          with self.assertRaises(release.PackageError):
+                              self.package(root, output)
+                      self.assertEqual(output.read_bytes(), sentinel)
+          
+              def test_source_mutation_after_snapshot_cannot_change_archive_bytes(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      work = Path(directory)
+                      root = fixture_tree(work / "root")
+                      target = root / "bin/heptactl"
+                      original_bytes = target.read_bytes()
+                      output = work / "release.tar.gz"
+                      original_build_manifest = release.build_manifest
+          
+                      def mutating_manifest(*args, **kwargs):
+                          manifest = original_build_manifest(*args, **kwargs)
+                          target.write_bytes(b"mutated-after-snapshot\n")
+                          return manifest
+          
+                      with mock.patch.object(
+                          release, "build_manifest", side_effect=mutating_manifest
+                      ):
+                          self.package(root, output)
+          
+                      with tarfile.open(output, "r:gz") as archive:
+                          payload_member = next(
+                              item
+                              for item in archive.getmembers()
+                              if item.name.endswith("/bin/heptactl")
+                          )
+                          payload_stream = archive.extractfile(payload_member)
+                          self.assertIsNotNone(payload_stream)
+                          archived_bytes = payload_stream.read()
+                          manifest_member = next(
+                              item
+                              for item in archive.getmembers()
+                              if item.name.endswith("/manifest.json")
+                          )
+                          manifest_stream = archive.extractfile(manifest_member)
+                          self.assertIsNotNone(manifest_stream)
+                          manifest = json.loads(manifest_stream.read())
+                      self.assertEqual(archived_bytes, original_bytes)
+                      entry = next(
+                          item for item in manifest["files"] if item["path"] == "bin/heptactl"
+                      )
+                      self.assertEqual(
+                          entry["sha256"], release.sha256_bytes(original_bytes)
+                      )
+                      self.assertNotEqual(target.read_bytes(), original_bytes)
+          '''
+          insertion = release_tests.index("\n\nif __name__ == \"__main__\":")
+          release_tests = (
+              release_tests[:insertion] + new_release_tests + release_tests[insertion:]
+          )
+          release_test_path.write_text(release_tests, encoding="utf-8")
+          
+          preflight_test_path = Path("tests/python/test_hepta_preflight.py")
+          preflight_tests = preflight_test_path.read_text(encoding="utf-8")
+          new_preflight_tests = r'''
+              def test_artifact_path_swap_during_inspection_fails_closed(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      work = Path(directory)
+                      artifact, package = self.valid_package(work / "first")
+                      other_root = fixture_tree(work / "other-root")
+                      (other_root / "share/doc/heptatrader/index.md").write_text(
+                          "different package\n", encoding="utf-8"
+                      )
+                      replacement = work / "replacement.tar.gz"
+                      release.package_install_root(
+                          other_root,
+                          replacement,
+                          version=VERSION,
+                          profile="core",
+                          source_sha="3" * 40,
+                          source_date_epoch=EPOCH,
+                      )
+                      original_open = preflight.tarfile.open
+                      swapped = False
+          
+                      def swapping_open(*args, **kwargs):
+                          nonlocal swapped
+                          if not swapped and kwargs.get("fileobj") is not None:
+                              swapped = True
+                              os.replace(replacement, artifact)
+                          return original_open(*args, **kwargs)
+          
+                      with mock.patch.object(
+                          preflight.tarfile, "open", side_effect=swapping_open
+                      ):
+                          receipt = preflight.run_preflight(
+                              args_for(artifact, package["package_sha256"])
+                          )
+                      self.assertTrue(swapped)
+                      self.assertEqual(receipt["result"], "FAIL")
+                      self.assertIn(
+                          "identity changed",
+                          check(receipt, "artifact.integrity")["detail"],
+                      )
+          
+              def test_concurrent_receipt_creation_is_never_replaced(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      output = Path(directory) / "receipt.json"
+                      sentinel = b"concurrent-receipt\n"
+                      original_publish = preflight._publish_noreplace
+          
+                      def competing_publish(
+                          directory_fd: int, temporary_name: str, final_name: str
+                      ) -> None:
+                          descriptor = os.open(
+                              final_name,
+                              os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                              0o600,
+                              dir_fd=directory_fd,
+                          )
+                          try:
+                              os.write(descriptor, sentinel)
+                              os.fsync(descriptor)
+                          finally:
+                              os.close(descriptor)
+                          original_publish(directory_fd, temporary_name, final_name)
+          
+                      with mock.patch.object(
+                          preflight,
+                          "_publish_noreplace",
+                          side_effect=competing_publish,
+                      ):
+                          with self.assertRaises(preflight.PreflightError):
+                              preflight._write_private_receipt(
+                                  output, {"result": "PASS"}
+                              )
+                      self.assertEqual(output.read_bytes(), sentinel)
+          '''
+          insertion = preflight_tests.index("\n\nif __name__ == \"__main__\":")
+          preflight_tests = (
+              preflight_tests[:insertion]
+              + new_preflight_tests
+              + preflight_tests[insertion:]
+          )
+          preflight_test_path.write_text(preflight_tests, encoding="utf-8")
+          PY
+          
+          python3 -m py_compile \
+            scripts/build_release_package.py \
+            scripts/hepta_preflight.py \
+            tests/python/test_release_package.py \
+            tests/python/test_hepta_preflight.py
+          python3 -m unittest discover -s tests/python -p 'test_release_package.py'
+          python3 -m unittest discover -s tests/python -p 'test_hepta_preflight.py'
+          git diff --check
+
+      - name: Commit verified fixes and remove temporary workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-fix-release-races.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'fix(release): pin input bytes and publish without replacement'
+          git push "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
