@@ -1,0 +1,79 @@
+name: Thread Sanitizer
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-tsan-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  tsan:
+    name: thread-sanitizer-core
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    env:
+      CC: gcc
+      CXX: g++
+      CXXFLAGS: -O1 -g -fsanitize=thread -fno-omit-frame-pointer
+      TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1:history_size=7
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Assert exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build g++ libssl-dev
+
+      - name: Configure ThreadSanitizer build
+        run: |
+          cmake -S . -B build/tsan -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=thread' \
+            -DCMAKE_SHARED_LINKER_FLAGS='-fsanitize=thread' \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+
+      - name: Build and run core tests serially under TSan
+        run: |
+          set -euo pipefail
+          cmake --build build/tsan --target hepta_core_test_binaries --parallel 2
+          ctest --test-dir build/tsan \
+            --output-on-failure \
+            --parallel 1 \
+            --timeout 180 \
+            -L core
+
+      - name: Reassert clean exact source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
