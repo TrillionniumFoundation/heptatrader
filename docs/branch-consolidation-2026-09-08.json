@@ -1,0 +1,842 @@
+{
+  "all_recorded_tips_reachable": true,
+  "authorization": {
+    "github_governance_evidence_required": true,
+    "live_authorized": false,
+    "paper_authorized": false,
+    "protected_ib_paper_evidence_required": true
+  },
+  "batch_count": 6,
+  "branch_count_at_inventory": 83,
+  "branches": [
+    {
+      "already_reachable_from_main": false,
+      "branch": "cleanup/iteration-speed-first",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "ee1167e6738dda93500e83a9700c721d8d115210",
+      "tree_sha": "db6ac432f000186efd577a6a4d6c46e26f585fed"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/agent-intent-contract",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "30fca331d29430ccd0959d127f844888092a5f57",
+      "tree_sha": "95adaef9a5b5f9d448d227067a98a20ce2662f7d"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/branch-consolidation-control-20260908",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "de9a7c028d080d8a6c42a77fb8b2dbfca05d07d8",
+      "tree_sha": "922449320aef43fb3886d2fdcbc168db36b70e49"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/branch-consolidation-inventory-20260908",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "e0b38e8a2988e4dc0b517a0b7ad44e805ef3f6e6",
+      "tree_sha": "d0d7347a39e6064a7870a09ee717f0b6947aad08"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "codex/cancel-obsolete-self-hosted-runs-20260902",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "f30d03864260e457f46ca4fe5445769b6f562e70",
+      "tree_sha": "db6ac432f000186efd577a6a4d6c46e26f585fed"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/close-all-runtime-gaps",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "b942adc709c693eaca9a5bd7685e5baa1db8eed7",
+      "tree_sha": "961592095a0904afd550d4c7ae658670797ba984"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/close-architecture-docs-ci-risk-gaps-20260907",
+      "resolution": "merge-history-preserve-identical-canonical-tree",
+      "same_tree_as_main": true,
+      "sha": "99a7fe6e0f902ba264fea0958f1a420d1a5df6f4",
+      "tree_sha": "86f0fbdf590fc25f889907821de4b774393a7deb"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/close-audit-blockers-20260831",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "5e17c5811b4d9f0e73b6475e6e485a380a117fe8",
+      "tree_sha": "dfc90d1ee3984f5cde10573a33f471f9157f811a"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "codex/close-runtime-doc-governance-gaps-20260907",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "57793d150501a00d239b7b77c68d38e7776cedea",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/exact-source-export-20260908",
+      "resolution": "merge-history-preserve-identical-canonical-tree",
+      "same_tree_as_main": true,
+      "sha": "99a7fe6e0f902ba264fea0958f1a420d1a5df6f4",
+      "tree_sha": "86f0fbdf590fc25f889907821de4b774393a7deb"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/final-blocker-closure-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "fb2cd905556944e46ca658e9b1c13c60149b704b",
+      "tree_sha": "1f76b7878f0d997df37c2ef2deb110b1e645c2c1"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/full-gap-closure-20260901",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d134047d40d22b486633a265e04c922537622d27",
+      "tree_sha": "fce28ff841356e8533b86dadf0cba4344905cd7e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/github-actions-control-plane-probe-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "c29d72ea0e7d79fa488d6263b1ffbb8abb9e68ea",
+      "tree_sha": "6c1e8a2bed6e908189b4cde06e638cfbe63a12bd"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/github-governance-workflow-bootstrap-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "602247be2a019f98f20dc10f0640f6c0219bbd78",
+      "tree_sha": "cdce425bee89daafb2e962d8f16e5c0a767d75dc"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/github-governance-workflow-bootstrap-ready-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "a5d702422c38052c1db516611fc1b4c489b3b885",
+      "tree_sha": "4e5bdd0119e086f0def9f78278f1ac4a267ee0d5"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/governance-check-contexts-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "9e8a1ca77c1fb0e78015e94b7784610ecd98fb57",
+      "tree_sha": "f91285b2561dbeeebd6bd1e80312dbb50fbc0a22"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "codex/harden-qualification-trust-boundary-20260904",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "7553d1e64261d5a38c082c15429ede8bfa5237e2",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-audit-export-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "197b94b856256a7b4e26fa76126939b53a6b3ba9",
+      "tree_sha": "b684b5d0f9fbae972da722149592814471fa3c4b"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-authority-docs-closure-20260901",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "7f392cf6d4bd1f37a049d1c767567589f70618ac",
+      "tree_sha": "af584d739c70ab38903c6e739d883b4b61a4f4f0"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-doc-evidence-materializer-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "37ee9aab10a7914f58c9aded322c7be9c69069c9",
+      "tree_sha": "de43a2b7b80368d9c6aff4e2fab22b00c003f63b"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-documentation-control-plane-v2",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "71919b906c5f00df40a8ec525836b0b3c921fcaf",
+      "tree_sha": "76d7ad53aab8a9b568488237d5dbc14d62478079"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-final-gap-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "952f012db83d89d8cba1f20cff5ca2b332b72984",
+      "tree_sha": "3cf5e2861e0cbbcf9f03f6f83e6096717145199e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-gap-closure-transport-20260901",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d89c453c247b1faad1b712286cb01cb890f8698e",
+      "tree_sha": "8439f65b51ad526b5e1e95e2454ac9112682e1f4"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-gap-closure-transport-v2-20260901",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "3f8ed0dcb72def7bb3dd0d6fc932384782c75559",
+      "tree_sha": "f02af177087017181a57f86a20ba6f7518eaaa61"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-gap-closure-v2",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "c743441ba706f5cb3fe42c2c08a5f4dc0fba190e",
+      "tree_sha": "c6f39d16360f177f4fc1c9b5a4a1483b926d6670"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-gap-closure-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "a066f42c1e19d01223a40dd05672060c2881cc65",
+      "tree_sha": "ccb61d243218ac9c235dafa0958cc8f9631fe0ef"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-internal-closure-candidate-v3",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "f15da1488d94f15d14ea2430508a72f917f9c54a",
+      "tree_sha": "042f43c37a5ae6ef352a3823c4b86d2dcd1ea864"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-m3-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "7884bde4d92033103a526e1f80f99aba5d0c6979",
+      "tree_sha": "772d1451729657d31869968b33bfce9cb6351862"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-m4-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "1d76520e921b0d29ec965d0579de43cdc5f50214",
+      "tree_sha": "54c448ea8e3506249690e53cd50f109778be29f4"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-m5-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "42c1fd9443745544ab54673d50b920952319e0fa",
+      "tree_sha": "4c206aa6bb01bf5c9c7da849f5989dc0164226d9"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-module-materializer-export-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "9b8db190faaac2eccd33f6e2395cae23b5c194d3",
+      "tree_sha": "ab040326d73146c785f32c8878f5b0b28f3b2a20"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-p1-integration-controller",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "ca2da24d0845f9cdd624eceb9276d9bd16d3089a",
+      "tree_sha": "50363405c4c82ccff15ebdaf9b99ca05a60ec9ef"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "codex/heptatrader-plan-closure-materialize-20260904",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "28583c0ca676f9e0d0eb172fef5ab1677902afdd",
+      "tree_sha": "de39bc998cb9d2714e70bc413e2ce2e44deee2d1"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-pr23-source-export-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "82f4133307340a045a688ec2b17244e2017e8d66",
+      "tree_sha": "4ea23d868c474fdd5db84efc4dfcae46b4196c78"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-receipt-binding-hardening-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "89c54d4c50e5f587bb7e615582149d691b8ad9f6",
+      "tree_sha": "29ffe8193ed99a43532e45e5951c712f9e37cb93"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-review-p1-allocation-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "cc33a45e8aa30faa8700a4ebf2fbb45b0ad743d9",
+      "tree_sha": "98fcd562e83f803e62c9958e2f50c2778c3239ed"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-review-p1-integration",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "3c048a7af1d0987c2e79139f364aee516338fe76",
+      "tree_sha": "92303cbb90627166815f73c3f25e374685021b9e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-review-p1-work",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "9a13f1092964ed3e970dfd41058dc2b309eab4a0",
+      "tree_sha": "cc2f9f37423c6aaa65608e0f1bd20dd4c8a29202"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-traceability-materialize-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "c7814ddf7ab1434ccfc04299338676d74a993a0f",
+      "tree_sha": "8a906d8cacddfa4b1c4327a3697ef11a0b9bc996"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-traceability-patch-export-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "a4ca4e29d8125582f8b2ec5942803942b9b50aa2",
+      "tree_sha": "6a8eeb45d433683196091b03f1dc32b2aac8fa75"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-traceability-stage-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "a6b228ab1f79a0971bc188fefe77a1c0f2acf507",
+      "tree_sha": "ab3d387693ffaf59a821966276ff34df98c52fb6"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-traceability-stage-export-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "b96e1ab2b457470c45ff90cedc30eb67ebfb1310",
+      "tree_sha": "273ece561c775982b626967187ff129003098efb"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/heptatrader-workspace-export-20260903",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "3cece417843b52e96d77247475027643253227f7",
+      "tree_sha": "f66b5c7c5bb289d8aac6c54cdfbaabbb659fdcbb"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-paper-canonical-runner-probe-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "71fa2fd34d0cb9c1de4a3cc4af96706634cbbfaf",
+      "tree_sha": "068510955cd562f3d91276759bdd0be102f30eb9"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-paper-label-only-probe-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "ed1c7c9317d16b5de8c79686bf78eb8ca39742f7",
+      "tree_sha": "557274e8e761a5d4692865b1770864406b8dc1aa"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-paper-qualification-trigger-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "cfd52b1792ebcb7e76d18da53d920020d41111e6",
+      "tree_sha": "6bfecd24661087c72192af3d263ac85dffc22cb5"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-paper-runner-probe-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "812e8fe4fef7fbc32335030185cc5aa3da33b290",
+      "tree_sha": "183a91c863d5efdb54bcab18377f4802fa94f40c"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-paper-workflow-bootstrap-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "47e603062f1f44f55984cf75a1328e0f29efa996",
+      "tree_sha": "848cf86e0c249bdd28a3a20539bc03c2db57eb65"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-paper-workflow-bootstrap-ready-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "258eebfb5f2b3cc5e6dbfe8a7b6935ef24da4301",
+      "tree_sha": "de39bc998cb9d2714e70bc413e2ce2e44deee2d1"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/ib-protected-environment-readback-20260906",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "0a568c87718cced57e8e120a176d8e96e760f209",
+      "tree_sha": "c51676157f03b9710a849f337040c3e2a0588c89"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/legacy-isolation",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "4e62a27ba1d2ba1cdadd810ae6533af90352a2b1",
+      "tree_sha": "8934f096ccd0cba0703f7e47a5b95ba9cc6ead44"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/marketdata-authority-closure-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d134047d40d22b486633a265e04c922537622d27",
+      "tree_sha": "fce28ff841356e8533b86dadf0cba4344905cd7e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/marketdata-authority-closure-20260902-v2",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d134047d40d22b486633a265e04c922537622d27",
+      "tree_sha": "fce28ff841356e8533b86dadf0cba4344905cd7e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/marketdata-linearization-closure-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d134047d40d22b486633a265e04c922537622d27",
+      "tree_sha": "fce28ff841356e8533b86dadf0cba4344905cd7e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/oms-history-staging-20260905",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "fdc7537225d5db061d43db28807d868040278ece",
+      "tree_sha": "d8b327fc92600f27774a7695fe1b3cbf27d615cc"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/patch-transfer-probe",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "37a4875a8ce9ceb221a10814ab57b55fcbec9059",
+      "tree_sha": "443adba0e7ac6ec7997b07bed1561e590ff1d4f5"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/pr-ready-transition-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "b81b0b4d556f3072ddeca907562cd428a6f69c57",
+      "tree_sha": "921a5404dc2e8950dc217740464f26839d6b60fb"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/pr17-oms-segment-publisher-20260905",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "36856226cffc3537c296e5e32a4a1d68d0442024",
+      "tree_sha": "38a54b0e61cabf9c6147cd20d9cb9a516ac1185c"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/pr17-oms-segment-publisher-ubuntu22-20260905",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "9c48beb913ced46b720df06a891e54fea4ae08b6",
+      "tree_sha": "bb3767c312eb18ac95904013bcfeadd16255b018"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/pr17-oms-segment-stage-20260905",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "a4ed2c344aff3691da55846616a8ad65bb260477",
+      "tree_sha": "6e792492806a7800926a8c7c09dfada9d93dc39b"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/pr25-final-postflight-staging-20260906",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "7ba6d712ac8542bc42f158113c5831ce9b6166a0",
+      "tree_sha": "395c4e835fa09de4ec6846c026398d711199f2af"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/pr25-postflight-staging-20260906",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "ec7dbe8f65323fa5f88eeebbefca3cc151d1514e",
+      "tree_sha": "958b84c33ed885abb00287412800d584275c58f6"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/probe-tree-content-unused",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d134047d40d22b486633a265e04c922537622d27",
+      "tree_sha": "fce28ff841356e8533b86dadf0cba4344905cd7e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/probe-tree-content-unused-2",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d134047d40d22b486633a265e04c922537622d27",
+      "tree_sha": "fce28ff841356e8533b86dadf0cba4344905cd7e"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/protected-governance-readback-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "46b8d908f9a49a50a8fc1ad976362e85ce8ddbc6",
+      "tree_sha": "0b85d91169ffe2a804940247a322d6a4640441dc"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/recover-gap-payload-20260908",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "3742725f7628b3796dd947db27f63ea42e281fc0",
+      "tree_sha": "39c5a4ee03eaf7bfa00213cf8d808e059cc0d2d9"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/research-docs-simplification",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "30fca331d29430ccd0959d127f844888092a5f57",
+      "tree_sha": "95adaef9a5b5f9d448d227067a98a20ce2662f7d"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/risk-snapshot-remediation-staging-20260907",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "1301832c2fab8a0a24b4d32a3bc08b79c296a84a",
+      "tree_sha": "b99534d76404224bfb82cdf35624271332ae9e76"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/runner-inventory-probe-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "0bfd994300e75cf528cae42bac67efe47551af6b",
+      "tree_sha": "53118bde3767f55c42b51404c290101cd969a344"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/self-hosted-runner-discovery-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "c45c84c13b333093dd52babeee4c40432ad59a87",
+      "tree_sha": "22935c62b797697b5ee65bf21cd939a02fc9a3d9"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/semantic-evidence-closure-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "bf3476c564210f3ddf4709c93e5c08ae0514d8f8",
+      "tree_sha": "95b12b5eb3db0c302688d70a0dfd10be7d1968aa"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/systemd-doc-integrity-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d52dcd332607e4fe37dd12c5093f6a5eb0ce76cb",
+      "tree_sha": "a45ee6e039d6d3093b79ada4e6726240cb10165b"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/werror-cleanup-20260902",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "d00f37e43ee45ae12b0c75e638120d2884ee52d5",
+      "tree_sha": "bdc33a66c50a37c9953854ae288a6b7d487191a7"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "codex/workspace-export-gap-closure-20260908",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "e152a930983a4dcfe6bef4cd8ff982e7f05c677b",
+      "tree_sha": "f2291c01544d1ad81fa52fc13e9205168187ce8b"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "governance/activate-team-codeowners-20260904",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "aa196e4aebd73076d5835ba68bd8cb7c48792466",
+      "tree_sha": "c8405a3d9cd6635c25ed65543ee92546e4b21815"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "integration/governance-security-f2-20260906",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "363308a179a4819deacd8491bbbc565f334a84af",
+      "tree_sha": "9d2c24846242afeb77f0d953f479fb4141f151ff"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "main",
+      "resolution": "canonical-main",
+      "same_tree_as_main": true,
+      "sha": "cc67cb231620363624b0efcfc6934e9a4b3297cc",
+      "tree_sha": "86f0fbdf590fc25f889907821de4b774393a7deb"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "ops/external-control-readiness-probe-20260906",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "57793d150501a00d239b7b77c68d38e7776cedea",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "ops/patch-ib-runner-groups-20260906",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "57793d150501a00d239b7b77c68d38e7776cedea",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "ops/qualification-source-audit-20260906",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "57793d150501a00d239b7b77c68d38e7776cedea",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "ops/qualification-source-audit-v2-20260906",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "57793d150501a00d239b7b77c68d38e7776cedea",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": true,
+      "branch": "ops/trusted-main-readiness-dispatch-20260906",
+      "resolution": "already-reachable-from-main",
+      "same_tree_as_main": false,
+      "sha": "57793d150501a00d239b7b77c68d38e7776cedea",
+      "tree_sha": "d72035d2c256f0370bc8e3e59ec34fb7ad8df95f"
+    },
+    {
+      "already_reachable_from_main": false,
+      "branch": "security/harden-x230-probe-input-20260906",
+      "resolution": "merge-history-resolve-tree-to-canonical-main",
+      "same_tree_as_main": false,
+      "sha": "225faa81a11d78d617d20b8ea4039deb2157864b",
+      "tree_sha": "afca8c56e8ac7c254eedc48f13f5df5b099bd659"
+    }
+  ],
+  "canonical_tree_before": "86f0fbdf590fc25f889907821de4b774393a7deb",
+  "generated_from_control_sha": "de9a7c028d080d8a6c42a77fb8b2dbfca05d07d8",
+  "history_merge_head": "603a1d9ee37edcf03c5e5a1e0692d016042e6a2e",
+  "main_before": "cc67cb231620363624b0efcfc6934e9a4b3297cc",
+  "merge_batches": [
+    {
+      "additional_parents": [
+        "ee1167e6738dda93500e83a9700c721d8d115210",
+        "30fca331d29430ccd0959d127f844888092a5f57",
+        "de9a7c028d080d8a6c42a77fb8b2dbfca05d07d8",
+        "e0b38e8a2988e4dc0b517a0b7ad44e805ef3f6e6",
+        "b942adc709c693eaca9a5bd7685e5baa1db8eed7",
+        "99a7fe6e0f902ba264fea0958f1a420d1a5df6f4",
+        "5e17c5811b4d9f0e73b6475e6e485a380a117fe8",
+        "fb2cd905556944e46ca658e9b1c13c60149b704b",
+        "d134047d40d22b486633a265e04c922537622d27",
+        "c29d72ea0e7d79fa488d6263b1ffbb8abb9e68ea",
+        "602247be2a019f98f20dc10f0640f6c0219bbd78",
+        "a5d702422c38052c1db516611fc1b4c489b3b885"
+      ],
+      "batch": 1,
+      "branches": [
+        "cleanup/iteration-speed-first",
+        "codex/agent-intent-contract",
+        "codex/research-docs-simplification",
+        "codex/branch-consolidation-control-20260908",
+        "codex/branch-consolidation-inventory-20260908",
+        "codex/close-all-runtime-gaps",
+        "codex/close-architecture-docs-ci-risk-gaps-20260907",
+        "codex/exact-source-export-20260908",
+        "codex/close-audit-blockers-20260831",
+        "codex/final-blocker-closure-20260902",
+        "codex/full-gap-closure-20260901",
+        "codex/marketdata-authority-closure-20260902",
+        "codex/marketdata-authority-closure-20260902-v2",
+        "codex/marketdata-linearization-closure-20260902",
+        "codex/probe-tree-content-unused",
+        "codex/probe-tree-content-unused-2",
+        "codex/github-actions-control-plane-probe-20260902",
+        "codex/github-governance-workflow-bootstrap-20260902",
+        "codex/github-governance-workflow-bootstrap-ready-20260902"
+      ],
+      "commit": "657645f3b6f69c132b2cfc18fe3a5216cc23408e",
+      "first_parent": "134697fec20af285d82371d1531bcb1b9cfb28f4"
+    },
+    {
+      "additional_parents": [
+        "197b94b856256a7b4e26fa76126939b53a6b3ba9",
+        "37ee9aab10a7914f58c9aded322c7be9c69069c9",
+        "952f012db83d89d8cba1f20cff5ca2b332b72984",
+        "d89c453c247b1faad1b712286cb01cb890f8698e",
+        "3f8ed0dcb72def7bb3dd0d6fc932384782c75559"
+      ],
+      "batch": 2,
+      "branches": [
+        "codex/heptatrader-audit-export-20260903",
+        "codex/heptatrader-doc-evidence-materializer-20260903",
+        "codex/heptatrader-final-gap-work",
+        "codex/heptatrader-gap-closure-transport-20260901",
+        "codex/heptatrader-gap-closure-transport-v2-20260901"
+      ],
+      "commit": "72f3fcc692032cc11301922ab37b205293f9f8d7",
+      "first_parent": "657645f3b6f69c132b2cfc18fe3a5216cc23408e"
+    },
+    {
+      "additional_parents": [
+        "9b8db190faaac2eccd33f6e2395cae23b5c194d3",
+        "ca2da24d0845f9cdd624eceb9276d9bd16d3089a",
+        "82f4133307340a045a688ec2b17244e2017e8d66",
+        "c7814ddf7ab1434ccfc04299338676d74a993a0f",
+        "a4ca4e29d8125582f8b2ec5942803942b9b50aa2"
+      ],
+      "batch": 3,
+      "branches": [
+        "codex/heptatrader-module-materializer-export-20260903",
+        "codex/heptatrader-p1-integration-controller",
+        "codex/heptatrader-pr23-source-export-20260903",
+        "codex/heptatrader-traceability-materialize-20260903",
+        "codex/heptatrader-traceability-patch-export-20260903"
+      ],
+      "commit": "dc10c6f95c8db85003469bddbb5a8f824fe60d55",
+      "first_parent": "72f3fcc692032cc11301922ab37b205293f9f8d7"
+    },
+    {
+      "additional_parents": [
+        "b96e1ab2b457470c45ff90cedc30eb67ebfb1310",
+        "3cece417843b52e96d77247475027643253227f7",
+        "71fa2fd34d0cb9c1de4a3cc4af96706634cbbfaf",
+        "ed1c7c9317d16b5de8c79686bf78eb8ca39742f7",
+        "cfd52b1792ebcb7e76d18da53d920020d41111e6",
+        "812e8fe4fef7fbc32335030185cc5aa3da33b290",
+        "47e603062f1f44f55984cf75a1328e0f29efa996",
+        "258eebfb5f2b3cc5e6dbfe8a7b6935ef24da4301",
+        "0a568c87718cced57e8e120a176d8e96e760f209",
+        "fdc7537225d5db061d43db28807d868040278ece",
+        "37a4875a8ce9ceb221a10814ab57b55fcbec9059"
+      ],
+      "batch": 4,
+      "branches": [
+        "codex/heptatrader-traceability-stage-export-20260903",
+        "codex/heptatrader-workspace-export-20260903",
+        "codex/ib-paper-canonical-runner-probe-20260902",
+        "codex/ib-paper-label-only-probe-20260902",
+        "codex/ib-paper-qualification-trigger-20260902",
+        "codex/ib-paper-runner-probe-20260902",
+        "codex/ib-paper-workflow-bootstrap-20260902",
+        "codex/ib-paper-workflow-bootstrap-ready-20260902",
+        "codex/ib-protected-environment-readback-20260906",
+        "codex/oms-history-staging-20260905",
+        "codex/patch-transfer-probe"
+      ],
+      "commit": "fe74ac6d46958040f40746fdfffc6d35c155ae58",
+      "first_parent": "dc10c6f95c8db85003469bddbb5a8f824fe60d55"
+    },
+    {
+      "additional_parents": [
+        "b81b0b4d556f3072ddeca907562cd428a6f69c57",
+        "36856226cffc3537c296e5e32a4a1d68d0442024",
+        "9c48beb913ced46b720df06a891e54fea4ae08b6",
+        "7ba6d712ac8542bc42f158113c5831ce9b6166a0",
+        "ec7dbe8f65323fa5f88eeebbefca3cc151d1514e",
+        "46b8d908f9a49a50a8fc1ad976362e85ce8ddbc6",
+        "3742725f7628b3796dd947db27f63ea42e281fc0",
+        "1301832c2fab8a0a24b4d32a3bc08b79c296a84a",
+        "0bfd994300e75cf528cae42bac67efe47551af6b",
+        "c45c84c13b333093dd52babeee4c40432ad59a87"
+      ],
+      "batch": 5,
+      "branches": [
+        "codex/pr-ready-transition-20260902",
+        "codex/pr17-oms-segment-publisher-20260905",
+        "codex/pr17-oms-segment-publisher-ubuntu22-20260905",
+        "codex/pr25-final-postflight-staging-20260906",
+        "codex/pr25-postflight-staging-20260906",
+        "codex/protected-governance-readback-20260902",
+        "codex/recover-gap-payload-20260908",
+        "codex/risk-snapshot-remediation-staging-20260907",
+        "codex/runner-inventory-probe-20260902",
+        "codex/self-hosted-runner-discovery-20260902"
+      ],
+      "commit": "71308432d96f75372a04b215bd7fd7c9912d0435",
+      "first_parent": "fe74ac6d46958040f40746fdfffc6d35c155ae58"
+    },
+    {
+      "additional_parents": [
+        "e152a930983a4dcfe6bef4cd8ff982e7f05c677b"
+      ],
+      "batch": 6,
+      "branches": [
+        "codex/workspace-export-gap-closure-20260908"
+      ],
+      "commit": "603a1d9ee37edcf03c5e5a1e0692d016042e6a2e",
+      "first_parent": "71308432d96f75372a04b215bd7fd7c9912d0435"
+    }
+  ],
+  "non_main_branch_count_at_inventory": 82,
+  "repository": "TrillionniumFoundation/heptatrader",
+  "resolution_policy": {
+    "conflict_policy": "preserve canonical main contents; do not overlay superseded, experimental, probe, staging, export or pre-canonical trees",
+    "content_authority": "main tree established by reviewed PR #31",
+    "deletion_precondition": "delete a branch only after its recorded tip is reachable from final main",
+    "history_policy": "retain every unique branch tip as reachable ancestry"
+  },
+  "schema": "heptatrader.branch-consolidation.v1",
+  "unique_non_main_tip_count": 70
+}
