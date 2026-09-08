@@ -57,6 +57,12 @@ The simulator uses two-phase placement: reserve an inert order, establish its ow
 
 The coordinator serializes command identity and durable state transitions. Venue callbacks may arrive concurrently and out of order; adapters normalize them into monotonic projections where possible and mark conflicts incomplete. No lock should be held across an unbounded broker call. Callback admission is explicitly closed and drained during terminal recovery.
 
+## Security and trust boundary
+
+The service process is the only component permitted to own a venue credential, venue socket or broker-port egress. Gateway requests arrive over an authenticated local protocol and are treated as untrusted intent: owner, execution domain, command identity, schema, policy permit, authoritative quote and durable state are independently revalidated before mutation. An Agent-supplied price, position, fill, account state or success claim is never authoritative.
+
+Broker adapters execute only through the coordinator's journaled mutation hooks. Test injection seams and simulator-only activation callbacks are unavailable from production configuration. Venue-specific credentials, state directories and sockets must be isolated from Agent, Gateway, research and legacy identities. Failure to prove that isolation closes risk-increasing admission; it never creates a fallback direct-send path.
+
 ## Failure semantics
 
 - Invalid owner/session/domain/lease: reject.
