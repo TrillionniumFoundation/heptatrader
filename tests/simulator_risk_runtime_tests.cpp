@@ -114,6 +114,188 @@ void TestDeterministicRiskReservationAndActivation()
     assert(!venue.PreviewRisk(contract, reverse).allow);
 }
 
+
+void TestFlattenCapacityReservations()
+{
+    const InstrumentRef contract = Contract();
+    auto flattenRisk = Risk();
+    flattenRisk.flattenOnly = true;
+    flattenRisk.maxOrderQuantity = 20.0;
+    flattenRisk.maxOrderNotional = 0.0;
+    flattenRisk.maxWorstCaseGrossNotional = 0.0;
+    flattenRisk.maxDailyLoss = 0.0;
+    flattenRisk.maxDrawdown = 0.0;
+    flattenRisk.maxSnapshotAgeMs = 0;
+    const auto exitOrder = [](const char* action, double quantity) {
+        OrderIntent order = Order(quantity);
+        order.action = action;
+        return order;
+    };
+
+    {
+        std::uint64_t now = 10000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        venue.SetRiskConfig(flattenRisk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", 10.0}}, 0, reason));
+        long four = -1, six = -1, extra = -1;
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 4.0), "long-four", &four, false));
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 6.0), "long-six", &six, false));
+        assert(!venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 0.01), "long-extra", &extra, false));
+        assert(venue.LastRejectReason() == "RISK_FLATTEN_ONLY_BLOCK");
+        assert(venue.ActivateOrder(four));
+        assert(venue.ActivateOrder(six));
+        venue.Process();
+        assert(venue.Position("EUR.USD") == 0.0 &&
+               "aggregate exact-capacity long exits must reach zero");
+    }
+
+    {
+        std::uint64_t now = 11000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        venue.SetRiskConfig(flattenRisk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", -10.0}}, 0, reason));
+        long four = -1, six = -1, extra = -1;
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("BUY", 4.0), "short-four", &four, false));
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("BUY", 6.0), "short-six", &six, false));
+        assert(!venue.PlaceOrderCorrelated(
+            contract, exitOrder("BUY", 0.01), "short-extra", &extra, false));
+        assert(venue.LastRejectReason() == "RISK_FLATTEN_ONLY_BLOCK");
+        assert(venue.ActivateOrder(four));
+        assert(venue.ActivateOrder(six));
+        venue.Process();
+        assert(venue.Position("EUR.USD") == 0.0 &&
+               "aggregate exact-capacity short exits must reach zero");
+    }
+
+    {
+        std::uint64_t now = 12000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        venue.SetRiskConfig(flattenRisk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", 10.0}}, 0, reason));
+        std::atomic<bool> start(false);
+        std::atomic<int> accepted(0);
+        long ids[2] = {-1, -1};
+        const OrderIntent exact = exitOrder("SELL", 10.0);
+        auto submit = [&](int index) {
+            while (!start.load()) std::this_thread::yield();
+            if (venue.PlaceOrderCorrelated(contract, exact,
+                    "concurrent-flatten-" + std::to_string(index),
+                    &ids[index], false))
+                ++accepted;
+        };
+        std::thread first(submit, 0);
+        std::thread second(submit, 1);
+        start.store(true);
+        first.join();
+        second.join();
+        assert(accepted.load() == 1 &&
+               "only one concurrent exact flatten may reserve the position");
+    }
+
+    {
+        std::uint64_t now = 13000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        venue.SetRiskConfig(flattenRisk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", 10.0}}, 0, reason));
+        long cancelling = -1, blocked = -1, replacement = -1;
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 10.0), "cancel-held",
+            &cancelling, true));
+        assert(venue.CancelOrder(cancelling));
+        assert(!venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 1.0), "before-cancel-terminal",
+            &blocked, false));
+        assert(venue.LastRejectReason() == "RISK_FLATTEN_ONLY_BLOCK" &&
+               "cancel request must not refund capacity before terminal confirmation");
+        venue.Process();
+        assert(venue.Position("EUR.USD") == 10.0);
+        assert(venue.TerminalOrderStatuses().at(cancelling) == "Cancelled");
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 10.0), "after-cancel-terminal",
+            &replacement, false));
+    }
+
+    {
+        std::uint64_t now = 14000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        venue.SetRiskConfig(flattenRisk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", 10.0}}, 0, reason));
+        long six = -1, five = -1, four = -1;
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 6.0), "policy-six", &six, false));
+        auto unrestricted = flattenRisk;
+        unrestricted.flattenOnly = false;
+        venue.SetRiskConfig(unrestricted);
+        venue.SetRiskConfig(flattenRisk);
+        assert(!venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 5.0), "policy-five", &five, false));
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 4.0), "policy-four", &four, false));
+    }
+
+    {
+        std::uint64_t now = 15000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        venue.SetRiskConfig(flattenRisk);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", 10.0}}, 0, reason));
+        long reserved = -1, ordinary = -1;
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 10.0), "guarded-reservation",
+            &reserved, false));
+        auto unrestricted = flattenRisk;
+        unrestricted.flattenOnly = false;
+        venue.SetRiskConfig(unrestricted);
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 10.0), "ordinary-reduction",
+            &ordinary, true));
+        venue.Process();
+        assert(venue.Position("EUR.USD") == 0.0);
+        assert(venue.ActivateOrder(reserved));
+        venue.Process();
+        assert(venue.Position("EUR.USD") == 0.0 &&
+               "fill-time guard must prevent a stale flatten reservation crossing zero");
+        assert(venue.TerminalOrderStatuses().at(reserved) == "Rejected");
+    }
+
+    {
+        std::uint64_t now = 16000;
+        DeterministicExecutionVenue venue([&]() { return now; });
+        auto monetary = Risk();
+        monetary.flattenOnly = true;
+        monetary.maxOrderQuantity = 20.0;
+        monetary.maxOrderNotional = 1000.0;
+        monetary.maxWorstCaseGrossNotional = 1000.0;
+        monetary.maxSnapshotAgeMs = 1000;
+        venue.SetRiskConfig(monetary);
+        venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        std::string reason;
+        assert(venue.RestoreRiskState({{"EUR.USD", 10.0}}, 7, reason));
+        long six = -1, five = -1;
+        assert(venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 6.0), "monetary-six", &six, false));
+        assert(!venue.PlaceOrderCorrelated(
+            contract, exitOrder("SELL", 5.0), "monetary-five", &five, false));
+        assert(venue.LastRejectReason() == "RISK_FLATTEN_ONLY_BLOCK");
+    }
+}
+
 void TestPreviewAndFinalAdmissionRejectSameRisk()
 {
     std::uint64_t now = 50000;
@@ -371,6 +553,7 @@ void TestProductionRuntimePumpsAndJournalsEvents()
 int main()
 {
     TestDeterministicRiskReservationAndActivation();
+    TestFlattenCapacityReservations();
     TestPreviewAndFinalAdmissionRejectSameRisk();
     TestProductionRuntimePumpsAndJournalsEvents();
     std::cout << "simulator risk, reservation, activation and production runtime tests passed\n";

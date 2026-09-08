@@ -90,6 +90,10 @@ private:
         bool submitted = false;
         bool cancelRequested = false;
         bool terminal = false;
+        // True only for an order admitted while flatten-only was active.
+        // The reservation survives deactivation and later policy changes until
+        // the order reaches an authoritative terminal state.
+        bool flattenCapacityReserved = false;
         std::string terminalStatus;
         std::string correlationId;
     };

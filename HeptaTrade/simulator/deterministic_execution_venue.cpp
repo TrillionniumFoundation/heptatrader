@@ -88,6 +88,44 @@ PreTradeRiskDecision DeterministicExecutionVenue::EvaluateRiskLocked(
     context.positionKnown = true;
     const auto position = m_positions.find(context.symbol);
     if (position != m_positions.end()) context.netPosition = position->second;
+    if (m_riskConfig.flattenOnly)
+    {
+        // Monetary pending exposure cannot protect a breached exit path because
+        // verified flatten orders intentionally bypass gross/loss limits. Keep
+        // a separate quantity reservation for every unresolved order that was
+        // admitted while flatten-only was active, including inactive orders and
+        // cancel requests that have not reached a terminal venue outcome.
+        double reservedQuantity = 0.0;
+        for (const auto& pending : m_orders)
+        {
+            const Order& reserved = pending.second;
+            if (reserved.terminal || !reserved.flattenCapacityReserved ||
+                reserved.instrument != context.symbol)
+                continue;
+            const bool directionMatches =
+                (context.netPosition > 0.0 && reserved.request.action == "SELL") ||
+                (context.netPosition < 0.0 && reserved.request.action == "BUY");
+            if (!directionMatches ||
+                !std::isfinite(reserved.request.totalQuantity) ||
+                reserved.request.totalQuantity <= 0.0)
+                return reject("SIM_FLATTEN_RESERVATION_INCONSISTENT");
+            reservedQuantity += reserved.request.totalQuantity;
+            if (!std::isfinite(reservedQuantity))
+                return reject("SIM_FLATTEN_RESERVATION_INCONSISTENT");
+        }
+        const double capacity = std::fabs(context.netPosition);
+        const double tolerance = std::max(1.0, capacity) *
+            64.0 * std::numeric_limits<double>::epsilon();
+        if (reservedQuantity > capacity + tolerance ||
+            (capacity <= tolerance && reservedQuantity > tolerance))
+            return reject("SIM_FLATTEN_RESERVATION_INCONSISTENT");
+        if (context.netPosition > 0.0)
+            context.netPosition = std::max(0.0,
+                context.netPosition - reservedQuantity);
+        else if (context.netPosition < 0.0)
+            context.netPosition = std::min(0.0,
+                context.netPosition + reservedQuantity);
+    }
     // This cumulative conservative budget also includes admitted orders
     // recovered from the journal, so restart cannot reset the order limit.
     context.todayOrderCount = static_cast<int>(std::min<std::uint64_t>(
@@ -296,6 +334,7 @@ bool DeterministicExecutionVenue::PlaceOrderCorrelated(
     stored.request = order;
     stored.correlationId = correlationId;
     stored.activated = activate;
+    stored.flattenCapacityReserved = m_riskConfig.flattenOnly;
     m_orders[stored.id] = stored;
     ++m_admittedOrderCount;
     ++m_generation;
@@ -475,6 +514,39 @@ void DeterministicExecutionVenue::Process()
                 (order.request.action == "BUY" && order.request.lmtPrice >= quote.ask) ||
                 (order.request.action == "SELL" && order.request.lmtPrice <= quote.bid);
             if (!marketable) continue;
+            if (order.flattenCapacityReserved)
+            {
+                const auto current = m_positions.find(order.instrument);
+                const double currentPosition = current == m_positions.end() ?
+                    0.0 : current->second;
+                const bool preservesZeroBoundary =
+                    std::isfinite(currentPosition) &&
+                    std::isfinite(order.request.totalQuantity) &&
+                    order.request.totalQuantity > 0.0 &&
+                    ((order.request.action == "SELL" &&
+                      currentPosition > 0.0 &&
+                      order.request.totalQuantity <= currentPosition) ||
+                     (order.request.action == "BUY" &&
+                      currentPosition < 0.0 &&
+                      order.request.totalQuantity <= -currentPosition));
+                if (!preservesZeroBoundary)
+                {
+                    // Defence in depth for policy transitions or damaged
+                    // recovery state: never execute a formerly flatten-only
+                    // reservation after its reducible capacity has vanished.
+                    order.terminal = true;
+                    order.terminalStatus = "Rejected";
+                    ++m_generation;
+                    SimulatedOrderEvent rejected;
+                    rejected.orderId = order.id;
+                    rejected.instrument = order.instrument;
+                    rejected.side = order.request.action;
+                    rejected.status = "Rejected";
+                    rejected.remainingQuantity = order.request.totalQuantity;
+                    events.push_back(rejected);
+                    continue;
+                }
+            }
             order.terminal = true;
             order.terminalStatus = "Filled";
             ++m_generation;
