@@ -1,0 +1,338 @@
+name: One-shot catalog and source cleanup
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: heptatrader-catalog-source-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 85
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Install build and package dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build make g++ libssl-dev dpkg-dev file
+
+      - name: Update catalog, ownership inventory, policy, and gap evidence
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import json
+          import re
+          import sys
+
+          root = Path('.')
+          catalog_path = root / 'docs/module-catalog.json'
+          catalog = json.loads(catalog_path.read_text(encoding='utf-8'))
+          modules = catalog['modules']
+          by_id = {item['id']: item for item in modules}
+
+          protocol = {
+              'id': 'protocol-contract',
+              'status': 'CURRENT',
+              'document': 'docs/modules/protocol-contract.md',
+              'implementation': [
+                  'protocol/hepta_tool_fields.def',
+                  'scripts/generate_tool_protocol_fields.py',
+                  'adapters/mcp/hepta_tool_protocol_fields.py',
+                  'HeptaTrade/tool_host/typed_tool_protocol.cpp',
+                  'HeptaTrade/tool_host/typed_tool_protocol.h',
+              ],
+              'tests': [
+                  'tests/python/test_tool_protocol_field_source.py',
+                  'tests/native_tool_client_tests.cpp',
+                  'tests/unix_tool_server_tests.cpp',
+                  'tests/python/test_protocol_fuzz_properties.py',
+              ],
+              'broker_mutation': 'NONE',
+              'production_authorized': False,
+          }
+          source_status = {
+              'id': 'source-status',
+              'status': 'CURRENT',
+              'document': 'docs/modules/source-status.md',
+              'implementation': [
+                  'scripts/derive_source_status.py',
+                  '.github/workflows/source-status.yml',
+                  'docs/SOURCE-STATUS.md',
+              ],
+              'tests': ['tests/python/test_source_status.py'],
+              'broker_mutation': 'NONE',
+              'production_authorized': False,
+          }
+          for desired in (protocol, source_status):
+              if desired['id'] in by_id:
+                  by_id[desired['id']].clear()
+                  by_id[desired['id']].update(desired)
+              else:
+                  modules.append(desired)
+                  by_id[desired['id']] = desired
+
+          deployment = by_id['deployment']
+          deployment['implementation'] = [
+              'systemd', 'tmpfiles.d', 'cmake/HeptaInstall.cmake'
+          ]
+          deployment['tests'] = [
+              'tests/python/test_documentation_control_plane.py',
+              '.github/workflows/install-package-smoke.yml',
+          ]
+          catalog_path.write_text(
+              json.dumps(catalog, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          index_path = root / 'docs/index.md'
+          index = index_path.read_text(encoding='utf-8')
+          rows = [
+              '| Tool protocol contract and generated bindings | CURRENT | [`modules/protocol-contract.md`](modules/protocol-contract.md) |',
+              '| Exact-SHA source status derivation | CURRENT | [`modules/source-status.md`](modules/source-status.md) |',
+          ]
+          anchor = '| Governance and qualification | QUALIFICATION_REQUIRED | [`modules/governance-qualification.md`](modules/governance-qualification.md) |'
+          if anchor not in index:
+              raise SystemExit('documentation index module-table anchor changed')
+          insertion = anchor + '\n' + '\n'.join(row for row in rows if row not in index)
+          index = index.replace(anchor, insertion, 1)
+          index_path.write_text(index, encoding='utf-8')
+
+          policy_path = root / 'docs/DOCUMENTATION-POLICY.md'
+          policy = policy_path.read_text(encoding='utf-8')
+          policy = policy.replace(
+              'Implementation: `scripts/check_documentation.py`  \n'
+              'Tests: `tests/python/test_documentation_control_plane.py`',
+              'Implementation: `scripts/check_documentation.py`, '
+              '`scripts/check_module_documentation_depth.py`, '
+              '`scripts/derive_source_status.py`  \n'
+              'Tests: `tests/python/test_documentation_control_plane.py`, '
+              '`tests/python/test_module_documentation_depth.py`, '
+              '`tests/python/test_source_status.py`',
+          )
+          depth_note = (
+              '\n## Implementation-depth validation\n\n'
+              'Path and heading existence is necessary but not sufficient. '
+              '`scripts/check_module_documentation_depth.py` requires maintained '
+              'modules to contain implementation-grade responsibility, contract, '
+              'state/persistence, failure/recovery, security/trust, operations/'
+              'observability, verification and limitation sections. It also '
+              'requires the catalogued implementation and test paths to appear '
+              'in the document. Experimental modules retain a lower depth floor '
+              'but must state their real capability and promotion boundary.\n\n'
+              'Source closure is not taken from an editable `CLOSED_SOURCE` '
+              'string. `scripts/derive_source_status.py` executes the exact-SHA '
+              'validators in a clean checkout and emits the derived source-status '
+              'receipt described in [`SOURCE-STATUS.md`](SOURCE-STATUS.md). '
+              'External gaps remain open until independently authenticated live '
+              'or broker receipts exist.\n'
+          )
+          if '## Implementation-depth validation' not in policy:
+              policy = policy.rstrip() + depth_note + '\n'
+          policy_path.write_text(policy, encoding='utf-8')
+
+          gap_doc = root / 'docs/GAP-REGISTER.md'
+          gap_text = gap_doc.read_text(encoding='utf-8')
+          derived_note = (
+              '\n## Exact-revision source status\n\n'
+              'The JSON register is the reviewed predicate and evidence inventory, '
+              'not proof that the current revision passes. Repository-controlled '
+              'closure is derived by `scripts/derive_source_status.py` from a clean '
+              'exact-SHA run. A failing validator reopens every repository source '
+              'claim in that receipt. External gaps cannot be closed by editing '
+              'this register. See [`SOURCE-STATUS.md`](SOURCE-STATUS.md).\n'
+          )
+          if '## Exact-revision source status' not in gap_text:
+              gap_text = gap_text.rstrip() + derived_note + '\n'
+          gap_doc.write_text(gap_text, encoding='utf-8')
+
+          gap_path = root / 'docs/gap-register.json'
+          register = json.loads(gap_path.read_text(encoding='utf-8'))
+          gaps = {item['id']: item for item in register['gaps']}
+          additions = {
+              'DOC-001': [
+                  'scripts/check_module_documentation_depth.py',
+                  'tests/python/test_module_documentation_depth.py',
+                  'docs/SOURCE-STATUS.md',
+                  'scripts/derive_source_status.py',
+                  'tests/python/test_source_status.py',
+              ],
+              'CI-001': [
+                  '.github/workflows/source-status.yml',
+                  '.github/workflows/install-package-smoke.yml',
+                  '.github/workflows/thread-sanitizer.yml',
+              ],
+              'TEST-001': [
+                  'tests/risk_property_tests.cpp',
+                  'tests/python/test_protocol_fuzz_properties.py',
+                  '.github/workflows/thread-sanitizer.yml',
+              ],
+              'BUILD-001': [
+                  'cmake/HeptaInstall.cmake',
+                  '.github/workflows/install-package-smoke.yml',
+              ],
+          }
+          for gap_id, paths in additions.items():
+              evidence = gaps[gap_id]['evidence']
+              for path in paths:
+                  if path not in evidence:
+                      evidence.append(path)
+          gap_path.write_text(
+              json.dumps(register, indent=2, ensure_ascii=False) + '\n',
+              encoding='utf-8',
+          )
+
+          closure = root / 'scripts/verify_source_gap_closures.py'
+          closure_text = closure.read_text(encoding='utf-8')
+          target = '    "hepta_risk_property_tests",\n'
+          if target not in closure_text:
+              anchor = '    "hepta_pre_trade_risk_engine_tests",\n'
+              if anchor not in closure_text:
+                  raise SystemExit('source closure required-target anchor changed')
+              closure_text = closure_text.replace(anchor, anchor + target, 1)
+          closure.write_text(closure_text, encoding='utf-8')
+
+          checker = root / 'scripts/check_documentation.py'
+          checker_text = checker.read_text(encoding='utf-8')
+          extra_workflows = [
+              '    Path(".github/workflows/source-status.yml"),',
+              '    Path(".github/workflows/install-package-smoke.yml"),',
+              '    Path(".github/workflows/thread-sanitizer.yml"),',
+          ]
+          wf_anchor = '    Path(".github/workflows/merge-candidate.yml"),'
+          if wf_anchor not in checker_text:
+              raise SystemExit('documentation required-workflow anchor changed')
+          insertion = wf_anchor + '\n' + '\n'.join(
+              line for line in extra_workflows if line not in checker_text
+          )
+          checker_text = checker_text.replace(wf_anchor, insertion, 1)
+          checker.write_text(checker_text, encoding='utf-8')
+
+          # Recalculate module ownership in both committed profiles. Core is
+          # later compared with a fresh CMake codemodel; the IB profile remains
+          # SDK-dependent but shares the same deterministic ownership rule.
+          sys.path.insert(0, str((root / 'scripts').resolve()))
+          import verify_build_ownership as ownership
+          inventory_path = root / 'docs/build-targets.json'
+          inventory = ownership.load_json(inventory_path)
+          module_paths = ownership.module_paths(root.resolve())
+          for profile in inventory['profiles'].values():
+              for target_entry in profile['targets']:
+                  for unit in target_entry['translation_units']:
+                      if unit['kind'] == 'implementation':
+                          unit['owner'] = ownership.owner_for(unit['path'], module_paths)
+          inventory_path.write_text(
+              json.dumps(inventory, indent=2, sort_keys=True) + '\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Remove temporary and duplicate source artifacts
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/CODEOWNERS.team-template \
+            docs/administration-probe.md \
+            .github/workflows/source-snapshot-export.yml \
+            .github/workflows/assert-migration-controller.yml \
+            .github/workflows/risk-context-migration-controller.yml \
+            .github/workflows/governance-verifier-migration-controller.yml \
+            .github/workflows/xt-scaffold-cleanup-controller.yml \
+            .github/workflows/protocol-field-source-controller.yml \
+            .github/workflows/risk-property-test-controller.yml \
+            .github/workflows/risk-property-test-repair-controller.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          import subprocess
+
+          tracked = subprocess.check_output(
+              ['git', 'ls-files', '-z'], text=False
+          ).split(b'\0')
+          for raw in tracked:
+              if not raw:
+                  continue
+              path = Path(raw.decode('utf-8'))
+              lower = path.name.lower()
+              if (
+                  ('source-snapshot' in lower and 'trigger' in lower)
+                  or ('snapshot-trigger' in lower)
+              ):
+                  path.unlink(missing_ok=True)
+          PY
+
+      - name: Validate documentation, ownership, source policy, and generated code
+        run: |
+          set -euo pipefail
+          python3 scripts/generate_tool_protocol_fields.py --check
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Build and run canonical core
+        env:
+          HEPTA_JOBS: '2'
+        run: ./scripts/dev_core.sh
+
+      - name: Validate canonical install and component archives
+        run: |
+          set -euo pipefail
+          cmake -S . -B build/package-final -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          cmake --build build/package-final --parallel 2
+          root="$RUNNER_TEMP/install-root"
+          cmake --install build/package-final --prefix "$root"
+          test -x "$root/bin/hepta_tool_gatewayd"
+          test -x "$root/bin/hepta_executiond"
+          test ! -e "$root/bin/hepta_ib_executiond"
+          test -x "$root/libexec/heptatrader/hepta_mcp_server.py"
+          test -f "$root/libexec/heptatrader/hepta_tool_protocol_fields.py"
+          find "$root" -type l -print -quit | (! grep .)
+          (cd build/package-final && cpack -G TGZ)
+          find build/package-final -maxdepth 1 -name 'heptatrader-*.tar.gz' -print -quit | grep .
+          for archive in build/package-final/heptatrader-*.tar.gz; do
+            tar -tzf "$archive" >/dev/null
+          done
+
+      - name: Ensure cleanup and source consistency
+        run: |
+          set -euo pipefail
+          test ! -e .github/CODEOWNERS.team-template
+          test ! -e docs/administration-probe.md
+          test ! -e .github/workflows/source-snapshot-export.yml
+          test ! -e scripts/verify_github_governance_legacy.py
+          test "$(find .github/workflows -maxdepth 1 -name '*controller.yml' ! -name 'catalog-source-cleanup-controller.yml' | wc -l)" -eq 0
+          git diff --check
+
+      - name: Commit verified catalog and cleanup
+        run: |
+          set -euo pipefail
+          rm .github/workflows/catalog-source-cleanup-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'chore: register source controls and remove migration scaffolding'
+          git pull --rebase origin codex/full-blocker-closure-20260908
+          git push origin HEAD:codex/full-blocker-closure-20260908
