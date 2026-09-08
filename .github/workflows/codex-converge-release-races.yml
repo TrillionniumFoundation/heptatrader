@@ -1,0 +1,139 @@
+name: Codex Converge Release Race Boundaries
+
+on:
+  push:
+    branches: [codex/close-source-blockers-v2-2026-09-08]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: heptatrader-codex-release-race-converger
+  cancel-in-progress: false
+
+jobs:
+  converge:
+    if: github.event.head_commit.message == 'chore: converge release race remediation'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Wait for older Codex writer runs to become terminal
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          BRANCH: codex/close-source-blockers-v2-2026-09-08
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, time, urllib.request
+
+          token = os.environ['GH_TOKEN']
+          repository = os.environ['REPOSITORY']
+          current = int(os.environ['RUN_ID'])
+          branch = os.environ['BRANCH']
+          headers = {
+              'Authorization': f'Bearer {token}',
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+          }
+          url = (
+              f'https://api.github.com/repos/{repository}/actions/runs'
+              f'?branch={branch}&per_page=100'
+          )
+          deadline = time.monotonic() + 20 * 60
+          while True:
+              request = urllib.request.Request(url, headers=headers)
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  payload = json.load(response)
+              active = []
+              for run in payload.get('workflow_runs', []):
+                  if int(run.get('id', 0)) == current:
+                      continue
+                  name = str(run.get('name', ''))
+                  status = run.get('status')
+                  if name.startswith('Codex ') and status not in {'completed'}:
+                      active.append((run.get('id'), name, status))
+              if not active:
+                  break
+              if time.monotonic() >= deadline:
+                  raise SystemExit(f'older Codex writer runs did not terminate: {active}')
+              print(f'waiting for older Codex runs: {active}', flush=True)
+              time.sleep(20)
+          PY
+
+      - name: Checkout current remote branch after writer quiescence
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/close-source-blockers-v2-2026-09-08
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply or verify release race remediation
+        run: |
+          set -euo pipefail
+          git fetch origin codex/close-source-blockers-v2-2026-09-08
+          git reset --hard origin/codex/close-source-blockers-v2-2026-09-08
+
+          if ! grep -Fq 'class PinnedSnapshot:' scripts/hepta_preflight.py \
+             || ! grep -Fq 'def _publish_noreplace(' scripts/build_release_package.py; then
+            test -f scripts/codex_fix_release_races.py
+            python3 scripts/codex_fix_release_races.py
+          fi
+          if test -f scripts/codex_refresh_release_race_test.py; then
+            python3 scripts/codex_refresh_release_race_test.py
+          fi
+
+          grep -Fq 'class PinnedSnapshot:' scripts/hepta_preflight.py
+          grep -Fq 'def _publish_noreplace(' scripts/build_release_package.py
+          grep -Fq 'test_release_security_races.py' docs/module-catalog.json
+          test -f tests/python/test_release_security_races.py
+
+          rm -f \
+            scripts/codex_fix_release_races.py \
+            scripts/codex_refresh_release_race_test.py \
+            .github/workflows/codex-fix-release-races.yml \
+            .github/workflows/codex-verify-release-races.yml \
+            .github/workflows/codex-finalize-release-races.yml \
+            .github/workflows/codex-converge-release-races.yml
+          chmod 0755 scripts/build_release_package.py scripts/hepta_preflight.py
+          git diff --check
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Validate focused security interleavings
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            scripts/build_release_package.py \
+            scripts/hepta_preflight.py \
+            tests/python/test_release_security_races.py
+          python3 -m unittest discover -s tests/python -p 'test_release_security_races.py'
+
+      - name: Validate complete repository state
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          git diff --check
+
+      - name: Publish one clean converged commit
+        run: |
+          set -euo pipefail
+          git fetch origin codex/close-source-blockers-v2-2026-09-08
+          test "$(git rev-parse origin/codex/close-source-blockers-v2-2026-09-08)" = "$(git rev-parse HEAD)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'fix(release): converge pinned no-replace publication'
+          git push origin HEAD:codex/close-source-blockers-v2-2026-09-08
