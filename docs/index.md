@@ -32,12 +32,15 @@ This index is the canonical entry point for current development documentation. A
 | CTP adapter | EXPERIMENTAL | [`modules/ctp-adapter.md`](modules/ctp-adapter.md) |
 | XT/QMT adapter | EXPERIMENTAL | [`modules/xt-adapter.md`](modules/xt-adapter.md) |
 | SHADOW research pipeline | EXPERIMENTAL | [`modules/shadow-research.md`](modules/shadow-research.md) |
+| Release engineering and host preflight | CURRENT | [`modules/release-engineering.md`](modules/release-engineering.md) |
 | systemd deployment assets | CURRENT | [`modules/deployment.md`](modules/deployment.md) |
 | Governance and qualification | QUALIFICATION_REQUIRED | [`modules/governance-qualification.md`](modules/governance-qualification.md) |
 
 ## Operations
 
 - [`operations/install.md`](operations/install.md)
+- [`operations/release-package.md`](operations/release-package.md)
+- [`operations/preflight.md`](operations/preflight.md)
 - [`operations/configure.md`](operations/configure.md)
 - [`operations/startup-shutdown.md`](operations/startup-shutdown.md)
 - [`operations/incident.md`](operations/incident.md)
@@ -54,6 +57,7 @@ This index is the canonical entry point for current development documentation. A
 - [`gap-register.json`](gap-register.json)
 - [`capabilities.json`](capabilities.json)
 - [`module-catalog.json`](module-catalog.json)
+- [`preflight-policy-v1.json`](preflight-policy-v1.json)
 
 ## Non-canonical material
 
