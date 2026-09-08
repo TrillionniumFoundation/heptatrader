@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -1163,10 +1164,26 @@ void TestDeadlineCancellationAndDrain()
     assert(journal.Init(journalPath));
     ExecutionCoordinatorCallbacks executionCallbacks;
     ExecutionCoordinator execution(journal, executionCallbacks);
+    std::mutex cancelBlockMutex;
+    std::condition_variable cancelBlockChanged;
+    bool cancelBlockEntered = false;
+    bool releaseCancelBlock = false;
+    std::atomic<unsigned int> cancelTargetInvocations(0);
     TradingToolReadCallbacks reads;
-    reads.marketGetQuote = [](const TradingToolSession& session, const TradingToolCall&,
-                              std::string& payload, std::string&) {
-        if (session.executionContext.toolCallId.find("block-") == 0) usleep(250000);
+    reads.marketGetQuote = [&](const TradingToolSession& session, const TradingToolCall&,
+                               std::string& payload, std::string&) {
+        const std::string& callId = session.executionContext.toolCallId;
+        if (callId == "block-cancel")
+        {
+            std::unique_lock<std::mutex> lock(cancelBlockMutex);
+            cancelBlockEntered = true;
+            cancelBlockChanged.notify_all();
+            assert(cancelBlockChanged.wait_for(lock,
+                std::chrono::milliseconds(kLocalSocketTimeoutMs),
+                [&]() { return releaseCancelBlock; }));
+        }
+        else if (callId.find("block-") == 0) usleep(250000);
+        if (callId == "cancel-target") ++cancelTargetInvocations;
         payload = "{}";
         return true;
     };
@@ -1227,10 +1244,22 @@ void TestDeadlineCancellationAndDrain()
     assert(blockerResponse.find("\"status\":\"ok\"") != std::string::npos);
 
     std::thread secondBlocker([&]() { blockerResponse = call(quote("block-cancel")); });
-    while (server.GetHealth().activeRequests == 0) usleep(1000);
+    {
+        std::unique_lock<std::mutex> lock(cancelBlockMutex);
+        assert(cancelBlockChanged.wait_for(lock,
+            std::chrono::milliseconds(kLocalSocketTimeoutMs),
+            [&]() { return cancelBlockEntered; }));
+    }
     std::string targetResponse;
     std::thread target([&]() { targetResponse = call(quote("cancel-target")); });
-    while (server.GetHealth().pendingConnections == 0) usleep(1000);
+    // A pending connection may still be decoding on another ingress worker.
+    // The held execution callback and ready owner prove the target is queued.
+    const std::chrono::steady_clock::time_point queueWaitLimit =
+        std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(kLocalSocketTimeoutMs);
+    while (server.GetHealth().readyOwners == 0 &&
+           std::chrono::steady_clock::now() < queueWaitLimit) usleep(1000);
+    assert(server.GetHealth().readyOwners == 1);
     TradingToolHostRequest cancel;
     cancel.sessionToken = binding.token;
     cancel.toolCallId = "cancel-command";
@@ -1239,9 +1268,17 @@ void TestDeadlineCancellationAndDrain()
     BindSchemaHash(registry, cancel);
     const std::string cancelResponse = call(cancel);
     target.join();
-    secondBlocker.join();
     assert(cancelResponse.find("REQUEST_CANCELLED") != std::string::npos);
     assert(targetResponse.find("REQUEST_CANCELLED") != std::string::npos);
+    assert(cancelTargetInvocations.load() == 0);
+    {
+        std::lock_guard<std::mutex> lock(cancelBlockMutex);
+        releaseCancelBlock = true;
+    }
+    cancelBlockChanged.notify_all();
+    secondBlocker.join();
+    assert(blockerResponse.find("\"status\":\"ok\"") != std::string::npos);
+    assert(cancelTargetInvocations.load() == 0);
 
     std::thread drainRequest([&]() { blockerResponse = call(quote("block-drain")); });
     while (server.GetHealth().activeRequests == 0) usleep(1000);
