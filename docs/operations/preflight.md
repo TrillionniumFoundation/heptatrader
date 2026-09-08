@@ -61,3 +61,10 @@ A bounded TCP reachability check can be requested with `--probe-broker --broker-
 A PASS static receipt must be followed by the protected IB qualification workflow, which verifies the effective profile, credential boundary, broker session/account mode, authoritative refresh barriers, journal ordering, idempotency, cancel/recovery behavior and final reconciliation against the same artifact digest.
 
 Any digest change, package replacement, host identity change, policy change, failed check, missing evidence or uncertain broker state invalidates the preflight for promotion. LIVE remains unavailable.
+## Exact binding guarantees
+
+The caller-supplied policy must be byte-identical to the policy inside the approved package. Archive limits also remain below compiled, non-relaxable ceilings. Artifact and policy paths are traversed component by component with no-follow directory descriptors, and the artifact is hashed and parsed through one pinned descriptor.
+
+Static-host mode compares the complete HeptaTrader-managed installed inventory with the package manifest. Every managed file must have the approved bytes, size and mode and must share the deployment-root owner/group; stale extra HeptaTrader binaries, units, helpers, policies or documentation fail the check. The installed build metadata is parsed again and must match the package profile and release identity.
+
+Receipt publication is atomic and no-replace. A competing writer that claims the output name wins without being overwritten; the preflight fails instead of replacing existing evidence.

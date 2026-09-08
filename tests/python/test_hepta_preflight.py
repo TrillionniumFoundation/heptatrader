@@ -51,7 +51,10 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
     for relative in paths:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(relative + "\n", encoding="utf-8")
+        if relative == "share/heptatrader/preflight-policy-v1.json":
+            path.write_bytes(POLICY.read_bytes())
+        else:
+            path.write_text(relative + "\n", encoding="utf-8")
         path.chmod(0o755 if relative.startswith("bin/") else 0o644)
     build_info = {
         "schema": "heptatrader.installed-build.v1",
@@ -442,6 +445,187 @@ class HeptaPreflightTests(unittest.TestCase):
                     )
             self.assertEqual(output.read_bytes(), sentinel)
 
+
+def test_external_policy_must_match_packaged_policy(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "package")
+        policy_value = json.loads(POLICY.read_text(encoding="utf-8"))
+        policy_value["maximum_archive_members"] -= 1
+        changed = work / "changed-policy.json"
+        changed.write_text(
+            json.dumps(policy_value, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        args = args_for(artifact, package["package_sha256"])
+        args.policy = changed
+        receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "FAIL")
+        self.assertIn(
+            "does not match the policy bound in the package",
+            check(receipt, "artifact.integrity")["detail"],
+        )
+
+def test_policy_cannot_exceed_compiled_archive_ceiling(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        value = json.loads(POLICY.read_text(encoding="utf-8"))
+        value["maximum_archive_members"] = (
+            preflight.HARD_MAXIMUM_ARCHIVE_MEMBERS + 1
+        )
+        changed = Path(directory) / "unsafe-policy.json"
+        changed.write_text(
+            json.dumps(value, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(
+            preflight.PreflightError, "compiled ceiling"
+        ):
+            preflight._load_policy(changed)
+
+def test_elevated_tar_mode_bits_are_rejected(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, _ = self.valid_package(work / "package")
+        members: list[tarfile.TarInfo] = []
+        bodies: list[bytes | None] = []
+        with tarfile.open(artifact, "r:gz") as source:
+            for original in source.getmembers():
+                member = copy.copy(original)
+                stream = source.extractfile(original) if original.isreg() else None
+                body = stream.read() if stream is not None else None
+                if member.name.endswith("/bin/heptactl"):
+                    member.mode = 0o4755
+                members.append(member)
+                bodies.append(body)
+        changed = work / "elevated.tar.gz"
+        digest = write_manual_archive(changed, members, bodies)
+        policy = preflight._load_policy(POLICY)
+        with self.assertRaisesRegex(
+            preflight.PreflightError, "elevated"
+        ):
+            preflight.inspect_archive(changed, digest, policy, "core")
+
+def test_policy_symlink_argument_is_rejected(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        link = Path(directory) / "policy-link.json"
+        link.symlink_to(POLICY)
+        with self.assertRaises((OSError, preflight.PreflightError)):
+            preflight._load_policy(link)
+
+def test_artifact_ancestor_symlink_argument_is_rejected(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "real")
+        alias = work / "alias"
+        alias.symlink_to(artifact.parent, target_is_directory=True)
+        args = args_for(alias / artifact.name, package["package_sha256"])
+        receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "FAIL")
+
+def test_exact_static_host_matches_approved_artifact(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "package")
+        host = work / "host"
+        fixture_tree(host / "usr")
+        args = args_for(artifact, package["package_sha256"])
+        args.artifact_only = False
+        args.host_root = host
+        with mock.patch.object(
+            preflight.shutil, "which", return_value="/usr/bin/systemctl"
+        ):
+            receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "PASS")
+
+def test_static_host_content_mutation_fails(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "package")
+        host = work / "host"
+        fixture_tree(host / "usr")
+        (host / "usr/bin/heptactl").write_text(
+            "mutated\n", encoding="utf-8"
+        )
+        args = args_for(artifact, package["package_sha256"])
+        args.artifact_only = False
+        args.host_root = host
+        with mock.patch.object(
+            preflight.shutil, "which", return_value="/usr/bin/systemctl"
+        ):
+            receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "FAIL")
+        self.assertIn(
+            "mismatch", check(receipt, "host.static")["detail"]
+        )
+
+def test_static_host_mode_mutation_fails(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "package")
+        host = work / "host"
+        fixture_tree(host / "usr")
+        (host / "usr/bin/heptactl").chmod(0o700)
+        args = args_for(artifact, package["package_sha256"])
+        args.artifact_only = False
+        args.host_root = host
+        with mock.patch.object(
+            preflight.shutil, "which", return_value="/usr/bin/systemctl"
+        ):
+            receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "FAIL")
+        self.assertIn(
+            "mode mismatch", check(receipt, "host.static")["detail"]
+        )
+
+def test_static_host_extra_managed_file_fails(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "package")
+        host = work / "host"
+        fixture_tree(host / "usr")
+        extra = host / "usr/bin/hepta-stale-runtime"
+        extra.write_text("stale\n", encoding="utf-8")
+        extra.chmod(0o755)
+        args = args_for(artifact, package["package_sha256"])
+        args.artifact_only = False
+        args.host_root = host
+        with mock.patch.object(
+            preflight.shutil, "which", return_value="/usr/bin/systemctl"
+        ):
+            receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "FAIL")
+        self.assertIn(
+            "unexpected managed", check(receipt, "host.static")["detail"]
+        )
+
+def test_static_host_build_metadata_mutation_fails(self) -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        work = Path(directory)
+        artifact, package = self.valid_package(work / "package")
+        host = work / "host"
+        fixture_tree(host / "usr")
+        build_info = host / "usr/share/heptatrader/heptatrader-build-info.json"
+        value = json.loads(build_info.read_text(encoding="utf-8"))
+        value["release_label"] = "other"
+        build_info.write_text(
+            json.dumps(value, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        args = args_for(artifact, package["package_sha256"])
+        args.artifact_only = False
+        args.host_root = host
+        with mock.patch.object(
+            preflight.shutil, "which", return_value="/usr/bin/systemctl"
+        ):
+            receipt = preflight.run_preflight(args)
+        self.assertEqual(receipt["result"], "FAIL")
+
+def test_static_host_owner_mismatch_is_rejected(self) -> None:
+    item = {"mode": 0o644, "size": 1}
+    metadata = os.stat_result(
+        (stat.S_IFREG | 0o644, 1, 1, 1, 1234, 1234, 1, 0, 0, 0)
+    )
+    problem = preflight._installed_metadata_problem(
+        metadata, item, 0, 0, "share/heptatrader/test"
+    )
+    self.assertIn("owner mismatch", problem or "")
 
 if __name__ == "__main__":
     unittest.main()
