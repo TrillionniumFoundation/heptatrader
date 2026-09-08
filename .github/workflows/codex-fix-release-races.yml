@@ -232,7 +232,7 @@ jobs:
           )
           
           old_archive_start = builder.index("def archive_bytes(\n")
-          old_archive_end = builder.index("def _ensure_new_outputs(", old_archive_start)
+          old_archive_end = builder.index("def package_install_root(", old_archive_start)
           new_archive = r'''def archive_bytes(
               payload: list[PayloadFile], manifest: dict[str, Any], version: str, profile: str, epoch: int
           ) -> tuple[bytes, str]:
