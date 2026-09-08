@@ -1,0 +1,177 @@
+name: Temporary Final Branch Ref Cleanup
+
+on:
+  push:
+    branches:
+      - codex/final-branch-ref-cleanup-20260908
+
+permissions:
+  contents: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact cleanup controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Join controller to main and delete every non-main ref
+        env:
+          EXPECTED_MAIN_SHA: 2713e0767c04e8d9aa2e1a94b1c5292a1adaa330
+          EXPECTED_MAIN_TREE: 900ed30c5555bbd4c4c210b41dc9d3377a42b905
+          CLEANUP_BRANCH: codex/final-branch-ref-cleanup-20260908
+          CONTROL_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export GIT_TERMINAL_PROMPT=0
+          test "$GITHUB_REF" = "refs/heads/$CLEANUP_BRANCH"
+          test "$(git rev-parse HEAD)" = "$CONTROL_SHA"
+          git config user.name 'heptatrader-final-ref-cleanup'
+          git config user.email 'heptatrader-final-ref-cleanup@users.noreply.github.com'
+          git fetch --force --prune --no-tags origin \
+            '+refs/heads/*:refs/remotes/origin/*'
+
+          current_main="$(git rev-parse refs/remotes/origin/main)"
+          test "$current_main" = "$EXPECTED_MAIN_SHA"
+          test "$(git rev-parse "$current_main^{tree}")" = "$EXPECTED_MAIN_TREE"
+          test "$(git rev-parse "refs/remotes/origin/$CLEANUP_BRANCH")" = "$CONTROL_SHA"
+
+          : > initial-branch-refs.txt
+          : > deleted-branch-refs.txt
+          : > dynamically-absorbed-tips.txt
+          git for-each-ref --format='%(refname:strip=3)	%(objectname)' \
+            refs/remotes/origin | LC_ALL=C sort > initial-branch-refs.txt
+
+          # Make the cleanup controller itself reachable from main without
+          # changing the reviewed canonical tree.
+          message=$(cat <<'EOF'
+          merge: absorb final branch-ref cleanup controller
+
+          Preserve the canonical main tree while joining the one-shot cleanup
+          controller as ancestry. PAPER and LIVE authorization remain false;
+          this commit changes repository history/ref topology only.
+          EOF
+          )
+          next_main="$(printf '%s\n' "$message" | git commit-tree \
+            "$EXPECTED_MAIN_TREE" -p "$current_main" -p "$CONTROL_SHA")"
+          test "$(git rev-parse "$next_main^{tree}")" = "$EXPECTED_MAIN_TREE"
+          git push --force-with-lease="refs/heads/main:$current_main" \
+            origin "$next_main:refs/heads/main"
+          current_main="$next_main"
+
+          # Reconcile branch movement occurring during cleanup. Any newly
+          # created or moved tip is first joined as an additional parent under
+          # the unchanged canonical tree; only then may its ref be deleted.
+          for pass in $(seq 1 12); do
+            git fetch --force --prune --no-tags origin \
+              '+refs/heads/*:refs/remotes/origin/*'
+            observed_main="$(git rev-parse refs/remotes/origin/main)"
+            test "$observed_main" = "$current_main"
+            test "$(git rev-parse "$current_main^{tree}")" = "$EXPECTED_MAIN_TREE"
+
+            mapfile -t extra_rows < <(
+              git for-each-ref --format='%(refname:strip=3)%09%(objectname)' \
+                refs/remotes/origin |
+                awk -F '\t' '$1 != "main"' |
+                LC_ALL=C sort
+            )
+            if ((${#extra_rows[@]} == 0)); then
+              break
+            fi
+
+            declare -A unresolved_by_sha=()
+            for row in "${extra_rows[@]}"; do
+              branch="${row%%$'\t'*}"
+              sha="${row#*$'\t'}"
+              if ! git merge-base --is-ancestor "$sha" "$current_main"; then
+                if [[ -n "${unresolved_by_sha[$sha]:-}" ]]; then
+                  unresolved_by_sha[$sha]+=",$branch"
+                else
+                  unresolved_by_sha[$sha]="$branch"
+                fi
+              fi
+            done
+
+            if ((${#unresolved_by_sha[@]} > 0)); then
+              mapfile -t unresolved_shas < <(
+                printf '%s\n' "${!unresolved_by_sha[@]}" | LC_ALL=C sort
+              )
+              offset=0
+              while ((offset < ${#unresolved_shas[@]})); do
+                batch=("${unresolved_shas[@]:offset:16}")
+                parent_args=(-p "$current_main")
+                details=()
+                for sha in "${batch[@]}"; do
+                  parent_args+=(-p "$sha")
+                  details+=("$sha ${unresolved_by_sha[$sha]}")
+                  printf '%s\t%s\n' "$sha" "${unresolved_by_sha[$sha]}" \
+                    >> dynamically-absorbed-tips.txt
+                done
+                batch_message="merge: absorb branch tips discovered during final cleanup"
+                for detail in "${details[@]}"; do
+                  batch_message+=$'\n\n- '
+                  batch_message+="$detail"
+                done
+                batch_message+=$'\n\nTree resolution: retain canonical main contents. PAPER/LIVE remain unauthorized.'
+                new_main="$(printf '%s\n' "$batch_message" | git commit-tree \
+                  "$EXPECTED_MAIN_TREE" "${parent_args[@]}")"
+                test "$(git rev-parse "$new_main^{tree}")" = "$EXPECTED_MAIN_TREE"
+                git push --force-with-lease="refs/heads/main:$current_main" \
+                  origin "$new_main:refs/heads/main"
+                current_main="$new_main"
+                offset=$((offset + 16))
+              done
+              continue
+            fi
+
+            # Every current ref tip is now an ancestor of current_main. Delete
+            # with a per-ref lease so concurrent movement can never be lost.
+            for row in "${extra_rows[@]}"; do
+              branch="${row%%$'\t'*}"
+              sha="${row#*$'\t'}"
+              git merge-base --is-ancestor "$sha" "$current_main"
+              git push --force-with-lease="refs/heads/$branch:$sha" \
+                origin --delete "$branch"
+              printf '%s\t%s\n' "$branch" "$sha" >> deleted-branch-refs.txt
+            done
+          done
+
+          mapfile -t final_rows < <(git ls-remote --heads origin | LC_ALL=C sort)
+          test "${#final_rows[@]}" -eq 1
+          test "${final_rows[0]}" = "$current_main"$'\trefs/heads/main'
+          test "$(git rev-parse "$current_main^{tree}")" = "$EXPECTED_MAIN_TREE"
+
+          printf '%s\n' "$current_main" > final-main-sha.txt
+          printf '%s\n' "$EXPECTED_MAIN_TREE" > final-main-tree.txt
+          printf '%s\n' "${final_rows[@]}" > final-branch-refs.txt
+          {
+            echo '## Final branch-ref cleanup'
+            echo
+            echo "- final main: \`$current_main\`"
+            echo "- final tree: \`$EXPECTED_MAIN_TREE\`"
+            echo "- deleted refs: \`$(wc -l < deleted-branch-refs.txt)\`"
+            echo '- remaining heads: `main` only'
+            echo '- PAPER authorization: false'
+            echo '- LIVE authorization: false'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload final topology evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-final-main-only-${{ github.sha }}
+          path: |
+            initial-branch-refs.txt
+            deleted-branch-refs.txt
+            dynamically-absorbed-tips.txt
+            final-main-sha.txt
+            final-main-tree.txt
+            final-branch-refs.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
