@@ -43,6 +43,12 @@ Quantity reservations belong to those in-memory active orders and are not replay
 
 Fixtures should declare instruments, initial positions, quote sequence, fill policy, timing, and injected failures. The venue constructor accepts a clock provider; deterministic risk, freshness and activation tests use a controlled clock.
 
+## Security and trust boundary
+
+Simulator authority is local to its deterministic venue and must never be promoted into broker evidence. The simulator process, state directory, execution socket, event socket and session domain use identities distinct from IB PAPER. It receives no broker credential and no broker-port network permission. A simulator order ID, fill event or successful recovery proves only the configured fixture behavior and cannot satisfy a PAPER or LIVE qualification gate.
+
+Fault-injection hooks and controlled clocks are test capabilities. Production configuration cannot enable them for a broker-backed runtime, and simulator fixtures cannot write IB journals, kill-switch markers or qualification receipts. The shared Execution path preserves command identity and persistence semantics while the deployment boundary prevents privilege inheritance.
+
 ## Failure injection
 
 Required deterministic fault points include:
