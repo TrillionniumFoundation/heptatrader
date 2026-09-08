@@ -5,40 +5,61 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   materialize:
-    name: materialize-flatten-capacity-repair
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    name: validate-and-publish-flatten-capacity-repair
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - name: Checkout exact PR head without credentials
+      - name: Checkout exact PR head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name }}
           ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
+          fetch-depth: 2
+          persist-credentials: true
 
       - name: Assert exact source identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git fetch --no-tags origin "refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" --depth=1
+          test "$(git rev-parse refs/remotes/origin/${HEAD_REF})" = "$EXPECTED_SHA"
 
       - name: Install build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev
 
-      - name: Apply exact flatten-capacity repair
+      - name: Materialize final clean source tree
         run: |
           set -euo pipefail
           python3 scripts/apply_flatten_capacity_fix.py
           python3 scripts/fix_flatten_verifier.py
+          rm -f \
+            .github/workflows/flatten-capacity-materialize.yml \
+            scripts/apply_flatten_capacity_fix.py \
+            scripts/fix_flatten_verifier.py
           git diff --check
+          actual="$(git diff --name-only | LC_ALL=C sort)"
+          expected="$(printf '%s\n' \
+            .github/workflows/flatten-capacity-materialize.yml \
+            HeptaTrade/simulator/deterministic_execution_venue.cpp \
+            HeptaTrade/simulator/deterministic_execution_venue.h \
+            docs/modules/simulator.md \
+            scripts/apply_flatten_capacity_fix.py \
+            scripts/fix_flatten_verifier.py \
+            scripts/verify_source_gap_closures.py \
+            tests/simulator_risk_runtime_tests.cpp | LC_ALL=C sort)"
+          test "$actual" = "$expected"
 
-      - name: Execute source and runtime verification
+      - name: Execute final-tree source and runtime verification
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
@@ -48,43 +69,36 @@ jobs:
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 -m unittest discover -s tests/python -p 'test_*.py'
           ./scripts/dev_core.sh
+          git diff --check
 
-      - name: Package modified exact-source files and logs
-        if: always()
+      - name: Publish only the verified fast-forward source commit
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/flatten-capacity-result/HeptaTrade/simulator"
-          mkdir -p "$RUNNER_TEMP/flatten-capacity-result/tests"
-          mkdir -p "$RUNNER_TEMP/flatten-capacity-result/docs/modules"
-          mkdir -p "$RUNNER_TEMP/flatten-capacity-result/scripts"
-          cp HeptaTrade/simulator/deterministic_execution_venue.h \
-             "$RUNNER_TEMP/flatten-capacity-result/HeptaTrade/simulator/"
-          cp HeptaTrade/simulator/deterministic_execution_venue.cpp \
-             "$RUNNER_TEMP/flatten-capacity-result/HeptaTrade/simulator/"
-          cp tests/simulator_risk_runtime_tests.cpp \
-             "$RUNNER_TEMP/flatten-capacity-result/tests/"
-          cp docs/modules/simulator.md \
-             "$RUNNER_TEMP/flatten-capacity-result/docs/modules/"
-          cp scripts/verify_source_gap_closures.py \
-             "$RUNNER_TEMP/flatten-capacity-result/scripts/"
-          git diff --binary > "$RUNNER_TEMP/flatten-capacity-result/repair.patch"
-          git status --short > "$RUNNER_TEMP/flatten-capacity-result/status.txt"
-          sha256sum \
-            HeptaTrade/simulator/deterministic_execution_venue.h \
+          git fetch --no-tags origin "refs/heads/${HEAD_REF}:refs/remotes/origin/${HEAD_REF}" --depth=1
+          test "$(git rev-parse refs/remotes/origin/${HEAD_REF})" = "$EXPECTED_SHA"
+          actual="$(git diff --name-only | LC_ALL=C sort)"
+          expected="$(printf '%s\n' \
+            .github/workflows/flatten-capacity-materialize.yml \
             HeptaTrade/simulator/deterministic_execution_venue.cpp \
-            tests/simulator_risk_runtime_tests.cpp \
+            HeptaTrade/simulator/deterministic_execution_venue.h \
             docs/modules/simulator.md \
+            scripts/apply_flatten_capacity_fix.py \
+            scripts/fix_flatten_verifier.py \
             scripts/verify_source_gap_closures.py \
-            > "$RUNNER_TEMP/flatten-capacity-result/SHA256SUMS"
-          tar -czf "$RUNNER_TEMP/heptatrader-flatten-capacity-result.tgz" \
-            -C "$RUNNER_TEMP/flatten-capacity-result" .
+            tests/simulator_risk_runtime_tests.cpp | LC_ALL=C sort)"
+          test "$actual" = "$expected"
+          git config user.name 'heptatrader-gap-closure-bot'
+          git config user.email 'heptatrader-gap-closure-bot@users.noreply.github.com'
+          git add --all
+          git diff --cached --check
+          git commit -m 'risk: reserve aggregate flatten capacity across pending exits'
+          git push origin "HEAD:refs/heads/${HEAD_REF}"
 
-      - name: Upload materialized repair
+      - name: Record terminal worktree state
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: heptatrader-flatten-capacity-${{ github.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/heptatrader-flatten-capacity-result.tgz
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
+        run: |
+          git status --short
+          git log -2 --format='%H %s'
