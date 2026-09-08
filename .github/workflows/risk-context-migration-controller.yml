@@ -1,0 +1,225 @@
+name: One-shot canonical risk-context cleanup
+
+on:
+  push:
+    branches: [codex/full-blocker-closure-20260908]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-risk-context-migration
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: codex/full-blocker-closure-20260908
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+
+      - name: Gate legacy-only risk fields outside the canonical API
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('.')
+          legacy = root / 'HeptaTrade/risk/legacy_pre_trade_risk_context.h'
+          legacy.write_text(r'''#pragma once
+
+#include <cstdint>
+#include <string>
+
+// Compatibility data for the default-disabled legacy monolith only.  The
+// canonical risk API is compiled without this base class' members, so a caller
+// cannot accidentally present unbound scalar values as authoritative state.
+#ifdef HEPTA_ENABLE_LEGACY_RISK_CONTEXT
+struct PreTradeRiskLegacyCompatibility
+{
+    bool baseCurrencyOrderNotionalPresent = false;
+    double baseCurrencyOrderNotional = 0.0;
+    bool snapshotComplete = false;
+    std::int64_t snapshotObservedAtMs = 0;
+    std::int64_t nowMs = 0;
+    double currentGrossNotional = 0.0;
+    double pendingBuyNotional = 0.0;
+    double pendingSellNotional = 0.0;
+    double realizedPnl = 0.0;
+    double unrealizedPnl = 0.0;
+    double peakEquity = 0.0;
+    double currentEquity = 0.0;
+    std::string adapterTag;
+};
+#else
+struct PreTradeRiskLegacyCompatibility
+{
+};
+#endif
+''', encoding='utf-8')
+
+          header = root / 'HeptaTrade/risk/pre_trade_risk_engine.h'
+          text = header.read_text(encoding='utf-8')
+          include_anchor = '#include <string>\n'
+          if '#include "legacy_pre_trade_risk_context.h"' not in text:
+              if include_anchor not in text:
+                  raise SystemExit('risk header include anchor changed')
+              text = text.replace(
+                  include_anchor,
+                  include_anchor + '\n#include "legacy_pre_trade_risk_context.h"\n',
+                  1,
+              )
+          text = text.replace(
+              'struct PreTradeRiskContext {',
+              'struct PreTradeRiskContext : PreTradeRiskLegacyCompatibility {',
+              1,
+          )
+
+          blocks = [
+              r'''\n    // Legacy unbound values are retained for source compatibility only\. They\n    // never satisfy an enabled notional limit; use orderNotionalEvidence\.\n    bool baseCurrencyOrderNotionalPresent = false;\n    double baseCurrencyOrderNotional = 0\.0;\n''',
+              r'''\n    // Compatibility-only fields retained for legacy callers\. They are never\n    // accepted as evidence for an enabled portfolio limit\. New code must use\n    // authoritativeSnapshot and its per-section presence/generation fields\.\n    bool snapshotComplete = false;\n    std::int64_t snapshotObservedAtMs = 0;\n    std::int64_t nowMs = 0;\n    double currentGrossNotional = 0\.0;\n    double pendingBuyNotional = 0\.0;\n    double pendingSellNotional = 0\.0;\n    double realizedPnl = 0\.0;\n    double unrealizedPnl = 0\.0;\n    double peakEquity = 0\.0;\n    double currentEquity = 0\.0;\n\n    // adapter extension points \(for CTP etc\.\)\n    std::string adapterTag;\n''',
+          ]
+          for pattern in blocks:
+              text, count = re.subn(pattern, '\n', text, count=1)
+              if count != 1:
+                  raise SystemExit('expected legacy risk field block changed')
+          header.write_text(text, encoding='utf-8')
+
+          cmake = root / 'HeptaTrade/CMakeLists.txt'
+          text = cmake.read_text(encoding='utf-8')
+          old = '''if(HEPTA_BUILD_LEGACY_MONOLITH)
+    add_executable(HeptaTrader ${DIR_SRC})
+endif()
+'''
+          new = '''if(HEPTA_BUILD_LEGACY_MONOLITH)
+    add_executable(HeptaTrader ${DIR_SRC})
+    target_compile_definitions(HeptaTrader PRIVATE
+        HEPTA_ENABLE_LEGACY_RISK_CONTEXT=1)
+endif()
+'''
+          if old not in text:
+              raise SystemExit('legacy monolith target block changed')
+          cmake.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          field_names = {
+              'baseCurrencyOrderNotionalPresent', 'baseCurrencyOrderNotional',
+              'snapshotComplete', 'snapshotObservedAtMs', 'nowMs',
+              'currentGrossNotional', 'pendingBuyNotional', 'pendingSellNotional',
+              'realizedPnl', 'unrealizedPnl', 'peakEquity', 'currentEquity',
+              'adapterTag',
+          }
+          # Historical tests assigned these values to prove they were ignored.
+          # Once the canonical type no longer contains them, those assignments
+          # are obsolete; retain the authoritative fixtures and expectations.
+          test = root / 'tests/pre_trade_risk_engine_tests.cpp'
+          lines = test.read_text(encoding='utf-8').splitlines(keepends=True)
+          removed = []
+          kept = []
+          assignment = re.compile(
+              r'^\s*[A-Za-z_][A-Za-z0-9_]*\.(?:' +
+              '|'.join(sorted(field_names, key=len, reverse=True)) +
+              r')\s*=.*;\s*(?://.*)?$'
+          )
+          for line in lines:
+              if assignment.match(line):
+                  removed.append(line.strip())
+              else:
+                  kept.append(line)
+          if not removed:
+              raise SystemExit('expected legacy risk assignments were not found in tests')
+          test.write_text(''.join(kept), encoding='utf-8')
+
+          doc = root / 'docs/modules/risk-engine.md'
+          text = doc.read_text(encoding='utf-8')
+          text = text.replace(
+              'Compatibility fields retained in `PreTradeRiskContext` are not read as authoritative evidence for enabled portfolio limits. They exist only to keep non-canonical legacy sources buildable during migration.\n\n',
+              'Legacy unbound scalar fields are compiled only for the default-disabled legacy monolith through `HEPTA_ENABLE_LEGACY_RISK_CONTEXT`. The canonical `PreTradeRiskContext` type does not expose them.\n\n',
+          )
+          text = text.replace(
+              'Legacy compatibility members remain temporarily present in `PreTradeRiskContext`; they are not authoritative and should be removed after non-canonical callers migrate. ',
+              'Legacy compatibility members are isolated behind an explicit legacy-only compile definition and are absent from canonical targets. ',
+          )
+          doc.write_text(text, encoding='utf-8')
+
+          # Prove no canonical implementation or test still refers to a gated
+          # member.  Legacy monolith sources and the compatibility header are
+          # the only permitted locations.
+          allowed_prefixes = (
+              'HeptaStrategy/', 'Interface/', 'HeptaSimulator/',
+              'HeptaTrade/HeptaDemoStrategyTrader.cpp',
+              'HeptaTrade/ib_fx_multi_strategy.cpp',
+              'HeptaTrade/risk/legacy_pre_trade_risk_context.h',
+              'docs/', 'scripts/',
+          )
+          violations = []
+          for path in root.rglob('*'):
+              if not path.is_file() or '.git' in path.parts or 'build' in path.parts:
+                  continue
+              relative = path.as_posix()
+              if relative.startswith(allowed_prefixes):
+                  continue
+              try:
+                  body = path.read_text(encoding='utf-8')
+              except (UnicodeError, OSError):
+                  continue
+              for name in field_names:
+                  if re.search(r'\.' + re.escape(name) + r'\b', body):
+                      violations.append(f'{relative}: {name}')
+          if violations:
+              raise SystemExit('canonical legacy-field references remain:\n' + '\n'.join(violations))
+
+          report = root / 'docs/risk-context-migration.md'
+          report.write_text(
+              '# Canonical risk-context migration\n\n'
+              'Status: CURRENT  \n'
+              'Applies to: canonical targets\n\n'
+              'Unbound scalar snapshot, PnL, equity, pending-exposure and '
+              'adapter-tag members were removed from the canonical '
+              '`PreTradeRiskContext` surface. The default-disabled legacy '
+              'monolith can compile its compatibility base only with '
+              '`HEPTA_ENABLE_LEGACY_RISK_CONTEXT=1`. The canonical evaluator '
+              'accepts only subject-, epoch-, generation-, unit-, quote- and '
+              'FX-bound evidence.\n\n'
+              f'Test-only obsolete assignments removed: {len(removed)}.\n',
+              encoding='utf-8',
+          )
+          PY
+
+      - name: Validate canonical and legacy compile boundaries
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/check_module_documentation_depth.py
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          cmake -S . -B build/legacy-config \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=ON \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          git diff --check
+
+      - name: Commit verified cleanup and remove controller
+        run: |
+          set -euo pipefail
+          rm .github/workflows/risk-context-migration-controller.yml
+          git add -A
+          test -n "$(git status --porcelain)"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'refactor: remove legacy scalars from canonical risk context'
+          git push origin HEAD:codex/full-blocker-closure-20260908
