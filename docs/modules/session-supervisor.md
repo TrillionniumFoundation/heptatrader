@@ -52,6 +52,12 @@ Each mutation of a lease is serialized against the durable generation. Repeated 
 
 The supervisor must not hold store locks while waiting indefinitely for an external service. Cross-service work is bounded and represented as explicit intermediate or uncertain state.
 
+## Security and trust boundary
+
+The Supervisor is an operator-side authority, not an Agent capability. Its Unix socket, lease store, encryption key, cleanup lock and token-publication paths must be owned by the configured operator or service identities with exact non-world-writable modes. Peer credentials are checked at the socket boundary; a token alone does not authorize lifecycle mutation. Broker credentials never enter this process, and the Supervisor cannot turn a repository or PAPER qualification failure into execution authority.
+
+Lease encryption protects stored token material, while owner, mode, inode, link-count and atomic-replacement checks protect the filesystem authority around it. A deployment must keep Supervisor administration separate from Agent and Gateway identities and must preserve the one-way terminal tombstone semantics across backup, restore and migration.
+
 ## Failure semantics
 
 - Store unreadable, malformed, unsafe, or version-incompatible: fail closed.
