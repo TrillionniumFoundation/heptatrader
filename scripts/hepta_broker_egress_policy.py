@@ -208,13 +208,22 @@ def _ruleset(
         f"add chain {family} {table} {chain} "
         "{ type filter hook output priority 0; policy accept; }",
     ])
-    if not deny_all:
+    # These are local TWS/IB Gateway listener ports, not a global
+    # destination-port ban. Bind every rule to loopback so the policy cannot
+    # interfere with unrelated remote services using the same port numbers.
+    destinations = (
+        "ip daddr 127.0.0.0/8",
+        "ip6 daddr ::1",
+    )
+    for destination in destinations:
+        if not deny_all:
+            lines.append(
+                f"add rule {family} {table} {chain} {destination} "
+                f"tcp dport {{ {port_set} }} "
+                f"meta skuid {{ {uid_set} }} accept")
         lines.append(
-            f"add rule {family} {table} {chain} "
-            f"tcp dport {{ {port_set} }} meta skuid {{ {uid_set} }} accept")
-    lines.append(
-        f"add rule {family} {table} {chain} "
-        f"tcp dport {{ {port_set} }} reject with tcp reset")
+            f"add rule {family} {table} {chain} {destination} "
+            f"tcp dport {{ {port_set} }} reject with tcp reset")
     return ("\n".join(lines) + "\n").encode("ascii")
 
 

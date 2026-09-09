@@ -1,0 +1,22 @@
+{
+  "host_boundary": "x230-ib-paper",
+  "live_authorized": false,
+  "logical_execution_identity": {
+    "gid": 2003,
+    "name": "hepta-ib-exec",
+    "uid": 2003
+  },
+  "runtime_execution_identity": {
+    "gid": 993,
+    "name": "hepta-codex-ib",
+    "uid": 995
+  },
+  "runtime_runner_identity": {
+    "gid": 992,
+    "name": "hepta-actions-paper",
+    "uid": 994
+  },
+  "schema": "hepta.x230-paper-host-identity-map.v1",
+  "scope": "ib-paper-qualification-only",
+  "version": 1
+}
