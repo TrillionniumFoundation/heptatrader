@@ -94,7 +94,8 @@
       ],
       "tests": [
         "tests/pre_trade_risk_engine_tests.cpp",
-        "tests/ib_paper_kill_switch_tests.cpp"
+        "tests/ib_paper_kill_switch_tests.cpp",
+        "tests/ib_paper_execution_profile_tests.cpp"
       ],
       "broker_mutation": "POLICY_GATE",
       "production_authorized": false
@@ -136,24 +137,31 @@
         "HeptaTrade/adapter_ib",
         "HeptaTrade/execution/hepta_ib_executiond.cpp",
         ".github/workflows/ib-paper-qualification.yml",
+        ".github/workflows/self-hosted-ib-availability.yml",
         "scripts/build_ib_candidate_artifact.sh",
         "scripts/verify_ib_candidate_artifact.py",
         "scripts/run_ib_paper_artifact_qualification.sh",
         "scripts/verify_ib_paper_qualification.py",
         "scripts/check_qualification_trust_boundary.py",
+        "scripts/hepta_broker_egress_policy.py",
         "systemd/hepta-execution-ib-paper.service",
+        "systemd/hepta-broker-network-policy-v1.json",
+        "systemd/hepta-x230-paper-host-identity-map-v1.json",
         "docs/ib-paper-profile-policy-v1.json",
         "scripts/verify_canonical_ib_paper_profile.py"
       ],
       "tests": [
         "tests/ib_order_lifecycle_tests.cpp",
         "tests/ib_paper_kill_switch_tests.cpp",
+        "tests/ib_paper_execution_profile_tests.cpp",
         "tests/ib_live_terminal_reconciliation_tests.cpp",
         "tests/execution_coordinator_tests.cpp",
         "tests/python/test_canonical_ib_paper_profile.py",
         "tests/python/test_ib_paper_qualification.py",
         "tests/python/test_qualification_trust_boundary.py",
-        "tests/python/test_ib_workflow_interfaces.py"
+        "tests/python/test_ib_workflow_interfaces.py",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_self_hosted_ib_availability.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
@@ -231,7 +239,9 @@
         "tmpfiles.d"
       ],
       "tests": [
-        "tests/python/test_documentation_control_plane.py"
+        "tests/python/test_documentation_control_plane.py",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_self_hosted_ib_availability.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

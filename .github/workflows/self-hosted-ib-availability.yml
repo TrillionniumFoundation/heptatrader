@@ -10,8 +10,9 @@ on:
         type: string
 
 # Dispatch-only, tokenless and checkout-free. The runner group must remain
-# restricted to this exact trusted-main workflow, and only runner x230 may carry
-# the dedicated heptatrader-x230-probe routing label.
+# restricted to this exact trusted-main workflow. The dedicated runner identity
+# is intentionally denied direct broker-port access; a root-owned host probe
+# reports only non-secret PAPER-boundary health.
 permissions: {}
 
 concurrency:
@@ -24,7 +25,7 @@ jobs:
     name: X230 IB runner probe
     runs-on:
       group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-x230-probe]
+      labels: [self-hosted, linux, x64, x230-ib-paper]
     permissions: {}
     timeout-minutes: 10
     steps:
@@ -36,7 +37,7 @@ jobs:
           set -euo pipefail
           test "$GITHUB_EVENT_NAME" = workflow_dispatch
           test "$GITHUB_REF" = refs/heads/main
-          test "$RUNNER_NAME" = x230
+          test "$RUNNER_NAME" = x230-ib-paper
           test "$RUNNER_OS" = Linux
           test "$RUNNER_ARCH" = X64
           [[ "$PROBE_REASON" =~ ^[A-Za-z0-9._:-]{1,80}$ ]]
@@ -44,12 +45,32 @@ jobs:
             "$RUNNER_NAME" "$RUNNER_OS" "$RUNNER_ARCH" "$GITHUB_REF" \
             "$PROBE_REASON"
 
-      - name: Read-only IB Gateway reachability snapshot
+      - name: Verify broker isolation and root-owned PAPER host health
         shell: bash
+        env:
+          HOST_PROBE_SHA256: ${{ vars.HEPTA_IB_PAPER_HOST_PROBE_SHA256 }}
         run: |
           set -euo pipefail
+          probe=/usr/libexec/hepta-ib-paper-host-probe
+          [[ "$HOST_PROBE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          test -f "$probe"
+          test -x "$probe"
+          test ! -L "$probe"
+          test "$(stat -c '%U:%G:%a:%h' "$probe")" = root:root:555:1
+          test "$(sha256sum "$probe" | awk '{print $1}')" = "$HOST_PROBE_SHA256"
           if command -v nc >/dev/null 2>&1; then
-            nc -z -w 3 127.0.0.1 4002
+            ! nc -z -w 3 127.0.0.1 4002
           else
-            timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
+            ! timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
           fi
+          # This digest is the reviewed
+          # systemd/hepta-x230-paper-host-identity-map-v1.json. The root probe
+          # independently requires the same digest from its root-owned host
+          # policy, binding logical hepta-ib-exec:2003 to this host's isolated
+          # hepta-codex-ib:995 runtime principal.
+          "$probe" \
+            --paper-port 4002 \
+            --logical-execution-uid 2003 \
+            --execution-uid 995 \
+            --identity-map-sha256 b3459819dcaa86acfe3b3f1ebf5ef047ccbde367df75500b881fa4d0471eda30 \
+            --runner-uid "$(id -u)"

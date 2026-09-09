@@ -261,6 +261,7 @@
             "hepta_ib_executiond",
             "hepta_ib_live_terminal_reconciliation_tests",
             "hepta_ib_order_lifecycle_tests",
+            "hepta_ib_paper_execution_profile_tests",
             "hepta_ib_paper_kill_switch_tests",
             "hepta_native_tool_client_tests",
             "hepta_oms_journal_durability_tests",
@@ -1062,6 +1063,64 @@
               "path": "tests/ib_order_lifecycle_tests.cpp",
               "kind": "test",
               "owner": "hepta_ib_order_lifecycle_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_paper_execution_profile_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_paper_execution_profile_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_paper_execution_profile_tests",
               "language": "CXX",
               "standard": "11"
             }
@@ -1927,6 +1986,7 @@
             "hepta_ib_executiond",
             "hepta_ib_live_terminal_reconciliation_tests",
             "hepta_ib_order_lifecycle_tests",
+            "hepta_ib_paper_execution_profile_tests",
             "hepta_ib_paper_kill_switch_tests",
             "hepta_native_tool_client_tests",
             "hepta_oms_journal_durability_tests",
@@ -2747,6 +2807,64 @@
               "path": "tests/ib_order_lifecycle_tests.cpp",
               "kind": "test",
               "owner": "hepta_ib_order_lifecycle_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_ib_paper_execution_profile_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_core",
+            "hepta_execution_server",
+            "hepta_execution_transport"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/ib_paper_execution_profile_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_ib_paper_execution_profile_tests",
               "language": "CXX",
               "standard": "11"
             }

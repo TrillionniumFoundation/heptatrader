@@ -30,8 +30,7 @@ bool ValidExternalFlattenEnvelope(
     std::int64_t nowMs)
 {
     return plan.profileOrderMode ==
-            IbPaperExecutionProfileConfig::OrderModeName(
-                IbPaperOrderMode::ExternalLimitDay) &&
+            IbPaperExecutionProfileConfig::OrderModeName(config.orderMode) &&
         plan.timeInForce == "DAY" &&
         plan.order.orderType == "LMT" &&
         plan.order.auxPrice == 0.0 &&
@@ -108,8 +107,11 @@ bool IbPaperExecutionGuard::AllowFlatten(
         return false;
     }
     const bool externalLimitDay = m_config.UsesExternalLimitDay();
+    const double externalPositionMaximum =
+        m_config.UsesExternalQualificationLimitDay() ?
+            m_config.maxOrderQuantity : 1.0;
     if (externalLimitDay &&
-        std::fabs(plan.expectedPositionQuantity) > 1.0)
+        std::fabs(plan.expectedPositionQuantity) > externalPositionMaximum)
     {
         reason = "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED";
         return false;

@@ -1247,6 +1247,68 @@ void TestFlattenLifecycleRecoveryAndRateProjection()
     std::remove(path.c_str());
 }
 
+void TestQualificationExternalFlattenIsExactAndAbsolutelyBounded()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    int venueSends = 0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.validateDecisionLease =
+        [](const AgentExecutionContext&, const std::string&,
+           std::string*) { return true; };
+    callbacks.placeIbReduceOnlyOrderCorrelated =
+        [&](const AuthoritativeFlattenPlan&, const std::string&,
+            long* orderId) {
+            ++venueSends;
+            *orderId = 1880;
+            return true;
+        };
+    callbacks.onIbOrderPlaced =
+        [](const IbPlaceOrderCommand&, long, std::string*) {
+            return true;
+        };
+    ExecutionCoordinator coordinator(journal, callbacks);
+
+    const double position = 250000.0;
+    const FlattenPositionCommand command =
+        MakeFlatten("qualification-external-flatten", position);
+    AuthoritativeFlattenPlan plan = MakeFlattenPlan(command, position);
+    plan.profileOrderMode = "EXTERNAL_QUALIFICATION_LMT_DAY";
+    plan.order.orderType = "LMT";
+    plan.order.lmtPrice = 1.10;
+    plan.referencePrice = 1.10;
+    plan.quoteBid = 1.10;
+    plan.quoteAsk = 1.11;
+    const ExecutionCommandResult accepted =
+        coordinator.ExecuteAuthoritativeFlatten(command, plan);
+    assert(accepted.status == ExecutionCommandStatus::Accepted);
+    assert(accepted.orderId == 1880);
+    assert(venueSends == 1);
+
+    const double oversizedPosition = 1000001.0;
+    const FlattenPositionCommand oversizedCommand =
+        MakeFlatten("qualification-external-flatten-oversized",
+                    oversizedPosition);
+    AuthoritativeFlattenPlan oversizedPlan =
+        MakeFlattenPlan(oversizedCommand, oversizedPosition);
+    oversizedPlan.profileOrderMode =
+        "EXTERNAL_QUALIFICATION_LMT_DAY";
+    oversizedPlan.order.orderType = "LMT";
+    oversizedPlan.order.lmtPrice = 1.10;
+    oversizedPlan.referencePrice = 1.10;
+    oversizedPlan.quoteBid = 1.10;
+    oversizedPlan.quoteAsk = 1.11;
+    const ExecutionCommandResult rejected =
+        coordinator.ExecuteAuthoritativeFlatten(
+            oversizedCommand, oversizedPlan);
+    assert(rejected.status == ExecutionCommandStatus::Rejected);
+    assert(rejected.reasonCode ==
+        "AUTHORITATIVE_FLATTEN_PLAN_INVALID");
+    assert(venueSends == 1);
+    std::remove(path.c_str());
+}
+
 void TestFlattenRejectsSubToleranceOverCloseAndStaleNoop()
 {
     const std::string path = TempJournalPath();
@@ -1931,6 +1993,7 @@ int main()
     TestProjectionFailureBlocksFurtherMutations();
     TestCancelProjectionFailureIsUncertain();
     TestFlattenLifecycleRecoveryAndRateProjection();
+    TestQualificationExternalFlattenIsExactAndAbsolutelyBounded();
     TestFlattenVenueRejectCodeAllowlist();
     TestFlattenOrphanIntentRequiresDurableReconciliation();
     TestFlattenProjectionFailureBlocksAndRecovers();
