@@ -1,1 +1,0 @@
-Temporary PR synchronize pulse. This file is removed in the immediately following commit.
