@@ -13,7 +13,7 @@
       "blocking_authorization": false,
       "summary": "Canonical module, capability, build ownership and operations documentation exists and is machine-validated.",
       "evidence": [
-        "README.md",
+        "docs/DOCUMENTATION-POLICY.md",
         "docs/index.md",
         "docs/module-catalog.json",
         "docs/build-targets.json",
