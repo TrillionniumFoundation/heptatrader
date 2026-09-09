@@ -46,37 +46,41 @@ jobs:
             '02c2a267bdaf73f14cf0985613d3d471cb2d02f4571e6e55bd5eab22f735fabb'
           python3 - <<'PY'
           from pathlib import Path
+          import re
 
           path = Path('.codex/integrate_release_owner_operated.py')
           text = path.read_text(encoding='utf-8')
-          old = '''    run(
-              sys.executable,
-              "-m",
-              "unittest",
-              "tests.python.test_release_package",
-              "tests.python.test_hepta_preflight",
-              "tests.python.test_cmake_install_integration",
+          pattern = re.compile(
+              r'(?m)^    run\(\n'
+              r'        sys\.executable,\n'
+              r'        "-m",\n'
+              r'        "unittest",\n'
+              r'        "tests\.python\.test_release_package",\n'
+              r'        "tests\.python\.test_hepta_preflight",\n'
+              r'        "tests\.python\.test_cmake_install_integration",\n'
+              r'    \)\n'
           )
-          '''
-          new = '''    for pattern in (
-              "test_release_package.py",
-              "test_hepta_preflight.py",
-              "test_cmake_install_integration.py",
-          ):
-              run(
-                  sys.executable,
-                  "-m",
-                  "unittest",
-                  "discover",
-                  "-s",
-                  "tests/python",
-                  "-p",
-                  pattern,
-              )
-          '''
-          if text.count(old) != 1:
-              raise SystemExit('pinned payload upgrade anchor mismatch')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          replacement = (
+              '    for pattern in (\n'
+              '        "test_release_package.py",\n'
+              '        "test_hepta_preflight.py",\n'
+              '        "test_cmake_install_integration.py",\n'
+              '    ):\n'
+              '        run(\n'
+              '            sys.executable,\n'
+              '            "-m",\n'
+              '            "unittest",\n'
+              '            "discover",\n'
+              '            "-s",\n'
+              '            "tests/python",\n'
+              '            "-p",\n'
+              '            pattern,\n'
+              '        )\n'
+          )
+          upgraded, count = pattern.subn(replacement, text)
+          if count != 1:
+              raise SystemExit(f'pinned payload upgrade count mismatch: {count}')
+          path.write_text(upgraded, encoding='utf-8')
           PY
           actual_sha="$(sha256sum .codex/integrate_release_owner_operated.py | awk '{print $1}')"
           actual_bytes="$(wc -c < .codex/integrate_release_owner_operated.py)"
