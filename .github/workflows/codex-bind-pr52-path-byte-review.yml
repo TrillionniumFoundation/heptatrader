@@ -1,0 +1,210 @@
+name: Bind PR 52 path-byte repair review
+
+on:
+  push:
+    branches:
+      - codex/fix-pr52-path-byte-contract-20260909
+
+permissions:
+  actions: read
+  checks: read
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: heptatrader-bind-pr52-path-byte-review
+  cancel-in-progress: false
+
+jobs:
+  bind:
+    name: wait-green-bind-exact-object-and-request-review
+    if: github.event.head_commit.message == 'ops: bind exact PR52 path-byte repair review'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
+      EXPECTED_CONTROLLER_BRANCH: codex/fix-pr52-path-byte-contract-20260909
+      EXPECTED_PR: '52'
+      EXPECTED_HEAD_BRANCH: codex/owner-operated-gap-closure-20260909
+      EXPECTED_HEAD_MESSAGE: 'fix(release): align producer and preflight path-byte policy'
+      GITHUB_API_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for exact repaired head and all substantive checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REF" = "refs/heads/$EXPECTED_CONTROLLER_BRANCH"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ['EXPECTED_REPOSITORY']
+          number = os.environ['EXPECTED_PR']
+          expected_branch = os.environ['EXPECTED_HEAD_BRANCH']
+          expected_message = os.environ['EXPECTED_HEAD_MESSAGE']
+          token = os.environ['GITHUB_API_TOKEN']
+          api = f'https://api.github.com/repos/{repo}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'heptatrader-pr52-path-byte-review-bind',
+          }
+
+          def request(path: str, method: str = 'GET', payload=None):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              req = urllib.request.Request(api + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      body = response.read()
+                      return response.status, json.loads(body) if body else None
+              except urllib.error.HTTPError as error:
+                  body = error.read()
+                  try:
+                      value = json.loads(body) if body else None
+                  except json.JSONDecodeError:
+                      value = body.decode('utf-8', 'replace')
+                  return error.code, value
+
+          required = {
+              'qualification-source-audit',
+              'documentation-control-plane-exact-head',
+              'core-runtime-exact-head',
+              'exact-merge-candidate',
+              'canonical-full-suite-core',
+              'canonical-full-suite-reliability (g++)',
+              'canonical-full-suite-reliability (clang++)',
+              'CodeQL',
+          }
+          deadline = time.monotonic() + 2400
+          stable_head = None
+          tree = None
+          prospective_merge = None
+          while time.monotonic() < deadline:
+              status, pull = request(f'/pulls/{number}')
+              if status != 200 or not isinstance(pull, dict):
+                  raise SystemExit(f'PR read failed: HTTP {status}: {pull}')
+              if pull.get('state') != 'open' or pull.get('draft') is not False:
+                  raise SystemExit('PR is not open and reviewable')
+              if pull.get('base', {}).get('ref') != 'main':
+                  raise SystemExit('PR base drifted from main')
+              if pull.get('head', {}).get('ref') != expected_branch:
+                  raise SystemExit('PR head branch drifted')
+              head = pull.get('head', {}).get('sha')
+              if not isinstance(head, str) or len(head) != 40:
+                  raise SystemExit('invalid PR head')
+              status, commit = request(f'/git/commits/{head}')
+              if status != 200 or not isinstance(commit, dict):
+                  raise SystemExit(f'head commit read failed: HTTP {status}')
+              if commit.get('message') != expected_message:
+                  time.sleep(10)
+                  continue
+              current_tree = commit.get('tree', {}).get('sha')
+              if not isinstance(current_tree, str) or len(current_tree) != 40:
+                  raise SystemExit('invalid head tree')
+              if stable_head is None:
+                  stable_head, tree = head, current_tree
+              if head != stable_head or current_tree != tree:
+                  raise SystemExit('PR head changed while waiting for checks')
+              prospective_merge = pull.get('merge_commit_sha')
+
+              status, checks = request(f'/commits/{head}/check-runs?per_page=100')
+              if status != 200 or not isinstance(checks, dict):
+                  raise SystemExit(f'check read failed: HTTP {status}')
+              observed = {}
+              for check in checks.get('check_runs', []):
+                  if not isinstance(check, dict):
+                      continue
+                  name = check.get('name')
+                  if isinstance(name, str):
+                      old = observed.get(name)
+                      if old is None or str(check.get('started_at', '')) >= str(old.get('started_at', '')):
+                          observed[name] = check
+              missing = sorted(required - set(observed))
+              failing = sorted(
+                  name for name in required
+                  if name in observed and observed[name].get('status') == 'completed'
+                  and observed[name].get('conclusion') != 'success'
+              )
+              pending = sorted(
+                  name for name in required
+                  if name in observed and observed[name].get('status') != 'completed'
+              )
+              if failing:
+                  raise SystemExit(f'current-head checks failed: {failing}')
+              if not missing and not pending and isinstance(prospective_merge, str) and len(prospective_merge) == 40:
+                  break
+              print(json.dumps({'head': head, 'missing': missing, 'pending': pending}, sort_keys=True))
+              time.sleep(15)
+          else:
+              raise SystemExit('repaired head/checks did not settle within bounded wait')
+
+          status, merge_commit = request(f'/git/commits/{prospective_merge}')
+          if status != 200 or not isinstance(merge_commit, dict):
+              raise SystemExit('prospective merge commit is unreadable')
+          if merge_commit.get('tree', {}).get('sha') != tree:
+              raise SystemExit('prospective merge tree differs from reviewed head tree')
+
+          body = f'''## Result
+
+This PR converts HeptaTrader to its owner-operated self-use model and closes every registered repository gap while keeping Broker mutation fail-closed.
+
+- `source_state = READY`
+- all registered gaps are `REPOSITORY / CLOSED_SOURCE / blocking_authorization=false`
+- no `EXTERNAL` gap remains in `docs/gap-register.json`
+- `paper_authorized = false`
+- `live_authorized = false`
+- IB PAPER remains optional and `QUALIFICATION_REQUIRED`; LIVE remains `UNAVAILABLE`
+
+## Retained engineering controls
+
+The final source removes obsolete team-governance machinery but retains exact source/artifact identity, deterministic build and tests, pre-trade risk, pending exposure, journal-before-send, uncertain-outcome recovery, reconciliation, fencing, kill switch, credential isolation and deterministic release/preflight tooling.
+
+## Latest release-path repair
+
+The producer and preflight consumer now share one path-byte contract before publication:
+
+- UTF-8 is preserved;
+- backslash, C0 controls and DEL are rejected in every payload component and emitted USTAR name/prefix;
+- hostile leaf and directory-component regressions require `PackageError` and zero package/digest/receipt outputs;
+- every normal package is inspected successfully by the same preflight consumer.
+
+This repair does not run a Broker campaign, deploy a host, publish a production release or authorize PAPER/LIVE.
+
+## Exact current object
+
+- Base: `main@{pull['base']['sha']}`
+- Head: `{stable_head}`
+- Tree: `{tree}`
+- Prospective merge: `{prospective_merge}`
+
+All substantive current-head checks are terminal-success. Any later base/head/tree/merge movement invalidates this evidence and requires fresh review.
+'''
+          status, updated = request(f'/pulls/{number}', method='PATCH', payload={'body': body, 'draft': False})
+          if status != 200 or not isinstance(updated, dict):
+              raise SystemExit(f'PR body update failed: HTTP {status}: {updated}')
+          status, requested = request(
+              f'/pulls/{number}/requested_reviewers',
+              method='POST',
+              payload={'reviewers': ['Franksudoman', 'Tomasrgbsf']},
+          )
+          if status not in {200, 201}:
+              raise SystemExit(f'reviewer request failed: HTTP {status}: {requested}')
+          comment = (
+              'Exact path-byte contract repair is published and all substantive current-head '
+              f'checks are terminal-success. Review only head `{stable_head}`, tree `{tree}`, '
+              f'prospective merge `{prospective_merge}`. The producer now rejects backslash, '
+              'C0 control and DEL path bytes before publication, hostile tests require zero '
+              'outputs, and normal packages pass the same preflight consumer. PAPER/LIVE remain false.'
+          )
+          status, _ = request(f'/issues/{number}/comments', method='POST', payload={'body': comment})
+          if status != 201:
+              raise SystemExit(f'comment failed: HTTP {status}')
+          print('[PR52-PATH-BYTE-REVIEW] bound and requested')
+          PY
