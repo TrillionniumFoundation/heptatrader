@@ -1,0 +1,102 @@
+name: Fix PR 52 authority and exact-tree blockers
+
+on:
+  push:
+    branches:
+      - codex/owner-operated-gap-closure-20260909
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-fix-pr52-review-blockers
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    if: >-
+      github.event.head_commit.message == 'chore: stage PR52 authority and exact-tree remediation'
+    name: remediate-pr52-review-blockers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact staging revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+          clean: true
+          submodules: false
+
+      - name: Apply bounded remediation and remove temporary control files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/codex/owner-operated-gap-closure-20260909'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f .codex/fix_pr52_review_blockers.py.gz.b64
+          base64 -d .codex/fix_pr52_review_blockers.py.gz.b64 | gzip -dc > /tmp/fix-pr52-review-blockers.py
+          chmod 0700 /tmp/fix-pr52-review-blockers.py
+          python3 /tmp/fix-pr52-review-blockers.py
+          rm -rf .codex
+          rm -f .github/workflows/codex-fix-pr52-review-blockers.yml
+          test ! -e .codex
+          test ! -e .github/workflows/codex-fix-pr52-review-blockers.yml
+          git diff --check
+
+      - name: Install deterministic validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++
+
+      - name: Validate authority, exact-tree, docs, source and runtime
+        shell: bash
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+
+      - name: Commit only the verified remediation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git status --porcelain=v1)"
+          git commit -m 'security: bind PAPER mutation to owner and exact clean trees'
+
+      - name: Reverify committed exact tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          python3 scripts/verify_exact_git_index.py --root .
+          python3 scripts/check_gap_register.py
+          python3 scripts/check_qualification_trust_boundary.py
+          python3 scripts/verify_source_gap_closures.py
+
+      - name: Push exact verified branch result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
