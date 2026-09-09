@@ -1,0 +1,77 @@
+name: Codex Retire External Governance
+
+on:
+  push:
+    branches: [codex/close-source-blockers-v2-2026-09-08]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-retire-heptatrader-external-governance
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.event.head_commit.message == 'chore: stage owner-operated governance cleanup'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout exact staging revision without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Apply owner-operated repository migration
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f .codex/remove_external_governance.py
+          python3 .codex/remove_external_governance.py
+          test ! -e .codex
+          test -z "$(find .github/workflows -maxdepth 1 -type f -name 'codex-*' -print -quit)"
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++
+
+      - name: Validate complete source, release and runtime contracts
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          test ! -e .github/CODEOWNERS
+          test ! -e .github/github-governance-policy-v1.json
+          test ! -e .github/workflows/github-governance-qualification.yml
+          test ! -e .github/workflows/governance-bootstrap-admission.yml
+          ! grep -R -n -E \
+            'G-TEAM-001|repository-governance|github-governance|verify_github_governance|verify_qualification_candidate|merge_group|merge_queue' \
+            .github scripts tests docs/gap-register.json docs/module-catalog.json
+
+      - name: Commit only the verified migration
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git status --porcelain=v1)"
+          git commit -m 'refactor: retire external governance for owner-operated system'
+
+      - name: Push verified branch result
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
