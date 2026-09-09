@@ -1,7 +1,7 @@
 # Gap register
 
-Status: CURRENT  
-Machine source: [`gap-register.json`](gap-register.json)  
+Status: CURRENT
+Machine source: [`gap-register.json`](gap-register.json)
 Verification: `python3 scripts/check_gap_register.py`
 
 HeptaTrader is an owner-operated self-use system. Repository teams, CODEOWNERS, mandatory review counts, branch protection, Merge Queue, protected governance environments, and governance receipts are not authorization domains. The historical `G-TEAM-001` requirement is retired as **NOT_APPLICABLE**.

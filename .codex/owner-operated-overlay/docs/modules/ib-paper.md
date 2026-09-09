@@ -1,8 +1,8 @@
 # IB PAPER runtime
 
-Status: QUALIFICATION_REQUIRED  
-Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `systemd/hepta-execution-ib-paper.service`, `docs/ib-paper-profile-policy-v1.json`  
+Status: QUALIFICATION_REQUIRED
+Applies to: repository HEAD
+Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `systemd/hepta-execution-ib-paper.service`, `docs/ib-paper-profile-policy-v1.json`
 Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`
 
 ## Scope

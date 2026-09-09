@@ -1,6 +1,6 @@
 # ADR 0002: Owner-operated repository model
 
-Status: ACCEPTED  
+Status: ACCEPTED
 Date: 2026-09-09
 
 ## Context
