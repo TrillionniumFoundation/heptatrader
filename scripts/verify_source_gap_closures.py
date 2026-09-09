@@ -412,6 +412,8 @@ def validate_release(root: Path) -> list[str]:
             'MANIFEST_SCHEMA = "heptatrader.release-manifest.v1"',
             'RECEIPT_SCHEMA = "heptatrader.release-package-receipt.v1"',
             'getattr(os, "O_NOFOLLOW", 0)',
+            "_canonical_path_bytes",
+            "forbidden path bytes",
             "authorization_effect",
             "paper_authorized",
             "live_authorized",
@@ -422,6 +424,19 @@ def validate_release(root: Path) -> list[str]:
     require_tokens(
         root,
         "scripts/hepta_preflight.py",
+        (
+            "_read_stable_core",
+            "hepta_preflight_core.py",
+            'getattr(os, "O_NOFOLLOW", 0)',
+            "_validate_complete_archive_namespace",
+            "_ORIGINAL_CHECK_MANIFEST_SHAPE",
+        ),
+        "RELEASE-001",
+        errors,
+    )
+    require_tokens(
+        root,
+        "scripts/hepta_preflight_core.py",
         (
             'POLICY_SCHEMA = "heptatrader.preflight-policy.v1"',
             'RECEIPT_SCHEMA = "heptatrader.preflight-receipt.v1"',

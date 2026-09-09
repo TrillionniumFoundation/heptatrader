@@ -171,12 +171,27 @@ def validate_identity(version: str, profile: str, source_sha: str, epoch: int) -
         raise PackageError("SOURCE_DATE_EPOCH must be a positive integer")
 
 
+def _canonical_path_bytes(value: str, label: str) -> bytes:
+    try:
+        encoded = value.encode("utf-8", "strict")
+    except UnicodeError as error:
+        raise PackageError(f"{label} is not UTF-8: {value!r}") from error
+    if "\\" in value or any(
+        byte < 0x20 or byte == 0x7F for byte in encoded
+    ):
+        raise PackageError(
+            f"{label} contains forbidden path bytes: {value!r}"
+        )
+    return encoded
+
+
 def canonical_relative(path: Path, root: Path) -> str:
     try:
         relative = path.relative_to(root)
     except ValueError as error:
         raise PackageError(f"path escaped install root: {path}") from error
     value = relative.as_posix()
+    _canonical_path_bytes(value, "package path")
     parsed = PurePosixPath(value)
     if (
         not value
@@ -225,6 +240,7 @@ def _reject_generated_namespace_collision(relative: str) -> None:
 
 
 def _admit_payload_path(relative: str, admitted: set[str]) -> None:
+    _canonical_path_bytes(relative, "payload path")
     _reject_generated_namespace_collision(relative)
     for existing in admitted:
         if (
@@ -240,10 +256,7 @@ def _admit_payload_path(relative: str, admitted: set[str]) -> None:
 
 
 def _validate_ustar_name(name: str) -> None:
-    try:
-        encoded = name.encode("utf-8", "strict")
-    except UnicodeError as error:
-        raise PackageError(f"archive path is not UTF-8: {name!r}") from error
+    encoded = _canonical_path_bytes(name, "archive path")
     if len(encoded) <= USTAR_NAME_BYTES:
         return
     parts = name.split("/")

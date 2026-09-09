@@ -13,7 +13,7 @@ The package boundary exists to prevent source SHA, rebuild, staging directory, P
 
 ## Install contract
 
-The top-level CMake project owns and explicitly registers the canonical install rules after every referenced runtime target exists. A core install contains the simulator Execution daemon, Tool Gateway, session control, CLI, public preflight wrapper and its bounded parser core, runtime helpers, systemd and tmpfiles assets, capability policy, build metadata, and current documentation. An IB PAPER install additionally contains the actual IB-linked Execution daemon and fixed PAPER policy.
+The top-level CMake project owns and explicitly registers the canonical install rules after every referenced runtime target exists. A core install contains the simulator Execution daemon, Tool Gateway, session control, CLI, public preflight wrapper and its bounded parser core, runtime helpers, systemd and tmpfiles assets, capability policy, build metadata, and current documentation. `docs/` is canonical documentation input; the repository-root README is installed only when present so documentation-layout changes cannot break the runtime install. An IB PAPER install additionally contains the actual IB-linked Execution daemon and fixed PAPER policy.
 
 Files ending in `.example` remain non-secret templates. Broker credentials, Agent session tokens, authorization markers, private keys, live environment files, journal state, and host-generated receipts are never package inputs.
 
@@ -26,7 +26,7 @@ Files ending in `.example` remain non-secret templates. Broker credentials, Agen
 - an explicit release label and `core` or `ib-paper` profile;
 - a new output path that is not replaced in place;
 - regular, single-link payload files with bounded sizes and no setuid/setgid bits;
-- no symlinks, hard links, private-key suffixes, non-example `.env` files, generated-name collisions, or file/directory prefix collisions.
+- no symlinks, hard links, private-key suffixes, non-example `.env` files, generated-name collisions, file/directory prefix collisions, backslashes, control characters, or DEL bytes in package paths.
 
 The archive normalizes path order, owner, group, mode, timestamp, tar format, and gzip timestamp. Its manifest binds every payload path, size, mode and SHA-256. The sidecar receipt records the source identity, manifest digest and package digest. Rebuilding the same installed bytes with the same identity inputs must produce the same archive bytes.
 
@@ -66,7 +66,7 @@ Receipts expose release label, source SHA, source epoch, package and manifest di
 
 ## Test expectations
 
-Unit tests cover reproducible archive bytes, global member uniqueness, generated-name and non-adjacent ancestor/descendant collisions, valid lexical neighbours such as `a` and `a-legal`, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys, compressed/decompressed ceilings, early member-count termination, zero-byte extension-metadata policy and forged LIVE claims. The collision fixture proves rejection immediately after the manifest and before any payload body is consumed.
+Unit tests cover reproducible archive bytes, global member uniqueness, generated-name and non-adjacent ancestor/descendant collisions, valid lexical neighbours such as `a` and `a-legal`, producer/consumer path-byte parity for hostile leaf and directory components, legitimate UTF-8 names, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys, compressed/decompressed ceilings, early member-count termination, zero-byte extension-metadata policy and forged LIVE claims. The collision fixture proves rejection immediately after the manifest and before any payload body is consumed.
 
 The install integration test consumes the same already-built canonical `build/core` directory, verifies its exact CMake profile, executes `cmake --install` under a fresh `DESTDIR`, asserts every policy-required regular file, rejects an IB-enabled daemon in the core profile, and checks installed build metadata. This prevents an install module that exists in source but is never registered from passing CI.
 

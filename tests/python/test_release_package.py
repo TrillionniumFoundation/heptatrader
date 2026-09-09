@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import build_release_package as release  # noqa: E402
+import hepta_preflight as preflight  # noqa: E402
 
 
 SOURCE_SHA = "1" * 40
@@ -43,7 +44,12 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
     for relative in paths:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes((relative + "\n").encode("utf-8"))
+        if relative == "share/heptatrader/preflight-policy-v1.json":
+            path.write_bytes(
+                (ROOT / "docs/preflight-policy-v1.json").read_bytes()
+            )
+        else:
+            path.write_bytes((relative + "\n").encode("utf-8"))
         path.chmod(0o755 if relative.startswith("bin/") else 0o644)
     build_info = {
         "schema": "heptatrader.installed-build.v1",
@@ -110,6 +116,63 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertEqual(receipt["authorization_effect"], "NONE")
             self.assertIs(receipt["paper_authorized"], False)
             self.assertIs(receipt["live_authorized"], False)
+
+    def test_forbidden_path_bytes_are_rejected_before_publication(self) -> None:
+        cases = (
+            ("leaf-backslash", r"share/doc/heptatrader/bad\name.txt"),
+            ("leaf-newline", "share/doc/heptatrader/bad\nname.txt"),
+            ("leaf-del", "share/doc/heptatrader/bad\x7fname.txt"),
+            ("directory-backslash", r"share/doc/heptatrader/bad\dir/child.txt"),
+            ("directory-newline", "share/doc/heptatrader/bad\ndir/child.txt"),
+        )
+        for label, relative in cases:
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    work = Path(directory)
+                    root = fixture_tree(work / "root")
+                    hostile = root / relative
+                    hostile.parent.mkdir(parents=True, exist_ok=True)
+                    hostile.write_text("hostile-path\n", encoding="utf-8")
+                    output = work / "release.tar.gz"
+                    with self.assertRaisesRegex(
+                        release.PackageError, "forbidden path bytes"
+                    ):
+                        release.package_install_root(
+                            root,
+                            output,
+                            version=VERSION,
+                            profile="core",
+                            source_sha=SOURCE_SHA,
+                            source_date_epoch=EPOCH,
+                        )
+                    self.assertFalse(output.exists())
+                    self.assertFalse(Path(str(output) + ".sha256").exists())
+                    self.assertFalse(
+                        Path(str(output) + ".receipt.json").exists()
+                    )
+
+    def test_legitimate_utf8_path_packages_and_passes_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            relative = "share/doc/heptatrader/说明.txt"
+            target = root / relative
+            target.write_text("legitimate utf-8\n", encoding="utf-8")
+            output = work / "release.tar.gz"
+            receipt = self.package(root, output)
+            policy = preflight._load_policy(
+                ROOT / "docs/preflight-policy-v1.json"
+            )
+            manifest, observed, _ = preflight.inspect_archive(
+                output,
+                receipt["package_sha256"],
+                policy,
+                "core",
+            )
+            self.assertEqual(observed, receipt["package_sha256"])
+            self.assertIn(
+                relative, {item["path"] for item in manifest["files"]}
+            )
 
     def test_generated_manifest_name_is_rejected_without_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -97,9 +97,11 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/tmpfiles.d/"
     COMPONENT runtime
     FILES_MATCHING PATTERN "*.conf")
 
-install(FILES "${PROJECT_SOURCE_DIR}/README.md"
-    DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
-    COMPONENT documentation)
+if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")
+    install(FILES "${PROJECT_SOURCE_DIR}/README.md"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
+        COMPONENT documentation)
+endif()
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/docs/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
     COMPONENT documentation

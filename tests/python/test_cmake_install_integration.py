@@ -25,6 +25,19 @@ def cmake_cache(path: Path) -> dict[str, str]:
 
 
 class CMakeInstallIntegrationTests(unittest.TestCase):
+    def test_readme_is_optional_but_docs_remain_installed(self) -> None:
+        install_module = (ROOT / "cmake/HeptaInstall.cmake").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")',
+            install_module,
+        )
+        self.assertIn(
+            'install(DIRECTORY "${PROJECT_SOURCE_DIR}/docs/"',
+            install_module,
+        )
+
     @unittest.skipUnless(os.environ.get(BUILD_ENV), f"{BUILD_ENV} is not set")
     def test_registered_core_install_has_closed_inventory(self) -> None:
         build = Path(os.environ[BUILD_ENV]).resolve()
