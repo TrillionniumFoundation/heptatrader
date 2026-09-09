@@ -38,6 +38,7 @@ HARD_MAXIMUM_TOTAL_UNPACKED_BYTES = 2 * 1024 * 1024 * 1024
 TAR_BLOCK_BYTES = 512
 TAR_RECORD_BYTES = 20 * TAR_BLOCK_BYTES
 HARD_MAXIMUM_EXTENSION_METADATA_BYTES = 0
+GENERATED_ARCHIVE_PATHS = frozenset({"manifest.json"})
 HARD_MAXIMUM_COMPRESSED_ARCHIVE_BYTES = (
     HARD_MAXIMUM_TOTAL_UNPACKED_BYTES
     + HARD_MAXIMUM_ARCHIVE_MEMBERS * 1024
@@ -601,6 +602,15 @@ class _BoundedTarReader:
             b"".join(retained) if retained is not None else None
         )
 
+def _generated_archive_namespace_collision(path: str) -> bool:
+    return any(
+        path == generated
+        or path.startswith(generated + "/")
+        or generated.startswith(path + "/")
+        for generated in GENERATED_ARCHIVE_PATHS
+    )
+
+
 def _check_manifest_shape(manifest: Any, profile: str) -> list[dict[str, Any]]:
     required = {
         "schema",
@@ -645,6 +655,11 @@ def _check_manifest_shape(manifest: Any, profile: str) -> list[dict[str, Any]]:
         if not isinstance(path, str):
             raise PreflightError(f"manifest file[{index}] path is invalid")
         parts = _canonical_member_name(path)
+        if _generated_archive_namespace_collision(path):
+            raise PreflightError(
+                "manifest payload collides with generated archive namespace: "
+                f"{path}"
+            )
         if len(parts) < 1:
             raise PreflightError(f"manifest file[{index}] path is empty")
         size = item.get("size")

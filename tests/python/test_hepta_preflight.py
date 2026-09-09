@@ -296,6 +296,49 @@ class HeptaPreflightTests(unittest.TestCase):
                     artifact, digest, policy, "core"
                 )
 
+    def test_manifest_payload_cannot_claim_generated_namespace(self) -> None:
+        payload = b"hostile-generated-namespace\n"
+        for relative in ("manifest.json", "manifest.json/child"):
+            with self.subTest(relative=relative):
+                with tempfile.TemporaryDirectory() as directory:
+                    artifact = Path(directory) / "bad.tar.gz"
+                    manifest = {
+                        "schema": preflight.MANIFEST_SCHEMA,
+                        "version": VERSION,
+                        "profile": "core",
+                        "source_sha": SOURCE_SHA,
+                        "source_date_epoch": EPOCH,
+                        "created_by": "scripts/build_release_package.py",
+                        "authorization": {
+                            "effect": "NONE",
+                            "paper_authorized": False,
+                            "live_authorized": False,
+                        },
+                        "files": [
+                            {
+                                "path": relative,
+                                "size": len(payload),
+                                "mode": 0o644,
+                                "sha256": hashlib.sha256(payload).hexdigest(),
+                            }
+                        ],
+                    }
+                    manifest_body = preflight.canonical_json(manifest)
+                    root_name = "heptatrader-x-core"
+                    members = [
+                        regular_info(f"{root_name}/manifest.json", manifest_body),
+                        regular_info(f"{root_name}/{relative}", payload),
+                    ]
+                    digest = write_manual_archive(
+                        artifact, members, [manifest_body, payload]
+                    )
+                    policy = preflight._load_policy(POLICY)
+                    with self.assertRaisesRegex(
+                        preflight.PreflightError,
+                        "generated archive namespace",
+                    ):
+                        preflight.inspect_archive(artifact, digest, policy, "core")
+
     def test_trailing_slash_regular_name_is_noncanonical(self) -> None:
         with self.assertRaisesRegex(
             preflight.PreflightError, "non-canonical"
