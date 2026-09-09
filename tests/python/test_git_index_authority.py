@@ -42,6 +42,10 @@ class ExactGitIndexAuthorityTests(
             workflow,
         )
         self.assertIn("git diff --cached --exit-code -- .", workflow)
+        self.assertGreaterEqual(
+            workflow.count("python3 scripts/verify_exact_git_index.py --root ."),
+            2,
+        )
 
     def test_ib_workflow_is_exact_current_main_only(self) -> None:
         relative = ".github/workflows/ib-paper-qualification.yml"
@@ -53,6 +57,10 @@ class ExactGitIndexAuthorityTests(
         condition = (
             "github.event_name == 'workflow_dispatch' && "
             "github.ref == 'refs/heads/main' && "
+            "github.repository == 'TrillionniumFoundation/heptatrader' && "
+            "github.actor == 'ProfHepta' && "
+            "github.actor_id == 102159240 && "
+            "github.triggering_actor == 'ProfHepta' && "
             "inputs.mutation_mode == true && "
             "inputs.candidate_sha == github.sha"
         )
@@ -63,6 +71,13 @@ class ExactGitIndexAuthorityTests(
         self.assertIn(relative, authority.CRITICAL_PATHS)
         self.assertNotIn("CODEOWNERS", workflow)
         self.assertNotIn("merge_queue", workflow)
+        self.assertEqual(
+            workflow.count(
+                "python3 trusted/scripts/verify_exact_git_index.py "
+                "--root candidate"
+            ),
+            2,
+        )
 
     def test_critical_paths_match_current_model(self) -> None:
         paths = set(authority.CRITICAL_PATHS)

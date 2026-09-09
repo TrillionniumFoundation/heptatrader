@@ -30,7 +30,9 @@ Qualification keeps two distinct trust domains:
 1. a no-secret builder receives the exact current `main` source, a digest-pinned OCI image, a read-only SDK/BID snapshot, and a bounded writable filesystem;
 2. a PAPER execution identity receives only the verified artifact and runs it through a separately pinned external harness with PAPER-only Broker access.
 
-The workflow confirms that the requested SHA equals the dispatching `main` SHA and independently reads `refs/heads/main` before and after the Broker campaign. It does not inspect pull requests, reviews, teams, branch rules, environments, or Merge Queue state.
+The workflow confirms that the requested SHA equals the dispatching `main` SHA and independently reads `refs/heads/main` before and after the Broker campaign. Before either self-hosted runner is allocated, the job condition requires the original actor and rerun triggering actor to be `ProfHepta` and requires immutable GitHub account ID `102159240`. Each job reasserts those values at runtime. It does not inspect pull requests, reviews, teams, branch rules, environments, or Merge Queue state.
+
+The trusted and candidate checkouts are cleaned explicitly and verified against HEAD, the stage-zero index, tracked bytes, file modes, link identity, non-ignored untracked paths, and ignored paths before use. The candidate and trusted trees are checked again after build, and the trusted harness is checked again after the Broker campaign.
 
 The final receipt binds source SHA, artifact and executable digests, builder image/toolchain/resource policy, SDK/BID digest, harness digest, effective PAPER profile, account mode, required scenarios, runner/host identity, and reconciled terminal state. Any bound-input change requires a new qualification.
 

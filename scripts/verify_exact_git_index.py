@@ -219,7 +219,31 @@ def validate(root: Path | str, *, critical_paths: Iterable[str] = CRITICAL_PATHS
     commands = (
         (["ls-files", "--stage", "-z", "--"], "git index listing"),
         (["ls-tree", "-r", "-z", "--full-tree", "HEAD"], "HEAD tree listing"),
-        (["ls-files", "--others", "--directory", "--no-empty-directory", "-z", "--"], "untracked path listing"),
+        (
+            [
+                "ls-files",
+                "--others",
+                "--directory",
+                "--no-empty-directory",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ],
+            "untracked path listing",
+        ),
+        (
+            [
+                "ls-files",
+                "--others",
+                "--directory",
+                "--no-empty-directory",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ],
+            "ignored path listing",
+        ),
     )
     payloads = [_git(root, args, errors, label) for args, label in commands]
     if any(item is None for item in payloads):
@@ -240,7 +264,16 @@ def validate(root: Path | str, *, critical_paths: Iterable[str] = CRITICAL_PATHS
             errors.append("stage-zero index entries differ from HEAD: " + ", ".join(changed))
     untracked = _records(payloads[2] or b"", "untracked path listing", errors)
     if untracked:
-        errors.append("untracked work-tree content is not permitted: " + ", ".join(sorted(untracked)))
+        errors.append(
+            "untracked work-tree content is not permitted: "
+            + ", ".join(sorted(untracked))
+        )
+    ignored = _records(payloads[3] or b"", "ignored path listing", errors)
+    if ignored:
+        errors.append(
+            "ignored work-tree content is not permitted: "
+            + ", ".join(sorted(ignored))
+        )
     critical = set(critical_paths)
     for relative in sorted(critical):
         if relative not in tree:

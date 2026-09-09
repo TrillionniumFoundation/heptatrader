@@ -12,6 +12,6 @@ Security-sensitive file readers reject symlinks, unsafe hard links, wrong owner/
 
 Repository administration is not an authorization domain for this self-use system. Teams, CODEOWNERS, mandatory review counts, branch rulesets, Merge Queue, protected governance environments, and governance receipts are not required.
 
-IB PAPER qualification instead binds the exact current `main` SHA, immutable SDK/BID and builder inputs, a separately pinned external harness, PAPER-only Broker access, the required fault/recovery campaign, the kill switch, and authoritative terminal reconciliation. Missing runtime inputs or a missing verifier receipt never becomes an implicit pass.
+IB PAPER qualification instead binds the exact current `main` SHA, immutable SDK/BID and builder inputs, a separately pinned external harness, PAPER-only Broker access, the required fault/recovery campaign, the kill switch, and authoritative terminal reconciliation. Real PAPER mutation is job-gated to GitHub actor `ProfHepta`, immutable account ID `102159240`, and the same rerun triggering actor before either self-hosted runner is allocated. Trusted and candidate trees reject tracked drift, untracked content, and ignored content before use and are rechecked after execution. Missing runtime inputs or a missing verifier receipt never becomes an implicit pass.
 
 CTP and XT/QMT have no real transport. LIVE remains unavailable.

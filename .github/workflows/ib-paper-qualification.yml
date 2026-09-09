@@ -23,17 +23,28 @@ concurrency:
 
 jobs:
   build-candidate:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
     name: ib-paper-candidate-artifact-build
     runs-on:
       group: trillionnium-ib-paper
       labels: [self-hosted, linux, x64, heptatrader-ib-builder]
     timeout-minutes: 100
     env:
+      PYTHONDONTWRITEBYTECODE: '1'
       HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
       HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
+      - name: Bind dispatch authority to immutable owner identity
+        env:
+          DISPATCH_ACTOR: ${{ github.actor }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_ACTOR" = 'ProfHepta'
+          test "$DISPATCH_ACTOR_ID" = '102159240'
+          test "$TRIGGERING_ACTOR" = 'ProfHepta'
       - name: Require exact current main
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
@@ -52,6 +63,7 @@ jobs:
           path: trusted
           fetch-depth: 1
           persist-credentials: false
+          clean: true
 
       - name: Checkout exact current main as build input
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -61,7 +73,14 @@ jobs:
           path: candidate
           fetch-depth: 1
           persist-credentials: false
+          clean: true
           submodules: false
+
+      - name: Verify exact clean trusted and candidate trees before build
+        run: |
+          set -euo pipefail
+          python3 trusted/scripts/verify_exact_git_index.py --root trusted
+          python3 trusted/scripts/verify_exact_git_index.py --root candidate
 
       - name: Build content-addressed binary
         env:
@@ -74,6 +93,12 @@ jobs:
           trusted/scripts/build_ib_candidate_artifact.sh candidate "$CANDIDATE_SHA" "$artifact"
           test -s "$artifact"
 
+      - name: Reverify immutable checkouts after build
+        run: |
+          set -euo pipefail
+          python3 trusted/scripts/verify_exact_git_index.py --root trusted
+          python3 trusted/scripts/verify_exact_git_index.py --root candidate
+
       - name: Upload immutable no-secret candidate artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -84,7 +109,7 @@ jobs:
           compression-level: 0
 
   qualify:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
     needs: build-candidate
     name: ib-paper-exact-artifact-qualification
     permissions:
@@ -97,8 +122,19 @@ jobs:
       labels: [self-hosted, linux, x64, heptatrader-ib-paper]
     timeout-minutes: 90
     env:
+      PYTHONDONTWRITEBYTECODE: '1'
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
+      - name: Bind dispatch authority to immutable owner identity
+        env:
+          DISPATCH_ACTOR: ${{ github.actor }}
+          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          test "$DISPATCH_ACTOR" = 'ProfHepta'
+          test "$DISPATCH_ACTOR_ID" = '102159240'
+          test "$TRIGGERING_ACTOR" = 'ProfHepta'
       - name: Checkout trusted current main qualification harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -107,6 +143,12 @@ jobs:
           path: trusted
           fetch-depth: 1
           persist-credentials: false
+          clean: true
+
+      - name: Verify exact clean trusted harness before Broker campaign
+        run: |
+          set -euo pipefail
+          python3 trusted/scripts/verify_exact_git_index.py --root trusted
 
       - name: Record exact remote main before Broker campaign
         env:
@@ -163,6 +205,11 @@ jobs:
           test "$before" = "$CANDIDATE_SHA"
           test "$remote_main" = "$before"
           printf '%s\n' "$remote_main" > "$RUNNER_TEMP/main-after-campaign.txt"
+
+      - name: Reverify immutable trusted harness after Broker campaign
+        run: |
+          set -euo pipefail
+          python3 trusted/scripts/verify_exact_git_index.py --root trusted
 
       - name: Issue final exact-current-main Broker receipt
         env:

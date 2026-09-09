@@ -46,7 +46,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
         "acknowledge_no_bypass",
         "verify_qualification_candidate.py",
         "github_qualification_evidence.py",
-        "environment: ib-paper",
         "secrets.",
     ):
         if token in workflow:
@@ -55,10 +54,27 @@ def validate(root: Path | str = ROOT) -> list[str]:
     condition = (
         "github.event_name == 'workflow_dispatch' && "
         "github.ref == 'refs/heads/main' && "
+        "github.repository == 'TrillionniumFoundation/heptatrader' && "
+        "github.actor == 'ProfHepta' && "
+        "github.actor_id == 102159240 && "
+        "github.triggering_actor == 'ProfHepta' && "
         "inputs.mutation_mode == true && inputs.candidate_sha == github.sha"
     )
     if workflow.count(condition) != 2:
-        errors.append(f"{WORKFLOW}: both jobs must require exact current main")
+        errors.append(
+            f"{WORKFLOW}: both jobs must require immutable owner dispatch "
+            "authority and exact current main before runner allocation"
+        )
+    if workflow.count("Bind dispatch authority to immutable owner identity") != 2:
+        errors.append(f"{WORKFLOW}: both jobs must reassert immutable owner identity")
+    if workflow.count(
+        "python3 trusted/scripts/verify_exact_git_index.py --root trusted"
+    ) < 4:
+        errors.append(f"{WORKFLOW}: trusted checkout exact-tree verification is incomplete")
+    if workflow.count(
+        "python3 trusted/scripts/verify_exact_git_index.py --root candidate"
+    ) != 2:
+        errors.append(f"{WORKFLOW}: candidate exact-tree verification must bracket build")
     if workflow.count("git ls-remote --exit-code") < 3:
         errors.append(f"{WORKFLOW}: current main must be checked before and after campaign")
 
@@ -73,6 +89,13 @@ def validate(root: Path | str = ROOT) -> list[str]:
         "Reverify unchanged remote main after Broker campaign",
         "qualification-verification.json",
         "HEPTA_QUALIFICATION_MUTATIONS: '1'",
+        "DISPATCH_ACTOR: ${{ github.actor }}",
+        "DISPATCH_ACTOR_ID: ${{ github.actor_id }}",
+        "TRIGGERING_ACTOR: ${{ github.triggering_actor }}",
+        "test \"$DISPATCH_ACTOR\" = 'ProfHepta'",
+        "test \"$DISPATCH_ACTOR_ID\" = '102159240'",
+        "test \"$TRIGGERING_ACTOR\" = 'ProfHepta'",
+        "verify_exact_git_index.py",
     ):
         if token not in workflow:
             errors.append(f"{WORKFLOW}: missing token: {token}")
@@ -91,23 +114,38 @@ def self_test() -> None:
     errors = validate(ROOT)
     if errors:
         raise RuntimeError("\n".join(errors))
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        target = root / WORKFLOW
-        target.parent.mkdir(parents=True)
-        shutil.copy2(ROOT / WORKFLOW, target)
-        text = target.read_text(encoding="utf-8")
-        target.write_text(
-            text.replace(
-                "inputs.candidate_sha == github.sha",
-                "inputs.candidate_sha != github.sha",
-                1,
-            ),
-            encoding="utf-8",
-        )
-        mutated = validate(root)
-        if not any("exact current main" in item for item in mutated):
-            raise RuntimeError("self-test failed to reject non-current candidate")
+    mutations = (
+        (
+            "inputs.candidate_sha == github.sha",
+            "inputs.candidate_sha != github.sha",
+            "exact current main",
+        ),
+        (
+            "github.actor == 'ProfHepta'",
+            "github.actor != 'ProfHepta'",
+            "immutable owner dispatch authority",
+        ),
+        (
+            "python3 trusted/scripts/verify_exact_git_index.py --root candidate",
+            "python3 trusted/scripts/verify_exact_git_index.py --root missing",
+            "candidate exact-tree verification",
+        ),
+    )
+    for old, new, expected in mutations:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / WORKFLOW
+            target.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / WORKFLOW, target)
+            text = target.read_text(encoding="utf-8")
+            if text.count(old) == 0:
+                raise RuntimeError(f"self-test fixture token missing: {old}")
+            target.write_text(text.replace(old, new, 1), encoding="utf-8")
+            mutated = validate(root)
+            if not any(expected in item for item in mutated):
+                raise RuntimeError(
+                    f"self-test failed to reject mutation {old!r}: {mutated}"
+                )
 
 
 def main(argv: list[str] | None = None) -> int:

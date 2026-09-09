@@ -18,8 +18,9 @@ The repository is owner-operated.
 - There is no team, CODEOWNERS, approval-count, Merge Queue, protected-governance-environment, or governance-receipt requirement.
 - Historical `G-TEAM-001` is retired as `NOT_APPLICABLE` and removed from the active gap register.
 - No repository event by itself authorizes Broker mutation.
+- A real IB PAPER campaign is admitted only when the workflow-dispatch actor and rerun triggering actor are `ProfHepta`, the immutable GitHub account ID is `102159240`, and the requested SHA is exact current `main`; these job-level gates are evaluated before either self-hosted runner is allocated.
 
-IB PAPER remains independently qualification-gated. Qualification is an optional activation prerequisite rather than an unresolved project gap. A valid qualification binds the exact current `main` SHA, immutable SDK/BID and builder inputs, the exact artifact, a separately pinned external harness, PAPER-only account mode, the complete bounded Broker scenario set, the operator kill switch, and authoritative terminal reconciliation. Movement of `main` invalidates an in-flight qualification.
+IB PAPER remains independently qualification-gated. Qualification is an optional activation prerequisite rather than an unresolved project gap. A valid qualification binds the exact current `main` SHA, immutable SDK/BID and builder inputs, the exact artifact, a separately pinned external harness, PAPER-only account mode, the complete bounded Broker scenario set, the operator kill switch, and authoritative terminal reconciliation. Movement of `main` invalidates an in-flight qualification. Both trusted and candidate checkouts are verified against their stage-zero Git index, tracked bytes, modes, links, untracked files, and ignored files before use; the checks are repeated after the build and Broker campaign.
 
 LIVE remains unavailable.
 

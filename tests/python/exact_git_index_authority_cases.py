@@ -97,7 +97,17 @@ class ExactGitIndexAuthorityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = self.repo(directory)
             (root / "ignored.bin").write_bytes(b"hostile")
-            self.assertTrue(any("untracked work-tree content" in item for item in self.validate(root)))
+            self.assertTrue(
+                any("ignored work-tree content" in item for item in self.validate(root))
+            )
+
+    def test_nonignored_untracked_content_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.repo(directory)
+            (root / "untracked.bin").write_bytes(b"hostile")
+            self.assertTrue(
+                any("untracked work-tree content" in item for item in self.validate(root))
+            )
 
     def test_missing_critical_path_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

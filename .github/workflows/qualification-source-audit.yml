@@ -18,6 +18,8 @@ jobs:
     name: qualification-source-audit
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout exact event subject without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -26,11 +28,14 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
+          clean: true
+          submodules: false
 
       - name: Validate owner-operated exact-current-main qualification boundary
         run: |
           set -euo pipefail
           git diff --check
+          python3 scripts/verify_exact_git_index.py --root .
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 scripts/check_qualification_trust_boundary.py --self-test
@@ -38,6 +43,7 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_ib_workflow_interfaces.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
           python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
+          python3 -m unittest discover -s tests/python -p 'test_git_index_authority.py'
 
       - name: Reassert immutable event subject
         if: always()
@@ -46,5 +52,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_exact_git_index.py --root .
           git diff --exit-code -- .
           git diff --cached --exit-code -- .
