@@ -17,29 +17,22 @@ REGULAR = {"100644", "100755"}
 SYMLINK = "120000"
 GITLINK = "160000"
 CRITICAL_PATHS = (
-    ".github/CODEOWNERS",
-    ".github/CODEOWNERS.team-template",
-    ".github/github-governance-policy-v1.json",
-    ".github/github-team-mapping-v1.json",
     ".github/required-check-contexts-v1.json",
-    ".github/workflows/github-governance-qualification.yml",
     ".github/workflows/ib-paper-qualification.yml",
+    ".github/workflows/qualification-source-audit.yml",
+    "docs/capabilities.json",
+    "docs/gap-register.json",
+    "docs/ib-paper-profile-policy-v1.json",
     "scripts/build_ib_candidate_artifact.sh",
     "scripts/check_qualification_trust_boundary.py",
-    "scripts/github_qualification_evidence.py",
     "scripts/run_ib_paper_artifact_qualification.sh",
     "scripts/verify_exact_git_index.py",
-    "scripts/verify_github_governance.py",
-    "scripts/verify_github_governance_legacy.py",
     "scripts/verify_ib_candidate_artifact.py",
     "scripts/verify_ib_paper_qualification.py",
-    "scripts/verify_qualification_candidate.py",
-    "scripts/verify_team_codeowners_activation.py",
+    "tests/python/test_gap_register.py",
     "tests/python/test_git_index_authority.py",
-    "tests/python/test_github_governance.py",
     "tests/python/test_ib_paper_qualification.py",
     "tests/python/test_qualification_trust_boundary.py",
-    "tests/python/test_team_codeowners_activation.py",
 )
 
 

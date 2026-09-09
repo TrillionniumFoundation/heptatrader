@@ -5,8 +5,15 @@
       "id": "agent-entry",
       "status": "CURRENT",
       "document": "docs/modules/agent-entry.md",
-      "implementation": ["adapters/mcp/hepta_mcp_server.py", "HeptaTrade/cli", "HeptaTrade/client"],
-      "tests": ["tests/native_tool_client_tests.cpp", "tests/unix_tool_server_tests.cpp"],
+      "implementation": [
+        "adapters/mcp/hepta_mcp_server.py",
+        "HeptaTrade/cli",
+        "HeptaTrade/client"
+      ],
+      "tests": [
+        "tests/native_tool_client_tests.cpp",
+        "tests/unix_tool_server_tests.cpp"
+      ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
     },
@@ -14,8 +21,15 @@
       "id": "tool-gateway",
       "status": "CURRENT",
       "document": "docs/modules/tool-gateway.md",
-      "implementation": ["HeptaTrade/tool_host", "HeptaTrade/tools"],
-      "tests": ["tests/trading_tool_host_tests.cpp", "tests/trading_tool_registry_tests.cpp", "tests/unix_tool_server_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/tool_host",
+        "HeptaTrade/tools"
+      ],
+      "tests": [
+        "tests/trading_tool_host_tests.cpp",
+        "tests/trading_tool_registry_tests.cpp",
+        "tests/unix_tool_server_tests.cpp"
+      ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
     },
@@ -23,8 +37,16 @@
       "id": "session-supervisor",
       "status": "CURRENT",
       "document": "docs/modules/session-supervisor.md",
-      "implementation": ["HeptaTrade/tool_host/session_supervisor_protocol.cpp", "HeptaTrade/tool_host/session_supervisor_lease_store.cpp", "HeptaTrade/tool_host/unix_session_supervisor_server.cpp", "HeptaTrade/cli/hepta_sessionctl.cpp"],
-      "tests": ["tests/unix_session_supervisor_server_tests.cpp", "tests/session_supervisor_lease_store_migration_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/tool_host/session_supervisor_protocol.cpp",
+        "HeptaTrade/tool_host/session_supervisor_lease_store.cpp",
+        "HeptaTrade/tool_host/unix_session_supervisor_server.cpp",
+        "HeptaTrade/cli/hepta_sessionctl.cpp"
+      ],
+      "tests": [
+        "tests/unix_session_supervisor_server_tests.cpp",
+        "tests/session_supervisor_lease_store_migration_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -32,8 +54,17 @@
       "id": "execution-service",
       "status": "CURRENT",
       "document": "docs/modules/execution-service.md",
-      "implementation": ["HeptaTrade/execution", "HeptaTrade/agent/decision_lease_manager.cpp", "HeptaTrade/events/execution_event_hub.cpp", "HeptaTrade/events/owner_scoped_health_publisher.cpp"],
-      "tests": ["tests/execution_coordinator_tests.cpp", "tests/execution_event_feed_tests.cpp", "tests/execution_decision_lease_authority_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/execution",
+        "HeptaTrade/agent/decision_lease_manager.cpp",
+        "HeptaTrade/events/execution_event_hub.cpp",
+        "HeptaTrade/events/owner_scoped_health_publisher.cpp"
+      ],
+      "tests": [
+        "tests/execution_coordinator_tests.cpp",
+        "tests/execution_event_feed_tests.cpp",
+        "tests/execution_decision_lease_authority_tests.cpp"
+      ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
     },
@@ -41,8 +72,15 @@
       "id": "oms-journal",
       "status": "CURRENT",
       "document": "docs/modules/oms-journal.md",
-      "implementation": ["HeptaTrade/oms_journal.cpp", "HeptaTrade/oms_recover.cpp"],
-      "tests": ["tests/oms_journal_durability_tests.cpp", "tests/oms_journal_schema_v4_tests.cpp", "tests/execution_coordinator_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/oms_journal.cpp",
+        "HeptaTrade/oms_recover.cpp"
+      ],
+      "tests": [
+        "tests/oms_journal_durability_tests.cpp",
+        "tests/oms_journal_schema_v4_tests.cpp",
+        "tests/execution_coordinator_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -50,8 +88,14 @@
       "id": "risk-engine",
       "status": "CURRENT",
       "document": "docs/modules/risk-engine.md",
-      "implementation": ["HeptaTrade/risk", "HeptaTrade/execution/ib_paper_execution_profile.cpp"],
-      "tests": ["tests/pre_trade_risk_engine_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/risk",
+        "HeptaTrade/execution/ib_paper_execution_profile.cpp"
+      ],
+      "tests": [
+        "tests/pre_trade_risk_engine_tests.cpp",
+        "tests/ib_paper_kill_switch_tests.cpp"
+      ],
       "broker_mutation": "POLICY_GATE",
       "production_authorized": false
     },
@@ -59,8 +103,13 @@
       "id": "authoritative-state",
       "status": "CURRENT",
       "document": "docs/modules/authoritative-state.md",
-      "implementation": ["HeptaTrade/state"],
-      "tests": ["tests/authoritative_trading_snapshot_store_tests.cpp", "tests/snapshot_refresh_coordinator_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/state"
+      ],
+      "tests": [
+        "tests/authoritative_trading_snapshot_store_tests.cpp",
+        "tests/snapshot_refresh_coordinator_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -68,8 +117,14 @@
       "id": "simulator",
       "status": "CURRENT",
       "document": "docs/modules/simulator.md",
-      "implementation": ["HeptaTrade/simulator", "HeptaTrade/execution/hepta_executiond.cpp"],
-      "tests": ["tests/agent_simulator_e2e_tests.cpp", "tests/simulator_risk_runtime_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/simulator",
+        "HeptaTrade/execution/hepta_executiond.cpp"
+      ],
+      "tests": [
+        "tests/agent_simulator_e2e_tests.cpp",
+        "tests/simulator_risk_runtime_tests.cpp"
+      ],
       "broker_mutation": "LOCAL_ONLY",
       "production_authorized": false
     },
@@ -77,8 +132,29 @@
       "id": "ib-paper",
       "status": "QUALIFICATION_REQUIRED",
       "document": "docs/modules/ib-paper.md",
-      "implementation": ["HeptaTrade/adapter_ib", "HeptaTrade/execution/hepta_ib_executiond.cpp", "systemd/hepta-execution-ib-paper.service", "docs/ib-paper-profile-policy-v1.json", "scripts/verify_canonical_ib_paper_profile.py"],
-      "tests": ["tests/ib_order_lifecycle_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp", "tests/ib_live_terminal_reconciliation_tests.cpp", "tests/execution_coordinator_tests.cpp", "tests/python/test_canonical_ib_paper_profile.py"],
+      "implementation": [
+        "HeptaTrade/adapter_ib",
+        "HeptaTrade/execution/hepta_ib_executiond.cpp",
+        ".github/workflows/ib-paper-qualification.yml",
+        "scripts/build_ib_candidate_artifact.sh",
+        "scripts/verify_ib_candidate_artifact.py",
+        "scripts/run_ib_paper_artifact_qualification.sh",
+        "scripts/verify_ib_paper_qualification.py",
+        "scripts/check_qualification_trust_boundary.py",
+        "systemd/hepta-execution-ib-paper.service",
+        "docs/ib-paper-profile-policy-v1.json",
+        "scripts/verify_canonical_ib_paper_profile.py"
+      ],
+      "tests": [
+        "tests/ib_order_lifecycle_tests.cpp",
+        "tests/ib_paper_kill_switch_tests.cpp",
+        "tests/ib_live_terminal_reconciliation_tests.cpp",
+        "tests/execution_coordinator_tests.cpp",
+        "tests/python/test_canonical_ib_paper_profile.py",
+        "tests/python/test_ib_paper_qualification.py",
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_ib_workflow_interfaces.py"
+      ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
     },
@@ -86,8 +162,12 @@
       "id": "ctp-adapter",
       "status": "EXPERIMENTAL",
       "document": "docs/modules/ctp-adapter.md",
-      "implementation": ["HeptaTrade/adapter_ctp"],
-      "tests": ["tests/venue_capability_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/adapter_ctp"
+      ],
+      "tests": [
+        "tests/venue_capability_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -95,8 +175,12 @@
       "id": "xt-adapter",
       "status": "EXPERIMENTAL",
       "document": "docs/modules/xt-adapter.md",
-      "implementation": ["HeptaTrade/adapter_xt"],
-      "tests": ["tests/venue_capability_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/adapter_xt"
+      ],
+      "tests": [
+        "tests/venue_capability_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -104,8 +188,16 @@
       "id": "shadow-research",
       "status": "EXPERIMENTAL",
       "document": "docs/modules/shadow-research.md",
-      "implementation": ["scripts/hepta_market_context_builder.py", "scripts/hepta_market_evidence_normalizer.py", "scripts/hepta_shadow_market_history.py", "scripts/hepta_strategy_shadow_runner.py", "scripts/hepta_strategy_replay_evaluator.py"],
-      "tests": ["tests/python/test_research_contract_smoke.py"],
+      "implementation": [
+        "scripts/hepta_market_context_builder.py",
+        "scripts/hepta_market_evidence_normalizer.py",
+        "scripts/hepta_shadow_market_history.py",
+        "scripts/hepta_strategy_shadow_runner.py",
+        "scripts/hepta_strategy_replay_evaluator.py"
+      ],
+      "tests": [
+        "tests/python/test_research_contract_smoke.py"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -113,18 +205,14 @@
       "id": "deployment",
       "status": "CURRENT",
       "document": "docs/modules/deployment.md",
-      "implementation": ["systemd", "tmpfiles.d"],
-      "tests": ["tests/python/test_documentation_control_plane.py"],
+      "implementation": [
+        "systemd",
+        "tmpfiles.d"
+      ],
+      "tests": [
+        "tests/python/test_documentation_control_plane.py"
+      ],
       "broker_mutation": "NONE",
-      "production_authorized": false
-    },
-    {
-      "id": "governance-qualification",
-      "status": "QUALIFICATION_REQUIRED",
-      "document": "docs/modules/governance-qualification.md",
-      "implementation": [".github", "scripts/verify_github_governance.py", "scripts/verify_ib_paper_qualification.py"],
-      "tests": ["tests/python/test_github_governance.py", "tests/python/test_ib_paper_qualification.py", "tests/python/test_qualification_trust_boundary.py"],
-      "broker_mutation": "EXTERNAL_QUALIFIER_ONLY",
       "production_authorized": false
     }
   ]

@@ -1,8 +1,8 @@
 # HeptaTrader documentation index
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Owner: HeptaTrader maintainers  
+Status: CURRENT
+Applies to: repository HEAD
+Owner: HeptaTrader maintainers
 Verification: `python3 scripts/check_documentation.py`
 
 This index is the canonical entry point for current development documentation. A document is operational only when its status is `CURRENT` and its implementation and test paths are present in `docs/module-catalog.json`.
@@ -33,7 +33,6 @@ This index is the canonical entry point for current development documentation. A
 | XT/QMT adapter | EXPERIMENTAL | [`modules/xt-adapter.md`](modules/xt-adapter.md) |
 | SHADOW research pipeline | EXPERIMENTAL | [`modules/shadow-research.md`](modules/shadow-research.md) |
 | systemd deployment assets | CURRENT | [`modules/deployment.md`](modules/deployment.md) |
-| Governance and qualification | QUALIFICATION_REQUIRED | [`modules/governance-qualification.md`](modules/governance-qualification.md) |
 
 ## Operations
 
@@ -58,3 +57,6 @@ This index is the canonical entry point for current development documentation. A
 ## Non-canonical material
 
 The top-level `HeptaStrategy/`, `HeptaSimulator/`, old Visual Studio projects, old PowerShell-oriented notes, and legacy reconciliation examples are not part of the canonical runtime unless explicitly named by the module catalog. Historical documents must be labeled `LEGACY` or `PROPOSAL`; their existence does not authorize deployment.
+- [`adr/0002-owner-operated-repository.md`](adr/0002-owner-operated-repository.md)
+
+All active supported-scope gaps are closed. Optional IB PAPER activation remains separately qualification-gated and disabled by default.

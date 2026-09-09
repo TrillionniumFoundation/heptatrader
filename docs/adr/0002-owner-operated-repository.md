@@ -19,7 +19,7 @@ The repository is owner-operated.
 - Historical `G-TEAM-001` is retired as `NOT_APPLICABLE` and removed from the active gap register.
 - No repository event by itself authorizes Broker mutation.
 
-IB PAPER remains independently qualification-gated. A valid qualification binds the exact current `main` SHA, immutable SDK/BID and builder inputs, the exact artifact, a separately pinned external harness, PAPER-only account mode, the complete bounded Broker scenario set, the operator kill switch, and authoritative terminal reconciliation. Movement of `main` invalidates an in-flight qualification.
+IB PAPER remains independently qualification-gated. Qualification is an optional activation prerequisite rather than an unresolved project gap. A valid qualification binds the exact current `main` SHA, immutable SDK/BID and builder inputs, the exact artifact, a separately pinned external harness, PAPER-only account mode, the complete bounded Broker scenario set, the operator kill switch, and authoritative terminal reconciliation. Movement of `main` invalidates an in-flight qualification.
 
 LIVE remains unavailable.
 

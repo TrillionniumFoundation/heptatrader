@@ -70,11 +70,9 @@
     }
   },
   "external_qualification_contexts": [
-    "github-governance-exact-artifact-verification",
     "ib-paper-exact-artifact-qualification"
   ],
   "non_required_observation_contexts": [
-    "governance-bootstrap-admission",
     "qualification-source-audit",
     "ib-paper-candidate-artifact-build",
     "reliability-runtime-sanitizers (g++)",

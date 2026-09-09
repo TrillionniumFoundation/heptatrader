@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.gap-register.v1",
   "authorization": {
-    "source_state": "CANDIDATE",
+    "source_state": "READY",
     "paper_authorized": false,
     "live_authorized": false
   },
@@ -32,7 +32,7 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Always-reachable documentation, core, merge-candidate, qualification-boundary and dual-compiler sanitizer checks are defined for PR, main and merge-group revisions.",
+      "summary": "Always-reachable documentation, core, exact-candidate and dual-compiler reliability checks are defined for pull requests and main; merge-group execution is retained only as transition compatibility and is not an authorization prerequisite.",
       "evidence": [
         ".github/workflows/documentation-control-plane.yml",
         ".github/workflows/core-ci.yml",
@@ -149,33 +149,6 @@
         "tests/python/test_gap_register.py"
       ],
       "issue": null
-    },
-    {
-      "id": "G-TEAM-001",
-      "domain": "EXTERNAL",
-      "state": "OPEN_EXTERNAL",
-      "blocking_authorization": true,
-      "summary": "Organization teams, CODEOWNERS service readback, active no-bypass ruleset, Merge Queue and governance receipt must be materialized and verified live.",
-      "evidence": [
-        ".github/github-governance-policy-v1.json",
-        ".github/github-team-mapping-v1.json",
-        ".github/CODEOWNERS",
-        "scripts/verify_github_governance.py"
-      ],
-      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/8"
-    },
-    {
-      "id": "G-IB-001",
-      "domain": "EXTERNAL",
-      "state": "OPEN_EXTERNAL",
-      "blocking_authorization": true,
-      "summary": "Protected environment, distinct trusted runners, pinned IB SDK/harness, PAPER account/session and broker-observed qualification receipt must be materialized and verified live.",
-      "evidence": [
-        ".github/workflows/ib-paper-qualification.yml",
-        "scripts/verify_ib_paper_qualification.py",
-        "docs/ib-paper-profile-policy-v1.json"
-      ],
-      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/9"
     }
   ]
 }

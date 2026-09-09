@@ -5,7 +5,7 @@ Documentation, fresh CMake ownership, qualification-boundary and profile
 validators are executed. Risk, venue and OMS token checks are static guards,
 not behavioral proof. C++ behavior is established by the separately built and
 executed core test suites. This script neither runs those suites nor grants
-PAPER/LIVE authorization or closes external qualification gaps.
+PAPER/LIVE authorization. Optional Broker activation remains separately fail-closed.
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ EXPECTED_REPOSITORY_GAPS = {
     "OMS-001",
     "BUILD-001",
 }
-EXPECTED_EXTERNAL_GAPS = {"G-TEAM-001", "G-IB-001"}
+EXPECTED_EXTERNAL_GAPS: set[str] = set()
 REQUIRED_TEST_TARGETS = {
     "hepta_pre_trade_risk_engine_tests",
     "hepta_venue_capability_tests",
@@ -419,8 +419,10 @@ def validate_register_projection(root: Path) -> list[str]:
             f"expected={sorted(EXPECTED_REPOSITORY_GAPS)} "
             f"actual={sorted(repository_ids)}"
         )
-    if not EXPECTED_EXTERNAL_GAPS.issubset(external_ids):
-        errors.append("required external gaps are missing")
+    if external_ids != EXPECTED_EXTERNAL_GAPS:
+        errors.append(
+            "unexpected external gaps remain: " + ", ".join(sorted(external_ids))
+        )
     for gap_id in EXPECTED_REPOSITORY_GAPS:
         item = by_id.get(gap_id, {})
         if item.get("state") != "CLOSED_SOURCE":
@@ -435,10 +437,10 @@ def validate_register_projection(root: Path) -> list[str]:
     if not isinstance(authorization, dict):
         errors.append("authorization projection is missing")
     else:
-        if authorization.get("source_state") != "CANDIDATE":
-            errors.append("source_state must remain CANDIDATE before merge")
+        if authorization.get("source_state") != "READY":
+            errors.append("source_state must be READY after supported-scope closure")
         if authorization.get("paper_authorized") is not False:
-            errors.append("PAPER must remain unauthorized without external receipt")
+            errors.append("PAPER must remain unauthorized without a Broker receipt")
         if authorization.get("live_authorized") is not False:
             errors.append("LIVE must remain unauthorized")
     return errors

@@ -40,7 +40,7 @@ The default build keeps the legacy monolith, legacy simulator, IB SDK integratio
 |---|---|---|
 | Deterministic simulator | CURRENT | local deterministic venue only |
 | Agent Tool Gateway | CURRENT | forwards bounded calls to Execution Service |
-| IB PAPER | QUALIFICATION_REQUIRED | disabled unless the fixed profile, credential, host controls, and external qualification all pass |
+| IB PAPER | QUALIFICATION_REQUIRED | disabled unless the fixed profile, host controls, exact-current-main artifact, and Broker qualification all pass |
 | CTP adapter | EXPERIMENTAL | fail-closed; no real transport |
 | XT/QMT adapter | EXPERIMENTAL | fail-closed; no real transport |
 | LIVE | UNAVAILABLE | none |
@@ -49,7 +49,7 @@ The machine-readable capability source of truth is [`docs/capabilities.json`](do
 
 ## Documentation
 
-Start with [`docs/index.md`](docs/index.md). Every maintained module has a module-level contract covering responsibilities, public interfaces, state, failure semantics, persistence, security boundaries, observability, tests, and known limitations. Documentation consistency is enforced by `scripts/check_documentation.py`. Build ownership is checked against fresh CMake File API replies by `scripts/verify_build_ownership.py`. Registered source and external qualification gaps are recorded in [`docs/gap-register.json`](docs/gap-register.json).
+Start with [`docs/index.md`](docs/index.md). Every maintained module has a module-level contract covering responsibilities, public interfaces, state, failure semantics, persistence, security boundaries, observability, tests, and known limitations. Documentation consistency is enforced by `scripts/check_documentation.py`. Build ownership is checked against fresh CMake File API replies by `scripts/verify_build_ownership.py`. The complete supported-scope closure is recorded in [`docs/gap-register.json`](docs/gap-register.json). Optional IB PAPER activation requirements are documented separately and never authorize themselves.
 
 ## Security invariants
 
@@ -58,8 +58,20 @@ Start with [`docs/index.md`](docs/index.md). Every maintained module has a modul
 - Risk-increasing mutations are journaled before external send and are idempotent by command ID.
 - Unknown session, identity, quote, state, configuration, persistence, or kill-switch conditions fail closed.
 - Cancel, reduce-only, and authoritative flatten remain available only through their explicit guarded paths.
-- Repository source, GitHub governance, runner controls, and real broker evidence are separate trust domains; source files alone never prove PAPER or LIVE authorization.
+- IB PAPER qualification binds the exact current `main` SHA, immutable build inputs, the resulting artifact, the pinned external harness, PAPER account mode, and the final reconciled Broker state.
+- LIVE remains unavailable regardless of repository workflow or PAPER qualification state.
 
-## Contributions
+## Owner-operated repository
 
-Use a branch and pull request. Exact required check names are defined in `.github/required-check-contexts-v1.json`. Organization-side branch rules, teams, protected environments, runner assignments, and broker qualification receipts remain external controls and must be independently read back before authorization changes.
+This is a self-use, single-operator system. The owner may commit, merge, revert, tag, and release directly. Pull requests, reviews, CI checks, and branch settings are optional engineering aids rather than authorization prerequisites. There is no team-distribution, CODEOWNERS, dual-approval, Merge Queue, protected-governance-environment, or governance-receipt requirement.
+
+A real IB PAPER campaign still requires the exact current `main` revision, isolated build and PAPER execution identities, pinned SDK/BID and harness inputs, the operator kill switch, authoritative reconciliation, and a verifier-issued Broker receipt. Repository convenience never grants LIVE authority.
+
+## Complete supported-scope baseline
+
+All registered gaps for the owner-operated simulator and trading
+runtime baseline are closed, and `source_state` is `READY`. IB
+PAPER remains an optional, disabled capability until a real
+PAPER-only Broker qualification succeeds. The absence of that
+optional activation does not reopen the project gap register.
+LIVE remains unavailable.

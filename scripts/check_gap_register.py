@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed validation for the source/external HeptaTrader gap register."""
+"""Fail-closed validation for the complete supported-scope gap register."""
 from __future__ import annotations
 
 import argparse
@@ -32,10 +32,7 @@ REQUIRED_REPOSITORY_GAPS = {
     "OMS-001",
     "BUILD-001",
 }
-REQUIRED_EXTERNAL_GAPS = {
-    "G-TEAM-001": "https://github.com/TrillionniumFoundation/heptatrader/issues/8",
-    "G-IB-001": "https://github.com/TrillionniumFoundation/heptatrader/issues/9",
-}
+REQUIRED_EXTERNAL_GAPS: dict[str, str] = {}
 ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
 
 
@@ -98,8 +95,8 @@ def validate(root: Path | str = ROOT) -> list[str]:
         authorization = register.get("authorization")
         if not isinstance(authorization, dict) or set(authorization) != AUTHORIZATION_KEYS:
             raise GapRegisterError("authorization fields are not canonical")
-        if authorization.get("source_state") != "CANDIDATE":
-            raise GapRegisterError("source_state must remain CANDIDATE before protected admission")
+        if authorization.get("source_state") != "READY":
+            raise GapRegisterError("source_state must be READY after all supported-scope gaps close")
         if authorization.get("paper_authorized") is not False:
             raise GapRegisterError("PAPER cannot be source-authorized")
         if authorization.get("live_authorized") is not False:
@@ -173,7 +170,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
         if not isinstance(capabilities, dict):
             raise GapRegisterError("capability matrix is invalid")
         if capabilities.get("live_trading_authorized") is not False:
-            raise GapRegisterError("capability matrix conflicts with external blockers")
+            raise GapRegisterError("capability matrix must keep LIVE disabled")
         by_id = {
             item.get("id"): item
             for item in capabilities.get("capabilities", [])
@@ -190,10 +187,10 @@ def validate(root: Path | str = ROOT) -> list[str]:
             for item in catalog.get("modules", [])
             if isinstance(item, dict)
         } if isinstance(catalog, dict) else {}
-        for module_id in ("ib-paper", "governance-qualification"):
+        for module_id in ("ib-paper",):
             if modules.get(module_id, {}).get("production_authorized") is not False:
                 raise GapRegisterError(
-                    f"{module_id}: external blockers require production_authorized=false"
+                    f"{module_id}: Broker qualification requires production_authorized=false"
                 )
     except GapRegisterError as error:
         errors.append(str(error))

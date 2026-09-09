@@ -133,24 +133,6 @@ class ExactGitIndexAuthorityTests(unittest.TestCase):
             self.assertNotIn("PASS", stdout.getvalue())
             self.assertIn("[EXACT-GIT-INDEX]", stderr.getvalue())
 
-    def test_all_main_pull_requests_run_the_governance_boundary(self) -> None:
-        workflow = (ROOT / ".github/workflows/github-governance-qualification.yml").read_text(encoding="utf-8")
-        pull_block = workflow.split("  workflow_dispatch:", 1)[0]
-        self.assertIn("  pull_request:\n    branches: [main]", pull_block)
-        self.assertNotIn("    paths:", pull_block)
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)
-        self.assertIn("python3 scripts/verify_exact_git_index.py --root .", workflow)
-        self.assertIn("python3 trusted/scripts/verify_exact_git_index.py --root trusted", workflow)
-        self.assertIn("test_git_index_authority.py", workflow)
-
-    def test_ib_workflow_is_part_of_the_exact_index_boundary(self) -> None:
-        workflow = (ROOT / ".github/workflows/ib-paper-qualification.yml").read_text(encoding="utf-8")
-        pull_block = workflow.split("  workflow_dispatch:", 1)[0]
-        self.assertIn("  pull_request:\n    branches: [main]", pull_block)
-        self.assertNotIn("    paths:", pull_block)
-        self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", workflow)
-        self.assertIn(".github/workflows/ib-paper-qualification.yml", authority.CRITICAL_PATHS)
-
 
 if __name__ == "__main__":
     unittest.main()
