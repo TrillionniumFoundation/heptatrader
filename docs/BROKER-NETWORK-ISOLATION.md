@@ -11,7 +11,7 @@ Agent 能生成并运行代码，因此“没有 broker credential”还不够�
 - `systemd/hepta-broker-network-policy-v1.json`
 - 固定 IB PAPER identity `hepta-ib-exec` / UID `2003`
 
-策略是静态的：允许配置中的 UID 访问受保护端口，拒绝所有其他本地 UID；其余 egress 不受影响。没有动态 identity manifest、activation reservation、receipt、ledger、campaign 或 attestation。
+策略是静态的：只对 IPv4/IPv6 loopback 上的受保护端口允许配置中的 UID 访问，拒绝所有其他本地 UID；相同远端端口及其余 egress 不受影响。没有动态 identity manifest、activation reservation、receipt、ledger、campaign 或 attestation。
 
 ## 当前受保护端口
 

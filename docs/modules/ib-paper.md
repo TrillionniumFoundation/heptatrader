@@ -35,7 +35,7 @@ The source-controlled canonical policy is [`../ib-paper-profile-policy-v1.json`]
 
 `python3 scripts/verify_canonical_ib_paper_profile.py` enforces the source template and is covered by hostile mutation tests. A deployment must verify the effective runtime environment against the same constraints; copying the example is not evidence by itself.
 
-The external canary mode is separately bounded to a small LMT/DAY order and an authoritative quote-age limit. It is not LIVE.
+The external canary mode is separately bounded to a small LMT/DAY order and an authoritative quote-age limit. A distinct protected-environment qualification mode retains the same single-CASH-contract, one-active-order, touch-price LMT/DAY boundary, but permits at most 1,000,000 units / 1,500,000 notional, six sends per minute and 1,000,000 gross PAPER position. Its separate `PAPER-V5` credential cannot authorize the ordinary or P1 profiles. It exists only so an independently pinned harness can submit a quantity just above broker-observed displayed liquidity, cancel the remainder and return to an authoritative flat state. Neither mode is LIVE.
 
 ## Kill switch and network boundary
 

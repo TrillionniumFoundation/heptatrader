@@ -17,7 +17,7 @@ PRIVILEGED = {
     WF / "ib-paper-qualification.yml":
         "709c6d02505e31399b106b48ebeb053d7a221205822008ed5ecbe510b0d9355d",
     WF / "self-hosted-ib-availability.yml":
-        "0386d801e409fa89cdb143df14610e64eb75819abdda7a13b7302a541fc55bb5",
+        "dbe93dc266ff63ed8d8a4cad8a563692c8925d3780521871ad9e8bcb22e4572a",
 }
 ENGINEERING = {
     WF / "canonical-full-suite.yml",
@@ -217,12 +217,12 @@ class GovernanceBootstrapAdmissionTests(unittest.TestCase):
         selector = (
             "runs-on:\n"
             "      group: trillionnium-ib-paper\n"
-            "      labels: [self-hosted, linux, x64, heptatrader-x230-probe]"
+            "      labels: [self-hosted, linux, x64, x230-ib-paper]"
         )
         self.assertEqual(probe.count(selector), 1)
         self.assertNotIn("heptatrader-ib-builder", probe)
         self.assertNotIn("heptatrader-ib-paper", probe)
-        self.assertNotIn("heptatrader-x230-probe", paper)
+        self.assertNotIn("x230-ib-paper", paper)
         self.assertIn('x230_selector="', self.admission)
         document = json.loads(CONTEXTS.read_text(encoding="utf-8"))
         observations = document["non_required_observation_contexts"]

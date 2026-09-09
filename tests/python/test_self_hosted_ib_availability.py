@@ -36,15 +36,17 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
         selector = (
             "runs-on:\n"
             "      group: trillionnium-ib-paper\n"
-            "      labels: [self-hosted, linux, x64, heptatrader-x230-probe]"
+            "      labels: [self-hosted, linux, x64, x230-ib-paper]"
         )
         self.assertEqual(section.count(selector), 1)
-        self.assertEqual(section.count("heptatrader-x230-probe"), 1)
+        self.assertEqual(section.count("x230-ib-paper"), 2)
         self.assertNotIn("heptatrader-ib-builder", section)
         self.assertNotIn("heptatrader-ib-paper", section)
         self.assertIn("permissions: {}", section)
         self.assertIn('test "$GITHUB_REF" = refs/heads/main', section)
-        self.assertIn('test "$RUNNER_NAME" = x230', section)
+        self.assertIn('test "$RUNNER_NAME" = x230-ib-paper', section)
+        self.assertIn("! nc -z -w 3 127.0.0.1 4002", section)
+        self.assertIn("/usr/libexec/hepta-ib-paper-host-probe", section)
         self.assertIn('test "$RUNNER_OS" = Linux', section)
         self.assertIn('test "$RUNNER_ARCH" = X64', section)
         self.assertNotIn("actions/checkout", section)
