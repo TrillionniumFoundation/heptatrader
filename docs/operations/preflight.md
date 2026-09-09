@@ -1,6 +1,6 @@
 # Deployment preflight
 
-Status: CURRENT  
+Status: CURRENT
 Applies to: immutable core and IB PAPER release packages
 
 ## Evidence boundary
@@ -21,7 +21,7 @@ hepta-preflight \
   --output /srv/releases/core-preflight.json
 ```
 
-This checks the archive root, paths, types, size bounds, strict manifest, every payload digest/mode/timestamp, profile-required files, installed build metadata, and prohibition on authorization claims.
+This checks the compressed size before hashing, incrementally parses canonical USTAR under decompressed/member/total ceilings, rejects extension metadata before reading its body, and validates the archive root, manifest-first ordering, paths, types, every payload digest/mode/timestamp, profile-required files, installed build metadata, and prohibition on authorization claims.
 
 ## Static host check
 
@@ -63,7 +63,7 @@ A PASS static receipt must be followed by the protected IB qualification workflo
 Any digest change, package replacement, host identity change, policy change, failed check, missing evidence or uncertain broker state invalidates the preflight for promotion. LIVE remains unavailable.
 ## Exact binding guarantees
 
-The caller-supplied policy must be byte-identical to the policy inside the approved package. Archive limits also remain below compiled, non-relaxable ceilings. Artifact and policy paths are traversed component by component with no-follow directory descriptors, and the artifact is hashed and parsed through one pinned descriptor.
+The caller-supplied policy must be byte-identical to the policy inside the approved package. Archive limits remain below compiled, non-relaxable ceilings. The compressed-file bound is checked before hashing; a streaming USTAR parser stops at the member-count boundary before body reads, bounds total decompressed bytes, and gives GNU/PAX extension metadata a compiled allowance of zero. Artifact and policy paths are traversed component by component with no-follow directory descriptors, and the artifact is hashed and parsed through one pinned descriptor.
 
 Static-host mode compares the complete HeptaTrader-managed installed inventory with the package manifest. Every managed file must have the approved bytes, size and mode and must share the deployment-root owner/group; stale extra HeptaTrader binaries, units, helpers, policies or documentation fail the check. The installed build metadata is parsed again and must match the package profile and release identity.
 

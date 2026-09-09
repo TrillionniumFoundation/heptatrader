@@ -1,6 +1,6 @@
 # Release package procedure
 
-Status: CURRENT  
+Status: CURRENT
 Applies to: canonical core and IB PAPER candidate builds
 
 ## Objective
@@ -32,7 +32,7 @@ python3 scripts/build_release_package.py \
   --source-date-epoch "$epoch"
 ```
 
-The output path, `.sha256` sidecar and `.receipt.json` sidecar must not already exist. The builder refuses replacement rather than silently changing an artifact identity.
+The output path, `.sha256` sidecar and `.receipt.json` sidecar must not already exist. The builder refuses replacement rather than silently changing an artifact identity. `manifest.json` is a generated archive name and is forbidden in the install-root payload, including as a directory prefix. Each output is published atomically and no-replace; if a later sidecar publication fails, earlier immutable outputs remain and the incomplete set must be recovered under a fresh basename or removed only after operator verification.
 
 ## IB PAPER candidate
 

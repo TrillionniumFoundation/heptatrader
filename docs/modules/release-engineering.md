@@ -1,8 +1,8 @@
 # Release engineering and host preflight
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `docs/preflight-policy-v1.json`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `docs/preflight-policy-v1.json`
 Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_cmake_install_integration.py`
 
 ## Responsibilities
@@ -26,7 +26,7 @@ Files ending in `.example` remain non-secret templates. Broker credentials, Agen
 - an explicit release label and `core` or `ib-paper` profile;
 - a new output path that is not replaced in place;
 - regular, single-link payload files with bounded sizes and no setuid/setgid bits;
-- no symlinks, hard links, private-key suffixes, or non-example `.env` files.
+- no symlinks, hard links, private-key suffixes, non-example `.env` files, generated-name collisions, or file/directory prefix collisions.
 
 The archive normalizes path order, owner, group, mode, timestamp, tar format, and gzip timestamp. Its manifest binds every payload path, size, mode and SHA-256. The sidecar receipt records the source identity, manifest digest and package digest. Rebuilding the same installed bytes with the same identity inputs must produce the same archive bytes.
 
@@ -37,9 +37,9 @@ The manifest and receipt always declare `authorization_effect=NONE`, `paper_auth
 `scripts/hepta_preflight.py`, installed as `hepta-preflight`, validates without extracting the package:
 
 1. artifact file identity and caller-supplied SHA-256;
-2. bounded member count and unpacked size;
-3. canonical paths and a single package root;
-4. rejection of links, devices and duplicate members;
+2. compressed size before hashing plus bounded streaming decompression, member count and unpacked size;
+3. canonical USTAR paths, a single package root and manifest-first ordering;
+4. rejection of links, devices, duplicate members and all GNU/PAX extension metadata before extension bodies are consumed;
 5. strict JSON without duplicate keys or non-finite numbers;
 6. manifest-to-payload size, mode, timestamp and digest equality;
 7. profile-required files and installed build metadata;
@@ -65,7 +65,7 @@ Receipts expose release label, source SHA, source epoch, package and manifest di
 
 ## Test expectations
 
-Unit tests cover reproducible archive bytes, sorted manifests, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys and forged LIVE claims.
+Unit tests cover reproducible archive bytes, global member uniqueness, generated-name and file-prefix collisions, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys, compressed/decompressed ceilings, early member-count termination, zero-byte extension-metadata policy and forged LIVE claims.
 
 The install integration test consumes the same already-built canonical `build/core` directory, verifies its exact CMake profile, executes `cmake --install` under a fresh `DESTDIR`, asserts every policy-required regular file, rejects an IB-enabled daemon in the core profile, and checks installed build metadata. This prevents an install module that exists in source but is never registered from passing CI.
 

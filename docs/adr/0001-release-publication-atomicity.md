@@ -1,6 +1,6 @@
 # ADR 0001: Atomic release publication and pinned input bytes
 
-Status: Accepted  
+Status: Accepted
 Date: 2026-09-09
 
 ## Context
@@ -11,13 +11,15 @@ The release builder and preflight verifier cross a local filesystem trust bounda
 
 Release payloads, policies and package archives are consumed from one no-follow descriptor-backed snapshot. Digest calculation and parsing or archive construction use the same snapshotted bytes. The original descriptor and pathname identity are checked for replacement or metadata drift.
 
-Package, checksum and receipt outputs are flushed to private same-directory files and published with an atomic no-replace operation relative to a pinned directory descriptor. A pre-existing or concurrently created destination causes a fail-closed result and is never overwritten. Transaction rollback removes only an inode created by that transaction.
+Package, checksum and receipt outputs are flushed to private same-directory files and published with an atomic no-replace operation relative to a pinned directory descriptor. A pre-existing or concurrently created destination causes a fail-closed result and is never overwritten. Publication is per-file atomic rather than a multi-file transaction; if a later sidecar loses a race, earlier immutable outputs remain and recovery requires a fresh basename or operator-verified cleanup.
 
 ## Consequences
 
-The package manifest is bound to the exact payload bytes archived, and a preflight receipt is bound to the exact package bytes inspected. Concurrent publishers can race safely: at most one publishes each destination, losing publishers fail, and independently created bytes remain intact.
+The package manifest is bound to the exact payload bytes archived, and a preflight receipt is bound to the exact package bytes inspected. Concurrent publishers can race safely: at most one publishes each destination, losing publishers fail, independently created bytes remain intact, and partial evidence sets are never described as complete.
 
 The implementation remains Linux-oriented, matching the canonical deployment target. These integrity guarantees have no PAPER or LIVE authorization effect. Repository admission settings are optional engineering controls; optional PAPER qualification remains a separate fail-closed Broker boundary and LIVE remains unavailable.
+
+The archive format is canonical USTAR. Generated manifest names and file-prefix collisions are rejected before packaging. Preflight uses a streaming parser with compressed, decompressed, member-count, member-size and total-payload ceilings; GNU/PAX extension metadata is forbidden and rejected before its body is consumed.
 
 ## Verification
 

@@ -1,8 +1,8 @@
 # Release publication and input pinning
 
-Status: CURRENT  
-Applies to: deterministic release packages and machine-readable host preflight receipts  
-Implementation: `scripts/build_release_package.py`, `scripts/hepta_preflight.py`  
+Status: CURRENT
+Applies to: deterministic release packages and machine-readable host preflight receipts
+Implementation: `scripts/build_release_package.py`, `scripts/hepta_preflight.py`
 Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_cmake_install_integration.py`
 
 ## Security objective
@@ -19,7 +19,11 @@ The original descriptor and path identity are checked again after the copy or in
 
 Package, checksum and receipt outputs are staged as private same-directory files, synchronously flushed, and published with an atomic no-replace link operation relative to a pinned directory descriptor. Existing destinations—including destinations created by a competing publisher after staging began—are never overwritten.
 
-After successful publication, the temporary name is removed and the containing directory is synchronized. On a later transaction failure, rollback removes only an output whose device and inode still match the output created by that transaction; independently replaced or independently created bytes are preserved.
+After successful publication, the temporary name is removed and the containing directory is synchronized. Publication is atomic per output, not transactional across the package and two sidecars. If a later no-replace publication fails, already published immutable outputs are deliberately retained; pathname-based rollback is not attempted because it could delete another writer's file. The evidence set is complete only when the package, checksum and receipt all exist and cross-bind. Recovery uses a fresh output basename or an operator-verified removal of the incomplete set.
+
+## Bounded archive parser
+
+The builder reserves `manifest.json`, rejects generated-name and file-prefix collisions before payload snapshots, emits canonical USTAR without GNU/PAX extension records, and asserts global member-name uniqueness. Preflight checks the compressed file-size ceiling before hashing, then parses the gzip stream incrementally. Member count and per-member/total sizes are checked before body consumption; total decompressed tar bytes are bounded; GNU/PAX long-name and extended-header metadata are rejected immediately with a compiled zero-byte extension-metadata allowance. No eager `getmembers()` materialization is used.
 
 ## Deterministic hostile tests
 
@@ -30,7 +34,7 @@ After successful publication, the temporary name is removed and the containing d
 - the archive pathname is replaced after preflight pins and hashes it but before archive parsing completes;
 - a competing preflight receipt publisher creates the destination before publication.
 
-The expected result is fail-closed rejection, preservation of competitor bytes, no orphaned sidecars, archive bytes equal to the bytes hashed into the manifest, and receipt evidence bound to the exact archive bytes inspected.
+The expected result is fail-closed rejection, preservation of competitor bytes, explicit retention of any earlier per-file publication after a later failure, archive bytes equal to the bytes hashed into the manifest, and receipt evidence bound to the exact archive bytes inspected.
 
 ## Authorization boundary
 

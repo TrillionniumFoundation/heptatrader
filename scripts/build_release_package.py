@@ -32,6 +32,9 @@ LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PRIVATE_SUFFIXES = {".key", ".pem", ".p12", ".pfx", ".jks"}
 MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
+GENERATED_ARCHIVE_PATHS = frozenset({"manifest.json"})
+USTAR_NAME_BYTES = 100
+USTAR_PREFIX_BYTES = 155
 
 
 class PackageError(ValueError):
@@ -203,12 +206,80 @@ def _file_mode(metadata: os.stat_result) -> int:
     return 0o755 if metadata.st_mode & 0o111 else 0o644
 
 
+def _is_path_prefix(prefix: str, candidate: str) -> bool:
+    return candidate.startswith(prefix + "/")
+
+
+def _reject_generated_namespace_collision(relative: str) -> None:
+    for generated in GENERATED_ARCHIVE_PATHS:
+        if (
+            relative == generated
+            or _is_path_prefix(generated, relative)
+            or _is_path_prefix(relative, generated)
+        ):
+            raise PackageError(
+                "payload path collides with generated archive namespace: "
+                f"{relative}"
+            )
+
+
+def _admit_payload_path(relative: str, admitted: set[str]) -> None:
+    _reject_generated_namespace_collision(relative)
+    for existing in admitted:
+        if (
+            relative == existing
+            or _is_path_prefix(existing, relative)
+            or _is_path_prefix(relative, existing)
+        ):
+            raise PackageError(
+                "payload file/directory prefix collision: "
+                f"{existing!r} versus {relative!r}"
+            )
+    admitted.add(relative)
+
+
+def _validate_ustar_name(name: str) -> None:
+    try:
+        encoded = name.encode("utf-8", "strict")
+    except UnicodeError as error:
+        raise PackageError(f"archive path is not UTF-8: {name!r}") from error
+    if len(encoded) <= USTAR_NAME_BYTES:
+        return
+    parts = name.split("/")
+    for index in range(1, len(parts)):
+        prefix = "/".join(parts[:index]).encode("utf-8")
+        suffix = "/".join(parts[index:]).encode("utf-8")
+        if (
+            len(prefix) <= USTAR_PREFIX_BYTES
+            and len(suffix) <= USTAR_NAME_BYTES
+        ):
+            return
+    raise PackageError(f"archive path is not representable in USTAR: {name}")
+
+
+def _validate_archive_member_names(names: list[str]) -> None:
+    if len(names) != len(set(names)):
+        raise PackageError("archive member names are not globally unique")
+    members = set(names)
+    for name in names:
+        parts = name.split("/")
+        for index in range(1, len(parts)):
+            prefix = "/".join(parts[:index])
+            if prefix in members:
+                raise PackageError(
+                    "archive file/directory prefix collision: "
+                    f"{prefix!r} versus {name!r}"
+                )
+        _validate_ustar_name(name)
+
+
 def collect_payload(root: Path) -> list[PayloadFile]:
     root = root.resolve(strict=True)
     if not root.is_dir() or root.is_symlink():
         raise PackageError("install root must be a real directory")
 
     payload: list[PayloadFile] = []
+    admitted_paths: set[str] = set()
     total = 0
     try:
         for directory, names, files in os.walk(root, topdown=True, followlinks=False):
@@ -220,12 +291,15 @@ def collect_payload(root: Path) -> list[PayloadFile]:
                     raise PackageError(f"symlinked directory is forbidden: {child}")
                 if not stat.S_ISDIR(metadata.st_mode):
                     raise PackageError(f"special directory entry is forbidden: {child}")
+                relative_directory = canonical_relative(child, root)
+                _reject_generated_namespace_collision(relative_directory)
             names.sort()
             files.sort()
             for name in files:
                 source = directory_path / name
                 observed = source.lstat()
                 relative = canonical_relative(source, root)
+                _admit_payload_path(relative, admitted_paths)
                 if _looks_private(relative):
                     raise PackageError(
                         f"private-key or secret-like path is forbidden: {relative}"
@@ -303,10 +377,15 @@ def archive_bytes(
 ) -> tuple[bytes, str]:
     root_name = f"heptatrader-{version}-{profile}"
     manifest_bytes = canonical_json(manifest)
+    manifest_name = f"{root_name}/manifest.json"
+    member_names = [manifest_name] + [
+        f"{root_name}/{item.path}" for item in payload
+    ]
+    _validate_archive_member_names(member_names)
     raw_tar = io.BytesIO()
-    with tarfile.open(fileobj=raw_tar, mode="w", format=tarfile.GNU_FORMAT) as archive:
+    with tarfile.open(fileobj=raw_tar, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         archive.addfile(
-            _tar_info(f"{root_name}/manifest.json", len(manifest_bytes), 0o644, epoch),
+            _tar_info(manifest_name, len(manifest_bytes), 0o644, epoch),
             io.BytesIO(manifest_bytes),
         )
         for item in payload:

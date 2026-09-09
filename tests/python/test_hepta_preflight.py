@@ -94,7 +94,7 @@ def check(receipt: dict, check_id: str) -> dict:
 
 def write_manual_archive(path: Path, members: list[tarfile.TarInfo], bodies: list[bytes | None]) -> str:
     raw = io.BytesIO()
-    with tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as archive:
+    with tarfile.open(fileobj=raw, mode="w", format=tarfile.USTAR_FORMAT) as archive:
         for member, body in zip(members, bodies):
             archive.addfile(member, io.BytesIO(body) if body is not None else None)
     compressed = io.BytesIO()
@@ -102,6 +102,42 @@ def write_manual_archive(path: Path, members: list[tarfile.TarInfo], bodies: lis
         stream.write(raw.getvalue())
     path.write_bytes(compressed.getvalue())
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def canonical_header(
+    name: str,
+    *,
+    size: int = 0,
+    typeflag: bytes = tarfile.REGTYPE,
+) -> bytes:
+    info = tarfile.TarInfo(name)
+    info.size = size
+    info.type = typeflag
+    info.mode = 0o644
+    info.mtime = EPOCH
+    info.uid = 0
+    info.gid = 0
+    info.uname = "root"
+    info.gname = "root"
+    return info.tobuf(
+        format=tarfile.USTAR_FORMAT,
+        encoding="utf-8",
+        errors="strict",
+    )
+
+
+def bounded_policy(
+    *,
+    maximum_members: int = 4,
+    maximum_member: int = 1024,
+    maximum_total: int = 2048,
+) -> preflight.LoadedPolicy:
+    value = dict(preflight._load_policy(POLICY))
+    value["maximum_archive_members"] = maximum_members
+    value["maximum_member_bytes"] = maximum_member
+    value["maximum_total_unpacked_bytes"] = maximum_total
+    raw = preflight.canonical_json(value)
+    return preflight.LoadedPolicy(value, raw, POLICY)
 
 
 def regular_info(name: str, body: bytes) -> tarfile.TarInfo:
@@ -166,6 +202,99 @@ class HeptaPreflightTests(unittest.TestCase):
             )
             receipt = preflight.run_preflight(args_for(output, package["package_sha256"]))
             self.assertEqual(receipt["result"], "FAIL")
+
+    def test_compressed_bound_is_checked_before_hashing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            policy = bounded_policy()
+            limit = preflight._compressed_archive_limit(
+                policy["maximum_archive_members"],
+                policy["maximum_total_unpacked_bytes"],
+            )
+            artifact = Path(directory) / "oversized.tar.gz"
+            with artifact.open("wb") as stream:
+                stream.truncate(limit + 1)
+            with mock.patch.object(preflight, "_hash_stream") as hash_stream:
+                with self.assertRaisesRegex(
+                    preflight.PreflightError, "compressed size"
+                ):
+                    preflight.inspect_archive(
+                        artifact, "0" * 64, policy, "core"
+                    )
+            hash_stream.assert_not_called()
+
+    def test_member_count_stops_at_configured_boundary(self) -> None:
+        allowed = 4
+        raw = b"".join(
+            canonical_header(f"heptatrader-x-core/file-{index}")
+            for index in range(allowed + 1)
+        )
+        stream = io.BytesIO(raw + b"body-must-not-be-read")
+        reader = preflight._BoundedTarReader(
+            stream,
+            maximum_members=allowed,
+            maximum_member_bytes=1024,
+            maximum_total_bytes=4096,
+            maximum_stream_bytes=len(raw) + 1024,
+        )
+        for _ in range(allowed):
+            member = reader.next_member()
+            self.assertIsNotNone(member)
+            reader.consume(member)
+        with self.assertRaisesRegex(
+            preflight.PreflightError, "member count"
+        ):
+            reader.next_member()
+        self.assertEqual(stream.tell(), (allowed + 1) * 512)
+
+    def test_extension_metadata_is_rejected_before_body_read(self) -> None:
+        header = canonical_header(
+            "heptatrader-x-core/pax",
+            size=1024 * 1024,
+            typeflag=tarfile.XHDTYPE,
+        )
+
+        class HeaderOnly(io.BytesIO):
+            def read(self, size: int = -1) -> bytes:
+                if self.tell() >= 512:
+                    raise AssertionError("extension body was read")
+                return super().read(size)
+
+        stream = HeaderOnly(header)
+        reader = preflight._BoundedTarReader(
+            stream,
+            maximum_members=4,
+            maximum_member_bytes=2 * 1024 * 1024,
+            maximum_total_bytes=2 * 1024 * 1024,
+            maximum_stream_bytes=3 * 1024 * 1024,
+        )
+        self.assertEqual(
+            preflight.HARD_MAXIMUM_EXTENSION_METADATA_BYTES, 0
+        )
+        with self.assertRaisesRegex(
+            preflight.PreflightError, "extension metadata"
+        ):
+            reader.next_member()
+        self.assertEqual(stream.tell(), 512)
+
+    def test_decompression_expansion_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            policy = bounded_policy(
+                maximum_members=2,
+                maximum_member=1024,
+                maximum_total=1024,
+            )
+            limit = preflight._tar_stream_limit(2, 1024)
+            expanded = b"\0" * (limit + 1)
+            artifact = Path(directory) / "expansion.tar.gz"
+            artifact.write_bytes(gzip.compress(expanded, mtime=EPOCH))
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(
+                preflight.PreflightError,
+                "decompressed tar stream exceeds",
+            ):
+                preflight.inspect_archive(
+                    artifact, digest, policy, "core"
+                )
 
     def test_archive_path_traversal_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -389,18 +518,18 @@ class HeptaPreflightTests(unittest.TestCase):
                 source_sha="3" * 40,
                 source_date_epoch=EPOCH,
             )
-            original_open = preflight.tarfile.open
+            original_open = preflight._open_gzip_stream
             swapped = False
 
-            def swapping_open(*args, **kwargs):
+            def swapping_open(stream):
                 nonlocal swapped
-                if not swapped and kwargs.get("fileobj") is not None:
+                if not swapped:
                     swapped = True
                     os.replace(replacement, artifact)
-                return original_open(*args, **kwargs)
+                return original_open(stream)
 
             with mock.patch.object(
-                preflight.tarfile, "open", side_effect=swapping_open
+                preflight, "_open_gzip_stream", side_effect=swapping_open
             ):
                 receipt = preflight.run_preflight(
                     args_for(artifact, package["package_sha256"])

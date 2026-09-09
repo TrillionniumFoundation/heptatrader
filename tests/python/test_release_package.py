@@ -60,7 +60,7 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
 
 class ReleasePackageTests(unittest.TestCase):
     def package(self, root: Path, output: Path, *, profile: str = "core") -> dict:
-        return release.package_install_root(
+        receipt = release.package_install_root(
             root,
             output,
             version=VERSION,
@@ -68,6 +68,10 @@ class ReleasePackageTests(unittest.TestCase):
             source_sha=SOURCE_SHA,
             source_date_epoch=EPOCH,
         )
+        with tarfile.open(output, "r:gz") as archive:
+            names = [member.name for member in archive.getmembers()]
+        self.assertEqual(len(names), len(set(names)))
+        return receipt
 
     def test_identical_input_produces_identical_archive(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -106,6 +110,42 @@ class ReleasePackageTests(unittest.TestCase):
             self.assertEqual(receipt["authorization_effect"], "NONE")
             self.assertIs(receipt["paper_authorized"], False)
             self.assertIs(receipt["live_authorized"], False)
+
+    def test_generated_manifest_name_is_rejected_without_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            (root / "manifest.json").write_text("payload\n", encoding="utf-8")
+            output = work / "release.tar.gz"
+            with self.assertRaisesRegex(
+                release.PackageError, "generated archive namespace"
+            ):
+                self.package(root, output)
+            self.assertFalse(output.exists())
+            self.assertFalse(Path(str(output) + ".sha256").exists())
+            self.assertFalse(Path(str(output) + ".receipt.json").exists())
+
+    def test_generated_manifest_directory_prefix_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            nested = root / "manifest.json/child"
+            nested.parent.mkdir(parents=True)
+            nested.write_text("payload\n", encoding="utf-8")
+            output = work / "release.tar.gz"
+            with self.assertRaisesRegex(
+                release.PackageError, "generated archive namespace"
+            ):
+                self.package(root, output)
+            self.assertFalse(output.exists())
+
+    def test_archive_namespace_rejects_file_prefix_collisions(self) -> None:
+        admitted: set[str] = set()
+        release._admit_payload_path("alpha", admitted)
+        with self.assertRaisesRegex(
+            release.PackageError, "prefix collision"
+        ):
+            release._admit_payload_path("alpha/child", admitted)
 
     def test_symlinked_payload_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
