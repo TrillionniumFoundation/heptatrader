@@ -127,6 +127,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rm -rf build
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
           python3 scripts/verify_exact_git_index.py --root .
           python3 scripts/check_gap_register.py
