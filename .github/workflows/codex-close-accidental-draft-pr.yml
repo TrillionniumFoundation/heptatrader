@@ -1,0 +1,46 @@
+name: Close accidental draft probe PR
+
+on:
+  push:
+    branches:
+      - codex/fix-pr52-path-byte-contract-20260909
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  close:
+    if: github.event.head_commit.message == 'ops: close accidental DO NOT USE draft PR'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
+      EXPECTED_HEAD: codex/fix-pr52-path-byte-contract-20260909
+    steps:
+      - name: Close only exact accidental draft probes
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          python3 - <<'PY'
+          import json, os, subprocess
+          repo=os.environ['EXPECTED_REPOSITORY']
+          head=os.environ['EXPECTED_HEAD']
+          data=json.loads(subprocess.check_output([
+              'gh','api',f'repos/{repo}/pulls?state=open&head={repo.split("/")[0]}:{head}&per_page=100'
+          ], text=True))
+          closed=[]
+          for pull in data:
+              if pull.get('title') != 'DO NOT USE':
+                  continue
+              if pull.get('draft') is not True:
+                  raise SystemExit(f"refusing to close non-draft PR #{pull.get('number')}")
+              if pull.get('base',{}).get('ref') != 'main' or pull.get('head',{}).get('ref') != head:
+                  raise SystemExit('probe PR identity mismatch')
+              number=str(pull['number'])
+              subprocess.check_call(['gh','api',f'repos/{repo}/pulls/{number}','--method','PATCH','-f','state=closed'])
+              closed.append(int(number))
+          print(json.dumps({'closed_accidental_draft_prs':closed},sort_keys=True))
+          PY
