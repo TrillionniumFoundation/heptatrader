@@ -1,0 +1,89 @@
+name: Remediate PR57 special-file admission v2
+
+on:
+  push:
+    branches:
+      - plan/p1-release-package-preflight-20260910
+    paths:
+      - .github/workflows/codex-fix-pr57-fifo-v2.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-fix-pr57-fifo-v2
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact remediation object
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Validate exact live branch object
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Apply nonblocking descriptor admission repair
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import gzip
+          from pathlib import Path
+          import re
+
+          carrier = Path('.github/workflows/codex-fix-pr57-fifo.yml').read_text(encoding='utf-8')
+          matches = re.findall(r'^\s*PATCH_GZIP_B64:\s*(\S+)\s*$', carrier, flags=re.MULTILINE)
+          if len(matches) != 1:
+              raise SystemExit(f'expected one embedded patch payload, found {len(matches)}')
+          payload = base64.b64decode(matches[0], validate=True)
+          source = gzip.decompress(payload)
+          compile(source, 'fix_pr57.py', 'exec')
+          exec(source, {'__name__': '__main__'})
+          PY
+
+      - name: Run focused and inherited release regression suites
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests.python.test_preflight_special_files -v
+          python3 -m unittest tests.python.test_release_package -v
+          python3 -m unittest tests.python.test_hepta_preflight -v
+          python3 -m unittest tests.python.test_preflight_complete_namespace -v
+          python3 -m py_compile \
+            scripts/build_release_package.py \
+            scripts/hepta_preflight.py \
+            scripts/hepta_preflight_core.py
+
+      - name: Publish final source and remove both carriers
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+        run: |
+          set -euo pipefail
+          rm \
+            .github/workflows/codex-fix-pr57-fifo.yml \
+            .github/workflows/codex-fix-pr57-fifo-v2.yml
+          git diff --check
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add \
+            scripts/build_release_package.py \
+            scripts/hepta_preflight.py \
+            scripts/hepta_preflight_core.py \
+            tests/python/test_preflight_special_files.py \
+            .github/workflows/codex-fix-pr57-fifo.yml \
+            .github/workflows/codex-fix-pr57-fifo-v2.yml
+          git commit -m 'fix(release): bound special-file descriptor admission'
+          git push origin "HEAD:$EXPECTED_BRANCH"
