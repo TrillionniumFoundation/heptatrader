@@ -47,6 +47,12 @@ struct IbPaperExecutionProfileConfig
     // its reviewed upper bound here so the authorization credential cannot
     // be reused with a looser quote-age policy.
     std::uint64_t externalQuoteMaxAgeMs = 0;
+    // V5 is the only profile with the expanded displayed-liquidity envelope.
+    // Bind its one reviewed CASH contract and primary instrument directly
+    // into the authorization credential so the credential cannot be replayed
+    // against a different contract universe.
+    std::string qualificationQuoteContracts;
+    std::string qualificationPrimaryQuoteInstrument;
 
     bool Validate(std::string& reason) const;
     bool VerifyAuthorizationCredential(std::string& reason) const;

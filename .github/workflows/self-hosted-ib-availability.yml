@@ -63,4 +63,14 @@ jobs:
           else
             ! timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
           fi
-          "$probe" --paper-port 4002 --execution-uid 995 --runner-uid "$(id -u)"
+          # This digest is the reviewed
+          # systemd/hepta-x230-paper-host-identity-map-v1.json. The root probe
+          # independently requires the same digest from its root-owned host
+          # policy, binding logical hepta-ib-exec:2003 to this host's isolated
+          # hepta-codex-ib:995 runtime principal.
+          "$probe" \
+            --paper-port 4002 \
+            --logical-execution-uid 2003 \
+            --execution-uid 995 \
+            --identity-map-sha256 b3459819dcaa86acfe3b3f1ebf5ef047ccbde367df75500b881fa4d0471eda30 \
+            --runner-uid "$(id -u)"

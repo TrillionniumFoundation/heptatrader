@@ -17,7 +17,7 @@ PRIVILEGED = {
     WF / "ib-paper-qualification.yml":
         "709c6d02505e31399b106b48ebeb053d7a221205822008ed5ecbe510b0d9355d",
     WF / "self-hosted-ib-availability.yml":
-        "dbe93dc266ff63ed8d8a4cad8a563692c8925d3780521871ad9e8bcb22e4572a",
+        "0ccbdd82949c33f57021743f08f7913ca01f4242ecd46810c240f0bcebb7ca50",
 }
 ENGINEERING = {
     WF / "canonical-full-suite.yml",

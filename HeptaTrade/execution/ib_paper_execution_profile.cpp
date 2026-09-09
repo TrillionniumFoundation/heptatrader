@@ -219,6 +219,43 @@ bool PaperExecutionDomain(const std::string& value)
          CanonicalDomainName(value.substr(6)));
 }
 
+bool QualificationContractBinding(const std::string& contracts,
+                                  const std::string& primary)
+{
+    if (contracts.empty() || primary.empty() ||
+        contracts.find(';') != std::string::npos)
+        return false;
+    std::vector<std::string> fields;
+    std::size_t begin = 0;
+    while (begin <= contracts.size())
+    {
+        const std::size_t separator = contracts.find('|', begin);
+        fields.push_back(contracts.substr(
+            begin, separator == std::string::npos ? separator :
+                separator - begin));
+        if (separator == std::string::npos) break;
+        begin = separator + 1;
+    }
+    if (fields.size() != 5 || fields[2] != "CASH" ||
+        fields[0] != fields[1] + "." + fields[4] ||
+        primary != fields[0])
+        return false;
+    for (std::size_t i = 0; i < fields.size(); ++i)
+    {
+        if (fields[i].empty() || fields[i].size() > 128)
+            return false;
+        for (std::size_t j = 0; j < fields[i].size(); ++j)
+        {
+            const unsigned char character =
+                static_cast<unsigned char>(fields[i][j]);
+            if (!(std::isalnum(character) || character == '.' ||
+                  character == '_' || character == '-'))
+                return false;
+        }
+    }
+    return true;
+}
+
 bool ReadPrivateCredential(const std::string& path, std::string& value,
                            std::string& reason)
 {
@@ -332,6 +369,8 @@ bool IbPaperExecutionProfileConfig::FromEnvironment(
         "HEPTA_EXECUTION_MAX_ORDER_NOTIONAL",
         "HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY",
         "HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL",
+        "HEPTA_IB_PAPER_QUOTE_CONTRACTS",
+        "HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT",
         "HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS",
         "HEPTA_IB_PAPER_CONTROL_DIRECTORY", "STATE_DIRECTORY",
         "CREDENTIALS_DIRECTORY"
@@ -350,7 +389,9 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     if (!enabled)
     {
         if (orderMode != IbPaperOrderMode::LocalMarketDay ||
-            externalQuoteMaxAgeMs != 0)
+            externalQuoteMaxAgeMs != 0 ||
+            !qualificationQuoteContracts.empty() ||
+            !qualificationPrimaryQuoteInstrument.empty())
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_MODE_REQUIRES_PAPER";
             return false;
@@ -412,6 +453,8 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     {
     case IbPaperOrderMode::LocalMarketDay:
         if (externalQuoteMaxAgeMs != 0 ||
+            !qualificationQuoteContracts.empty() ||
+            !qualificationPrimaryQuoteInstrument.empty() ||
             maxOrderQuantity > kMaximumOrderQuantity ||
             maxOrderNotional > kMaximumOrderNotional ||
             maxGrossPosition > kMaximumGrossPosition)
@@ -423,6 +466,8 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     case IbPaperOrderMode::ExternalLimitDay:
         if (maxOrderQuantity > 1.0 || maxOrderNotional > 5000.0 ||
             maxActiveOrders > 1 || maxGrossPosition > 1.0 ||
+            !qualificationQuoteContracts.empty() ||
+            !qualificationPrimaryQuoteInstrument.empty() ||
             externalQuoteMaxAgeMs < 100 ||
             externalQuoteMaxAgeMs > 5000)
         {
@@ -437,6 +482,9 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
             maxActiveOrders > kQualificationMaximumActiveOrders ||
             maxGrossPosition > kQualificationMaximumGrossPosition ||
             maxOrderQuantity > maxGrossPosition ||
+            !QualificationContractBinding(
+                qualificationQuoteContracts,
+                qualificationPrimaryQuoteInstrument) ||
             externalQuoteMaxAgeMs < 100 ||
             externalQuoteMaxAgeMs > 5000)
         {
@@ -510,6 +558,13 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
                              OrderModeName(orderMode));
         AppendCanonicalField(canonical, "quote_max_age_ms",
                              std::to_string(externalQuoteMaxAgeMs));
+    }
+    if (UsesExternalQualificationLimitDay())
+    {
+        AppendCanonicalField(canonical, "quote_contracts",
+                             qualificationQuoteContracts);
+        AppendCanonicalField(canonical, "primary_quote_instrument",
+                             qualificationPrimaryQuoteInstrument);
     }
     const std::string digest = Sha256Hex(canonical);
     if (digest.empty())
@@ -595,6 +650,10 @@ bool IbPaperExecutionProfileConfig::FromValues(
         }
         config.orderMode =
             IbPaperOrderMode::ExternalQualificationLimitDay;
+        config.qualificationQuoteContracts =
+            Read(values, "HEPTA_IB_PAPER_QUOTE_CONTRACTS");
+        config.qualificationPrimaryQuoteInstrument =
+            Read(values, "HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT");
         std::uint64_t quoteMaxAge = 0;
         if (!ParseUnsigned(Read(values, kQuoteMaxAgeKey), 5000,
                 quoteMaxAge) || quoteMaxAge < 100)

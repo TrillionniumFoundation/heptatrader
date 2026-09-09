@@ -274,6 +274,8 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
             !profile.controlDirectory.empty() || profile.maxOrderQuantity != 0.0 ||
             profile.maxOrderNotional != 0.0 || profile.maxOrdersPerMinute != 0 ||
             profile.maxActiveOrders != 0 || profile.maxGrossPosition != 0.0 ||
+            !profile.qualificationQuoteContracts.empty() ||
+            !profile.qualificationPrimaryQuoteInstrument.empty() ||
             listenFd != -1 || eventListenFd != -1 || !allowedGatewayUids.empty() ||
             gatewayContextBinding.Complete() ||
             !stateDirectory.empty() || !journalPath.empty() ||
@@ -328,6 +330,26 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
     {
         reason = "IB_PAPER_QUOTE_CONTRACTS_REQUIRED";
         return false;
+    }
+    if (profile.UsesExternalQualificationLimitDay())
+    {
+        if (quoteContracts.size() != 1)
+        {
+            reason = "IB_PAPER_QUALIFICATION_CONTRACT_BINDING_MISMATCH";
+            return false;
+        }
+        const std::map<std::string, InstrumentRef>::const_iterator only =
+            quoteContracts.begin();
+        const std::string parsedBinding = only->first + "|" +
+            only->second.symbol + "|" + only->second.secType + "|" +
+            only->second.exchange + "|" + only->second.currency;
+        if (profile.qualificationQuoteContracts != parsedBinding ||
+            profile.qualificationPrimaryQuoteInstrument !=
+                primaryQuoteInstrument)
+        {
+            reason = "IB_PAPER_QUALIFICATION_CONTRACT_BINDING_MISMATCH";
+            return false;
+        }
     }
     for (std::map<std::string, InstrumentRef>::const_iterator it =
              quoteContracts.begin(); it != quoteContracts.end(); ++it)

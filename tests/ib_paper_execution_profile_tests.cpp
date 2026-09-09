@@ -22,6 +22,9 @@ std::map<std::string, std::string> QualificationValues()
     values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "1000000";
     values["HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY"] = "1";
     values["HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL"] = "1500000";
+    values["HEPTA_IB_PAPER_QUOTE_CONTRACTS"] =
+        "EUR.USD|EUR|CASH|IDEALPRO|USD";
+    values["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"] = "EUR.USD";
     values["HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS"] = "5000";
     values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"] =
         "/run/hepta/ib-paper-control-qualification";
@@ -49,6 +52,18 @@ void TestQualificationProfileIsDistinctAndBounded()
     assert(config.BuildAuthorizationCredential(credential, reason));
     assert(credential.size() == 80);
     assert(credential.compare(0, 16, "PAPER-V5:sha256:") == 0);
+
+    std::map<std::string, std::string> different = QualificationValues();
+    different["HEPTA_IB_PAPER_QUOTE_CONTRACTS"] =
+        "GBP.USD|GBP|CASH|IDEALPRO|USD";
+    different["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"] = "GBP.USD";
+    IbPaperExecutionProfileConfig differentConfig;
+    assert(IbPaperExecutionProfileConfig::FromValues(
+        different, differentConfig, reason));
+    std::string differentCredential;
+    assert(differentConfig.BuildAuthorizationCredential(
+        differentCredential, reason));
+    assert(differentCredential != credential);
 }
 
 void TestQualificationProfileRejectsWiderOrAmbiguousAuthority()
@@ -91,6 +106,17 @@ void TestQualificationProfileRejectsWiderOrAmbiguousAuthority()
     values["HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL"] = "1500001";
     assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));
     assert(reason == "IB_PAPER_EXTERNAL_ORDER_MODE_CONFIGURATION_INVALID");
+
+    values = QualificationValues();
+    values["HEPTA_IB_PAPER_QUOTE_CONTRACTS"] +=
+        ";GBP.USD|GBP|CASH|IDEALPRO|USD";
+    assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));
+    assert(reason == "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID");
+
+    values = QualificationValues();
+    values["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"] = "GBP.USD";
+    assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));
+    assert(reason == "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID");
 }
 }
 
