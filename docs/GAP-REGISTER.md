@@ -20,6 +20,7 @@ supported baseline is closed in source and none blocks repository use.
 | VENUE-001 | CLOSED_SOURCE | CTP and XT/QMT scaffolds cannot manufacture venue success. |
 | OMS-001 | CLOSED_SOURCE | Journal-before-send, uncertainty and reconciliation contracts match schema v4. |
 | BUILD-001 | CLOSED_SOURCE | Canonical target and translation-unit ownership are verified from fresh CMake File API data. |
+| RELEASE-001 | CLOSED_SOURCE | Canonical install ownership, deterministic content-addressed packages, descriptor-pinned preflight and atomic no-replace receipts are implemented and tested. |
 
 `source_state` is `READY`. `paper_authorized` and `live_authorized`
 remain `false`.

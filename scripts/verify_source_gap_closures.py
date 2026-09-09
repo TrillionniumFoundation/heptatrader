@@ -26,6 +26,7 @@ EXPECTED_REPOSITORY_GAPS = {
     "VENUE-001",
     "OMS-001",
     "BUILD-001",
+    "RELEASE-001",
 }
 EXPECTED_EXTERNAL_GAPS: set[str] = set()
 REQUIRED_TEST_TARGETS = {
@@ -379,6 +380,97 @@ def validate_profile(root: Path) -> list[str]:
     ]
 
 
+
+def validate_release(root: Path) -> list[str]:
+    errors: list[str] = []
+    require_tokens(
+        root,
+        "CMakeLists.txt",
+        (
+            'set(HEPTA_RELEASE_LABEL "0.1.0-beta.1" CACHE STRING',
+            "include(cmake/HeptaInstall.cmake)",
+        ),
+        "RELEASE-001",
+        errors,
+    )
+    require_tokens(
+        root,
+        "cmake/HeptaInstall.cmake",
+        (
+            "canonical install target is missing",
+            "scripts/hepta_preflight.py",
+            "docs/preflight-policy-v1.json",
+            "install(DIRECTORY",
+        ),
+        "RELEASE-001",
+        errors,
+    )
+    require_tokens(
+        root,
+        "scripts/build_release_package.py",
+        (
+            'MANIFEST_SCHEMA = "heptatrader.release-manifest.v1"',
+            'RECEIPT_SCHEMA = "heptatrader.release-package-receipt.v1"',
+            'getattr(os, "O_NOFOLLOW", 0)',
+            "authorization_effect",
+            "paper_authorized",
+            "live_authorized",
+        ),
+        "RELEASE-001",
+        errors,
+    )
+    require_tokens(
+        root,
+        "scripts/hepta_preflight.py",
+        (
+            'POLICY_SCHEMA = "heptatrader.preflight-policy.v1"',
+            'RECEIPT_SCHEMA = "heptatrader.preflight-receipt.v1"',
+            'getattr(os, "O_NOFOLLOW", 0)',
+            "HARD_MAXIMUM_ARCHIVE_MEMBERS",
+            "paper_authorized",
+            "live_authorized",
+        ),
+        "RELEASE-001",
+        errors,
+    )
+    for relative in (
+        "docs/modules/release-engineering.md",
+        "docs/RELEASE-PUBLICATION-SECURITY.md",
+        "docs/adr/0001-release-publication-atomicity.md",
+        "docs/operations/release-package.md",
+        "docs/operations/preflight.md",
+        "tests/python/test_release_package.py",
+        "tests/python/test_hepta_preflight.py",
+        "tests/python/test_cmake_install_integration.py",
+    ):
+        require_tokens(root, relative, ("release",), "RELEASE-001", errors)
+    try:
+        policy = load_json(root / "docs/preflight-policy-v1.json")
+        if not isinstance(policy, dict) or policy.get("schema") != "heptatrader.preflight-policy.v1":
+            errors.append("RELEASE-001: invalid preflight policy schema")
+        profiles = policy.get("profiles") if isinstance(policy, dict) else None
+        if not isinstance(profiles, dict) or set(profiles) != {"core", "ib-paper"}:
+            errors.append("RELEASE-001: preflight policy must define exact core and ib-paper profiles")
+        catalog = load_json(root / "docs/module-catalog.json")
+        modules = {
+            item.get("id"): item
+            for item in catalog.get("modules", [])
+            if isinstance(item, dict)
+        } if isinstance(catalog, dict) else {}
+        release = modules.get("release-engineering")
+        if not isinstance(release, dict):
+            errors.append("RELEASE-001: release-engineering module is missing")
+        else:
+            if release.get("status") != "CURRENT":
+                errors.append("RELEASE-001: release-engineering module is not CURRENT")
+            if release.get("broker_mutation") != "NONE":
+                errors.append("RELEASE-001: release-engineering must have no Broker mutation")
+            if release.get("production_authorized") is not False:
+                errors.append("RELEASE-001: release engineering cannot grant production authority")
+    except SourceClosureError as error:
+        errors.append(f"RELEASE-001: {error}")
+    return errors
+
 def validate_register_projection(root: Path) -> list[str]:
     import check_gap_register
 
@@ -481,6 +573,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
         errors.extend(validate_venue(root))
         errors.extend(validate_oms(root))
         errors.extend(f"PENDING-EXPOSURE-001: {item}" for item in validate_profile(root))
+        errors.extend(validate_release(root))
         errors.extend(validate_register_projection(root))
     except (SourceClosureError, OSError, UnicodeError) as error:
         errors.append(str(error))

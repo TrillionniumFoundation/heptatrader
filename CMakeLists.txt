@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(HeptaTrader LANGUAGES CXX)
+project(HeptaTrader VERSION 0.1.0 LANGUAGES CXX)
 
+set(HEPTA_RELEASE_LABEL "0.1.0-beta.1" CACHE STRING
+    "Version label recorded in installed HeptaTrader build metadata")
 option(BUILD_IB_PROBE "Build the IB/TWS connectivity probe" OFF)
 option(HEPTA_BUILD_LEGACY_MONOLITH
        "Build the deprecated multi-venue composition binary" OFF)
@@ -25,6 +27,7 @@ if(HEPTA_BUILD_LEGACY_MONOLITH)
 endif()
 
 add_subdirectory(HeptaTrade)
+include(cmake/HeptaInstall.cmake)
 
 # Preserve RTTI for instrumented Release builds. Removing the optimization
 # unconditionally also expanded the ordinary production Gateway beyond its

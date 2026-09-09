@@ -149,6 +149,33 @@
         "tests/python/test_gap_register.py"
       ],
       "issue": null
+    },
+    {
+      "id": "RELEASE-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Canonical CMake install ownership, deterministic content-addressed packaging, descriptor-pinned fail-closed preflight, atomic no-replace publication and non-authorizing receipts are implemented and tested.",
+      "evidence": [
+        "CMakeLists.txt",
+        "cmake/HeptaInstall.cmake",
+        "cmake/heptatrader-build-info.json.in",
+        "scripts/build_release_package.py",
+        "scripts/hepta_preflight.py",
+        "docs/preflight-policy-v1.json",
+        "docs/modules/release-engineering.md",
+        "docs/RELEASE-PUBLICATION-SECURITY.md",
+        "docs/adr/0001-release-publication-atomicity.md",
+        "docs/operations/release-package.md",
+        "docs/operations/preflight.md",
+        "tests/python/test_release_package.py",
+        "tests/python/test_hepta_preflight.py",
+        "tests/python/test_cmake_install_integration.py",
+        "scripts/verify_source_gap_closures.py",
+        "scripts/check_gap_register.py",
+        ".github/workflows/core-ci.yml"
+      ],
+      "issue": null
     }
   ]
 }

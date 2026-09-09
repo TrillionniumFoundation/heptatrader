@@ -31,6 +31,7 @@ REQUIRED_REPOSITORY_GAPS = {
     "VENUE-001",
     "OMS-001",
     "BUILD-001",
+    "RELEASE-001",
 }
 REQUIRED_EXTERNAL_GAPS: dict[str, str] = {}
 ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
