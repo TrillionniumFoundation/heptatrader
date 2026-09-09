@@ -56,7 +56,8 @@ def trim_generic_cases() -> None:
     end = text.find(end_marker)
     if start < 0 or end < 0 or end <= start:
         raise SystemExit("exact_git_index_authority_cases.py: legacy tail changed")
-    path.write_text(text[:start] + text[end:] + "\n", encoding="utf-8")
+    value = (text[:start] + text[end:]).rstrip() + "\n"
+    path.write_text(value, encoding="utf-8")
 
 
 def write_repository_cases() -> None:
