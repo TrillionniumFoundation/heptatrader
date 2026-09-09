@@ -1,0 +1,73 @@
+name: Remediate PR57 special-file admission
+
+on:
+  push:
+    branches:
+      - plan/p1-release-package-preflight-20260910
+    paths:
+      - .github/workflows/codex-fix-pr57-fifo.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-fix-pr57-fifo
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout exact remediation carrier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply nonblocking descriptor admission repair
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+          PATCH_GZIP_B64: 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
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
+          python3 - <<'PY'
+          import base64, gzip, os
+          payload = base64.b64decode(os.environ['PATCH_GZIP_B64'], validate=True)
+          source = gzip.decompress(payload)
+          compile(source, 'fix_pr57.py', 'exec')
+          exec(source, {'__name__': '__main__'})
+          PY
+
+      - name: Run focused and release regression suites
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests.python.test_preflight_special_files -v
+          python3 -m unittest tests.python.test_release_package -v
+          python3 -m unittest tests.python.test_hepta_preflight -v
+          python3 -m unittest tests.python.test_preflight_complete_namespace -v
+          python3 -m py_compile \
+            scripts/build_release_package.py \
+            scripts/hepta_preflight.py \
+            scripts/hepta_preflight_core.py
+
+      - name: Publish final source and remove carrier
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-fix-pr57-fifo.yml
+          git diff --check
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add \
+            scripts/build_release_package.py \
+            scripts/hepta_preflight.py \
+            scripts/hepta_preflight_core.py \
+            tests/python/test_preflight_special_files.py \
+            .github/workflows/codex-fix-pr57-fifo.yml
+          git commit -m 'fix(release): bound special-file descriptor admission'
+          git push origin "HEAD:$EXPECTED_BRANCH"
