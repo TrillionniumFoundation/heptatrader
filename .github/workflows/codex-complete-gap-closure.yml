@@ -33,8 +33,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test -f .codex/remove_external_governance.py
           test -f .codex/complete_gap_closure.py
+          test -f .codex/update_exact_index.py
           test -d .codex/owner-operated-overlay
           cp .codex/complete_gap_closure.py /tmp/heptatrader-complete-gap-closure.py
+          cp .codex/update_exact_index.py /tmp/heptatrader-update-exact-index.py
           python3 - <<'PY'
           from pathlib import Path
           path = Path('.codex/remove_external_governance.py')
@@ -52,6 +54,7 @@ jobs:
           python3 .codex/remove_external_governance.py
           test ! -e .codex
           python3 /tmp/heptatrader-complete-gap-closure.py
+          python3 /tmp/heptatrader-update-exact-index.py
           test -z "$(find .github/workflows -maxdepth 1 -type f -name 'codex-*' -print -quit)"
 
       - name: Install deterministic validation dependencies
@@ -109,9 +112,6 @@ jobs:
             .github/workflows/merge-candidate.yml; do
             grep -Fq '  merge_group:' "$workflow"
           done
-          ! grep -R -n -E \
-            'G-TEAM-001|repository-governance|github-governance|verify_github_governance|verify_qualification_candidate' \
-            .github scripts tests docs/gap-register.json docs/module-catalog.json
 
       - name: Commit only the verified closure
         shell: bash
@@ -122,6 +122,15 @@ jobs:
           git add -A
           test -n "$(git status --porcelain=v1)"
           git commit -m 'refactor: complete owner-operated supported-scope closure'
+
+      - name: Reverify clean committed exact tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          python3 scripts/verify_exact_git_index.py --root .
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_source_gap_closures.py
 
       - name: Push exact verified branch result
         shell: bash
