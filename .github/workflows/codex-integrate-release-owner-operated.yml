@@ -37,12 +37,17 @@ jobs:
           git fetch --no-tags origin \
             dbeaab22c51c310c3cbe5b370931aa8e617491c6 \
             15f7d9fa73990ab23bea5400c745889e58b910f1
-          base64 --decode .codex/integrate_release_owner_operated.py.gz.b64 \
-            | gzip --decompress --stdout \
+          echo "[PAYLOAD] base64-bytes=$(wc -c < .codex/integrate_release_owner_operated.py.gz.b64)"
+          base64 --decode .codex/integrate_release_owner_operated.py.gz.b64 > "$RUNNER_TEMP/integration.py.gz"
+          gzip --test "$RUNNER_TEMP/integration.py.gz"
+          gzip --decompress --stdout "$RUNNER_TEMP/integration.py.gz" \
             > .codex/integrate_release_owner_operated.py
-          test "$(sha256sum .codex/integrate_release_owner_operated.py | awk '{print $1}')" = \
-            '46246bc02793a465bceb2e1f59027c38e4fec96dd6993b88b273b745f8e46782'
+          actual_sha="$(sha256sum .codex/integrate_release_owner_operated.py | awk '{print $1}')"
+          actual_bytes="$(wc -c < .codex/integrate_release_owner_operated.py)"
+          echo "[PAYLOAD] decoded-bytes=$actual_bytes sha256=$actual_sha"
+          test "$actual_sha" = '46246bc02793a465bceb2e1f59027c38e4fec96dd6993b88b273b745f8e46782'
           python3 -m py_compile .codex/integrate_release_owner_operated.py
+          echo '[PAYLOAD] Python syntax validated'
 
       - name: Build, test, commit and push exact clean integrated tree
         shell: bash
