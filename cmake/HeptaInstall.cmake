@@ -43,6 +43,11 @@ install(PROGRAMS
     DESTINATION "${CMAKE_INSTALL_BINDIR}"
     RENAME hepta-preflight
     COMPONENT runtime)
+install(FILES
+    "${PROJECT_SOURCE_DIR}/scripts/hepta_preflight_core.py"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    RENAME hepta-preflight-core.py
+    COMPONENT runtime)
 
 set(_hepta_runtime_helpers
     scripts/hepta_agent_mcp_launcher.py

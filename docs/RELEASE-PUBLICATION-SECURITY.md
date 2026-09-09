@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: deterministic release packages and machine-readable host preflight receipts
-Implementation: `scripts/build_release_package.py`, `scripts/hepta_preflight.py`
-Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_cmake_install_integration.py`
+Implementation: `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`
+Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`
 
 ## Security objective
 
@@ -23,18 +23,19 @@ After successful publication, the temporary name is removed and the containing d
 
 ## Bounded archive parser
 
-The builder reserves `manifest.json`, rejects generated-name and file-prefix collisions before payload snapshots, emits canonical USTAR without GNU/PAX extension records, and asserts global member-name uniqueness. Preflight independently rejects any manifest payload path equal to that generated name or nested beneath it before consuming the claimed payload body. Its compiled member-count, member-size and total-unpacked ceilings equal the installed preflight policy; generated manifest bytes and its archive member are included in those budgets, so a successfully built package is not rejected merely because producer and consumer count different objects. Preflight checks the compressed file-size ceiling before hashing, then parses the gzip stream incrementally. Member count and per-member/total sizes are checked before body consumption; total decompressed tar bytes are bounded; GNU/PAX long-name and extended-header metadata are rejected immediately with a compiled zero-byte extension-metadata allowance. Regular-file archive names are exact canonical POSIX paths and cannot use trailing-slash aliases. No eager `getmembers()` materialization is used.
+The builder reserves `manifest.json`, rejects generated-name and file-prefix collisions before payload snapshots, emits canonical USTAR without GNU/PAX extension records, and asserts global member-name uniqueness. The public preflight entry point loads the unchanged bounded parser core through one stable regular-file descriptor and adds a complete namespace admission check. Preflight validates the generated-plus-payload file namespace and rejects exact, ancestor, or descendant collisions before consuming any payload body. The check enumerates every slash-delimited ancestor rather than relying on adjacent sorted names, so `a`, `a-legal`, `a/child` is rejected while `a` plus `a-legal` remains valid. Its compiled member-count, member-size and total-unpacked ceilings equal the installed preflight policy; generated manifest bytes and its archive member are included in those budgets, so a successfully built package is not rejected merely because producer and consumer count different objects. Preflight checks the compressed file-size ceiling before hashing, then parses the gzip stream incrementally. Member count and per-member/total sizes are checked before body consumption; total decompressed tar bytes are bounded; GNU/PAX long-name and extended-header metadata are rejected immediately with a compiled zero-byte extension-metadata allowance. Regular-file archive names are exact canonical POSIX paths and cannot use trailing-slash aliases. No eager `getmembers()` materialization is used.
 
 ## Deterministic hostile tests
 
-`tests/python/test_release_package.py` and `tests/python/test_hepta_preflight.py` inject the following deterministic interleavings:
+`tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py` and `tests/python/test_preflight_complete_namespace.py` inject the following deterministic interleavings and namespace attacks:
 
 - a competing package publisher creates the destination after staging and before publication;
 - a release payload source changes after it has been snapshotted and hashed;
 - the archive pathname is replaced after preflight pins and hashes it but before archive parsing completes;
-- a competing preflight receipt publisher creates the destination before publication.
+- a competing preflight receipt publisher creates the destination before publication;
+- an otherwise valid artifact declares non-adjacent payload names with an ancestor/descendant collision.
 
-The expected result is fail-closed rejection, preservation of competitor bytes, explicit retention of any earlier per-file publication after a later failure, archive bytes equal to the bytes hashed into the manifest, and receipt evidence bound to the exact archive bytes inspected.
+The expected result is fail-closed rejection, preservation of competitor bytes, explicit retention of any earlier per-file publication after a later failure, archive bytes equal to the bytes hashed into the manifest, receipt evidence bound to the exact archive bytes inspected, and rejection of a colliding manifest before any payload body is consumed.
 
 ## Authorization boundary
 

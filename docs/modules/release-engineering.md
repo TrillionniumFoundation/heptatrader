@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `docs/preflight-policy-v1.json`
-Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_cmake_install_integration.py`
+Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`, `docs/preflight-policy-v1.json`
+Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`
 
 ## Responsibilities
 
@@ -13,7 +13,7 @@ The package boundary exists to prevent source SHA, rebuild, staging directory, P
 
 ## Install contract
 
-The top-level CMake project owns and explicitly registers the canonical install rules after every referenced runtime target exists. A core install contains the simulator Execution daemon, Tool Gateway, session control, CLI, preflight command, runtime helpers, systemd and tmpfiles assets, capability policy, build metadata, and current documentation. An IB PAPER install additionally contains the actual IB-linked Execution daemon and fixed PAPER policy.
+The top-level CMake project owns and explicitly registers the canonical install rules after every referenced runtime target exists. A core install contains the simulator Execution daemon, Tool Gateway, session control, CLI, public preflight wrapper and its bounded parser core, runtime helpers, systemd and tmpfiles assets, capability policy, build metadata, and current documentation. An IB PAPER install additionally contains the actual IB-linked Execution daemon and fixed PAPER policy.
 
 Files ending in `.example` remain non-secret templates. Broker credentials, Agent session tokens, authorization markers, private keys, live environment files, journal state, and host-generated receipts are never package inputs.
 
@@ -34,16 +34,17 @@ The manifest and receipt always declare `authorization_effect=NONE`, `paper_auth
 
 ## Preflight contract
 
-`scripts/hepta_preflight.py`, installed as `hepta-preflight`, validates without extracting the package:
+`scripts/hepta_preflight.py`, installed as `hepta-preflight`, loads `scripts/hepta_preflight_core.py` through one stable regular-file descriptor and validates without extracting the package:
 
 1. artifact file identity and caller-supplied SHA-256;
 2. compressed size before hashing plus bounded streaming decompression, member count and unpacked size;
 3. canonical USTAR paths, a single package root and manifest-first ordering;
-4. rejection of links, devices, duplicate members and all GNU/PAX extension metadata before extension bodies are consumed;
-5. strict JSON without duplicate keys or non-finite numbers;
-6. manifest-to-payload size, mode, timestamp and digest equality;
-7. profile-required files and installed build metadata;
-8. prohibition on PAPER/LIVE authorization claims.
+4. complete generated-plus-payload namespace uniqueness, including every ancestor/descendant relationship rather than only adjacent sorted names;
+5. rejection of links, devices, duplicate members and all GNU/PAX extension metadata before extension bodies are consumed;
+6. strict JSON without duplicate keys or non-finite numbers;
+7. manifest-to-payload size, mode, timestamp and digest equality;
+8. profile-required files and installed build metadata;
+9. prohibition on PAPER/LIVE authorization claims.
 
 Artifact-only mode is suitable for CI and admission. Static-host mode additionally checks installed files, Linux commands and, for IB PAPER, distinct host UIDs and a safe root-owned kill-switch marker. An explicitly requested TCP probe is restricted to policy-approved loopback PAPER ports and proves reachability only; it does not prove account mode, credentials, order behavior, or broker qualification.
 
@@ -55,7 +56,7 @@ Build and preflight receipts are evidence inputs. They are not mutable runtime s
 
 ## Failure semantics
 
-Any path escape, symlink, hard link, special file, unexpected authorization claim, invalid digest, manifest mismatch, missing required file, unsafe kill-switch marker, missing host identity, unsupported Broker endpoint, malformed JSON, non-finite number, size overflow, output replacement attempt, unregistered install module, or incomplete installed inventory fails closed.
+Any path escape, exact/generated/ancestor namespace collision, symlink, hard link, special file, unexpected authorization claim, invalid digest, manifest mismatch, missing required file, unsafe kill-switch marker, missing host identity, unsupported Broker endpoint, malformed JSON, non-finite number, size overflow, output replacement attempt, unregistered install module, or incomplete installed inventory fails closed.
 
 A failed preflight leaves the host and package unchanged. A successful artifact-only preflight does not imply the host is installed. A successful static-host preflight does not imply PAPER qualification. LIVE remains unavailable.
 
@@ -65,7 +66,7 @@ Receipts expose release label, source SHA, source epoch, package and manifest di
 
 ## Test expectations
 
-Unit tests cover reproducible archive bytes, global member uniqueness, generated-name and file-prefix collisions, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys, compressed/decompressed ceilings, early member-count termination, zero-byte extension-metadata policy and forged LIVE claims.
+Unit tests cover reproducible archive bytes, global member uniqueness, generated-name and non-adjacent ancestor/descendant collisions, valid lexical neighbours such as `a` and `a-legal`, authorization non-escalation, overwrite refusal, private-key paths, symlinks, hard links, invalid source identity, digest mismatch, required-file absence, path traversal, archive symlinks, duplicate JSON keys, compressed/decompressed ceilings, early member-count termination, zero-byte extension-metadata policy and forged LIVE claims. The collision fixture proves rejection immediately after the manifest and before any payload body is consumed.
 
 The install integration test consumes the same already-built canonical `build/core` directory, verifies its exact CMake profile, executes `cmake --install` under a fresh `DESTDIR`, asserts every policy-required regular file, rejects an IB-enabled daemon in the core profile, and checks installed build metadata. This prevents an install module that exists in source but is never registered from passing CI.
 

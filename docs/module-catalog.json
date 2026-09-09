@@ -210,11 +210,13 @@
         "cmake/HeptaInstall.cmake",
         "scripts/build_release_package.py",
         "scripts/hepta_preflight.py",
+        "scripts/hepta_preflight_core.py",
         "docs/preflight-policy-v1.json"
       ],
       "tests": [
         "tests/python/test_release_package.py",
         "tests/python/test_hepta_preflight.py",
+        "tests/python/test_preflight_complete_namespace.py",
         "tests/python/test_cmake_install_integration.py"
       ],
       "broker_mutation": "NONE",
