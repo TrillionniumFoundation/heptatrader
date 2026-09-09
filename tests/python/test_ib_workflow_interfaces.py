@@ -30,6 +30,11 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
             "Reverify unchanged remote main after Broker campaign", self.workflow
         )
 
+    def test_untrusted_candidate_input_cannot_select_or_name_build_data(self) -> None:
+        self.assertEqual(self.workflow.count("ref: ${{ github.sha }}"), 3)
+        self.assertEqual(self.workflow.count("${{ inputs.candidate_sha }}"), 1)
+        self.assertNotIn("ref: ${{ inputs.candidate_sha }}", self.workflow)
+
     def test_only_immutable_owner_can_allocate_qualification_runners(self) -> None:
         build, qualify = self.workflow.split("\n  qualify:\n", 1)
         for block in (build, qualify):

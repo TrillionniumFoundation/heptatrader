@@ -75,6 +75,12 @@ def validate(root: Path | str = ROOT) -> list[str]:
         "python3 trusted/scripts/verify_exact_git_index.py --root candidate"
     ) != 2:
         errors.append(f"{WORKFLOW}: candidate exact-tree verification must bracket build")
+    if workflow.count("ref: ${{ github.sha }}") != 3:
+        errors.append(f"{WORKFLOW}: every trusted and candidate checkout must use github.sha")
+    if workflow.count("${{ inputs.candidate_sha }}") != 1:
+        errors.append(
+            f"{WORKFLOW}: candidate input must only enter the quoted exact-main gate"
+        )
     if workflow.count("git ls-remote --exit-code") < 3:
         errors.append(f"{WORKFLOW}: current main must be checked before and after campaign")
 
@@ -129,6 +135,11 @@ def self_test() -> None:
             "python3 trusted/scripts/verify_exact_git_index.py --root candidate",
             "python3 trusted/scripts/verify_exact_git_index.py --root missing",
             "candidate exact-tree verification",
+        ),
+        (
+            "ref: ${{ github.sha }}",
+            "ref: ${{ inputs.candidate_sha }}",
+            "every trusted and candidate checkout must use github.sha",
         ),
     )
     for old, new, expected in mutations:
