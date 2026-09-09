@@ -1,0 +1,208 @@
+name: Watch PR 52 repaired head to admission
+
+on:
+  push:
+    branches:
+      - codex/fix-pr52-path-byte-contract-20260909
+
+permissions:
+  actions: read
+  checks: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: heptatrader-watch-pr52-repaired-admission
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: wait-for-fresh-review-and-attempt-ordinary-admission
+    if: github.event.head_commit.message == 'ops: watch exact PR52 path-byte repair to admission'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
+      EXPECTED_CONTROLLER_BRANCH: codex/fix-pr52-path-byte-contract-20260909
+      EXPECTED_PR: '52'
+      EXPECTED_PR_BRANCH: codex/owner-operated-gap-closure-20260909
+      EXPECTED_HEAD_MESSAGE: 'fix(release): align producer and preflight path-byte policy'
+      GITHUB_API_TOKEN: ${{ github.token }}
+    steps:
+      - name: Wait for exact repaired object, green checks and fresh approvals
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REF" = "refs/heads/$EXPECTED_CONTROLLER_BRANCH"
+          python3 - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          import time
+          import urllib.error
+          import urllib.request
+
+          repo = os.environ['EXPECTED_REPOSITORY']
+          number = os.environ['EXPECTED_PR']
+          expected_branch = os.environ['EXPECTED_PR_BRANCH']
+          expected_message = os.environ['EXPECTED_HEAD_MESSAGE']
+          token = os.environ['GITHUB_API_TOKEN']
+          api = f'https://api.github.com/repos/{repo}'
+          headers = {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': f'Bearer {token}',
+              'X-GitHub-Api-Version': '2022-11-28',
+              'User-Agent': 'heptatrader-pr52-repaired-admission-watch',
+          }
+
+          def call(path: str, method: str = 'GET', payload=None):
+              data = None if payload is None else json.dumps(payload).encode('utf-8')
+              req = urllib.request.Request(api + path, data=data, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as response:
+                      body = response.read()
+                      return response.status, json.loads(body) if body else None
+              except urllib.error.HTTPError as error:
+                  body = error.read()
+                  try:
+                      value = json.loads(body) if body else None
+                  except json.JSONDecodeError:
+                      value = body.decode('utf-8', 'replace')
+                  return error.code, value
+
+          required = {
+              'qualification-source-audit',
+              'documentation-control-plane-exact-head',
+              'core-runtime-exact-head',
+              'exact-merge-candidate',
+              'canonical-full-suite-core',
+              'canonical-full-suite-reliability (g++)',
+              'canonical-full-suite-reliability (clang++)',
+              'CodeQL',
+          }
+          reviewers = {'Franksudoman', 'Tomasrgbsf'}
+          deadline = time.monotonic() + 3000
+          exact_head = None
+          while time.monotonic() < deadline:
+              status, pull = call(f'/pulls/{number}')
+              if status != 200 or not isinstance(pull, dict):
+                  raise SystemExit(f'PR read failed: HTTP {status}: {pull}')
+              if pull.get('merged') is True:
+                  print('[PR52-ADMISSION] already merged')
+                  raise SystemExit(0)
+              if pull.get('state') != 'open' or pull.get('draft') is not False:
+                  raise SystemExit('PR is not open and reviewable')
+              if pull.get('head', {}).get('ref') != expected_branch:
+                  raise SystemExit('PR head branch drift')
+              head = pull.get('head', {}).get('sha')
+              status, commit = call(f'/git/commits/{head}')
+              if status != 200 or not isinstance(commit, dict):
+                  raise SystemExit('head commit read failed')
+              if commit.get('message') != expected_message:
+                  time.sleep(15)
+                  continue
+              if exact_head is None:
+                  exact_head = head
+              if head != exact_head:
+                  raise SystemExit('repaired head moved while awaiting admission')
+
+              status, checks = call(f'/commits/{head}/check-runs?per_page=100')
+              if status != 200 or not isinstance(checks, dict):
+                  raise SystemExit('check read failed')
+              observed = {}
+              for item in checks.get('check_runs', []):
+                  if not isinstance(item, dict) or not isinstance(item.get('name'), str):
+                      continue
+                  old = observed.get(item['name'])
+                  if old is None or str(item.get('started_at', '')) >= str(old.get('started_at', '')):
+                      observed[item['name']] = item
+              failed = sorted(
+                  name for name in required
+                  if name in observed and observed[name].get('status') == 'completed'
+                  and observed[name].get('conclusion') != 'success'
+              )
+              if failed:
+                  raise SystemExit(f'current-head checks failed: {failed}')
+              checks_green = all(
+                  name in observed and observed[name].get('status') == 'completed'
+                  and observed[name].get('conclusion') == 'success'
+                  for name in required
+              )
+
+              status, reviews = call(f'/pulls/{number}/reviews?per_page=100')
+              if status != 200 or not isinstance(reviews, list):
+                  raise SystemExit('review read failed')
+              latest = {}
+              for review in reviews:
+                  if not isinstance(review, dict):
+                      continue
+                  login = review.get('user', {}).get('login')
+                  if isinstance(login, str):
+                      latest[login] = review
+              current_changes = sorted(
+                  login for login in reviewers
+                  if isinstance(latest.get(login), dict)
+                  and latest[login].get('commit_id') == head
+                  and latest[login].get('state') == 'CHANGES_REQUESTED'
+              )
+              if current_changes:
+                  comment = (
+                      f'Admission watcher stopped on exact head `{head}` because current '
+                      f'changes were requested by {", ".join(current_changes)}. Source must '
+                      'be repaired; no merge queue or PAPER/LIVE action was attempted.'
+                  )
+                  call(f'/issues/{number}/comments', method='POST', payload={'body': comment})
+                  raise SystemExit(f'current changes requested: {current_changes}')
+              approved = sorted(
+                  login for login in reviewers
+                  if isinstance(latest.get(login), dict)
+                  and latest[login].get('commit_id') == head
+                  and latest[login].get('state') == 'APPROVED'
+              )
+              if checks_green and len(approved) == 2:
+                  break
+              print(json.dumps({'head': head, 'checks_green': checks_green, 'approved': approved}, sort_keys=True))
+              time.sleep(20)
+          else:
+              raise SystemExit('fresh review/admission predicates did not settle in bounded wait')
+
+          status, queued = call(
+              f'/pulls/{number}/merge-async',
+              method='PUT',
+              payload={'sha': exact_head, 'merge_action': 'merge_queue'},
+          )
+          if status == 200 and isinstance(queued, dict) and queued.get('status') == 'merged':
+              print('[PR52-ADMISSION] merged immediately')
+              raise SystemExit(0)
+          if status not in {200, 202, 409} or not isinstance(queued, dict):
+              raise SystemExit(f'merge-queue request failed: HTTP {status}: {queued}')
+          details = queued.get('details')
+          uuid = details.get('uuid') if isinstance(details, dict) else None
+          if not isinstance(uuid, str) or not uuid:
+              raise SystemExit(f'merge-queue response lacks UUID: {queued}')
+          for _ in range(90):
+              time.sleep(10)
+              poll_status, poll = call(f'/pulls/{number}/merge-async/{uuid}')
+              if poll_status != 200 or not isinstance(poll, dict):
+                  raise SystemExit(f'merge-queue poll failed: HTTP {poll_status}: {poll}')
+              state = poll.get('status')
+              if state == 'merged':
+                  print('[PR52-ADMISSION] merge queue completed')
+                  raise SystemExit(0)
+              if state in {'failed', 'cancelled'}:
+                  message = poll.get('details', {}).get('message', str(poll))
+                  call(
+                      f'/issues/{number}/comments',
+                      method='POST',
+                      payload={'body': (
+                          f'Exact head `{exact_head}` is green and freshly approved, but GitHub '
+                          f'merge-queue admission returned: `{message}`. A repository administrator '
+                          'must use **Merge when ready** or retire the obsolete Ruleset. '
+                          'PAPER/LIVE remain false.'
+                      )},
+                  )
+                  raise SystemExit(f'merge queue terminated: {poll}')
+          raise SystemExit('merge queue did not reach a terminal state')
+          PY
