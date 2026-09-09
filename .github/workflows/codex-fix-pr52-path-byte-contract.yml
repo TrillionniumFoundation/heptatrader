@@ -1,0 +1,128 @@
+name: Fix PR 52 release path-byte contract
+
+on:
+  push:
+    branches:
+      - codex/fix-pr52-path-byte-contract-20260909
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-fix-pr52-path-byte-contract
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    if: github.event.head_commit.message == 'ops: run path-byte contract remediation'
+    name: validate-and-publish-path-byte-fix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      HEPTA_JOBS: '2'
+    steps:
+      - name: Checkout exact staging revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Materialize and apply reviewed fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = 'refs/heads/codex/fix-pr52-path-byte-contract-20260909'
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -f .codex/fix_pr52_path_byte_contract_v2.py.gz.b64
+          base64 --decode .codex/fix_pr52_path_byte_contract_v2.py.gz.b64 \
+            | gzip --decompress > /tmp/fix-pr52-path-byte-contract.py
+          python3 -m py_compile /tmp/fix-pr52-path-byte-contract.py
+          python3 /tmp/fix-pr52-path-byte-contract.py
+          rm -rf .codex
+          rm -f .github/workflows/codex-fix-pr52-path-byte-contract.yml
+
+      - name: Install deterministic validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build libssl-dev g++
+
+      - name: Validate source, release and runtime contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          python3 -m py_compile \
+            scripts/build_release_package.py \
+            tests/python/test_release_package.py \
+            tests/python/test_cmake_install_integration.py
+          python3 -m unittest discover -s tests/python -p 'test_release_package.py'
+          python3 -m unittest discover -s tests/python -p 'test_preflight_complete_namespace.py'
+          python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py'
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          HEPTA_RELEASE_INTEGRATION_BUILD_DIR=build/core \
+            python3 -m unittest discover -s tests/python \
+              -p 'test_cmake_install_integration.py'
+
+          work="$(mktemp -d)"
+          epoch="$(git show -s --format=%ct HEAD)"
+          artifact="$work/heptatrader-0.1.0-beta.1-core.tar.gz"
+          python3 scripts/build_release_package.py \
+            --build-dir build/core \
+            --output "$artifact" \
+            --version 0.1.0-beta.1 \
+            --profile core \
+            --source-sha "$GITHUB_SHA" \
+            --source-date-epoch "$epoch"
+          digest="$(awk '{print $1}' "$artifact.sha256")"
+          python3 scripts/hepta_preflight.py \
+            --artifact "$artifact" \
+            --expected-sha256 "$digest" \
+            --profile core \
+            --policy docs/preflight-policy-v1.json \
+            --artifact-only
+          rm -rf "$work"
+
+      - name: Commit only the validated persistent changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf build
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          git diff --check
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          test -n "$(git status --porcelain=v1)"
+          git commit -s -m 'fix(release): align producer and consumer path bytes'
+
+      - name: Reverify clean committed tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          python3 scripts/verify_exact_git_index.py --root .
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_source_gap_closures.py
+          test ! -e .codex
+          test -z "$(find .github/workflows -maxdepth 1 -type f -name 'codex-*' -print -quit)"
+
+      - name: Push exact validated branch result
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${GITHUB_REF_NAME}"
