@@ -216,6 +216,7 @@ def validate(root: Path = ROOT) -> list[str]:
         "--cpus \"$CPU_LIMIT\"",
         "--pids-limit \"$PIDS_LIMIT\"",
         "--tmpfs \"/tmp:",
+        "--env CMAKE_TOOLCHAIN_FILE=",
         "mountpoint -q",
         "FILESYSTEM_BYTES",
         "snapshot-tree",
@@ -229,6 +230,7 @@ def validate(root: Path = ROOT) -> list[str]:
         "BUILD_TESTING=OFF",
         '-f "$SDK_ROOT/libbid.a" && ! -L "$SDK_ROOT/libbid.a"',
         "-DIBAPI_DECIMAL_LIBRARY=/sdk/libbid.a",
+        'chmod -R u+rwX -- "$WORK_ROOT"',
     ):
         _require(builder, token, "trusted candidate builder", errors)
     decimal_paths = re.findall(r"-DIBAPI_DECIMAL_LIBRARY=([^\s\\]+)", builder)

@@ -80,7 +80,15 @@ docker image inspect --format '{{json .RepoDigests}}' "$BUILDER_IMAGE" \
 
 WORK_ROOT="$(mktemp -d --tmpdir="$QUOTA_ROOT" .hepta-ib-build.XXXXXX)"
 chmod 0700 "$WORK_ROOT"
-cleanup() { [[ -n "${WORK_ROOT:-}" && -d "$WORK_ROOT" ]] && rm -rf -- "$WORK_ROOT"; }
+cleanup() {
+  if [[ -n "${WORK_ROOT:-}" && -d "$WORK_ROOT" ]]; then
+    # Source and SDK snapshots are intentionally made read-only before the
+    # untrusted build. Restore only their owner's permissions so the trusted
+    # wrapper can remove its private quota-directory workspace on every exit.
+    chmod -R u+rwX -- "$WORK_ROOT" 2>/dev/null || true
+    rm -rf -- "$WORK_ROOT"
+  fi
+}
 trap cleanup EXIT INT TERM HUP
 SOURCE_ROOT="$WORK_ROOT/source"
 SDK_SNAPSHOT="$WORK_ROOT/sdk"
@@ -153,6 +161,10 @@ COMMON_DOCKER=(
   --env LC_ALL=C
   --env SOURCE_DATE_EPOCH=0
   --env CMAKE_BUILD_PARALLEL_LEVEL=2
+  # Some otherwise-native builder images export a cross-compilation CMake
+  # toolchain. Never inherit it: the candidate's executable BID ABI probe must
+  # run inside this same x86_64 container during configuration.
+  --env CMAKE_TOOLCHAIN_FILE=
   --mount "type=bind,src=$SOURCE_ROOT,dst=/src,readonly"
   --mount "type=bind,src=$SDK_SNAPSHOT,dst=/sdk,readonly"
   --mount "type=bind,src=$BUILD_ROOT,dst=/build"
