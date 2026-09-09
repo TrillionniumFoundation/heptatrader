@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import fcntl
 import gzip
 import hashlib
 import io
@@ -80,6 +81,24 @@ def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
     return _file_identity(left) == _file_identity(right)
 
 
+def _clear_nonblocking(descriptor: int) -> None:
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
+    if not nonblocking:
+        return
+    flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    if flags & nonblocking:
+        fcntl.fcntl(descriptor, fcntl.F_SETFL, flags & ~nonblocking)
+
+
+def _regular_file_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+
+
 def _hash_stream(stream: BinaryIO) -> str:
     stream.seek(0)
     digest = hashlib.sha256()
@@ -89,8 +108,18 @@ def _hash_stream(stream: BinaryIO) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    with path.open("rb") as stream:
-        return _hash_stream(stream)
+    descriptor = os.open(path, _regular_file_flags())
+    try:
+        pinned = os.fstat(descriptor)
+        if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
+            raise PackageError(f"file is not a regular single-link file: {path}")
+        _clear_nonblocking(descriptor)
+        with os.fdopen(descriptor, "rb", closefd=True) as stream:
+            descriptor = -1
+            return _hash_stream(stream)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
 
 
 def _snapshot_source(
@@ -102,21 +131,18 @@ def _snapshot_source(
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    file_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
+    file_flags = _regular_file_flags()
     directory = os.open(source.parent, directory_flags)
     descriptor = -1
     snapshot: BinaryIO | None = None
     try:
         descriptor = os.open(source.name, file_flags, dir_fd=directory)
         pinned = os.fstat(descriptor)
-        if not _same_file(observed, pinned):
-            raise PackageError(f"file identity changed before snapshot: {relative}")
         if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
             raise PackageError(f"payload is not a regular single-link file: {relative}")
+        _clear_nonblocking(descriptor)
+        if not _same_file(observed, pinned):
+            raise PackageError(f"file identity changed before snapshot: {relative}")
         if pinned.st_mode & (stat.S_ISUID | stat.S_ISGID):
             raise PackageError(f"setuid/setgid file is forbidden: {relative}")
         if pinned.st_size > MAX_FILE_BYTES:

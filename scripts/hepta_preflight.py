@@ -2,6 +2,7 @@
 """Public HeptaTrader preflight entry point with strict archive namespace admission."""
 from __future__ import annotations
 
+import fcntl
 import os
 from pathlib import Path
 import stat
@@ -9,6 +10,15 @@ import sys
 
 _WRAPPER_NAME = __name__
 _WRAPPER_FILE = __file__
+
+
+def _clear_nonblocking(descriptor: int) -> None:
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
+    if not nonblocking:
+        return
+    flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    if flags & nonblocking:
+        fcntl.fcntl(descriptor, fcntl.F_SETFL, flags & ~nonblocking)
 
 
 def _read_stable_core() -> tuple[Path, bytes]:
@@ -28,9 +38,13 @@ def _read_stable_core() -> tuple[Path, bytes]:
                 candidate,
                 os.O_RDONLY
                 | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
+                | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0),
             )
             pinned = os.fstat(descriptor)
+            if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
+                raise OSError("not a regular non-symlink single-link file")
+            _clear_nonblocking(descriptor)
             chunks: list[bytes] = []
             while True:
                 chunk = os.read(descriptor, 1024 * 1024)
