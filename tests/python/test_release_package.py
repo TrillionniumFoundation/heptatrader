@@ -147,6 +147,70 @@ class ReleasePackageTests(unittest.TestCase):
         ):
             release._admit_payload_path("alpha/child", admitted)
 
+    def test_compiled_bounds_match_preflight_policy(self) -> None:
+        policy = json.loads(
+            (ROOT / "docs/preflight-policy-v1.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(
+            release.MAX_ARCHIVE_MEMBERS,
+            policy["maximum_archive_members"],
+        )
+        self.assertEqual(
+            release.MAX_FILE_BYTES,
+            policy["maximum_member_bytes"],
+        )
+        self.assertEqual(
+            release.MAX_TOTAL_BYTES,
+            policy["maximum_total_unpacked_bytes"],
+        )
+
+    def test_member_budget_includes_generated_manifest_without_outputs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            output = work / "release.tar.gz"
+            with mock.patch.object(release, "MAX_ARCHIVE_MEMBERS", 2):
+                with self.assertRaisesRegex(
+                    release.PackageError,
+                    "member-count bound.*generated metadata",
+                ):
+                    self.package(root, output)
+            self.assertFalse(output.exists())
+            self.assertFalse(Path(str(output) + ".sha256").exists())
+            self.assertFalse(
+                Path(str(output) + ".receipt.json").exists()
+            )
+
+    def test_total_budget_includes_generated_manifest_without_outputs(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            payload_total = sum(
+                path.stat().st_size
+                for path in root.rglob("*")
+                if path.is_file()
+            )
+            output = work / "release.tar.gz"
+            with mock.patch.object(
+                release, "MAX_TOTAL_BYTES", payload_total
+            ):
+                with self.assertRaisesRegex(
+                    release.PackageError,
+                    "total unpacked-size bound.*generated metadata",
+                ):
+                    self.package(root, output)
+            self.assertFalse(output.exists())
+            self.assertFalse(Path(str(output) + ".sha256").exists())
+            self.assertFalse(
+                Path(str(output) + ".receipt.json").exists()
+            )
+
     def test_symlinked_payload_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

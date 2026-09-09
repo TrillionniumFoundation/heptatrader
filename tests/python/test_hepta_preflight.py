@@ -296,6 +296,14 @@ class HeptaPreflightTests(unittest.TestCase):
                     artifact, digest, policy, "core"
                 )
 
+    def test_trailing_slash_regular_name_is_noncanonical(self) -> None:
+        with self.assertRaisesRegex(
+            preflight.PreflightError, "non-canonical"
+        ):
+            preflight._canonical_member_name(
+                "heptatrader-x-core/manifest.json/"
+            )
+
     def test_archive_path_traversal_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             artifact = Path(directory) / "bad.tar.gz"

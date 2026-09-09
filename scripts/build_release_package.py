@@ -30,6 +30,7 @@ ALLOWED_PROFILES = {"core", "ib-paper"}
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 PRIVATE_SUFFIXES = {".key", ".pem", ".p12", ".pfx", ".jks"}
+MAX_ARCHIVE_MEMBERS = 4096
 MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 2 * 1024 * 1024 * 1024
 GENERATED_ARCHIVE_PATHS = frozenset({"manifest.json"})
@@ -300,6 +301,14 @@ def collect_payload(root: Path) -> list[PayloadFile]:
                 observed = source.lstat()
                 relative = canonical_relative(source, root)
                 _admit_payload_path(relative, admitted_paths)
+                if (
+                    len(admitted_paths) + len(GENERATED_ARCHIVE_PATHS)
+                    > MAX_ARCHIVE_MEMBERS
+                ):
+                    raise PackageError(
+                        "release archive exceeds member-count bound "
+                        "including generated metadata"
+                    )
                 if _looks_private(relative):
                     raise PackageError(
                         f"private-key or secret-like path is forbidden: {relative}"
@@ -377,6 +386,19 @@ def archive_bytes(
 ) -> tuple[bytes, str]:
     root_name = f"heptatrader-{version}-{profile}"
     manifest_bytes = canonical_json(manifest)
+    if len(payload) + len(GENERATED_ARCHIVE_PATHS) > MAX_ARCHIVE_MEMBERS:
+        raise PackageError(
+            "release archive exceeds member-count bound "
+            "including generated metadata"
+        )
+    if len(manifest_bytes) > MAX_FILE_BYTES:
+        raise PackageError("generated release manifest exceeds member-size bound")
+    total_unpacked = len(manifest_bytes) + sum(item.size for item in payload)
+    if total_unpacked > MAX_TOTAL_BYTES:
+        raise PackageError(
+            "release archive exceeds total unpacked-size bound "
+            "including generated metadata"
+        )
     manifest_name = f"{root_name}/manifest.json"
     member_names = [manifest_name] + [
         f"{root_name}/{item.path}" for item in payload

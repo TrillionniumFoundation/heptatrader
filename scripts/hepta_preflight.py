@@ -349,7 +349,7 @@ def _canonical_member_name(name: str) -> tuple[str, ...]:
     path = PurePosixPath(name)
     if (
         path.is_absolute()
-        or path.as_posix() != name.rstrip("/")
+        or path.as_posix() != name
         or any(part in {"", ".", ".."} for part in path.parts)
     ):
         raise PreflightError(f"archive path escapes or is non-canonical: {name!r}")

@@ -23,7 +23,7 @@ After successful publication, the temporary name is removed and the containing d
 
 ## Bounded archive parser
 
-The builder reserves `manifest.json`, rejects generated-name and file-prefix collisions before payload snapshots, emits canonical USTAR without GNU/PAX extension records, and asserts global member-name uniqueness. Preflight checks the compressed file-size ceiling before hashing, then parses the gzip stream incrementally. Member count and per-member/total sizes are checked before body consumption; total decompressed tar bytes are bounded; GNU/PAX long-name and extended-header metadata are rejected immediately with a compiled zero-byte extension-metadata allowance. No eager `getmembers()` materialization is used.
+The builder reserves `manifest.json`, rejects generated-name and file-prefix collisions before payload snapshots, emits canonical USTAR without GNU/PAX extension records, and asserts global member-name uniqueness. Its compiled member-count, member-size and total-unpacked ceilings equal the installed preflight policy; generated manifest bytes and its archive member are included in those budgets, so a successfully built package is not rejected merely because producer and consumer count different objects. Preflight checks the compressed file-size ceiling before hashing, then parses the gzip stream incrementally. Member count and per-member/total sizes are checked before body consumption; total decompressed tar bytes are bounded; GNU/PAX long-name and extended-header metadata are rejected immediately with a compiled zero-byte extension-metadata allowance. Regular-file archive names are exact canonical POSIX paths and cannot use trailing-slash aliases. No eager `getmembers()` materialization is used.
 
 ## Deterministic hostile tests
 
