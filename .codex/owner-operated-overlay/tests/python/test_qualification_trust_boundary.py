@@ -52,10 +52,18 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
     def test_builder_and_paper_runners_are_distinct(self) -> None:
         workflow = (ROOT / boundary.WORKFLOW).read_text(encoding="utf-8")
         build, qualify = workflow.split("\n  qualify:\n", 1)
-        self.assertIn("heptatrader-ib-builder", build)
-        self.assertNotIn("heptatrader-ib-paper", build)
-        self.assertIn("heptatrader-ib-paper", qualify)
-        self.assertNotIn("heptatrader-ib-builder", qualify)
+        self.assertIn(
+            "labels: [self-hosted, linux, x64, heptatrader-ib-builder]", build
+        )
+        self.assertNotIn(
+            "labels: [self-hosted, linux, x64, heptatrader-ib-paper]", build
+        )
+        self.assertIn(
+            "labels: [self-hosted, linux, x64, heptatrader-ib-paper]", qualify
+        )
+        self.assertNotIn(
+            "labels: [self-hosted, linux, x64, heptatrader-ib-builder]", qualify
+        )
         self.assertNotIn("secrets.", build)
 
 
