@@ -1,0 +1,165 @@
+name: Apply PR 52 path-byte contract repair
+
+on:
+  push:
+    branches:
+      - codex/fix-pr52-path-byte-contract-20260909
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: heptatrader-apply-pr52-path-byte-contract
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    name: repair-validate-and-publish-exact-pr52-head
+    if: github.event.head_commit.message == 'ops: apply exact PR52 path-byte contract repair'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
+      EXPECTED_CONTROLLER_BRANCH: codex/fix-pr52-path-byte-contract-20260909
+      EXPECTED_PR_NUMBER: '52'
+      EXPECTED_PR_BRANCH: codex/owner-operated-gap-closure-20260909
+    steps:
+      - name: Checkout controller without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve immutable live PR head
+        id: resolve
+        shell: bash
+        env:
+          GITHUB_API_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
+          test "$GITHUB_REF" = "refs/heads/$EXPECTED_CONTROLLER_BRANCH"
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          repo = os.environ['EXPECTED_REPOSITORY']
+          number = os.environ['EXPECTED_PR_NUMBER']
+          expected_branch = os.environ['EXPECTED_PR_BRANCH']
+          token = os.environ['GITHUB_API_TOKEN']
+          request = urllib.request.Request(
+              f'https://api.github.com/repos/{repo}/pulls/{number}',
+              headers={
+                  'Accept': 'application/vnd.github+json',
+                  'Authorization': f'Bearer {token}',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'heptatrader-pr52-path-byte-repair',
+              },
+          )
+          with urllib.request.urlopen(request, timeout=30) as response:
+              pull = json.load(response)
+          checks = {
+              'open': pull.get('state') == 'open',
+              'not_draft': pull.get('draft') is False,
+              'base': pull.get('base', {}).get('ref') == 'main',
+              'head_branch': pull.get('head', {}).get('ref') == expected_branch,
+              'same_repo': pull.get('head', {}).get('repo', {}).get('full_name') == repo,
+          }
+          failed = sorted(key for key, value in checks.items() if not value)
+          if failed:
+              raise SystemExit(f'PR identity mismatch: {failed}')
+          head = pull.get('head', {}).get('sha')
+          if not isinstance(head, str) or len(head) != 40:
+              raise SystemExit('invalid PR head SHA')
+          output = os.environ['GITHUB_OUTPUT']
+          with open(output, 'a', encoding='utf-8') as stream:
+              stream.write(f'head={head}\n')
+          print(f'[PR52-PATH-BYTE] exact input head {head}')
+          PY
+
+      - name: Checkout immutable PR head without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.resolve.outputs.head }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Apply bounded producer-consumer path repair
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C candidate rev-parse HEAD)" = '${{ steps.resolve.outputs.head }}'
+          test -f controller/.codex/fix_pr52_path_byte_contract.py
+          cp controller/.codex/fix_pr52_path_byte_contract.py /tmp/fix_pr52_path_byte_contract.py
+          cd candidate
+          python3 -m py_compile /tmp/fix_pr52_path_byte_contract.py
+          python3 /tmp/fix_pr52_path_byte_contract.py
+          test ! -e .codex
+          git diff --check
+
+      - name: Install deterministic validation dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++
+
+      - name: Run focused and complete validation
+        shell: bash
+        working-directory: candidate
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build_release_package.py tests/python/test_release_package.py
+          python3 -m unittest tests.python.test_release_package tests.python.test_preflight_complete_namespace
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_source_gap_closures.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+          git diff --check
+
+      - name: Commit exact validated repair
+        id: commit
+        shell: bash
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/build_release_package.py tests/python/test_release_package.py docs/RELEASE-PUBLICATION-SECURITY.md docs/modules/release-engineering.md
+          test -n "$(git status --porcelain=v1)"
+          git commit -m 'fix(release): align producer and preflight path-byte policy'
+          rm -rf build
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "tree=$(git rev-parse HEAD^{tree})" >> "$GITHUB_OUTPUT"
+
+      - name: Publish only with exact-head lease
+        shell: bash
+        working-directory: candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OLD_HEAD: ${{ steps.resolve.outputs.head }}
+          NEW_HEAD: ${{ steps.commit.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$NEW_HEAD"
+          git push \
+            --force-with-lease="refs/heads/$EXPECTED_PR_BRANCH:$OLD_HEAD" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/$EXPECTED_PR_BRANCH"
+          remote="$(git ls-remote --exit-code "https://github.com/${GITHUB_REPOSITORY}.git" "refs/heads/$EXPECTED_PR_BRANCH" | awk '{print $1}')"
+          test "$remote" = "$NEW_HEAD"
+          printf '[PR52-PATH-BYTE] published head=%s tree=%s\n' "$NEW_HEAD" '${{ steps.commit.outputs.tree }}'
