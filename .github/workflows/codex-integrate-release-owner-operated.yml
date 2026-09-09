@@ -1,0 +1,51 @@
+name: Integrate reviewed release capability into owner-operated head
+
+on:
+  push:
+    branches:
+      - codex/integrate-release-owner-operated-20260909
+
+permissions:
+  contents: write
+
+concurrency:
+  group: heptatrader-integrate-release-owner-operated
+  cancel-in-progress: false
+
+jobs:
+  integrate:
+    name: integrate-release-owner-operated-exact-tree
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout integration branch with push authority
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: TrillionniumFoundation/heptatrader
+          ref: codex/integrate-release-owner-operated-20260909
+          fetch-depth: 0
+          persist-credentials: true
+          clean: true
+          submodules: false
+
+      - name: Fetch exact source objects and decode pinned integration controller
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'TrillionniumFoundation/heptatrader'
+          test "$(git rev-parse --abbrev-ref HEAD)" = 'codex/integrate-release-owner-operated-20260909'
+          git fetch --no-tags origin \
+            dbeaab22c51c310c3cbe5b370931aa8e617491c6 \
+            15f7d9fa73990ab23bea5400c745889e58b910f1
+          base64 --decode .codex/integrate_release_owner_operated.py.gz.b64 \
+            | gzip --decompress --stdout \
+            > .codex/integrate_release_owner_operated.py
+          test "$(sha256sum .codex/integrate_release_owner_operated.py | awk '{print $1}')" = \
+            '46246bc02793a465bceb2e1f59027c38e4fec96dd6993b88b273b745f8e46782'
+          python3 -m py_compile .codex/integrate_release_owner_operated.py
+
+      - name: Build, test, commit and push exact clean integrated tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .codex/integrate_release_owner_operated.py
