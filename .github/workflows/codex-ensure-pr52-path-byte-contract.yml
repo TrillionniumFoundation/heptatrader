@@ -1,0 +1,124 @@
+name: Ensure PR 52 path-byte contract
+
+on:
+  push:
+    branches:
+      - codex/fix-pr52-path-byte-contract-20260909
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: heptatrader-ensure-pr52-path-byte-contract
+  cancel-in-progress: false
+
+jobs:
+  ensure:
+    name: idempotently-ensure-repaired-head
+    if: github.event.head_commit.message == 'ops: ensure exact PR52 path-byte contract'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
+      EXPECTED_PR: '52'
+      EXPECTED_PR_BRANCH: codex/owner-operated-gap-closure-20260909
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout controller
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: controller
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Resolve and checkout current PR head
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${EXPECTED_PR}" --jq '.head.sha')"
+          branch="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${EXPECTED_PR}" --jq '.head.ref')"
+          state="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${EXPECTED_PR}" --jq '.state')"
+          test "$state" = open
+          test "$branch" = "$EXPECTED_PR_BRANCH"
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]]
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout exact PR head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ steps.resolve.outputs.head }}
+          path: candidate
+          fetch-depth: 1
+          persist-credentials: false
+          clean: true
+
+      - name: Apply repair only when absent
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd candidate
+          if grep -Fq 'def _canonical_path_bytes' scripts/build_release_package.py && \
+             grep -Fq 'test_hostile_path_bytes_fail_before_publication' tests/python/test_release_package.py; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            python3 ../controller/.codex/fix_pr52_path_byte_contract.py
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+          git diff --check
+
+      - name: Install validation dependencies
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++
+
+      - name: Validate producer-consumer contract
+        shell: bash
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/build_release_package.py tests/python/test_release_package.py
+          python3 -m unittest tests.python.test_release_package tests.python.test_preflight_complete_namespace
+          python3 scripts/check_documentation.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_source_gap_closures.py
+
+      - name: Full validation for a newly materialized repair
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        working-directory: candidate
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          ./scripts/dev_core.sh
+
+      - name: Publish only a newly repaired exact tree
+        if: steps.patch.outputs.changed == 'true'
+        shell: bash
+        working-directory: candidate
+        env:
+          OLD_HEAD: ${{ steps.resolve.outputs.head }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/build_release_package.py tests/python/test_release_package.py docs/RELEASE-PUBLICATION-SECURITY.md docs/modules/release-engineering.md
+          git commit -m 'fix(release): align producer and preflight path-byte policy'
+          rm -rf build
+          find . -type d -name __pycache__ -prune -exec rm -rf {} +
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+          git push \
+            --force-with-lease="refs/heads/$EXPECTED_PR_BRANCH:$OLD_HEAD" \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/$EXPECTED_PR_BRANCH"
