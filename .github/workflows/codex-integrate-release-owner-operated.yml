@@ -98,10 +98,14 @@ jobs:
           actual_bytes="$(wc -c < .codex/integrate_release_owner_operated.py)"
           echo "[PAYLOAD] upgraded-bytes=$actual_bytes sha256=$actual_sha"
           python3 -m py_compile .codex/integrate_release_owner_operated.py
+          rm -rf .codex/__pycache__
+          test ! -e .codex/__pycache__
           echo '[PAYLOAD] Python syntax and semantic anchors validated'
 
       - name: Build, test, commit and push exact clean integrated tree
         shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
         run: |
           set -euo pipefail
           python3 .codex/integrate_release_owner_operated.py
