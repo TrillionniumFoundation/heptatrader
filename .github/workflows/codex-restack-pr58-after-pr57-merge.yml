@@ -1,0 +1,94 @@
+name: Restack PR58 after PR57 merge
+
+on:
+  push:
+    branches:
+      - plan/p2-bounded-paper-v5-source-20260910
+    paths:
+      - .github/workflows/codex-restack-pr58-after-pr57-merge.yml
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: codex-restack-pr58-after-pr57-merge
+  cancel-in-progress: false
+
+jobs:
+  restack:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      P1_BRANCH: plan/p1-release-package-preflight-20260910
+      P2_BRANCH: plan/p2-bounded-paper-v5-source-20260910
+      CARRIER: .github/workflows/codex-restack-pr58-after-pr57-merge.yml
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout exact source branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: plan/p2-bounded-paper-v5-source-20260910
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Prove PR57 merged and capture exact source
+        run: |
+          set -euo pipefail
+          test "$(gh api repos/TrillionniumFoundation/heptatrader/pulls/57 --jq .merged)" = true
+          source_sha="$(git rev-parse HEAD)"
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$P2_BRANCH" | awk '{print $1}')"
+          test "$source_sha" = "$remote_sha"
+          printf '%s\n' "$source_sha" > /tmp/p2-source-sha
+
+      - name: Build the pure PR58 delta and apply it to current main
+        run: |
+          set -euo pipefail
+          source_sha="$(cat /tmp/p2-source-sha)"
+          git fetch --force origin \
+            refs/heads/main:refs/remotes/origin/main \
+            "refs/heads/$P1_BRANCH:refs/remotes/origin/$P1_BRANCH"
+          git merge-base --is-ancestor "refs/remotes/origin/$P1_BRANCH" "$source_sha"
+          git diff --binary --full-index \
+            "refs/remotes/origin/$P1_BRANCH" "$source_sha" -- \
+            . \
+            ":(exclude)$CARRIER" \
+            > /tmp/pr58.patch
+          test -s /tmp/pr58.patch
+          git checkout -B restacked-pr58 refs/remotes/origin/main
+          git apply --index --3way /tmp/pr58.patch
+          test ! -e "$CARRIER"
+          grep -Fq 'maxOrderQuantity != maxGrossPosition' \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp
+          ! grep -Fq 'maxOrderQuantity > maxGrossPosition ||' \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp
+          grep -Fq 'TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath' \
+            tests/ib_paper_execution_profile_tests.cpp
+          grep -Fq 'test_fifo_policy_is_rejected_without_blocking_or_receipt' \
+            tests/python/test_preflight_special_files.py
+
+      - name: Validate restacked PR58
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+          git diff --check --cached
+
+      - name: Publish exact restack and retarget PR58 to main
+        run: |
+          set -euo pipefail
+          source_sha="$(cat /tmp/p2-source-sha)"
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git commit -m 'feat(ib-paper): restack bounded V5 controls on merged release base'
+          git push \
+            --force-with-lease="refs/heads/$P2_BRANCH:$source_sha" \
+            origin "HEAD:refs/heads/$P2_BRANCH"
+          gh api --method PATCH \
+            repos/TrillionniumFoundation/heptatrader/pulls/58 \
+            -f base=main >/dev/null
