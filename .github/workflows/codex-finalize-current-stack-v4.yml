@@ -1,0 +1,74 @@
+name: Finalize current three-slice remediation stack
+
+on:
+  push:
+    branches:
+      - plan/p1-release-package-preflight-20260910
+    paths:
+      - .github/workflows/codex-finalize-current-stack-v4.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-finalize-current-stack-v4
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout exact finalizer carrier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Assert exact live branch object
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Install deterministic validation dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            cmake ninja-build make g++ clang libssl-dev
+
+      - name: Repair, validate and restack all three slices
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          python3 scripts/.codex_finalize_current_stack.py
+
+      - name: Publish final stack identities
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cat /tmp/heptatrader-final-stack-shas.json
+          p1="$(python3 -c 'import json; print(json.load(open("/tmp/heptatrader-final-stack-shas.json"))["p1"])')"
+          p2="$(python3 -c 'import json; print(json.load(open("/tmp/heptatrader-final-stack-shas.json"))["p2"])')"
+          p0="$(python3 -c 'import json; print(json.load(open("/tmp/heptatrader-final-stack-shas.json"))["p0"])')"
+          for tuple in "57:$p1" "58:$p2" "59:$p0"; do
+            number="${tuple%%:*}"
+            sha="${tuple#*:}"
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/issues/${number}/comments" \
+              -f body="Final-stack source remediation completed on exact head \`${sha}\`. Complete canonical core/Python validation and behavior-bound blocker checks passed before publication. Fresh independent review must bind to this head. No Broker campaign ran; paper_authorized=false and live_authorized=false."
+            gh api --method POST \
+              "repos/${GITHUB_REPOSITORY}/pulls/${number}/requested_reviewers" \
+              --input - <<'JSON'
+          {"reviewers":["Franksudoman","Tomasrgbsf"]}
+          JSON
+          done
