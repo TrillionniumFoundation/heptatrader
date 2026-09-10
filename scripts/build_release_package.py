@@ -134,50 +134,322 @@ def sha256_file(path: Path) -> str:
             os.close(descriptor)
 
 
-def _snapshot_source(
-    source: Path, observed: os.stat_result, relative: str
-) -> tuple[BinaryIO, os.stat_result, str]:
-    directory_flags = (
+
+def _directory_flags() -> int:
+    return (
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    file_flags = _regular_file_flags()
-    directory = os.open(source.parent, directory_flags)
+
+
+def _canonical_component(name: str, label: str) -> None:
+    # Preserve the canonical forbidden-byte diagnostic before the
+    # structural component check so historical hostile contracts
+    # keep exercising the same security classification.
+    _canonical_path_bytes(name, label)
+    if (
+        not isinstance(name, str)
+        or not name
+        or name in {".", ".."}
+        or "/" in name
+    ):
+        raise PackageError(f"{label} is not a canonical path component")
+
+
+def _open_directory_absolute(
+    path: Path, label: str
+) -> tuple[int, os.stat_result, Path]:
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    descriptor = os.open("/", _directory_flags())
+    try:
+        for part in absolute.parts[1:]:
+            _canonical_component(part, label)
+            following = os.open(
+                part, _directory_flags(), dir_fd=descriptor
+            )
+            metadata = os.fstat(following)
+            if not stat.S_ISDIR(metadata.st_mode):
+                os.close(following)
+                raise PackageError(
+                    f"{label} component is not a directory: {part}"
+                )
+            os.close(descriptor)
+            descriptor = following
+        pinned = os.fstat(descriptor)
+        current = os.stat(absolute, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(pinned.st_mode)
+            or not _same_file(pinned, current)
+        ):
+            raise PackageError(
+                f"{label} is not a stable no-follow directory"
+            )
+        return descriptor, pinned, absolute
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _reopen_directory_chain(
+    root_path: Path,
+    root_pinned: os.stat_result,
+    chain: tuple[tuple[str, os.stat_result], ...],
+    relative: str,
+) -> int:
+    descriptor, fresh_root, _ = _open_directory_absolute(
+        root_path, "install root confirmation"
+    )
+    try:
+        if not _same_file(root_pinned, fresh_root):
+            raise PackageError(
+                "install root identity changed during payload snapshot"
+            )
+        for name, expected in chain:
+            following = os.open(
+                name, _directory_flags(), dir_fd=descriptor
+            )
+            actual = os.fstat(following)
+            if (
+                not stat.S_ISDIR(actual.st_mode)
+                or not _same_file(expected, actual)
+            ):
+                os.close(following)
+                raise PackageError(
+                    "payload directory topology changed during "
+                    f"snapshot: {relative}"
+                )
+            os.close(descriptor)
+            descriptor = following
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _validate_directory_namespace(
+    root_path: Path,
+    root_pinned: os.stat_result,
+    directory: int,
+    directory_pinned: os.stat_result,
+    chain: tuple[tuple[str, os.stat_result], ...],
+    relative: str,
+) -> None:
+    try:
+        held = os.fstat(directory)
+        if not _same_file(directory_pinned, held):
+            raise PackageError(
+                "payload directory descriptor changed during "
+                f"snapshot: {relative}"
+            )
+        confirmation = _reopen_directory_chain(
+            root_path, root_pinned, chain, relative
+        )
+        try:
+            if not _same_file(
+                directory_pinned, os.fstat(confirmation)
+            ):
+                raise PackageError(
+                    "payload directory path changed during "
+                    f"snapshot: {relative}"
+                )
+        finally:
+            os.close(confirmation)
+    except OSError as error:
+        raise PackageError(
+            "payload directory namespace changed during "
+            f"snapshot: {relative}: {error}"
+        ) from error
+
+
+def _validate_snapshot_namespace(
+    root_path: Path,
+    root_pinned: os.stat_result,
+    directory: int,
+    directory_pinned: os.stat_result,
+    chain: tuple[tuple[str, os.stat_result], ...],
+    name: str,
+    pinned: os.stat_result,
+    relative: str,
+) -> None:
+    try:
+        held_directory = os.fstat(directory)
+        held_leaf = os.stat(
+            name, dir_fd=directory, follow_symlinks=False
+        )
+        if (
+            not _same_file(directory_pinned, held_directory)
+            or not _same_file(pinned, held_leaf)
+        ):
+            raise PackageError(
+                "payload leaf or parent path changed after "
+                f"snapshot: {relative}"
+            )
+        confirmation = _reopen_directory_chain(
+            root_path, root_pinned, chain, relative
+        )
+        try:
+            fresh_leaf = os.stat(
+                name,
+                dir_fd=confirmation,
+                follow_symlinks=False,
+            )
+            if (
+                not _same_file(
+                    directory_pinned,
+                    os.fstat(confirmation),
+                )
+                or not _same_file(pinned, fresh_leaf)
+            ):
+                raise PackageError(
+                    "payload namespace changed after snapshot: "
+                    f"{relative}"
+                )
+        finally:
+            os.close(confirmation)
+    except OSError as error:
+        raise PackageError(
+            "payload namespace changed after snapshot: "
+            f"{relative}: {error}"
+        ) from error
+
+
+def _validate_complete_payload_namespace(
+    root_path: Path,
+    root_pinned: os.stat_result,
+    directories: list[
+        tuple[
+            tuple[tuple[str, os.stat_result], ...],
+            os.stat_result,
+            str,
+        ]
+    ],
+    leaves: list[
+        tuple[
+            tuple[tuple[str, os.stat_result], ...],
+            str,
+            os.stat_result,
+            str,
+        ]
+    ],
+) -> None:
+    for chain, expected, relative in directories:
+        confirmation = _reopen_directory_chain(
+            root_path, root_pinned, chain, relative
+        )
+        try:
+            if not _same_file(expected, os.fstat(confirmation)):
+                raise PackageError(
+                    "payload directory changed before namespace "
+                    f"commit: {relative}"
+                )
+        finally:
+            os.close(confirmation)
+    for chain, name, expected, relative in leaves:
+        confirmation = _reopen_directory_chain(
+            root_path, root_pinned, chain, relative
+        )
+        try:
+            current = os.stat(
+                name,
+                dir_fd=confirmation,
+                follow_symlinks=False,
+            )
+            if not _same_file(expected, current):
+                raise PackageError(
+                    "payload leaf changed before namespace commit: "
+                    f"{relative}"
+                )
+        except OSError as error:
+            raise PackageError(
+                "payload leaf namespace changed before commit: "
+                f"{relative}: {error}"
+            ) from error
+        finally:
+            os.close(confirmation)
+
+
+def _snapshot_source(
+    root_path: Path,
+    root_pinned: os.stat_result,
+    directory: int,
+    directory_pinned: os.stat_result,
+    chain: tuple[tuple[str, os.stat_result], ...],
+    name: str,
+    observed: os.stat_result,
+    relative: str,
+) -> tuple[BinaryIO, os.stat_result, str]:
     descriptor = -1
     snapshot: BinaryIO | None = None
     try:
-        descriptor = os.open(source.name, file_flags, dir_fd=directory)
+        descriptor = os.open(
+            name,
+            _regular_file_flags(),
+            dir_fd=directory,
+        )
         pinned = os.fstat(descriptor)
-        if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
-            raise PackageError(f"payload is not a regular single-link file: {relative}")
+        current = os.stat(
+            name, dir_fd=directory, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(pinned.st_mode)
+            or pinned.st_nlink != 1
+            or pinned.st_dev != directory_pinned.st_dev
+            or not _same_file(observed, pinned)
+            or not _same_file(pinned, current)
+        ):
+            raise PackageError(
+                "payload is not one stable regular single-link "
+                f"file: {relative}"
+            )
         _clear_nonblocking(descriptor)
-        if not _same_file(observed, pinned):
-            raise PackageError(f"file identity changed before snapshot: {relative}")
         if pinned.st_mode & (stat.S_ISUID | stat.S_ISGID):
-            raise PackageError(f"setuid/setgid file is forbidden: {relative}")
+            raise PackageError(
+                f"setuid/setgid file is forbidden: {relative}"
+            )
         if pinned.st_size > MAX_FILE_BYTES:
-            raise PackageError(f"file exceeds release size bound: {relative}")
+            raise PackageError(
+                f"file exceeds release size bound: {relative}"
+            )
 
         snapshot = tempfile.TemporaryFile(mode="w+b")
         digest = hashlib.sha256()
         total = 0
-        with os.fdopen(descriptor, "rb", closefd=True) as source_stream:
-            descriptor = -1
-            while True:
-                chunk = source_stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > MAX_FILE_BYTES:
-                    raise PackageError(f"file exceeds release size bound: {relative}")
-                digest.update(chunk)
-                snapshot.write(chunk)
-            after = os.fstat(source_stream.fileno())
-        if not _same_file(pinned, after) or total != pinned.st_size:
-            raise PackageError(f"file changed while being snapshotted: {relative}")
+        while True:
+            try:
+                chunk = os.read(descriptor, 1024 * 1024)
+            except InterruptedError:
+                continue
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_FILE_BYTES:
+                raise PackageError(
+                    f"file exceeds release size bound: {relative}"
+                )
+            digest.update(chunk)
+            snapshot.write(chunk)
+        after = os.fstat(descriptor)
+        if (
+            not _same_file(pinned, after)
+            or total != pinned.st_size
+        ):
+            raise PackageError(
+                "file changed while being snapshotted: "
+                f"{relative}"
+            )
         snapshot.flush()
+        _validate_snapshot_namespace(
+            root_path,
+            root_pinned,
+            directory,
+            directory_pinned,
+            chain,
+            name,
+            pinned,
+            relative,
+        )
         snapshot.seek(0)
         return snapshot, pinned, digest.hexdigest()
     except Exception:
@@ -187,7 +459,6 @@ def _snapshot_source(
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        os.close(directory)
 
 
 def close_payload(payload: Iterable[PayloadFile]) -> None:
@@ -325,35 +596,149 @@ def _validate_archive_member_names(names: list[str]) -> None:
         _validate_ustar_name(name)
 
 
-def collect_payload(root: Path) -> list[PayloadFile]:
-    root = root.resolve(strict=True)
-    if not root.is_dir() or root.is_symlink():
-        raise PackageError("install root must be a real directory")
 
+def collect_payload(root: Path) -> list[PayloadFile]:
+    root_descriptor = -1
     payload: list[PayloadFile] = []
     admitted_paths: set[str] = set()
+    directory_pins: list[
+        tuple[
+            tuple[tuple[str, os.stat_result], ...],
+            os.stat_result,
+            str,
+        ]
+    ] = []
+    leaf_pins: list[
+        tuple[
+            tuple[tuple[str, os.stat_result], ...],
+            str,
+            os.stat_result,
+            str,
+        ]
+    ] = []
     total = 0
     try:
-        for directory, names, files in os.walk(root, topdown=True, followlinks=False):
-            directory_path = Path(directory)
-            for name in list(names):
-                child = directory_path / name
-                metadata = child.lstat()
-                if stat.S_ISLNK(metadata.st_mode):
-                    raise PackageError(f"symlinked directory is forbidden: {child}")
-                if not stat.S_ISDIR(metadata.st_mode):
-                    raise PackageError(f"special directory entry is forbidden: {child}")
-                relative_directory = canonical_relative(child, root)
-                _reject_generated_namespace_collision(relative_directory)
-            names.sort()
-            files.sort()
-            for name in files:
-                source = directory_path / name
-                observed = source.lstat()
-                relative = canonical_relative(source, root)
+        root_descriptor, root_pinned, root_path = (
+            _open_directory_absolute(root, "install root")
+        )
+        if root_path == Path("/"):
+            raise PackageError(
+                "filesystem root cannot be a release install root"
+            )
+        directory_pins.append((tuple(), root_pinned, "."))
+
+        def visit(
+            directory: int,
+            directory_pinned: os.stat_result,
+            chain: tuple[tuple[str, os.stat_result], ...],
+            parts: tuple[str, ...],
+        ) -> None:
+            nonlocal total
+            relative_directory = "/".join(parts) or "."
+            _validate_directory_namespace(
+                root_path,
+                root_pinned,
+                directory,
+                directory_pinned,
+                chain,
+                relative_directory,
+            )
+            try:
+                with os.scandir(directory) as iterator:
+                    entries = [
+                        (
+                            entry.name,
+                            entry.stat(follow_symlinks=False),
+                        )
+                        for entry in iterator
+                    ]
+            except OSError as error:
+                raise PackageError(
+                    "cannot enumerate stable install directory "
+                    f"{relative_directory}: {error}"
+                ) from error
+
+            for name, observed in sorted(
+                entries, key=lambda item: item[0]
+            ):
+                _canonical_component(name, "payload path")
+                child_parts = parts + (name,)
+                relative = "/".join(child_parts)
+                _canonical_path_bytes(relative, "payload path")
+                if stat.S_ISDIR(observed.st_mode):
+                    _reject_generated_namespace_collision(relative)
+                    child = -1
+                    try:
+                        child = os.open(
+                            name,
+                            _directory_flags(),
+                            dir_fd=directory,
+                        )
+                        pinned = os.fstat(child)
+                        current = os.stat(
+                            name,
+                            dir_fd=directory,
+                            follow_symlinks=False,
+                        )
+                        if (
+                            not stat.S_ISDIR(pinned.st_mode)
+                            or pinned.st_dev
+                            != directory_pinned.st_dev
+                            or not _same_file(observed, pinned)
+                            or not _same_file(pinned, current)
+                        ):
+                            raise PackageError(
+                                "payload directory identity changed "
+                                f"before traversal: {relative}"
+                            )
+                        child_chain = chain + ((name, pinned),)
+                        directory_pins.append(
+                            (child_chain, pinned, relative)
+                        )
+                        visit(
+                            child,
+                            pinned,
+                            child_chain,
+                            child_parts,
+                        )
+                        after = os.fstat(child)
+                        current_after = os.stat(
+                            name,
+                            dir_fd=directory,
+                            follow_symlinks=False,
+                        )
+                        if (
+                            not _same_file(pinned, after)
+                            or not _same_file(
+                                pinned, current_after
+                            )
+                        ):
+                            raise PackageError(
+                                "payload directory changed during "
+                                f"traversal: {relative}"
+                            )
+                        _validate_directory_namespace(
+                            root_path,
+                            root_pinned,
+                            child,
+                            pinned,
+                            child_chain,
+                            relative,
+                        )
+                    except OSError as error:
+                        raise PackageError(
+                            "payload directory namespace changed: "
+                            f"{relative}: {error}"
+                        ) from error
+                    finally:
+                        if child >= 0:
+                            os.close(child)
+                    continue
+
                 _admit_payload_path(relative, admitted_paths)
                 if (
-                    len(admitted_paths) + len(GENERATED_ARCHIVE_PATHS)
+                    len(admitted_paths)
+                    + len(GENERATED_ARCHIVE_PATHS)
                     > MAX_ARCHIVE_MEMBERS
                 ):
                     raise PackageError(
@@ -362,19 +747,33 @@ def collect_payload(root: Path) -> list[PayloadFile]:
                     )
                 if _looks_private(relative):
                     raise PackageError(
-                        f"private-key or secret-like path is forbidden: {relative}"
+                        "private-key or secret-like path is "
+                        f"forbidden: {relative}"
                     )
-                if not stat.S_ISREG(observed.st_mode) or stat.S_ISLNK(observed.st_mode):
-                    raise PackageError(f"only regular files may be packaged: {relative}")
-                if observed.st_nlink != 1:
-                    raise PackageError(f"hard-linked file is forbidden: {relative}")
+                if (
+                    not stat.S_ISREG(observed.st_mode)
+                    or observed.st_nlink != 1
+                ):
+                    raise PackageError(
+                        "only regular single-link files may be "
+                        f"packaged: {relative}"
+                    )
                 snapshot, pinned, digest = _snapshot_source(
-                    source, observed, relative
+                    root_path,
+                    root_pinned,
+                    directory,
+                    directory_pinned,
+                    chain,
+                    name,
+                    observed,
+                    relative,
                 )
                 total += pinned.st_size
                 if total > MAX_TOTAL_BYTES:
                     snapshot.close()
-                    raise PackageError("release payload exceeds total size bound")
+                    raise PackageError(
+                        "release payload exceeds total size bound"
+                    )
                 payload.append(
                     PayloadFile(
                         path=relative,
@@ -384,12 +783,40 @@ def collect_payload(root: Path) -> list[PayloadFile]:
                         sha256=digest,
                     )
                 )
+                leaf_pins.append(
+                    (chain, name, pinned, relative)
+                )
+
+            _validate_directory_namespace(
+                root_path,
+                root_pinned,
+                directory,
+                directory_pinned,
+                chain,
+                relative_directory,
+            )
+
+        visit(
+            root_descriptor,
+            root_pinned,
+            tuple(),
+            tuple(),
+        )
         if not payload:
             raise PackageError("install root is empty")
+        _validate_complete_payload_namespace(
+            root_path,
+            root_pinned,
+            directory_pins,
+            leaf_pins,
+        )
         return sorted(payload, key=lambda item: item.path)
     except Exception:
         close_payload(payload)
         raise
+    finally:
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
 
 
 def build_manifest(

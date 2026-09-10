@@ -353,6 +353,105 @@ class ReleasePackageTests(unittest.TestCase):
                     self.package(root, output)
             self.assertEqual(output.read_bytes(), sentinel)
 
+
+    def test_leaf_replacement_after_snapshot_copy_is_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            output = work / "release.tar.gz"
+            target = root / "bin/heptactl"
+            original = release._validate_snapshot_namespace
+            replaced = False
+
+            def replacing_leaf(*args, **kwargs):
+                nonlocal replaced
+                relative = args[-1]
+                if not replaced and relative == "bin/heptactl":
+                    replacement = target.with_name(
+                        "heptactl-replacement"
+                    )
+                    replacement.write_bytes(
+                        b"replacement-after-copy\n"
+                    )
+                    replacement.chmod(0o755)
+                    os.replace(replacement, target)
+                    replaced = True
+                return original(*args, **kwargs)
+
+            with mock.patch.object(
+                release,
+                "_validate_snapshot_namespace",
+                side_effect=replacing_leaf,
+            ):
+                with self.assertRaisesRegex(
+                    release.PackageError,
+                    "payload .*changed after snapshot|payload namespace",
+                ):
+                    self.package(root, output)
+            self.assertTrue(replaced)
+            self.assertFalse(output.exists())
+            self.assertFalse(
+                Path(str(output) + ".sha256").exists()
+            )
+            self.assertFalse(
+                Path(str(output) + ".receipt.json").exists()
+            )
+
+    def test_ancestor_directory_replacement_after_copy_is_rejected(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            root = fixture_tree(work / "root")
+            output = work / "release.tar.gz"
+            original = release._validate_snapshot_namespace
+            replaced = False
+
+            def replacing_ancestor(*args, **kwargs):
+                nonlocal replaced
+                relative = args[-1]
+                if (
+                    not replaced
+                    and relative
+                    == "share/doc/heptatrader/index.md"
+                ):
+                    original_share = root / "share"
+                    displaced = root / "share-displaced"
+                    original_share.rename(displaced)
+                    replacement = (
+                        root
+                        / "share/doc/heptatrader/index.md"
+                    )
+                    replacement.parent.mkdir(parents=True)
+                    replacement.write_bytes(
+                        b"replacement-tree\n"
+                    )
+                    replacement.chmod(0o644)
+                    replaced = True
+                return original(*args, **kwargs)
+
+            with mock.patch.object(
+                release,
+                "_validate_snapshot_namespace",
+                side_effect=replacing_ancestor,
+            ):
+                with self.assertRaisesRegex(
+                    release.PackageError,
+                    "install root identity changed|directory topology changed|payload namespace",
+                ):
+                    self.package(root, output)
+            self.assertTrue(replaced)
+            self.assertFalse(output.exists())
+            self.assertFalse(
+                Path(str(output) + ".sha256").exists()
+            )
+            self.assertFalse(
+                Path(str(output) + ".receipt.json").exists()
+            )
+
+
     def test_source_mutation_after_snapshot_cannot_change_archive_bytes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)

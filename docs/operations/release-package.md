@@ -32,6 +32,8 @@ python3 scripts/build_release_package.py \
   --source-date-epoch "$epoch"
 ```
 
+The install root is a stable snapshot boundary. The builder pins the no-follow root and every traversed directory, opens each leaf relative to those descriptors, and revalidates the full root/ancestor/leaf namespace after every copy and again before manifest construction. Concurrent leaf or ancestor replacement fails before any output is published.
+
 The output path, `.sha256` sidecar and `.receipt.json` sidecar must not already exist. The builder refuses replacement rather than silently changing an artifact identity. `manifest.json` is a generated archive name and is forbidden in the install-root payload, including as a directory prefix. The destination parent is part of the security boundary: it must be owned by the invoking operator, must not be group/world writable, and its filesystem must support Linux anonymous `O_TMPFILE` staging plus descriptor-bound `/proc/self/fd` hard-link publication. The builder keeps the fsynced anonymous inode open, atomically links that exact inode to a previously absent destination, verifies destination inode/bytes/mode and the pinned parent identity, and never exposes or cleans up a mutable staging pathname. If a later sidecar publication fails, earlier immutable outputs remain and the incomplete set must be recovered under a fresh basename or removed only after operator verification.
 
 ## IB PAPER candidate

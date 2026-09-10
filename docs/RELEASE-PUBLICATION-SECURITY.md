@@ -11,9 +11,9 @@ A release digest, manifest, inspected archive and emitted receipt must refer to 
 
 ## Input contract
 
-Release payload files, the preflight policy and the release archive are opened through a no-follow parent directory descriptor. The implementation binds the opened descriptor to its device, inode, mode, link count, size, modification time and change time, copies the bytes once into an anonymous immutable snapshot, computes the digest while copying, and consumes that same snapshot for manifest construction, archive generation or archive inspection.
+The release builder opens the install root component by component with no-follow directory descriptors and keeps that root pinned for the complete payload snapshot. Every child directory is opened relative to its pinned parent; every leaf is opened nonblocking and no-follow relative to that directory. The implementation binds root, directory and leaf objects to device, inode, mode, link count, size, modification time and change time, copies each leaf once into an anonymous immutable snapshot, and computes the digest while copying.
 
-The original descriptor and path identity are checked again after the copy or inspection. Path replacement, in-place mutation, link-count change, metadata change, disappearance or size drift fails closed. Hashing one pathname open and parsing another is forbidden.
+After every copy, the still-open leaf descriptor, leaf name under the held parent, freshly reopened install-root path, complete logical directory chain and leaf name under that fresh chain must all resolve to the pinned objects. A final full-tree namespace pass repeats the directory and leaf checks before the payload snapshot is committed. Leaf replacement, ancestor-directory replacement, root replacement, in-place mutation, link-count change, disappearance or metadata drift fails closed. The policy and archive inspection paths use the same descriptor/path identity discipline; hashing one pathname open and parsing another is forbidden.
 
 ## Publication contract
 
@@ -31,6 +31,8 @@ The builder reserves `manifest.json`, rejects generated-name and file-prefix col
 
 - a competing package publisher creates the destination after staging and before publication;
 - a release payload source changes after it has been snapshotted and hashed;
+- a payload leaf pathname is replaced after its bytes are copied but before namespace commitment;
+- an ancestor directory is renamed and replaced after a descendant leaf is copied;
 - the archive pathname is replaced after preflight pins and hashes it but before archive parsing completes;
 - a competing preflight receipt publisher creates the destination before publication;
 - an otherwise valid artifact declares non-adjacent payload names with an ancestor/descendant collision;

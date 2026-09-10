@@ -174,11 +174,31 @@ class SpecialFileAdmissionTests(unittest.TestCase):
                 observed = source.lstat()
                 source.unlink()
                 os.mkfifo(source)
+                root_fd, root_pinned, root_path = (
+                    module._open_directory_absolute(
+                        source.parent, "test install root"
+                    )
+                )
                 try:
-                    module._snapshot_source(source, observed, "payload")
-                    raise AssertionError("regular-to-FIFO swap was admitted")
-                except module.PackageError:
-                    print("EXPECTED_REJECTION")
+                    try:
+                        snapshot, _, _ = module._snapshot_source(
+                            root_path,
+                            root_pinned,
+                            root_fd,
+                            root_pinned,
+                            tuple(),
+                            source.name,
+                            observed,
+                            "payload",
+                        )
+                        snapshot.close()
+                        raise AssertionError(
+                            "regular-to-FIFO swap was admitted"
+                        )
+                    except module.PackageError:
+                        print("EXPECTED_REJECTION")
+                finally:
+                    os.close(root_fd)
             '''
         )
         self.assert_expected_rejection(completed)
