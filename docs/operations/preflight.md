@@ -50,9 +50,11 @@ sudo hepta-preflight \
   --policy /usr/share/heptatrader/preflight-policy-v1.json \
   --execution-uid "$(id -u hepta-ib-execution)" \
   --gateway-uid "$(id -u hepta-tool-gateway)" \
-  --kill-switch-path /etc/heptatrader/control/ib-paper.kill \
+  --kill-switch-path /run/hepta/ib-paper-control/kill-switch \
   --output /var/lib/heptatrader/evidence/ib-paper-host-preflight.json
 ```
+
+The logical kill-switch path is non-relaxable: `/run/hepta/ib-paper-control/kill-switch`. Under a test or offline `--host-root`, that exact logical path is resolved below the pinned host root. The control directory must be root-owned, bound to the execution primary group, mode `0750`, and contain no subdirectories. The marker must be a stable root/execution-group regular single-link file, mode `0440`, with exact bytes `engaged`, matching `tmpfiles.d/heptatrader-ib-paper.conf`. Every ancestor and the final marker are opened through no-follow descriptors and revalidated after the content read; an unrelated root-owned file, alternate path, symlink, metadata mismatch, content mismatch or identity change fails the static check.
 
 A bounded TCP reachability check can be requested with `--probe-broker --broker-host 127.0.0.1 --broker-port 4002`. The package policy may narrow access, but it cannot widen the compiled literal-address ceiling of `127.0.0.1`/`::1` and PAPER ports `4002`/`7497`; hostnames and DNS resolution are not admitted. Policy and package identity must succeed before any connection attempt. TCP success is not evidence that the session is PAPER, the account is correct, callbacks are healthy, or mutations are qualified.
 

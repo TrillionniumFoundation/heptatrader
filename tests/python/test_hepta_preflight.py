@@ -514,14 +514,181 @@ class HeptaPreflightTests(unittest.TestCase):
             self.assertEqual(receipt["result"], "FAIL")
             self.assertIn("distinct positive", check(receipt, "host.static")["detail"])
 
-    def test_kill_switch_rejects_relative_path(self) -> None:
-        self.assertIn("absolute", preflight._safe_kill_switch(Path("relative-marker")) or "")
 
-    def test_kill_switch_rejects_world_writable_root_marker(self) -> None:
-        fake = os.stat_result((stat.S_IFREG | 0o666, 1, 1, 1, 0, 0, 1, 0, 0, 0))
-        with mock.patch.object(Path, "lstat", return_value=fake):
-            problem = preflight._safe_kill_switch(Path("/run/heptatrader/kill-switch"))
-        self.assertIn("group/world writable", problem or "")
+    def _canonical_kill_switch(
+        self,
+        host_root: Path,
+        *,
+        content: bytes = b"engaged",
+        mode: int = 0o440,
+    ) -> Path:
+        control = host_root / "run/hepta/ib-paper-control"
+        control.mkdir(parents=True)
+        control.chmod(0o750)
+        marker = control / "kill-switch"
+        marker.write_bytes(content)
+        marker.chmod(mode)
+        return marker
+
+    def _validate_test_kill_switch(
+        self,
+        host_root: Path,
+        logical_path: Path = Path(
+            preflight.CANONICAL_IB_PAPER_KILL_SWITCH_PATH
+        ),
+    ) -> str | None:
+        return preflight._safe_kill_switch(
+            host_root,
+            logical_path,
+            os.getegid(),
+            expected_owner_uid=os.geteuid(),
+        )
+
+    def test_kill_switch_rejects_relative_path(self) -> None:
+        problem = self._validate_test_kill_switch(
+            Path("/"), Path("relative-marker")
+        )
+        self.assertIn("must be exactly", problem or "")
+
+    def test_kill_switch_rejects_unrelated_absolute_file(self) -> None:
+        problem = self._validate_test_kill_switch(
+            Path("/"), Path("/etc/hosts")
+        )
+        self.assertIn("must be exactly", problem or "")
+
+    def test_kill_switch_accepts_canonical_tmpfiles_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host_root = Path(directory)
+            self._canonical_kill_switch(host_root)
+            self.assertIsNone(
+                self._validate_test_kill_switch(host_root)
+            )
+
+    def test_kill_switch_rejects_valid_marker_at_wrong_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host_root = Path(directory)
+            wrong = host_root / "etc/heptatrader/control/ib-paper.kill"
+            wrong.parent.mkdir(parents=True)
+            wrong.write_bytes(b"engaged")
+            wrong.chmod(0o440)
+            problem = self._validate_test_kill_switch(
+                host_root,
+                Path("/etc/heptatrader/control/ib-paper.kill"),
+            )
+            self.assertIn("must be exactly", problem or "")
+
+    def test_kill_switch_rejects_final_and_ancestor_symlinks(self) -> None:
+        for case in ("final", "ancestor"):
+            with self.subTest(case=case):
+                with tempfile.TemporaryDirectory() as directory:
+                    host_root = Path(directory)
+                    if case == "final":
+                        marker = self._canonical_kill_switch(host_root)
+                        target = marker.with_name("target")
+                        target.write_bytes(b"engaged")
+                        target.chmod(0o440)
+                        marker.unlink()
+                        marker.symlink_to(target.name)
+                    else:
+                        actual = host_root / "actual-control"
+                        actual.mkdir()
+                        actual.chmod(0o750)
+                        marker = actual / "kill-switch"
+                        marker.write_bytes(b"engaged")
+                        marker.chmod(0o440)
+                        (host_root / "run").mkdir()
+                        (host_root / "run/hepta").symlink_to(
+                            actual, target_is_directory=True
+                        )
+                    problem = self._validate_test_kill_switch(
+                        host_root
+                    )
+                    self.assertIsNotNone(problem)
+
+    def test_kill_switch_rejects_wrong_content_or_metadata(self) -> None:
+        for label, content, mode in (
+            ("content", b"disarmed", 0o440),
+            ("newline", b"engaged\n", 0o440),
+            ("mode", b"engaged", 0o640),
+        ):
+            with self.subTest(label=label):
+                with tempfile.TemporaryDirectory() as directory:
+                    host_root = Path(directory)
+                    self._canonical_kill_switch(
+                        host_root, content=content, mode=mode
+                    )
+                    problem = self._validate_test_kill_switch(
+                        host_root
+                    )
+                    self.assertIsNotNone(problem)
+
+    def test_kill_switch_rejects_identity_change_during_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            host_root = Path(directory)
+            marker = self._canonical_kill_switch(host_root)
+            original_read = preflight._read_bounded
+            changed = False
+
+            def replacing_read(stream, maximum, label):
+                nonlocal changed
+                value = original_read(stream, maximum, label)
+                replacement = marker.with_name("replacement")
+                replacement.write_bytes(b"engaged")
+                replacement.chmod(0o440)
+                os.replace(replacement, marker)
+                changed = True
+                return value
+
+            with mock.patch.object(
+                preflight,
+                "_read_bounded",
+                side_effect=replacing_read,
+            ):
+                problem = self._validate_test_kill_switch(
+                    host_root
+                )
+            self.assertTrue(changed)
+            self.assertIn("changed", problem or "")
+
+    def test_ib_static_preflight_rejects_arbitrary_kill_switch(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            artifact, package = self.valid_package(
+                work / "package", profile="ib-paper"
+            )
+            host = work / "host"
+            fixture_tree(host / "usr", ib=True)
+            args = args_for(
+                artifact,
+                package["package_sha256"],
+                profile="ib-paper",
+            )
+            args.artifact_only = False
+            args.host_root = host
+            args.execution_uid = 2001
+            args.gateway_uid = 2002
+            args.kill_switch_path = Path("/etc/hosts")
+            account = mock.Mock(pw_gid=os.getegid())
+            with (
+                mock.patch.object(
+                    preflight.shutil,
+                    "which",
+                    return_value="/usr/bin/tool",
+                ),
+                mock.patch.object(
+                    preflight.pwd,
+                    "getpwuid",
+                    return_value=account,
+                ),
+            ):
+                receipt = preflight.run_preflight(args)
+            self.assertEqual(receipt["result"], "FAIL")
+            self.assertIn(
+                "must be exactly",
+                check(receipt, "host.static")["detail"],
+            )
 
     def test_broker_probe_is_rejected_for_core_profile(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -910,6 +1077,12 @@ class HeptaPreflightTests(unittest.TestCase):
             "test_static_host_extra_managed_file_fails",
             "test_static_host_build_metadata_mutation_fails",
             "test_static_host_owner_mismatch_is_rejected",
+            "test_kill_switch_accepts_canonical_tmpfiles_marker",
+            "test_kill_switch_rejects_unrelated_absolute_file",
+            "test_kill_switch_rejects_valid_marker_at_wrong_path",
+            "test_kill_switch_rejects_final_and_ancestor_symlinks",
+            "test_kill_switch_rejects_identity_change_during_read",
+            "test_ib_static_preflight_rejects_arbitrary_kill_switch",
             "test_packaged_policy_cannot_widen_compiled_broker_endpoint_ceiling",
         }
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(

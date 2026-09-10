@@ -49,6 +49,10 @@ HARD_MAXIMUM_COMPRESSED_ARCHIVE_BYTES = (
 HARD_PRIVATE_KEY_SUFFIXES = frozenset({".key", ".pem", ".p12", ".pfx", ".jks"})
 HARD_ALLOWED_BROKER_HOSTS = frozenset({"127.0.0.1", "::1"})
 HARD_ALLOWED_BROKER_PORTS = frozenset({4002, 7497})
+CANONICAL_IB_PAPER_KILL_SWITCH_PATH = "/run/hepta/ib-paper-control/kill-switch"
+CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT = b"engaged"
+CANONICAL_IB_PAPER_CONTROL_DIRECTORY_MODE = 0o750
+CANONICAL_IB_PAPER_KILL_SWITCH_MODE = 0o440
 MANAGED_SUBTREES = (
     "libexec/heptatrader",
     "share/heptatrader",
@@ -1293,20 +1297,126 @@ def _verify_installed_tree(
         os.close(root)
 
 
-def _safe_kill_switch(path: Path) -> str | None:
-    if not path.is_absolute():
-        return "kill-switch path must be absolute"
+
+def _safe_kill_switch(
+    host_root: Path,
+    path: Path,
+    expected_group_gid: int,
+    *,
+    expected_owner_uid: int = 0,
+) -> str | None:
+    if os.fspath(path) != CANONICAL_IB_PAPER_KILL_SWITCH_PATH:
+        return (
+            "kill-switch path must be exactly "
+            + CANONICAL_IB_PAPER_KILL_SWITCH_PATH
+        )
+    if (
+        not isinstance(expected_owner_uid, int)
+        or isinstance(expected_owner_uid, bool)
+        or expected_owner_uid < 0
+        or not isinstance(expected_group_gid, int)
+        or isinstance(expected_group_gid, bool)
+        or expected_group_gid < 0
+    ):
+        return "kill-switch owner/group identity is invalid"
+
+    root_descriptor = -1
+    directory = -1
+    marker = -1
+    confirmation = -1
+    parts = ("run", "hepta", "ib-paper-control")
     try:
-        metadata = path.lstat()
-    except OSError as error:
-        return str(error)
-    if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-        return "kill-switch marker must be a regular single-link file"
-    if metadata.st_uid != 0:
-        return "kill-switch marker must be owned by root"
-    if metadata.st_mode & 0o022:
-        return "kill-switch marker must not be group/world writable"
-    return None
+        root_descriptor = _open_directory_absolute(
+            host_root, "host root"
+        )
+        directory = _open_relative_directory(
+            root_descriptor,
+            parts,
+            "kill-switch control directory",
+        )
+        directory_metadata = os.fstat(directory)
+        if (
+            not stat.S_ISDIR(directory_metadata.st_mode)
+            or directory_metadata.st_uid != expected_owner_uid
+            or directory_metadata.st_gid != expected_group_gid
+            or stat.S_IMODE(directory_metadata.st_mode)
+            != CANONICAL_IB_PAPER_CONTROL_DIRECTORY_MODE
+            or directory_metadata.st_nlink != 2
+        ):
+            return (
+                "kill-switch control directory must be a stable "
+                "0750 owner/group-bound directory with no subdirectories"
+            )
+
+        marker = os.open(
+            "kill-switch",
+            _file_flags(),
+            dir_fd=directory,
+        )
+        pinned = os.fstat(marker)
+        current = os.stat(
+            "kill-switch",
+            dir_fd=directory,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISREG(pinned.st_mode)
+            or pinned.st_nlink != 1
+            or pinned.st_uid != expected_owner_uid
+            or pinned.st_gid != expected_group_gid
+            or stat.S_IMODE(pinned.st_mode)
+            != CANONICAL_IB_PAPER_KILL_SWITCH_MODE
+            or pinned.st_dev != directory_metadata.st_dev
+            or not _same_inode(pinned, current)
+        ):
+            return (
+                "kill-switch marker must be the canonical stable "
+                "0440 owner/group-bound regular single-link file"
+            )
+        _clear_nonblocking(marker)
+        with os.fdopen(marker, "rb", closefd=True) as stream:
+            marker = -1
+            content = _read_bounded(
+                stream,
+                len(CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT),
+                "kill-switch marker",
+            )
+            if content != CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT:
+                return (
+                    "kill-switch marker must contain the exact "
+                    "engaged-state representation"
+                )
+            _assert_stable_file(
+                stream,
+                pinned,
+                directory,
+                "kill-switch",
+                "kill-switch marker",
+            )
+
+        confirmation = _open_relative_directory(
+            root_descriptor,
+            parts,
+            "kill-switch control directory confirmation",
+        )
+        confirmed = os.fstat(confirmation)
+        if not _same_file(directory_metadata, confirmed):
+            return (
+                "kill-switch control directory identity changed "
+                "during validation"
+            )
+        return None
+    except (OSError, PreflightError) as error:
+        return f"kill-switch marker validation failed: {error}"
+    finally:
+        if marker >= 0:
+            os.close(marker)
+        if confirmation >= 0:
+            os.close(confirmation)
+        if directory >= 0:
+            os.close(directory)
+        if root_descriptor >= 0:
+            os.close(root_descriptor)
 
 
 def _open_receipt_output_directory(
@@ -1500,6 +1610,7 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
         record("host.static", "FAIL", "host checks require a valid release manifest")
     else:
         host_errors: list[str] = []
+        execution_group_gid: int | None = None
         host_root = _absolute_path(args.host_root)
         if platform.system() != "Linux":
             host_errors.append("host platform is not Linux")
@@ -1519,13 +1630,23 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 for uid in (args.execution_uid, args.gateway_uid):
                     try:
-                        pwd.getpwuid(uid)
+                        account = pwd.getpwuid(uid)
+                        if uid == args.execution_uid:
+                            execution_group_gid = account.pw_gid
                     except KeyError:
                         host_errors.append(f"host UID does not exist: {uid}")
             if args.kill_switch_path is None:
                 host_errors.append("IB PAPER static preflight requires a kill-switch marker path")
+            elif execution_group_gid is None:
+                host_errors.append(
+                    "IB PAPER execution primary group is unavailable"
+                )
             else:
-                problem = _safe_kill_switch(args.kill_switch_path)
+                problem = _safe_kill_switch(
+                    host_root,
+                    args.kill_switch_path,
+                    execution_group_gid,
+                )
                 if problem:
                     host_errors.append(problem)
         if host_errors:
