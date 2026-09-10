@@ -1,0 +1,78 @@
+name: Finalize PR58 after final PR57 trigger
+
+on:
+  push:
+    branches:
+      - plan/p2-bounded-paper-v5-source-20260910
+    paths:
+      - .github/workflows/codex-finalize-pr58-after-p1-trigger-v4.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-reconcile-pr58-v5-envelope-v2
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout live PR58 branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: plan/p2-bounded-paper-v5-source-20260910
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge current PR57 final-check head
+        run: |
+          set -euo pipefail
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          p1='plan/p1-release-package-preflight-20260910'
+          git fetch --force origin "refs/heads/$p1:refs/remotes/origin/$p1"
+          git merge --no-edit "refs/remotes/origin/$p1"
+
+      - name: Verify all lower-slice closures
+        run: |
+          set -euo pipefail
+          grep -Fq 'maxOrderQuantity != maxGrossPosition' \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp
+          ! grep -Fq 'maxOrderQuantity > maxGrossPosition ||' \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp
+          grep -Fq 'TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath' \
+            tests/ib_paper_execution_profile_tests.cpp
+          grep -Fq 'test_fifo_policy_is_rejected_without_blocking_or_receipt' \
+            tests/python/test_preflight_special_files.py
+          for path in \
+            scripts/hepta_preflight_core.py \
+            scripts/hepta_preflight.py \
+            scripts/build_release_package.py; do
+            grep -Fq 'getattr(os, "O_NONBLOCK", 0)' "$path"
+          done
+
+      - name: Run complete canonical Core and Python suites
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Publish final carrier-free PR58 branch
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/codex-fix-pr58-v5-envelope.yml \
+            .github/workflows/codex-reconcile-pr58-v5-envelope-v2.yml \
+            .github/workflows/codex-finalize-pr58-stack-v3.yml \
+            .github/workflows/codex-finalize-pr58-after-p1-trigger-v4.yml
+          git diff --check
+          git add -A
+          git commit -m 'chore(stack): bind PR58 to final PR57 tree and evidence'
+          git push origin HEAD:plan/p2-bounded-paper-v5-source-20260910
