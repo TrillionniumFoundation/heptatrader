@@ -1298,11 +1298,13 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
     manifest: dict[str, Any] = {}
     package_sha256 = ""
     manifest_sha256 = ""
+    artifact_admitted = False
     policy = _load_policy(_absolute_path(args.policy))
     try:
         manifest, package_sha256, manifest_sha256 = inspect_archive(
             _absolute_path(args.artifact), args.expected_sha256, policy, args.profile
         )
+        artifact_admitted = True
         record("artifact.integrity", "PASS", "digest, archive, manifest and payload verified")
     except (OSError, PreflightError) as error:
         record("artifact.integrity", "FAIL", str(error))
@@ -1349,7 +1351,13 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
             record("host.static", "PASS", "installed bytes, modes, ownership, inventory and identity boundaries match the approved artifact")
 
     if args.probe_broker:
-        if args.profile != "ib-paper":
+        if not artifact_admitted:
+            record(
+                "broker.reachability",
+                "FAIL",
+                "Broker probing requires successful artifact and policy admission",
+            )
+        elif args.profile != "ib-paper":
             record("broker.reachability", "FAIL", "Broker probing is valid only for ib-paper")
         else:
             hosts = set(selected.get("allowed_broker_hosts", []))
