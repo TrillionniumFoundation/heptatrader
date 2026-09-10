@@ -1,0 +1,89 @@
+name: Finalize PR58 on current release slice
+
+on:
+  push:
+    branches:
+      - plan/p2-bounded-paper-v5-source-20260910
+    paths:
+      - .github/workflows/codex-finalize-pr58-stack-v3.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-reconcile-pr58-v5-envelope-v2
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    steps:
+      - name: Checkout live PR58 branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: plan/p2-bounded-paper-v5-source-20260910
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge the current PR57 slice
+        run: |
+          set -euo pipefail
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git fetch origin \
+            refs/heads/plan/p1-release-package-preflight-20260910:refs/remotes/origin/plan/p1-release-package-preflight-20260910
+          git merge --no-edit \
+            refs/remotes/origin/plan/p1-release-package-preflight-20260910
+
+      - name: Converge or verify the V5 repair
+        run: |
+          set -euo pipefail
+          if test -f .github/workflows/codex-reconcile-pr58-v5-envelope-v2.yml; then
+            python3 - <<'PY'
+          from pathlib import Path
+          import textwrap
+          carrier = Path('.github/workflows/codex-reconcile-pr58-v5-envelope-v2.yml')
+          text = carrier.read_text(encoding='utf-8')
+          marker = "python3 - <<'PY'\n"
+          if marker not in text:
+              raise SystemExit('reconcile carrier has no Python payload')
+          body = text.split(marker, 1)[1].split('\n          PY', 1)[0]
+          source = textwrap.dedent(body)
+          compile(source, 'converge_pr58.py', 'exec')
+          exec(source, {'__name__': '__main__'})
+          PY
+          fi
+          grep -Fq 'maxOrderQuantity != maxGrossPosition' \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp
+          ! grep -Fq 'maxOrderQuantity > maxGrossPosition ||' \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp
+          grep -Fq 'TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath' \
+            tests/ib_paper_execution_profile_tests.cpp
+          grep -Fq 'test_fifo_policy_is_rejected_without_blocking_or_receipt' \
+            tests/python/test_preflight_special_files.py
+          grep -Fq 'getattr(os, "O_NONBLOCK", 0)' \
+            scripts/hepta_preflight_core.py
+
+      - name: Run complete canonical Core and Python suites
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Publish final carrier-free PR58 branch
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/codex-fix-pr58-v5-envelope.yml \
+            .github/workflows/codex-reconcile-pr58-v5-envelope-v2.yml \
+            .github/workflows/codex-finalize-pr58-stack-v3.yml
+          git diff --check
+          git add -A
+          git commit -m 'fix(ib-paper): finalize atomic-flatten-safe stacked slice'
+          git push origin HEAD:plan/p2-bounded-paper-v5-source-20260910
