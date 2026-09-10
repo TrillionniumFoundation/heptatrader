@@ -45,13 +45,18 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
                 "bin/hepta-ib-executiond",
                 "lib/systemd/system/hepta-broker-egress-policy.service",
                 "lib/systemd/system/hepta-execution-ib-paper.service",
+                "share/heptatrader/hepta-broker-network-policy-v1.json",
                 "share/heptatrader/ib-paper-profile-policy-v1.json",
             ]
         )
     for relative in paths:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        if relative == "share/heptatrader/preflight-policy-v1.json":
+        if relative == "share/heptatrader/hepta-broker-network-policy-v1.json":
+            path.write_bytes(
+                (ROOT / "systemd/hepta-broker-network-policy-v1.json").read_bytes()
+            )
+        elif relative == "share/heptatrader/preflight-policy-v1.json":
             path.write_bytes(POLICY.read_bytes())
         else:
             path.write_text(relative + "\n", encoding="utf-8")
@@ -429,15 +434,22 @@ class HeptaPreflightTests(unittest.TestCase):
             work = Path(directory)
             root = fixture_tree(work / "root")
             payload = release.collect_payload(root)
-            manifest = release.build_manifest(payload, VERSION, "core", SOURCE_SHA, EPOCH)
-            manifest["authorization"]["live_authorized"] = True
-            archive_bytes, _ = release.archive_bytes(payload, manifest, VERSION, "core", EPOCH)
-            artifact = work / "bad.tar.gz"
-            artifact.write_bytes(archive_bytes)
-            digest = hashlib.sha256(archive_bytes).hexdigest()
-            policy = preflight._load_policy(POLICY)
-            with self.assertRaises(preflight.PreflightError):
-                preflight.inspect_archive(artifact, digest, policy, "core")
+            try:
+                manifest = release.build_manifest(
+                    payload, VERSION, "core", SOURCE_SHA, EPOCH
+                )
+                manifest["authorization"]["live_authorized"] = True
+                archive_bytes, _ = release.archive_bytes(
+                    payload, manifest, VERSION, "core", EPOCH
+                )
+                artifact = work / "bad.tar.gz"
+                artifact.write_bytes(archive_bytes)
+                digest = hashlib.sha256(archive_bytes).hexdigest()
+                policy = preflight._load_policy(POLICY)
+                with self.assertRaises(preflight.PreflightError):
+                    preflight.inspect_archive(artifact, digest, policy, "core")
+            finally:
+                release.close_payload(payload)
 
     def test_ib_package_requires_ib_enabled_build_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
