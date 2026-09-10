@@ -9,7 +9,7 @@ Tests: `tests/python/test_documentation_control_plane.py`
 
 The repository contains source deployment units and examples for simulator execution, IB PAPER execution, the Tool Gateway, event sockets, session-supervisor sockets, service identities, trust-domain configuration, broker egress policy and runtime directories.
 
-The top-level CMake project now installs the maintained runtime into a canonical tree. [`release-engineering.md`](release-engineering.md) builds a deterministic archive from that tree and validates it with a read-only machine-readable preflight. These assets still do not prove that a particular host, GitHub environment or Broker account is qualified.
+The top-level CMake project now installs the maintained runtime into a canonical tree. [`release-package.md`](../operations/release-package.md) builds a deterministic archive from that tree and validates it with a read-only machine-readable preflight. These assets still do not prove that a particular host, GitHub environment or Broker account is qualified.
 
 ## Identity separation
 

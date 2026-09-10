@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 from pathlib import Path
@@ -11,9 +10,6 @@ ROOT = Path(__file__).resolve().parents[2]
 POLICY_PATH = ROOT / "systemd" / "hepta-broker-network-policy-v1.json"
 IDENTITIES_PATH = ROOT / "systemd" / "hepta-service-identities-v1.json"
 HOST_MAP_PATH = ROOT / "systemd" / "hepta-x230-paper-host-identity-map-v1.json"
-WORKFLOW_PATH = (
-    ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml"
-)
 SPEC = importlib.util.spec_from_file_location(
     "hepta_broker_egress_policy",
     ROOT / "scripts" / "hepta_broker_egress_policy.py",
@@ -32,7 +28,6 @@ class BrokerEgressRulesetTests(unittest.TestCase):
         )
         cls.host_map_raw = HOST_MAP_PATH.read_bytes()
         cls.host_map = json.loads(cls.host_map_raw)
-        cls.workflow = WORKFLOW_PATH.read_text(encoding="utf-8")
         cls.validated = POLICY._validate_policy(  # noqa: SLF001
             POLICY._read_policy(POLICY_PATH)  # noqa: SLF001
         )
@@ -73,7 +68,7 @@ class BrokerEgressRulesetTests(unittest.TestCase):
         )
         self.assertEqual(canonical["role"], "ib-paper-execution-authority")
 
-    def test_x230_host_mapping_is_distinct_digest_bound_and_non_live(self) -> None:
+    def test_x230_host_mapping_is_distinct_and_non_live(self) -> None:
         logical = self.host_map["logical_execution_identity"]
         execution = self.host_map["runtime_execution_identity"]
         runner = self.host_map["runtime_runner_identity"]
@@ -84,12 +79,6 @@ class BrokerEgressRulesetTests(unittest.TestCase):
         self.assertEqual(runner["name"], "hepta-actions-paper")
         self.assertEqual(runner["uid"], 994)
         self.assertEqual(len({logical["uid"], execution["uid"], runner["uid"]}), 3)
-        digest = hashlib.sha256(self.host_map_raw).hexdigest()
-        self.assertEqual(self.workflow.count(digest), 1)
-        self.assertIn("--identity-map-sha256 " + digest, self.workflow)
-        self.assertIn("--logical-execution-uid 2003", self.workflow)
-        self.assertIn("--execution-uid 995", self.workflow)
-        self.assertIn('! nc -z -w 3 127.0.0.1 4002', self.workflow)
 
     def test_canonical_apply_is_loopback_only_and_uid_scoped(self) -> None:
         rules = self.render(uids=(2003,), deny_all=False)

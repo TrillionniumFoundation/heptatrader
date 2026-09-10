@@ -481,7 +481,7 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
             maxOrdersPerMinute > kQualificationMaximumOrdersPerMinute ||
             maxActiveOrders > kQualificationMaximumActiveOrders ||
             maxGrossPosition > kQualificationMaximumGrossPosition ||
-            maxOrderQuantity > maxGrossPosition ||
+            maxOrderQuantity != maxGrossPosition ||
             !QualificationContractBinding(
                 qualificationQuoteContracts,
                 qualificationPrimaryQuoteInstrument) ||
