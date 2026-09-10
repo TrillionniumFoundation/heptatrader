@@ -1,0 +1,495 @@
+name: Remediate PR57 canonical kill-switch proof
+
+on:
+  push:
+    branches:
+      - plan/p1-release-package-preflight-20260910
+    paths:
+      - .github/workflows/codex-fix-pr57-canonical-kill-switch.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-fix-pr57-canonical-kill-switch
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout exact remediation carrier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Assert exact live branch object
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Bind static preflight to the canonical engaged marker
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+          import textwrap
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one exact anchor, found {count}')
+              target.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          def sub_once(path: str, pattern: str, replacement: str) -> None:
+              target = Path(path)
+              text = target.read_text(encoding='utf-8')
+              updated, count = re.subn(
+                  pattern,
+                  lambda _match: replacement,
+                  text,
+                  count=1,
+                  flags=re.DOTALL,
+              )
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one regex anchor, found {count}')
+              target.write_text(updated, encoding='utf-8')
+
+          core = 'scripts/hepta_preflight_core.py'
+          replace_once(
+              core,
+              'HARD_ALLOWED_BROKER_PORTS = frozenset({4002, 7497})\n',
+              'HARD_ALLOWED_BROKER_PORTS = frozenset({4002, 7497})\n'
+              'CANONICAL_IB_PAPER_KILL_SWITCH_PATH = "' \
+              '/run/hepta/ib-paper-control/kill-switch"\n'
+              'CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT = b"engaged"\n'
+              'CANONICAL_IB_PAPER_CONTROL_DIRECTORY_MODE = 0o750\n'
+              'CANONICAL_IB_PAPER_KILL_SWITCH_MODE = 0o440\n',
+          )
+
+          safe_marker = textwrap.dedent(r'''
+          def _safe_kill_switch(
+              host_root: Path,
+              path: Path,
+              expected_group_gid: int,
+              *,
+              expected_owner_uid: int = 0,
+          ) -> str | None:
+              if os.fspath(path) != CANONICAL_IB_PAPER_KILL_SWITCH_PATH:
+                  return (
+                      "kill-switch path must be exactly "
+                      + CANONICAL_IB_PAPER_KILL_SWITCH_PATH
+                  )
+              if (
+                  not isinstance(expected_owner_uid, int)
+                  or isinstance(expected_owner_uid, bool)
+                  or expected_owner_uid < 0
+                  or not isinstance(expected_group_gid, int)
+                  or isinstance(expected_group_gid, bool)
+                  or expected_group_gid < 0
+              ):
+                  return "kill-switch owner/group identity is invalid"
+
+              root_descriptor = -1
+              directory = -1
+              marker = -1
+              confirmation = -1
+              parts = ("run", "hepta", "ib-paper-control")
+              try:
+                  root_descriptor = _open_directory_absolute(
+                      host_root, "host root"
+                  )
+                  directory = _open_relative_directory(
+                      root_descriptor,
+                      parts,
+                      "kill-switch control directory",
+                  )
+                  directory_metadata = os.fstat(directory)
+                  if (
+                      not stat.S_ISDIR(directory_metadata.st_mode)
+                      or directory_metadata.st_uid != expected_owner_uid
+                      or directory_metadata.st_gid != expected_group_gid
+                      or stat.S_IMODE(directory_metadata.st_mode)
+                      != CANONICAL_IB_PAPER_CONTROL_DIRECTORY_MODE
+                      or directory_metadata.st_nlink != 2
+                  ):
+                      return (
+                          "kill-switch control directory must be a stable "
+                          "0750 owner/group-bound directory with no subdirectories"
+                      )
+
+                  marker = os.open(
+                      "kill-switch",
+                      _file_flags(),
+                      dir_fd=directory,
+                  )
+                  pinned = os.fstat(marker)
+                  current = os.stat(
+                      "kill-switch",
+                      dir_fd=directory,
+                      follow_symlinks=False,
+                  )
+                  if (
+                      not stat.S_ISREG(pinned.st_mode)
+                      or pinned.st_nlink != 1
+                      or pinned.st_uid != expected_owner_uid
+                      or pinned.st_gid != expected_group_gid
+                      or stat.S_IMODE(pinned.st_mode)
+                      != CANONICAL_IB_PAPER_KILL_SWITCH_MODE
+                      or pinned.st_dev != directory_metadata.st_dev
+                      or not _same_inode(pinned, current)
+                  ):
+                      return (
+                          "kill-switch marker must be the canonical stable "
+                          "0440 owner/group-bound regular single-link file"
+                      )
+                  _clear_nonblocking(marker)
+                  with os.fdopen(marker, "rb", closefd=True) as stream:
+                      marker = -1
+                      content = _read_bounded(
+                          stream,
+                          len(CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT),
+                          "kill-switch marker",
+                      )
+                      if content != CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT:
+                          return (
+                              "kill-switch marker must contain the exact "
+                              "engaged-state representation"
+                          )
+                      _assert_stable_file(
+                          stream,
+                          pinned,
+                          directory,
+                          "kill-switch",
+                          "kill-switch marker",
+                      )
+
+                  confirmation = _open_relative_directory(
+                      root_descriptor,
+                      parts,
+                      "kill-switch control directory confirmation",
+                  )
+                  confirmed = os.fstat(confirmation)
+                  if not _same_file(directory_metadata, confirmed):
+                      return (
+                          "kill-switch control directory identity changed "
+                          "during validation"
+                      )
+                  return None
+              except (OSError, PreflightError) as error:
+                  return f"kill-switch marker validation failed: {error}"
+              finally:
+                  if marker >= 0:
+                      os.close(marker)
+                  if confirmation >= 0:
+                      os.close(confirmation)
+                  if directory >= 0:
+                      os.close(directory)
+                  if root_descriptor >= 0:
+                      os.close(root_descriptor)
+
+
+          def _open_receipt_output_directory''')
+          sub_once(
+              core,
+              r'def _safe_kill_switch\(path: Path\) -> str \| None:\n.*?\n\ndef _open_receipt_output_directory',
+              safe_marker,
+          )
+
+          replace_once(
+              core,
+              '        host_errors: list[str] = []\n'
+              '        host_root = _absolute_path(args.host_root)\n',
+              '        host_errors: list[str] = []\n'
+              '        execution_group_gid: int | None = None\n'
+              '        host_root = _absolute_path(args.host_root)\n',
+          )
+          replace_once(
+              core,
+              '                for uid in (args.execution_uid, args.gateway_uid):\n'
+              '                    try:\n'
+              '                        pwd.getpwuid(uid)\n'
+              '                    except KeyError:\n'
+              '                        host_errors.append(f"host UID does not exist: {uid}")\n',
+              '                for uid in (args.execution_uid, args.gateway_uid):\n'
+              '                    try:\n'
+              '                        account = pwd.getpwuid(uid)\n'
+              '                        if uid == args.execution_uid:\n'
+              '                            execution_group_gid = account.pw_gid\n'
+              '                    except KeyError:\n'
+              '                        host_errors.append(f"host UID does not exist: {uid}")\n',
+          )
+          replace_once(
+              core,
+              '            else:\n'
+              '                problem = _safe_kill_switch(args.kill_switch_path)\n'
+              '                if problem:\n'
+              '                    host_errors.append(problem)\n',
+              '            elif execution_group_gid is None:\n'
+              '                host_errors.append(\n'
+              '                    "IB PAPER execution primary group is unavailable"\n'
+              '                )\n'
+              '            else:\n'
+              '                problem = _safe_kill_switch(\n'
+              '                    host_root,\n'
+              '                    args.kill_switch_path,\n'
+              '                    execution_group_gid,\n'
+              '                )\n'
+              '                if problem:\n'
+              '                    host_errors.append(problem)\n',
+          )
+
+          tests = 'tests/python/test_hepta_preflight.py'
+          kill_switch_tests = textwrap.dedent(r'''
+              def _canonical_kill_switch(
+                  self,
+                  host_root: Path,
+                  *,
+                  content: bytes = b"engaged",
+                  mode: int = 0o440,
+              ) -> Path:
+                  control = host_root / "run/hepta/ib-paper-control"
+                  control.mkdir(parents=True)
+                  control.chmod(0o750)
+                  marker = control / "kill-switch"
+                  marker.write_bytes(content)
+                  marker.chmod(mode)
+                  return marker
+
+              def _validate_test_kill_switch(
+                  self,
+                  host_root: Path,
+                  logical_path: Path = Path(
+                      preflight.CANONICAL_IB_PAPER_KILL_SWITCH_PATH
+                  ),
+              ) -> str | None:
+                  return preflight._safe_kill_switch(
+                      host_root,
+                      logical_path,
+                      os.getegid(),
+                      expected_owner_uid=os.geteuid(),
+                  )
+
+              def test_kill_switch_rejects_relative_path(self) -> None:
+                  problem = self._validate_test_kill_switch(
+                      Path("/"), Path("relative-marker")
+                  )
+                  self.assertIn("must be exactly", problem or "")
+
+              def test_kill_switch_rejects_unrelated_absolute_file(self) -> None:
+                  problem = self._validate_test_kill_switch(
+                      Path("/"), Path("/etc/hosts")
+                  )
+                  self.assertIn("must be exactly", problem or "")
+
+              def test_kill_switch_accepts_canonical_tmpfiles_marker(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      host_root = Path(directory)
+                      self._canonical_kill_switch(host_root)
+                      self.assertIsNone(
+                          self._validate_test_kill_switch(host_root)
+                      )
+
+              def test_kill_switch_rejects_valid_marker_at_wrong_path(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      host_root = Path(directory)
+                      wrong = host_root / "etc/heptatrader/control/ib-paper.kill"
+                      wrong.parent.mkdir(parents=True)
+                      wrong.write_bytes(b"engaged")
+                      wrong.chmod(0o440)
+                      problem = self._validate_test_kill_switch(
+                          host_root,
+                          Path("/etc/heptatrader/control/ib-paper.kill"),
+                      )
+                      self.assertIn("must be exactly", problem or "")
+
+              def test_kill_switch_rejects_final_and_ancestor_symlinks(self) -> None:
+                  for case in ("final", "ancestor"):
+                      with self.subTest(case=case):
+                          with tempfile.TemporaryDirectory() as directory:
+                              host_root = Path(directory)
+                              if case == "final":
+                                  marker = self._canonical_kill_switch(host_root)
+                                  target = marker.with_name("target")
+                                  target.write_bytes(b"engaged")
+                                  target.chmod(0o440)
+                                  marker.unlink()
+                                  marker.symlink_to(target.name)
+                              else:
+                                  actual = host_root / "actual-control"
+                                  actual.mkdir()
+                                  actual.chmod(0o750)
+                                  marker = actual / "kill-switch"
+                                  marker.write_bytes(b"engaged")
+                                  marker.chmod(0o440)
+                                  (host_root / "run").mkdir()
+                                  (host_root / "run/hepta").symlink_to(
+                                      actual, target_is_directory=True
+                                  )
+                              problem = self._validate_test_kill_switch(
+                                  host_root
+                              )
+                              self.assertIsNotNone(problem)
+
+              def test_kill_switch_rejects_wrong_content_or_metadata(self) -> None:
+                  for label, content, mode in (
+                      ("content", b"disarmed", 0o440),
+                      ("newline", b"engaged\n", 0o440),
+                      ("mode", b"engaged", 0o640),
+                  ):
+                      with self.subTest(label=label):
+                          with tempfile.TemporaryDirectory() as directory:
+                              host_root = Path(directory)
+                              self._canonical_kill_switch(
+                                  host_root, content=content, mode=mode
+                              )
+                              problem = self._validate_test_kill_switch(
+                                  host_root
+                              )
+                              self.assertIsNotNone(problem)
+
+              def test_kill_switch_rejects_identity_change_during_read(self) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      host_root = Path(directory)
+                      marker = self._canonical_kill_switch(host_root)
+                      original_read = preflight._read_bounded
+                      changed = False
+
+                      def replacing_read(stream, maximum, label):
+                          nonlocal changed
+                          value = original_read(stream, maximum, label)
+                          replacement = marker.with_name("replacement")
+                          replacement.write_bytes(b"engaged")
+                          replacement.chmod(0o440)
+                          os.replace(replacement, marker)
+                          changed = True
+                          return value
+
+                      with mock.patch.object(
+                          preflight,
+                          "_read_bounded",
+                          side_effect=replacing_read,
+                      ):
+                          problem = self._validate_test_kill_switch(
+                              host_root
+                          )
+                      self.assertTrue(changed)
+                      self.assertIn("changed", problem or "")
+
+              def test_ib_static_preflight_rejects_arbitrary_kill_switch(
+                  self,
+              ) -> None:
+                  with tempfile.TemporaryDirectory() as directory:
+                      work = Path(directory)
+                      artifact, package = self.valid_package(
+                          work / "package", profile="ib-paper"
+                      )
+                      host = work / "host"
+                      fixture_tree(host / "usr", ib=True)
+                      args = args_for(
+                          artifact,
+                          package["package_sha256"],
+                          profile="ib-paper",
+                      )
+                      args.artifact_only = False
+                      args.host_root = host
+                      args.execution_uid = 2001
+                      args.gateway_uid = 2002
+                      args.kill_switch_path = Path("/etc/hosts")
+                      account = mock.Mock(pw_gid=os.getegid())
+                      with (
+                          mock.patch.object(
+                              preflight.shutil,
+                              "which",
+                              return_value="/usr/bin/tool",
+                          ),
+                          mock.patch.object(
+                              preflight.pwd,
+                              "getpwuid",
+                              return_value=account,
+                          ),
+                      ):
+                          receipt = preflight.run_preflight(args)
+                      self.assertEqual(receipt["result"], "FAIL")
+                      self.assertIn(
+                          "must be exactly",
+                          check(receipt, "host.static")["detail"],
+                      )
+
+              def test_broker_probe_is_rejected_for_core_profile''')
+          sub_once(
+              tests,
+              r'    def test_kill_switch_rejects_relative_path\(self\) -> None:\n.*?\n    def test_broker_probe_is_rejected_for_core_profile',
+              kill_switch_tests,
+          )
+          replace_once(
+              tests,
+              '            "test_static_host_owner_mismatch_is_rejected",\n',
+              '            "test_static_host_owner_mismatch_is_rejected",\n'
+              '            "test_kill_switch_accepts_canonical_tmpfiles_marker",\n'
+              '            "test_kill_switch_rejects_unrelated_absolute_file",\n'
+              '            "test_kill_switch_rejects_valid_marker_at_wrong_path",\n'
+              '            "test_kill_switch_rejects_final_and_ancestor_symlinks",\n'
+              '            "test_kill_switch_rejects_identity_change_during_read",\n'
+              '            "test_ib_static_preflight_rejects_arbitrary_kill_switch",\n',
+          )
+
+          docs = 'docs/operations/preflight.md'
+          replace_once(
+              docs,
+              '--kill-switch-path /etc/heptatrader/control/ib-paper.kill',
+              '--kill-switch-path /run/hepta/ib-paper-control/kill-switch',
+          )
+          replace_once(
+              docs,
+              'A bounded TCP reachability check can be requested with `--probe-broker --broker-host 127.0.0.1 --broker-port 4002`.',
+              'The logical kill-switch path is non-relaxable: `/run/hepta/ib-paper-control/kill-switch`. Under a test or offline `--host-root`, that exact logical path is resolved below the pinned host root. The control directory must be root-owned, bound to the execution primary group, mode `0750`, and contain no subdirectories. The marker must be a stable root/execution-group regular single-link file, mode `0440`, with exact bytes `engaged`, matching `tmpfiles.d/heptatrader-ib-paper.conf`. Every ancestor and the final marker are opened through no-follow descriptors and revalidated after the content read; an unrelated root-owned file, alternate path, symlink, metadata mismatch, content mismatch or identity change fails the static check.\n\nA bounded TCP reachability check can be requested with `--probe-broker --broker-host 127.0.0.1 --broker-port 4002`.',
+          )
+          PY
+          git diff --check
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build g++ libssl-dev
+
+      - name: Run focused hostile regressions
+        run: |
+          set -euo pipefail
+          python3 -m unittest tests.python.test_hepta_preflight -v
+          python3 -m unittest tests.python.test_preflight_special_files -v
+          python3 -m unittest tests.python.test_publication_identity -v
+
+      - name: Run complete canonical validation
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Publish repaired product source
+        env:
+          EXPECTED_BRANCH: plan/p1-release-package-preflight-20260910
+        run: |
+          set -euo pipefail
+          git diff --check
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add \
+            scripts/hepta_preflight_core.py \
+            tests/python/test_hepta_preflight.py \
+            docs/operations/preflight.md
+          git commit -m 'fix(preflight): authenticate canonical engaged kill switch'
+          git push origin "HEAD:$EXPECTED_BRANCH"
