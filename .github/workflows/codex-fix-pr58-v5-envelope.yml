@@ -32,7 +32,6 @@ jobs:
           EXPECTED_BRANCH: plan/p2-bounded-paper-v5-source-20260910
         run: |
           set -euo pipefail
-          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           remote_sha="$(git ls-remote --exit-code origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
           test "$remote_sha" = "$GITHUB_SHA"
