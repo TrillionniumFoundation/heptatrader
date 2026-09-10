@@ -1,0 +1,104 @@
+name: Remediate PR58 atomic flatten envelope
+
+on:
+  push:
+    branches:
+      - plan/p2-bounded-paper-v5-source-20260910
+    paths:
+      - .github/workflows/codex-fix-pr58-v5-envelope.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-fix-pr58-v5-envelope
+  cancel-in-progress: false
+
+jobs:
+  remediate:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact remediation carrier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Assert exact live branch object
+        env:
+          EXPECTED_BRANCH: plan/p2-bounded-paper-v5-source-20260910
+        run: |
+          set -euo pipefail
+          test "$(git branch --show-current)" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+
+      - name: Close the atomic flatten reachability gap
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one patch anchor, found {count}')
+              file.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'HeptaTrade/execution/ib_paper_execution_profile.cpp',
+              '''            maxGrossPosition > kQualificationMaximumGrossPosition ||\n            maxOrderQuantity > maxGrossPosition ||\n''',
+              '''            maxGrossPosition > kQualificationMaximumGrossPosition ||\n            maxOrderQuantity != maxGrossPosition ||\n''',
+          )
+
+          test_path = Path('tests/ib_paper_execution_profile_tests.cpp')
+          test_text = test_path.read_text(encoding='utf-8')
+          test_text = test_text.replace(
+              '#include <iostream>\n#include <map>\n#include <string>\n',
+              '#include <iostream>\n#include <map>\n#include <memory>\n#include <string>\n',
+              1,
+          )
+          anchor = '''    values = QualificationValues();\n    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "999999";\n    assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));\n    assert(reason == "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID");\n\n'''
+          addition = anchor + '''    // V5 external flatten is deliberately one exact-position order. Reject\n    // any profile that could accumulate more exposure than one permitted\n    // flatten order, even through sequential completed or partial fills.\n    values = QualificationValues();\n    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "250000";\n    assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));\n    assert(reason == "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID");\n\n'''
+          if test_text.count(anchor) != 1:
+              raise SystemExit('profile test insertion anchor drifted')
+          test_text = test_text.replace(anchor, addition, 1)
+
+          closing = '''}\n}\n\nint main()\n{\n    TestQualificationProfileIsDistinctAndBounded();\n    TestQualificationProfileRejectsWiderOrAmbiguousAuthority();\n    std::cout << "ib paper execution profile tests passed\\n";\n    return 0;\n}\n'''
+          expanded = '''}\n\nclass FixedKillSwitchReader final : public IbPaperKillSwitchReader\n{\npublic:\n    explicit FixedKillSwitchReader(IbPaperKillSwitchState state)\n        : m_state(state) {}\n\n    IbPaperKillSwitchObservation Observe() const override\n    {\n        IbPaperKillSwitchObservation observation;\n        observation.state = m_state;\n        if (m_state == IbPaperKillSwitchState::Engaged)\n            observation.reasonCode = "IB_PAPER_KILL_SWITCH_ENGAGED";\n        else if (m_state == IbPaperKillSwitchState::Uncertain)\n            observation.reasonCode = "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN";\n        return observation;\n    }\n\nprivate:\n    IbPaperKillSwitchState m_state;\n};\n\nAuthoritativeFlattenPlan ExactQualificationPlan(double position)\n{\n    AuthoritativeFlattenPlan plan;\n    plan.profileOrderMode = "EXTERNAL_QUALIFICATION_LMT_DAY";\n    plan.timeInForce = "DAY";\n    plan.expectedPositionQuantity = position;\n    plan.order.action = position > 0.0 ? "SELL" : "BUY";\n    plan.order.orderType = "LMT";\n    plan.order.totalQuantity = position > 0.0 ? position : -position;\n    plan.quoteSubscriptionId = "qualification-quote";\n    plan.quoteObservedAtMs = 1000;\n    plan.quoteStaleAfterMs = 5000;\n    plan.quoteBid = 1.10;\n    plan.quoteAsk = 1.11;\n    plan.order.lmtPrice = position > 0.0 ? plan.quoteBid : plan.quoteAsk;\n    plan.referencePrice = plan.order.lmtPrice;\n    return plan;\n}\n\nvoid TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath()\n{\n    std::map<std::string, std::string> values = QualificationValues();\n    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "250000";\n    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "250000";\n    IbPaperExecutionProfileConfig config;\n    std::string reason;\n    assert(IbPaperExecutionProfileConfig::FromValues(values, config, reason));\n    assert(config.maxOrderQuantity == config.maxGrossPosition);\n    assert(config.maxActiveOrders == 1);\n    assert(config.qualificationQuoteContracts ==\n        "EUR.USD|EUR|CASH|IDEALPRO|USD");\n\n    const std::shared_ptr<IbPaperKillSwitchReader> engaged(\n        new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));\n    IbPaperExecutionGuard guard(config, engaged);\n    FlattenPositionCommand command;\n    command.context.account = config.account;\n    command.context.venue = "IB";\n    command.context.executionDomain = "PAPER";\n    command.context.allowCancelAny = false;\n    IbPaperAuthoritativeRiskSnapshot risk;\n    risk.complete = true;\n    risk.activeOrderCount = 0;\n\n    // Both signs remain exactly reducible while the kill switch is engaged.\n    AuthoritativeFlattenPlan longPlan = ExactQualificationPlan(250000.0);\n    assert(guard.AllowFlatten(command, longPlan, risk, 2000, reason));\n    assert(reason.empty());\n\n    // A partial fill produces a smaller short exposure; it is still flattened\n    // in one exact reduce-only order, never rounded up or chunked past zero.\n    AuthoritativeFlattenPlan partialShortPlan =\n        ExactQualificationPlan(-125000.0);\n    assert(guard.AllowFlatten(\n        command, partialShortPlan, risk, 2000, reason));\n    assert(reason.empty());\n\n    AuthoritativeFlattenPlan unreachable =\n        ExactQualificationPlan(250001.0);\n    assert(!guard.AllowFlatten(command, unreachable, risk, 2000, reason));\n    assert(reason == "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED");\n}\n}\n\nint main()\n{\n    TestQualificationProfileIsDistinctAndBounded();\n    TestQualificationProfileRejectsWiderOrAmbiguousAuthority();\n    TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath();\n    std::cout << "ib paper execution profile tests passed\\n";\n    return 0;\n}\n'''
+          if test_text.count(closing) != 1:
+              raise SystemExit('profile test closing anchor drifted')
+          test_path.write_text(test_text.replace(closing, expanded, 1), encoding='utf-8')
+          PY
+
+      - name: Build and run the complete canonical core suite
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Publish fixed source and remove carrier
+        env:
+          EXPECTED_BRANCH: plan/p2-bounded-paper-v5-source-20260910
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-fix-pr58-v5-envelope.yml
+          git diff --check
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git add \
+            HeptaTrade/execution/ib_paper_execution_profile.cpp \
+            tests/ib_paper_execution_profile_tests.cpp \
+            .github/workflows/codex-fix-pr58-v5-envelope.yml
+          git commit -m 'fix(ib-paper): keep V5 exposure atomically flattenable'
+          git push origin "HEAD:$EXPECTED_BRANCH"
