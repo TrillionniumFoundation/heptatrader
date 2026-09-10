@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import gzip
@@ -122,6 +123,7 @@ def _file_flags() -> int:
         os.O_RDONLY
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
     )
 
 
@@ -141,6 +143,15 @@ def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
 
 def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
     return _file_identity(left) == _file_identity(right)
+
+
+def _clear_nonblocking(descriptor: int) -> None:
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
+    if not nonblocking:
+        return
+    flags = fcntl.fcntl(descriptor, fcntl.F_GETFL)
+    if flags & nonblocking:
+        fcntl.fcntl(descriptor, fcntl.F_SETFL, flags & ~nonblocking)
 
 
 def _open_directory_absolute(path: Path, label: str) -> int:
@@ -193,12 +204,13 @@ def _open_pinned_regular(path: Path, label: str) -> Any:
     try:
         descriptor = os.open(absolute.name, _file_flags(), dir_fd=directory)
         pinned = os.fstat(descriptor)
+        if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
+            raise PreflightError(
+                f"{label} must be a stable regular non-symlink single-link file"
+            )
+        _clear_nonblocking(descriptor)
         current = os.stat(absolute.name, dir_fd=directory, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(pinned.st_mode)
-            or pinned.st_nlink != 1
-            or not _same_file(pinned, current)
-        ):
+        if not _same_file(pinned, current):
             raise PreflightError(
                 f"{label} must be a stable regular non-symlink single-link file"
             )
@@ -224,12 +236,13 @@ def _open_pinned_regular_at(root: int, relative: str, label: str) -> Any:
     try:
         descriptor = os.open(parts[-1], _file_flags(), dir_fd=directory)
         pinned = os.fstat(descriptor)
+        if not stat.S_ISREG(pinned.st_mode) or pinned.st_nlink != 1:
+            raise PreflightError(
+                f"{label} must be a stable regular non-symlink single-link file"
+            )
+        _clear_nonblocking(descriptor)
         current = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
-        if (
-            not stat.S_ISREG(pinned.st_mode)
-            or pinned.st_nlink != 1
-            or not _same_file(pinned, current)
-        ):
+        if not _same_file(pinned, current):
             raise PreflightError(
                 f"{label} must be a stable regular non-symlink single-link file"
             )
