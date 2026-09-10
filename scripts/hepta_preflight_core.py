@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import gzip
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -46,6 +47,8 @@ HARD_MAXIMUM_COMPRESSED_ARCHIVE_BYTES = (
     + 32 * 1024 * 1024
 )
 HARD_PRIVATE_KEY_SUFFIXES = frozenset({".key", ".pem", ".p12", ".pfx", ".jks"})
+HARD_ALLOWED_BROKER_HOSTS = frozenset({"127.0.0.1", "::1"})
+HARD_ALLOWED_BROKER_PORTS = frozenset({4002, 7497})
 MANAGED_SUBTREES = (
     "libexec/heptatrader",
     "share/heptatrader",
@@ -143,6 +146,18 @@ def _file_identity(metadata: os.stat_result) -> tuple[int, ...]:
 
 def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
     return _file_identity(left) == _file_identity(right)
+
+
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_dev,
+        left.st_ino,
+        stat.S_IFMT(left.st_mode),
+    ) == (
+        right.st_dev,
+        right.st_ino,
+        stat.S_IFMT(right.st_mode),
+    )
 
 
 def _clear_nonblocking(descriptor: int) -> None:
@@ -307,6 +322,82 @@ def _read_bounded(stream: BinaryIO, maximum: int, label: str) -> bytes:
     return b"".join(chunks)
 
 
+def _canonical_string_array(value: Any, label: str) -> list[str]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(
+            not isinstance(item, str)
+            or not item
+            or item.strip() != item
+            for item in value
+        )
+        or value != sorted(value)
+        or len(value) != len(set(value))
+    ):
+        raise PreflightError(f"{label} must be a sorted unique string array")
+    return value
+
+
+def _validate_profile_policy(profiles: dict[str, Any]) -> None:
+    core = profiles.get("core")
+    paper = profiles.get("ib-paper")
+    if not isinstance(core, dict) or set(core) != {
+        "required_package_paths",
+        "required_host_commands",
+    }:
+        raise PreflightError("core preflight profile fields are not canonical")
+    if not isinstance(paper, dict) or set(paper) != {
+        "required_package_paths",
+        "required_host_commands",
+        "allowed_broker_hosts",
+        "allowed_broker_ports",
+    }:
+        raise PreflightError("ib-paper preflight profile fields are not canonical")
+    for name, profile in (("core", core), ("ib-paper", paper)):
+        _canonical_string_array(
+            profile.get("required_package_paths"),
+            f"{name}.required_package_paths",
+        )
+        _canonical_string_array(
+            profile.get("required_host_commands"),
+            f"{name}.required_host_commands",
+        )
+
+    hosts = _canonical_string_array(
+        paper.get("allowed_broker_hosts"),
+        "ib-paper.allowed_broker_hosts",
+    )
+    for host in hosts:
+        try:
+            parsed = ipaddress.ip_address(host)
+        except ValueError as error:
+            raise PreflightError(
+                "broker policy hosts must be literal IP addresses"
+            ) from error
+        if str(parsed) != host:
+            raise PreflightError(
+                "broker policy hosts must use canonical literal IP form"
+            )
+    ports = paper.get("allowed_broker_ports")
+    if (
+        not isinstance(ports, list)
+        or not ports
+        or any(
+            not isinstance(port, int)
+            or isinstance(port, bool)
+            or port < 1
+            or port > 65535
+            for port in ports
+        )
+        or ports != sorted(ports)
+        or len(ports) != len(set(ports))
+    ):
+        raise PreflightError(
+            "ib-paper.allowed_broker_ports must be a sorted unique port array"
+        )
+
+
 def _load_policy(path: Path) -> LoadedPolicy:
     absolute = _absolute_path(path)
     with _open_pinned_regular(absolute, "policy") as (
@@ -354,6 +445,7 @@ def _load_policy(path: Path) -> LoadedPolicy:
     profiles = value.get("profiles")
     if not isinstance(profiles, dict) or set(profiles) != {"core", "ib-paper"}:
         raise PreflightError("preflight policy profiles are not canonical")
+    _validate_profile_policy(profiles)
     return LoadedPolicy(value, raw_bytes, absolute)
 
 
@@ -1217,20 +1309,9 @@ def _safe_kill_switch(path: Path) -> str | None:
     return None
 
 
-def _publish_noreplace(
-    directory: int, temporary_name: str, final_name: str
-) -> None:
-    os.link(
-        temporary_name,
-        final_name,
-        src_dir_fd=directory,
-        dst_dir_fd=directory,
-        follow_symlinks=False,
-    )
-
-
-def _write_private_receipt(path: Path, value: dict[str, Any]) -> None:
-    path = _absolute_path(path)
+def _open_receipt_output_directory(
+    path: Path,
+) -> tuple[int, os.stat_result]:
     path.parent.mkdir(parents=True, exist_ok=True)
     directory = os.open(
         path.parent,
@@ -1239,53 +1320,155 @@ def _write_private_receipt(path: Path, value: dict[str, Any]) -> None:
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0),
     )
-    descriptor = -1
-    temporary_name = ""
     try:
-        for _ in range(32):
-            candidate = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
-            try:
-                descriptor = os.open(
-                    candidate,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                    dir_fd=directory,
-                )
-                temporary_name = candidate
-                break
-            except FileExistsError:
-                continue
-        if descriptor < 0:
+        pinned = os.fstat(directory)
+        current = os.stat(path.parent, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(pinned.st_mode)
+            or not _same_inode(pinned, current)
+        ):
             raise PreflightError(
-                "could not allocate a private receipt staging file"
+                f"receipt parent is not a stable directory: {path.parent}"
             )
-        os.fchmod(descriptor, 0o600)
-        with os.fdopen(descriptor, "wb", closefd=True) as stream:
-            descriptor = -1
-            stream.write(canonical_json(value))
-            stream.flush()
-            os.fsync(stream.fileno())
+        if (
+            pinned.st_uid != os.geteuid()
+            or stat.S_IMODE(pinned.st_mode) & 0o022
+        ):
+            raise PreflightError(
+                "receipt output directory must be operator-custodied: "
+                "owned by the current user and not group/world writable"
+            )
+        return directory, pinned
+    except Exception:
+        os.close(directory)
+        raise
+
+
+def _open_anonymous_receipt(directory: int) -> int:
+    anonymous = getattr(os, "O_TMPFILE", 0)
+    if not anonymous:
+        raise PreflightError(
+            "receipt filesystem lacks anonymous inode-bound staging"
+        )
+    try:
+        descriptor = os.open(
+            ".",
+            os.O_RDWR
+            | anonymous
+            | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory,
+        )
+    except OSError as error:
+        raise PreflightError(
+            "receipt filesystem does not support anonymous "
+            "inode-bound staging"
+        ) from error
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0:
+        os.close(descriptor)
+        raise PreflightError(
+            "anonymous receipt staging is not an unlinked regular file"
+        )
+    os.fchmod(descriptor, 0o600)
+    return descriptor
+
+
+def _write_all_descriptor(descriptor: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
         try:
-            _publish_noreplace(directory, temporary_name, path.name)
+            count = os.write(descriptor, remaining)
+        except InterruptedError:
+            continue
+        if count <= 0:
+            raise PreflightError(
+                "receipt staging write made no progress"
+            )
+        remaining = remaining[count:]
+
+
+def _descriptor_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, 1024 * 1024, offset)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+        offset += len(chunk)
+
+
+def _publish_noreplace(
+    directory: int, descriptor: int, final_name: str
+) -> None:
+    os.link(
+        f"/proc/self/fd/{descriptor}",
+        final_name,
+        dst_dir_fd=directory,
+        follow_symlinks=True,
+    )
+
+
+def _write_private_receipt(path: Path, value: dict[str, Any]) -> None:
+    path = _absolute_path(path)
+    content = canonical_json(value)
+    directory, pinned_directory = _open_receipt_output_directory(path)
+    descriptor = -1
+    published = False
+    try:
+        descriptor = _open_anonymous_receipt(directory)
+        _write_all_descriptor(descriptor, content)
+        os.fsync(descriptor)
+        try:
+            _publish_noreplace(directory, descriptor, path.name)
+            published = True
         except FileExistsError as error:
             raise PreflightError(
                 f"refusing to replace concurrently created receipt: {path}"
             ) from error
-        os.unlink(temporary_name, dir_fd=directory)
-        temporary_name = ""
+        pinned = os.fstat(descriptor)
+        current = os.stat(
+            path.name, dir_fd=directory, follow_symlinks=False
+        )
+        if (
+            not stat.S_ISREG(current.st_mode)
+            or current.st_nlink != 1
+            or not _same_inode(pinned, current)
+            or current.st_size != len(content)
+            or stat.S_IMODE(current.st_mode) != 0o600
+            or _descriptor_sha256(descriptor)
+            != hashlib.sha256(content).hexdigest()
+        ):
+            raise PreflightError(
+                "published receipt identity, bytes or mode differ "
+                "from the fsynced staging inode"
+            )
+        current_directory = os.stat(
+            path.parent, follow_symlinks=False
+        )
+        if not _same_inode(pinned_directory, current_directory):
+            raise PreflightError(
+                "receipt output directory identity changed during publication"
+            )
         os.fsync(directory)
+    except Exception:
+        if published and descriptor >= 0:
+            try:
+                current = os.stat(
+                    path.name,
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+                if _same_inode(os.fstat(descriptor), current):
+                    os.unlink(path.name, dir_fd=directory)
+                    os.fsync(directory)
+            except OSError:
+                pass
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if temporary_name:
-            try:
-                os.unlink(temporary_name, dir_fd=directory)
-            except OSError:
-                pass
         os.close(directory)
 
 
@@ -1359,6 +1542,15 @@ def run_preflight(args: argparse.Namespace) -> dict[str, Any]:
             )
         elif args.profile != "ib-paper":
             record("broker.reachability", "FAIL", "Broker probing is valid only for ib-paper")
+        elif (
+            args.broker_host not in HARD_ALLOWED_BROKER_HOSTS
+            or args.broker_port not in HARD_ALLOWED_BROKER_PORTS
+        ):
+            record(
+                "broker.reachability",
+                "FAIL",
+                "Broker endpoint is outside the compiled PAPER endpoint boundary",
+            )
         else:
             hosts = set(selected.get("allowed_broker_hosts", []))
             ports = set(selected.get("allowed_broker_ports", []))

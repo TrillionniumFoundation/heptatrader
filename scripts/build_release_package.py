@@ -81,6 +81,18 @@ def _same_file(left: os.stat_result, right: os.stat_result) -> bool:
     return _file_identity(left) == _file_identity(right)
 
 
+def _same_inode(left: os.stat_result, right: os.stat_result) -> bool:
+    return (
+        left.st_dev,
+        left.st_ino,
+        stat.S_IFMT(left.st_mode),
+    ) == (
+        right.st_dev,
+        right.st_ino,
+        stat.S_IFMT(right.st_mode),
+    )
+
+
 def _clear_nonblocking(descriptor: int) -> None:
     nonblocking = getattr(os, "O_NONBLOCK", 0)
     if not nonblocking:
@@ -481,7 +493,7 @@ def _absolute_output(path: Path) -> Path:
     return absolute
 
 
-def _open_output_directory(path: Path) -> int:
+def _open_output_directory(path: Path) -> tuple[int, os.stat_result]:
     path.parent.mkdir(parents=True, exist_ok=True)
     flags = (
         os.O_RDONLY
@@ -490,20 +502,119 @@ def _open_output_directory(path: Path) -> int:
         | getattr(os, "O_NOFOLLOW", 0)
     )
     directory = os.open(path.parent, flags)
-    if not stat.S_ISDIR(os.fstat(directory).st_mode):
+    try:
+        pinned = os.fstat(directory)
+        current = os.stat(path.parent, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(pinned.st_mode)
+            or not _same_inode(pinned, current)
+        ):
+            raise PackageError(
+                f"output parent is not a stable directory: {path.parent}"
+            )
+        if (
+            pinned.st_uid != os.geteuid()
+            or stat.S_IMODE(pinned.st_mode) & 0o022
+        ):
+            raise PackageError(
+                "output directory must be operator-custodied: owned by "
+                "the current user and not group/world writable"
+            )
+        return directory, pinned
+    except Exception:
         os.close(directory)
-        raise PackageError(f"output parent is not a directory: {path.parent}")
-    return directory
+        raise
 
 
-def _publish_noreplace(directory: int, temporary_name: str, final_name: str) -> None:
+def _open_anonymous_staging(directory: int, mode: int) -> int:
+    anonymous = getattr(os, "O_TMPFILE", 0)
+    if not anonymous:
+        raise PackageError(
+            "output filesystem lacks anonymous inode-bound staging"
+        )
+    try:
+        descriptor = os.open(
+            ".",
+            os.O_RDWR
+            | anonymous
+            | getattr(os, "O_CLOEXEC", 0),
+            mode,
+            dir_fd=directory,
+        )
+    except OSError as error:
+        raise PackageError(
+            "output filesystem does not support anonymous "
+            "inode-bound staging"
+        ) from error
+    metadata = os.fstat(descriptor)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 0:
+        os.close(descriptor)
+        raise PackageError(
+            "anonymous publication staging is not an unlinked regular file"
+        )
+    os.fchmod(descriptor, mode)
+    return descriptor
+
+
+def _write_all(descriptor: int, content: bytes) -> None:
+    remaining = memoryview(content)
+    while remaining:
+        try:
+            count = os.write(descriptor, remaining)
+        except InterruptedError:
+            continue
+        if count <= 0:
+            raise PackageError("publication staging write made no progress")
+        remaining = remaining[count:]
+
+
+def _descriptor_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while True:
+        chunk = os.pread(descriptor, 1024 * 1024, offset)
+        if not chunk:
+            return digest.hexdigest()
+        digest.update(chunk)
+        offset += len(chunk)
+
+
+def _publish_noreplace(
+    directory: int, descriptor: int, final_name: str
+) -> None:
+    # The source is the still-open anonymous inode, never a mutable
+    # staging pathname. Destination creation remains atomic/no-replace.
     os.link(
-        temporary_name,
+        f"/proc/self/fd/{descriptor}",
         final_name,
-        src_dir_fd=directory,
         dst_dir_fd=directory,
-        follow_symlinks=False,
+        follow_symlinks=True,
     )
+
+
+def _validate_published_output(
+    directory: int,
+    descriptor: int,
+    final_name: str,
+    content: bytes,
+    mode: int,
+) -> None:
+    pinned = os.fstat(descriptor)
+    published = os.stat(
+        final_name, dir_fd=directory, follow_symlinks=False
+    )
+    if (
+        not stat.S_ISREG(published.st_mode)
+        or published.st_nlink != 1
+        or not _same_inode(pinned, published)
+        or published.st_size != len(content)
+        or stat.S_IMODE(published.st_mode) != mode
+        or _descriptor_sha256(descriptor) != sha256_bytes(content)
+    ):
+        raise PackageError(
+            "published output identity, bytes or mode differ from "
+            "the fsynced staging inode"
+        )
 
 
 def _ensure_new_outputs(paths: Iterable[Path]) -> None:
@@ -519,52 +630,50 @@ def _ensure_new_outputs(paths: Iterable[Path]) -> None:
 
 def _write_atomic(path: Path, content: bytes, mode: int) -> None:
     path = _absolute_output(path)
-    directory = _open_output_directory(path)
+    directory, pinned_directory = _open_output_directory(path)
     descriptor = -1
-    temporary_name = ""
+    published = False
     try:
-        for _ in range(32):
-            candidate = f".{path.name}.{os.getpid()}.{secrets.token_hex(8)}"
-            try:
-                descriptor = os.open(
-                    candidate,
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_EXCL
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                    mode,
-                    dir_fd=directory,
-                )
-                temporary_name = candidate
-                break
-            except FileExistsError:
-                continue
-        if descriptor < 0:
-            raise PackageError("could not allocate a private output staging file")
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "wb", closefd=True) as stream:
-            descriptor = -1
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
+        descriptor = _open_anonymous_staging(directory, mode)
+        _write_all(descriptor, content)
+        os.fsync(descriptor)
         try:
-            _publish_noreplace(directory, temporary_name, path.name)
+            _publish_noreplace(directory, descriptor, path.name)
+            published = True
         except FileExistsError as error:
             raise PackageError(
                 f"refusing to replace concurrently created output: {path}"
             ) from error
-        os.unlink(temporary_name, dir_fd=directory)
-        temporary_name = ""
+        _validate_published_output(
+            directory, descriptor, path.name, content, mode
+        )
+        current_directory = os.stat(
+            path.parent, follow_symlinks=False
+        )
+        if not _same_inode(pinned_directory, current_directory):
+            raise PackageError(
+                "output directory identity changed during publication"
+            )
         os.fsync(directory)
+    except Exception:
+        # Roll back only the exact inode published by this writer.
+        # Never unlink a replacement supplied by another publisher.
+        if published and descriptor >= 0:
+            try:
+                current = os.stat(
+                    path.name,
+                    dir_fd=directory,
+                    follow_symlinks=False,
+                )
+                if _same_inode(os.fstat(descriptor), current):
+                    os.unlink(path.name, dir_fd=directory)
+                    os.fsync(directory)
+            except OSError:
+                pass
+        raise
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-        if temporary_name:
-            try:
-                os.unlink(temporary_name, dir_fd=directory)
-            except OSError:
-                pass
         os.close(directory)
 
 

@@ -542,7 +542,96 @@ class HeptaPreflightTests(unittest.TestCase):
                 receipt = preflight.run_preflight(args)
             connect.assert_not_called()
             self.assertEqual(receipt["result"], "FAIL")
-            self.assertIn("outside the PAPER policy", check(receipt, "broker.reachability")["detail"])
+            self.assertIn("outside the compiled PAPER endpoint boundary", check(receipt, "broker.reachability")["detail"])
+
+
+    def test_packaged_policy_cannot_widen_compiled_broker_endpoint_ceiling(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            policy_value = json.loads(
+                POLICY.read_text(encoding="utf-8")
+            )
+            paper = policy_value["profiles"]["ib-paper"]
+            paper["allowed_broker_hosts"] = sorted(
+                set(paper["allowed_broker_hosts"])
+                | {"192.0.2.1"}
+            )
+            paper["allowed_broker_ports"] = sorted(
+                set(paper["allowed_broker_ports"])
+                | {4001}
+            )
+            widened_policy = work / "widened-policy.json"
+            widened_policy.write_bytes(
+                preflight.canonical_json(policy_value)
+            )
+            root = fixture_tree(work / "root", ib=True)
+            packaged_policy = (
+                root
+                / "share/heptatrader/preflight-policy-v1.json"
+            )
+            packaged_policy.write_bytes(widened_policy.read_bytes())
+            artifact = work / "ib-paper.tar.gz"
+            package = release.package_install_root(
+                root,
+                artifact,
+                version=VERSION,
+                profile="ib-paper",
+                source_sha=SOURCE_SHA,
+                source_date_epoch=EPOCH,
+            )
+
+            for label, host, port in (
+                ("non-loopback", "192.0.2.1", 4002),
+                ("non-paper-port", "127.0.0.1", 4001),
+            ):
+                with self.subTest(label=label):
+                    args = args_for(
+                        artifact,
+                        package["package_sha256"],
+                        profile="ib-paper",
+                    )
+                    args.policy = widened_policy
+                    args.probe_broker = True
+                    args.broker_host = host
+                    args.broker_port = port
+                    with mock.patch.object(
+                        preflight.socket, "create_connection"
+                    ) as connect:
+                        receipt = preflight.run_preflight(args)
+                    connect.assert_not_called()
+                    self.assertEqual(
+                        check(receipt, "artifact.integrity")["status"],
+                        "PASS",
+                    )
+                    self.assertEqual(receipt["result"], "FAIL")
+                    self.assertIn(
+                        "compiled PAPER endpoint boundary",
+                        check(receipt, "broker.reachability")["detail"],
+                    )
+
+            args = args_for(
+                artifact,
+                package["package_sha256"],
+                profile="ib-paper",
+            )
+            args.policy = widened_policy
+            args.probe_broker = True
+            connection = mock.MagicMock()
+            with mock.patch.object(
+                preflight.socket,
+                "create_connection",
+                return_value=connection,
+            ) as connect:
+                receipt = preflight.run_preflight(args)
+            connect.assert_called_once_with(
+                ("127.0.0.1", 4002), timeout=0.1
+            )
+            self.assertEqual(
+                check(receipt, "broker.reachability")["status"],
+                "PASS",
+            )
 
     def test_receipt_output_is_never_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -821,6 +910,7 @@ class HeptaPreflightTests(unittest.TestCase):
             "test_static_host_extra_managed_file_fails",
             "test_static_host_build_metadata_mutation_fails",
             "test_static_host_owner_mismatch_is_rejected",
+            "test_packaged_policy_cannot_widen_compiled_broker_endpoint_ceiling",
         }
         suite = unittest.defaultTestLoader.loadTestsFromTestCase(
             HeptaPreflightTests

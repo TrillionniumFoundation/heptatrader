@@ -54,7 +54,7 @@ sudo hepta-preflight \
   --output /var/lib/heptatrader/evidence/ib-paper-host-preflight.json
 ```
 
-A bounded TCP reachability check can be requested with `--probe-broker --broker-host 127.0.0.1 --broker-port 4002`. It is deliberately restricted to policy-approved loopback PAPER ports. TCP success is not evidence that the session is PAPER, the account is correct, callbacks are healthy, or mutations are qualified.
+A bounded TCP reachability check can be requested with `--probe-broker --broker-host 127.0.0.1 --broker-port 4002`. The package policy may narrow access, but it cannot widen the compiled literal-address ceiling of `127.0.0.1`/`::1` and PAPER ports `4002`/`7497`; hostnames and DNS resolution are not admitted. Policy and package identity must succeed before any connection attempt. TCP success is not evidence that the session is PAPER, the account is correct, callbacks are healthy, or mutations are qualified.
 
 ## Required follow-on checks
 
@@ -67,4 +67,4 @@ The caller-supplied policy must be byte-identical to the policy inside the appro
 
 Static-host mode compares the complete HeptaTrader-managed installed inventory with the package manifest. Every managed file must have the approved bytes, size and mode and must share the deployment-root owner/group; stale extra HeptaTrader binaries, units, helpers, policies or documentation fail the check. The installed build metadata is parsed again and must match the package profile and release identity.
 
-Receipt publication is atomic and no-replace. A competing writer that claims the output name wins without being overwritten; the preflight fails instead of replacing existing evidence.
+Receipt publication requires an operator-owned parent directory that is not group/world writable and a filesystem supporting anonymous `O_TMPFILE` staging. The receipt is fsynced through an unnamed descriptor, linked no-replace from that descriptor, and verified by inode, bytes, mode and pinned parent identity. No mutable staging pathname exists for another publisher to replace or for cleanup to unlink. A competing writer that first claims the final output name wins without being overwritten; the preflight fails instead of replacing existing evidence.
