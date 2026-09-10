@@ -1,0 +1,74 @@
+name: Restack PR58 on final PR57
+
+on:
+  push:
+    branches:
+      - plan/p2-bounded-paper-v5-source-20260910
+    paths:
+      - .github/workflows/codex-restack-pr58-on-final-pr57.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-restack-pr58-on-final-pr57
+  cancel-in-progress: false
+
+jobs:
+  restack:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout exact current PR58 carrier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify exact branch and merge final PR57
+        env:
+          EXPECTED_BRANCH: plan/p2-bounded-paper-v5-source-20260910
+          FINAL_PR57: 760697c9602e10dc7c0f5d4a1c1fc4930fcd34dd
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          remote_sha="$(git ls-remote --exit-code origin "refs/heads/$EXPECTED_BRANCH" | awk '{print $1}')"
+          test "$remote_sha" = "$GITHUB_SHA"
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git merge --no-ff --no-edit "$FINAL_PR57"
+          test "$(git merge-base --is-ancestor "$FINAL_PR57" HEAD; echo $?)" = '0'
+
+      - name: Remove carrier and validate final merged slice
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-restack-pr58-on-final-pr57.yml
+          git add .github/workflows/codex-restack-pr58-on-final-pr57.yml
+          git commit --amend --no-edit
+          git diff --check
+          python3 scripts/check_documentation.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest tests.python.test_preflight_special_files -v
+          python3 -m unittest tests.python.test_hepta_preflight -v
+          python3 -m unittest tests.python.test_hepta_broker_egress_policy -v
+
+      - name: Run complete canonical core and Python suites
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Publish final restacked PR58
+        env:
+          EXPECTED_BRANCH: plan/p2-bounded-paper-v5-source-20260910
+        run: |
+          set -euo pipefail
+          git diff --check
+          git push origin "HEAD:$EXPECTED_BRANCH"
