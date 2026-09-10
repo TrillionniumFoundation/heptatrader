@@ -1,0 +1,205 @@
+name: Finalize PR58 V5 envelope fail-safe
+
+on:
+  push:
+    branches:
+      - plan/p2-bounded-paper-v5-source-20260910
+    paths:
+      - .github/workflows/codex-finalize-pr58-v5-envelope-v3.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-fix-pr58-v5-envelope
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - name: Checkout newest PAPER stack
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: plan/p2-bounded-paper-v5-source-20260910
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Merge newest release safety baseline
+        run: |
+          set -euo pipefail
+          git fetch origin \
+            plan/p1-release-package-preflight-20260910 \
+            plan/p2-bounded-paper-v5-source-20260910
+          git checkout -B plan/p2-bounded-paper-v5-source-20260910 \
+            origin/plan/p2-bounded-paper-v5-source-20260910
+          git config user.name 'ProfHepta'
+          git config user.email '102159240+ProfHepta@users.noreply.github.com'
+          git merge --no-edit origin/plan/p1-release-package-preflight-20260910
+
+      - name: Materialize fail-safe behavioral closure
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          profile = Path('HeptaTrade/execution/ib_paper_execution_profile.cpp')
+          source = profile.read_text(encoding='utf-8')
+          source = source.replace(
+              '            maxOrderQuantity > maxGrossPosition ||\n',
+              '            maxOrderQuantity != maxGrossPosition ||\n',
+              1,
+          )
+          if 'maxOrderQuantity != maxGrossPosition' not in source:
+              raise SystemExit('V5 equality guard is absent')
+          profile.write_text(source, encoding='utf-8')
+
+          tests = Path('tests/ib_paper_execution_profile_tests.cpp')
+          text = tests.read_text(encoding='utf-8')
+          if '#include <cmath>\n' not in text:
+              text = text.replace('#include <cassert>\n', '#include <cassert>\n#include <cmath>\n', 1)
+          if '#include <memory>\n' not in text:
+              text = text.replace('#include <map>\n', '#include <map>\n#include <memory>\n', 1)
+
+          reject_marker = 'An atomic V5 flatten must cover every reachable position.'
+          if reject_marker not in text:
+              anchor = '''    values = QualificationValues();\n    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "999999";\n    assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));\n    assert(reason == "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID");\n\n'''
+              if anchor not in text:
+                  raise SystemExit('V5 rejection anchor drifted')
+              text = text.replace(
+                  anchor,
+                  anchor + '''    // An atomic V5 flatten must cover every reachable position.\n    values = QualificationValues();\n    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "250000";\n    assert(!IbPaperExecutionProfileConfig::FromValues(values, config, reason));\n    assert(reason == "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID");\n\n''',
+                  1,
+              )
+
+          if 'TestSequentialFillsRemainAtomicallyFlattenable' not in text:
+              block = r'''
+class EngagedKillSwitchReader final : public IbPaperKillSwitchReader
+{
+public:
+    IbPaperKillSwitchObservation Observe() const override
+    {
+        IbPaperKillSwitchObservation observation;
+        observation.state = IbPaperKillSwitchState::Engaged;
+        observation.reasonCode = "IB_PAPER_KILL_SWITCH_ENGAGED";
+        return observation;
+    }
+};
+
+AuthoritativeFlattenPlan FailSafeQualificationFlatten(double position)
+{
+    AuthoritativeFlattenPlan plan;
+    plan.profileOrderMode = "EXTERNAL_QUALIFICATION_LMT_DAY";
+    plan.timeInForce = "DAY";
+    plan.expectedPositionQuantity = position;
+    plan.order.action = position > 0.0 ? "SELL" : "BUY";
+    plan.order.orderType = "LMT";
+    plan.order.totalQuantity = std::fabs(position);
+    plan.quoteSubscriptionId = "qualification-quote";
+    plan.quoteObservedAtMs = 1000;
+    plan.quoteStaleAfterMs = 5000;
+    plan.quoteBid = 1.10;
+    plan.quoteAsk = 1.11;
+    plan.order.lmtPrice = position > 0.0 ? plan.quoteBid : plan.quoteAsk;
+    plan.referencePrice = plan.order.lmtPrice;
+    return plan;
+}
+
+void TestSequentialFillsRemainAtomicallyFlattenable()
+{
+    std::map<std::string, std::string> values = QualificationValues();
+    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "250000";
+    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "250000";
+    IbPaperExecutionProfileConfig config;
+    std::string reason;
+    assert(IbPaperExecutionProfileConfig::FromValues(values, config, reason));
+    assert(config.maxOrderQuantity == config.maxGrossPosition);
+    assert(config.maxActiveOrders == 1);
+
+    const double firstCompletedFill = 125000.0;
+    const double secondCompletedFill = 125000.0;
+    const double accumulatedLong = firstCompletedFill + secondCompletedFill;
+    assert(accumulatedLong == config.maxGrossPosition);
+    assert(accumulatedLong <= config.maxOrderQuantity);
+    const double partialShort = -firstCompletedFill;
+    assert(std::fabs(partialShort) <= config.maxOrderQuantity);
+
+    const std::shared_ptr<IbPaperKillSwitchReader> engaged(
+        new EngagedKillSwitchReader());
+    IbPaperExecutionGuard guard(config, engaged);
+    FlattenPositionCommand command;
+    command.context.account = config.account;
+    command.context.venue = "IB";
+    command.context.executionDomain = "PAPER";
+    command.context.allowCancelAny = false;
+    IbPaperAuthoritativeRiskSnapshot risk;
+    risk.complete = true;
+    risk.activeOrderCount = 0;
+    risk.grossAbsolutePosition = accumulatedLong;
+
+    AuthoritativeFlattenPlan longPlan =
+        FailSafeQualificationFlatten(accumulatedLong);
+    assert(guard.AllowFlatten(command, longPlan, risk, 2000, reason));
+    assert(reason.empty());
+    risk.grossAbsolutePosition = std::fabs(partialShort);
+    AuthoritativeFlattenPlan shortPlan =
+        FailSafeQualificationFlatten(partialShort);
+    assert(guard.AllowFlatten(command, shortPlan, risk, 2100, reason));
+    assert(reason.empty());
+}
+'''
+              marker = '\n}\n\nint main()\n'
+              if marker not in text:
+                  raise SystemExit('profile test namespace anchor drifted')
+              text = text.replace(marker, '\n' + block + marker, 1)
+          if '    TestSequentialFillsRemainAtomicallyFlattenable();\n' not in text:
+              anchor = '    TestQualificationProfileRejectsWiderOrAmbiguousAuthority();\n'
+              if anchor not in text:
+                  raise SystemExit('profile test main anchor drifted')
+              text = text.replace(
+                  anchor,
+                  anchor + '    TestSequentialFillsRemainAtomicallyFlattenable();\n',
+                  1,
+              )
+          tests.write_text(text, encoding='utf-8')
+
+          coordinator = Path('tests/execution_coordinator_tests.cpp')
+          text = coordinator.read_text(encoding='utf-8')
+          start = text.find('void TestQualificationExternalFlattenIsExactAndAbsolutelyBounded()')
+          end = text.find('\nvoid TestFlattenRejectsSubToleranceOverCloseAndStaleNoop()', start)
+          if start < 0 or end < 0:
+              raise SystemExit('qualification coordinator regression is absent')
+          block = text[start:end]
+          if 'firstCompletedFill' not in block:
+              old = '    const double position = 250000.0;\n'
+              new = '''    const double firstCompletedFill = 125000.0;\n    const double secondCompletedFill = 125000.0;\n    const double position = firstCompletedFill + secondCompletedFill;\n'''
+              if old not in block:
+                  raise SystemExit('coordinator position anchor drifted')
+              block = block.replace(old, new, 1)
+              text = text[:start] + block + text[end:]
+          coordinator.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Run complete canonical validation
+        env:
+          HEPTA_JOBS: '2'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          ./scripts/dev_core.sh
+          python3 -m unittest discover -s tests/python -p 'test_*.py'
+
+      - name: Publish validated source and remove every PR58 carrier
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/codex-fix-pr58-v5-envelope.yml \
+            .github/workflows/codex-finalize-pr58-v5-envelope.yml \
+            .github/workflows/codex-finalize-pr58-v5-envelope-v3.yml
+          git diff --check
+          git add -A
+          git commit -m 'fix(ib-paper): verify atomically recoverable V5 exposure'
+          git push origin HEAD:plan/p2-bounded-paper-v5-source-20260910
