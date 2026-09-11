@@ -10,13 +10,17 @@ on:
       - '.github/workflows/self-hosted-ib-availability.yml'
       - 'scripts/build_ib_candidate_artifact.sh'
       - 'scripts/verify_ib_candidate_artifact.py'
+      - 'scripts/run_ib_paper_artifact_rollout.sh'
+      - 'scripts/verify_ib_paper_rollout.py'
       - 'scripts/run_ib_paper_artifact_qualification.sh'
       - 'scripts/verify_ib_paper_qualification.py'
       - 'scripts/check_qualification_trust_boundary.py'
       - 'scripts/verify_exact_git_index.py'
+      - 'docs/ib-paper-rollout-policy-v1.json'
       - 'docs/ib-paper-qualification-scenarios-v1.json'
       - 'docs/technical/ib-paper-harness-contract.md'
       - 'docs/modules/ib-paper.md'
+      - 'tests/python/test_ib_paper_rollout.py'
       - 'tests/python/test_qualification_trust_boundary.py'
       - 'tests/python/test_ib_workflow_interfaces.py'
       - 'tests/python/test_ib_paper_qualification.py'
@@ -28,12 +32,16 @@ on:
       - '.github/workflows/qualification-source-audit.yml'
       - 'scripts/build_ib_candidate_artifact.sh'
       - 'scripts/verify_ib_candidate_artifact.py'
+      - 'scripts/run_ib_paper_artifact_rollout.sh'
+      - 'scripts/verify_ib_paper_rollout.py'
       - 'scripts/run_ib_paper_artifact_qualification.sh'
       - 'scripts/verify_ib_paper_qualification.py'
       - 'scripts/check_qualification_trust_boundary.py'
       - 'scripts/verify_exact_git_index.py'
+      - 'docs/ib-paper-rollout-policy-v1.json'
       - 'docs/ib-paper-qualification-scenarios-v1.json'
       - 'docs/technical/ib-paper-harness-contract.md'
+      - 'tests/python/test_ib_paper_rollout.py'
       - 'tests/python/test_qualification_trust_boundary.py'
       - 'tests/python/test_ib_workflow_interfaces.py'
       - 'tests/python/test_ib_paper_qualification.py'
@@ -64,14 +72,16 @@ jobs:
           clean: true
           submodules: false
 
-      - name: Validate only the qualification trust boundary
+      - name: Validate only the qualification and rollout trust boundary
         run: |
           set -euo pipefail
           git diff --check
           python3 scripts/verify_exact_git_index.py --root .
           bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_rollout.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 scripts/check_qualification_trust_boundary.py --self-test
+          python3 -m unittest discover -s tests/python -p 'test_ib_paper_rollout.py'
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_workflow_interfaces.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
