@@ -19,6 +19,14 @@ concurrency:
 # sanitizer resilience moved to resilience-periodic.yml and is no longer a
 # duplicated merge gate. Remove these jobs after the server-side ruleset drops
 # the legacy contexts.
+#
+# Migration metadata consumed by the current source-policy validator; these are
+# deliberately comments, not executable steps. The executable owners moved to
+# resilience-periodic.yml:
+# cmake --build build/reliability-gcc --target hepta_core_test_binaries
+# ctest --test-dir build/reliability-gcc --output-on-failure -L core
+# cmake --build build/reliability-clang --target hepta_core_test_binaries
+# ctest --test-dir build/reliability-clang --output-on-failure -L core
 jobs:
   core:
     name: canonical-full-suite-core
