@@ -2,9 +2,9 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Verification: `python3 scripts/check_component_coverage.py`
+Verification: `python3 scripts/check_documentation.py` and `python3 scripts/check_component_coverage.py`
 
-This index connects every registered module document with the deeper implementation references used for development, review, operations, and incident response.
+This index connects every registered module document with the deeper implementation references used for development, review, operations, qualification, and incident response.
 
 ## Module contracts
 
@@ -33,7 +33,14 @@ This index connects every registered module document with the deeper implementat
 - [`docs/technical/build-supply-chain.md`](technical/build-supply-chain.md)
 - [`docs/technical/component-coverage.md`](technical/component-coverage.md)
 - [`docs/technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
+- [`docs/technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
+- [`docs/technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
+- [`docs/ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json)
 
 ## Required depth
 
-A maintained subsystem document should state ownership, public contracts, configuration/state, concurrency where applicable, persistence and migration, failure semantics, security boundary, observability, executable tests, operational procedure, and known limitations. Source status and trading authorization are separate: simulator is current, IB PAPER requires external qualification, CTP/XT have no real transport, and LIVE is unavailable.
+A maintained subsystem document must contain substantive engineering prose rather than only metadata and path inventories. `scripts/check_documentation.py` requires maintained modules to cover a broad set of purpose/contracts/state/concurrency/failure/security/observability/testing/operations/limitations topics while allowing module-specific wording. Experimental and legacy material has a lower threshold but must still explain capability, failure and test boundaries.
+
+Compatibility fields that remain for historical source callers are not exempt from authority boundaries. `tests/python/test_risk_legacy_compatibility_boundary.py` rejects any canonical C++ implementation that consumes the old unbound risk scalars; production code must use the authoritative snapshot and converted-notional evidence contracts.
+
+Source status and trading authorization are separate: simulator is current, IB PAPER requires external broker-observed qualification, CTP/XT have no real transport, and LIVE is unavailable. A green documentation or repository-control check never implies Broker authorization.

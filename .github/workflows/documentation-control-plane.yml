@@ -41,7 +41,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
 
-      - name: Validate documentation, component ownership, build ownership, release, capability and gap truth sources
+      - name: Validate documentation and source truth contracts
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
@@ -51,14 +51,14 @@ jobs:
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 scripts/verify_source_gap_closures.py
           python3 -m unittest discover -s tests/python -p 'test_documentation_control_plane.py'
+          python3 -m unittest discover -s tests/python -p 'test_documentation_depth.py'
           python3 -m unittest discover -s tests/python -p 'test_component_coverage.py'
           python3 -m unittest discover -s tests/python -p 'test_build_ownership.py'
           python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
+          python3 -m unittest discover -s tests/python -p 'test_behavior_bound_gap_evidence.py'
           python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
-          python3 -m unittest discover -s tests/python -p 'test_research_contract_smoke.py'
-          python3 -m unittest discover -s tests/python -p 'test_release_package.py'
-          python3 -m unittest discover -s tests/python -p 'test_hepta_preflight.py'
-          python3 -m unittest discover -s tests/python -p 'test_release_simulator_smoke.py'
+          python3 -m unittest discover -s tests/python -p 'test_ib_paper_scenario_contract.py'
+          python3 -m unittest discover -s tests/python -p 'test_risk_legacy_compatibility_boundary.py'
           python3 -m unittest discover -s tests/python -p 'test_legacy_runtime_boundary.py'
 
       - name: Reassert clean exact source

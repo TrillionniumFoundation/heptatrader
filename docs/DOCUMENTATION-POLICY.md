@@ -3,7 +3,7 @@
 Status: CURRENT  
 Applies to: repository HEAD  
 Implementation: `scripts/check_documentation.py`  
-Tests: `tests/python/test_documentation_control_plane.py`
+Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_depth.py`
 
 ## Required module contract
 
@@ -17,17 +17,22 @@ Every entry in `docs/module-catalog.json` must have:
 6. an explicit broker-mutation classification;
 7. an explicit production-authorization value.
 
-A module document must state its status, implementation paths, tests, responsibilities, public contracts, state and persistence, failure semantics, security boundaries, observability, and known limitations.
+A module document is not considered complete merely because it exists or contains a technical heading. Maintained module documentation must contain substantive prose and cover the engineering topics needed to operate and change the component: purpose/responsibility, public contracts, state/persistence/recovery where applicable, failure semantics, security/authority boundaries, observability, executable testing, operations and limitations. Module-specific wording is allowed; the checker validates topic coverage rather than forcing one ceremonial template.
+
+`CURRENT` and `QUALIFICATION_REQUIRED` documents must meet a higher depth threshold than `EXPERIMENTAL`, `LEGACY`, `PROPOSAL` or `UNAVAILABLE` material. A catalog-shaped stub that only repeats implementation and test paths fails the documentation gate.
 
 ## Truthfulness rules
 
 - `EXPERIMENTAL` and `PROPOSAL` modules may not be production-authorized.
 - `UNAVAILABLE` capabilities may not have a mutation path.
 - CTP and XT/QMT must remain fail-closed until a real transport, authoritative callbacks, reconciliation, and venue-specific qualification exist.
-- Repository source may describe an IB PAPER qualification path but may not claim that organization teams, rulesets, environments, runners, credentials, broker sessions, or receipts exist.
+- Repository source may describe an IB PAPER qualification path but may not claim that external runners, credentials, Broker sessions, host policy or broker-observed receipts exist merely because source files or CI jobs exist.
+- Repository review/ruleset state is an engineering admission fact, not Broker authority.
 - A document may not call a file “installed” unless the canonical install process actually installs it.
 - CURRENT documentation must not depend on a developer-specific absolute path.
 
 ## Change discipline
 
-A pull request that changes a module implementation, public protocol, persistent schema, reason code, service unit, or capability state must update its module document and tests in the same pull request. `documentation-control-plane-exact-head` validates the catalog, links, statuses, and high-risk capability invariants.
+A pull request that changes a module implementation, public protocol, persistent schema, reason code, service unit, capability state, release contract or Broker qualification scenario must update the corresponding module/technical documentation and tests in the same pull request.
+
+`documentation-control-plane-exact-head` validates catalog ownership, links, lifecycle/capability truth and semantic documentation depth. It should not duplicate the complete runtime/release behavioral suite; those assertions belong to the behavior-bearing core/release gates.
