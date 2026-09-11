@@ -98,12 +98,14 @@ Files ending in `.example` are templates, never authority. Runtime code should e
 
 ## Test ownership
 
-Tests are intentionally non-overlapping at the workflow level:
+Behavior-bearing evidence is intentionally assigned once:
 
-- **Core Runtime CI** owns canonical build/CTest, full Python discovery, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
+- **Core Runtime CI** owns the canonical build/CTest, full Python discovery, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
 - **GCC/Clang reliability lanes** independently own sanitizer behavior.
-- **Documentation/source-truth lanes** validate module coverage, build ownership, gap evidence and exact prospective-merge source invariants without rerunning the full behavior suite.
+- **Documentation Control Plane** owns documentation depth, component/build ownership, capability truth and source-gap contracts without rerunning the behavior suite.
 - **IB PAPER qualification** is an explicit owner-dispatched external Broker campaign and is not a routine merge gate.
+
+The live repository ruleset `22597364` still names two additional historical contexts: `canonical-full-suite-core` and `exact-merge-candidate`. While that server-side rule remains active, those job names are retained only as **compatibility shims**. They intentionally do not checkout, build, package, rerun documentation, or assert Broker authority. Their only purpose is to stop an obsolete repository-administration rule from forcing duplicate computation. They should be deleted together with the corresponding required-context inventory after the live ruleset is retired or replaced. A green compatibility shim is not engineering evidence and never changes PAPER/LIVE authorization.
 
 A new invariant belongs in the smallest behavior test that can falsify it. Repeating the same deterministic suite in another workflow is not independent evidence.
 

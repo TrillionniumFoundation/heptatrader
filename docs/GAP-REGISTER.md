@@ -7,14 +7,14 @@ Verification: `python3 scripts/check_gap_register.py`
 
 HeptaTrader is an owner-operated, self-use system. Every gap in the supported baseline is closed in source and none blocks repository use. Source closure and Broker authorization remain separate claims.
 
-The gap verifier checks concrete repository evidence, complementary CI ownership and executable-contract agreement. It deliberately does not treat duplicated workflow command strings, workflow file shape, issue labels or repository-governance ceremony as trading-safety evidence.
+The gap verifier checks concrete repository evidence, complementary CI ownership and executable-contract agreement. It deliberately does not treat duplicated workflow command strings, compatibility check names, issue labels or repository-governance ceremony as trading-safety evidence.
 
 ## Complete supported-scope closure
 
 | Gap | State | Closure |
 |---|---|---|
 | DOC-001 | CLOSED_SOURCE | Canonical module/component ownership and substantive technical-document depth are machine-validated; the external PAPER harness interface and 12-scenario contract are reviewable source. |
-| CI-001 | CLOSED_SOURCE | Core Runtime owns full build/Python/install/package/preflight/lifecycle behavior; GCC/Clang lanes independently own sanitizer coverage; documentation and exact-merge lanes validate source truth without rerunning the complete suite. |
+| CI-001 | CLOSED_SOURCE | Core Runtime owns full build/Python/install/package/preflight/lifecycle behavior; GCC/Clang lanes independently own sanitizer coverage; Documentation Control Plane owns source truth. Historical contexts retained solely for the live server-side ruleset are compatibility shims, not closure evidence. |
 | TEST-001 | CLOSED_SOURCE | Gap-critical executable/Python tests are inventoried by build facts, and the PAPER scenario document is machine-bound to the executable evidence verifier. |
 | RISK-001 | CLOSED_SOURCE | Generic snapshot, unit/notional, pending exposure, loss, drawdown and guarded-exit rules are implemented and tested. |
 | PENDING-EXPOSURE-001 | CLOSED_SOURCE | Pending exposure, exact V5 atomic flatten, machine-state nftables replacement/readback, deny-all fallback and Broker-observed qualification scenario/evidence contracts are behavior-bound. |

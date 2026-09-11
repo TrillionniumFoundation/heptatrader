@@ -9,8 +9,8 @@ This validator separates three concerns:
 * CI responsibility separation, so behavior is executed once by its owning
   lane instead of being duplicated as process ceremony.
 
-It intentionally does not require unrelated workflows to repeat the same full
-build/test/package command sequence.
+It intentionally does not require compatibility workflows to repeat source or
+behavior checks owned by another lane.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import json
 from pathlib import Path
 import re
 import stat
+import sys
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,7 +63,6 @@ REQUIRED_EVIDENCE: dict[str, set[str]] = {
         ".github/workflows/core-ci.yml",
         ".github/workflows/canonical-full-suite.yml",
         ".github/workflows/documentation-control-plane.yml",
-        ".github/workflows/merge-candidate.yml",
     },
     "TEST-001": {
         "docs/build-targets.json",
@@ -284,11 +284,18 @@ def _require_workflow_role(
 
 
 def validate_ci_roles(root: Path) -> None:
-    """Require complementary CI responsibilities instead of duplicated suites."""
+    """Require one owner per CI evidence family and keep legacy shims inert."""
     full_python = "python3 -m unittest discover -s tests/python -p 'test_*.py'"
     dev_core = "./scripts/dev_core.sh"
     release_smoke = "scripts/run_release_simulator_smoke.py"
     package = "scripts/build_release_package.py"
+    source_truth = (
+        "scripts/check_documentation.py",
+        "scripts/check_component_coverage.py",
+        "scripts/verify_build_ownership.py",
+        "scripts/check_gap_register.py",
+    )
+    behavior_owned = (dev_core, full_python, package, release_smoke)
 
     _require_workflow_role(
         root,
@@ -297,30 +304,35 @@ def validate_ci_roles(root: Path) -> None:
     )
     _require_workflow_role(
         root,
+        ".github/workflows/documentation-control-plane.yml",
+        source_truth,
+        forbidden=behavior_owned,
+    )
+    _require_workflow_role(
+        root,
         ".github/workflows/canonical-full-suite.yml",
         (
+            "compatibility-only context",
             "cmake --build build/reliability-gcc --target hepta_core_test_binaries",
             "ctest --test-dir build/reliability-gcc --output-on-failure -L core",
             "cmake --build build/reliability-clang --target hepta_core_test_binaries",
             "ctest --test-dir build/reliability-clang --output-on-failure -L core",
         ),
-        forbidden=(dev_core, full_python, package, release_smoke),
+        forbidden=behavior_owned + source_truth,
     )
-    for relative in (
-        ".github/workflows/documentation-control-plane.yml",
+    _require_workflow_role(
+        root,
         ".github/workflows/merge-candidate.yml",
-    ):
-        _require_workflow_role(
-            root,
-            relative,
-            (
-                "scripts/check_documentation.py",
-                "scripts/check_component_coverage.py",
-                "scripts/verify_build_ownership.py",
-                "scripts/check_gap_register.py",
-            ),
-            forbidden=(dev_core, full_python, package, release_smoke),
-        )
+        ("compatibility-only context",),
+        forbidden=(
+            *behavior_owned,
+            *source_truth,
+            "actions/checkout@",
+            "apt-get",
+            "cmake ",
+            "ctest ",
+        ),
+    )
 
 
 def validate_behavior_evidence(root: Path, observed: dict[str, dict[str, Any]]) -> None:
