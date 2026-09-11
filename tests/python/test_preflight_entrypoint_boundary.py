@@ -177,10 +177,14 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
         for required in (
             "RELEASE_LABEL_RE",
             "_validate_complete_archive_namespace",
-            'expected_root = f"heptatrader-{manifest[\'version\']}-{profile}"',
-            PRIVATE_MESSAGE,
+            "expected_root = (",
+            "private implementation module; use hepta-preflight",
         ):
             self.assertIn(required, core)
+        self.assertIn(
+            "f\"heptatrader-{manifest['version']}-{profile}\"",
+            core,
+        )
         self.assertIn(
             'DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"',
             install,
