@@ -1,0 +1,109 @@
+name: Periodic Runtime Resilience
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'HeptaTrade/execution/**'
+      - 'HeptaTrade/risk/**'
+      - 'HeptaTrade/oms_journal.*'
+      - 'HeptaTrade/oms_recover.*'
+      - 'HeptaTrade/state/**'
+      - 'HeptaTrade/reconcile/**'
+      - 'HeptaTrade/adapter_ib/**'
+      - 'HeptaTrade/simulator/**'
+      - 'tests/**'
+      - 'CMakeLists.txt'
+      - 'HeptaTrade/CMakeLists.txt'
+      - 'cmake/**'
+      - '.github/workflows/resilience-periodic.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptatrader-resilience-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  BUILD_PARALLEL: '2'
+
+jobs:
+  reliability-gcc:
+    name: reliability-runtime-sanitizers (g++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CC: gcc
+      CXX: g++
+      CXXFLAGS: -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
+      ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++
+      - name: Configure sanitizer build
+        run: |
+          cmake -S . -B build/reliability-gcc -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined' \
+            -DCMAKE_SHARED_LINKER_FLAGS='-fsanitize=address,undefined' \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+      - name: Build and run sanitizer tests
+        run: |
+          cmake --build build/reliability-gcc --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
+          ctest --test-dir build/reliability-gcc --output-on-failure -L core --parallel "$BUILD_PARALLEL"
+
+  reliability-clang:
+    name: reliability-runtime-sanitizers (clang++)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      CC: clang
+      CXX: clang++
+      CXXFLAGS: -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
+      ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
+      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev clang
+      - name: Configure sanitizer build
+        run: |
+          cmake -S . -B build/reliability-clang -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined' \
+            -DCMAKE_SHARED_LINKER_FLAGS='-fsanitize=address,undefined' \
+            -DBUILD_TESTING=ON \
+            -DHEPTA_ENABLE_IBAPI=OFF \
+            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
+            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+      - name: Build and run sanitizer tests
+        run: |
+          cmake --build build/reliability-clang --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
+          ctest --test-dir build/reliability-clang --output-on-failure -L core --parallel "$BUILD_PARALLEL"
