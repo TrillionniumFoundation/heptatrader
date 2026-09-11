@@ -95,7 +95,7 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
             qualify.index("Run controlled PAPER campaign"),
         )
 
-    def test_non_current_candidate_is_rejected(self) -> None:
+    def test_non_dispatch_candidate_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             path = root / boundary.WORKFLOW
@@ -111,7 +111,36 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
                 encoding="utf-8",
             )
             self.assertTrue(
-                any("exact current main" in item for item in boundary.validate(root))
+                any(
+                    "exact dispatch-main candidate" in item
+                    for item in boundary.validate(root)
+                )
+            )
+
+    def test_mutable_main_rechecks_are_forbidden_after_artifact_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / boundary.WORKFLOW
+            path.parent.mkdir(parents=True)
+            shutil.copy2(ROOT / boundary.WORKFLOW, path)
+            text = path.read_text(encoding="utf-8")
+            marker = "      - name: Reverify immutable trusted harness after Broker campaign\n"
+            path.write_text(
+                text.replace(
+                    marker,
+                    "      - name: Obsolete mutable-main proof\n"
+                    "        run: git ls-remote --exit-code "
+                    "https://github.com/example/example refs/heads/main\n\n"
+                    + marker,
+                    1,
+                ),
+                encoding="utf-8",
+            )
+            self.assertTrue(
+                any(
+                    "must not depend on mutable main" in item
+                    for item in boundary.validate(root)
+                )
             )
 
     def test_builder_and_paper_runners_are_distinct(self) -> None:

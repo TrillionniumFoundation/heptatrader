@@ -47,7 +47,7 @@ class ExactGitIndexAuthorityTests(
             2,
         )
 
-    def test_ib_workflow_is_exact_current_main_only(self) -> None:
+    def test_ib_workflow_uses_dispatch_main_then_exact_artifact(self) -> None:
         relative = ".github/workflows/ib-paper-qualification.yml"
         workflow = (ROOT / relative).read_text(encoding="utf-8")
         trigger = workflow.split("\npermissions:", 1)[0]
@@ -65,9 +65,9 @@ class ExactGitIndexAuthorityTests(
             "inputs.candidate_sha == github.sha"
         )
         self.assertEqual(workflow.count(condition), 2)
-        self.assertGreaterEqual(
-            workflow.count("git ls-remote --exit-code"), 3
-        )
+        self.assertNotIn("git ls-remote --exit-code", workflow)
+        self.assertIn("Issue final exact-artifact Broker receipt", workflow)
+        self.assertNotIn("Issue final exact-current-main Broker receipt", workflow)
         self.assertIn(relative, authority.CRITICAL_PATHS)
         self.assertNotIn("CODEOWNERS", workflow)
         self.assertNotIn("merge_queue", workflow)

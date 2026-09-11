@@ -40,12 +40,15 @@ This index is the canonical entry point for current development documentation. A
 ## Development references
 
 - [`DEVELOPMENT-DOCUMENTATION-INDEX.md`](DEVELOPMENT-DOCUMENTATION-INDEX.md)
+- [`technical/runtime-engineering-map.md`](technical/runtime-engineering-map.md)
 - [`technical/execution-events.md`](technical/execution-events.md)
 - [`technical/reconciliation-engine.md`](technical/reconciliation-engine.md)
 - [`technical/service-lifecycle.md`](technical/service-lifecycle.md)
 - [`technical/build-supply-chain.md`](technical/build-supply-chain.md)
 - [`technical/component-coverage.md`](technical/component-coverage.md)
 - [`technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
+- [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
+- [`technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
 
 ## Operations
 
@@ -67,6 +70,9 @@ This index is the canonical entry point for current development documentation. A
 - [`GAP-REGISTER.md`](GAP-REGISTER.md)
 - [`RELEASE-PUBLICATION-SECURITY.md`](RELEASE-PUBLICATION-SECURITY.md)
 - [`adr/0001-release-publication-atomicity.md`](adr/0001-release-publication-atomicity.md)
+- [`adr/0002-owner-operated-repository.md`](adr/0002-owner-operated-repository.md)
+- [`adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md)
+- [`ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json)
 - [`preflight-policy-v1.json`](preflight-policy-v1.json)
 - [`gap-register.json`](gap-register.json)
 - [`capabilities.json`](capabilities.json)
@@ -77,6 +83,4 @@ This index is the canonical entry point for current development documentation. A
 
 The historical `HeptaStrategy/`, `HeptaSimulator/`, old Visual Studio projects, large legacy data files, and deprecated bridges are explicitly owned by the LEGACY module and excluded from the default build. Their presence does not authorize deployment or provide an alternate order path.
 
-- [`adr/0002-owner-operated-repository.md`](adr/0002-owner-operated-repository.md)
-
-All active supported-scope gaps, including canonical release/install/preflight engineering, Git-discovered component ownership, documentation depth, and Broker-free release rollback smoke, are closed in source. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
+All active supported-scope source gaps, including canonical release/install/preflight engineering, Git-discovered component ownership, documentation depth, and Broker-free release rollback smoke, are closed in source. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.

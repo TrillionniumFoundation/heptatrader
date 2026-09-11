@@ -31,7 +31,7 @@ jobs:
           clean: true
           submodules: false
 
-      - name: Validate owner-operated exact-current-main qualification boundary
+      - name: Validate owner-operated dispatch-main to immutable-artifact qualification boundary
         run: |
           set -euo pipefail
           git diff --check

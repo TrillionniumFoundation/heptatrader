@@ -65,10 +65,12 @@ The checkout-free runner probe pins the map digest, proves the runner cannot rea
 
 Qualification keeps two trust domains:
 
-1. a no-secret builder receives exact current `main`, a digest-pinned OCI image, a read-only SDK/BID snapshot, and bounded writable storage;
-2. a PAPER execution identity receives only the verified artifact and runs it through a separately pinned external harness with PAPER-only Broker access.
+1. a no-secret builder receives the exact dispatch-time `main` revision, a digest-pinned OCI image, a read-only SDK/BID snapshot, and bounded writable storage;
+2. a PAPER execution identity receives only the verified immutable artifact and runs it through a separately pinned external harness with PAPER-only Broker access.
 
-The workflow requires the requested SHA to equal the dispatching current `main` SHA and independently reads remote `refs/heads/main` before and after the Broker campaign. Main movement invalidates the result. The original actor and rerun triggering actor must match the configured immutable owner identity before self-hosted allocation and are reasserted at runtime.
+The dispatch actor and rerun triggering actor must match the configured immutable owner identity before self-hosted allocation and are reasserted at runtime. The requested SHA must equal the dispatch-time `main` SHA, so an arbitrary branch cannot select qualification code or candidate bytes.
+
+After that exact source has been built and verified, the Broker campaign is bound to the immutable artifact/source digest rather than to the mutable `refs/heads/main` pointer. Ordinary development may advance `main` while the campaign runs; that does not alter the candidate binary and does not invalidate otherwise valid Broker-observed evidence. Any change to the candidate source SHA, artifact/executable digest, builder inputs, harness, effective profile, contract binding, account/host identity, or required scenario evidence still requires a new campaign. See [`../technical/ib-paper-harness-contract.md`](../technical/ib-paper-harness-contract.md) and ADR [`../adr/0003-immutable-artifact-paper-qualification.md`](../adr/0003-immutable-artifact-paper-qualification.md).
 
 The mutation-capable `qualify` job also declares the protected GitHub environment `ib-paper`; the no-secret builder does not. Environment reviewers, deployment protection and credential access remain server-side controls and must be configured independently. Merely naming the environment in source is not evidence that it exists, is protected, or approved a campaign.
 
@@ -92,7 +94,7 @@ The final receipt binds source SHA, artifact/executable digest, builder image/to
 
 ## Failure semantics
 
-Missing SDK, invalid or conflicting profile mode, unsafe credential, changed contract binding, multiple quote contracts, unsupported STK scope, Broker loss, stale quote, incomplete risk state, kill-switch uncertainty, identity-map mismatch, runner broker reachability, callback conflict, journal failure, source movement, artifact mismatch, campaign failure, or absent qualification all fail closed for risk increase. Cancel and guarded authoritative flatten retain their own owner, fencing, order-state, quote, and venue checks.
+Missing SDK, invalid or conflicting profile mode, unsafe credential, changed contract binding, multiple quote contracts, unsupported STK scope, Broker loss, stale quote, incomplete risk state, kill-switch uncertainty, identity-map mismatch, runner broker reachability, callback conflict, journal failure, artifact/source mismatch, campaign failure, or absent qualification all fail closed for risk increase. Cancel and guarded authoritative flatten retain their own owner, fencing, order-state, quote, and venue checks.
 
 ## Observability
 
@@ -104,14 +106,14 @@ No metric, receipt, issue label, or CI status may represent source-only success 
 
 A qualifying run must:
 
-1. build an immutable no-secret candidate from exact current `main`;
+1. build an immutable no-secret candidate from the exact dispatch-time `main` revision;
 2. verify package, executable, SDK/BID, builder, harness, profile, contract, and host identities;
 3. establish a PAPER-only account/session and fresh authoritative barriers;
 4. execute rejection, accepted-order, partial-fill, duplicate/out-of-order callback, cancel-race, disconnect/reconnect, uncertain-outcome, restart/journal replay, fencing, and kill-switch scenarios;
 5. cancel/flatten and perform final authoritative order, execution, position, and account reconciliation;
 6. issue a digest-bound receipt only after the final state is flat and every possible send is resolved.
 
-Failure or absent effect-bound evidence leaves `production_authorized=false` and `paper_authorized=false`.
+A later change to the `main` branch pointer is not a candidate change. Failure, bound-input drift, or absent effect-bound evidence leaves `production_authorized=false` and `paper_authorized=false`.
 
 ## Known limitations
 
@@ -119,4 +121,4 @@ The repository does not supply the IB SDK, external harness, PAPER credentials, 
 
 ## Gap-register relationship
 
-IB PAPER is optional and disabled by default. Its real Broker campaign is an activation prerequisite, not an unresolved supported-scope source gap. Closing repository gaps never asserts that the campaign happened. Until a valid current receipt exists, `paper_authorized=false`; `live_authorized=false` remains invariant.
+IB PAPER is optional and disabled by default. Its real Broker campaign is an activation prerequisite, not an unresolved supported-scope source gap. Closing repository gaps never asserts that the campaign happened. Until a valid current receipt exists for the selected artifact/profile/environment tuple, `paper_authorized=false`; `live_authorized=false` remains invariant.

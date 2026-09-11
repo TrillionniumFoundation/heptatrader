@@ -27,8 +27,10 @@ The gap verifier checks concrete repository evidence, complementary CI ownership
 
 ## Optional IB PAPER activation
 
-IB PAPER is retained as a disabled, qualification-required capability, not as an unresolved project gap. Nothing in the repository enables it. An operator who later chooses to activate it must complete the exact-current-main, immutable-artifact, PAPER-only Broker campaign documented in [`modules/ib-paper.md`](modules/ib-paper.md), [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md), and [`ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json).
+IB PAPER is retained as a disabled, qualification-required capability, not as an unresolved project gap. Nothing in the repository enables it. An operator who later chooses to activate it must complete the exact dispatch-main, immutable-artifact, PAPER-only Broker campaign documented in [`modules/ib-paper.md`](modules/ib-paper.md), [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md), [`ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json), and [`adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md).
 
 The external SDK, pinned credential-bearing harness, PAPER credentials, TWS/IB Gateway, root-owned host controls and Broker account are owner-controlled runtime inputs. Their absence is not a source-code gap; it simply leaves the optional capability disabled. A failed or absent campaign cannot be converted into partial authorization.
+
+The qualification workflow requires the candidate SHA to equal `main` at workflow dispatch. After the immutable candidate is built, later `main` movement is not a candidate change and does not invalidate the campaign. Any change to the bound source/artifact/builder/SDK/harness/profile/account/host/scenario tuple requires a new campaign.
 
 LIVE trading remains unavailable.
