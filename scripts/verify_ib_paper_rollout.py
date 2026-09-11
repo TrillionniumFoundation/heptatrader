@@ -145,6 +145,9 @@ def _stage_policy(policy: dict[str, Any], stage: str) -> dict[str, Any]:
 def _verify_evidence(root: Path, entries: Any) -> list[dict[str, Any]]:
     if not isinstance(entries, list) or not entries:
         raise VerificationError("evidence must be a non-empty array")
+    root_metadata = root.lstat()
+    if root.is_symlink() or not stat.S_ISDIR(root_metadata.st_mode):
+        raise VerificationError("evidence root must be a real directory")
     root = root.resolve(strict=True)
     observed_kinds: set[str] = set()
     observed_paths: set[str] = set()
@@ -167,14 +170,15 @@ def _verify_evidence(root: Path, entries: Any) -> list[dict[str, Any]]:
             raise VerificationError(f"evidence[{index}]: invalid sha256")
         if isinstance(size, bool) or not isinstance(size, int) or size <= 0 or size > MAX_EVIDENCE_BYTES:
             raise VerificationError(f"evidence[{index}]: invalid size")
-        candidate = (root / path_value).resolve(strict=True)
+        unresolved = root / path_value
+        metadata = unresolved.lstat()
+        if unresolved.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise VerificationError(f"evidence[{index}]: file is not regular single-link")
+        candidate = unresolved.resolve(strict=True)
         try:
             candidate.relative_to(root)
         except ValueError as error:
             raise VerificationError(f"evidence[{index}]: path escapes evidence root") from error
-        metadata = candidate.lstat()
-        if candidate.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise VerificationError(f"evidence[{index}]: file is not regular single-link")
         if metadata.st_size != size:
             raise VerificationError(f"evidence[{index}]: size mismatch")
         if _sha256_file(candidate) != digest:
