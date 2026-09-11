@@ -25,6 +25,7 @@ jobs:
       github.event.pull_request.head.ref == 'ops/queue-pr62-20260911' &&
       github.event.pull_request.base.ref == 'ops/queue-control-base-20260911'
     runs-on: ubuntu-latest
+    environment: repository-governance
     timeout-minutes: 20
     steps:
       - name: Validate immutable target with ephemeral workflow token
@@ -62,14 +63,15 @@ jobs:
           ' <<<"${reviews}")"
           test "${approved_count}" -ge 2
 
-      - name: Enqueue exact SHA with ephemeral workflow identity
+      - name: Enqueue exact SHA with protected governance identity
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
           TARGET_PR: '62'
           TARGET_SHA: 535315a2be529b9fe1b73a4d700dcf88e1c4c557
         shell: bash
         run: |
           set -euo pipefail
+          test -n "${GH_TOKEN}"
           jq -n \
             --arg sha "${TARGET_SHA}" \
             '{sha: $sha, merge_action: "merge_queue"}' \
@@ -90,7 +92,7 @@ jobs:
 
       - name: Poll official asynchronous merge result
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
           TARGET_PR: '62'
           TARGET_SHA: 535315a2be529b9fe1b73a4d700dcf88e1c4c557
         shell: bash
