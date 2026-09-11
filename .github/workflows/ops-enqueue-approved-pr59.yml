@@ -1,0 +1,149 @@
+name: Enqueue approved PR 59
+
+on:
+  pull_request:
+    branches:
+      - ops/queue-control-base-20260911
+    types:
+      - opened
+      - synchronize
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: ops-enqueue-approved-pr59-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  enqueue:
+    if: >-
+      github.repository == 'TrillionniumFoundation/heptatrader' &&
+      github.event.pull_request.user.login == 'ProfHepta' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.head.ref == 'ops/queue-pr59-20260911' &&
+      github.event.pull_request.base.ref == 'ops/queue-control-base-20260911'
+    runs-on: ubuntu-latest
+    environment: repository-governance
+    timeout-minutes: 10
+    steps:
+      - name: Validate immutable target with ephemeral workflow token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_PR: '59'
+          TARGET_SHA: 474c9ef4b32fbc5e4ad140dd71ab629bde7cd6f2
+          REQUIRED_MAIN: 7ead0403a9c14cfc378987034439f49748c15ac4
+        shell: bash
+        run: |
+          set -euo pipefail
+          main="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main")"
+          test "$(jq -r '.commit.sha' <<<"${main}")" = "${REQUIRED_MAIN}"
+
+          target="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}")"
+          jq -e --arg sha "${TARGET_SHA}" --arg base "${REQUIRED_MAIN}" '
+            .state == "open" and
+            .draft == false and
+            .base.ref == "main" and
+            .base.sha == $base and
+            .head.sha == $sha
+          ' <<<"${target}" >/dev/null
+
+          reviews="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}/reviews?per_page=100")"
+          approved_count="$(jq --arg sha "${TARGET_SHA}" '
+            [
+              .[]
+              | select(.state == "APPROVED")
+              | select(.commit_id == $sha)
+              | select(.user.login != "ProfHepta")
+              | .user.login
+            ]
+            | unique
+            | length
+          ' <<<"${reviews}")"
+          test "${approved_count}" -ge 2
+
+      - name: Enqueue exact SHA with protected governance identity
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
+          TARGET_PR: '59'
+          TARGET_SHA: 474c9ef4b32fbc5e4ad140dd71ab629bde7cd6f2
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GH_TOKEN}"
+          jq -n \
+            --arg sha "${TARGET_SHA}" \
+            '{sha: $sha, merge_action: "merge_queue"}' \
+            > /tmp/merge-request.json
+
+          response="$(gh api \
+            --method PUT \
+            -H 'Accept: application/vnd.github+json' \
+            -H 'X-GitHub-Api-Version: 2026-03-10' \
+            "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}/merge-async" \
+            --input /tmp/merge-request.json)"
+          jq -e --arg sha "${TARGET_SHA}" '
+            (.status == "pending" or .status == "merged") and
+            ((.details.expected_head_sha // $sha) == $sha)
+          ' <<<"${response}" >/dev/null
+          uuid="$(jq -r '.details.uuid // empty' <<<"${response}")"
+          printf '%s\n' "${uuid}" > /tmp/merge-uuid
+
+      - name: Poll official asynchronous merge result
+        env:
+          GH_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
+          TARGET_PR: '59'
+          TARGET_SHA: 474c9ef4b32fbc5e4ad140dd71ab629bde7cd6f2
+        shell: bash
+        run: |
+          set -euo pipefail
+          uuid="$(cat /tmp/merge-uuid)"
+          if test -z "${uuid}"; then
+            target="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}")"
+            jq -e '.merged_at != null' <<<"${target}" >/dev/null
+            exit 0
+          fi
+          for attempt in $(seq 1 120); do
+            result="$(gh api \
+              -H 'Accept: application/vnd.github+json' \
+              -H 'X-GitHub-Api-Version: 2026-03-10' \
+              "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}/merge-async/${uuid}")"
+            status="$(jq -r '.status' <<<"${result}")"
+            case "${status}" in
+              merged)
+                jq -e '.details.sha | type == "string" and length == 40' <<<"${result}" >/dev/null
+                exit 0
+                ;;
+              pending)
+                jq -e --arg sha "${TARGET_SHA}" '.details.expected_head_sha == $sha' <<<"${result}" >/dev/null
+                ;;
+              failed)
+                jq -r '.details.message' <<<"${result}" >&2
+                exit 1
+                ;;
+              *)
+                echo "unexpected asynchronous merge status: ${status}" >&2
+                exit 1
+                ;;
+            esac
+            sleep 5
+          done
+          echo "merge queue request did not reach a terminal state" >&2
+          exit 1
+
+      - name: Close and delete isolated control branches
+        if: ${{ success() }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONTROL_PR: ${{ github.event.pull_request.number }}
+          CONTROL_BRANCH: ops/queue-pr59-20260911
+          CONTROL_BASE: ops/queue-control-base-20260911
+        shell: bash
+        run: |
+          set +e
+          gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${CONTROL_PR}" -f state=closed >/dev/null
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${CONTROL_BRANCH}" >/dev/null
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${CONTROL_BASE}" >/dev/null
+          exit 0
