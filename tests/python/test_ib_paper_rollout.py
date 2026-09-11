@@ -141,6 +141,17 @@ class IbPaperRolloutTests(unittest.TestCase):
             with self.assertRaisesRegex(rollout.VerificationError, "size mismatch|digest mismatch"):
                 rollout.verify(result, evidence, "a" * 40, binary, harness, "canary")
 
+    def test_symlinked_evidence_leaf_is_rejected_even_when_target_bytes_match(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            result, evidence, binary, harness = self.make_fixture(root)
+            journal = evidence / "journal.jsonl"
+            target = evidence / "journal-target.jsonl"
+            journal.rename(target)
+            journal.symlink_to(target.name)
+            with self.assertRaisesRegex(rollout.VerificationError, "regular single-link"):
+                rollout.verify(result, evidence, "a" * 40, binary, harness, "canary")
+
     def test_result_cannot_widen_p1_limits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
