@@ -166,7 +166,8 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
             self.assertIn("preflight core is unavailable", result.stderr)
             self.assertNotIn('"result":"PASS"', result.stderr)
             self.assertTrue((real_libexec / "heptatrader/hepta-preflight-core.py").exists())
-            self.assertFalse(private.exists())
+            self.assertTrue((prefix / "libexec").is_symlink())
+            self.assertTrue(private.exists())
 
     def test_installed_loader_rejects_writable_parent(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
