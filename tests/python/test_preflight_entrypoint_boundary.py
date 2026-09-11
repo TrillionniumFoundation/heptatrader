@@ -178,7 +178,8 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
             "RELEASE_LABEL_RE",
             "_validate_complete_archive_namespace",
             "expected_root = (",
-            "private implementation module; use hepta-preflight",
+            "[PREFLIGHT] private implementation module; ",
+            "use hepta-preflight",
         ):
             self.assertIn(required, core)
         self.assertIn(
