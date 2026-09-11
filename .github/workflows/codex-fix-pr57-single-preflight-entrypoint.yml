@@ -1,0 +1,236 @@
+name: Temporary P1 single-entrypoint materializer
+
+on:
+  push:
+    branches:
+      - plan/p1-release-package-preflight-20260910
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: >-
+      github.actor == 'ProfHepta' &&
+      github.event.head_commit.message == 'chore(remediation): materialize single preflight entrypoint'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact carrier subject
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: plan/p1-release-package-preflight-20260910
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply asserted core-only semantic consolidation
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("scripts/hepta_preflight_core.py")
+          text = path.read_text(encoding="utf-8")
+          trailer = '''if __name__ == "__main__":
+              raise SystemExit(main())
+          '''
+          if text.count(trailer) != 1:
+              raise SystemExit("unexpected preflight core trailer")
+          for forbidden in (
+              "_ORIGINAL_CHECK_MANIFEST_SHAPE",
+              "_ORIGINAL_INSPECT_ARCHIVE",
+              "_read_admitted_archive_root",
+              "private implementation module; use hepta-preflight",
+          ):
+              if forbidden in text:
+                  raise SystemExit(f"preflight core already contains {forbidden}")
+
+          consolidation = r'''_ORIGINAL_CHECK_MANIFEST_SHAPE = _check_manifest_shape
+          _ORIGINAL_INSPECT_ARCHIVE = inspect_archive
+          RELEASE_LABEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+          def _validate_complete_archive_namespace(paths: list[str]) -> None:
+              """Reject any file path that is an ancestor of another archive file."""
+              namespace = set(GENERATED_ARCHIVE_PATHS)
+              namespace.update(paths)
+              for candidate in sorted(namespace):
+                  parts = candidate.split("/")
+                  for depth in range(1, len(parts)):
+                      ancestor = "/".join(parts[:depth])
+                      if ancestor in namespace:
+                          raise PreflightError(
+                              "manifest archive namespace contains a file/directory "
+                              "prefix collision: "
+                              f"{ancestor!r} versus {candidate!r}"
+                          )
+
+
+          def _check_manifest_shape(
+              manifest: Any, profile: str
+          ) -> list[dict[str, Any]]:
+              files = _ORIGINAL_CHECK_MANIFEST_SHAPE(manifest, profile)
+              version = manifest.get("version")
+              if (
+                  not isinstance(version, str)
+                  or RELEASE_LABEL_RE.fullmatch(version) is None
+              ):
+                  raise PreflightError(
+                      "release version must be a bounded canonical label"
+                  )
+              _validate_complete_archive_namespace(
+                  [item["path"] for item in files]
+              )
+              return files
+
+
+          def _read_admitted_archive_root(
+              artifact: Path,
+              admitted_sha256: str,
+              policy: LoadedPolicy,
+          ) -> str:
+              """Re-open admitted bytes and return the first member root."""
+              maximum_members = policy["maximum_archive_members"]
+              maximum_member = policy["maximum_member_bytes"]
+              maximum_total = policy["maximum_total_unpacked_bytes"]
+              maximum_stream = _tar_stream_limit(
+                  maximum_members, maximum_total
+              )
+              maximum_compressed = _compressed_archive_limit(
+                  maximum_members, maximum_total
+              )
+
+              with _open_pinned_regular(
+                  artifact, "artifact root identity"
+              ) as (stream, pinned, directory, name):
+                  if (
+                      pinned.st_size <= 0
+                      or pinned.st_size > maximum_compressed
+                  ):
+                      raise PreflightError(
+                          "artifact root identity compressed size is outside "
+                          "compiled bound"
+                      )
+                  observed_sha256 = _hash_stream(stream)
+                  if observed_sha256 != admitted_sha256:
+                      raise PreflightError(
+                          "artifact identity changed before root validation"
+                      )
+                  stream.seek(0)
+                  try:
+                      with _open_gzip_stream(stream) as gzip_stream:
+                          reader = _BoundedTarReader(
+                              gzip_stream,
+                              maximum_members=maximum_members,
+                              maximum_member_bytes=maximum_member,
+                              maximum_total_bytes=maximum_total,
+                              maximum_stream_bytes=maximum_stream,
+                          )
+                          member = reader.next_member()
+                          if member is None:
+                              raise PreflightError(
+                                  "release archive is empty"
+                              )
+                          parts = _canonical_member_name(member.name)
+                          if (
+                              len(parts) != 2
+                              or parts[1] != "manifest.json"
+                          ):
+                              raise PreflightError(
+                                  "release manifest must be the first "
+                                  "archive member"
+                              )
+                          root_name = parts[0]
+                  except PreflightError:
+                      raise
+                  except (OSError, EOFError, gzip.BadGzipFile) as error:
+                      raise PreflightError(
+                          "artifact root identity is not a valid bounded "
+                          f"gzip/USTAR archive: {error}"
+                      ) from error
+                  _assert_stable_file(
+                      stream,
+                      pinned,
+                      directory,
+                      name,
+                      "artifact root identity",
+                  )
+              return root_name
+
+
+          def inspect_archive(
+              artifact: Path,
+              expected_sha256: str,
+              policy: LoadedPolicy,
+              profile: str,
+          ) -> tuple[dict[str, Any], str, str]:
+              manifest, actual_sha256, manifest_sha256 = (
+                  _ORIGINAL_INSPECT_ARCHIVE(
+                      artifact,
+                      expected_sha256,
+                      policy,
+                      profile,
+                  )
+              )
+              root_name = _read_admitted_archive_root(
+                  artifact, actual_sha256, policy
+              )
+              expected_root = (
+                  f"heptatrader-{manifest['version']}-{profile}"
+              )
+              if root_name != expected_root:
+                  raise PreflightError(
+                      "archive root identity does not match manifest "
+                      "version/profile: "
+                      f"expected={expected_root!r}, observed={root_name!r}"
+                  )
+              return manifest, actual_sha256, manifest_sha256
+
+
+          if __name__ == "__main__":
+              print(
+                  "[PREFLIGHT] private implementation module; "
+                  "use hepta-preflight",
+                  file=sys.stderr,
+              )
+              raise SystemExit(2)
+          '''
+          path.write_text(
+              text.replace(trailer, consolidation),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Remove one-shot materializer and run focused regressions
+        run: |
+          set -euo pipefail
+          rm .github/workflows/codex-fix-pr57-single-preflight-entrypoint.yml
+          python3 -m py_compile \
+            scripts/hepta_preflight.py \
+            scripts/hepta_preflight_core.py \
+            tests/python/test_preflight_entrypoint_boundary.py
+          python3 -m unittest discover -s tests/python -p 'test_preflight_entrypoint_boundary.py' -v
+          python3 -m unittest discover -s tests/python -p 'test_preflight_release_identity.py' -v
+          python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py' -v
+          test -z "$(find .github/workflows -maxdepth 1 -type f -name 'codex-*' -print -quit)"
+          git diff --check
+
+      - name: Publish carrier-free repaired product tree
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            scripts/hepta_preflight.py \
+            scripts/hepta_preflight_core.py \
+            cmake/HeptaInstall.cmake \
+            docs/operations/preflight.md \
+            tests/python/test_cmake_install_integration.py \
+            tests/python/test_preflight_entrypoint_boundary.py \
+            .github/workflows/codex-fix-pr57-single-preflight-entrypoint.yml
+          git commit -m "fix(preflight): collapse to one public entrypoint" \
+            -m "Move security semantics into the private core, reject direct core execution, keep only hepta-preflight in the public binary namespace, and add source/staged-install hostile regressions." \
+            -m "paper_authorized=false; live_authorized=false."
+          test -z "$(find .github/workflows -maxdepth 1 -type f -name 'codex-*' -print -quit)"
+          git push origin HEAD:plan/p1-release-package-preflight-20260910

@@ -7,6 +7,8 @@ Applies to: immutable core and IB PAPER release packages
 
 `hepta-preflight` is read-only. It validates the package and selected static host properties, writes a machine-readable receipt, and exits non-zero on failure. It does not install files, change firewall rules, create users, deliver credentials, open sessions, disarm the kill switch, place orders, or authorize PAPER/LIVE.
 
+`hepta-preflight` is the only supported command-line entry point. The parser and verifier implementation is installed as the private regular file `libexec/heptatrader/hepta-preflight-core.py`, outside the public binary namespace. Direct execution of either the source or installed core exits with status `2` before argument parsing, package inspection, receipt publication, or optional network probing. The public wrapper loads that core through a stable no-follow descriptor. Archive namespace, release-label and exact root/version/profile rules are defined in the core itself rather than patched by the wrapper.
+
 ## Artifact-only check
 
 Run before an artifact reaches a privileged host:
@@ -63,6 +65,7 @@ A bounded TCP reachability check can be requested with `--probe-broker --broker-
 A PASS static receipt must be followed by the protected IB qualification workflow, which verifies the effective profile, credential boundary, broker session/account mode, authoritative refresh barriers, journal ordering, idempotency, cancel/recovery behavior and final reconciliation against the same artifact digest.
 
 Any digest change, package replacement, host identity change, policy change, failed check, missing evidence or uncertain broker state invalidates the preflight for promotion. LIVE remains unavailable.
+
 ## Exact binding guarantees
 
 The caller-supplied policy must be byte-identical to the policy inside the approved package. Archive limits remain below compiled, non-relaxable ceilings. The compressed-file bound is checked before hashing; a streaming USTAR parser stops at the member-count boundary before body reads, bounds total decompressed bytes, and gives GNU/PAX extension metadata a compiled allowance of zero. Artifact and policy paths are traversed component by component with no-follow directory descriptors, and the artifact is hashed and parsed through one pinned descriptor.

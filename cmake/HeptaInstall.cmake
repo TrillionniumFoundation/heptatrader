@@ -43,9 +43,13 @@ install(PROGRAMS
     DESTINATION "${CMAKE_INSTALL_BINDIR}"
     RENAME hepta-preflight
     COMPONENT runtime)
+
+# The parser/verification implementation is a private library module. It is
+# loaded by the descriptor-pinned public wrapper and is never installed in the
+# public binary namespace.
 install(FILES
     "${PROJECT_SOURCE_DIR}/scripts/hepta_preflight_core.py"
-    DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"
     RENAME hepta-preflight-core.py
     COMPONENT runtime)
 

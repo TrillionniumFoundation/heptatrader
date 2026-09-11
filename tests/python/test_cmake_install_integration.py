@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -35,6 +36,21 @@ class CMakeInstallIntegrationTests(unittest.TestCase):
         )
         self.assertIn(
             'install(DIRECTORY "${PROJECT_SOURCE_DIR}/docs/"',
+            install_module,
+        )
+
+    def test_preflight_core_uses_private_install_namespace(self) -> None:
+        install_module = (ROOT / "cmake/HeptaInstall.cmake").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            'DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"\n'
+            '    RENAME hepta-preflight-core.py',
+            install_module,
+        )
+        self.assertNotIn(
+            'DESTINATION "${CMAKE_INSTALL_BINDIR}"\n'
+            '    RENAME hepta-preflight-core.py',
             install_module,
         )
 
@@ -91,6 +107,33 @@ class CMakeInstallIntegrationTests(unittest.TestCase):
                 self.assertFalse(target.is_symlink(), relative)
                 self.assertTrue(stat.S_ISREG(metadata.st_mode), relative)
                 self.assertEqual(metadata.st_nlink, 1, relative)
+
+            public_entrypoint = install_root / "bin/hepta-preflight"
+            private_core = (
+                install_root
+                / "libexec/heptatrader/hepta-preflight-core.py"
+            )
+            self.assertTrue(public_entrypoint.is_file())
+            self.assertFalse(
+                (install_root / "bin/hepta-preflight-core.py").exists(),
+                "private preflight implementation must not be installed in bin",
+            )
+            private_metadata = private_core.lstat()
+            self.assertTrue(stat.S_ISREG(private_metadata.st_mode))
+            self.assertEqual(private_metadata.st_nlink, 1)
+            self.assertEqual(stat.S_IMODE(private_metadata.st_mode), 0o644)
+            direct = subprocess.run(
+                [sys.executable, str(private_core), "--help"],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertEqual(direct.returncode, 2, direct)
+            self.assertEqual(direct.stdout, "")
+            self.assertIn("private implementation module", direct.stderr)
+            self.assertIn("use hepta-preflight", direct.stderr)
 
             self.assertFalse(
                 (install_root / "bin/hepta-ib-executiond").exists(),
