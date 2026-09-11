@@ -1,4 +1,4 @@
-name: Enqueue approved PR 62
+name: Converge refs after PR 62
 
 on:
   pull_request:
@@ -7,147 +7,95 @@ on:
     types:
       - opened
       - synchronize
+      - reopened
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  group: ops-enqueue-approved-pr62-${{ github.sha }}
-  cancel-in-progress: false
+  group: ops-converge-pr62-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  enqueue:
+  cleanup:
     if: >-
       github.repository == 'TrillionniumFoundation/heptatrader' &&
       github.event.pull_request.user.login == 'Franksudoman' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       github.event.pull_request.head.ref == 'ops/queue-pr62-20260911' &&
       github.event.pull_request.base.ref == 'ops/queue-control-base-20260911'
-    runs-on: ubuntu-latest
-    environment: repository-governance
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
-      - name: Validate immutable target with ephemeral workflow token
+      - name: Wait for exact hardened tree to enter protected main
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_PR: '62'
-          TARGET_SHA: 535315a2be529b9fe1b73a4d700dcf88e1c4c557
-          REQUIRED_MAIN: af52b159d61900ef66eb525bd2678f3750d84ecf
+          TARGET_HEAD: 535315a2be529b9fe1b73a4d700dcf88e1c4c557
+          TARGET_TREE: cd8d0575f632b150b8f3d68d971f8d6e94a806af
         shell: bash
         run: |
           set -euo pipefail
-          main="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main")"
-          test "$(jq -r '.commit.sha' <<<"${main}")" = "${REQUIRED_MAIN}"
-
-          target="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}")"
-          jq -e --arg sha "${TARGET_SHA}" --arg base "${REQUIRED_MAIN}" '
-            .state == "open" and
-            .draft == false and
-            .base.ref == "main" and
-            .base.sha == $base and
-            .head.sha == $sha
-          ' <<<"${target}" >/dev/null
-
-          reviews="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}/reviews?per_page=100")"
-          approved_count="$(jq --arg sha "${TARGET_SHA}" '
-            [
-              .[]
-              | select(.state == "APPROVED")
-              | select(.commit_id == $sha)
-              | select(.user.login != "Franksudoman")
-              | .user.login
-            ]
-            | unique
-            | length
-          ' <<<"${reviews}")"
-          test "${approved_count}" -ge 2
-
-      - name: Enqueue exact SHA with protected governance identity
-        env:
-          GH_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
-          TARGET_PR: '62'
-          TARGET_SHA: 535315a2be529b9fe1b73a4d700dcf88e1c4c557
-        shell: bash
-        run: |
-          set -euo pipefail
-          test -n "${GH_TOKEN}"
-          jq -n \
-            --arg sha "${TARGET_SHA}" \
-            '{sha: $sha, merge_action: "merge_queue"}' \
-            > /tmp/merge-request.json
-
-          response="$(gh api \
-            --method PUT \
-            -H 'Accept: application/vnd.github+json' \
-            -H 'X-GitHub-Api-Version: 2026-03-10' \
-            "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}/merge-async" \
-            --input /tmp/merge-request.json)"
-          jq -e --arg sha "${TARGET_SHA}" '
-            (.status == "pending" or .status == "merged") and
-            ((.details.expected_head_sha // $sha) == $sha)
-          ' <<<"${response}" >/dev/null
-          uuid="$(jq -r '.details.uuid // empty' <<<"${response}")"
-          printf '%s\n' "${uuid}" > /tmp/merge-uuid
-
-      - name: Poll official asynchronous merge result
-        env:
-          GH_TOKEN: ${{ secrets.HEPTA_GOVERNANCE_TOKEN }}
-          TARGET_PR: '62'
-          TARGET_SHA: 535315a2be529b9fe1b73a4d700dcf88e1c4c557
-        shell: bash
-        run: |
-          set -euo pipefail
-          uuid="$(cat /tmp/merge-uuid)"
-          if test -z "${uuid}"; then
+          merged=0
+          for attempt in $(seq 1 480); do
             target="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}")"
-            jq -e '.merged_at != null' <<<"${target}" >/dev/null
-            exit 0
-          fi
-          for attempt in $(seq 1 120); do
-            result="$(gh api \
-              -H 'Accept: application/vnd.github+json' \
-              -H 'X-GitHub-Api-Version: 2026-03-10' \
-              "repos/${GITHUB_REPOSITORY}/pulls/${TARGET_PR}/merge-async/${uuid}")"
-            status="$(jq -r '.status' <<<"${result}")"
-            case "${status}" in
-              merged)
-                jq -e '.details.sha | type == "string" and length == 40' <<<"${result}" >/dev/null
-                exit 0
-                ;;
-              pending)
-                jq -e --arg sha "${TARGET_SHA}" '.details.expected_head_sha == $sha' <<<"${result}" >/dev/null
-                ;;
-              failed)
-                jq -r '.details.message' <<<"${result}" >&2
-                exit 1
-                ;;
-              *)
-                echo "unexpected asynchronous merge status: ${status}" >&2
-                exit 1
-                ;;
-            esac
+            jq -e --arg head "${TARGET_HEAD}" '
+              .head.sha == $head and
+              .base.ref == "main"
+            ' <<<"${target}" >/dev/null
+
+            if jq -e '.merged_at != null' <<<"${target}" >/dev/null; then
+              main_sha="$(gh api "repos/${GITHUB_REPOSITORY}/branches/main" --jq '.commit.sha')"
+              main_tree="$(gh api "repos/${GITHUB_REPOSITORY}/git/commits/${main_sha}" --jq '.tree.sha')"
+              test "${main_tree}" = "${TARGET_TREE}"
+
+              gap_json="$(gh api "repos/${GITHUB_REPOSITORY}/contents/docs/gap-register.json?ref=main" --jq '.content' | tr -d '\n' | base64 -d)"
+              jq -e '
+                .authorization.source_state == "READY" and
+                .authorization.paper_authorized == false and
+                .authorization.live_authorized == false and
+                ([.gaps[] | select(.state != "CLOSED_SOURCE" or .blocking_authorization != false)] | length) == 0
+              ' <<<"${gap_json}" >/dev/null
+              merged=1
+              break
+            fi
             sleep 5
           done
-          echo "merge queue request did not reach a terminal state" >&2
-          exit 1
+          test "${merged}" -eq 1
 
-      - name: Close controller and delete every non-main ref
-        if: ${{ success() }}
-        continue-on-error: true
+      - name: Close controller and delete absorbed non-main refs
         env:
           GH_TOKEN: ${{ github.token }}
           CONTROL_PR: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          set +e
+          set -euo pipefail
           gh api --method PATCH "repos/${GITHUB_REPOSITORY}/pulls/${CONTROL_PR}" -f state=closed >/dev/null
+
           for branch in \
+            hardening/behavior-over-formalism-20260911 \
             ops/queue-pr62-20260911 \
             ops/queue-control-base-20260911 \
-            hardening/behavior-over-formalism-20260911 \
             ops/queue-pr59-20260911 \
             plan/p0-owner-operated-truth-ci-20260910; do
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${branch}" >/dev/null
+            encoded="${branch//\//%2F}"
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${encoded}" >/dev/null 2>&1; then
+              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/heads/${encoded}" >/dev/null
+            fi
           done
-          exit 0
+
+          for attempt in $(seq 1 24); do
+            mapfile -t branches < <(gh api --paginate "repos/${GITHUB_REPOSITORY}/branches?per_page=100" --jq '.[].name')
+            extras=()
+            for branch in "${branches[@]}"; do
+              test "${branch}" = main || extras+=("${branch}")
+            done
+            if test "${#extras[@]}" -eq 0; then
+              exit 0
+            fi
+            printf 'remaining non-main refs: %s\n' "${extras[*]}" >&2
+            sleep 5
+          done
+          echo 'non-main refs remain after cleanup window' >&2
+          exit 1
