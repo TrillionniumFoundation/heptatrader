@@ -17,29 +17,22 @@ REGULAR = {"100644", "100755"}
 SYMLINK = "120000"
 GITLINK = "160000"
 CRITICAL_PATHS = (
-    ".github/CODEOWNERS",
-    ".github/CODEOWNERS.team-template",
-    ".github/github-governance-policy-v1.json",
-    ".github/github-team-mapping-v1.json",
     ".github/required-check-contexts-v1.json",
-    ".github/workflows/github-governance-qualification.yml",
     ".github/workflows/ib-paper-qualification.yml",
+    ".github/workflows/qualification-source-audit.yml",
+    "docs/capabilities.json",
+    "docs/gap-register.json",
+    "docs/ib-paper-profile-policy-v1.json",
     "scripts/build_ib_candidate_artifact.sh",
     "scripts/check_qualification_trust_boundary.py",
-    "scripts/github_qualification_evidence.py",
     "scripts/run_ib_paper_artifact_qualification.sh",
     "scripts/verify_exact_git_index.py",
-    "scripts/verify_github_governance.py",
-    "scripts/verify_github_governance_legacy.py",
     "scripts/verify_ib_candidate_artifact.py",
     "scripts/verify_ib_paper_qualification.py",
-    "scripts/verify_qualification_candidate.py",
-    "scripts/verify_team_codeowners_activation.py",
+    "tests/python/test_gap_register.py",
     "tests/python/test_git_index_authority.py",
-    "tests/python/test_github_governance.py",
     "tests/python/test_ib_paper_qualification.py",
     "tests/python/test_qualification_trust_boundary.py",
-    "tests/python/test_team_codeowners_activation.py",
 )
 
 
@@ -226,7 +219,31 @@ def validate(root: Path | str, *, critical_paths: Iterable[str] = CRITICAL_PATHS
     commands = (
         (["ls-files", "--stage", "-z", "--"], "git index listing"),
         (["ls-tree", "-r", "-z", "--full-tree", "HEAD"], "HEAD tree listing"),
-        (["ls-files", "--others", "--directory", "--no-empty-directory", "-z", "--"], "untracked path listing"),
+        (
+            [
+                "ls-files",
+                "--others",
+                "--directory",
+                "--no-empty-directory",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ],
+            "untracked path listing",
+        ),
+        (
+            [
+                "ls-files",
+                "--others",
+                "--directory",
+                "--no-empty-directory",
+                "--ignored",
+                "--exclude-standard",
+                "-z",
+                "--",
+            ],
+            "ignored path listing",
+        ),
     )
     payloads = [_git(root, args, errors, label) for args, label in commands]
     if any(item is None for item in payloads):
@@ -247,7 +264,16 @@ def validate(root: Path | str, *, critical_paths: Iterable[str] = CRITICAL_PATHS
             errors.append("stage-zero index entries differ from HEAD: " + ", ".join(changed))
     untracked = _records(payloads[2] or b"", "untracked path listing", errors)
     if untracked:
-        errors.append("untracked work-tree content is not permitted: " + ", ".join(sorted(untracked)))
+        errors.append(
+            "untracked work-tree content is not permitted: "
+            + ", ".join(sorted(untracked))
+        )
+    ignored = _records(payloads[3] or b"", "ignored path listing", errors)
+    if ignored:
+        errors.append(
+            "ignored work-tree content is not permitted: "
+            + ", ".join(sorted(ignored))
+        )
     critical = set(critical_paths)
     for relative in sorted(critical):
         if relative not in tree:

@@ -2,14 +2,16 @@
 
 Status: QUALIFICATION_REQUIRED  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `systemd/hepta-execution-ib-paper.service`, `docs/ib-paper-profile-policy-v1.json`  
-Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`
+Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`, `HeptaTrade/execution/ib_paper_execution_runtime_config.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`  
+Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_self_hosted_ib_availability.py`
 
 ## Scope
 
-The IB runtime is a fixed PAPER-only broker authority candidate. It may connect only to the configured loopback TWS/IB Gateway PAPER listener using the dedicated execution identity and a separately supplied IB C++ API source/runtime.
+The IB runtime is a fixed PAPER-only Broker authority candidate. It may connect only to a configured loopback TWS/IB Gateway PAPER listener through a dedicated execution identity and a separately supplied, pinned IB C++ API source/runtime.
 
-Repository source does not by itself authorize a real PAPER campaign. The protected environment, builder, runner, broker account, credentials, host controls, human approval, and verifier-issued receipt are external requirements.
+Repository source does not authorize a real PAPER campaign. `paper_authorized=false` remains the default, and LIVE is unavailable. A successful build, simulator run, TCP probe, host-map test, pull-request approval, or issue closure is not Broker qualification evidence.
+
+This is an owner-operated system. Repository teams, CODEOWNERS, pull-request approval counts, branch rules, Merge Queue, governance environments, and governance receipts are engineering controls only; they neither grant nor revoke Broker mutation authority.
 
 ## Composition
 
@@ -18,55 +20,103 @@ Repository source does not by itself authorize a real PAPER campaign. The protec
 - the IB API session and callback lifecycle;
 - authoritative quote subscriptions;
 - account, position, active-order, terminal-order, and execution refresh barriers;
-- order ID and correlation state;
+- order ID and venue-correlation state;
 - venue-specific risk and order-field validation;
-- journaled send/cancel/flatten operations;
-- reconnect and terminal recovery.
+- journaled send, cancel, and authoritative flatten operations;
+- reconnect, uncertain-outcome recovery, and terminalization.
 
-The Tool Gateway communicates over the typed Execution protocol and cannot link or call the IB API.
+The Tool Gateway communicates through the typed Execution protocol and cannot link or call the IB API. Agent, Gateway, and Actions runner identities do not receive Broker credentials or direct broker-port access.
 
-The IB SDK uses IEEE decimal64 BID quantities and the real Intel Decimal Floating-Point Math Library. Native builds require an explicit library archive and pass the SDK/BID ABI probe at configure time. Binary64 bit-copy shims are unsupported. The qualifying builder packages `libbid.a` inside the pinned SDK tree, so its existing SDK digest and read-only snapshot also cover decimal arithmetic and wire conversion.
+The SDK uses IEEE decimal64 BID quantities and the real Intel Decimal Floating-Point Math Library. Native builds require an explicit archive and must pass the SDK/BID ABI probe. The qualifying read-only SDK snapshot digest covers both source and `libbid.a`.
 
-## Fixed profile
+## Fixed profile families
 
-The profile binds PAPER mode, `DU` account, loopback host, allowed port, client ID, state directory, control directory, authorization credential, allowed security/order types, order quantity/notional limits, order rate, active-order limit, gross-position limit, and quote freshness. The authorization credential is a digest of the reviewed profile.
+The source-controlled baseline is [`../ib-paper-profile-policy-v1.json`](../ib-paper-profile-policy-v1.json). Every enabled profile binds PAPER mode, a `DU` account, loopback endpoint, client ID, state/control directories, authorization credential, security/order types, quantity/notional/rate limits, active-order limit, gross-position limit, quote freshness, and the execution domain.
 
-The source-controlled canonical policy is [`../ib-paper-profile-policy-v1.json`](../ib-paper-profile-policy-v1.json). Until the authoritative snapshot exposes aggregate pending-order notional across contracts, the canonical profile permits exactly **one active order** and exactly **one CASH quote contract**. This prevents a second candidate order from stacking behind an unaccounted live order. Multi-contract or STK profiles are not qualified by the current source policy even though lower-level adapter types remain extensible.
+The canonical service template remains the ordinary fixed PAPER profile. Until aggregate pending-order notional is authoritative across contracts, the supported qualification scope permits exactly one active order and one CASH quote contract. Multi-contract and STK profiles are not qualified.
 
-`python3 scripts/verify_canonical_ib_paper_profile.py` enforces the source template and is covered by hostile mutation tests. A deployment must verify the effective runtime environment against the same constraints; copying the example is not evidence by itself.
+### Ordinary local profile
 
-The external canary mode is separately bounded to a small LMT/DAY order and an authoritative quote-age limit. It is not LIVE.
+The local profile uses its own `PAPER-V3` credential and conservative hard limits. It does not inherit any external qualification mode or V5 limit.
+
+### P1 external canary
+
+The existing external canary uses a distinct `PAPER-V4` credential, LMT/DAY only, a small absolute order/position envelope, a bounded quote-age policy, and one active order. It cannot reuse or select V5.
+
+### Qualification-only PAPER-V5
+
+The protected qualification mode is selected only by the explicit `HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY=1` configuration and uses a distinct `PAPER-V5` credential. It is never selected by the canonical service template.
+
+V5 retains one active order, LMT/DAY at the authoritative touch, quote age between 100 and 5,000 milliseconds, at most six sends per minute, at most 1,000,000 units, at most 1,500,000 notional, and at most 1,000,000 gross PAPER position. The configured maximum order quantity must equal the configured gross-position ceiling, so every reachable V5 position remains within one permissible exact atomic flatten order.
+
+The credential digest includes the exact canonical single CASH contract string and primary quote instrument. Runtime configuration reparses the sole contract and rejects any mismatch between the effective contract map, primary instrument, and credential-bound values. A changed contract universe therefore requires a different credential and a new qualification.
+
+The expanded envelope exists only to let an independently pinned harness place a touch-price order above displayed top-of-book liquidity, observe a genuine partial fill, cancel any remainder, and return to an authoritative flat state. It does not authorize market orders, multiple active orders, another contract, another account, ordinary unattended operation, or LIVE.
 
 ## Kill switch and network boundary
 
-The canonical kill switch is a root/operator-owned marker under the fixed control directory. Unsafe owner, mode, inode, link, directory, or I/O state is `Uncertain` and blocks risk increase. The Execution process cannot disarm it.
+The canonical kill switch is a root/operator-owned marker under the fixed control directory. Unsafe owner, mode, inode, link, directory, or I/O state becomes `Uncertain` and blocks risk increase. Execution cannot disarm it.
 
-Broker API destination ports are restricted to the dedicated IB execution UID by the nftables policy. Agent and Gateway identities must be denied those ports even when they do not possess credentials.
+Canonical deployment uses logical `hepta-ib-exec:2003` and the source-controlled loopback nftables policy. The bounded x230 qualification host uses the reviewed mapping `systemd/hepta-x230-paper-host-identity-map-v1.json`, which binds logical UID `2003` to host execution UID `995`, keeps Actions runner UID `994` distinct, limits scope to IB PAPER qualification, and declares `live_authorized=false`.
 
-## Callback and recovery invariants
+The checkout-free runner probe pins the map digest, proves the runner cannot reach port 4002, and delegates non-secret host-boundary inspection to a separately pinned root-owned helper. Canonical nftables replacement queries JSON machine state, retries only within a compiled bound and requires exact structural rule readback before either allow or deny-all is accepted. Any host-specific policy permitting UID `995` remains a root-owned deployment input bound to that map; source tests or the probe do not install it or authorize a campaign. See [`../BROKER-NETWORK-ISOLATION.md`](../BROKER-NETWORK-ISOLATION.md).
 
-- `nextValidId` and connection epoch must be established before order admission.
-- A quote is authoritative only after the exact subscription and freshness checks pass.
-- CASH quote startup accepts the exact trailing broker farm id `cashfarm` or regional `hfarm`, independent of localized message prose. Generic 2104 notices and lookalike names grant no readiness; account, position, epoch and fresh contract-bound quote barriers still apply.
-- Filled terminal orders require execution evidence.
-- After the initial terminal download completes, validated live executions and terminal callbacks supplement that snapshot in the same connection epoch. Evidence must match the submitted order's broker client, account, H1 correlation and contract binding. A Filled status alone cannot prove an execution; partial fills retain their cumulative quantity, and duplicate callbacks do not create a new generation.
-- A cancel queued before broker acknowledgement remains uncertain until positive terminal evidence resolves it. If the target traded, reconciliation records `AUTHORITATIVE_CANCEL_TARGET_FILLED`; it must not report successful cancellation or depend on a reconnect to observe that fill.
+## Owner-operated qualification boundary
+
+Qualification keeps two trust domains:
+
+1. a no-secret builder receives exact current `main`, a digest-pinned OCI image, a read-only SDK/BID snapshot, and bounded writable storage;
+2. a PAPER execution identity receives only the verified artifact and runs it through a separately pinned external harness with PAPER-only Broker access.
+
+The workflow requires the requested SHA to equal the dispatching current `main` SHA and independently reads remote `refs/heads/main` before and after the Broker campaign. Main movement invalidates the result. The original actor and rerun triggering actor must match the configured immutable owner identity before self-hosted allocation and are reasserted at runtime.
+
+The mutation-capable `qualify` job also declares the protected GitHub environment `ib-paper`; the no-secret builder does not. Environment reviewers, deployment protection and credential access remain server-side controls and must be configured independently. Merely naming the environment in source is not evidence that it exists, is protected, or approved a campaign.
+
+Trusted and candidate checkouts are cleaned and checked against HEAD, stage-zero index, tracked bytes, modes, link identity, and untracked/ignored paths. Candidate and trusted trees are rechecked after build; the trusted harness is rechecked after the Broker campaign.
+
+The final receipt binds source SHA, artifact/executable digest, builder image/toolchain/resource policy, SDK/BID digest, harness digest, effective PAPER profile and contract binding, account mode, required scenarios, runner/host identity, kill-switch observations, and reconciled terminal state. Any bound-input change requires a new campaign.
+
+## Runtime and recovery invariants
+
+- `nextValidId` and a current connection epoch exist before admission.
+- A quote is authoritative only for the exact subscription/contract and freshness window.
+- Risk-increasing commands have stable command identity and durable intent/send-attempt records before Broker I/O.
+- Filled terminal orders require execution evidence; Filled text alone is insufficient.
+- Validated live execution and terminal callbacks must match Broker client, account, correlation, connection epoch, and contract binding.
+- Partial fills retain cumulative quantity; duplicate or out-of-order callbacks do not create new economic fills.
+- A cancel queued before acknowledgement remains uncertain until authoritative terminal evidence resolves it.
 - Reconnect invalidates affected snapshots and correlations.
-- A possibly sent command is reconciled by stable command and venue identities; it is not blindly resent.
-- Terminalization closes event ingress, drains callbacks, freezes one recovery snapshot, and commits a durable witness.
+- A possibly sent command is reconciled by stable command and venue identity and is never blindly resent.
+- V5 flatten is LMT/DAY at the authoritative touch, exactly equals the authoritative position, and is absolutely bounded to 1,000,000 units.
+- Terminalization closes ingress, drains callbacks, freezes one recovery snapshot, and commits a durable witness.
 
 ## Failure semantics
 
-Missing SDK, invalid profile, unsafe credential, broker connection loss, stale quote, incomplete risk state, kill-switch uncertainty, correlation conflict, callback drain failure, journal failure, non-canonical multi-order/multi-contract profile, or qualification absence all fail closed for risk increase. Cancel and guarded flatten retain their own checks and may remain available.
+Missing SDK, invalid or conflicting profile mode, unsafe credential, changed contract binding, multiple quote contracts, unsupported STK scope, Broker loss, stale quote, incomplete risk state, kill-switch uncertainty, identity-map mismatch, runner broker reachability, callback conflict, journal failure, source movement, artifact mismatch, campaign failure, or absent qualification all fail closed for risk increase. Cancel and guarded authoritative flatten retain their own owner, fencing, order-state, quote, and venue checks.
 
 ## Observability
 
-Track connection epoch, next-valid-order-ID state, subscription IDs, quote age, callback lag, active and terminal correlations, execution IDs, position/account refresh completeness, risk reason codes, send attempts, uncertain commands, reconnect duration, kill-switch state, effective profile digest, active-order limit, and quote-contract count.
+Track connection epoch, next-valid-order-ID state, subscription IDs, exact contract identity, quote age, callback lag, active/terminal correlations, execution IDs, account/position refresh completeness, risk reason codes, send attempts, uncertain commands, reconnect duration, kill-switch state, logical/runtime/runner identity, effective profile digest, credential version, active-order limit, and quote-contract count.
+
+No metric, receipt, issue label, or CI status may represent source-only success as PAPER authorization.
 
 ## Qualification
 
-A qualifying run must build an immutable candidate without broker secrets, verify the artifact with trusted code, validate the effective profile against the canonical source policy, run a bounded PAPER campaign through an independently pinned harness, re-admit the unchanged reviewed candidate, and issue a final receipt only after post-campaign state and evidence verify. Failure or missing evidence leaves `production_authorized=false`.
+A qualifying run must:
+
+1. build an immutable no-secret candidate from exact current `main`;
+2. verify package, executable, SDK/BID, builder, harness, profile, contract, and host identities;
+3. establish a PAPER-only account/session and fresh authoritative barriers;
+4. execute rejection, accepted-order, partial-fill, duplicate/out-of-order callback, cancel-race, disconnect/reconnect, uncertain-outcome, restart/journal replay, fencing, and kill-switch scenarios;
+5. cancel/flatten and perform final authoritative order, execution, position, and account reconciliation;
+6. issue a digest-bound receipt only after the final state is flat and every possible send is resolved.
+
+Failure or absent effect-bound evidence leaves `production_authorized=false` and `paper_authorized=false`.
 
 ## Known limitations
 
-The current repository does not prove that organization teams, protected environments, runner-group restrictions, the IB SDK, credentials, TWS/Gateway, or a PAPER account are present. Aggregate pending-order notional and general multi-asset base-currency exposure remain prerequisites for relaxing the single-active-order/single-CASH-contract policy. LIVE is unavailable.
+The repository does not supply the IB SDK, external harness, PAPER credentials, TWS/IB Gateway, root-owned x230 host policy, or Broker account. Those are owner-controlled runtime inputs and require separate evidence. Aggregate pending-order notional and general multi-asset base-currency exposure remain prerequisites for relaxing the one-active-order/one-CASH-contract policy. LIVE is unavailable.
+
+## Gap-register relationship
+
+IB PAPER is optional and disabled by default. Its real Broker campaign is an activation prerequisite, not an unresolved supported-scope source gap. Closing repository gaps never asserts that the campaign happened. Until a valid current receipt exists, `paper_authorized=false`; `live_authorized=false` remains invariant.

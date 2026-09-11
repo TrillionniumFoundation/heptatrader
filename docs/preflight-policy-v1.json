@@ -1,0 +1,42 @@
+{
+  "schema": "heptatrader.preflight-policy.v1",
+  "maximum_archive_members": 4096,
+  "maximum_member_bytes": 536870912,
+  "maximum_total_unpacked_bytes": 2147483648,
+  "private_key_suffixes": [".key", ".pem", ".p12", ".pfx", ".jks"],
+  "profiles": {
+    "core": {
+      "required_package_paths": [
+        "bin/hepta-executiond",
+        "bin/hepta-preflight",
+        "bin/hepta-sessionctl",
+        "bin/hepta-tool-gatewayd",
+        "bin/heptactl",
+        "lib/systemd/system/hepta-execution-simulator.service",
+        "share/doc/heptatrader/index.md",
+        "share/heptatrader/heptatrader-build-info.json",
+        "share/heptatrader/preflight-policy-v1.json"
+      ],
+      "required_host_commands": ["systemctl"]
+    },
+    "ib-paper": {
+      "required_package_paths": [
+        "bin/hepta-ib-executiond",
+        "bin/hepta-preflight",
+        "bin/hepta-sessionctl",
+        "bin/hepta-tool-gatewayd",
+        "bin/heptactl",
+        "lib/systemd/system/hepta-broker-egress-policy.service",
+        "lib/systemd/system/hepta-execution-ib-paper.service",
+        "share/doc/heptatrader/index.md",
+        "share/heptatrader/hepta-broker-network-policy-v1.json",
+        "share/heptatrader/heptatrader-build-info.json",
+        "share/heptatrader/ib-paper-profile-policy-v1.json",
+        "share/heptatrader/preflight-policy-v1.json"
+      ],
+      "required_host_commands": ["nft", "systemctl"],
+      "allowed_broker_hosts": ["127.0.0.1", "::1"],
+      "allowed_broker_ports": [4002, 7497]
+    }
+  }
+}

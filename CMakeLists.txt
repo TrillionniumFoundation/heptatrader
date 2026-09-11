@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.16)
-project(HeptaTrader LANGUAGES CXX)
+project(HeptaTrader VERSION 0.1.0 LANGUAGES CXX)
 
+set(HEPTA_RELEASE_LABEL "0.1.0-beta.1" CACHE STRING
+    "Version label recorded in installed HeptaTrader build metadata")
 option(BUILD_IB_PROBE "Build the IB/TWS connectivity probe" OFF)
 option(HEPTA_BUILD_LEGACY_MONOLITH
        "Build the deprecated multi-venue composition binary" OFF)
@@ -56,3 +58,7 @@ endif()
 if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
+
+# Install ownership is registered after optional test targets exist so a
+# canonical tested release can carry the installed simulator lifecycle smoke.
+include(cmake/HeptaInstall.cmake)

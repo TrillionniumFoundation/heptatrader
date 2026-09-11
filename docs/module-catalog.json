@@ -5,8 +5,19 @@
       "id": "agent-entry",
       "status": "CURRENT",
       "document": "docs/modules/agent-entry.md",
-      "implementation": ["adapters/mcp/hepta_mcp_server.py", "HeptaTrade/cli", "HeptaTrade/client"],
-      "tests": ["tests/native_tool_client_tests.cpp", "tests/unix_tool_server_tests.cpp"],
+      "implementation": [
+        ".agents/plugins",
+        "adapters/mcp/hepta_mcp_server.py",
+        "HeptaTrade/cli",
+        "HeptaTrade/client",
+        "plugins/heptatrader-agent-os",
+        "scripts/hepta_agent_mcp_launcher.py",
+        "scripts/hepta_agent_trust_domain.py"
+      ],
+      "tests": [
+        "tests/native_tool_client_tests.cpp",
+        "tests/unix_tool_server_tests.cpp"
+      ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
     },
@@ -14,8 +25,15 @@
       "id": "tool-gateway",
       "status": "CURRENT",
       "document": "docs/modules/tool-gateway.md",
-      "implementation": ["HeptaTrade/tool_host", "HeptaTrade/tools"],
-      "tests": ["tests/trading_tool_host_tests.cpp", "tests/trading_tool_registry_tests.cpp", "tests/unix_tool_server_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/tool_host",
+        "HeptaTrade/tools"
+      ],
+      "tests": [
+        "tests/trading_tool_host_tests.cpp",
+        "tests/trading_tool_registry_tests.cpp",
+        "tests/unix_tool_server_tests.cpp"
+      ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
     },
@@ -23,8 +41,16 @@
       "id": "session-supervisor",
       "status": "CURRENT",
       "document": "docs/modules/session-supervisor.md",
-      "implementation": ["HeptaTrade/tool_host/session_supervisor_protocol.cpp", "HeptaTrade/tool_host/session_supervisor_lease_store.cpp", "HeptaTrade/tool_host/unix_session_supervisor_server.cpp", "HeptaTrade/cli/hepta_sessionctl.cpp"],
-      "tests": ["tests/unix_session_supervisor_server_tests.cpp", "tests/session_supervisor_lease_store_migration_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/tool_host/session_supervisor_protocol.cpp",
+        "HeptaTrade/tool_host/session_supervisor_lease_store.cpp",
+        "HeptaTrade/tool_host/unix_session_supervisor_server.cpp",
+        "HeptaTrade/cli/hepta_sessionctl.cpp"
+      ],
+      "tests": [
+        "tests/unix_session_supervisor_server_tests.cpp",
+        "tests/session_supervisor_lease_store_migration_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -32,8 +58,16 @@
       "id": "execution-service",
       "status": "CURRENT",
       "document": "docs/modules/execution-service.md",
-      "implementation": ["HeptaTrade/execution", "HeptaTrade/agent/decision_lease_manager.cpp", "HeptaTrade/events/execution_event_hub.cpp", "HeptaTrade/events/owner_scoped_health_publisher.cpp"],
-      "tests": ["tests/execution_coordinator_tests.cpp", "tests/execution_event_feed_tests.cpp", "tests/execution_decision_lease_authority_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/execution",
+        "HeptaTrade/agent",
+        "HeptaTrade/events"
+      ],
+      "tests": [
+        "tests/execution_coordinator_tests.cpp",
+        "tests/execution_event_feed_tests.cpp",
+        "tests/execution_decision_lease_authority_tests.cpp"
+      ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
     },
@@ -41,8 +75,18 @@
       "id": "oms-journal",
       "status": "CURRENT",
       "document": "docs/modules/oms-journal.md",
-      "implementation": ["HeptaTrade/oms_journal.cpp", "HeptaTrade/oms_recover.cpp"],
-      "tests": ["tests/oms_journal_durability_tests.cpp", "tests/oms_journal_schema_v4_tests.cpp", "tests/execution_coordinator_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/oms_journal.cpp",
+        "HeptaTrade/oms_journal.h",
+        "HeptaTrade/oms_recover.cpp",
+        "HeptaTrade/oms_recover.h",
+        "scripts/verify_oms_journal_replay.py"
+      ],
+      "tests": [
+        "tests/oms_journal_durability_tests.cpp",
+        "tests/oms_journal_schema_v4_tests.cpp",
+        "tests/execution_coordinator_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -50,8 +94,15 @@
       "id": "risk-engine",
       "status": "CURRENT",
       "document": "docs/modules/risk-engine.md",
-      "implementation": ["HeptaTrade/risk", "HeptaTrade/execution/ib_paper_execution_profile.cpp"],
-      "tests": ["tests/pre_trade_risk_engine_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/risk",
+        "HeptaTrade/execution/ib_paper_execution_profile.cpp"
+      ],
+      "tests": [
+        "tests/pre_trade_risk_engine_tests.cpp",
+        "tests/ib_paper_kill_switch_tests.cpp",
+        "tests/ib_paper_execution_profile_tests.cpp"
+      ],
       "broker_mutation": "POLICY_GATE",
       "production_authorized": false
     },
@@ -59,8 +110,14 @@
       "id": "authoritative-state",
       "status": "CURRENT",
       "document": "docs/modules/authoritative-state.md",
-      "implementation": ["HeptaTrade/state"],
-      "tests": ["tests/authoritative_trading_snapshot_store_tests.cpp", "tests/snapshot_refresh_coordinator_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/state",
+        "HeptaTrade/reconcile"
+      ],
+      "tests": [
+        "tests/authoritative_trading_snapshot_store_tests.cpp",
+        "tests/snapshot_refresh_coordinator_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -68,8 +125,16 @@
       "id": "simulator",
       "status": "CURRENT",
       "document": "docs/modules/simulator.md",
-      "implementation": ["HeptaTrade/simulator", "HeptaTrade/execution/hepta_executiond.cpp"],
-      "tests": ["tests/agent_simulator_e2e_tests.cpp", "tests/simulator_risk_runtime_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/simulator",
+        "HeptaTrade/execution/hepta_executiond.cpp",
+        "scripts/validate_sim_data.py"
+      ],
+      "tests": [
+        "tests/agent_simulator_e2e_tests.cpp",
+        "tests/simulator_risk_runtime_tests.cpp",
+        "tests/python/test_release_simulator_smoke.py"
+      ],
       "broker_mutation": "LOCAL_ONLY",
       "production_authorized": false
     },
@@ -77,8 +142,38 @@
       "id": "ib-paper",
       "status": "QUALIFICATION_REQUIRED",
       "document": "docs/modules/ib-paper.md",
-      "implementation": ["HeptaTrade/adapter_ib", "HeptaTrade/execution/hepta_ib_executiond.cpp", "systemd/hepta-execution-ib-paper.service", "docs/ib-paper-profile-policy-v1.json", "scripts/verify_canonical_ib_paper_profile.py"],
-      "tests": ["tests/ib_order_lifecycle_tests.cpp", "tests/ib_paper_kill_switch_tests.cpp", "tests/ib_live_terminal_reconciliation_tests.cpp", "tests/execution_coordinator_tests.cpp", "tests/python/test_canonical_ib_paper_profile.py"],
+      "implementation": [
+        "HeptaTrade/adapter_ib",
+        "HeptaTrade/execution/hepta_ib_executiond.cpp",
+        ".github/workflows/ib-paper-qualification.yml",
+        ".github/workflows/self-hosted-ib-availability.yml",
+        "scripts/build_ib_candidate_artifact.sh",
+        "scripts/verify_ib_candidate_artifact.py",
+        "scripts/run_ib_paper_artifact_qualification.sh",
+        "scripts/verify_ib_paper_qualification.py",
+        "scripts/check_qualification_trust_boundary.py",
+        "scripts/hepta_broker_egress_policy.py",
+        "systemd/hepta-execution-ib-paper.service",
+        "systemd/hepta-broker-network-policy-v1.json",
+        "systemd/hepta-x230-paper-host-identity-map-v1.json",
+        "docs/ib-paper-profile-policy-v1.json",
+        "scripts/verify_canonical_ib_paper_profile.py",
+        "scripts/ib_obs_latency_stats.py"
+      ],
+      "tests": [
+        "tests/ib_order_lifecycle_tests.cpp",
+        "tests/ib_paper_kill_switch_tests.cpp",
+        "tests/ib_paper_execution_profile_tests.cpp",
+        "tests/ib_live_terminal_reconciliation_tests.cpp",
+        "tests/execution_coordinator_tests.cpp",
+        "tests/python/test_canonical_ib_paper_profile.py",
+        "tests/python/test_ib_paper_qualification.py",
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_ib_workflow_interfaces.py",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_self_hosted_ib_availability.py",
+        "tests/python/test_hepta_broker_egress_policy_atomic.py"
+      ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
     },
@@ -86,8 +181,14 @@
       "id": "ctp-adapter",
       "status": "EXPERIMENTAL",
       "document": "docs/modules/ctp-adapter.md",
-      "implementation": ["HeptaTrade/adapter_ctp"],
-      "tests": ["tests/venue_capability_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/adapter_ctp",
+        "third_party/ctp"
+      ],
+      "tests": [
+        "tests/venue_capability_tests.cpp",
+        "tests/python/test_legacy_runtime_boundary.py"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -95,8 +196,13 @@
       "id": "xt-adapter",
       "status": "EXPERIMENTAL",
       "document": "docs/modules/xt-adapter.md",
-      "implementation": ["HeptaTrade/adapter_xt"],
-      "tests": ["tests/venue_capability_tests.cpp"],
+      "implementation": [
+        "HeptaTrade/adapter_xt"
+      ],
+      "tests": [
+        "tests/venue_capability_tests.cpp",
+        "tests/python/test_legacy_runtime_boundary.py"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -104,8 +210,49 @@
       "id": "shadow-research",
       "status": "EXPERIMENTAL",
       "document": "docs/modules/shadow-research.md",
-      "implementation": ["scripts/hepta_market_context_builder.py", "scripts/hepta_market_evidence_normalizer.py", "scripts/hepta_shadow_market_history.py", "scripts/hepta_strategy_shadow_runner.py", "scripts/hepta_strategy_replay_evaluator.py"],
-      "tests": ["tests/python/test_research_contract_smoke.py"],
+      "implementation": [
+        "scripts/hepta_market_context_builder.py",
+        "scripts/hepta_market_evidence_normalizer.py",
+        "scripts/hepta_shadow_market_history.py",
+        "scripts/hepta_strategy_shadow_runner.py",
+        "scripts/hepta_strategy_replay_evaluator.py",
+        "strategies",
+        "scripts/hepta_eurusd_confirmed_momentum_strategy.py",
+        "scripts/hepta_market_official_source_extractor.py",
+        "scripts/hepta_official_source_capture.py",
+        "scripts/hepta_strategy_contracts.py",
+        "scripts/validate_hepta_strategy_decision_receipt.py"
+      ],
+      "tests": [
+        "tests/python/test_research_contract_smoke.py"
+      ],
+      "broker_mutation": "NONE",
+      "production_authorized": false
+    },
+    {
+      "id": "release-engineering",
+      "status": "CURRENT",
+      "document": "docs/modules/release-engineering.md",
+      "implementation": [
+        "CMakeLists.txt",
+        "VERSION",
+        "HeptaTrade/CMakeLists.txt",
+        "cmake",
+        "scripts/build_release_package.py",
+        "scripts/hepta_preflight.py",
+        "scripts/hepta_preflight_core.py",
+        "scripts/run_release_simulator_smoke.py",
+        "docs/preflight-policy-v1.json"
+      ],
+      "tests": [
+        "tests/python/test_release_package.py",
+        "tests/python/test_hepta_preflight.py",
+        "tests/python/test_preflight_special_files.py",
+        "tests/python/test_preflight_complete_namespace.py",
+        "tests/python/test_cmake_install_integration.py",
+        "tests/python/test_release_simulator_smoke.py",
+        "tests/agent_simulator_e2e_tests.cpp"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
@@ -113,18 +260,80 @@
       "id": "deployment",
       "status": "CURRENT",
       "document": "docs/modules/deployment.md",
-      "implementation": ["systemd", "tmpfiles.d"],
-      "tests": ["tests/python/test_documentation_control_plane.py"],
+      "implementation": [
+        ".env.hepta.example",
+        "systemd",
+        "tmpfiles.d",
+        "scripts/resolve_hepta_config.py"
+      ],
+      "tests": [
+        "tests/python/test_documentation_control_plane.py",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_self_hosted_ib_availability.py",
+        "tests/python/test_hepta_broker_egress_policy_atomic.py",
+        "tests/python/test_release_simulator_smoke.py"
+      ],
       "broker_mutation": "NONE",
       "production_authorized": false
     },
     {
-      "id": "governance-qualification",
-      "status": "QUALIFICATION_REQUIRED",
-      "document": "docs/modules/governance-qualification.md",
-      "implementation": [".github", "scripts/verify_github_governance.py", "scripts/verify_ib_paper_qualification.py"],
-      "tests": ["tests/python/test_github_governance.py", "tests/python/test_ib_paper_qualification.py", "tests/python/test_qualification_trust_boundary.py"],
-      "broker_mutation": "EXTERNAL_QUALIFIER_ONLY",
+      "id": "repository-control",
+      "status": "CURRENT",
+      "document": "docs/modules/repository-control.md",
+      "implementation": [
+        ".github",
+        ".agents",
+        "scripts/README.md",
+        "scripts/check_component_coverage.py",
+        "scripts/check_documentation.py",
+        "scripts/check_documentation_core.py",
+        "scripts/check_gap_register.py",
+        "scripts/dev_core.sh",
+        "scripts/verify_build_ownership.py",
+        "scripts/verify_exact_git_index.py",
+        "scripts/verify_source_gap_closures.py"
+      ],
+      "tests": [
+        "tests/python/test_component_coverage.py",
+        "tests/python/test_documentation_control_plane.py",
+        "tests/python/test_gap_register.py",
+        "tests/python/test_qualification_trust_boundary.py"
+      ],
+      "broker_mutation": "NONE",
+      "production_authorized": false
+    },
+    {
+      "id": "legacy-runtime",
+      "status": "LEGACY",
+      "document": "docs/modules/legacy-runtime.md",
+      "implementation": [
+        "HeptaStrategy",
+        "HeptaSimulator",
+        "Interface",
+        "Tools",
+        "HeptaTrader.sln",
+        "HeptaTrader_Linux.sln",
+        "HeptaTrade/FM_AdaGrad_cu2603.xml",
+        "HeptaTrade/FM_AdaGrad_cu2605.xml",
+        "HeptaTrade/HeptaDemoStrategyTrader.cpp",
+        "HeptaTrade/HeptaTrader.vcxproj",
+        "HeptaTrade/HeptaTraderConfig.paper.xml",
+        "HeptaTrade/HeptaTraderConfig.xml.example",
+        "HeptaTrade/HeptaTrader_Linux.vcxproj",
+        "HeptaTrade/IBRisk.template.xml",
+        "HeptaTrade/Instrument.xml",
+        "HeptaTrade/ib_fx_multi_strategy.cpp",
+        "HeptaTrade/ib_fx_multi_strategy.h",
+        "HeptaTrade/openclaw_0dte_bridge.cpp",
+        "HeptaTrade/openclaw_0dte_bridge.h",
+        "HeptaTrade/order_watchdog.cpp",
+        "HeptaTrade/order_watchdog.h"
+      ],
+      "tests": [
+        "tests/python/test_legacy_runtime_boundary.py",
+        "tests/venue_capability_tests.cpp"
+      ],
+      "broker_mutation": "NONE",
       "production_authorized": false
     }
   ]

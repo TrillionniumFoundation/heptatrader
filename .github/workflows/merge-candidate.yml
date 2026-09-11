@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     steps:
-      - name: Checkout exact merge/event revision without credentials
+      - name: Checkout exact prospective merge or event revision without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ github.repository }}
@@ -39,17 +39,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
 
-      - name: Validate exact candidate
+      - name: Build and test the exact prospective merge object
         env:
+          HEPTA_BUILD_DIR: ${{ github.workspace }}/build/merge-candidate
           HEPTA_JOBS: "2"
+        run: ./scripts/dev_core.sh
+
+      - name: Verify install, package and preflight on the prospective merge object
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+          HEPTA_RELEASE_INTEGRATION_BUILD_DIR: ${{ github.workspace }}/build/merge-candidate
         run: |
           set -euo pipefail
           git diff --check
           python3 scripts/check_documentation.py
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py'
+          mkdir -p build/merge-evidence
+          epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
+          package="build/merge-evidence/heptatrader-merge-${EXPECTED_SHA}.tar.gz"
+          python3 scripts/build_release_package.py \
+            --build-dir build/merge-candidate \
+            --output "$package" \
+            --version 0.1.0-beta.1 \
+            --profile core \
+            --source-sha "$EXPECTED_SHA" \
+            --source-date-epoch "$epoch"
+          digest="$(cut -d' ' -f1 "$package.sha256")"
+          python3 scripts/hepta_preflight.py \
+            --artifact "$package" \
+            --expected-sha256 "$digest" \
+            --profile core \
+            --policy docs/preflight-policy-v1.json \
+            --artifact-only \
+            --output "build/merge-evidence/preflight-${EXPECTED_SHA}.json"
           python3 -m unittest discover -s tests/python -p 'test_*.py'
-          ./scripts/dev_core.sh
 
       - name: Reassert exact candidate bytes
         if: always()

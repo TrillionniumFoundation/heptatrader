@@ -30,7 +30,11 @@ def _markdown_files(
         )
         if document is not None:
             files.append(root / document)
+    development_index = root / "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md"
+    if development_index.is_file() and not development_index.is_symlink():
+        files.append(development_index)
     files.extend(sorted((root / "docs/operations").glob("*.md")))
+    files.extend(sorted((root / "docs/technical").glob("*.md")))
     return files
 
 

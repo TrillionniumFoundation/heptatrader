@@ -29,12 +29,28 @@ class ResearchContractSmokeTests(unittest.TestCase):
         module = next(
             item for item in catalog["modules"] if item["id"] == "shadow-research"
         )
-        return [ROOT / item for item in module["implementation"]]
+        paths: list[Path] = []
+        for item in module["implementation"]:
+            path = ROOT / item
+            if path.is_dir():
+                paths.extend(
+                    candidate
+                    for candidate in sorted(path.rglob("*"))
+                    if candidate.is_file()
+                )
+            else:
+                paths.append(path)
+        return paths
 
     def test_catalogued_research_modules_compile_and_do_not_import_broker_sdks(self) -> None:
         for path in self.research_paths():
             with self.subTest(path=path):
                 self.assertTrue(path.is_file())
+                if path.suffix == ".json":
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                    self.assertIsInstance(value, dict)
+                    continue
+                self.assertEqual(path.suffix, ".py", f"unsupported research asset: {path}")
                 with tempfile.TemporaryDirectory() as directory:
                     py_compile.compile(
                         str(path),
