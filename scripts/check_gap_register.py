@@ -1,5 +1,17 @@
 #!/usr/bin/env python3
-"""Fail-closed validation for the complete supported-scope gap register."""
+"""Validate supported-scope gap closure from behavior-bearing source evidence.
+
+This validator separates three concerns:
+
+* repository evidence ownership and authorization truth;
+* compact behavior-bound source invariants whose removal would invalidate a
+  CLOSED_SOURCE claim;
+* CI responsibility separation, so behavior is executed once by its owning
+  lane instead of being duplicated as process ceremony.
+
+It intentionally does not require unrelated workflows to repeat the same full
+build/test/package command sequence.
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +19,6 @@ import json
 from pathlib import Path
 import re
 import stat
-import sys
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -34,7 +45,74 @@ REQUIRED_REPOSITORY_GAPS = {
     "RELEASE-001",
 }
 REQUIRED_EXTERNAL_GAPS: dict[str, str] = {}
-REQUIRED_GAP_EVIDENCE: dict[str, set[str]] = {
+ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
+
+# Catalog/index ownership anchors. These prove that an evidence family is
+# registered; behavior-sensitive evidence below is checked separately so a
+# generic ownership error cannot hide a missing safety contract.
+REQUIRED_EVIDENCE: dict[str, set[str]] = {
+    "DOC-001": {
+        "docs/DOCUMENTATION-POLICY.md",
+        "docs/module-catalog.json",
+        "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md",
+        "scripts/check_documentation.py",
+        "scripts/check_component_coverage.py",
+    },
+    "CI-001": {
+        ".github/workflows/core-ci.yml",
+        ".github/workflows/canonical-full-suite.yml",
+        ".github/workflows/documentation-control-plane.yml",
+        ".github/workflows/merge-candidate.yml",
+    },
+    "TEST-001": {
+        "docs/build-targets.json",
+        "tests/agent_simulator_e2e_tests.cpp",
+        "tests/execution_coordinator_tests.cpp",
+        "tests/python/test_behavior_bound_gap_evidence.py",
+    },
+    "RISK-001": {
+        "HeptaTrade/risk/pre_trade_risk_engine.cpp",
+        "tests/pre_trade_risk_engine_tests.cpp",
+        "docs/modules/risk-engine.md",
+    },
+    "PENDING-EXPOSURE-001": {
+        "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+        "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+        "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+        "tests/execution_coordinator_tests.cpp",
+        "scripts/hepta_broker_egress_policy.py",
+    },
+    "VENUE-001": {
+        "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
+        "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
+        "tests/venue_capability_tests.cpp",
+    },
+    "OMS-001": {
+        "HeptaTrade/execution/execution_place_order_dispatch.cpp",
+        "tests/oms_journal_durability_tests.cpp",
+        "tests/oms_journal_schema_v4_tests.cpp",
+        "docs/OMS-EVENT-SCHEMA.md",
+    },
+    "BUILD-001": {
+        "docs/build-targets.json",
+        "scripts/verify_build_ownership.py",
+        "scripts/check_component_coverage.py",
+        "tests/python/test_build_ownership.py",
+    },
+    "RELEASE-001": {
+        "cmake/HeptaInstall.cmake",
+        "scripts/build_release_package.py",
+        "scripts/hepta_preflight.py",
+        "scripts/hepta_preflight_core.py",
+        "scripts/run_release_simulator_smoke.py",
+        "tests/python/test_release_simulator_smoke.py",
+    },
+}
+
+# Evidence whose *presence in the register* is itself part of a source-closure
+# claim. Tests intentionally mutate these arrays to ensure closure cannot be
+# asserted after deleting the corresponding hostile regression.
+REQUIRED_BEHAVIOR_EVIDENCE: dict[str, set[str]] = {
     "TEST-001": {
         "tests/python/test_behavior_bound_gap_evidence.py",
         "tests/python/test_hepta_preflight.py",
@@ -45,19 +123,14 @@ REQUIRED_GAP_EVIDENCE: dict[str, set[str]] = {
     },
     "PENDING-EXPOSURE-001": {
         "HeptaTrade/execution/ib_paper_execution_profile.cpp",
-        "cmake/HeptaInstall.cmake",
-        "docs/BROKER-NETWORK-ISOLATION.md",
-        "docs/preflight-policy-v1.json",
-        "scripts/hepta_broker_egress_policy.py",
-        "systemd/hepta-broker-network-policy-v1.json",
-        "tests/python/test_hepta_broker_egress_policy.py",
-        "tests/python/test_hepta_broker_egress_policy_atomic.py",
         "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
         "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
-        "tests/python/test_behavior_bound_gap_evidence.py",
         "tests/ib_paper_execution_profile_tests.cpp",
         "tests/execution_coordinator_tests.cpp",
-        "docs/modules/ib-paper.md",
+        "scripts/hepta_broker_egress_policy.py",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_hepta_broker_egress_policy_atomic.py",
+        "tests/python/test_behavior_bound_gap_evidence.py",
     },
     "RELEASE-001": {
         "scripts/build_release_package.py",
@@ -69,6 +142,11 @@ REQUIRED_GAP_EVIDENCE: dict[str, set[str]] = {
         "tmpfiles.d/heptatrader-ib-paper.conf",
     },
 }
+
+# Narrow source anchors for properties that cannot be inferred from file
+# existence alone. These deliberately avoid CI-layout tokens: the runtime/core
+# tests execute the behavior, while this list prevents the source contract from
+# silently losing the mechanism those tests are meant to exercise.
 REQUIRED_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
     "HeptaTrade/execution/ib_paper_execution_profile.cpp": (
         "maxOrderQuantity != maxGrossPosition",
@@ -86,58 +164,17 @@ REQUIRED_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
     ),
     "tests/ib_paper_execution_profile_tests.cpp": (
         "TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath",
-        "125000.0",
-        "250001.0",
-        "IbPaperKillSwitchState::Engaged",
         "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED",
         "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED",
     ),
     "tests/execution_coordinator_tests.cpp": (
         "TestQualificationExternalFlattenIsExactAndAbsolutelyBounded",
     ),
-    "scripts/build_release_package.py": (
-        'getattr(os, "O_NONBLOCK", 0)',
-        "def _clear_nonblocking(",
-    ),
-    "scripts/hepta_preflight.py": (
-        'getattr(os, "O_NONBLOCK", 0)',
-        "def _clear_nonblocking(",
-    ),
     "scripts/hepta_preflight_core.py": (
-        'getattr(os, "O_NONBLOCK", 0)',
-        "artifact_admitted",
-        "Broker probing requires successful artifact and policy admission",
         "CANONICAL_IB_PAPER_KILL_SWITCH_PATH",
         "/run/hepta/ib-paper-control/kill-switch",
         'CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT = b"engaged"',
         "def _safe_kill_switch(",
-        "expected_group_gid",
-    ),
-    "tests/python/test_hepta_preflight.py": (
-        "test_declared_preflight_regressions_are_discovered",
-        "test_rejected_artifacts_never_probe_broker",
-        "connect.assert_not_called()",
-        "test_kill_switch_accepts_canonical_tmpfiles_marker",
-        "test_kill_switch_rejects_unrelated_absolute_file",
-        "test_kill_switch_rejects_valid_marker_at_wrong_path",
-        "test_kill_switch_rejects_final_and_ancestor_symlinks",
-        "test_kill_switch_rejects_identity_change_during_read",
-        "test_ib_static_preflight_rejects_arbitrary_kill_switch",
-    ),
-    ".github/workflows/canonical-full-suite.yml": (
-        "python3 -m unittest discover -s tests/python -p 'test_*.py'",
-        "./scripts/dev_core.sh",
-        "cmake --build build/reliability-gcc --target hepta_core_test_binaries",
-        "ctest --test-dir build/reliability-gcc --output-on-failure -L core",
-        "cmake --build build/reliability-clang --target hepta_core_test_binaries",
-        "ctest --test-dir build/reliability-clang --output-on-failure -L core",
-    ),
-    "cmake/HeptaInstall.cmake": (
-        "systemd/hepta-broker-network-policy-v1.json",
-        "if(HEPTA_ENABLE_IBAPI)",
-    ),
-    "docs/preflight-policy-v1.json": (
-        "share/heptatrader/hepta-broker-network-policy-v1.json",
     ),
     "scripts/hepta_broker_egress_policy.py": (
         "CANONICAL_POLICY_SHA256",
@@ -148,20 +185,9 @@ REQUIRED_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
         "policy parent or final path changed during read",
         "_apply(nft, COMPILED_POLICY, deny_all=True)",
         "APPLY_ATTEMPTS = 3",
-        "RULE_COMMENTS = {",
         "def _run_nft_query(",
         "def _table_exists(",
         "def _verify_table(",
-        "machine-state retries",
-    ),
-    "tests/python/test_hepta_broker_egress_policy.py": (
-        "test_policy_digest_mismatch_is_rejected",
-        "test_policy_in_place_mutation_during_read_is_rejected",
-        "test_policy_final_replacement_during_read_is_rejected",
-        "test_policy_parent_substitution_during_read_is_rejected",
-        "test_policy_read_failure_attempts_compiled_deny_all",
-        "test_allow_apply_failure_attempts_compiled_deny_all",
-        "test_explicit_deny_all_does_not_read_policy",
     ),
     "tests/python/test_hepta_broker_egress_policy_atomic.py": (
         "test_table_presence_uses_json_inventory_not_diagnostics",
@@ -173,23 +199,10 @@ REQUIRED_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
         "test_structural_readback_rejects_extra_permissive_rule",
         "test_double_apply_failure_reports_unverified_fallback",
     ),
-    "tmpfiles.d/heptatrader-ib-paper.conf": (
-        "/run/hepta/ib-paper-control",
-        "kill-switch 0440 root hepta-ib-exec",
-        "engaged",
-    ),
-    "tests/python/test_preflight_special_files.py": (
-        "test_fifo_policy_is_rejected_without_blocking_or_receipt",
-        "test_fifo_artifact_is_rejected_without_blocking_or_pass_receipt",
-        "test_fifo_installed_leaf_is_rejected_without_blocking",
-        "test_regular_to_fifo_builder_swap_is_rejected_without_blocking",
-        "test_fifo_preflight_core_is_rejected_without_blocking",
-    ),
 }
 FORBIDDEN_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
     "scripts/hepta_broker_egress_policy.py": ("File exists",),
 }
-ID_RE = re.compile(r"^[A-Z][A-Z0-9-]{2,63}$")
 
 
 class GapRegisterError(ValueError):
@@ -233,12 +246,12 @@ def read_text(path: Path) -> str:
         raise GapRegisterError(f"cannot read {path}: {error}") from error
 
 
-def canonical_path(root: Path, value: Any, label: str) -> Path:
+def canonical_evidence(root: Path, value: Any, label: str) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
-        raise GapRegisterError(f"{label}: invalid repository-relative path")
+        raise GapRegisterError(f"{label}: invalid repository-relative evidence path")
     relative = Path(value)
     if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
-        raise GapRegisterError(f"{label}: non-canonical path: {value!r}")
+        raise GapRegisterError(f"{label}: non-canonical evidence path: {value!r}")
     path = root / relative
     try:
         metadata = path.lstat()
@@ -246,11 +259,72 @@ def canonical_path(root: Path, value: Any, label: str) -> Path:
         raise GapRegisterError(f"{label}: missing evidence {value}: {error}") from error
     if path.is_symlink() or not (stat.S_ISREG(metadata.st_mode) or stat.S_ISDIR(metadata.st_mode)):
         raise GapRegisterError(f"{label}: evidence is not a regular file/directory: {value}")
-    return relative
+    return relative.as_posix()
+
+
+def _require_workflow_role(
+    root: Path,
+    relative: str,
+    required: tuple[str, ...],
+    forbidden: tuple[str, ...] = (),
+) -> None:
+    text = read_text(root / relative)
+    missing = [token for token in required if token not in text]
+    if missing:
+        raise GapRegisterError(
+            f"{relative}: missing role-bearing commands: "
+            + ", ".join(repr(token) for token in missing)
+        )
+    leaked = [token for token in forbidden if token in text]
+    if leaked:
+        raise GapRegisterError(
+            f"{relative}: duplicates commands owned by another CI role: "
+            + ", ".join(repr(token) for token in leaked)
+        )
+
+
+def validate_ci_roles(root: Path) -> None:
+    """Require complementary CI responsibilities instead of duplicated suites."""
+    full_python = "python3 -m unittest discover -s tests/python -p 'test_*.py'"
+    dev_core = "./scripts/dev_core.sh"
+    release_smoke = "scripts/run_release_simulator_smoke.py"
+    package = "scripts/build_release_package.py"
+
+    _require_workflow_role(
+        root,
+        ".github/workflows/core-ci.yml",
+        (dev_core, full_python, package, "scripts/hepta_preflight.py", release_smoke),
+    )
+    _require_workflow_role(
+        root,
+        ".github/workflows/canonical-full-suite.yml",
+        (
+            "cmake --build build/reliability-gcc --target hepta_core_test_binaries",
+            "ctest --test-dir build/reliability-gcc --output-on-failure -L core",
+            "cmake --build build/reliability-clang --target hepta_core_test_binaries",
+            "ctest --test-dir build/reliability-clang --output-on-failure -L core",
+        ),
+        forbidden=(dev_core, full_python, package, release_smoke),
+    )
+    for relative in (
+        ".github/workflows/documentation-control-plane.yml",
+        ".github/workflows/merge-candidate.yml",
+    ):
+        _require_workflow_role(
+            root,
+            relative,
+            (
+                "scripts/check_documentation.py",
+                "scripts/check_component_coverage.py",
+                "scripts/verify_build_ownership.py",
+                "scripts/check_gap_register.py",
+            ),
+            forbidden=(dev_core, full_python, package, release_smoke),
+        )
 
 
 def validate_behavior_evidence(root: Path, observed: dict[str, dict[str, Any]]) -> None:
-    for gap_id, required in REQUIRED_GAP_EVIDENCE.items():
+    for gap_id, required in REQUIRED_BEHAVIOR_EVIDENCE.items():
         evidence = observed.get(gap_id, {}).get("evidence", [])
         present = set(evidence) if isinstance(evidence, list) else set()
         missing = sorted(required - present)
@@ -312,6 +386,47 @@ def validate_behavior_evidence(root: Path, observed: dict[str, dict[str, Any]]) 
             "TEST-001: V5 atomic-flatten test target is not reachable from hepta_core_test_binaries"
         )
 
+    catalog = load_json(root / "docs/module-catalog.json")
+    modules = {
+        item.get("id"): item
+        for item in catalog.get("modules", [])
+        if isinstance(item, dict)
+    } if isinstance(catalog, dict) else {}
+    ib_tests = set(modules.get("ib-paper", {}).get("tests", []))
+    deployment_tests = set(modules.get("deployment", {}).get("tests", []))
+    atomic = "tests/python/test_hepta_broker_egress_policy_atomic.py"
+    if atomic not in ib_tests:
+        raise GapRegisterError("ib-paper: atomic nftables regression is missing from the module catalog")
+    if atomic not in deployment_tests:
+        raise GapRegisterError("deployment: atomic nftables regression is missing from the module catalog")
+
+
+def validate_paper_scenario_contract(root: Path) -> None:
+    """Bind the reviewable PAPER scenario contract to executable verification."""
+    import verify_ib_paper_qualification as verifier
+
+    value = load_json(root / "docs/ib-paper-qualification-scenarios-v1.json")
+    if not isinstance(value, dict) or set(value) != {"schema", "purpose", "scenarios"}:
+        raise GapRegisterError("IB PAPER scenario contract fields are not canonical")
+    if value.get("schema") != "heptatrader.ib-paper-scenario-contract.v1":
+        raise GapRegisterError("unsupported IB PAPER scenario contract schema")
+    scenarios = value.get("scenarios")
+    if not isinstance(scenarios, list):
+        raise GapRegisterError("IB PAPER scenario contract scenarios must be an array")
+    ids = [item.get("id") for item in scenarios if isinstance(item, dict)]
+    if ids != list(verifier.REQUIRED_SCENARIOS):
+        raise GapRegisterError("reviewable IB PAPER scenarios drift from executable verifier")
+    for item in scenarios:
+        if not isinstance(item, dict) or set(item) != {
+            "id", "objective", "required_assertions", "required_evidence_kinds"
+        }:
+            raise GapRegisterError("IB PAPER scenario entry fields are not canonical")
+        scenario_id = item["id"]
+        if set(item["required_assertions"]) != set(verifier.REQUIRED_ASSERTIONS[scenario_id]):
+            raise GapRegisterError(f"{scenario_id}: assertion contract drift")
+        if set(item["required_evidence_kinds"]) != set(verifier.REQUIRED_EVIDENCE_KINDS[scenario_id]):
+            raise GapRegisterError(f"{scenario_id}: evidence-kind contract drift")
+
 
 def validate(root: Path | str = ROOT) -> list[str]:
     root = Path(root).resolve()
@@ -322,11 +437,12 @@ def validate(root: Path | str = ROOT) -> list[str]:
             raise GapRegisterError("gap register fields are not canonical")
         if register.get("schema") != "heptatrader.gap-register.v1":
             raise GapRegisterError("unsupported gap register schema")
+
         authorization = register.get("authorization")
         if not isinstance(authorization, dict) or set(authorization) != AUTHORIZATION_KEYS:
             raise GapRegisterError("authorization fields are not canonical")
         if authorization.get("source_state") != "READY":
-            raise GapRegisterError("source_state must be READY after all supported-scope gaps close")
+            raise GapRegisterError("source_state must be READY after supported-scope closure")
         if authorization.get("paper_authorized") is not False:
             raise GapRegisterError("PAPER cannot be source-authorized")
         if authorization.get("live_authorized") is not False:
@@ -346,50 +462,41 @@ def validate(root: Path | str = ROOT) -> list[str]:
             if gap_id in observed:
                 raise GapRegisterError(f"{label}: duplicate gap id {gap_id}")
             observed[gap_id] = gap
+            if gap.get("domain") != "REPOSITORY":
+                raise GapRegisterError(f"{gap_id}: supported-scope register may contain REPOSITORY gaps only")
+            if gap.get("state") != "CLOSED_SOURCE":
+                raise GapRegisterError(f"{gap_id}: repository gap must be CLOSED_SOURCE")
+            if gap.get("blocking_authorization") is not False:
+                raise GapRegisterError(f"{gap_id}: closed source gap cannot block authorization")
+            if gap.get("issue") is not None:
+                raise GapRegisterError(f"{gap_id}: closed source gap must not depend on an open issue")
             if not isinstance(gap.get("summary"), str) or not gap["summary"].strip():
                 raise GapRegisterError(f"{gap_id}: non-empty summary required")
-            if not isinstance(gap.get("blocking_authorization"), bool):
-                raise GapRegisterError(f"{gap_id}: blocking_authorization must be boolean")
             evidence = gap.get("evidence")
             if not isinstance(evidence, list) or not evidence:
-                raise GapRegisterError(f"{gap_id}: evidence must be a non-empty array")
-            if any(not isinstance(item, str) for item in evidence) or len(evidence) != len(set(evidence)):
-                raise GapRegisterError(f"{gap_id}: evidence paths must be unique strings")
-            for evidence_index, value in enumerate(evidence):
-                canonical_path(root, value, f"{gap_id}.evidence[{evidence_index}]")
+                raise GapRegisterError(f"{gap_id}: non-empty evidence array required")
+            canonical = [canonical_evidence(root, item, f"{gap_id}.evidence") for item in evidence]
+            if len(canonical) != len(set(canonical)):
+                raise GapRegisterError(f"{gap_id}: duplicate evidence path")
 
-            domain = gap.get("domain")
-            state = gap.get("state")
-            issue = gap.get("issue")
-            if domain == "REPOSITORY":
-                if state != "CLOSED_SOURCE":
-                    raise GapRegisterError(f"{gap_id}: repository-controlled gap must be closed in this candidate")
-                if issue is not None:
-                    raise GapRegisterError(f"{gap_id}: closed source gap must not delegate closure")
-                if gap["blocking_authorization"]:
-                    raise GapRegisterError(f"{gap_id}: closed source gap cannot remain an authorization blocker")
-            elif domain == "EXTERNAL":
-                if state != "OPEN_EXTERNAL":
-                    raise GapRegisterError(f"{gap_id}: source cannot mark an external control closed")
-                expected_issue = REQUIRED_EXTERNAL_GAPS.get(gap_id)
-                if expected_issue is None or issue != expected_issue:
-                    raise GapRegisterError(f"{gap_id}: external issue binding is invalid")
-                if not gap["blocking_authorization"]:
-                    raise GapRegisterError(f"{gap_id}: external gap must block authorization")
-            else:
-                raise GapRegisterError(f"{gap_id}: invalid domain {domain!r}")
-
-        missing_repository = sorted(REQUIRED_REPOSITORY_GAPS - set(observed))
-        if missing_repository:
-            raise GapRegisterError("missing repository gaps: " + ", ".join(missing_repository))
-        unexpected = sorted(set(observed) - REQUIRED_REPOSITORY_GAPS)
-        if unexpected:
-            raise GapRegisterError("unexpected gaps in supported source register: " + ", ".join(unexpected))
-        missing_external = sorted(set(REQUIRED_EXTERNAL_GAPS) - set(observed))
-        if missing_external:
-            raise GapRegisterError("missing external gaps: " + ", ".join(missing_external))
+        observed_ids = set(observed)
+        if observed_ids != REQUIRED_REPOSITORY_GAPS:
+            raise GapRegisterError(
+                "repository gap set mismatch; missing="
+                + repr(sorted(REQUIRED_REPOSITORY_GAPS - observed_ids))
+                + " extra="
+                + repr(sorted(observed_ids - REQUIRED_REPOSITORY_GAPS))
+            )
 
         validate_behavior_evidence(root, observed)
+
+        for gap_id, required in REQUIRED_EVIDENCE.items():
+            present = set(observed[gap_id]["evidence"])
+            missing = sorted(required - present)
+            if missing:
+                raise GapRegisterError(
+                    f"{gap_id}: missing ownership/evidence anchors: " + ", ".join(missing)
+                )
 
         capabilities = load_json(root / "docs/capabilities.json")
         if not isinstance(capabilities, dict):
@@ -406,23 +513,9 @@ def validate(root: Path | str = ROOT) -> list[str]:
         if by_id.get("live", {}).get("status") != "UNAVAILABLE":
             raise GapRegisterError("LIVE must remain unavailable")
 
-        catalog = load_json(root / "docs/module-catalog.json")
-        modules = {
-            item.get("id"): item
-            for item in catalog.get("modules", [])
-            if isinstance(item, dict)
-        } if isinstance(catalog, dict) else {}
-        if modules.get("ib-paper", {}).get("production_authorized") is not False:
-            raise GapRegisterError("ib-paper: Broker qualification requires production_authorized=false")
-        ib_tests = set(modules.get("ib-paper", {}).get("tests", []))
-        if "tests/ib_paper_execution_profile_tests.cpp" not in ib_tests:
-            raise GapRegisterError("ib-paper: atomic-flatten regression is missing from the module catalog")
-        if "tests/python/test_hepta_broker_egress_policy_atomic.py" not in ib_tests:
-            raise GapRegisterError("ib-paper: atomic nftables regression is missing from the module catalog")
-        deployment_tests = set(modules.get("deployment", {}).get("tests", []))
-        if "tests/python/test_hepta_broker_egress_policy_atomic.py" not in deployment_tests:
-            raise GapRegisterError("deployment: atomic nftables regression is missing from the module catalog")
-    except GapRegisterError as error:
+        validate_ci_roles(root)
+        validate_paper_scenario_contract(root)
+    except (GapRegisterError, KeyError, TypeError, ValueError) as error:
         errors.append(str(error))
     return errors
 

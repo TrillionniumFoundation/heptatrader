@@ -1,0 +1,78 @@
+{
+  "schema": "heptatrader.ib-paper-scenario-contract.v1",
+  "purpose": "Reviewable source contract for every broker-observed scenario required by IB PAPER qualification. The executable verifier remains authoritative and tests require exact agreement with this file.",
+  "scenarios": [
+    {
+      "id": "connect_authoritative_snapshot",
+      "objective": "Establish a real PAPER connection and complete the authoritative account, position and open-order barriers before mutation admission.",
+      "required_assertions": ["IB_CONNECTION_READY", "AUTHORITATIVE_ACCOUNT_COMPLETE", "AUTHORITATIVE_POSITIONS_COMPLETE", "AUTHORITATIVE_OPEN_ORDERS_COMPLETE"],
+      "required_evidence_kinds": ["authoritative-snapshot", "broker-callbacks"]
+    },
+    {
+      "id": "disconnect_reconnect",
+      "objective": "Demonstrate that disconnect blocks risk increase, creates a new connection epoch and requires reconciliation before reopening authority.",
+      "required_assertions": ["DISCONNECT_OBSERVED", "RISK_INCREASE_BLOCKED_DURING_DISCONNECT", "NEW_CONNECTION_EPOCH", "RECONCILIATION_COMPLETED"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    },
+    {
+      "id": "partial_fill",
+      "objective": "Observe a genuine partial fill, preserve remaining quantity and converge to an authoritative terminal result.",
+      "required_assertions": ["PARTIAL_FILL_OBSERVED", "REMAINING_QUANTITY_RECONCILED", "FINAL_TERMINAL_STATUS"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    },
+    {
+      "id": "duplicate_out_of_order_status",
+      "objective": "Prove duplicate callbacks are idempotent and out-of-order broker state is rejected or reconciled without manufacturing economic events.",
+      "required_assertions": ["DUPLICATE_EVENT_IDEMPOTENT", "OUT_OF_ORDER_EVENT_REJECTED_OR_RECONCILED", "PROJECTION_CONVERGED"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    },
+    {
+      "id": "broker_reject",
+      "objective": "Observe a real broker rejection, persist the rejection evidence and prove the rejected order is not left active.",
+      "required_assertions": ["BROKER_REJECT_OBSERVED", "REJECT_DETAILS_DURABLE", "ORDER_NOT_ACTIVE"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    },
+    {
+      "id": "stale_quote",
+      "objective": "Reject risk increase from stale authoritative market data before any place send attempt occurs.",
+      "required_assertions": ["STALE_QUOTE_REJECTED", "NO_PLACE_SEND_ATTEMPT"],
+      "required_evidence_kinds": ["execution-events", "oms-journal"]
+    },
+    {
+      "id": "outcome_uncertain",
+      "objective": "Force a possibly-sent outcome into durable uncertainty, prohibit blind retry and resolve it through authoritative evidence.",
+      "required_assertions": ["OUTCOME_UNCERTAIN_DURABLE", "NO_BLIND_RETRY", "AUTHORITATIVE_RESOLUTION"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    },
+    {
+      "id": "cancel_race",
+      "objective": "Exercise fill/cancel races and prove the terminal projection converges without duplicate cancellation effects.",
+      "required_assertions": ["CANCEL_RACE_OBSERVED", "TERMINAL_STATE_CONVERGED", "NO_DUPLICATE_CANCEL_EFFECT"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    },
+    {
+      "id": "reconcile_divergence",
+      "objective": "Introduce journal-versus-broker divergence, block risk increase and resolve or terminally contain the divergence.",
+      "required_assertions": ["DIVERGENCE_DETECTED", "RISK_INCREASE_BLOCKED", "RECONCILIATION_RESOLVED_OR_TERMINAL"],
+      "required_evidence_kinds": ["authoritative-snapshot", "oms-journal"]
+    },
+    {
+      "id": "lease_fencing",
+      "objective": "Reject stale execution leases, accept the active lease and prove no stale owner can reach a venue send.",
+      "required_assertions": ["STALE_LEASE_REJECTED", "ACTIVE_LEASE_ACCEPTED", "NO_STALE_VENUE_SEND"],
+      "required_evidence_kinds": ["execution-events", "oms-journal"]
+    },
+    {
+      "id": "kill_switch",
+      "objective": "Observe the engaged operator kill switch, block risk increase and retain only bounded guarded exit behavior.",
+      "required_assertions": ["KILL_SWITCH_ENGAGED", "RISK_INCREASE_BLOCKED", "EXIT_PATH_REMAINS_BOUNDED"],
+      "required_evidence_kinds": ["execution-events", "oms-journal"]
+    },
+    {
+      "id": "terminal_recovery",
+      "objective": "Restart the process, replay the durable journal, reconcile broker state and prove no duplicate risk increase occurs.",
+      "required_assertions": ["PROCESS_RESTART_OBSERVED", "JOURNAL_REPLAY_COMPLETE", "BROKER_STATE_RECONCILED", "NO_DUPLICATE_RISK_INCREASE"],
+      "required_evidence_kinds": ["broker-callbacks", "oms-journal"]
+    }
+  ]
+}

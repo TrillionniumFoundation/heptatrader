@@ -132,6 +132,24 @@ struct PreTradeRiskOrderNotionalEvidence {
     PreTradeRiskFxEvidence fx;
 };
 
+// Transitional compatibility members are write-only at the type level. Legacy
+// callers/tests may still populate them, but no canonical implementation can
+// consume them as bool/double/integer evidence through aliases, pointers,
+// templates or pointer-to-member indirection. The sink deliberately stores no
+// value and exposes no conversion or getter. It remains C++11-compatible with
+// the canonical runtime. Remove the wrapper and named members once old writers
+// are migrated.
+template <typename T>
+struct PreTradeRiskLegacyWriteOnly {
+    PreTradeRiskLegacyWriteOnly() noexcept {}
+    PreTradeRiskLegacyWriteOnly(T) noexcept {}
+    PreTradeRiskLegacyWriteOnly& operator=(T) noexcept {
+        return *this;
+    }
+    PreTradeRiskLegacyWriteOnly(const PreTradeRiskLegacyWriteOnly&) = default;
+    PreTradeRiskLegacyWriteOnly& operator=(const PreTradeRiskLegacyWriteOnly&) = default;
+};
+
 struct PreTradeRiskContext {
     std::string venue;      // IB / CTP / ...
     std::string account;
@@ -159,26 +177,26 @@ struct PreTradeRiskContext {
 
     PreTradeRiskOrderNotionalEvidence orderNotionalEvidence;
 
-    // Legacy unbound values are retained for source compatibility only. They
-    // never satisfy an enabled notional limit; use orderNotionalEvidence.
-    bool baseCurrencyOrderNotionalPresent = false;
-    double baseCurrencyOrderNotional = 0.0;
+    // Legacy unbound names retain write compatibility only. They can never be
+    // converted back to risk evidence; use orderNotionalEvidence.
+    PreTradeRiskLegacyWriteOnly<bool> baseCurrencyOrderNotionalPresent{};
+    PreTradeRiskLegacyWriteOnly<double> baseCurrencyOrderNotional{};
 
     PreTradeRiskAuthoritativeSnapshot authoritativeSnapshot;
 
-    // Compatibility-only fields retained for legacy callers. They are never
-    // accepted as evidence for an enabled portfolio limit. New code must use
-    // authoritativeSnapshot and its per-section presence/generation fields.
-    bool snapshotComplete = false;
-    std::int64_t snapshotObservedAtMs = 0;
-    std::int64_t nowMs = 0;
-    double currentGrossNotional = 0.0;
-    double pendingBuyNotional = 0.0;
-    double pendingSellNotional = 0.0;
-    double realizedPnl = 0.0;
-    double unrealizedPnl = 0.0;
-    double peakEquity = 0.0;
-    double currentEquity = 0.0;
+    // Compatibility-only writers are retained for historical callers/tests.
+    // Reading these wrappers as scalar evidence is a compile-time error. New
+    // code must use authoritativeSnapshot and its bound section identities.
+    PreTradeRiskLegacyWriteOnly<bool> snapshotComplete{};
+    PreTradeRiskLegacyWriteOnly<std::int64_t> snapshotObservedAtMs{};
+    PreTradeRiskLegacyWriteOnly<std::int64_t> nowMs{};
+    PreTradeRiskLegacyWriteOnly<double> currentGrossNotional{};
+    PreTradeRiskLegacyWriteOnly<double> pendingBuyNotional{};
+    PreTradeRiskLegacyWriteOnly<double> pendingSellNotional{};
+    PreTradeRiskLegacyWriteOnly<double> realizedPnl{};
+    PreTradeRiskLegacyWriteOnly<double> unrealizedPnl{};
+    PreTradeRiskLegacyWriteOnly<double> peakEquity{};
+    PreTradeRiskLegacyWriteOnly<double> currentEquity{};
 
     // adapter extension points (for CTP etc.)
     std::string adapterTag;
