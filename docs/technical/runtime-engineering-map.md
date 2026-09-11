@@ -66,7 +66,7 @@ A change that introduces a second lock acquisition order or waits on external I/
 | session generation/fence | Session Supervisor lease store | atomic durable generation; malformed/newer format fails closed |
 | Broker/simulator snapshots | Authoritative State | re-established after restart; epoch/generation completeness required |
 | release identity | package manifest + digest receipt | immutable evidence, not runtime authority |
-| PAPER qualification | exact artifact + verification receipt | external evidence bound to source/artifact/harness/profile/account/host/scenarios |
+| PAPER rollout / qualification | exact artifact + verifier receipts | external evidence bound to source/artifact/harness/profile/account/host/stage or scenarios |
 | strategy research history | SHADOW records | read-only to execution authority until a separately reviewed promotion boundary exists |
 
 Rollback is permitted only across compatible journal and lease schemas or through a tested migration. See [`service-lifecycle.md`](service-lifecycle.md).
@@ -101,13 +101,31 @@ Files ending in `.example` are templates, never authority. Runtime code should e
 Behavior-bearing evidence is intentionally assigned once:
 
 - **Core Runtime CI** owns the canonical build/CTest, full Python discovery, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
-- **GCC/Clang reliability lanes** independently own sanitizer behavior.
+- **Periodic Runtime Resilience** owns the actual GCC/Clang ASan+UBSan executions. It runs daily and on pull requests that touch execution, risk, OMS, authoritative state/reconciliation, IB, simulator, test or build surfaces.
 - **Documentation Control Plane** owns documentation depth, component/build ownership, capability truth and source-gap contracts without rerunning the behavior suite.
-- **IB PAPER qualification** is an explicit owner-dispatched external Broker campaign and is not a routine merge gate.
+- **Qualification Source Audit** owns only the source-side PAPER artifact/rollout/certification trust boundary and is path-scoped to that surface.
+- **IB PAPER progressive rollout / certification** is explicit owner-dispatched external Broker work and is never a routine merge gate.
 
-The live repository ruleset `22597364` still names two additional historical contexts: `canonical-full-suite-core` and `exact-merge-candidate`. While that server-side rule remains active, those job names are retained only as **compatibility shims**. They intentionally do not checkout, build, package, rerun documentation, or assert Broker authority. Their only purpose is to stop an obsolete repository-administration rule from forcing duplicate computation. They should be deleted together with the corresponding required-context inventory after the live ruleset is retired or replaced. A green compatibility shim is not engineering evidence and never changes PAPER/LIVE authorization.
+The live repository ruleset `22597364` still names four historical contexts that no longer own behavior: `canonical-full-suite-core`, `canonical-full-suite-reliability (g++)`, `canonical-full-suite-reliability (clang++)`, and `exact-merge-candidate`. While that server-side rule remains active, those job names are retained only as **compatibility shims**. They intentionally do not checkout, install dependencies, build, package, run sanitizer binaries, rerun documentation, or assert Broker authority. Their only purpose is to stop obsolete repository-administration context names from deadlocking Merge Queue. They should be deleted when the live ruleset is updated. A green compatibility shim is not engineering evidence and never changes PAPER/LIVE authorization.
+
+The current gap validator still searches the historical sanitizer command tokens in `canonical-full-suite.yml`; those tokens are retained there only as comments during this ruleset/source-policy transition. `tests/python/test_resilience_workflow.py` separately proves that the comments are not executable and that the real sanitizer commands live in `resilience-periodic.yml`. The comments should disappear together with the old validator expectation, not become a permanent control mechanism.
 
 A new invariant belongs in the smallest behavior test that can falsify it. Repeating the same deterministic suite in another workflow is not independent evidence.
+
+## PAPER deployment and certification ownership
+
+PAPER deployment follows one artifact identity:
+
+```text
+single candidate build
+  -> lightweight host preflight
+  -> P1 canary
+  -> P1 pilot
+  -> P1 extended
+  -> optional V5 heavy certification
+```
+
+Canary/pilot/extended increase only the number of independently terminal flat PAPER-V4 cycles; they do not increase the one-unit instantaneous P1 exposure envelope. Heavy V5 fault experiments execute only when `certify` is explicitly selected. See [`../modules/ib-paper.md`](../modules/ib-paper.md) and [`ib-paper-harness-contract.md`](ib-paper-harness-contract.md).
 
 ## Performance budget and measurement
 
@@ -134,7 +152,7 @@ Performance changes must preserve the safety invariants above. Host-specific low
 | venue adapter | callback correlation + partial fill + reconnect + reconciliation fixtures |
 | persistent schema | old fixture + migration + rollback compatibility test |
 | release/preflight | package producer/consumer parity + installed simulator lifecycle smoke |
-| PAPER profile / harness contract | scenario contract + exact-artifact qualification campaign |
+| PAPER profile / harness contract | source trust-boundary tests + progressive P1 rollout; V5 certification when resilience contract changes |
 | strategy/research | deterministic replay + no-lookahead + cost/capacity evidence; no authority promotion |
 
 The objective is to preserve behavior-bearing defenses while keeping source, CI and deployment evidence as small and direct as the invariant allows.
