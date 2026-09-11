@@ -51,11 +51,7 @@ def _hostile_artifacts(work: Path) -> list[tuple[str, Path, str]]:
     }
     for label, root_name in roots.items():
         artifact = work / f"direct-{label}.tar.gz"
-        digest = identity._rewrite_archive(
-            source,
-            artifact,
-            root_name=root_name,
-        )
+        digest = identity._rewrite_archive(source, artifact, root_name=root_name)
         cases.append((label, artifact, digest))
     versions = {
         "overlong": "a" * 65,
@@ -67,9 +63,7 @@ def _hostile_artifacts(work: Path) -> list[tuple[str, Path, str]]:
     for label, version in versions.items():
         artifact = work / f"direct-version-{label}.tar.gz"
         digest = identity._rewrite_archive(
-            source,
-            artifact,
-            manifest_version=version,
+            source, artifact, manifest_version=version
         )
         cases.append((f"version-{label}", artifact, digest))
     return cases
@@ -95,6 +89,18 @@ def _assert_private_rejection(
     testcase.assertNotIn('"result":"PASS"', result.stderr)
 
 
+def _stage_wrapper(prefix: Path) -> tuple[Path, Path]:
+    public = prefix / "bin/hepta-preflight"
+    private = prefix / "libexec/heptatrader/hepta-preflight-core.py"
+    public.parent.mkdir(parents=True)
+    private.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / "scripts/hepta_preflight.py", public)
+    shutil.copy2(ROOT / "scripts/hepta_preflight_core.py", private)
+    public.chmod(0o755)
+    private.chmod(0o644)
+    return public, private
+
+
 class PreflightEntrypointBoundaryTests(unittest.TestCase):
     def test_source_core_direct_invocation_is_fail_closed_for_hostile_matrix(
         self,
@@ -104,12 +110,7 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
             work = Path(directory)
             for label, artifact, digest in _hostile_artifacts(work):
                 with self.subTest(label=label):
-                    _assert_private_rejection(
-                        self,
-                        core,
-                        artifact,
-                        digest,
-                    )
+                    _assert_private_rejection(self, core, artifact, digest)
 
     def test_staged_private_core_rejects_direct_use_and_public_wrapper_passes(
         self,
@@ -117,28 +118,13 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             prefix = work / "prefix"
-            public = prefix / "bin/hepta-preflight"
-            private = (
-                prefix
-                / "libexec/heptatrader/hepta-preflight-core.py"
-            )
-            public.parent.mkdir(parents=True)
-            private.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / "scripts/hepta_preflight.py", public)
-            shutil.copy2(ROOT / "scripts/hepta_preflight_core.py", private)
-            public.chmod(0o755)
-            private.chmod(0o644)
+            public, private = _stage_wrapper(prefix)
 
             self.assertFalse((prefix / "bin/hepta-preflight-core.py").exists())
             hostile = _hostile_artifacts(work / "hostile")
             for label, artifact, digest in hostile:
                 with self.subTest(label=label):
-                    _assert_private_rejection(
-                        self,
-                        private,
-                        artifact,
-                        digest,
-                    )
+                    _assert_private_rejection(self, private, artifact, digest)
 
             artifact, digest = identity._build_valid_package(work / "positive")
             accepted = subprocess.run(
@@ -158,16 +144,54 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
             self.assertIs(receipt["live_authorized"], False)
             self.assertEqual(receipt["artifact"]["sha256"], digest)
 
+    def test_installed_loader_rejects_intermediate_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            prefix = work / "prefix"
+            public, private = _stage_wrapper(prefix)
+            real_libexec = work / "real-libexec"
+            shutil.move(str(prefix / "libexec"), real_libexec)
+            (prefix / "libexec").symlink_to(real_libexec, target_is_directory=True)
+            artifact, digest = identity._build_valid_package(work / "artifact")
+            result = subprocess.run(
+                [str(public), *_arguments(artifact, digest, probe=False)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, result)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("preflight core is unavailable", result.stderr)
+            self.assertNotIn('"result":"PASS"', result.stderr)
+            self.assertTrue((real_libexec / "heptatrader/hepta-preflight-core.py").exists())
+            self.assertFalse(private.exists())
+
+    def test_installed_loader_rejects_writable_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            prefix = work / "prefix"
+            public, private = _stage_wrapper(prefix)
+            private.parent.chmod(0o777)
+            artifact, digest = identity._build_valid_package(work / "artifact")
+            result = subprocess.run(
+                [str(public), *_arguments(artifact, digest, probe=False)],
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+                check=False,
+            )
+            self.assertNotEqual(result.returncode, 0, result)
+            self.assertEqual(result.stdout, "")
+            self.assertIn("untrusted or writable core parent directory", result.stderr)
+            self.assertNotIn('"result":"PASS"', result.stderr)
+
     def test_wrapper_contains_no_security_semantic_overrides(self) -> None:
-        wrapper = (ROOT / "scripts/hepta_preflight.py").read_text(
-            encoding="utf-8"
-        )
-        core = (ROOT / "scripts/hepta_preflight_core.py").read_text(
-            encoding="utf-8"
-        )
-        install = (ROOT / "cmake/HeptaInstall.cmake").read_text(
-            encoding="utf-8"
-        )
+        wrapper = (ROOT / "scripts/hepta_preflight.py").read_text(encoding="utf-8")
+        core = (ROOT / "scripts/hepta_preflight_core.py").read_text(encoding="utf-8")
+        install = (ROOT / "cmake/HeptaInstall.cmake").read_text(encoding="utf-8")
         for forbidden in (
             "_ORIGINAL_CHECK_MANIFEST_SHAPE",
             "_ORIGINAL_INSPECT_ARCHIVE",
@@ -182,6 +206,14 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
             "use hepta-preflight",
         ):
             self.assertIn(required, core)
+        for loader_requirement in (
+            "O_DIRECTORY",
+            "O_NOFOLLOW",
+            "_trusted_directory",
+            "_open_relative_directory",
+            "core parent directory changed while reading",
+        ):
+            self.assertIn(loader_requirement, wrapper)
         self.assertIn(
             "f\"heptatrader-{manifest['version']}-{profile}\"",
             core,
