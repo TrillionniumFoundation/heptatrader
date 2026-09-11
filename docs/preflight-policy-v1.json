@@ -29,6 +29,7 @@
         "lib/systemd/system/hepta-broker-egress-policy.service",
         "lib/systemd/system/hepta-execution-ib-paper.service",
         "share/doc/heptatrader/index.md",
+        "share/heptatrader/hepta-broker-network-policy-v1.json",
         "share/heptatrader/heptatrader-build-info.json",
         "share/heptatrader/ib-paper-profile-policy-v1.json",
         "share/heptatrader/preflight-policy-v1.json"

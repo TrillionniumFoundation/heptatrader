@@ -16,17 +16,29 @@
 
 namespace
 {
-// Bounded to the IDEALPRO minimum ticket used by this PAPER-only profile.
+// Ordinary PAPER remains bounded to the IDEALPRO minimum ticket. The
+// qualification-only profile has a separate absolute ceiling so a touch
+// LMT can exceed one displayed top-of-book size without becoming an
+// unbounded market order.
 const double kMaximumOrderQuantity = 25000.0;
 const double kMaximumOrderNotional = 250000.0;
 const std::size_t kMaximumOrdersPerMinute = 30;
 const std::size_t kMaximumActiveOrders = 50;
 const double kMaximumGrossPosition = 100000.0;
+const double kQualificationMaximumOrderQuantity = 1000000.0;
+const double kQualificationMaximumOrderNotional = 1500000.0;
+const std::size_t kQualificationMaximumOrdersPerMinute = 6;
+const std::size_t kQualificationMaximumActiveOrders = 1;
+const double kQualificationMaximumGrossPosition = 1000000.0;
 const int kMaximumClientId = 65535;
 const char* const kExternalLimitDayKey =
     "HEPTA_EXECUTION_EXTERNAL_P1_CANARY_LMT_DAY";
 const char* const kExternalMaxOrderNotionalKey =
     "HEPTA_EXECUTION_MAX_ORDER_NOTIONAL";
+const char* const kExternalQualificationLimitDayKey =
+    "HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY";
+const char* const kExternalQualificationMaxOrderNotionalKey =
+    "HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL";
 const char* const kQuoteMaxAgeKey =
     "HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS";
 
@@ -207,6 +219,43 @@ bool PaperExecutionDomain(const std::string& value)
          CanonicalDomainName(value.substr(6)));
 }
 
+bool QualificationContractBinding(const std::string& contracts,
+                                  const std::string& primary)
+{
+    if (contracts.empty() || primary.empty() ||
+        contracts.find(';') != std::string::npos)
+        return false;
+    std::vector<std::string> fields;
+    std::size_t begin = 0;
+    while (begin <= contracts.size())
+    {
+        const std::size_t separator = contracts.find('|', begin);
+        fields.push_back(contracts.substr(
+            begin, separator == std::string::npos ? separator :
+                separator - begin));
+        if (separator == std::string::npos) break;
+        begin = separator + 1;
+    }
+    if (fields.size() != 5 || fields[2] != "CASH" ||
+        fields[0] != fields[1] + "." + fields[4] ||
+        primary != fields[0])
+        return false;
+    for (std::size_t i = 0; i < fields.size(); ++i)
+    {
+        if (fields[i].empty() || fields[i].size() > 128)
+            return false;
+        for (std::size_t j = 0; j < fields[i].size(); ++j)
+        {
+            const unsigned char character =
+                static_cast<unsigned char>(fields[i][j]);
+            if (!(std::isalnum(character) || character == '.' ||
+                  character == '_' || character == '-'))
+                return false;
+        }
+    }
+    return true;
+}
+
 bool ReadPrivateCredential(const std::string& path, std::string& value,
                            std::string& reason)
 {
@@ -288,13 +337,21 @@ const char* IbPaperExecutionProfileConfig::OrderModeName(
         return "LOCAL_MKT_DAY";
     case IbPaperOrderMode::ExternalLimitDay:
         return "EXTERNAL_P1_CANARY_LMT_DAY";
+    case IbPaperOrderMode::ExternalQualificationLimitDay:
+        return "EXTERNAL_QUALIFICATION_LMT_DAY";
     }
     return "UNKNOWN";
 }
 
 bool IbPaperExecutionProfileConfig::UsesExternalLimitDay() const
 {
-    return orderMode == IbPaperOrderMode::ExternalLimitDay;
+    return orderMode == IbPaperOrderMode::ExternalLimitDay ||
+        orderMode == IbPaperOrderMode::ExternalQualificationLimitDay;
+}
+
+bool IbPaperExecutionProfileConfig::UsesExternalQualificationLimitDay() const
+{
+    return orderMode == IbPaperOrderMode::ExternalQualificationLimitDay;
 }
 
 bool IbPaperExecutionProfileConfig::FromEnvironment(
@@ -310,6 +367,10 @@ bool IbPaperExecutionProfileConfig::FromEnvironment(
         "HEPTA_IB_PAPER_MAX_GROSS_POSITION",
         "HEPTA_EXECUTION_EXTERNAL_P1_CANARY_LMT_DAY",
         "HEPTA_EXECUTION_MAX_ORDER_NOTIONAL",
+        "HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY",
+        "HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL",
+        "HEPTA_IB_PAPER_QUOTE_CONTRACTS",
+        "HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT",
         "HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS",
         "HEPTA_IB_PAPER_CONTROL_DIRECTORY", "STATE_DIRECTORY",
         "CREDENTIALS_DIRECTORY"
@@ -328,7 +389,9 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     if (!enabled)
     {
         if (orderMode != IbPaperOrderMode::LocalMarketDay ||
-            externalQuoteMaxAgeMs != 0)
+            externalQuoteMaxAgeMs != 0 ||
+            !qualificationQuoteContracts.empty() ||
+            !qualificationPrimaryQuoteInstrument.empty())
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_MODE_REQUIRES_PAPER";
             return false;
@@ -378,14 +441,10 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
         return false;
     }
     if (!std::isfinite(maxOrderQuantity) || maxOrderQuantity <= 0.0 ||
-        maxOrderQuantity > kMaximumOrderQuantity ||
         !std::isfinite(maxOrderNotional) || maxOrderNotional <= 0.0 ||
-        maxOrderNotional > kMaximumOrderNotional ||
-        maxOrdersPerMinute == 0 ||
-        maxOrdersPerMinute > kMaximumOrdersPerMinute ||
+        maxOrdersPerMinute == 0 || maxOrdersPerMinute > kMaximumOrdersPerMinute ||
         maxActiveOrders == 0 || maxActiveOrders > kMaximumActiveOrders ||
-        !std::isfinite(maxGrossPosition) || maxGrossPosition <= 0.0 ||
-        maxGrossPosition > kMaximumGrossPosition)
+        !std::isfinite(maxGrossPosition) || maxGrossPosition <= 0.0)
     {
         reason = "IB_PAPER_HARD_LIMITS_INVALID";
         return false;
@@ -393,7 +452,12 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     switch (orderMode)
     {
     case IbPaperOrderMode::LocalMarketDay:
-        if (externalQuoteMaxAgeMs != 0)
+        if (externalQuoteMaxAgeMs != 0 ||
+            !qualificationQuoteContracts.empty() ||
+            !qualificationPrimaryQuoteInstrument.empty() ||
+            maxOrderQuantity > kMaximumOrderQuantity ||
+            maxOrderNotional > kMaximumOrderNotional ||
+            maxGrossPosition > kMaximumGrossPosition)
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_MODE_CONFIGURATION_INVALID";
             return false;
@@ -402,10 +466,29 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
     case IbPaperOrderMode::ExternalLimitDay:
         if (maxOrderQuantity > 1.0 || maxOrderNotional > 5000.0 ||
             maxActiveOrders > 1 || maxGrossPosition > 1.0 ||
+            !qualificationQuoteContracts.empty() ||
+            !qualificationPrimaryQuoteInstrument.empty() ||
             externalQuoteMaxAgeMs < 100 ||
             externalQuoteMaxAgeMs > 5000)
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_MODE_LIMITS_INVALID";
+            return false;
+        }
+        break;
+    case IbPaperOrderMode::ExternalQualificationLimitDay:
+        if (maxOrderQuantity > kQualificationMaximumOrderQuantity ||
+            maxOrderNotional > kQualificationMaximumOrderNotional ||
+            maxOrdersPerMinute > kQualificationMaximumOrdersPerMinute ||
+            maxActiveOrders > kQualificationMaximumActiveOrders ||
+            maxGrossPosition > kQualificationMaximumGrossPosition ||
+            maxOrderQuantity != maxGrossPosition ||
+            !QualificationContractBinding(
+                qualificationQuoteContracts,
+                qualificationPrimaryQuoteInstrument) ||
+            externalQuoteMaxAgeMs < 100 ||
+            externalQuoteMaxAgeMs > 5000)
+        {
+            reason = "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID";
             return false;
         }
         break;
@@ -449,8 +532,9 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
     }
     if (!Validate(reason)) return false;
     std::string canonical;
-    AppendCanonicalField(canonical, "profile_version",
-                         UsesExternalLimitDay() ? "4" : "3");
+    const char* profileVersion = UsesExternalQualificationLimitDay() ? "5" :
+        (UsesExternalLimitDay() ? "4" : "3");
+    AppendCanonicalField(canonical, "profile_version", profileVersion);
     AppendCanonicalField(canonical, "account", account);
     AppendCanonicalField(canonical, "host", host);
     AppendCanonicalField(canonical, "port", std::to_string(port));
@@ -475,14 +559,24 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
         AppendCanonicalField(canonical, "quote_max_age_ms",
                              std::to_string(externalQuoteMaxAgeMs));
     }
+    if (UsesExternalQualificationLimitDay())
+    {
+        AppendCanonicalField(canonical, "quote_contracts",
+                             qualificationQuoteContracts);
+        AppendCanonicalField(canonical, "primary_quote_instrument",
+                             qualificationPrimaryQuoteInstrument);
+    }
     const std::string digest = Sha256Hex(canonical);
     if (digest.empty())
     {
         reason = "IB_PAPER_AUTHORIZATION_PROFILE_HASH_FAILED";
         return false;
     }
-    value = std::string(UsesExternalLimitDay() ?
-        "PAPER-V4:sha256:" : "PAPER-V3:sha256:") + digest;
+    const char* prefix = UsesExternalQualificationLimitDay() ?
+        "PAPER-V5:sha256:" :
+        (UsesExternalLimitDay() ? "PAPER-V4:sha256:" :
+         "PAPER-V3:sha256:");
+    value = std::string(prefix) + digest;
     reason.clear();
     return true;
 }
@@ -497,9 +591,15 @@ bool IbPaperExecutionProfileConfig::FromValues(
         values.find(kExternalLimitDayKey);
     const std::map<std::string, std::string>::const_iterator externalNotional =
         values.find(kExternalMaxOrderNotionalKey);
+    const std::map<std::string, std::string>::const_iterator qualificationMode =
+        values.find(kExternalQualificationLimitDayKey);
+    const std::map<std::string, std::string>::const_iterator qualificationNotional =
+        values.find(kExternalQualificationMaxOrderNotionalKey);
     if (mode.empty() || mode == "DISABLED")
     {
-        if (externalMode != values.end() || externalNotional != values.end())
+        if (externalMode != values.end() || externalNotional != values.end() ||
+            qualificationMode != values.end() ||
+            qualificationNotional != values.end())
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_MODE_REQUIRES_PAPER";
             return false;
@@ -513,11 +613,17 @@ bool IbPaperExecutionProfileConfig::FromValues(
         return false;
     }
     config.enabled = true;
+    if (externalMode != values.end() && qualificationMode != values.end())
+    {
+        reason = "IB_PAPER_EXTERNAL_ORDER_MODE_CONFIGURATION_INVALID";
+        return false;
+    }
     if (externalMode != values.end())
     {
         if (externalMode->second != "1" ||
             externalNotional == values.end() ||
-            externalNotional->second != "5000")
+            externalNotional->second != "5000" ||
+            qualificationNotional != values.end())
         {
             reason = "IB_PAPER_EXTERNAL_ORDER_MODE_CONFIGURATION_INVALID";
             return false;
@@ -532,7 +638,33 @@ bool IbPaperExecutionProfileConfig::FromValues(
         }
         config.externalQuoteMaxAgeMs = quoteMaxAge;
     }
-    else if (externalNotional != values.end())
+    else if (qualificationMode != values.end())
+    {
+        if (qualificationMode->second != "1" ||
+            qualificationNotional == values.end() ||
+            qualificationNotional->second != "1500000" ||
+            externalNotional != values.end())
+        {
+            reason = "IB_PAPER_EXTERNAL_ORDER_MODE_CONFIGURATION_INVALID";
+            return false;
+        }
+        config.orderMode =
+            IbPaperOrderMode::ExternalQualificationLimitDay;
+        config.qualificationQuoteContracts =
+            Read(values, "HEPTA_IB_PAPER_QUOTE_CONTRACTS");
+        config.qualificationPrimaryQuoteInstrument =
+            Read(values, "HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT");
+        std::uint64_t quoteMaxAge = 0;
+        if (!ParseUnsigned(Read(values, kQuoteMaxAgeKey), 5000,
+                quoteMaxAge) || quoteMaxAge < 100)
+        {
+            reason = "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID";
+            return false;
+        }
+        config.externalQuoteMaxAgeMs = quoteMaxAge;
+    }
+    else if (externalNotional != values.end() ||
+             qualificationNotional != values.end())
     {
         reason = "IB_PAPER_EXTERNAL_ORDER_MODE_CONFIGURATION_INVALID";
         return false;

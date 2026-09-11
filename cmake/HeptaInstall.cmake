@@ -79,6 +79,13 @@ install(FILES
     DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader"
     COMPONENT runtime)
 
+if(HEPTA_ENABLE_IBAPI)
+    install(FILES
+        "${PROJECT_SOURCE_DIR}/systemd/hepta-broker-network-policy-v1.json"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader"
+        COMPONENT runtime)
+endif()
+
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/systemd/"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/systemd/system"
     COMPONENT runtime

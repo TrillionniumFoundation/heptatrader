@@ -18,7 +18,12 @@
 enum class IbPaperOrderMode
 {
     LocalMarketDay = 0,
-    ExternalLimitDay
+    ExternalLimitDay,
+    // Protected-environment-only PAPER qualification profile. It retains
+    // the authoritative touch-price LMT/DAY envelope while permitting one
+    // bounded displayed-liquidity test large enough to observe a genuine
+    // partial fill. It is never selected by the canonical service template.
+    ExternalQualificationLimitDay
 };
 
 struct IbPaperExecutionProfileConfig
@@ -42,6 +47,12 @@ struct IbPaperExecutionProfileConfig
     // its reviewed upper bound here so the authorization credential cannot
     // be reused with a looser quote-age policy.
     std::uint64_t externalQuoteMaxAgeMs = 0;
+    // V5 is the only profile with the expanded displayed-liquidity envelope.
+    // Bind its one reviewed CASH contract and primary instrument directly
+    // into the authorization credential so the credential cannot be replayed
+    // against a different contract universe.
+    std::string qualificationQuoteContracts;
+    std::string qualificationPrimaryQuoteInstrument;
 
     bool Validate(std::string& reason) const;
     bool VerifyAuthorizationCredential(std::string& reason) const;
@@ -54,6 +65,7 @@ struct IbPaperExecutionProfileConfig
     const char* AllowedOrderTypes() const;
     static const char* OrderModeName(IbPaperOrderMode mode);
     bool UsesExternalLimitDay() const;
+    bool UsesExternalQualificationLimitDay() const;
     static bool FromEnvironment(IbPaperExecutionProfileConfig& config,
                                 std::string& reason);
     static bool FromValues(const std::map<std::string, std::string>& values,

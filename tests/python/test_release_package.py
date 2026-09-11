@@ -38,13 +38,18 @@ def fixture_tree(root: Path, *, ib: bool = False) -> Path:
                 "bin/hepta-ib-executiond",
                 "lib/systemd/system/hepta-broker-egress-policy.service",
                 "lib/systemd/system/hepta-execution-ib-paper.service",
+                "share/heptatrader/hepta-broker-network-policy-v1.json",
                 "share/heptatrader/ib-paper-profile-policy-v1.json",
             ]
         )
     for relative in paths:
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        if relative == "share/heptatrader/preflight-policy-v1.json":
+        if relative == "share/heptatrader/hepta-broker-network-policy-v1.json":
+            path.write_bytes(
+                (ROOT / "systemd/hepta-broker-network-policy-v1.json").read_bytes()
+            )
+        elif relative == "share/heptatrader/preflight-policy-v1.json":
             path.write_bytes(
                 (ROOT / "docs/preflight-policy-v1.json").read_bytes()
             )

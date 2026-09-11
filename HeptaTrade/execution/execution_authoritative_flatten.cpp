@@ -99,8 +99,12 @@ bool ExactExternalLimitDayReduceOnly(
     double position,
     double quantity)
 {
-    return plan.profileOrderMode ==
-            "EXTERNAL_P1_CANARY_LMT_DAY" &&
+    const bool boundedProfile =
+        (plan.profileOrderMode == "EXTERNAL_P1_CANARY_LMT_DAY" &&
+         quantity <= 1.0) ||
+        (plan.profileOrderMode == "EXTERNAL_QUALIFICATION_LMT_DAY" &&
+         quantity <= 1000000.0);
+    return boundedProfile &&
         plan.order.orderType == "LMT" &&
         std::isfinite(plan.quoteBid) && plan.quoteBid > 0.0 &&
         std::isfinite(plan.quoteAsk) &&
@@ -111,7 +115,7 @@ bool ExactExternalLimitDayReduceOnly(
           plan.order.lmtPrice == plan.quoteBid) ||
          (plan.order.action == "BUY" &&
           plan.order.lmtPrice == plan.quoteAsk)) &&
-        quantity == std::fabs(position) && quantity <= 1.0;
+        quantity == std::fabs(position);
 }
 
 bool ExactLocalMarketReduceOnly(
