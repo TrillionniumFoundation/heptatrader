@@ -21,16 +21,22 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
             self.assertIn(token, self.workflow)
         self.assertNotIn("candidate/scripts/", self.workflow)
 
-    def test_exact_current_main_is_rechecked(self) -> None:
+    def test_dispatch_main_is_converted_to_immutable_artifact_identity(self) -> None:
         self.assertEqual(
             self.workflow.count("inputs.candidate_sha == github.sha"), 2
         )
-        self.assertGreaterEqual(self.workflow.count("git ls-remote --exit-code"), 3)
         self.assertIn(
+            "Require exact dispatch-main candidate identity", self.workflow
+        )
+        self.assertIn("Issue final exact-artifact Broker receipt", self.workflow)
+        self.assertNotIn("git ls-remote --exit-code", self.workflow)
+        self.assertNotIn(
             "Reverify unchanged remote main after Broker campaign", self.workflow
         )
+        self.assertNotIn("main-before-campaign.txt", self.workflow)
+        self.assertNotIn("main-after-campaign.txt", self.workflow)
 
-    def test_untrusted_candidate_input_cannot_select_or_name_build_data(self) -> None:
+    def test_candidate_input_cannot_select_candidate_control_code(self) -> None:
         self.assertEqual(self.workflow.count("ref: ${{ github.sha }}"), 3)
         self.assertEqual(self.workflow.count("${{ inputs.candidate_sha }}"), 1)
         self.assertNotIn("ref: ${{ inputs.candidate_sha }}", self.workflow)

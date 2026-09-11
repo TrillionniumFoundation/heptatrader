@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Validate the owner-operated exact-current-main IB PAPER boundary.
+# Validate the owner-operated dispatch-main -> immutable-artifact IB PAPER boundary.
 from __future__ import annotations
 
 import argparse
@@ -63,7 +63,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
     if workflow.count(condition) != 2:
         errors.append(
             f"{WORKFLOW}: both jobs must require immutable owner dispatch "
-            "authority and exact current main before runner allocation"
+            "authority and the exact dispatch-main candidate before runner allocation"
         )
     if workflow.count("Bind dispatch authority to immutable owner identity") != 2:
         errors.append(f"{WORKFLOW}: both jobs must reassert immutable owner identity")
@@ -80,13 +80,33 @@ def validate(root: Path | str = ROOT) -> list[str]:
     ) != 2:
         errors.append(f"{WORKFLOW}: candidate exact-tree verification must bracket build")
     if workflow.count("ref: ${{ github.sha }}") != 3:
-        errors.append(f"{WORKFLOW}: every trusted and candidate checkout must use github.sha")
+        errors.append(
+            f"{WORKFLOW}: trusted builder, candidate and qualification harness must use the dispatch SHA"
+        )
     if workflow.count("${{ inputs.candidate_sha }}") != 1:
         errors.append(
-            f"{WORKFLOW}: candidate input must only enter the quoted exact-main gate"
+            f"{WORKFLOW}: candidate input must only enter the quoted dispatch-main identity gate"
         )
-    if workflow.count("git ls-remote --exit-code") < 3:
-        errors.append(f"{WORKFLOW}: current main must be checked before and after campaign")
+
+    # Once the dispatch-main source is built into an immutable artifact, branch
+    # movement is unrelated to the Broker experiment. Re-reading refs/heads/main
+    # before/after the campaign would serialize ordinary development without
+    # adding evidence about the exact binary under test.
+    if "git ls-remote --exit-code" in workflow:
+        errors.append(
+            f"{WORKFLOW}: qualification must not depend on mutable main after artifact creation"
+        )
+    for token in (
+        "Record exact remote main before Broker campaign",
+        "Reverify unchanged remote main after Broker campaign",
+        "main-before-campaign.txt",
+        "main-after-campaign.txt",
+        "Issue final exact-current-main Broker receipt",
+    ):
+        if token in workflow:
+            errors.append(
+                f"{WORKFLOW}: obsolete mutable-main proof remains: {token}"
+            )
 
     for token in (
         "heptatrader-ib-builder",
@@ -95,8 +115,8 @@ def validate(root: Path | str = ROOT) -> list[str]:
         "verify_ib_candidate_artifact.py",
         "run_ib_paper_artifact_qualification.sh",
         "verify_ib_paper_qualification.py",
-        "Record exact remote main before Broker campaign",
-        "Reverify unchanged remote main after Broker campaign",
+        "Require exact dispatch-main candidate identity",
+        "Issue final exact-artifact Broker receipt",
         "qualification-verification.json",
         "HEPTA_QUALIFICATION_MUTATIONS: '1'",
         "DISPATCH_ACTOR: ${{ github.actor }}",
@@ -128,7 +148,7 @@ def self_test() -> None:
         (
             "inputs.candidate_sha == github.sha",
             "inputs.candidate_sha != github.sha",
-            "exact current main",
+            "exact dispatch-main candidate",
         ),
         (
             "github.actor == 'ProfHepta'",
@@ -148,7 +168,12 @@ def self_test() -> None:
         (
             "ref: ${{ github.sha }}",
             "ref: ${{ inputs.candidate_sha }}",
-            "every trusted and candidate checkout must use github.sha",
+            "trusted builder, candidate and qualification harness must use the dispatch SHA",
+        ),
+        (
+            "Issue final exact-artifact Broker receipt",
+            "Issue final exact-current-main Broker receipt",
+            "obsolete mutable-main proof",
         ),
     )
     for old, new, expected in mutations:
@@ -166,6 +191,29 @@ def self_test() -> None:
                 raise RuntimeError(
                     f"self-test failed to reject mutation {old!r}: {mutated}"
                 )
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        target = root / WORKFLOW
+        target.parent.mkdir(parents=True)
+        shutil.copy2(ROOT / WORKFLOW, target)
+        text = target.read_text(encoding="utf-8")
+        marker = "      - name: Reverify immutable trusted harness after Broker campaign\n"
+        target.write_text(
+            text.replace(
+                marker,
+                "      - name: Obsolete mutable-main check\n"
+                "        run: git ls-remote --exit-code https://github.com/example/example refs/heads/main\n\n"
+                + marker,
+                1,
+            ),
+            encoding="utf-8",
+        )
+        mutated = validate(root)
+        if not any("must not depend on mutable main" in item for item in mutated):
+            raise RuntimeError(
+                f"self-test failed to reject mutable-main recheck: {mutated}"
+            )
 
 
 def main(argv: list[str] | None = None) -> int:

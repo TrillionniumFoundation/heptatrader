@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate canonical HeptaTrader documentation without a root README."""
+"""Validate canonical HeptaTrader documentation and substantive module depth."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +12,7 @@ import check_documentation_core as _core
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL_FILES = (
+    Path("README.md"),
     Path("docs/index.md"),
     Path("docs/DOCUMENTATION-POLICY.md"),
 )

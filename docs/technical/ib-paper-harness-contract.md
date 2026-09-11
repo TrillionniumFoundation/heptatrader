@@ -13,8 +13,10 @@ The canonical scenario list is [`../ib-paper-qualification-scenarios-v1.json`](.
 
 The qualification workflow has two distinct principals:
 
-1. a no-secret builder produces and verifies an immutable candidate artifact from the exact admitted source revision;
+1. a no-secret builder produces and verifies an immutable candidate artifact from the exact `main` revision selected at owner-authorized workflow dispatch;
 2. a PAPER host executes only that verified candidate through an independently pinned qualifier.
+
+The requested candidate SHA must equal the dispatch event's immutable `github.sha` before either self-hosted runner is allocated. That converts a moving branch pointer into an immutable source/artifact identity at admission. Once the candidate artifact exists, later movement of `refs/heads/main` is intentionally irrelevant to that campaign: it cannot change the source SHA, executable digest, harness, profile, Broker account, host or evidence already bound to the qualification subject. A changed bound input requires a new campaign.
 
 Candidate code must not inherit Actions credentials, repository write credentials or raw Broker credentials. The qualifier is responsible for Broker login/session custody and for constraining candidate networking to the approved PAPER path.
 
@@ -69,3 +71,5 @@ The repository deliberately does not claim that the external harness, credential
 ## Failure semantics
 
 Any mismatch between the reviewable scenario contract and the executable verifier fails source CI. Any mismatch between the pinned harness, candidate identity, operation allowlist, Broker environment, evidence contract or terminal state fails qualification. Missing external infrastructure leaves `paper_authorized=false`; LIVE remains unavailable.
+
+Branch-pointer movement after immutable candidate admission is not a failure condition. It is repository navigation state, not a mutation of the candidate bytes. See [`../adr/0003-immutable-artifact-paper-qualification.md`](../adr/0003-immutable-artifact-paper-qualification.md).

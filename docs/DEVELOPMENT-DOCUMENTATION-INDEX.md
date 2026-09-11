@@ -27,6 +27,7 @@ This index connects every registered module document with the deeper implementat
 
 ## Detailed implementation references
 
+- [`docs/technical/runtime-engineering-map.md`](technical/runtime-engineering-map.md)
 - [`docs/technical/execution-events.md`](technical/execution-events.md)
 - [`docs/technical/reconciliation-engine.md`](technical/reconciliation-engine.md)
 - [`docs/technical/service-lifecycle.md`](technical/service-lifecycle.md)
@@ -36,6 +37,7 @@ This index connects every registered module document with the deeper implementat
 - [`docs/technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
 - [`docs/technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
 - [`docs/ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json)
+- [`docs/adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md)
 
 ## Required depth
 
@@ -44,3 +46,5 @@ A maintained subsystem document must contain substantive engineering prose rathe
 Compatibility fields that remain for historical source callers are not exempt from authority boundaries. `tests/python/test_risk_legacy_compatibility_boundary.py` rejects any canonical C++ implementation that consumes the old unbound risk scalars; production code must use the authoritative snapshot and converted-notional evidence contracts.
 
 Source status and trading authorization are separate: simulator is current, IB PAPER requires external broker-observed qualification, CTP/XT have no real transport, and LIVE is unavailable. A green documentation or repository-control check never implies Broker authorization.
+
+The PAPER qualification subject is the exact dispatch-time source plus the immutable candidate artifact and its bound runtime evidence. Later movement of `main` is not an artifact mutation and is deliberately not a qualification invalidator; see ADR 0003.
