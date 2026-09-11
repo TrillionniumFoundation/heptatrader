@@ -29,8 +29,14 @@ The package digest is the identity carried into later qualification and deployme
 
 `hepta_market_*`, `hepta_official_source_capture.py`, `hepta_strategy_*`, `hepta_eurusd_confirmed_momentum_strategy.py`, and `validate_hepta_strategy_decision_receipt.py` implement read-only evidence and replay components. The repository does not currently contain a canonical bounded observer/controller and does not install these research scripts automatically.
 
-## Trusted qualification
+## Trusted PAPER rollout and certification
 
-`check_qualification_trust_boundary.py`, `build_ib_candidate_artifact.sh`, `verify_ib_candidate_artifact.py`, `run_ib_paper_artifact_qualification.sh`, `verify_ib_paper_qualification.py`, and `verify_canonical_ib_paper_profile.py` are trusted-main qualification components. They do not make external runners, credentials, Broker sessions or receipts exist; the verifiers fail when those controls are absent.
+`check_qualification_trust_boundary.py`, `build_ib_candidate_artifact.sh`, and `verify_ib_candidate_artifact.py` establish the build-once immutable-artifact boundary.
+
+`run_ib_paper_artifact_rollout.sh` and `verify_ib_paper_rollout.py` own the small PAPER-V4 progressive rollout interface. They permit canary/pilot/extended to increase only the number of independently terminal flat round trips; they never widen the existing one-unit instantaneous P1 exposure envelope and their receipts have no authorization effect.
+
+`run_ib_paper_artifact_qualification.sh` and `verify_ib_paper_qualification.py` retain the separate qualification-only PAPER-V5 twelve-scenario resilience/certification path. `verify_canonical_ib_paper_profile.py` keeps the source-controlled profile contract canonical.
+
+These trusted-main components do not make external runners, credentials, Broker sessions, host policy, external harness support or receipts exist; the verifiers fail when those controls are absent. The external harness remains an owner-controlled input and must implement the documented progressive-rollout mode before real P1 stages can execute.
 
 Do not add developer-specific paths, untrusted `eval`/`source`, Broker secrets, encoded transfer payloads, an alternate order path, or a branch-mutating remediation carrier to this directory.
