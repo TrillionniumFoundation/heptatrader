@@ -1,0 +1,42 @@
+{
+  "schema": "heptatrader.ib-paper-rollout-policy.v1",
+  "execution_mode": "PAPER",
+  "profile_order_mode": "EXTERNAL_P1_CANARY_LMT_DAY",
+  "live_authorized": false,
+  "stages": [
+    {
+      "id": "canary",
+      "max_mutation_cycles": 1,
+      "max_order_quantity": 1.0,
+      "max_order_notional": 5000.0,
+      "max_active_orders": 1,
+      "max_gross_position": 1.0,
+      "require_flat_between_cycles": true
+    },
+    {
+      "id": "pilot",
+      "max_mutation_cycles": 3,
+      "max_order_quantity": 1.0,
+      "max_order_notional": 5000.0,
+      "max_active_orders": 1,
+      "max_gross_position": 1.0,
+      "require_flat_between_cycles": true
+    },
+    {
+      "id": "extended",
+      "max_mutation_cycles": 10,
+      "max_order_quantity": 1.0,
+      "max_order_notional": 5000.0,
+      "max_active_orders": 1,
+      "max_gross_position": 1.0,
+      "require_flat_between_cycles": true
+    }
+  ],
+  "terminal_requirements": {
+    "active_orders": 0,
+    "uncertain_commands": 0,
+    "position_quantity": 0.0,
+    "authoritative_reconciliation_complete": true
+  },
+  "rationale": "Progressive PAPER rollout increases only the number of independently terminal, flat P1 canary cycles. Per-order and instantaneous exposure remain at the existing PAPER-V4 one-unit boundary. Heavy fault/resilience qualification remains a separate certification path."
+}

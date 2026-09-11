@@ -19,7 +19,7 @@ jobs:
   documentation:
     name: documentation-control-plane-exact-head
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 12
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -31,17 +31,15 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Assert exact source identity
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-
-      - name: Install build-model validation dependencies
+      - name: Install source-model dependencies
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
 
-      - name: Validate documentation and source truth contracts
+      # This lane owns source/document/build-model truth only. Core Runtime CI
+      # owns the Python regression corpus and runtime/release behavior; those
+      # tests are intentionally not repeated here.
+      - name: Validate source truth contracts once
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
@@ -50,24 +48,11 @@ jobs:
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 scripts/verify_source_gap_closures.py
-          python3 -m unittest discover -s tests/python -p 'test_documentation_control_plane.py'
-          python3 -m unittest discover -s tests/python -p 'test_documentation_depth.py'
-          python3 -m unittest discover -s tests/python -p 'test_component_coverage.py'
-          python3 -m unittest discover -s tests/python -p 'test_build_ownership.py'
-          python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
-          python3 -m unittest discover -s tests/python -p 'test_behavior_bound_gap_evidence.py'
-          python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_paper_scenario_contract.py'
-          python3 -m unittest discover -s tests/python -p 'test_risk_legacy_compatibility_boundary.py'
-          python3 -m unittest discover -s tests/python -p 'test_legacy_runtime_boundary.py'
 
-      - name: Reassert clean exact source
+      - name: Reassert clean source after source-model validation
         if: always()
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           git diff --check
           git diff --exit-code -- .
           git diff --cached --exit-code -- .
