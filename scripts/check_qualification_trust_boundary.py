@@ -185,7 +185,7 @@ def self_test() -> None:
         (
             "    environment: ib-paper\n",
             "",
-            "four mutation stages",
+            "must use ib-paper environment",
         ),
         (
             "trusted/scripts/run_ib_paper_artifact_rollout.sh",
