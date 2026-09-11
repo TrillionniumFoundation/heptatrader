@@ -59,9 +59,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
         if token in workflow:
             errors.append(f"{WORKFLOW}: retired or unsafe token remains: {token}")
 
-    # Every self-hosted stage is rejected before runner allocation unless the
-    # immutable owner dispatches main, explicitly opts into PAPER mutation, and
-    # names exactly the immutable dispatch SHA.
     if workflow.count(OWNER_GATE) != 6:
         errors.append(
             f"{WORKFLOW}: all six self-hosted jobs must share the immutable owner/exact-SHA gate"
@@ -103,8 +100,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
         if job not in workflow:
             errors.append(f"{WORKFLOW}: missing staged job: {job.strip()}")
 
-    # Host preflight is intentionally non-mutating and outside the protected
-    # mutation environment. Every mutation-bearing stage uses that environment.
     if workflow.count("\n    environment: ib-paper\n") != 4:
         errors.append(
             f"{WORKFLOW}: canary, pilot, extended and certification must use ib-paper environment"
@@ -121,9 +116,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
         if token not in workflow:
             errors.append(f"{WORKFLOW}: missing lightweight host preflight control: {token}")
 
-    # Progressive stages all consume the one immutable artifact, retain the P1
-    # one-unit boundary, and use the dedicated rollout verifier. Heavy V5
-    # certification remains explicit and runs only after extended succeeds.
     if workflow.count("run_ib_paper_artifact_rollout.sh") != 3:
         errors.append(f"{WORKFLOW}: canary/pilot/extended must each use the rollout wrapper")
     if workflow.count("verify_ib_paper_rollout.py") != 3:
@@ -158,8 +150,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
     if workflow.count("HEPTA_QUALIFICATION_MUTATIONS: '1'") != 4:
         errors.append(f"{WORKFLOW}: mutation opt-in must be explicit in exactly four mutation stages")
 
-    # Once source is converted to a content-addressed artifact, branch movement
-    # is unrelated to rollout/certification and must never serialize development.
     if "git ls-remote --exit-code" in workflow:
         errors.append(f"{WORKFLOW}: rollout must not depend on mutable main after artifact creation")
     for token in (
@@ -203,9 +193,9 @@ def self_test() -> None:
             "rollout wrapper",
         ),
         (
-            "inputs.rollout_stage == 'certify'",
-            "inputs.rollout_stage == 'extended'",
-            "explicitly selected",
+            "    needs: extended\n    name: ib-paper-exact-artifact-qualification",
+            "    needs: canary\n    name: ib-paper-exact-artifact-qualification",
+            "must follow successful extended rollout",
         ),
         (
             "ref: ${{ github.sha }}",
