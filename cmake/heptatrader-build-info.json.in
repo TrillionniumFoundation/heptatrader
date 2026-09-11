@@ -1,0 +1,8 @@
+{
+  "schema": "heptatrader.installed-build.v1",
+  "release_label": "@HEPTA_RELEASE_LABEL@",
+  "project_version": "@PROJECT_VERSION@",
+  "ib_api_compiled": @HEPTA_IBAPI_COMPILED_JSON@,
+  "paper_authorized": false,
+  "live_authorized": false
+}

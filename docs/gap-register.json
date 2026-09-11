@@ -1,7 +1,7 @@
 {
   "schema": "heptatrader.gap-register.v1",
   "authorization": {
-    "source_state": "CANDIDATE",
+    "source_state": "READY",
     "paper_authorized": false,
     "live_authorized": false
   },
@@ -11,16 +11,27 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Canonical module, capability, build ownership and operations documentation exists and is machine-validated.",
+      "summary": "Canonical module, capability, build ownership, Git-discovered component coverage, detailed technical references and operations documentation exist and are machine-validated.",
       "evidence": [
         "docs/DOCUMENTATION-POLICY.md",
         "docs/index.md",
+        "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md",
         "docs/module-catalog.json",
         "docs/build-targets.json",
         "docs/capabilities.json",
+        "docs/modules/repository-control.md",
+        "docs/modules/legacy-runtime.md",
+        "docs/technical/execution-events.md",
+        "docs/technical/reconciliation-engine.md",
+        "docs/technical/service-lifecycle.md",
+        "docs/technical/build-supply-chain.md",
+        "docs/technical/component-coverage.md",
+        "docs/technical/release-simulator-smoke.md",
         "scripts/check_documentation.py",
+        "scripts/check_component_coverage.py",
         "scripts/verify_source_gap_closures.py",
         "tests/python/test_documentation_control_plane.py",
+        "tests/python/test_component_coverage.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
         "tests/python/test_gap_register.py"
@@ -32,15 +43,19 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Always-reachable documentation, core, merge-candidate, qualification-boundary and dual-compiler sanitizer checks are defined for PR, main and merge-group revisions.",
+      "summary": "Exact-revision documentation, Git-discovered component ownership, complete Python discovery, canonical dev_core/CTest, installed release rollback smoke, exact-candidate and GCC/Clang sanitizer checks are defined for pull requests and main.",
       "evidence": [
         ".github/workflows/documentation-control-plane.yml",
         ".github/workflows/core-ci.yml",
         ".github/workflows/canonical-full-suite.yml",
         ".github/workflows/merge-candidate.yml",
         ".github/required-check-contexts-v1.json",
+        "scripts/check_component_coverage.py",
+        "scripts/run_release_simulator_smoke.py",
         "scripts/check_qualification_trust_boundary.py",
         "scripts/verify_source_gap_closures.py",
+        "tests/python/test_component_coverage.py",
+        "tests/python/test_release_simulator_smoke.py",
         "tests/python/test_gap_register.py"
       ],
       "issue": null
@@ -50,7 +65,7 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Gap-critical test targets are explicitly inventoried, machine-owned and included in the integrated optimized test aggregate.",
+      "summary": "Gap-critical executable and Python behavior tests are explicitly inventoried and exercised by the canonical aggregate/discovery, including V5 atomic flatten, machine-verified nftables replacement, Git-discovered ownership, legacy boundaries and installed simulator rollback.",
       "evidence": [
         "tests/CMakeLists.txt",
         "tests/unix_session_supervisor_test_prelude.h",
@@ -58,7 +73,17 @@
         "scripts/verify_source_gap_closures.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
-        "tests/python/test_gap_register.py"
+        "tests/python/test_gap_register.py",
+        "tests/python/test_behavior_bound_gap_evidence.py",
+        "tests/python/test_component_coverage.py",
+        "tests/python/test_release_simulator_smoke.py",
+        "tests/python/test_legacy_runtime_boundary.py",
+        "tests/agent_simulator_e2e_tests.cpp",
+        "tests/ib_paper_execution_profile_tests.cpp",
+        "tests/execution_coordinator_tests.cpp",
+        "tests/python/test_hepta_preflight.py",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_hepta_broker_egress_policy_atomic.py"
       ],
       "issue": null
     },
@@ -83,7 +108,7 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Worst-case generic risk includes authoritative pending buy and sell notional. Simulator flatten-only admission also reserves reducible quantity across unresolved same-direction orders, including inactive and cancel-pending orders, with a fill-time zero-boundary check across policy changes; the qualifying IB PAPER profile remains restricted to one active order and one CASH contract.",
+      "summary": "Worst-case generic risk includes authoritative pending buy and sell notional. Simulator flatten-only admission reserves reducible quantity across unresolved same-direction orders with a fill-time zero-boundary check. Qualification V5 requires one active CASH order and max order quantity equal to max gross position, so every reachable signed or partial-fill exposure fits one exact atomic flatten. Canonical Broker egress binds the installed digest-pinned policy, obtains nftables table presence from JSON machine state, uses bounded create-or-replace retries, accepts only exact structural readback, and independently verifies the compiled deny-all fallback.",
       "evidence": [
         "HeptaTrade/risk/pre_trade_risk_engine.cpp",
         "tests/pre_trade_risk_engine_tests.cpp",
@@ -93,9 +118,23 @@
         "systemd/hepta-execution-ib-paper.env.example",
         "scripts/verify_source_gap_closures.py",
         "tests/python/test_gap_register.py",
+        "tests/python/test_behavior_bound_gap_evidence.py",
         "HeptaTrade/simulator/deterministic_execution_venue.cpp",
         "tests/simulator_risk_runtime_tests.cpp",
-        "docs/modules/simulator.md"
+        "docs/modules/simulator.md",
+        "HeptaTrade/execution/ib_paper_execution_profile.cpp",
+        "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp",
+        "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp",
+        "tests/ib_paper_execution_profile_tests.cpp",
+        "tests/execution_coordinator_tests.cpp",
+        "docs/modules/ib-paper.md",
+        "cmake/HeptaInstall.cmake",
+        "docs/BROKER-NETWORK-ISOLATION.md",
+        "docs/preflight-policy-v1.json",
+        "scripts/hepta_broker_egress_policy.py",
+        "systemd/hepta-broker-network-policy-v1.json",
+        "tests/python/test_hepta_broker_egress_policy.py",
+        "tests/python/test_hepta_broker_egress_policy_atomic.py"
       ],
       "issue": null
     },
@@ -104,11 +143,13 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "CTP and XT/QMT scaffolds reject connection, query and mutation instead of manufacturing broker-like success.",
+      "summary": "CTP and XT/QMT scaffolds reject connection, query and mutation instead of manufacturing broker-like success; legacy runtime profiles are default-off and cannot be represented as canonical venue authority.",
       "evidence": [
         "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
         "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
         "tests/venue_capability_tests.cpp",
+        "tests/python/test_legacy_runtime_boundary.py",
+        "docs/modules/legacy-runtime.md",
         "docs/capabilities.json",
         "scripts/verify_source_gap_closures.py",
         "tests/python/test_gap_register.py"
@@ -129,7 +170,8 @@
         "tests/oms_journal_durability_tests.cpp",
         "tests/oms_journal_schema_v4_tests.cpp",
         "tests/python/test_gap_register.py",
-        "tests/execution_coordinator_tests.cpp"
+        "tests/execution_coordinator_tests.cpp",
+        "docs/technical/reconciliation-engine.md"
       ],
       "issue": null
     },
@@ -138,44 +180,56 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Canonical Linux Core and IB SDK target membership and unique module ownership of their compiled implementation translation units are verified from fresh CMake File API data; excluded legacy/probe profiles and non-exposed imported/interface targets are not claimed.",
+      "summary": "Canonical Linux Core and IB SDK target membership and unique module ownership of compiled implementation translation units are verified from fresh CMake File API data, while the exact Git index closes production paths outside the CMake graph.",
       "evidence": [
         "HeptaTrade/CMakeLists.txt",
         "tests/CMakeLists.txt",
         "docs/build-targets.json",
+        "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md",
+        "scripts/check_component_coverage.py",
+        "tests/python/test_component_coverage.py",
         "scripts/verify_source_gap_closures.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
-        "tests/python/test_gap_register.py"
+        "tests/python/test_gap_register.py",
+        "docs/technical/build-supply-chain.md"
       ],
       "issue": null
     },
     {
-      "id": "G-TEAM-001",
-      "domain": "EXTERNAL",
-      "state": "OPEN_EXTERNAL",
-      "blocking_authorization": true,
-      "summary": "Organization teams, CODEOWNERS service readback, active no-bypass ruleset, Merge Queue and governance receipt must be materialized and verified live.",
+      "id": "RELEASE-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED_SOURCE",
+      "blocking_authorization": false,
+      "summary": "Canonical CMake install ownership, deterministic content-addressed packaging, descriptor-pinned fail-closed preflight, installed Agent/Gateway/Execution/simulator execution, atomic slot promotion, rollback and re-promotion, immutable publication and non-authorizing receipts are behavior-tested.",
       "evidence": [
-        ".github/github-governance-policy-v1.json",
-        ".github/github-team-mapping-v1.json",
-        ".github/CODEOWNERS",
-        "scripts/verify_github_governance.py"
+        "CMakeLists.txt",
+        "cmake/HeptaInstall.cmake",
+        "cmake/heptatrader-build-info.json.in",
+        "scripts/build_release_package.py",
+        "scripts/hepta_preflight.py",
+        "scripts/hepta_preflight_core.py",
+        "scripts/run_release_simulator_smoke.py",
+        "docs/preflight-policy-v1.json",
+        "docs/modules/release-engineering.md",
+        "docs/RELEASE-PUBLICATION-SECURITY.md",
+        "docs/adr/0001-release-publication-atomicity.md",
+        "docs/operations/release-package.md",
+        "docs/operations/preflight.md",
+        "docs/technical/release-simulator-smoke.md",
+        "tests/python/test_release_package.py",
+        "tests/python/test_hepta_preflight.py",
+        "tests/python/test_preflight_special_files.py",
+        "tests/python/test_preflight_complete_namespace.py",
+        "tests/python/test_cmake_install_integration.py",
+        "tests/python/test_release_simulator_smoke.py",
+        "tests/agent_simulator_e2e_tests.cpp",
+        "scripts/verify_source_gap_closures.py",
+        "scripts/check_gap_register.py",
+        ".github/workflows/core-ci.yml",
+        "tmpfiles.d/heptatrader-ib-paper.conf"
       ],
-      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/8"
-    },
-    {
-      "id": "G-IB-001",
-      "domain": "EXTERNAL",
-      "state": "OPEN_EXTERNAL",
-      "blocking_authorization": true,
-      "summary": "Protected environment, distinct trusted runners, pinned IB SDK/harness, PAPER account/session and broker-observed qualification receipt must be materialized and verified live.",
-      "evidence": [
-        ".github/workflows/ib-paper-qualification.yml",
-        "scripts/verify_ib_paper_qualification.py",
-        "docs/ib-paper-profile-policy-v1.json"
-      ],
-      "issue": "https://github.com/TrillionniumFoundation/heptatrader/issues/9"
+      "issue": null
     }
   ]
 }

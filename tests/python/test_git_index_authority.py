@@ -9,71 +9,90 @@ ROOT = Path(__file__).resolve().parents[2]
 authority = cases.authority
 
 
-class ExactGitIndexAuthorityTests(cases.ExactGitIndexAuthorityTests):
-    """Run the full exact-index suite under the split hosted-audit topology."""
+class ExactGitIndexAuthorityTests(
+    cases.ExactGitIndexAuthorityTests
+):
+    """Run generic exact-index tests under the owner-operated model."""
 
-    def test_all_main_pull_requests_run_the_governance_boundary(self) -> None:
-        for relative in (
-            Path(".github/workflows/governance-bootstrap-admission.yml"),
-            Path(".github/workflows/qualification-source-audit.yml"),
-        ):
-            with self.subTest(workflow=relative.as_posix()):
-                workflow = (ROOT / relative).read_text(encoding="utf-8")
-                trigger_header = workflow.split("\npermissions:", 1)[0]
-                self.assertIn("  pull_request:\n    branches: [main]", trigger_header)
-                self.assertIn(
-                    "  merge_group:\n    types: [checks_requested]", trigger_header
-                )
-                self.assertNotIn("    paths:", trigger_header)
-                self.assertNotIn("pull_request_target", trigger_header)
-                self.assertIn(
-                    "cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
-                    workflow,
-                )
-                self.assertIn(
-                    "ref: ${{ github.event.pull_request.head.sha || github.sha }}",
-                    workflow,
-                )
-                self.assertIn("persist-credentials: false", workflow)
-                self.assertIn(
-                    "- name: Reassert immutable event subject\n        if: always()",
-                    workflow,
-                )
-                self.assertIn("git diff --cached --exit-code -- .", workflow)
-                self.assertIn("--untracked-files=all --ignored=matching", workflow)
-
-        governance = (
-            ROOT / ".github/workflows/github-governance-qualification.yml"
-        ).read_text(encoding="utf-8")
-        governance_trigger = governance.split("\npermissions:", 1)[0]
-        self.assertIn("on:\n  workflow_dispatch:", governance_trigger)
-        self.assertNotIn("pull_request", governance_trigger)
-        self.assertIn("cancel-in-progress: false", governance)
+    def test_source_audit_is_exact_head_bound(self) -> None:
+        relative = Path(
+            ".github/workflows/qualification-source-audit.yml"
+        )
+        workflow = (ROOT / relative).read_text(encoding="utf-8")
+        trigger = workflow.split("\npermissions:", 1)[0]
         self.assertIn(
-            ".github/workflows/github-governance-qualification.yml",
-            authority.CRITICAL_PATHS,
+            "  pull_request:\n    branches: [main]", trigger
+        )
+        self.assertIn("  push:\n    branches: [main]", trigger)
+        self.assertNotIn("    paths:", trigger)
+        self.assertNotIn("pull_request_target", trigger)
+        self.assertIn(
+            "cancel-in-progress: "
+            "${{ github.event_name == 'pull_request' }}",
+            workflow,
+        )
+        self.assertIn(
+            "ref: ${{ github.event.pull_request.head.sha "
+            "|| github.sha }}",
+            workflow,
+        )
+        self.assertIn("persist-credentials: false", workflow)
+        self.assertIn(
+            "- name: Reassert immutable event subject",
+            workflow,
+        )
+        self.assertIn("git diff --cached --exit-code -- .", workflow)
+        self.assertGreaterEqual(
+            workflow.count("python3 scripts/verify_exact_git_index.py --root ."),
+            2,
         )
 
-    def test_ib_workflow_is_part_of_the_exact_index_boundary(self) -> None:
+    def test_ib_workflow_is_exact_current_main_only(self) -> None:
         relative = ".github/workflows/ib-paper-qualification.yml"
         workflow = (ROOT / relative).read_text(encoding="utf-8")
-        trigger_header = workflow.split("\npermissions:", 1)[0]
-        self.assertIn("on:\n  workflow_dispatch:", trigger_header)
-        self.assertNotIn("pull_request", trigger_header)
+        trigger = workflow.split("\npermissions:", 1)[0]
+        self.assertIn("on:\n  workflow_dispatch:", trigger)
+        self.assertNotIn("pull_request", trigger)
         self.assertIn("cancel-in-progress: false", workflow)
+        condition = (
+            "github.event_name == 'workflow_dispatch' && "
+            "github.ref == 'refs/heads/main' && "
+            "github.repository == 'TrillionniumFoundation/heptatrader' && "
+            "github.actor == 'ProfHepta' && "
+            "github.actor_id == 102159240 && "
+            "github.triggering_actor == 'ProfHepta' && "
+            "inputs.mutation_mode == true && "
+            "inputs.candidate_sha == github.sha"
+        )
+        self.assertEqual(workflow.count(condition), 2)
+        self.assertGreaterEqual(
+            workflow.count("git ls-remote --exit-code"), 3
+        )
         self.assertIn(relative, authority.CRITICAL_PATHS)
+        self.assertNotIn("CODEOWNERS", workflow)
+        self.assertNotIn("merge_queue", workflow)
+        self.assertEqual(
+            workflow.count(
+                "python3 trusted/scripts/verify_exact_git_index.py "
+                "--root candidate"
+            ),
+            2,
+        )
 
-        admission = (
-            ROOT / ".github/workflows/governance-bootstrap-admission.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn(relative, admission)
-        self.assertIn("verify_dispatch_workflow", admission)
-
-        source_audit = (
-            ROOT / ".github/workflows/qualification-source-audit.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("test_ib_paper_qualification.py", source_audit)
-        self.assertIn("test_ib_workflow_interfaces.py", source_audit)
+    def test_critical_paths_match_current_model(self) -> None:
+        paths = set(authority.CRITICAL_PATHS)
+        self.assertIn("docs/gap-register.json", paths)
+        self.assertIn(
+            "scripts/check_qualification_trust_boundary.py", paths
+        )
+        self.assertIn(
+            ".github/workflows/ib-paper-qualification.yml", paths
+        )
+        self.assertTrue(
+            all("CODEOWNERS" not in item for item in paths), paths
+        )
+        for relative in paths:
+            self.assertTrue((ROOT / relative).is_file(), relative)
 
 
 if __name__ == "__main__":

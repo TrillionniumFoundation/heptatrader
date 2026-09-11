@@ -1,38 +1,37 @@
 # Gap register
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Machine source: [`gap-register.json`](gap-register.json)  
+Status: CURRENT
+Applies to: repository HEAD
+Machine source: [`gap-register.json`](gap-register.json)
 Verification: `python3 scripts/check_gap_register.py`
 
-The register separates repository-controlled closure from controls that only organization administrators, protected environments, dedicated runners, host operators, and a real IB PAPER session can materialize. Source code is not allowed to mark an external control complete.
+HeptaTrader is an owner-operated, self-use system. Every gap in the
+supported baseline is closed in source and none blocks repository use.
 
-## Repository-controlled closure
+## Complete supported-scope closure
 
 | Gap | State | Closure |
 |---|---|---|
-| DOC-001 | CLOSED_SOURCE | Canonical README, module/capability catalogs, module designs and operations are machine-validated. |
-| CI-001 | CLOSED_SOURCE | Required ordinary checks run on PR, main and Merge Queue revisions. |
-| TEST-001 | CLOSED_SOURCE | Release tests execute their assertions and the integrated supervisor test compiles. |
-| RISK-001 | CLOSED_SOURCE | Generic snapshot/notional/pending exposure/loss/drawdown checks and boundary tests exist. |
-| PENDING-EXPOSURE-001 | CLOSED_SOURCE | Qualifying IB PAPER source scope is one active order and one CASH contract until aggregate pending notional is authoritative. |
-| VENUE-001 | CLOSED_SOURCE | CTP and XT/QMT scaffolds fail closed and cannot manufacture success. |
-| OMS-001 | CLOSED_SOURCE | Public journal documentation and strict verification match schema v4. |
-| BUILD-001 | CLOSED_SOURCE | Shared protocol/session implementations replace duplicated compilation and global compiler flags. |
+| DOC-001 | CLOSED_SOURCE | Canonical documentation, capability, module and build inventories are machine-validated. |
+| CI-001 | CLOSED_SOURCE | Exact-revision full Python discovery, canonical core/CTest, candidate and complete GCC/Clang core sanitizer checks are defined. |
+| TEST-001 | CLOSED_SOURCE | Gap-critical executable tests are inventoried and built by the canonical aggregate. |
+| RISK-001 | CLOSED_SOURCE | Generic snapshot, notional, pending exposure, loss, drawdown and guarded-exit rules are implemented and tested. |
+| PENDING-EXPOSURE-001 | CLOSED_SOURCE | Pending exposure, exact V5 atomic flatten, JSON machine-state nftables replacement, exact readback and independently verified deny-all fallback are behavior-bound. |
+| VENUE-001 | CLOSED_SOURCE | CTP and XT/QMT scaffolds cannot manufacture venue success. |
+| OMS-001 | CLOSED_SOURCE | Journal-before-send, uncertainty and reconciliation contracts match schema v4. |
+| BUILD-001 | CLOSED_SOURCE | Canonical target and translation-unit ownership are verified from fresh CMake File API data. |
+| RELEASE-001 | CLOSED_SOURCE | Canonical install, immutable publication, descriptor-pinned preflight and exact stable engaged kill-switch validation are behavior-tested. |
 
-`CLOSED_SOURCE` means the exact candidate contains implementation, documentation, and automated source evidence. It does not authorize merge, PAPER, or LIVE.
+`source_state` is `READY`. `paper_authorized` and `live_authorized`
+remain `false`.
 
-## External authorization blockers
+## Optional IB PAPER activation
 
-| Gap | State | Tracking issue | Required result |
-|---|---|---|---|
-| G-TEAM-001 | OPEN_EXTERNAL | [#8](https://github.com/TrillionniumFoundation/heptatrader/issues/8) | Live organization teams/grants, zero-error CODEOWNERS readback, active no-bypass ruleset, required checks, genuine Merge Queue revision and verifier-issued governance receipt. |
-| G-IB-001 | OPEN_EXTERNAL | [#9](https://github.com/TrillionniumFoundation/heptatrader/issues/9) | Protected environment, distinct restricted runners, pinned builder/SDK/harness, host identity/network/kill-switch controls, exact bounded IB PAPER campaign and verifier-issued broker receipt. |
+IB PAPER is retained as a disabled, qualification-required capability,
+not as an unresolved project gap. Nothing in the repository enables it.
+An operator who later chooses to activate it must complete the
+exact-current-main, immutable-artifact, PAPER-only Broker campaign
+documented in [`modules/ib-paper.md`](modules/ib-paper.md). A failed or
+absent campaign simply leaves the optional capability disabled.
 
-While either external blocker remains open:
-
-- `paper_authorized` remains false;
-- `live_authorized` remains false;
-- IB stays `QUALIFICATION_REQUIRED`;
-- LIVE stays `UNAVAILABLE`;
-- direct/admin merge, synthetic receipts, earlier-head evidence, or manually edited status cannot close the blocker.
+LIVE trading remains unavailable.

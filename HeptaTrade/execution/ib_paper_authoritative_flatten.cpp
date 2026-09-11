@@ -95,7 +95,9 @@ bool ConfigureExternalLimitDayFlattenPlan(
         IbPaperExecutionProfileConfig::OrderModeName(config.orderMode);
     plan.order.orderType = "LMT";
     plan.timeInForce = "DAY";
-    if (std::fabs(position.quantity) <= 1.0)
+    const double maximum = config.UsesExternalQualificationLimitDay() ?
+        config.maxOrderQuantity : 1.0;
+    if (std::fabs(position.quantity) <= maximum)
         return true;
     reason = "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED";
     return false;

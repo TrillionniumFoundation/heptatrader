@@ -165,6 +165,17 @@ add_executable(hepta_ib_paper_kill_switch_tests
 target_link_libraries(hepta_ib_paper_kill_switch_tests pthread)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
+add_executable(hepta_ib_paper_execution_profile_tests
+    ib_paper_execution_profile_tests.cpp
+    ../HeptaTrade/execution/ib_paper_execution_profile.cpp
+    ../HeptaTrade/execution/ib_paper_kill_switch.cpp
+    ../HeptaTrade/execution/ib_paper_authoritative_flatten.cpp
+    ../HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp
+    ../HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp)
+target_link_libraries(hepta_ib_paper_execution_profile_tests
+    hepta_execution_core OpenSSL::Crypto pthread)
+hepta_register_core_test(hepta_ib_paper_execution_profile_tests)
+
 add_executable(hepta_ib_live_terminal_reconciliation_tests
     ib_live_terminal_reconciliation_tests.cpp
     ../HeptaTrade/adapter_ib/ib_api_wrapper.cpp

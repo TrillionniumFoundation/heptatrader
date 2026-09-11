@@ -1,11 +1,11 @@
 # HeptaTrader documentation index
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Owner: HeptaTrader maintainers  
-Verification: `python3 scripts/check_documentation.py`
+Status: CURRENT
+Applies to: repository HEAD
+Owner: HeptaTrader maintainers
+Verification: `python3 scripts/check_documentation.py` and `python3 scripts/check_component_coverage.py`
 
-This index is the canonical entry point for current development documentation. A document is operational only when its status is `CURRENT` and its implementation and test paths are present in `docs/module-catalog.json`.
+This index is the canonical entry point for current development documentation. A document is operational only when its status is `CURRENT` and its implementation and test paths are present in `docs/module-catalog.json`. Production-path completeness is independently derived from the exact Git index by `scripts/check_component_coverage.py`.
 
 ## Status vocabulary
 
@@ -32,12 +32,26 @@ This index is the canonical entry point for current development documentation. A
 | CTP adapter | EXPERIMENTAL | [`modules/ctp-adapter.md`](modules/ctp-adapter.md) |
 | XT/QMT adapter | EXPERIMENTAL | [`modules/xt-adapter.md`](modules/xt-adapter.md) |
 | SHADOW research pipeline | EXPERIMENTAL | [`modules/shadow-research.md`](modules/shadow-research.md) |
+| Release engineering and host preflight | CURRENT | [`modules/release-engineering.md`](modules/release-engineering.md) |
 | systemd deployment assets | CURRENT | [`modules/deployment.md`](modules/deployment.md) |
-| Governance and qualification | QUALIFICATION_REQUIRED | [`modules/governance-qualification.md`](modules/governance-qualification.md) |
+| Repository control and source verification | CURRENT | [`modules/repository-control.md`](modules/repository-control.md) |
+| Historical monolith and compatibility assets | LEGACY | [`modules/legacy-runtime.md`](modules/legacy-runtime.md) |
+
+## Development references
+
+- [`DEVELOPMENT-DOCUMENTATION-INDEX.md`](DEVELOPMENT-DOCUMENTATION-INDEX.md)
+- [`technical/execution-events.md`](technical/execution-events.md)
+- [`technical/reconciliation-engine.md`](technical/reconciliation-engine.md)
+- [`technical/service-lifecycle.md`](technical/service-lifecycle.md)
+- [`technical/build-supply-chain.md`](technical/build-supply-chain.md)
+- [`technical/component-coverage.md`](technical/component-coverage.md)
+- [`technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
 
 ## Operations
 
 - [`operations/install.md`](operations/install.md)
+- [`operations/release-package.md`](operations/release-package.md)
+- [`operations/preflight.md`](operations/preflight.md)
 - [`operations/configure.md`](operations/configure.md)
 - [`operations/startup-shutdown.md`](operations/startup-shutdown.md)
 - [`operations/incident.md`](operations/incident.md)
@@ -51,10 +65,18 @@ This index is the canonical entry point for current development documentation. A
 - [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md)
 - [`DOCUMENTATION-POLICY.md`](DOCUMENTATION-POLICY.md)
 - [`GAP-REGISTER.md`](GAP-REGISTER.md)
+- [`RELEASE-PUBLICATION-SECURITY.md`](RELEASE-PUBLICATION-SECURITY.md)
+- [`adr/0001-release-publication-atomicity.md`](adr/0001-release-publication-atomicity.md)
+- [`preflight-policy-v1.json`](preflight-policy-v1.json)
 - [`gap-register.json`](gap-register.json)
 - [`capabilities.json`](capabilities.json)
 - [`module-catalog.json`](module-catalog.json)
+- [`build-targets.json`](build-targets.json)
 
 ## Non-canonical material
 
-The top-level `HeptaStrategy/`, `HeptaSimulator/`, old Visual Studio projects, old PowerShell-oriented notes, and legacy reconciliation examples are not part of the canonical runtime unless explicitly named by the module catalog. Historical documents must be labeled `LEGACY` or `PROPOSAL`; their existence does not authorize deployment.
+The historical `HeptaStrategy/`, `HeptaSimulator/`, old Visual Studio projects, large legacy data files, and deprecated bridges are explicitly owned by the LEGACY module and excluded from the default build. Their presence does not authorize deployment or provide an alternate order path.
+
+- [`adr/0002-owner-operated-repository.md`](adr/0002-owner-operated-repository.md)
+
+All active supported-scope gaps, including canonical release/install/preflight engineering, Git-discovered component ownership, documentation depth, and Broker-free release rollback smoke, are closed in source. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.

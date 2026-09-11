@@ -36,8 +36,9 @@ MAX_TRUSTED_FILES = 32
 TRUSTED_BUILDER_FILES = (
     "scripts/build_ib_candidate_artifact.sh",
     "scripts/verify_ib_candidate_artifact.py",
-    "scripts/verify_qualification_candidate.py",
-    "scripts/github_qualification_evidence.py",
+    "scripts/run_ib_paper_artifact_qualification.sh",
+    "scripts/verify_ib_paper_qualification.py",
+    "docs/ib-paper-profile-policy-v1.json",
     ".github/workflows/ib-paper-qualification.yml",
 )
 MANIFEST_KEYS = frozenset(
