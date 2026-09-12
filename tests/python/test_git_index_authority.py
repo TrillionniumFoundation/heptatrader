@@ -14,7 +14,7 @@ class ExactGitIndexAuthorityTests(
 ):
     """Run generic exact-index tests under the owner-operated model."""
 
-    def test_source_audit_is_exact_head_bound(self) -> None:
+    def test_source_audit_is_exact_head_bound_and_path_scoped(self) -> None:
         relative = Path(
             ".github/workflows/qualification-source-audit.yml"
         )
@@ -24,7 +24,9 @@ class ExactGitIndexAuthorityTests(
             "  pull_request:\n    branches: [main]", trigger
         )
         self.assertIn("  push:\n    branches: [main]", trigger)
-        self.assertNotIn("    paths:", trigger)
+        self.assertIn("    paths:", trigger)
+        self.assertIn("scripts/run_ib_paper_artifact_rollout.sh", trigger)
+        self.assertIn("scripts/verify_ib_paper_rollout.py", trigger)
         self.assertNotIn("pull_request_target", trigger)
         self.assertIn(
             "cancel-in-progress: "
@@ -47,37 +49,10 @@ class ExactGitIndexAuthorityTests(
             2,
         )
 
-    def test_ib_workflow_uses_dispatch_main_then_exact_artifact(self) -> None:
-        relative = ".github/workflows/ib-paper-qualification.yml"
-        workflow = (ROOT / relative).read_text(encoding="utf-8")
-        trigger = workflow.split("\npermissions:", 1)[0]
-        self.assertIn("on:\n  workflow_dispatch:", trigger)
-        self.assertNotIn("pull_request", trigger)
-        self.assertIn("cancel-in-progress: false", workflow)
-        condition = (
-            "github.event_name == 'workflow_dispatch' && "
-            "github.ref == 'refs/heads/main' && "
-            "github.repository == 'TrillionniumFoundation/heptatrader' && "
-            "github.actor == 'ProfHepta' && "
-            "github.actor_id == 102159240 && "
-            "github.triggering_actor == 'ProfHepta' && "
-            "inputs.mutation_mode == true && "
-            "inputs.candidate_sha == github.sha"
-        )
-        self.assertEqual(workflow.count(condition), 2)
-        self.assertNotIn("git ls-remote --exit-code", workflow)
-        self.assertIn("Issue final exact-artifact Broker receipt", workflow)
-        self.assertNotIn("Issue final exact-current-main Broker receipt", workflow)
-        self.assertIn(relative, authority.CRITICAL_PATHS)
-        self.assertNotIn("CODEOWNERS", workflow)
-        self.assertNotIn("merge_queue", workflow)
-        self.assertEqual(
-            workflow.count(
-                "python3 trusted/scripts/verify_exact_git_index.py "
-                "--root candidate"
-            ),
-            2,
-        )
+    def test_ib_workflow_builds_once_then_reuses_historical_artifact_id(self) -> None:
+        import check_qualification_trust_boundary as contract
+        self.assertEqual(contract.validate(ROOT), [])
+        self.assertIn(str(contract.WORKFLOW), authority.CRITICAL_PATHS)
 
     def test_critical_paths_match_current_model(self) -> None:
         paths = set(authority.CRITICAL_PATHS)

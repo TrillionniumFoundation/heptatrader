@@ -48,6 +48,7 @@ This index is the canonical entry point for current development documentation. A
 - [`technical/component-coverage.md`](technical/component-coverage.md)
 - [`technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
 - [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
+- [`technical/ib-paper-host-driver.md`](technical/ib-paper-host-driver.md)
 - [`technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
 
 ## Operations
@@ -55,6 +56,7 @@ This index is the canonical entry point for current development documentation. A
 - [`operations/install.md`](operations/install.md)
 - [`operations/release-package.md`](operations/release-package.md)
 - [`operations/preflight.md`](operations/preflight.md)
+- [`operations/paper-continuation.md`](operations/paper-continuation.md)
 - [`operations/configure.md`](operations/configure.md)
 - [`operations/startup-shutdown.md`](operations/startup-shutdown.md)
 - [`operations/incident.md`](operations/incident.md)

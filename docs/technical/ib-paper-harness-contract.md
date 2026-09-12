@@ -1,75 +1,105 @@
-# IB PAPER external harness contract
+# Reviewable IB PAPER harness and evidence
 
-Status: CURRENT  
-Applies to: optional owner-operated IB PAPER qualification only
+Status: CURRENT
+Applies to: optional owner-operated PAPER rollout and certification
+Implementation: `scripts/hepta_ib_paper_harness.py`, `scripts/hepta_paper_campaign.py`, `scripts/verify_ib_paper_rollout.py`
 
-## Purpose
+## Build once, admit one identity
 
-The external qualifier remains outside the repository because it owns host-specific Broker session control and may access credentials that repository code must never receive. Its behavior is nevertheless not an opaque source of truth. The repository defines the complete scenario, evidence, isolation and terminal-state contract that a qualifying harness must satisfy.
+A build-only owner dispatch produces one immutable candidate. Later dispatches select
+an exact GitHub artifact ID and source SHA, not a moving branch or latest artifact.
+The metadata resolver requires an owner-dispatched main build and its successful
+candidate-build job. A failed later campaign does not invalidate that successful
+build. Download uses exact artifact ID plus original run ID; each target host verifies
+archive and executable bytes before use. New source is not checked out as build input
+during continuation.
 
-The canonical scenario list is [`../ib-paper-qualification-scenarios-v1.json`](../ib-paper-qualification-scenarios-v1.json). `tests/python/test_ib_paper_scenario_contract.py` requires that reviewable contract to agree exactly with the assertions and evidence kinds enforced by `scripts/verify_ib_paper_qualification.py`.
+The root-admitted campaign schema is `heptatrader.paper-campaign.v1`, with exactly
+`schema`, `binding`, `created_at_ms`, `account_mode=PAPER`. Binding comprises:
 
-## Trust boundary
+```text
+campaign_id, candidate_sha, artifact_sha256, binary_sha256,
+harness_sha256, driver_sha256, controller_sha256, profile_sha256,
+account_fingerprint, host_fingerprint, instrument, quote_currency, base_currency
+```
 
-The qualification workflow has two distinct principals:
+All digest/fingerprint fields are canonical SHA-256 except the Git SHA (40 hex).
+The controller digest covers the portable controller, its imported evidence/verifier/
+state/host code, shell wrappers and P1 policy. It is computed by
+`hepta_evidence_io.controller_digest()`. Thus unrelated main movement does not change
+an admitted campaign, but an actual controller/profile/driver change does. Prior
+v1 self-reported rollout evidence cannot be promoted into a v2 campaign.
 
-1. a no-secret builder produces and verifies an immutable candidate artifact from the exact `main` revision selected at owner-authorized workflow dispatch;
-2. a PAPER host executes only that verified candidate through an independently pinned qualifier.
+## Portable controller and host driver
 
-The requested candidate SHA must equal the dispatch event's immutable `github.sha` before either self-hosted runner is allocated. That converts a moving branch pointer into an immutable source/artifact identity at admission. Once the candidate artifact exists, later movement of `refs/heads/main` is intentionally irrelevant to that campaign: it cannot change the source SHA, executable digest, harness, profile, Broker account, host or evidence already bound to the qualification subject. A changed bound input requires a new campaign.
+The reviewable controller uses a separately installed digest-pinned host driver with
+the [typed host contract](ib-paper-host-driver.md). The repository no longer leaves
+stage orchestration, failure retention or consistency verification in an opaque
+external program. Credentials and privileged installation stay external.
 
-Candidate code must not inherit Actions credentials, repository write credentials or raw Broker credentials. The qualifier is responsible for Broker login/session custody and for constraining candidate networking to the approved PAPER path.
+The production controller has no synthetic mode. Its tests use in-memory test
+doubles without Broker credentials. A real host driver and account-qualified runtime
+must still be supplied and verified before a genuine Broker campaign can execute.
 
-## Invocation contract
+## Strict v2 evidence
 
-`scripts/run_ib_paper_artifact_qualification.sh` invokes the pinned qualifier from an empty environment except for the explicitly bounded qualification variables. The qualifier receives:
+`verify_ib_paper_rollout.py` requires an independently admitted campaign path. Result
+schema is `heptatrader.ib-paper-rollout-result.v2`; a digest alone is insufficient.
+Three bounded digest-addressed evidence sources are parsed and cross-checked:
 
-- the exact candidate executable and SHA-256;
-- the exact source SHA;
-- the required scenario/operation allowlist;
-- an evidence directory that does not exist before the run;
-- the required result path;
-- `candidate-environment=cleared`;
-- `candidate-network-policy=broker-proxy-only`;
-- `credential-delivery=harness-only`;
-- `mode=bounded-mutations`.
+| Evidence | Contract |
+|---|---|
+| `authoritative-snapshot` | An explicit complete flat before/after barrier for every cycle, matching identity and connection epoch, increasing generation and non-overlapping times. |
+| `oms-journal` | Each stable command has ordered durable intent, send attempt and reconciled outcome, with consistent order identity and LMT/DAY fields. Journal sequence is increasing; timestamps cannot regress. |
+| `broker-callbacks` | Correlated economic fills carry execution IDs and valid quantities/prices, followed by authoritative terminal state. Duplicates must agree exactly. Missing economic proof, unexplained commands, overfills and limit violations reject. |
 
-The harness may not silently expand the operation set, run a different executable, substitute another account/environment, or reuse a stale evidence directory.
+The verifier derives cycle counts and economic flatness from these relationships,
+then checks reported totals. Empty snapshots and merely plausible text cannot pass.
+The same one-unit, USD 5,000, one-active-order and one-unit gross-position P1 bounds
+apply at every stage. Counts are **exactly 1, 3, 10 additional terminal cycles** for
+canary, pilot and extended; reaching extended therefore observes 14 cycles total.
+These are operational sample counts, not statistical reliability or strategy claims.
 
-## Scenario execution semantics
+Every cycle is verified before starting the next. A stage receipt is
+`heptatrader.ib-paper-rollout-verification.v2`, includes start/end time, exact binding,
+evidence digests and result digest, and always declares `authorization_effect=NONE`,
+`paper_authorized=false`, `live_authorized=false`.
 
-Every canonical scenario is an effect-bound experiment, not a text assertion. The harness must induce or observe the actual condition and retain the Broker/runtime evidence required by the scenario contract. Examples include a genuine partial fill, an actual disconnect/reconnect epoch transition, an outcome whose send result is initially uncertain, and process restart followed by journal replay and authoritative reconciliation.
+## Durable continuation and failure evidence
 
-A scenario is not satisfied by emitting its assertion names. The verifier requires evidence files with declared kinds, sizes and digests and binds the result to the exact candidate, source, harness, Broker session and timing envelope.
+`hepta_paper_campaign.py` maintains one private persistent store per binding. It takes
+an exclusive nonblocking lock, records the active attempt before any possible send,
+then verifies evidence and commits completion. Repeating a completed stage reverifies
+its original receipt/bytes and sends nothing. A higher stage requires the contiguous,
+verified earlier stages and chronological terminal boundaries.
 
-## Evidence contract
+A failure or interrupted attempt blocks automatic resubmission. A completion-state
+write failure also retains the fence even if evidence verification succeeded. The
+pre-send running record remains durable if the later diagnostic update itself fails.
+No automatic recovery clears a failed state; real existing-command reconciliation is
+required. Different artifacts or controller bindings cannot reuse that store.
 
-The harness writes `qualification-result.json` only after scenario execution. Evidence is immutable input to the repository verifier and must include the exact evidence kinds required by each scenario. The verifier rejects missing, duplicate, unexpected, oversized, changed or path-escaping evidence.
+Both PAPER wrappers create the final evidence directory **before** launching a
+harness. Exit code, state and identities are synchronized to `campaign-exit.json`.
+Nonzero exit, TERM and even KILL preserve already written evidence. KILL/power loss
+may leave `outcome=running`, which means unresolved, not successful. Private scratch
+HOME is separate and is never packaged as trading evidence. A harness returning zero
+is not a verifier passing and is not trading authorization.
 
-Raw secret values must never appear in evidence. Account and host identity use bounded fingerprints. Broker callbacks, authoritative snapshots, execution events and OMS journal extracts should retain the minimum fields needed to prove the asserted state transition while omitting credentials and session tokens.
+## Optional heavy certification
 
-## Terminal state
+The twelve-scenario V5 campaign remains explicitly selected with `certify`, after the
+same artifact's extended P1 stage. It uses the independently pinned heavy qualifier
+and original [scenario contract](../ib-paper-qualification-scenarios-v1.json); P1
+cannot select its larger limits. A fixed persistent certification evidence destination
+refuses accidental re-execution of an uncertain run. This revision does not claim an
+external V5 harness or a completed twelve-scenario real account campaign.
 
-A qualifying run is incomplete until every possible mutation is resolved and the bounded PAPER account is authoritatively reconciled. Any active/unresolved order, uncertain send, unexplained execution, position divergence, incomplete refresh barrier, unsafe kill-switch state or changed source/artifact/harness identity makes the campaign fail.
+## Operations and tests
 
-The final state must satisfy the profile's flat/terminal requirements. A failed campaign is evidence of failure; it never grants partial authorization.
-
-## Reproducibility and audit
-
-A qualification record must make it possible to answer, without trusting narrative prose:
-
-- exactly which source and executable ran;
-- which qualifier bytes ran;
-- which PAPER profile, account fingerprint and host fingerprint were used;
-- which scenarios executed and in what order;
-- which immutable evidence files prove each scenario;
-- whether any mutation remained uncertain;
-- whether final authoritative reconciliation was complete.
-
-The repository deliberately does not claim that the external harness, credentials, TWS/IB Gateway or PAPER account exist merely because this interface is documented. Their presence and behavior require a real owner-operated campaign.
-
-## Failure semantics
-
-Any mismatch between the reviewable scenario contract and the executable verifier fails source CI. Any mismatch between the pinned harness, candidate identity, operation allowlist, Broker environment, evidence contract or terminal state fails qualification. Missing external infrastructure leaves `paper_authorized=false`; LIVE remains unavailable.
-
-Branch-pointer movement after immutable candidate admission is not a failure condition. It is repository navigation state, not a mutation of the candidate bytes. See [`../adr/0003-immutable-artifact-paper-qualification.md`](../adr/0003-immutable-artifact-paper-qualification.md).
+See [continuous PAPER operations](../operations/paper-continuation.md) for build,
+admission, continuation and failure handling. Maintained tests cover transcript
+correlations, duplicate/conflicting executions, empty/forged evidence, durable failure
+retention, skipped/repeated stages, stale identities, simultaneous processes and
+exact artifact metadata admission. Core CI owns these behavior tests; source workflow
+checks do not substitute for them or for Broker observations.

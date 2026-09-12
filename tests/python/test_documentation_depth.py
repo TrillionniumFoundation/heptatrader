@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
@@ -27,7 +28,7 @@ class DocumentationDepthTests(unittest.TestCase):
         ]
         self.assertEqual(depth_errors, [])
 
-    def test_catalog_shaped_stub_is_rejected(self) -> None:
+    def test_catalog_shaped_stub_emits_editorial_advice(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             path = root / "docs/modules/stub.md"
@@ -58,6 +59,13 @@ class DocumentationDepthTests(unittest.TestCase):
             self.assertTrue(errors)
             self.assertTrue(any("too shallow" in error for error in errors))
             self.assertTrue(any("missing required engineering topics" in error for error in errors))
+
+    def test_editorial_heuristics_cannot_block_valid_source_metadata(self):
+        with patch.object(documentation, '_validate_documentation_depth', side_effect=RuntimeError('heuristic must not run')):
+            # Missing metadata still produces errors; this test establishes that
+            # validate does not invoke the prose heuristic at all.
+            with tempfile.TemporaryDirectory() as root:
+                self.assertTrue(documentation.validate(Path(root)))
 
 
 if __name__ == "__main__":

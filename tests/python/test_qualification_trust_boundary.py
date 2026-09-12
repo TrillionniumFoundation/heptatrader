@@ -1,165 +1,47 @@
 from __future__ import annotations
-
+import copy
 from pathlib import Path
-import shutil
 import sys
 import tempfile
 import unittest
-
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
-
-import check_qualification_trust_boundary as boundary  # noqa: E402
-
-
-class QualificationTrustBoundaryTests(unittest.TestCase):
-    def test_repository_boundary_passes(self) -> None:
-        self.assertEqual(boundary.validate(ROOT), [])
-
-    def test_governance_formalism_is_absent(self) -> None:
-        workflow = (ROOT / boundary.WORKFLOW).read_text(encoding="utf-8")
-        for token in (
-            "pull_number",
-            "CODEOWNERS",
-            "merge_group",
-            "repository-governance",
-            "verify_qualification_candidate.py",
-        ):
-            self.assertNotIn(token, workflow)
-        for relative in boundary.RETIRED:
-            self.assertFalse((ROOT / relative).exists(), relative)
-
-    def test_owner_identity_gates_both_jobs_before_runner_allocation(self) -> None:
-        workflow = (ROOT / boundary.WORKFLOW).read_text(encoding="utf-8")
-        build, qualify = workflow.split("\n  qualify:\n", 1)
-        for block in (build, qualify):
-            condition = block.split("\n    name:", 1)[0]
-            self.assertIn("github.actor == 'ProfHepta'", condition)
-            self.assertIn("github.actor_id == 102159240", condition)
-            self.assertIn("github.triggering_actor == 'ProfHepta'", condition)
-            self.assertLess(condition.index("github.actor"), block.index("runs-on:"))
-            self.assertIn(
-                "Bind dispatch authority to immutable owner identity", block
-            )
-
-    def test_real_paper_campaign_is_environment_gated(self) -> None:
-        workflow = (ROOT / boundary.WORKFLOW).read_text(encoding="utf-8")
-        build, qualify = workflow.split("\n  qualify:\n", 1)
-        self.assertNotIn("\n    environment: ib-paper\n", build)
-        self.assertEqual(qualify.count("\n    environment: ib-paper\n"), 1)
-
-    def test_unauthorized_owner_dispatch_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / boundary.WORKFLOW
-            path.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / boundary.WORKFLOW, path)
-            text = path.read_text(encoding="utf-8")
-            path.write_text(
-                text.replace(
-                    "github.actor == 'ProfHepta'",
-                    "github.actor != 'ProfHepta'",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-            self.assertTrue(
-                any(
-                    "immutable owner dispatch authority" in item
-                    for item in boundary.validate(root)
-                )
-            )
-
-    def test_exact_tree_verification_brackets_build_and_campaign(self) -> None:
-        workflow = (ROOT / boundary.WORKFLOW).read_text(encoding="utf-8")
-        build, qualify = workflow.split("\n  qualify:\n", 1)
-        trusted = (
-            "python3 trusted/scripts/verify_exact_git_index.py --root trusted"
-        )
-        candidate = (
-            "python3 trusted/scripts/verify_exact_git_index.py --root candidate"
-        )
-        self.assertEqual(build.count(candidate), 2)
-        self.assertGreaterEqual(build.count(trusted), 2)
-        self.assertLess(build.index(candidate), build.index("Build content-addressed binary"))
-        self.assertGreater(
-            build.rindex(candidate), build.index("Build content-addressed binary")
-        )
-        self.assertGreaterEqual(qualify.count(trusted), 2)
-        self.assertLess(
-            qualify.index(trusted),
-            qualify.index("Run controlled PAPER campaign"),
-        )
-        self.assertGreater(
-            qualify.rindex(trusted),
-            qualify.index("Run controlled PAPER campaign"),
-        )
-
-    def test_non_dispatch_candidate_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / boundary.WORKFLOW
-            path.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / boundary.WORKFLOW, path)
-            text = path.read_text(encoding="utf-8")
-            path.write_text(
-                text.replace(
-                    "inputs.candidate_sha == github.sha",
-                    "inputs.candidate_sha != github.sha",
-                    1,
-                ),
-                encoding="utf-8",
-            )
-            self.assertTrue(
-                any(
-                    "exact dispatch-main candidate" in item
-                    for item in boundary.validate(root)
-                )
-            )
-
-    def test_mutable_main_rechecks_are_forbidden_after_artifact_creation(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            path = root / boundary.WORKFLOW
-            path.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / boundary.WORKFLOW, path)
-            text = path.read_text(encoding="utf-8")
-            marker = "      - name: Reverify immutable trusted harness after Broker campaign\n"
-            path.write_text(
-                text.replace(
-                    marker,
-                    "      - name: Obsolete mutable-main proof\n"
-                    "        run: git ls-remote --exit-code "
-                    "https://github.com/example/example refs/heads/main\n\n"
-                    + marker,
-                    1,
-                ),
-                encoding="utf-8",
-            )
-            self.assertTrue(
-                any(
-                    "must not depend on mutable main" in item
-                    for item in boundary.validate(root)
-                )
-            )
-
-    def test_builder_and_paper_runners_are_distinct(self) -> None:
-        workflow = (ROOT / boundary.WORKFLOW).read_text(encoding="utf-8")
-        build, qualify = workflow.split("\n  qualify:\n", 1)
-        self.assertIn(
-            "labels: [self-hosted, linux, x64, heptatrader-ib-builder]", build
-        )
-        self.assertNotIn(
-            "labels: [self-hosted, linux, x64, heptatrader-ib-paper]", build
-        )
-        self.assertIn(
-            "labels: [self-hosted, linux, x64, heptatrader-ib-paper]", qualify
-        )
-        self.assertNotIn(
-            "labels: [self-hosted, linux, x64, heptatrader-ib-builder]", qualify
-        )
-        self.assertNotIn("secrets.", build)
+import yaml
+ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts'))
+from ci_workflow_contract import load_workflow
+import check_qualification_trust_boundary as contract
 
 
-if __name__ == "__main__":
-    unittest.main()
+class QualificationBoundaryTests(unittest.TestCase):
+    def mutate(self,mutation):
+        value=load_workflow(ROOT/contract.WORKFLOW);mutation(value)
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);path=root/contract.WORKFLOW;path.parent.mkdir(parents=True)
+            path.write_text(yaml.safe_dump(value,sort_keys=False));return contract.validate(root)
+    def test_repository_executable_contract(self):self.assertEqual(contract.validate(),[])
+    def test_untrusted_actor_or_branch_cannot_allocate_host(self):
+        for name in ('build-candidate','resolve-artifact','campaign'):
+            with self.subTest(name=name):self.assertTrue(self.mutate(lambda w:w['jobs'][name].update({'if':'true'})))
+    def test_build_not_a_mutation_environment(self):self.assertTrue(self.mutate(lambda w:w['jobs']['build-candidate'].update(environment='ib-paper')))
+    def test_campaign_needs_environment_and_exact_artifact_admission(self):
+        for field in ('environment','needs'):
+            with self.subTest(field=field):self.assertTrue(self.mutate(lambda w:w['jobs']['campaign'].pop(field)))
+    def test_fake_comment_does_not_supply_host_execution(self):
+        def mutate(w):
+            for step in w['jobs']['campaign']['steps']:
+                if 'hepta_paper_rollout_host.py' in step.get('run',''):step['run']='# '+step['run'].replace('\n','\n# ')
+        self.assertTrue(self.mutate(mutate))
+    def test_step_failure_cannot_be_suppressed(self):self.assertTrue(self.mutate(lambda w:w['jobs']['campaign']['steps'][2].update({'continue-on-error':True})))
+    def test_mutation_step_cannot_skip_preflight(self):self.assertTrue(self.mutate(lambda w:w['jobs']['campaign']['steps'][3].update({'if':'false'})))
+    def test_success_only_upload_is_rejected(self):
+        def mutate(w):
+            for step in w['jobs']['campaign']['steps']:
+                if str(step.get('uses','')).startswith('actions/upload-artifact@'):step.pop('if')
+        self.assertTrue(self.mutate(mutate))
+    def test_download_is_not_tied_to_current_run_attempt(self):
+        def mutate(w):
+            for step in w['jobs']['campaign']['steps']:
+                if str(step.get('uses','')).startswith('actions/download-artifact@'):step['with']['artifact-ids']='${{ github.run_attempt }}'
+        self.assertTrue(self.mutate(mutate))
+    def test_actions_are_digest_pinned(self):self.assertTrue(self.mutate(lambda w:w['jobs']['campaign']['steps'][0].update(uses='actions/checkout@main')))
+
+if __name__=='__main__':unittest.main()

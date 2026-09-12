@@ -174,7 +174,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
         )
     modules = _core._validate_catalog(root, errors)
     _core._validate_capabilities(root, modules, errors)
-    _validate_documentation_depth(root, modules, errors)
     _core._validate_links(root, _markdown_files(root, modules), errors)
     return errors
 
@@ -184,6 +183,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     args = parser.parse_args(argv)
     errors = validate(args.root)
+    # Prose length/topic heuristics are editorial hints, never safety gates.
+    warnings: list[str] = []
+    modules = _core._validate_catalog(Path(args.root), [])
+    _validate_documentation_depth(Path(args.root), modules, warnings)
+    for warning in warnings:
+        print(f"[DOCUMENTATION ADVISORY] {warning}", file=sys.stderr)
     for error in errors:
         print(f"[DOCUMENTATION] {error}", file=sys.stderr)
     if errors:

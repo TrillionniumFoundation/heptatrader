@@ -80,12 +80,14 @@
         "HeptaTrade/oms_journal.h",
         "HeptaTrade/oms_recover.cpp",
         "HeptaTrade/oms_recover.h",
-        "scripts/verify_oms_journal_replay.py"
+        "scripts/verify_oms_journal_replay.py",
+        "scripts/hepta_runtime_diagnostics.py"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
         "tests/oms_journal_schema_v4_tests.cpp",
-        "tests/execution_coordinator_tests.cpp"
+        "tests/execution_coordinator_tests.cpp",
+        "tests/python/test_runtime_diagnostics.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -149,6 +151,8 @@
         ".github/workflows/self-hosted-ib-availability.yml",
         "scripts/build_ib_candidate_artifact.sh",
         "scripts/verify_ib_candidate_artifact.py",
+        "scripts/run_ib_paper_artifact_rollout.sh",
+        "scripts/verify_ib_paper_rollout.py",
         "scripts/run_ib_paper_artifact_qualification.sh",
         "scripts/verify_ib_paper_qualification.py",
         "scripts/check_qualification_trust_boundary.py",
@@ -157,8 +161,15 @@
         "systemd/hepta-broker-network-policy-v1.json",
         "systemd/hepta-x230-paper-host-identity-map-v1.json",
         "docs/ib-paper-profile-policy-v1.json",
+        "docs/ib-paper-rollout-policy-v1.json",
         "scripts/verify_canonical_ib_paper_profile.py",
-        "scripts/ib_obs_latency_stats.py"
+        "scripts/ib_obs_latency_stats.py",
+        "scripts/hepta_campaign_evidence.sh",
+        "scripts/hepta_evidence_io.py",
+        "scripts/hepta_ib_paper_harness.py",
+        "scripts/hepta_paper_campaign.py",
+        "scripts/hepta_paper_rollout_host.py",
+        "scripts/resolve_ib_artifact.py"
       ],
       "tests": [
         "tests/ib_order_lifecycle_tests.cpp",
@@ -167,12 +178,15 @@
         "tests/ib_live_terminal_reconciliation_tests.cpp",
         "tests/execution_coordinator_tests.cpp",
         "tests/python/test_canonical_ib_paper_profile.py",
+        "tests/python/test_ib_paper_rollout.py",
         "tests/python/test_ib_paper_qualification.py",
         "tests/python/test_qualification_trust_boundary.py",
         "tests/python/test_ib_workflow_interfaces.py",
         "tests/python/test_hepta_broker_egress_policy.py",
         "tests/python/test_self_hosted_ib_availability.py",
-        "tests/python/test_hepta_broker_egress_policy_atomic.py"
+        "tests/python/test_hepta_broker_egress_policy_atomic.py",
+        "tests/python/test_campaign_evidence_retention.py",
+        "tests/python/test_paper_campaign.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
@@ -224,7 +238,8 @@
         "scripts/validate_hepta_strategy_decision_receipt.py"
       ],
       "tests": [
-        "tests/python/test_research_contract_smoke.py"
+        "tests/python/test_research_contract_smoke.py",
+        "tests/python/test_research_behavior.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -291,13 +306,17 @@
         "scripts/dev_core.sh",
         "scripts/verify_build_ownership.py",
         "scripts/verify_exact_git_index.py",
-        "scripts/verify_source_gap_closures.py"
+        "scripts/verify_source_gap_closures.py",
+        "scripts/ci_workflow_contract.py",
+        "scripts/run_runtime_resilience.sh",
+        "scripts/requirements-ci.txt"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
         "tests/python/test_documentation_control_plane.py",
         "tests/python/test_gap_register.py",
-        "tests/python/test_qualification_trust_boundary.py"
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_gateway_symbol_boundary.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

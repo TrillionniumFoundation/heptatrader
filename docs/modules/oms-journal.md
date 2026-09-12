@@ -1,8 +1,8 @@
 # OMS journal and recovery
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_recover.cpp`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_recover.cpp`
 Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`
 
 ## Responsibilities
@@ -60,3 +60,12 @@ Expose append latency, fsync latency, file size, replay duration, records read, 
 ## Test expectations
 
 Tests inject path replacement and I/O failure, verify synchronous critical durability, callback-atomic replay, same-command replay, conflicting-command rejection, malformed records, restart recovery, and complete v4 broker-field round trips. New schema fields require both old-fixture and current-writer tests.
+
+## Bounded long-running diagnostics
+
+`scripts/hepta_runtime_diagnostics.py` reads a bounded prefix from a no-follow,
+regular single-link journal descriptor, reports byte/free-space budgets, schema
+and event counts, invalid/trailing records and scan time, without changing files.
+A changing or truncated scan is explicitly incomplete. It never claims unresolved
+orders are absent or that authoritative reconciliation is complete. The command
+is a source-side diagnostic utility, not a new installed order authority.

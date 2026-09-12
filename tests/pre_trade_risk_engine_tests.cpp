@@ -190,8 +190,8 @@ void TestNotionalEvidence() {
         }, "RISK_SNAPSHOT_EVALUATION_TIME_MISMATCH"},
         {"legacy scalar cannot bypass binding", [](PreTradeRiskContext& c) {
             c.orderNotionalEvidence.present = false;
-            c.baseCurrencyOrderNotionalPresent = true;
-            c.baseCurrencyOrderNotional = 0.01;
+
+
         }, "RISK_ORDER_NOTIONAL_UNAVAILABLE"},
         {"converted account mismatch", [](PreTradeRiskContext& c) {
             c.orderNotionalEvidence.subject.account = "other";
@@ -414,8 +414,8 @@ int main() {
         cfg.maxWorstCaseGrossNotional = 1000.0;
         cfg.maxSnapshotAgeMs = 1000;
         PreTradeRiskContext ctx = BaseContext();
-        ctx.baseCurrencyOrderNotionalPresent = true;
-        ctx.baseCurrencyOrderNotional = 100.0;
+
+
         BindZeroSnapshot(ctx);
         ctx.authoritativeSnapshot.exposure.currentGrossNotional = 400.0;
         ctx.authoritativeSnapshot.exposure.pendingBuyNotional = 250.0;
@@ -534,10 +534,10 @@ int main() {
         PreTradeRiskConfig cfg = BaseConfig();
         cfg.maxWorstCaseGrossNotional = 1000.0;
         PreTradeRiskContext ctx = BaseContext();
-        ctx.snapshotComplete = true;
-        ctx.currentGrossNotional = 0.0;
-        ctx.pendingBuyNotional = 0.0;
-        ctx.pendingSellNotional = 0.0;
+
+
+
+
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
                     "RISK_SNAPSHOT_FRESHNESS_POLICY_REQUIRED",
                 "portfolio policy without freshness policy must fail");
@@ -605,6 +605,80 @@ int main() {
         const PreTradeRiskDecision d = PreTradeRiskEngine::Evaluate(cfg, ctx);
         Require(d.allow,
                 "explicit authoritative zero exposure, zero PnL and zero equity must pass");
+    }
+    {
+        // Mixed native units are valued independently in account currency. A
+        // short option contributes gross premium notional, never negative risk.
+        PreTradeRiskContext seed = BaseContext();
+        seed.authorizedSubject.instruments = {"EUR.USD", "STOCK.EUR", "FUT.202612", "OPT.202612.C.100"};
+        std::vector<PreTradeRiskPortfolioAsset> assets;
+        for (const auto& name : seed.authorizedSubject.instruments) {
+            PreTradeRiskPortfolioAsset asset;
+            asset.unitMark = seed;
+            auto& c = asset.unitMark;
+            c.symbol = name; c.orderType = "MKT"; c.totalQuantity = 1;
+            c.instrumentContract.instrument = name;
+            c.instrumentContract.specificationId = name+"-v1";
+            c.referencePrice = 100; asset.signedQuantity = 10;
+            if (name == "STOCK.EUR") {
+                c.instrumentContract.kind = PreTradeRiskInstrumentKind::Stock;
+                c.instrumentContract.quantityUnit = PreTradeRiskQuantityUnit::Shares;
+                c.instrumentContract.quoteCurrency = "EUR";
+                c.referencePrice = 50; asset.signedQuantity = 3;
+            } else if (name == "FUT.202612") {
+                c.instrumentContract.kind = PreTradeRiskInstrumentKind::Future;
+                c.instrumentContract.quantityUnit = PreTradeRiskQuantityUnit::Contracts;
+                c.instrumentContract.multiplier = 50;
+                c.referencePrice = 200; asset.signedQuantity = 2;
+            } else if (name == "OPT.202612.C.100") {
+                c.instrumentContract.kind = PreTradeRiskInstrumentKind::Option;
+                c.instrumentContract.quantityUnit = PreTradeRiskQuantityUnit::Contracts;
+                c.instrumentContract.multiplier = 100;
+                c.referencePrice = 3; asset.signedQuantity = -4;
+            }
+            c.limitPrice = c.referencePrice;
+            BindZeroSnapshot(c);
+            c.orderNotionalEvidence.fx.rate = name == "STOCK.EUR" ? 1.1 : 1.0;
+            c.orderNotionalEvidence.baseCurrencyNotional = c.referencePrice*c.instrumentContract.multiplier*c.orderNotionalEvidence.fx.rate;
+            assets.push_back(asset);
+        }
+        const auto identity = assets[0].unitMark.authoritativeSnapshot.identity;
+        std::vector<PreTradeRiskPendingOrder> pending;
+        for (const auto& asset : assets) {
+            if (asset.unitMark.symbol == "FUT.202612" || asset.unitMark.symbol == "STOCK.EUR") {
+                PreTradeRiskPendingOrder order;
+                order.orderId = asset.unitMark.symbol+"-pending";
+                order.valuation = asset.unitMark;
+                auto& c = order.valuation;
+                c.orderType = "LMT";
+                c.action = c.symbol == "FUT.202612" ? "BUY" : "SELL";
+                c.totalQuantity = c.symbol == "FUT.202612" ? 1 : 2;
+                c.limitPrice = c.symbol == "FUT.202612" ? 220 : 50;
+                c.orderNotionalEvidence.quantity = c.totalQuantity;
+                c.orderNotionalEvidence.baseCurrencyNotional = c.totalQuantity*c.limitPrice*c.instrumentContract.multiplier*c.orderNotionalEvidence.fx.rate;
+                pending.push_back(order);
+            }
+        }
+        const auto assemble = [&]() {return PreTradeRiskEngine::AssemblePortfolioExposure(identity,assets,pending,true,true,5000,1000);};
+        auto result = assemble();
+        Require(result.complete, "mixed-asset assembly must validate bound marks");
+        Require(std::fabs(result.exposure.currentGrossNotional-22365) < 1e-8, "gross must use multiplier and FX conversion");
+        Require(result.exposure.pendingBuyNotional == 11000 && std::fabs(result.exposure.pendingSellNotional-110) < 1e-8,
+                "pending limit orders must retain conservative converted exposure");
+        auto saved = assets;
+        assets.pop_back(); result=assemble();
+        Require(!result.complete && !result.exposure.present, "missing even a zero asset invalidates entire portfolio");
+        assets=saved; assets[0].unitMark.orderNotionalEvidence.fx.generation++;
+        Require(!assemble().complete, "mixed generation must not aggregate");
+        assets=saved; assets[0].unitMark.authorizedSubject.account="OTHER";
+        Require(!assemble().complete, "cross-account marks must not aggregate");
+        assets=saved; pending.push_back(pending.front());
+        Require(!assemble().complete, "duplicate order must not be counted or accepted");
+        pending.pop_back();assets[0].signedQuantity=std::numeric_limits<double>::max();
+        Require(!assemble().complete, "overflow must not publish partial exposure");
+        assets=saved;
+        Require(!PreTradeRiskEngine::AssemblePortfolioExposure(identity,assets,pending,true,false,5000,1000).complete,
+                "incomplete order barrier must not mean no pending orders");
     }
     std::cout << "pre_trade_risk_engine_tests: PASS" << std::endl;
     return 0;

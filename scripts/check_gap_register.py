@@ -147,64 +147,6 @@ REQUIRED_BEHAVIOR_EVIDENCE: dict[str, set[str]] = {
 # existence alone. These deliberately avoid CI-layout tokens: the runtime/core
 # tests execute the behavior, while this list prevents the source contract from
 # silently losing the mechanism those tests are meant to exercise.
-REQUIRED_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
-    "HeptaTrade/execution/ib_paper_execution_profile.cpp": (
-        "maxOrderQuantity != maxGrossPosition",
-        "IB_PAPER_QUALIFICATION_ORDER_MODE_LIMITS_INVALID",
-    ),
-    "HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp": (
-        "m_config.maxOrderQuantity",
-        "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED",
-        "ExactReduceOnlyQuantity",
-    ),
-    "HeptaTrade/execution/ib_paper_authoritative_flatten.cpp": (
-        "config.maxOrderQuantity",
-        "PopulateNonzeroFlattenOrder",
-        "plan.order.totalQuantity = std::fabs(position.quantity);",
-    ),
-    "tests/ib_paper_execution_profile_tests.cpp": (
-        "TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath",
-        "IB_PAPER_MAX_GROSS_POSITION_EXCEEDED",
-        "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED",
-    ),
-    "tests/execution_coordinator_tests.cpp": (
-        "TestQualificationExternalFlattenIsExactAndAbsolutelyBounded",
-    ),
-    "scripts/hepta_preflight_core.py": (
-        "CANONICAL_IB_PAPER_KILL_SWITCH_PATH",
-        "/run/hepta/ib-paper-control/kill-switch",
-        'CANONICAL_IB_PAPER_KILL_SWITCH_CONTENT = b"engaged"',
-        "def _safe_kill_switch(",
-    ),
-    "scripts/hepta_broker_egress_policy.py": (
-        "CANONICAL_POLICY_SHA256",
-        "5eddd44a588ac3269804cb62adb19c3879febce8569df30ab86886028e969e6b",
-        "def _open_policy_parent(",
-        "def _read_bounded_policy(",
-        "policy identity changed while being read",
-        "policy parent or final path changed during read",
-        "_apply(nft, COMPILED_POLICY, deny_all=True)",
-        "APPLY_ATTEMPTS = 3",
-        "def _run_nft_query(",
-        "def _table_exists(",
-        "def _verify_table(",
-    ),
-    "tests/python/test_hepta_broker_egress_policy_atomic.py": (
-        "test_table_presence_uses_json_inventory_not_diagnostics",
-        "test_localized_failure_reprobes_and_replaces",
-        "test_present_to_absent_race_is_retried_without_text_matching",
-        "test_command_failure_is_accepted_only_after_exact_readback",
-        "test_unverified_state_fails_after_bounded_attempts",
-        "test_structural_readback_accepts_exact_allow_and_deny",
-        "test_structural_readback_rejects_extra_permissive_rule",
-        "test_double_apply_failure_reports_unverified_fallback",
-    ),
-}
-FORBIDDEN_BEHAVIOR_TOKENS: dict[str, tuple[str, ...]] = {
-    "scripts/hepta_broker_egress_policy.py": ("File exists",),
-}
-
-
 class GapRegisterError(ValueError):
     pass
 
@@ -262,77 +204,12 @@ def canonical_evidence(root: Path, value: Any, label: str) -> str:
     return relative.as_posix()
 
 
-def _require_workflow_role(
-    root: Path,
-    relative: str,
-    required: tuple[str, ...],
-    forbidden: tuple[str, ...] = (),
-) -> None:
-    text = read_text(root / relative)
-    missing = [token for token in required if token not in text]
-    if missing:
-        raise GapRegisterError(
-            f"{relative}: missing role-bearing commands: "
-            + ", ".join(repr(token) for token in missing)
-        )
-    leaked = [token for token in forbidden if token in text]
-    if leaked:
-        raise GapRegisterError(
-            f"{relative}: duplicates commands owned by another CI role: "
-            + ", ".join(repr(token) for token in leaked)
-        )
-
-
 def validate_ci_roles(root: Path) -> None:
-    """Require one owner per CI evidence family and keep legacy shims inert."""
-    full_python = "python3 -m unittest discover -s tests/python -p 'test_*.py'"
-    dev_core = "./scripts/dev_core.sh"
-    release_smoke = "scripts/run_release_simulator_smoke.py"
-    package = "scripts/build_release_package.py"
-    source_truth = (
-        "scripts/check_documentation.py",
-        "scripts/check_component_coverage.py",
-        "scripts/verify_build_ownership.py",
-        "scripts/check_gap_register.py",
-    )
-    behavior_owned = (dev_core, full_python, package, release_smoke)
-
-    _require_workflow_role(
-        root,
-        ".github/workflows/core-ci.yml",
-        (dev_core, full_python, package, "scripts/hepta_preflight.py", release_smoke),
-    )
-    _require_workflow_role(
-        root,
-        ".github/workflows/documentation-control-plane.yml",
-        source_truth,
-        forbidden=behavior_owned,
-    )
-    _require_workflow_role(
-        root,
-        ".github/workflows/canonical-full-suite.yml",
-        (
-            "compatibility-only context",
-            "cmake --build build/reliability-gcc --target hepta_core_test_binaries",
-            "ctest --test-dir build/reliability-gcc --output-on-failure -L core",
-            "cmake --build build/reliability-clang --target hepta_core_test_binaries",
-            "ctest --test-dir build/reliability-clang --output-on-failure -L core",
-        ),
-        forbidden=behavior_owned + source_truth,
-    )
-    _require_workflow_role(
-        root,
-        ".github/workflows/merge-candidate.yml",
-        ("compatibility-only context",),
-        forbidden=(
-            *behavior_owned,
-            *source_truth,
-            "actions/checkout@",
-            "apt-get",
-            "cmake ",
-            "ctest ",
-        ),
-    )
+    """Require real, failure-propagating jobs; never accept comment anchors."""
+    from ci_workflow_contract import validate as validate_workflows
+    errors = validate_workflows(root)
+    if errors:
+        raise GapRegisterError("; ".join(errors))
 
 
 def validate_behavior_evidence(root: Path, observed: dict[str, dict[str, Any]]) -> None:
@@ -343,24 +220,6 @@ def validate_behavior_evidence(root: Path, observed: dict[str, dict[str, Any]]) 
         if missing:
             raise GapRegisterError(
                 f"{gap_id}: missing required behavior evidence: " + ", ".join(missing)
-            )
-
-    for relative, tokens in REQUIRED_BEHAVIOR_TOKENS.items():
-        text = read_text(root / relative)
-        missing = [token for token in tokens if token not in text]
-        if missing:
-            raise GapRegisterError(
-                f"behavior evidence {relative}: missing contract tokens: "
-                + ", ".join(repr(token) for token in missing)
-            )
-
-    for relative, tokens in FORBIDDEN_BEHAVIOR_TOKENS.items():
-        text = read_text(root / relative)
-        present = [token for token in tokens if token in text]
-        if present:
-            raise GapRegisterError(
-                f"behavior evidence {relative}: forbidden diagnostic protocol tokens: "
-                + ", ".join(repr(token) for token in present)
             )
 
     inventory = load_json(root / "docs/build-targets.json")

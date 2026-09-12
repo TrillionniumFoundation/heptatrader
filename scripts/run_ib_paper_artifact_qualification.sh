@@ -8,8 +8,10 @@ usage() {
 }
 [[ $# -eq 3 ]] || usage
 
+TRUSTED_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ARTIFACT_INPUT="$1"
 EXPECTED_SHA="$2"
+[[ ! -L "$3" ]] || exit 73
 EVIDENCE_DIR="$(realpath -m -- "$3")"
 QUALIFIER_INPUT="${HEPTA_IB_PAPER_QUALIFIER:-}"
 EXPECTED_QUALIFIER_SHA="${HEPTA_IB_PAPER_QUALIFIER_SHA256:-}"
@@ -69,19 +71,11 @@ if value.get("isolation") != expected_isolation:
     raise SystemExit("candidate build isolation claim mismatch")
 PY
 
-[[ ! -e "$EVIDENCE_DIR" && ! -L "$EVIDENCE_DIR" ]] || exit 73
-PARENT="$(dirname -- "$EVIDENCE_DIR")"
-mkdir -p -- "$PARENT"
-PARENT="$(realpath -e -- "$PARENT")"
-WORK_DIR="$(mktemp -d --tmpdir="$PARENT" .hepta-ib-paper-campaign.XXXXXX)"
-chmod 0700 "$WORK_DIR"
-cleanup() { [[ -n "${WORK_DIR:-}" && -d "$WORK_DIR" ]] && rm -rf -- "$WORK_DIR"; }
-trap cleanup EXIT INT TERM HUP
+source "$TRUSTED_ROOT/scripts/hepta_campaign_evidence.sh"
+campaign_evidence_init
 
 RESULT_PATH="$WORK_DIR/qualification-result.json"
 REQUIRED_SCENARIOS="connect_authoritative_snapshot,disconnect_reconnect,partial_fill,duplicate_out_of_order_status,broker_reject,stale_quote,outcome_uncertain,cancel_race,reconcile_divergence,lease_fencing,kill_switch,terminal_recovery"
-HARNESS_HOME="$WORK_DIR/harness-home"
-mkdir -m 0700 "$HARNESS_HOME"
 
 # Only the independently pinned external harness may launch the candidate.
 # It starts from an empty environment. Raw Actions, runner, GitHub and Broker
@@ -116,9 +110,4 @@ env -i \
   echo "external PAPER harness did not produce qualification-result.json" >&2
   exit 70
 }
-rmdir "$HARNESS_HOME" 2>/dev/null || true
-chmod 0700 "$WORK_DIR"
-mv -T -- "$WORK_DIR" "$EVIDENCE_DIR"
-WORK_DIR=""
-trap - EXIT INT TERM HUP
-printf 'IB PAPER broker campaign evidence committed for post-campaign admission: %s\n' "$EVIDENCE_DIR"
+# EXIT records the actual outcome; verifier success remains a separate fact.

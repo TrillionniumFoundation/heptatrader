@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <set>
 #include <string>
+#include <vector>
 
 struct PreTradeRiskConfig {
     bool enableOrderSubmission = false;
@@ -132,24 +133,6 @@ struct PreTradeRiskOrderNotionalEvidence {
     PreTradeRiskFxEvidence fx;
 };
 
-// Transitional compatibility members are write-only at the type level. Legacy
-// callers/tests may still populate them, but no canonical implementation can
-// consume them as bool/double/integer evidence through aliases, pointers,
-// templates or pointer-to-member indirection. The sink deliberately stores no
-// value and exposes no conversion or getter. It remains C++11-compatible with
-// the canonical runtime. Remove the wrapper and named members once old writers
-// are migrated.
-template <typename T>
-struct PreTradeRiskLegacyWriteOnly {
-    PreTradeRiskLegacyWriteOnly() noexcept {}
-    PreTradeRiskLegacyWriteOnly(T) noexcept {}
-    PreTradeRiskLegacyWriteOnly& operator=(T) noexcept {
-        return *this;
-    }
-    PreTradeRiskLegacyWriteOnly(const PreTradeRiskLegacyWriteOnly&) = default;
-    PreTradeRiskLegacyWriteOnly& operator=(const PreTradeRiskLegacyWriteOnly&) = default;
-};
-
 struct PreTradeRiskContext {
     std::string venue;      // IB / CTP / ...
     std::string account;
@@ -177,29 +160,26 @@ struct PreTradeRiskContext {
 
     PreTradeRiskOrderNotionalEvidence orderNotionalEvidence;
 
-    // Legacy unbound names retain write compatibility only. They can never be
-    // converted back to risk evidence; use orderNotionalEvidence.
-    PreTradeRiskLegacyWriteOnly<bool> baseCurrencyOrderNotionalPresent{};
-    PreTradeRiskLegacyWriteOnly<double> baseCurrencyOrderNotional{};
-
     PreTradeRiskAuthoritativeSnapshot authoritativeSnapshot;
-
-    // Compatibility-only writers are retained for historical callers/tests.
-    // Reading these wrappers as scalar evidence is a compile-time error. New
-    // code must use authoritativeSnapshot and its bound section identities.
-    PreTradeRiskLegacyWriteOnly<bool> snapshotComplete{};
-    PreTradeRiskLegacyWriteOnly<std::int64_t> snapshotObservedAtMs{};
-    PreTradeRiskLegacyWriteOnly<std::int64_t> nowMs{};
-    PreTradeRiskLegacyWriteOnly<double> currentGrossNotional{};
-    PreTradeRiskLegacyWriteOnly<double> pendingBuyNotional{};
-    PreTradeRiskLegacyWriteOnly<double> pendingSellNotional{};
-    PreTradeRiskLegacyWriteOnly<double> realizedPnl{};
-    PreTradeRiskLegacyWriteOnly<double> unrealizedPnl{};
-    PreTradeRiskLegacyWriteOnly<double> peakEquity{};
-    PreTradeRiskLegacyWriteOnly<double> currentEquity{};
 
     // adapter extension points (for CTP etc.)
     std::string adapterTag;
+};
+
+// Execution-owned refresh inputs. Every authorized instrument must appear,
+// including an explicit zero holding; all live orders appear once by stable id.
+struct PreTradeRiskPortfolioAsset {
+    double signedQuantity = 0.0;
+    PreTradeRiskContext unitMark; // MKT valuation of exactly one native unit
+};
+struct PreTradeRiskPendingOrder {
+    std::string orderId;
+    PreTradeRiskContext valuation; // remaining quantity and conservative limit mark
+};
+struct PreTradeRiskPortfolioAssembly {
+    bool complete = false;
+    std::string reasonCode;
+    PreTradeRiskExposureSnapshot exposure;
 };
 
 struct PreTradeRiskDecision {
@@ -216,6 +196,14 @@ class PreTradeRiskEngine {
 public:
     static PreTradeRiskDecision Evaluate(const PreTradeRiskConfig& cfg,
                                          const PreTradeRiskContext& ctx);
+
+    // Pure data assembly: never sends an order or changes a venue capability.
+    static PreTradeRiskPortfolioAssembly AssemblePortfolioExposure(
+        const PreTradeRiskSnapshotIdentity& identity,
+        const std::vector<PreTradeRiskPortfolioAsset>& assets,
+        const std::vector<PreTradeRiskPendingOrder>& pending,
+        bool positionsComplete, bool ordersComplete,
+        std::int64_t evaluatedAtMs, std::int64_t maxAgeMs);
 
 private:
     static bool IsFlatteningOrder(const PreTradeRiskContext& ctx);

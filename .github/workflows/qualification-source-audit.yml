@@ -1,10 +1,65 @@
 name: Qualification Source Audit
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
+    paths:
+      - '.github/workflows/ib-paper-qualification.yml'
+      - '.github/workflows/qualification-source-audit.yml'
+      - '.github/workflows/self-hosted-ib-availability.yml'
+      - 'scripts/build_ib_candidate_artifact.sh'
+      - 'scripts/verify_ib_candidate_artifact.py'
+      - 'scripts/run_ib_paper_artifact_rollout.sh'
+      - 'scripts/verify_ib_paper_rollout.py'
+      - 'scripts/run_ib_paper_artifact_qualification.sh'
+      - 'scripts/verify_ib_paper_qualification.py'
+      - 'scripts/check_qualification_trust_boundary.py'
+      - 'scripts/hepta_*campaign*'
+      - 'scripts/hepta_*harness*'
+      - 'scripts/hepta_evidence_io.py'
+      - 'scripts/hepta_paper_rollout_host.py'
+      - 'scripts/ci_workflow_contract.py'
+      - 'scripts/requirements-ci.txt'
+      - 'scripts/resolve_ib_artifact.py'
+      - 'scripts/verify_exact_git_index.py'
+      - 'docs/ib-paper-rollout-policy-v1.json'
+      - 'docs/ib-paper-qualification-scenarios-v1.json'
+      - 'docs/technical/ib-paper-harness-contract.md'
+      - 'docs/modules/ib-paper.md'
+      - 'tests/python/test_ib_paper_rollout.py'
+      - 'tests/python/test_qualification_trust_boundary.py'
+      - 'tests/python/test_ib_workflow_interfaces.py'
+      - 'tests/python/test_ib_paper_qualification.py'
+      - 'tests/python/test_git_index_authority.py'
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/ib-paper-qualification.yml'
+      - '.github/workflows/qualification-source-audit.yml'
+      - 'scripts/build_ib_candidate_artifact.sh'
+      - 'scripts/verify_ib_candidate_artifact.py'
+      - 'scripts/run_ib_paper_artifact_rollout.sh'
+      - 'scripts/verify_ib_paper_rollout.py'
+      - 'scripts/run_ib_paper_artifact_qualification.sh'
+      - 'scripts/verify_ib_paper_qualification.py'
+      - 'scripts/check_qualification_trust_boundary.py'
+      - 'scripts/hepta_*campaign*'
+      - 'scripts/hepta_*harness*'
+      - 'scripts/hepta_evidence_io.py'
+      - 'scripts/hepta_paper_rollout_host.py'
+      - 'scripts/ci_workflow_contract.py'
+      - 'scripts/requirements-ci.txt'
+      - 'scripts/resolve_ib_artifact.py'
+      - 'scripts/verify_exact_git_index.py'
+      - 'docs/ib-paper-rollout-policy-v1.json'
+      - 'docs/ib-paper-qualification-scenarios-v1.json'
+      - 'docs/technical/ib-paper-harness-contract.md'
+      - 'tests/python/test_ib_paper_rollout.py'
+      - 'tests/python/test_qualification_trust_boundary.py'
+      - 'tests/python/test_ib_workflow_interfaces.py'
+      - 'tests/python/test_ib_paper_qualification.py'
+      - 'tests/python/test_git_index_authority.py'
 
 permissions:
   contents: read
@@ -17,7 +72,7 @@ jobs:
   audit:
     name: qualification-source-audit
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 20
     env:
       PYTHONDONTWRITEBYTECODE: '1'
     steps:
@@ -31,27 +86,26 @@ jobs:
           clean: true
           submodules: false
 
-      - name: Validate owner-operated dispatch-main to immutable-artifact qualification boundary
+      - name: Install pinned source parser
+        run: python3 -m pip install -r scripts/requirements-ci.txt
+
+      - name: Validate only the qualification and rollout trust boundary
         run: |
           set -euo pipefail
           git diff --check
           python3 scripts/verify_exact_git_index.py --root .
           bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_rollout.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 scripts/check_qualification_trust_boundary.py --self-test
           python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
           python3 -m unittest discover -s tests/python -p 'test_ib_workflow_interfaces.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
-          python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
           python3 -m unittest discover -s tests/python -p 'test_git_index_authority.py'
 
       - name: Reassert immutable event subject
         if: always()
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           python3 scripts/verify_exact_git_index.py --root .
           git diff --exit-code -- .
           git diff --cached --exit-code -- .

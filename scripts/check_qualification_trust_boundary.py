@@ -1,238 +1,80 @@
 #!/usr/bin/env python3
-# Validate the owner-operated dispatch-main -> immutable-artifact IB PAPER boundary.
+"""Check executable workflow structure; comments and display names are not proof."""
 from __future__ import annotations
-
 import argparse
 from pathlib import Path
 import re
-import shutil
 import sys
-import tempfile
+from ci_workflow_contract import load_workflow
 
-ROOT = Path(__file__).resolve().parents[1]
-WORKFLOW = Path(".github/workflows/ib-paper-qualification.yml")
-RETIRED = (
-    Path(".github/CODEOWNERS"),
-    Path(".github/github-governance-policy-v1.json"),
-    Path(".github/github-team-mapping-v1.json"),
-    Path(".github/workflows/github-governance-qualification.yml"),
-    Path(".github/workflows/governance-bootstrap-admission.yml"),
-    Path("scripts/github_qualification_evidence.py"),
-    Path("scripts/verify_github_governance.py"),
-    Path("scripts/verify_qualification_candidate.py"),
-)
-ACTION_SHA = re.compile(r"^[0-9a-f]{40}$")
+def run_steps(job):
+    return [step["run"] for step in job.get("steps",[]) if isinstance(step.get("run"),str)]
+
+ROOT=Path(__file__).resolve().parents[1]
+WORKFLOW=Path('.github/workflows/ib-paper-qualification.yml')
+OWNER_GATE="github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta'"
+BUILD_GATE=OWNER_GATE+" && inputs.rollout_stage == 'build' && inputs.candidate_sha == github.sha"
+CAMPAIGN_GATE=OWNER_GATE+" && inputs.rollout_stage != 'build' && inputs.mutation_mode == true && inputs.artifact_id != ''"
 
 
-def validate(root: Path | str = ROOT) -> list[str]:
-    root = Path(root).resolve()
-    errors: list[str] = []
-    for relative in RETIRED:
-        if (root / relative).exists() or (root / relative).is_symlink():
-            errors.append(f"retired governance artifact remains: {relative}")
-
-    path = root / WORKFLOW
-    try:
-        workflow = path.read_text(encoding="utf-8")
-    except OSError as error:
-        return [f"{WORKFLOW}: {error}"]
-
-    for token in (
-        "pull_number",
-        "repository-governance",
-        "CODEOWNERS",
-        "merge_group",
-        "merge_queue",
-        "acknowledge_no_bypass",
-        "verify_qualification_candidate.py",
-        "github_qualification_evidence.py",
-        "secrets.",
-    ):
-        if token in workflow:
-            errors.append(f"{WORKFLOW}: retired or unsafe token remains: {token}")
-
-    condition = (
-        "github.event_name == 'workflow_dispatch' && "
-        "github.ref == 'refs/heads/main' && "
-        "github.repository == 'TrillionniumFoundation/heptatrader' && "
-        "github.actor == 'ProfHepta' && "
-        "github.actor_id == 102159240 && "
-        "github.triggering_actor == 'ProfHepta' && "
-        "inputs.mutation_mode == true && inputs.candidate_sha == github.sha"
-    )
-    if workflow.count(condition) != 2:
-        errors.append(
-            f"{WORKFLOW}: both jobs must require immutable owner dispatch "
-            "authority and the exact dispatch-main candidate before runner allocation"
-        )
-    if workflow.count("Bind dispatch authority to immutable owner identity") != 2:
-        errors.append(f"{WORKFLOW}: both jobs must reassert immutable owner identity")
-    if workflow.count("\n    environment: ib-paper\n") != 1:
-        errors.append(
-            f"{WORKFLOW}: real PAPER campaign must use exactly one protected ib-paper environment"
-        )
-    if workflow.count(
-        "python3 trusted/scripts/verify_exact_git_index.py --root trusted"
-    ) < 4:
-        errors.append(f"{WORKFLOW}: trusted checkout exact-tree verification is incomplete")
-    if workflow.count(
-        "python3 trusted/scripts/verify_exact_git_index.py --root candidate"
-    ) != 2:
-        errors.append(f"{WORKFLOW}: candidate exact-tree verification must bracket build")
-    if workflow.count("ref: ${{ github.sha }}") != 3:
-        errors.append(
-            f"{WORKFLOW}: trusted builder, candidate and qualification harness must use the dispatch SHA"
-        )
-    if workflow.count("${{ inputs.candidate_sha }}") != 1:
-        errors.append(
-            f"{WORKFLOW}: candidate input must only enter the quoted dispatch-main identity gate"
-        )
-
-    # Once the dispatch-main source is built into an immutable artifact, branch
-    # movement is unrelated to the Broker experiment. Re-reading refs/heads/main
-    # before/after the campaign would serialize ordinary development without
-    # adding evidence about the exact binary under test.
-    if "git ls-remote --exit-code" in workflow:
-        errors.append(
-            f"{WORKFLOW}: qualification must not depend on mutable main after artifact creation"
-        )
-    for token in (
-        "Record exact remote main before Broker campaign",
-        "Reverify unchanged remote main after Broker campaign",
-        "main-before-campaign.txt",
-        "main-after-campaign.txt",
-        "Issue final exact-current-main Broker receipt",
-    ):
-        if token in workflow:
-            errors.append(
-                f"{WORKFLOW}: obsolete mutable-main proof remains: {token}"
-            )
-
-    for token in (
-        "heptatrader-ib-builder",
-        "heptatrader-ib-paper",
-        "build_ib_candidate_artifact.sh",
-        "verify_ib_candidate_artifact.py",
-        "run_ib_paper_artifact_qualification.sh",
-        "verify_ib_paper_qualification.py",
-        "Require exact dispatch-main candidate identity",
-        "Issue final exact-artifact Broker receipt",
-        "qualification-verification.json",
-        "HEPTA_QUALIFICATION_MUTATIONS: '1'",
-        "DISPATCH_ACTOR: ${{ github.actor }}",
-        "DISPATCH_ACTOR_ID: ${{ github.actor_id }}",
-        "TRIGGERING_ACTOR: ${{ github.triggering_actor }}",
-        "test \"$DISPATCH_ACTOR\" = 'ProfHepta'",
-        "test \"$DISPATCH_ACTOR_ID\" = '102159240'",
-        "test \"$TRIGGERING_ACTOR\" = 'ProfHepta'",
-        "verify_exact_git_index.py",
-    ):
-        if token not in workflow:
-            errors.append(f"{WORKFLOW}: missing token: {token}")
-
-    for match in re.finditer(r"(?m)^\s*uses:\s*([^@\s]+)@([^\s]+)\s*$", workflow):
-        action, revision = match.groups()
-        if ACTION_SHA.fullmatch(revision) is None:
-            errors.append(f"{WORKFLOW}: action not pinned: {action}@{revision}")
-
-    if "candidate/scripts/" in workflow:
-        errors.append(f"{WORKFLOW}: candidate-controlled script execution is forbidden")
+def validate(root=ROOT):
+    root=Path(root);errors=[]
+    try:w=load_workflow(root/WORKFLOW)
+    except (OSError,ValueError) as exc:return [str(exc)]
+    if set(w.get('on',{}))!={'workflow_dispatch'}:errors.append('PAPER must be explicitly owner-dispatched')
+    if w.get('permissions')!={'actions':'read','contents':'read'}:errors.append('unexpected workflow credentials')
+    if w.get('concurrency',{}).get('cancel-in-progress') is not False:errors.append('running PAPER campaign must not auto-cancel')
+    jobs=w.get('jobs',{})
+    if set(jobs)!={'build-candidate','resolve-artifact','campaign'}:return errors+['missing build/resolve/campaign separation']
+    for name,job in jobs.items():
+        gate=BUILD_GATE if name=='build-candidate' else CAMPAIGN_GATE
+        if job.get('if')!=gate:errors.append(name+': owner/immutable input gate changed')
+        if job.get('continue-on-error'):errors.append(name+': job failure may not be ignored')
+        for step in job.get('steps',[]):
+            if step.get('continue-on-error'):errors.append(name+': step failure may not be ignored')
+            action=step.get('uses')
+            if action and re.fullmatch(r'[^@\s]+@[0-9a-f]{40}',action) is None:errors.append(name+': unpinned action')
+            if action and action.startswith('actions/checkout@'):
+                options=step.get('with',{})
+                if options.get('persist-credentials') is not False or options.get('ref')!='${{ github.sha }}':
+                    errors.append(name+': candidate input may not select trusted checkout or inherit credentials')
+    build=jobs['build-candidate'];resolver=jobs['resolve-artifact'];campaign=jobs['campaign']
+    if 'environment' in build or 'environment' in resolver:errors.append('no-secret build/metadata jobs cannot request mutation environment')
+    if campaign.get('environment')!='ib-paper' or campaign.get('needs')!='resolve-artifact':errors.append('mutation environment or artifact admission dependency missing')
+    if resolver.get('runs-on')!='ubuntu-24.04':errors.append('artifact resolver must not allocate privileged host')
+    build_runs=run_steps(build)
+    actual_build=[s for s in build_runs if any(line.strip().startswith('trusted/scripts/build_ib_candidate_artifact.sh ') for line in s.splitlines())]
+    if len(actual_build)!=1:errors.append('candidate must be built exactly once in the build-only job')
+    for name in ('resolve-artifact','campaign'):
+        if any('build_ib_candidate_artifact.sh' in line and not line.lstrip().startswith('#') for s in run_steps(jobs[name]) for line in s.splitlines()):errors.append(name+': reuse must never rebuild candidate')
+    source_checkouts=[s for s in build.get('steps',[]) if s.get('with',{}).get('path')=='candidate']
+    if len(source_checkouts)!=1:errors.append('exactly one candidate source checkout required')
+    downloads=[s for s in campaign.get('steps',[]) if str(s.get('uses','')).startswith('actions/download-artifact@')]
+    if len(downloads)!=1 or downloads[0].get('with',{}).get('artifact-ids')!='${{ needs.resolve-artifact.outputs.artifact_id }}' or downloads[0].get('with',{}).get('run-id')!='${{ needs.resolve-artifact.outputs.run_id }}':errors.append('campaign must reuse exact historical artifact ID/run')
+    runs=run_steps(campaign)
+    steps=campaign.get('steps',[])
+    verify=[i for i,s in enumerate(steps) if any(line.strip().startswith('python3 trusted/scripts/verify_ib_candidate_artifact.py verify') for line in s.get('run','').splitlines())]
+    probe=[i for i,s in enumerate(steps) if any(line.strip().startswith('"$probe" ') for line in s.get('run','').splitlines())]
+    execute=[i for i,s in enumerate(steps) if any(line.strip().startswith('python3 trusted/scripts/hepta_paper_rollout_host.py ') for line in s.get('run','').splitlines())]
+    if not(len(verify)==len(probe)==len(execute)==1 and verify[0]<probe[0]<execute[0]):errors.append('same-host verify/preflight/campaign ordering missing')
+    for indices in (verify,probe,execute):
+        if len(indices)==1 and 'if' in steps[indices[0]]:errors.append('mandatory host step may not be skipped')
+    if campaign.get('env',{}).get('HEPTA_QUALIFICATION_MUTATIONS')!='1':errors.append('missing explicit bounded mutation input')
+    uploads=[s for s in steps if str(s.get('uses','')).startswith('actions/upload-artifact@')]
+    if len(uploads)!=1 or uploads[0].get('if')!='always()':errors.append('failure evidence upload must always run')
     return errors
 
 
-def self_test() -> None:
-    errors = validate(ROOT)
-    if errors:
-        raise RuntimeError("\n".join(errors))
-    mutations = (
-        (
-            "inputs.candidate_sha == github.sha",
-            "inputs.candidate_sha != github.sha",
-            "exact dispatch-main candidate",
-        ),
-        (
-            "github.actor == 'ProfHepta'",
-            "github.actor != 'ProfHepta'",
-            "immutable owner dispatch authority",
-        ),
-        (
-            "    environment: ib-paper\n",
-            "",
-            "protected ib-paper environment",
-        ),
-        (
-            "python3 trusted/scripts/verify_exact_git_index.py --root candidate",
-            "python3 trusted/scripts/verify_exact_git_index.py --root missing",
-            "candidate exact-tree verification",
-        ),
-        (
-            "ref: ${{ github.sha }}",
-            "ref: ${{ inputs.candidate_sha }}",
-            "trusted builder, candidate and qualification harness must use the dispatch SHA",
-        ),
-        (
-            "Issue final exact-artifact Broker receipt",
-            "Issue final exact-current-main Broker receipt",
-            "obsolete mutable-main proof",
-        ),
-    )
-    for old, new, expected in mutations:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            target = root / WORKFLOW
-            target.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / WORKFLOW, target)
-            text = target.read_text(encoding="utf-8")
-            if text.count(old) == 0:
-                raise RuntimeError(f"self-test fixture token missing: {old}")
-            target.write_text(text.replace(old, new, 1), encoding="utf-8")
-            mutated = validate(root)
-            if not any(expected in item for item in mutated):
-                raise RuntimeError(
-                    f"self-test failed to reject mutation {old!r}: {mutated}"
-                )
-
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        target = root / WORKFLOW
-        target.parent.mkdir(parents=True)
-        shutil.copy2(ROOT / WORKFLOW, target)
-        text = target.read_text(encoding="utf-8")
-        marker = "      - name: Reverify immutable trusted harness after Broker campaign\n"
-        target.write_text(
-            text.replace(
-                marker,
-                "      - name: Obsolete mutable-main check\n"
-                "        run: git ls-remote --exit-code https://github.com/example/example refs/heads/main\n\n"
-                + marker,
-                1,
-            ),
-            encoding="utf-8",
-        )
-        mutated = validate(root)
-        if not any("must not depend on mutable main" in item for item in mutated):
-            raise RuntimeError(
-                f"self-test failed to reject mutable-main recheck: {mutated}"
-            )
+def self_test():
+    errors=validate()
+    if errors:raise ValueError('\n'.join(errors))
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--self-test", action="store_true")
-    args = parser.parse_args(argv)
-    if args.self_test:
-        self_test()
-        print("[QUALIFICATION-BOUNDARY] SELF-TEST PASS")
-        return 0
-    errors = validate(args.root)
-    for error in errors:
-        print(f"[QUALIFICATION-BOUNDARY] {error}", file=sys.stderr)
-    if errors:
-        return 1
-    print("[QUALIFICATION-BOUNDARY] PASS")
-    return 0
+def main(argv=None):
+    parser=argparse.ArgumentParser();parser.add_argument('--root',type=Path,default=ROOT);parser.add_argument('--self-test',action='store_true');args=parser.parse_args(argv)
+    errors=validate(args.root)
+    for error in errors:print('[QUALIFICATION] '+error,file=sys.stderr)
+    if errors:return 1
+    print('[QUALIFICATION] PASS executable workflow contract');return 0
 
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+if __name__=='__main__':raise SystemExit(main())

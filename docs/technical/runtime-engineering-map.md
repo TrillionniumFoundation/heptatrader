@@ -1,7 +1,7 @@
 # Runtime engineering map
 
-Status: CURRENT  
-Applies to: canonical Agent-native runtime  
+Status: CURRENT
+Applies to: canonical Agent-native runtime
 Primary architecture: [`../AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](../AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md)
 
 This document is a developer navigation map, not an additional approval or authorization gate. It connects the subsystem contracts that already own runtime behavior so a change can be traced from caller input to durable state, external effect, recovery, tests, and operations without inventing another control plane.
@@ -66,7 +66,7 @@ A change that introduces a second lock acquisition order or waits on external I/
 | session generation/fence | Session Supervisor lease store | atomic durable generation; malformed/newer format fails closed |
 | Broker/simulator snapshots | Authoritative State | re-established after restart; epoch/generation completeness required |
 | release identity | package manifest + digest receipt | immutable evidence, not runtime authority |
-| PAPER qualification | exact artifact + verification receipt | external evidence bound to source/artifact/harness/profile/account/host/scenarios |
+| PAPER rollout / qualification | exact artifact + verifier receipts | external evidence bound to source/artifact/harness/profile/account/host/stage or scenarios |
 | strategy research history | SHADOW records | read-only to execution authority until a separately reviewed promotion boundary exists |
 
 Rollback is permitted only across compatible journal and lease schemas or through a tested migration. See [`service-lifecycle.md`](service-lifecycle.md).
@@ -98,16 +98,20 @@ Files ending in `.example` are templates, never authority. Runtime code should e
 
 ## Test ownership
 
-Behavior-bearing evidence is intentionally assigned once:
+Core Runtime CI owns canonical CTest, full Python discovery, install/package/preflight
+and simulator lifecycle smoke. Required GCC/Clang contexts execute the common
+`run_runtime_resilience.sh` ASan/UBSan suite for any non-documentation change.
+Unknown paths are conservative code changes; Gateway/Session/client changes are
+not missed. Nightly runs use the same script and do not duplicate PR triggers.
+Source-model checks parse actual workflow jobs and run steps, not comments or
+command names embedded in prose. Native risk/OMS/venue/release source token gates
+have been removed; their behavioral owners remain CTest and Python regression.
 
-- **Core Runtime CI** owns the canonical build/CTest, full Python discovery, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
-- **GCC/Clang reliability lanes** independently own sanitizer behavior.
-- **Documentation Control Plane** owns documentation depth, component/build ownership, capability truth and source-gap contracts without rerunning the behavior suite.
-- **IB PAPER qualification** is an explicit owner-dispatched external Broker campaign and is not a routine merge gate.
-
-The live repository ruleset `22597364` still names two additional historical contexts: `canonical-full-suite-core` and `exact-merge-candidate`. While that server-side rule remains active, those job names are retained only as **compatibility shims**. They intentionally do not checkout, build, package, rerun documentation, or assert Broker authority. Their only purpose is to stop an obsolete repository-administration rule from forcing duplicate computation. They should be deleted together with the corresponding required-context inventory after the live ruleset is retired or replaced. A green compatibility shim is not engineering evidence and never changes PAPER/LIVE authorization.
-
-A new invariant belongs in the smallest behavior test that can falsify it. Repeating the same deterministic suite in another workflow is not independent evidence.
+Server-side ruleset 22597364 still requires the redundant
+`canonical-full-suite-core` and `exact-merge-candidate` context names. Only those
+names remain temporary compatibility emitters; they are not additional evidence.
+Delete them together with the server-side required-context inventory, not before.
+The required sanitizer names retain actual test execution and failure propagation.
 
 ## Performance budget and measurement
 
@@ -134,7 +138,7 @@ Performance changes must preserve the safety invariants above. Host-specific low
 | venue adapter | callback correlation + partial fill + reconnect + reconciliation fixtures |
 | persistent schema | old fixture + migration + rollback compatibility test |
 | release/preflight | package producer/consumer parity + installed simulator lifecycle smoke |
-| PAPER profile / harness contract | scenario contract + exact-artifact qualification campaign |
+| PAPER profile / harness contract | source trust-boundary tests + progressive P1 rollout; V5 certification when resilience contract changes |
 | strategy/research | deterministic replay + no-lookahead + cost/capacity evidence; no authority promotion |
 
 The objective is to preserve behavior-bearing defenses while keeping source, CI and deployment evidence as small and direct as the invariant allows.

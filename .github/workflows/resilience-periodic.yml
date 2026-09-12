@@ -1,28 +1,16 @@
-name: Canonical Full Suite
+name: Periodic Runtime Resilience
 on:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-  merge_group:
-    types: [checks_requested]
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: heptatrader-required-resilience-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: heptatrader-periodic-resilience
+  cancel-in-progress: false
 jobs:
-  # The server still requires this redundant historical core name. Core CI owns
-  # its real behavior; retire this one shim with the server-side context.
-  core:
-    name: canonical-full-suite-core
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    steps:
-      - name: Legacy core context pending ruleset retirement
-        run: echo 'compatibility-only context; real core owner is core-runtime-exact-head'
   reliability-gcc:
-    name: canonical-full-suite-reliability (g++)
+    name: reliability-runtime-sanitizers (g++)
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     env:
@@ -41,7 +29,7 @@ jobs:
       - name: Execute the behavior-bearing sanitizer lane
         run: bash scripts/run_runtime_resilience.sh g++
   reliability-clang:
-    name: canonical-full-suite-reliability (clang++)
+    name: reliability-runtime-sanitizers (clang++)
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     env:

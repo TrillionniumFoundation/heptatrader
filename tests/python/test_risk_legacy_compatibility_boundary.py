@@ -59,62 +59,20 @@ class RiskLegacyCompatibilityBoundaryTests(unittest.TestCase):
                 text=True,
             )
 
-    def test_legacy_fields_are_compile_time_write_only_wrappers(self) -> None:
-        header = HEADER.read_text(encoding="utf-8")
-        self.assertIn("struct PreTradeRiskLegacyWriteOnly", header)
-        self.assertNotIn("operator T", header)
-        self.assertNotIn("value()", header)
-        self.assertNotIn("value_", header)
+    def test_removed_unbound_scalar_writes_fail_to_compile(self) -> None:
         for field in LEGACY_FIELDS:
-            self.assertIn(field, header)
-        self.assertIn(
-            "PreTradeRiskLegacyWriteOnly<bool> baseCurrencyOrderNotionalPresent",
-            header,
-        )
-        self.assertIn(
-            "PreTradeRiskLegacyWriteOnly<double> currentGrossNotional",
-            header,
-        )
+            with self.subTest(field=field):
+                result=self._compile('#include "risk/pre_trade_risk_engine.h"\n'
+                    'void Bad(PreTradeRiskContext& ctx) { ctx.'+field+' = 1; }\n')
+                self.assertNotEqual(result.returncode,0,'removed scalar compatibility unexpectedly restored')
 
-    def test_historical_writes_and_authoritative_reads_compile_under_canonical_cxx11(self) -> None:
-        source = r'''
-#include "risk/pre_trade_risk_engine.h"
-#include <cstdint>
-#include <type_traits>
-static_assert(std::is_empty<PreTradeRiskLegacyWriteOnly<double>>::value,
-              "legacy compatibility wrapper must retain no scalar state");
-static_assert(!std::is_convertible<PreTradeRiskLegacyWriteOnly<bool>, bool>::value,
-              "legacy bool wrapper must not be readable");
-static_assert(!std::is_convertible<PreTradeRiskLegacyWriteOnly<double>, double>::value,
-              "legacy numeric wrapper must not be readable");
-static_assert(!std::is_convertible<PreTradeRiskLegacyWriteOnly<std::int64_t>, std::int64_t>::value,
-              "legacy time wrapper must not be readable");
-void HistoricalWrites(PreTradeRiskContext& ctx) {
-    ctx.baseCurrencyOrderNotionalPresent = true;
-    ctx.baseCurrencyOrderNotional = 1.0;
-    ctx.snapshotComplete = true;
-    ctx.snapshotObservedAtMs = 10;
-    ctx.nowMs = 11;
-    ctx.currentGrossNotional = 12.0;
-    ctx.pendingBuyNotional = 13.0;
-    ctx.pendingSellNotional = 14.0;
-    ctx.realizedPnl = 15.0;
-    ctx.unrealizedPnl = 16.0;
-    ctx.peakEquity = 17.0;
-    ctx.currentEquity = 18.0;
-}
-double CanonicalRead(const PreTradeRiskContext& ctx) {
-    return ctx.authoritativeSnapshot.exposure.currentGrossNotional
-        + ctx.authoritativeSnapshot.exposure.pendingBuyNotional
-        + ctx.authoritativeSnapshot.exposure.pendingSellNotional
-        + ctx.authoritativeSnapshot.pnl.realizedPnl
-        + ctx.authoritativeSnapshot.pnl.unrealizedPnl
-        + ctx.authoritativeSnapshot.equity.peakEquity
-        + ctx.authoritativeSnapshot.equity.currentEquity;
-}
-'''
-        result = self._compile(source)
-        self.assertEqual(result.returncode, 0, result.stderr)
+    def test_authoritative_evidence_reads_compile(self) -> None:
+        result=self._compile('''#include "risk/pre_trade_risk_engine.h"
+        double Valid(const PreTradeRiskContext& ctx) {
+            return ctx.authoritativeSnapshot.exposure.currentGrossNotional
+                + ctx.orderNotionalEvidence.baseCurrencyNotional;
+        }''')
+        self.assertEqual(result.returncode,0,result.stderr)
 
     def test_alias_consumption_is_rejected_by_compiler(self) -> None:
         source = r'''
