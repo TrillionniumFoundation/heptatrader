@@ -1,7 +1,7 @@
 # Execution Service
 
-Status: CURRENT  
-Applies to: repository HEAD  
+Status: CURRENT
+Applies to: repository HEAD
 Implementation: `HeptaTrade/execution/`, `HeptaTrade/agent/decision_lease_manager.cpp`, `HeptaTrade/events/execution_event_hub.cpp`, `HeptaTrade/events/owner_scoped_health_publisher.cpp`
 Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`
 
@@ -79,3 +79,13 @@ Tests cover idempotency, journal-before-send, conflicting command IDs, send exce
 ## Known limitations
 
 LIVE is unavailable. IB PAPER remains qualification-gated. CTP and XT do not implement real transports and may not be wired as authoritative venues.
+
+## Developer map and recovery examples
+
+[`Execution recovery and reconciliation`](../technical/reconciliation-engine.md)
+maps entry points and tests, explains exact correlation resolution and guarded
+absence handling, distinguishes cancel resolution from economic fills, and
+specifies refresh coalescing, owner terminalization and decision lease roles.
+[`Execution events`](../technical/execution-events.md) owns the stream cursor and
+backpressure contract. The legacy CSV reporter under `HeptaTrade/reconcile/`
+is not a canonical recovery entry point.

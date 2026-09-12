@@ -8,7 +8,7 @@ After=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket
 Type=simple
 User=hepta-gateway
 Group=hepta-gateway
-ExecStart=/usr/libexec/hepta-tool-gatewayd
+ExecStart=/usr/bin/hepta-tool-gatewayd
 EnvironmentFile=/etc/heptatrader/hepta-tool-gateway.env
 Environment=HEPTA_TOOL_SOCKET=/run/hepta-agent/tools.sock
 Sockets=hepta-tool-gateway.socket hepta-tool-session-supervisor.socket

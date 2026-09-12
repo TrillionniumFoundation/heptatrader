@@ -1,13 +1,13 @@
 # Legacy runtime boundary
 
-Status: LEGACY  
-Applies to: repository HEAD  
-Implementation: `HeptaStrategy/`, `HeptaSimulator/`, `Interface/`, `Tools/`, `HeptaTrader.sln`, `HeptaTrader_Linux.sln`, selected top-level legacy files under `HeptaTrade/`  
+Status: LEGACY
+Applies to: repository HEAD
+Implementation: `HeptaStrategy/`, `HeptaSimulator/`, `Interface/`, `Tools/`, `HeptaTrade/reconcile/`, selected top-level legacy files under `HeptaTrade/`
 Tests: `tests/python/test_legacy_runtime_boundary.py`, `tests/venue_capability_tests.cpp`
 
 ## Responsibilities
 
-This module records the historical monolith, strategy platform, Pegasus simulator, Visual Studio assets, vendored compatibility headers, large static instrument data, and deprecated bridges that remain in the repository. Its purpose is compatibility and migration analysis, not canonical runtime delivery.
+This module records the historical monolith, strategy platform, Pegasus simulator, vendored compatibility headers, large static instrument data, and deprecated bridges that remain in the repository. Its purpose is compatibility and migration analysis, not canonical runtime delivery.
 
 ## Public interfaces
 
@@ -15,7 +15,7 @@ Legacy build profiles are exposed only through explicit CMake options. They are 
 
 ## State and persistence
 
-Legacy XML, solution files, market-data examples, and compatibility headers are repository assets. They are not read automatically by the maintained Agent OS runtime unless a separately documented legacy profile is enabled.
+Legacy XML, market-data examples, and compatibility headers are repository assets. They are not read automatically by the maintained Agent OS runtime unless a separately documented legacy profile is enabled.
 
 ## Failure semantics
 
@@ -35,4 +35,4 @@ Tests lock the default-off CMake options, experimental adapter no-transport beha
 
 ## Known limitations
 
-The legacy source is not comprehensively modernized, benchmarked, or supported across current compilers. Large data assets and old IDE projects should eventually be archived or moved to versioned external artifacts after reproducibility and licensing are documented.
+The legacy source is not comprehensively modernized, benchmarked, or supported across current compilers. Eight unused Visual Studio solution/project assets have been removed; their exact provenance and the shared sources deliberately retained are documented in [`../technical/legacy-retirement.md`](../technical/legacy-retirement.md). Large data assets remain pending consumer and licensing analysis rather than being blindly deleted.

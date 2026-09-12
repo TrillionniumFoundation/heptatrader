@@ -12,6 +12,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 BUILD_ENV = "HEPTA_RELEASE_INTEGRATION_BUILD_DIR"
+sys.path.insert(0, str(ROOT / "scripts"))
+import check_systemd_units
 
 
 def cmake_cache(path: Path) -> dict[str, str]:
@@ -125,6 +127,8 @@ class CMakeInstallIntegrationTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
             install_root = stage / "usr"
             self.assertTrue(install_root.is_dir(), result.stdout)
+            self.assertEqual(check_systemd_units.validate_installed(install_root, "core"), [])
+            self.assertFalse((install_root / "lib/tmpfiles.d/heptatrader-ib-paper.conf").exists())
 
             for relative in required:
                 target = install_root / relative

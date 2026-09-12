@@ -1,38 +1,59 @@
-# Documentation control policy
+# Documentation maintenance policy
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `scripts/check_documentation.py`  
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_depth.py`
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `scripts/check_documentation.py`
+Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_structure.py`
 
-## Required module contract
+## Machine-verifiable facts
 
-Every entry in `docs/module-catalog.json` must have:
+`module-catalog.json` is the single manually maintained module/ownership index.
+Every entry has a unique ID, lifecycle status, document, implementation paths,
+test paths, mutation classification and authorization value. The checker
+validates those fields, existing paths, local links and capability consistency.
+The module table in `index.md` is generated with:
 
-1. a unique module ID;
-2. an allowed lifecycle status;
-3. one existing module document;
-4. one or more existing implementation paths;
-5. tests for every `CURRENT` or `QUALIFICATION_REQUIRED` module;
-6. an explicit broker-mutation classification;
-7. an explicit production-authorization value.
+```bash
+python3 scripts/check_documentation.py --write-index
+```
 
-A module document is not considered complete merely because it exists or contains a technical heading. Maintained module documentation must contain substantive prose and cover the engineering topics needed to operate and change the component: purpose/responsibility, public contracts, state/persistence/recovery where applicable, failure semantics, security/authority boundaries, observability, executable testing, operations and limitations. Module-specific wording is allowed; the checker validates topic coverage rather than forcing one ceremonial template.
+Normal validation never edits files. The historical development-index URL is a
+navigation redirect, not another manually maintained list of modules.
+`check_component_coverage.py` independently discovers tracked components,
+including previously unknown top-level runtime directories. Directory ownership
+is not evidence that every child component is explained or functionally tested.
 
-`CURRENT` and `QUALIFICATION_REQUIRED` documents must meet a higher depth threshold than `EXPERIMENTAL`, `LEGACY`, `PROPOSAL` or `UNAVAILABLE` material. A catalog-shaped stub that only repeats implementation and test paths fails the documentation gate.
+## Human-reviewed technical content
 
-## Truthfulness rules
+A useful maintained contract explains concrete inputs/outputs, units, identities,
+state transitions, durability boundaries, concurrency, failures, compatibility
+and representative tests. Topics that genuinely do not apply can say so. A
+scaffold should explain what is absent rather than describe a future design as
+implemented. A legacy boundary document is not a claim of full legacy support.
 
-- `EXPERIMENTAL` and `PROPOSAL` modules may not be production-authorized.
-- `UNAVAILABLE` capabilities may not have a mutation path.
-- CTP and XT/QMT must remain fail-closed until a real transport, authoritative callbacks, reconciliation, and venue-specific qualification exist.
-- Repository source may describe an IB PAPER qualification path but may not claim that external runners, credentials, Broker sessions, host policy or broker-observed receipts exist merely because source files or CI jobs exist.
-- Repository review/ruleset state is an engineering admission fact, not Broker authority.
-- A document may not call a file “installed” unless the canonical install process actually installs it.
-- CURRENT documentation must not depend on a developer-specific absolute path.
+No byte, paragraph, keyword or heading-count score establishes design quality.
+Structural lint may pass a concise document; review must still determine whether
+a developer can change the behavior using its examples and implementation/test
+references. Known missing integration evidence belongs in the gap register.
 
 ## Change discipline
 
-A pull request that changes a module implementation, public protocol, persistent schema, reason code, service unit, capability state, release contract or Broker qualification scenario must update the corresponding module/technical documentation and tests in the same pull request.
+Update the owning contract when an observable interface, persistent format,
+authority boundary, failure behavior or operation changes. A private rename or
+behavior-preserving refactor does not require a prose-only ceremony. Update
+actual regression tests when behavior changes, not comments solely to satisfy a
+source-token scanner. Protocol reference tables may repeat stable wire facts,
+but runtime discovery and the owning serializer remain authoritative.
 
-`documentation-control-plane-exact-head` validates catalog ownership, links, lifecycle/capability truth and semantic documentation depth. It should not duplicate the complete runtime/release behavioral suite; those assertions belong to the behavior-bearing core/release gates.
+EXPERIMENTAL, LEGACY and unavailable transports cannot acquire authority through
+a status edit. Source, lint, CI, review, receipts and host qualification are
+separate evidence domains. CTP/XT remain no-transport, IB PAPER remains externally
+qualification-gated, and LIVE remains unavailable.
+
+## CI responsibility
+
+`documentation-control-plane-exact-head` checks source structure and ownership.
+Core Runtime CI owns Python behavioral regressions, native tests, installation,
+packaging and installed simulator lifecycle. GCC/Clang own independent sanitizer
+builds. Preserve these nonempty job names when simplifying implementation; server
+required-check configuration is not changed by this policy.

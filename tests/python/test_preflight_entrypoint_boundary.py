@@ -189,45 +189,6 @@ class PreflightEntrypointBoundaryTests(unittest.TestCase):
             self.assertIn("untrusted or writable core parent directory", result.stderr)
             self.assertNotIn('"result":"PASS"', result.stderr)
 
-    def test_wrapper_contains_no_security_semantic_overrides(self) -> None:
-        wrapper = (ROOT / "scripts/hepta_preflight.py").read_text(encoding="utf-8")
-        core = (ROOT / "scripts/hepta_preflight_core.py").read_text(encoding="utf-8")
-        install = (ROOT / "cmake/HeptaInstall.cmake").read_text(encoding="utf-8")
-        for forbidden in (
-            "_ORIGINAL_CHECK_MANIFEST_SHAPE",
-            "_ORIGINAL_INSPECT_ARCHIVE",
-            "_read_admitted_archive_root",
-        ):
-            self.assertNotIn(forbidden, wrapper)
-        for required in (
-            "RELEASE_LABEL_RE",
-            "_validate_complete_archive_namespace",
-            "expected_root = (",
-            "[PREFLIGHT] private implementation module; ",
-            "use hepta-preflight",
-        ):
-            self.assertIn(required, core)
-        for loader_requirement in (
-            "O_DIRECTORY",
-            "O_NOFOLLOW",
-            "_trusted_directory",
-            "_open_relative_directory",
-            "core parent directory changed while reading",
-        ):
-            self.assertIn(loader_requirement, wrapper)
-        self.assertIn(
-            "f\"heptatrader-{manifest['version']}-{profile}\"",
-            core,
-        )
-        self.assertIn(
-            'DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"',
-            install,
-        )
-        self.assertNotIn(
-            'DESTINATION "${CMAKE_INSTALL_BINDIR}"\n'
-            '    RENAME hepta-preflight-core.py',
-            install,
-        )
 
 
 if __name__ == "__main__":

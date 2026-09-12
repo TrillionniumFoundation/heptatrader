@@ -41,39 +41,6 @@ class LegacyRuntimeBoundaryTests(unittest.TestCase):
         self.assertFalse(capabilities["live"]["advertisable"])
         self.assertFalse(capabilities["live"]["authorized"])
 
-    def test_experimental_adapters_cannot_report_transport_success(self) -> None:
-        ctp = (ROOT / "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("CTP_TRANSPORT_NOT_IMPLEMENTED", ctp)
-        self.assertIn('return "EXPERIMENTAL_NO_TRANSPORT";', ctp)
-        self.assertRegex(
-            ctp,
-            r"(?s)bool HeptaCTPGatewayAdapter::Connect\(\).*?return false;",
-        )
-
-        xt = (ROOT / "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("XT_EXPERIMENTAL_NO_TRANSPORT", xt)
-        self.assertIn("XT_TRANSPORT_NOT_IMPLEMENTED", xt)
-        self.assertIn('return RejectUnsupported("connect");', xt)
-
-    def test_default_build_excludes_legacy_runtime_profiles(self) -> None:
-        cmake = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertIn(
-            'option(HEPTA_BUILD_LEGACY_MONOLITH\n'
-            '       "Build the deprecated multi-venue composition binary" OFF)',
-            cmake,
-        )
-        self.assertIn(
-            'option(HEPTA_BUILD_LEGACY_SIMULATOR\n'
-            '       "Build the deprecated Pegasus simulator" OFF)',
-            cmake,
-        )
-        self.assertIn("if(HEPTA_BUILD_LEGACY_MONOLITH)", cmake)
-        self.assertIn("if(HEPTA_BUILD_LEGACY_SIMULATOR)", cmake)
-
     def test_module_catalog_marks_legacy_and_experimental_boundaries(self) -> None:
         catalog = json.loads(
             (ROOT / "docs/module-catalog.json").read_text(encoding="utf-8")

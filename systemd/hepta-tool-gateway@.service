@@ -9,7 +9,7 @@ Type=simple
 User=hepta-gw-%i
 Group=hepta-gw-%i
 SupplementaryGroups=
-ExecStart=/usr/libexec/hepta-tool-gatewayd
+ExecStart=/usr/bin/hepta-tool-gatewayd
 EnvironmentFile=/etc/heptatrader/trust-domains/%i.env
 Environment=HEPTA_TOOL_SOCKET=/run/hepta-agent-%i/tools.sock
 Environment=HEPTA_TOOL_AGENT_ID=%i

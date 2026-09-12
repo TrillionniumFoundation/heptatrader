@@ -188,10 +188,12 @@ void TestNotionalEvidence() {
         {"old snapshot cannot supply its own evaluation clock", [](PreTradeRiskContext& c) {
             c.evaluatedAtMs = 10000;
         }, "RISK_SNAPSHOT_EVALUATION_TIME_MISMATCH"},
-        {"legacy scalar cannot bypass binding", [](PreTradeRiskContext& c) {
+        {"caller price cannot replace notional evidence", [](PreTradeRiskContext& c) {
             c.orderNotionalEvidence.present = false;
-            c.baseCurrencyOrderNotionalPresent = true;
-            c.baseCurrencyOrderNotional = 0.01;
+            // Keep raw prices mutually consistent so the notional evidence
+            // gate is reached, rather than the earlier deviation gate.
+            c.referencePrice = 0.01;
+            c.limitPrice = 0.01;
         }, "RISK_ORDER_NOTIONAL_UNAVAILABLE"},
         {"converted account mismatch", [](PreTradeRiskContext& c) {
             c.orderNotionalEvidence.subject.account = "other";
@@ -414,8 +416,6 @@ int main() {
         cfg.maxWorstCaseGrossNotional = 1000.0;
         cfg.maxSnapshotAgeMs = 1000;
         PreTradeRiskContext ctx = BaseContext();
-        ctx.baseCurrencyOrderNotionalPresent = true;
-        ctx.baseCurrencyOrderNotional = 100.0;
         BindZeroSnapshot(ctx);
         ctx.authoritativeSnapshot.exposure.currentGrossNotional = 400.0;
         ctx.authoritativeSnapshot.exposure.pendingBuyNotional = 250.0;
@@ -534,17 +534,13 @@ int main() {
         PreTradeRiskConfig cfg = BaseConfig();
         cfg.maxWorstCaseGrossNotional = 1000.0;
         PreTradeRiskContext ctx = BaseContext();
-        ctx.snapshotComplete = true;
-        ctx.currentGrossNotional = 0.0;
-        ctx.pendingBuyNotional = 0.0;
-        ctx.pendingSellNotional = 0.0;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
                     "RISK_SNAPSHOT_FRESHNESS_POLICY_REQUIRED",
                 "portfolio policy without freshness policy must fail");
         cfg.maxSnapshotAgeMs = 1000;
         Require(PreTradeRiskEngine::Evaluate(cfg, ctx).reasonCode ==
                     "RISK_SNAPSHOT_IDENTITY_REQUIRED",
-                "legacy default fields must not masquerade as an authoritative snapshot");
+                "missing explicit snapshot identity must fail closed");
     }
     {
         PreTradeRiskConfig cfg = BaseConfig();

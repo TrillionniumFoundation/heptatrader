@@ -1,4 +1,4 @@
-# Release simulator installation and rollback smoke
+# Release component integration and same-artifact slot-switch smoke
 
 Status: CURRENT  
 Implementation: `scripts/run_release_simulator_smoke.py`, canonical CMake install tree  
@@ -26,3 +26,7 @@ The installed E2E program starts real Unix sockets, session-supervisor logic, To
 A failed candidate run or deployment-record publication attempts to restore the previous slot. No deployment record is published on failure. Archive links or special files, source-path replacement during snapshot, non-executable smoke binaries, existing slots, output replacement, digest drift, or an authorizing preflight receipt fail closed.
 
 The record always states `broker_mutation=false`, `authorization_effect=NONE`, `paper_authorized=false`, and `live_authorized=false`. Passing this smoke is not IB PAPER qualification.
+
+## Separate installed-process evidence
+
+The installed unit-test executable above is component integration, not proof that the installed daemons were launched as separate processes. [Installed process acceptance](installed-process-acceptance.md) now exercises the real CLI/MCP/Gateway/Execution processes and one distinct-source artifact pair separately. The two tests must retain these different evidence scopes.

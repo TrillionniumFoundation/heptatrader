@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import re
+import shlex
+import stat
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +126,89 @@ def _lint(root: Path) -> list[str]:
     return errors
 
 
+# External executable dependencies are explicit, not arbitrary unchecked paths.
+# Application daemons and credential-delivered code must exist in this install.
+HOST_EXECUTABLES = frozenset({"/usr/bin/python3"})
+
+
+def validate_installed(install_root: Path | str, profile: str = "core") -> list[str]:
+    """Cross-check real installed units against the same installed payload.
+
+    install_root is the staged /usr tree, not the build directory or host /.
+    This checks static wiring only: it does not load units, create accounts,
+    start services, or grant Broker authority.
+    """
+    root = Path(install_root).absolute()
+    errors: list[str] = []
+    if profile not in {"core", "ib-paper"}:
+        return [f"unsupported install profile: {profile}"]
+    units = root / "lib/systemd/system"
+    paths = sorted(units.glob("hepta-*.service")) + sorted(units.glob("hepta-*.socket"))
+    names = {p.name for p in paths}
+    if not paths:
+        return ["installed unit inventory is empty"]
+
+    def installed_file(logical: str, label: str, executable: bool = False) -> None:
+        if not logical.startswith("/usr/"):
+            errors.append(f"{label}: unmanaged application path {logical}")
+            return
+        relative = Path(logical.removeprefix("/usr/"))
+        if any(part in {".", ".."} for part in relative.parts) or "%" in logical or "$" in logical:
+            errors.append(f"{label}: non-canonical installed path {logical}")
+            return
+        path = root
+        try:
+            for part in relative.parts:
+                path = path / part
+                metadata = path.lstat()
+                if stat.S_ISLNK(metadata.st_mode):
+                    raise ValueError("symlink is not an installed payload")
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise ValueError("not a regular single-link file")
+            if executable and not metadata.st_mode & 0o111:
+                raise ValueError("not executable")
+        except (OSError, ValueError) as error:
+            errors.append(f"{label}: missing/unsafe installed file {logical}: {error}")
+
+    for path in paths:
+        if profile == "core" and ("ib-paper" in path.name or "broker-egress-policy" in path.name):
+            errors.append(f"{path.name}: Broker authority unit must not be installed in core")
+        try:
+            installed_file("/usr/lib/systemd/system/" + path.name, path.name)
+            sections = _parse(path)
+            service = sections.get("Service", [])
+            for key in ("ExecStart", "ExecStartPre", "ExecStartPost", "ExecStop", "ExecStopPost"):
+                for command in _values(service, key):
+                    argv = shlex.split(command)
+                    if not argv:
+                        errors.append(f"{path.name}: empty {key}")
+                        continue
+                    executable = argv[0]
+                    if executable not in HOST_EXECUTABLES:
+                        installed_file(executable, f"{path.name}.{key}", executable=True)
+                    for value in argv[1:]:
+                        if value.startswith("/usr/"):
+                            installed_file(value, f"{path.name}.{key} input")
+            for value in _values(service, "LoadCredential"):
+                _, separator, source = value.partition(":")
+                if separator and source.startswith("/usr/"):
+                    installed_file(source, f"{path.name}.LoadCredential")
+            # Required application associations resolve to a concrete unit or
+            # its installed template; optional Conflicts/After are not requires.
+            references = _values(service, "Sockets")
+            references += _values(sections.get("Socket", []), "Service")
+            for key in ("Requires", "BindsTo"):
+                references += _values(sections.get("Unit", []), key)
+            for value in references:
+                for name in value.split():
+                    canonical = re.sub(r"@%[iI]\.", "@.", name)
+                    if canonical.startswith("hepta-") and canonical not in names:
+                        errors.append(f"{path.name}: missing required installed unit {name}")
+        except (OSError, ValueError) as error:
+            errors.append(f"{path.name}: invalid installed unit: {error}")
+    return errors
+
+
 def validate(root: Path | str = ROOT) -> list[str]:
     return _lint(Path(root).resolve())
 
@@ -130,8 +216,12 @@ def validate(root: Path | str = ROOT) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--install-root", type=Path, help="staged /usr tree for payload cross-check")
+    parser.add_argument("--profile", choices=("core", "ib-paper"), default="core")
     args = parser.parse_args(argv)
     errors = validate(args.root)
+    if args.install_root is not None:
+        errors.extend(validate_installed(args.install_root, args.profile))
     for error in errors:
         print(f"[SYSTEMD] {error}", file=sys.stderr)
     if errors:

@@ -3,6 +3,7 @@
 import copy
 import hashlib
 import json
+import math
 import os
 import socket
 import stat
@@ -84,16 +85,17 @@ PLACE_COMMAND_ID_SCHEMA = {
 def _stable_metadata(metadata):
     return (
         metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid,
-        metadata.st_size, metadata.st_mtime_ns,
+        metadata.st_size, metadata.st_mtime_ns, metadata.st_ctime_ns,
+        metadata.st_gid, metadata.st_nlink,
     )
 
 
 def read_session_token(path):
     if not path:
         raise RuntimeError("HEPTA_TOOL_SESSION_TOKEN_FILE is required")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
     before = os.lstat(path)
-    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+    if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
         raise RuntimeError("session token path must be a regular non-symlink file")
     if before.st_uid not in (0, os.geteuid()):
         raise RuntimeError("session token file has an untrusted owner")
@@ -110,7 +112,8 @@ def read_session_token(path):
         if os.read(descriptor, 1):
             raise RuntimeError("session token file exceeds the size limit")
         after = os.fstat(descriptor)
-        if _stable_metadata(opened) != _stable_metadata(after):
+        if (_stable_metadata(opened) != _stable_metadata(after) or
+                _stable_metadata(opened) != _stable_metadata(os.lstat(path))):
             raise RuntimeError("session token file changed while reading")
     finally:
         os.close(descriptor)
@@ -136,6 +139,8 @@ def enforce_expected_uid(value):
 
 
 def scalar_text(value):
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("tool arguments must be finite")
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (str, int, float)) and not isinstance(value, complex):
@@ -256,20 +261,47 @@ def recv_exact(connection, size):
     return b"".join(chunks)
 
 
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _reject_constant(value):
+    raise ValueError("non-finite JSON number")
+
+
+def _finite_float(token):
+    value = float(token)
+    if not math.isfinite(value):
+        raise ValueError("non-finite JSON number")
+    if value == 0.0 and any(digit in "123456789" for digit in token.lower().split("e", 1)[0]):
+        raise ValueError("JSON number underflow")
+    return value
+
+
+def strict_json_loads(text):
+    return json.loads(text, object_pairs_hook=_unique_object,
+                      parse_constant=_reject_constant, parse_float=_finite_float)
+
+
 def validate_envelope(body):
     try:
-        envelope = json.loads(body.decode("utf-8", errors="strict"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        envelope = strict_json_loads(body.decode("utf-8", errors="strict"))
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise RuntimeError("invalid tool gateway response JSON") from error
     if not isinstance(envelope, dict):
         raise RuntimeError("invalid tool gateway response envelope")
     for key in ("status", "tool", "reason_code", "detail", "order_id", "payload"):
         if key not in envelope:
             raise RuntimeError("tool gateway response misses " + key)
-    if envelope["status"] not in VALID_RESULT_STATUSES:
-        raise RuntimeError("tool gateway returned an unknown status")
     if not all(isinstance(envelope[key], str) for key in ("status", "tool", "reason_code", "detail")):
         raise RuntimeError("tool gateway response has invalid string fields")
+    if envelope["status"] not in VALID_RESULT_STATUSES:
+        raise RuntimeError("tool gateway returned an unknown status")
     if not isinstance(envelope["order_id"], int) or isinstance(envelope["order_id"], bool):
         raise RuntimeError("tool gateway response has invalid order_id")
     return envelope
@@ -319,9 +351,12 @@ class NativeToolGateway:
         payload = envelope.get("payload") or {}
         if not isinstance(payload, dict) or payload.get("protocol") != PROTOCOL_NAME:
             raise RuntimeError("unexpected tool protocol")
-        minimum = int(payload.get("protocol_min_version", payload.get("protocol_version", 0)))
-        maximum = int(payload.get("protocol_max_version", payload.get("protocol_version", 0)))
-        selected = int(payload.get("protocol_version", 0))
+        minimum = payload.get("protocol_min_version", payload.get("protocol_version", 0))
+        maximum = payload.get("protocol_max_version", payload.get("protocol_version", 0))
+        selected = payload.get("protocol_version", 0)
+        if any(isinstance(value, bool) or not isinstance(value, int)
+               for value in (minimum, maximum, selected)):
+            raise RuntimeError("invalid HeptaTrader protocol version")
         if not minimum <= PROTOCOL_VERSION <= maximum or selected != PROTOCOL_VERSION:
             raise RuntimeError("unsupported HeptaTrader protocol version")
         schema_version = payload.get("schema_version")
@@ -486,14 +521,14 @@ def main():
         else:
             try:
                 line = raw_message.decode("utf-8", errors="strict")
-                request = json.loads(line)
+                request = strict_json_loads(line)
                 if not isinstance(request, dict):
                     raise ValueError("request must be a JSON object")
                 request_id = request.get("id")
                 response = handle(gateway, request)
             except (
                     KeyError, TypeError, UnicodeDecodeError, ValueError,
-                    RuntimeError, OSError) as error:
+                    RuntimeError, OSError, RecursionError) as error:
                 response = failure(request_id, -32603, str(error))
         if response is not None:
             sys.stdout.write(json.dumps(response, separators=(",", ":")) + "\n")

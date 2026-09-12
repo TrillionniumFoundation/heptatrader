@@ -1,8 +1,8 @@
 # Repository control and source verification
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `.github/`, `.agents/`, `scripts/`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `.github/`, `.agents/`, `scripts/`
 Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_gap_register.py`, `tests/python/test_qualification_trust_boundary.py`
 
 ## Responsibilities
@@ -14,8 +14,8 @@ The component-coverage verifier discovers production paths from the exact Git in
 ## Public interfaces
 
 - `scripts/check_component_coverage.py` validates Git-discovered production ownership and CMake translation-unit owner agreement.
-- `scripts/check_documentation.py` validates module metadata, capabilities, and documentation links.
-- `scripts/check_gap_register.py` validates supported-scope gap evidence and authorization invariants.
+- `scripts/check_documentation.py` validates module metadata, capabilities, links and the catalog-generated index; `--write-index` explicitly regenerates navigation. It does not score technical prose depth.
+- `scripts/check_gap_register.py` validates an extensible issue inventory and authorization invariants. Open issues are allowed; only an explicit `--release-profile` check rejects its scoped unresolved blockers.
 - `scripts/verify_build_ownership.py` compares fresh CMake File API output with `docs/build-targets.json`.
 - Maintained workflows execute those controls on pull-request, main, and merge-group subjects as applicable.
 
@@ -40,7 +40,7 @@ Repository credentials, review settings, CI status, host credentials, runner cus
 
 ## Observability
 
-Failures identify the exact path, target, module, document, or contract token that drifted. Successful output is intentionally small and is bound by the workflow to the exact checked-out SHA.
+Failures identify the exact path, target, module, document, invalid fact or release blocker. Successful output is intentionally small and is bound by the workflow to the exact checked-out SHA.
 
 ## Test expectations
 
@@ -49,3 +49,18 @@ Tests create hostile fixture repositories with newly tracked unowned components,
 ## Known limitations
 
 GitHub-side review, Ruleset, Merge Queue, environment, and runner controls remain server-side facts. The source tree can describe and verify their intended interfaces but cannot force a different principal to approve or make an offline runner available.
+
+## CI responsibility and limits
+
+Core Runtime CI owns full Python regression discovery once, native behavior,
+installation and installed simulator lifecycle. The documentation lane runs
+structural, ownership and configuration checks without repeating Python subsets.
+GCC and Clang sanitizers remain real independent native executions. Existing
+required context names are unchanged; service-side protection settings are not
+modified by this source cleanup.
+
+The former static source-token closure verifier has been removed. Behavioral
+correctness belongs to executed tests, not required private function names,
+formula spelling or historical test messages. A valid issue inventory may
+contain OPEN, ACCEPTED or DEFERRED work. A green structural check does not
+constitute universal project completeness or external qualification.
