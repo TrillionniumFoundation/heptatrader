@@ -110,8 +110,16 @@ jobs:
           version="$(tr -d '[:space:]' < VERSION)"
           candidate="$GITHUB_WORKSPACE/dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
           previous="$GITHUB_WORKSPACE/dist/rollback-reference-${REFERENCE_SHA}.tar.gz"
-          # Hosted disposable runner only. The fixture refuses an existing
-          # /run/hepta-agent and never starts a broker-capable executable.
+          # Hosted disposable runner only. Keep root's preflight trust anchor
+          # root-owned without changing ownership of the runner's checkout.
+          # Archive only the exact reviewed tracked source; exclude build state.
+          process_source="$(sudo mktemp -d /tmp/hepta-process-source.XXXXXXXX)"
+          trap 'sudo rm -rf -- "$process_source"' EXIT
+          git archive "$EXPECTED_SHA" | sudo tar -x --no-same-owner --no-same-permissions -C "$process_source"
+          sudo chmod 0755 "$process_source"
+          cd "$process_source"
+          # The fixture refuses an existing /run/hepta-agent and never starts
+          # a broker-capable executable. Production ownership checks stay on.
           sudo env -i PATH=/usr/bin:/bin LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
             HEPTA_ISOLATED_PROCESS_TESTS=1 \
             HEPTA_PROCESS_CANDIDATE_ARTIFACT="$candidate" \

@@ -22,6 +22,8 @@ The existing `run_release_simulator_smoke.py` continues to own component integra
 
 ## Invocation and failure behavior
 
+The hosted runner owns its checkout as an ordinary user. Before the root-only fixture, CI exports the exact reviewed commit with `git archive` into a newly created root-owned temporary source directory, then runs the fixture from that snapshot and removes it on exit. This gives the unchanged preflight wrapper a correctly owned trust anchor; it neither changes checkout ownership nor bypasses core-file ownership checks. Build directories, ignored files and credentials are not copied into this source snapshot.
+
 The process lane is opt-in and requires root **only on a disposable Linux test host**. It refuses any existing `/run/hepta-agent`; it creates the fixed production cleanup interlock exclusively and deletes only its own recorded inode. It does not adopt, overwrite or clean an existing host installation. Daemons and the Agent run without root. Test process shutdown has a deadline and fails if SIGKILL is needed. Do not run this lane on a trading host.
 
 ```sh
