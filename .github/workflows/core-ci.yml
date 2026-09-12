@@ -48,12 +48,9 @@ jobs:
       - name: Verify registered CMake install inventory under fresh DESTDIR
         env:
           HEPTA_RELEASE_INTEGRATION_BUILD_DIR: ${{ github.workspace }}/build/core
-        run: python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py'
+        run: python3 scripts/run_python_tests.py --lane install
 
-      - name: Verify deployment unit contract without host mutation
-        run: python3 scripts/check_systemd_units.py
-
-      - name: Package, preflight, install, execute, roll back and re-promote the exact tested core
+      - name: Package, preflight, component integration and same-artifact slot-switch smoke
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
@@ -80,10 +77,63 @@ jobs:
             --work-root "dist/release-simulator-smoke-${EXPECTED_SHA}" \
             --output "dist/release-simulator-smoke-${EXPECTED_SHA}.json"
 
-      - name: Run Python contract tests
+      - name: Build the reviewed rollback reference without credentials
+        env:
+          REFERENCE_SHA: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+        run: |
+          set -euo pipefail
+          reference="$RUNNER_TEMP/hepta-rollback-reference"
+          git init "$reference"
+          git -C "$reference" remote add origin https://github.com/TrillionniumFoundation/heptatrader.git
+          git -C "$reference" fetch --no-tags --depth=1 origin "$REFERENCE_SHA"
+          git -C "$reference" checkout --detach FETCH_HEAD
+          test "$(git -C "$reference" rev-parse HEAD)" = "$REFERENCE_SHA"
+          cmake -S "$reference" -B "$RUNNER_TEMP/hepta-reference-build" -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_IB_PROBE=OFF \
+            -DHEPTA_ENABLE_IBAPI=OFF -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
+            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          cmake --build "$RUNNER_TEMP/hepta-reference-build" \
+            --target hepta_core_test_binaries --parallel 2
+          python3 scripts/build_release_package.py \
+            --build-dir "$RUNNER_TEMP/hepta-reference-build" \
+            --output "dist/rollback-reference-${REFERENCE_SHA}.tar.gz" \
+            --version "$(tr -d '[:space:]' < "$reference/VERSION")" --profile core \
+            --source-sha "$REFERENCE_SHA" \
+            --source-date-epoch "$(git -C "$reference" show -s --format=%ct HEAD)"
+
+      - name: Run installed multi-UID processes and distinct-artifact rollback
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          REFERENCE_SHA: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          candidate="$GITHUB_WORKSPACE/dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
+          previous="$GITHUB_WORKSPACE/dist/rollback-reference-${REFERENCE_SHA}.tar.gz"
+          # Hosted disposable runner only. The fixture refuses an existing
+          # /run/hepta-agent and never starts a broker-capable executable.
+          sudo env -i PATH=/usr/bin:/bin LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
+            HEPTA_ISOLATED_PROCESS_TESTS=1 \
+            HEPTA_PROCESS_CANDIDATE_ARTIFACT="$candidate" \
+            HEPTA_PROCESS_CANDIDATE_SHA256="$(cut -d' ' -f1 "$candidate.sha256")" \
+            HEPTA_PROCESS_PREVIOUS_ARTIFACT="$previous" \
+            HEPTA_PROCESS_PREVIOUS_SHA256="$(cut -d' ' -f1 "$previous.sha256")" \
+            HEPTA_PROCESS_EVIDENCE_DIR="$GITHUB_WORKSPACE/dist/process-evidence" \
+            python3 scripts/run_python_tests.py --lane process
+
+      - name: Retain exact-pair process evidence and failure logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: installed-process-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/process-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Run core Python behavior partition (source and install run separately)
         env:
           PYTHONWARNINGS: error::ResourceWarning
-        run: python3 -m unittest discover -s tests/python -p 'test_*.py'
+        run: python3 scripts/run_python_tests.py --lane core
 
       - name: Upload immutable main-branch core package evidence
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

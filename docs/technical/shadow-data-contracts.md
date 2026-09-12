@@ -1,8 +1,8 @@
 # SHADOW data pipeline: developer contracts and behavioral fixtures
 
-Status: CURRENT  
-Scope: documentation of the EXPERIMENTAL, read-only SHADOW implementation; no promotion of module status  
-Implementation: `scripts/hepta_strategy_contracts.py`, capture/extractor/normalizer/context/history/strategy/shadow/replay modules listed in `docs/module-catalog.json`  
+Status: CURRENT
+Scope: documentation of the EXPERIMENTAL, read-only SHADOW implementation; no promotion of module status
+Implementation: `scripts/hepta_strategy_contracts.py`, capture/extractor/normalizer/context/history/strategy/shadow/replay modules listed in `docs/module-catalog.json`
 Tests: `tests/python/test_research_contract_smoke.py`, `tests/python/test_shadow_data_behavior.py`
 
 ## Processing graph and ownership

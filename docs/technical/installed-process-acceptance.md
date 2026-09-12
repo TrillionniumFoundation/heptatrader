@@ -1,7 +1,7 @@
 # Installed process and exact-revision-pair acceptance
 
-Status: CURRENT  
-Implementation: `tests/python/test_installed_runtime_processes.py`, `.github/workflows/core-ci.yml`  
+Status: CURRENT
+Implementation: `tests/python/test_installed_runtime_processes.py`, `.github/workflows/core-ci.yml`
 Scope: disposable Linux, real installed executables, simulator only
 
 ## What is exercised

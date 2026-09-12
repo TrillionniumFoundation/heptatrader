@@ -1,8 +1,8 @@
 # Agent tool protocol and client development contract
 
-Status: CURRENT  
-Scope: local Agent/MCP/CLI to Tool Gateway; not the separate Execution service protocol  
-Implementation: `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/client/`, `HeptaTrade/tool_host/typed_tool_protocol.cpp`, `HeptaTrade/tools/trading_tool_wire_contract.h`  
+Status: CURRENT
+Scope: local Agent/MCP/CLI to Tool Gateway; not the separate Execution service protocol
+Implementation: `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/client/`, `HeptaTrade/tool_host/typed_tool_protocol.cpp`, `HeptaTrade/tools/trading_tool_wire_contract.h`
 Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/trading_tool_registry_tests.cpp`, `tests/python/test_installed_runtime_processes.py`
 
 ## Transport and request encoding
