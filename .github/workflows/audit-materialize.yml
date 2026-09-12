@@ -1,0 +1,168 @@
+name: Audit verified tree transfer (temporary)
+on:
+  push:
+    branches: [remediation/audit-followthrough-20260912]
+    paths: [.github/workflows/audit-materialize.yml]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Read pinned original source without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Reconstruct and verify complete tested tree; create unreferenced commit only
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PARENT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import lzma
+          import os
+          from pathlib import Path, PurePosixPath
+          import subprocess
+          import urllib.request
+
+          repo = 'TrillionniumFoundation/heptatrader'
+          base = 'd003f54c7c6c2bd19002627f2bcd9081228b01cd'
+          base_tree = '22845276c508e5a6709a36876ebd6286d2911592'
+          expected_tree = 'ee4bbd9a6160a7635f9d0a1afb562675815d2d95'
+          expected_digest = '30d4070d56aec09b62f558d9ac9bb8b6e5f37b80e35c3a11ed24401b0a936a60'
+          parts = [
+              '835bb75bbb67733bc6ff47b775b1c92a0f6aa08a',
+              '249d5b88a73e8591d824a0eb8c761afa89012114',
+              'c63e5190a0688cfec6561ccaa4be9a053efa4db4',
+              'be180e6264365855506d891de15be36d800460cc',
+              '01cc8530b2e9e9dffff7a09f759ecc0c615f27e9',
+              'a5c872a5e8cb54404c63c1d00c79efeea35031bb',
+          ]
+          def git(*args):
+              return subprocess.check_output(['git', *args])
+          def api(path, document=None):
+              payload = None if document is None else json.dumps(document).encode('utf-8')
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/' + repo + path,
+                  data=payload,
+                  headers={
+                      'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                      'Accept': 'application/vnd.github+json',
+                      'X-GitHub-Api-Version': '2022-11-28',
+                      'Content-Type': 'application/json',
+                  },
+                  method='GET' if document is None else 'POST',
+              )
+              with urllib.request.urlopen(request, timeout=45) as response:
+                  raw = response.read(2000001)
+              if len(raw) > 2000000:
+                  raise RuntimeError('API response exceeds transfer bound')
+              return json.loads(raw)
+          def relative(value):
+              if not isinstance(value, str) or not value:
+                  raise ValueError('invalid path type')
+              path = PurePosixPath(value)
+              if path.is_absolute() or path.as_posix() != value or any(p in ('', '.', '..', '.git') for p in path.parts):
+                  raise ValueError('unsafe path')
+              if '\\' in value or any(ord(c) < 32 for c in value):
+                  raise ValueError('invalid path byte')
+              return value
+
+          if git('rev-parse', 'HEAD').decode().strip() != base:
+              raise RuntimeError('original source mismatch')
+          git('diff', '--exit-code')
+          git('diff', '--cached', '--exit-code')
+          chunks = []
+          for sha in parts:
+              blob = api('/git/blobs/' + sha)
+              if blob.get('encoding') != 'base64' or not 0 < blob.get('size', 0) <= 6000:
+                  raise RuntimeError('invalid transfer blob')
+              chunk = base64.b64decode(blob['content'])
+              if hashlib.sha1(b'blob ' + str(len(chunk)).encode() + b'\0' + chunk).hexdigest() != sha:
+                  raise RuntimeError('transfer blob identity mismatch')
+              chunks.append(chunk)
+          compressed = b''.join(chunks)
+          if len(compressed) != 34644 or hashlib.sha256(compressed).hexdigest() != expected_digest:
+              raise RuntimeError('transfer digest mismatch')
+          decoder = lzma.LZMADecompressor(memlimit=256 * 1024 * 1024)
+          raw = decoder.decompress(compressed, max_length=128179)
+          if len(raw) != 128178 or not decoder.eof or decoder.unused_data:
+              raise RuntimeError('transfer stream mismatch')
+          delta = json.loads(raw)
+          if delta.get('schema') != 'heptatrader.audit-line-delta.v1' or delta.get('base_sha') != base or delta.get('expected_tree') != expected_tree:
+              raise RuntimeError('transfer subject mismatch')
+          if len(delta['files']) != 45 or len(delta['deletes']) != 11:
+              raise RuntimeError('transfer inventory mismatch')
+          entries = []
+          seen = set()
+          for item in delta['files']:
+              path = relative(item['path'])
+              if path in seen or item['mode'] not in ('100644', '100755'):
+                  raise ValueError('duplicate path or invalid mode')
+              seen.add(path)
+              original = [] if item['base_path'] is None else git('show', base + ':' + relative(item['base_path'])).decode('utf-8').splitlines(keepends=True)
+              contents = []
+              for op in item['ops']:
+                  if isinstance(op, str):
+                      contents.append(op)
+                  elif isinstance(op, list) and len(op) == 2 and all(type(n) is int for n in op) and 0 <= op[0] <= op[1] <= len(original):
+                      contents.append(''.join(original[op[0]:op[1]]))
+                  else:
+                      raise ValueError('invalid copy range')
+              text = ''.join(contents)
+              target = Path(path)
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(text.encode('utf-8'))
+              target.chmod(int(item['mode'], 8) & 0o777)
+              entries.append({'path': path, 'type': 'blob', 'mode': item['mode'], 'content': text})
+          for value in delta['deletes']:
+              path = relative(value)
+              if path in seen:
+                  raise ValueError('duplicate deletion')
+              seen.add(path)
+              Path(path).unlink()
+              entries.append({'path': path, 'type': 'blob', 'mode': '100644', 'sha': None})
+          git('add', '-A')
+          git('diff', '--cached', '--check')
+          if git('write-tree').decode().strip() != expected_tree:
+              raise RuntimeError('reconstructed tree is not the tested tree')
+          tree = api('/git/trees', {'base_tree': base_tree, 'tree': entries})
+          if tree['sha'] != expected_tree:
+              raise RuntimeError('published tree is not the tested tree')
+          parent = os.environ['PARENT_SHA']
+          commit = api('/git/commits', {
+              'message': 'refactor: implement audit remediation with behavior-bound tests\n\nHarden SHADOW and MCP numerical/file boundaries; add real component and IPC tests; replace forced closure and source wording gates with scoped gap tracking; deduplicate CI; document exact protocols, leases, recovery and research contracts; retire unused risk sinks and eight IDE files.\n\nLocally tested source tree: ' + expected_tree + '\nNo Broker campaign, authority expansion, ruleset change or main update. Temporary transfer workflows are absent from this tree.',
+              'tree': expected_tree,
+              'parents': [parent],
+          })
+          receipt = {
+              'schema': 'heptatrader.audit-tree-transfer.v1',
+              'commit_sha': commit['sha'],
+              'tree_sha': expected_tree,
+              'parent_sha': parent,
+              'base_sha': base,
+              'transfer_sha256': expected_digest,
+              'changed_files': 45,
+              'deleted_files': 11,
+              'authorization_effect': 'NONE',
+              'paper_authorized': False,
+              'live_authorized': False,
+          }
+          output = Path(os.environ['RUNNER_TEMP']) / 'audit-tree-transfer.json'
+          output.write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+          print(json.dumps(receipt, sort_keys=True))
+          PY
+      - name: Retain non-secret tree identity receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-audit-materialized-result
+          path: ${{ runner.temp }}/audit-tree-transfer.json
+          retention-days: 1
+          if-no-files-found: error
