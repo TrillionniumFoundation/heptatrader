@@ -138,6 +138,34 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      - name: Exercise exact installed core through real PID1 systemd
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          candidate="$GITHUB_WORKSPACE/dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
+          host_source="$(sudo mktemp -d /tmp/hepta-systemd-source.XXXXXXXX)"
+          trap 'sudo rm -rf -- "$host_source"' EXIT
+          git archive "$EXPECTED_SHA" | sudo tar -x --no-same-owner --no-same-permissions -C "$host_source"
+          sudo chmod 0755 "$host_source"
+          cd "$host_source"
+          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
+            HEPTA_DISPOSABLE_SYSTEMD_TEST=1 \
+            python3 tests/systemd_simulator_smoke.py \
+            --artifact "$candidate" \
+            --expected-sha256 "$(cut -d' ' -f1 "$candidate.sha256")" \
+            --evidence-dir "$GITHUB_WORKSPACE/dist/systemd-evidence"
+
+      - name: Retain real systemd lifecycle and failure evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: systemd-simulator-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: dist/systemd-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Run core Python behavior partition (source and install run separately)
         env:
           PYTHONWARNINGS: error::ResourceWarning
@@ -148,7 +176,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: heptatrader-core-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/
+          path: |
+            dist/heptatrader-*-core-*.tar.gz
+            dist/heptatrader-*-core-*.tar.gz.sha256
+            dist/heptatrader-*-core-*.tar.gz.receipt.json
+            dist/release-simulator-smoke-*.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

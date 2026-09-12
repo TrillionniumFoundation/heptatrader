@@ -83,3 +83,19 @@ Repository admission settings are optional engineering controls for this owner-o
 ## Detailed development reference
 
 See [`installed-process-acceptance.md`](../technical/installed-process-acceptance.md) for concrete contracts, executable acceptance and the limits of that evidence.
+
+## Installed unit and single-descriptor acceptance
+
+CMake installation is also checked by `check_systemd_units.validate_installed`:
+service executables, credential-delivered application code and required unit
+associations must resolve within the exact staged payload. Core omits IB and
+broker-policy runtime units. `tests/systemd_simulator_smoke.py` then exercises
+the same artifact with real PID 1, private credentials and unprivileged daemons;
+see [manager acceptance](../technical/systemd-simulator-acceptance.md).
+
+Preflight has one manifest validator and one archive inspector. Namespace,
+bounded label and exact root/version/profile checks run before payload reads
+inside that same descriptor-pinned inspector. It does not re-open and re-hash
+the artifact to add a second root-identity check. Regression tests preserve
+identity substitution rejection and early rejection, not private variable
+spellings or a particular formatting of an assignment.

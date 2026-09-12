@@ -25,8 +25,9 @@ ctest --test-dir build/core --output-on-failure -L core
 The top-level CMake project defines one install tree for the maintained runtime. Install into an empty staging root before deployment or packaging:
 
 ```bash
-rm -rf stage/core
-DESTDIR="$PWD/stage/core" cmake --install build/core --prefix /usr
+stage="$(mktemp -d)"
+DESTDIR="$stage" cmake --install build/core --prefix /usr
+python3 scripts/check_systemd_units.py --install-root "$stage/usr" --profile core
 ```
 
 The resulting tree contains the canonical daemons and CLIs, `hepta-preflight`, selected runtime helpers, systemd and tmpfiles assets, capability/preflight policy, installed build metadata and current documentation. Example configuration remains under the package share directory and is never treated as an effective secret-bearing configuration.
@@ -44,3 +45,17 @@ A successful compilation, installation, package build or preflight does not auth
 ## Deployment rule
 
 Production-like hosts install only an approved, content-addressed archive. The approved digest, extracted installed-file manifest, effective non-secret configuration digest, static-host preflight receipt and later qualification receipt must refer to the same release candidate. Any local rebuild or file replacement creates a new candidate.
+
+## Executable and service layout
+
+Canonical daemons and CLIs are installed in `/usr/bin`. Private Python helpers
+live in `/usr/libexec/heptatrader`; systemd units live in `/usr/lib/systemd/system`.
+The installed unit inventory is cross-checked against the actual executable and
+credential-code payload, not just the syntax of an absolute path. Core packages
+do not install unusable IB/policy units or the IB kill-switch tmpfiles rule.
+IB examples remain non-secret, non-operational templates.
+
+See the [operator walkthrough](../technical/simulator-operator-walkthrough.md)
+and [real systemd acceptance](../technical/systemd-simulator-acceptance.md).
+The latter requires an empty disposable VM and is never safe to run against an
+existing host installation.

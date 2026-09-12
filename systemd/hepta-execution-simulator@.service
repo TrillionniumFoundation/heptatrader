@@ -11,7 +11,7 @@ Sockets=hepta-execution-simulator@%i.socket hepta-execution-events-simulator@%i.
 User=hepta-exec-%i
 Group=hepta-exec-%i
 WorkingDirectory=/
-ExecStart=/usr/libexec/hepta-executiond
+ExecStart=/usr/bin/hepta-executiond
 Environment=HEPTA_EXECUTION_SERVICE_MODE=SIMULATOR
 EnvironmentFile=/etc/heptatrader/trust-domains/%i.execution.env
 LoadCredential=hepta-execution-fence:/etc/heptatrader/credentials/trust-domains/%i/hepta-execution-simulator-fence

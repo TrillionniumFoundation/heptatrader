@@ -50,8 +50,8 @@ sudo hepta-preflight \
   --expected-sha256 <approved-package-sha256> \
   --profile ib-paper \
   --policy /usr/share/heptatrader/preflight-policy-v1.json \
-  --execution-uid "$(id -u hepta-ib-execution)" \
-  --gateway-uid "$(id -u hepta-tool-gateway)" \
+  --execution-uid "$(id -u hepta-ib-exec)" \
+  --gateway-uid "$(id -u hepta-gateway)" \
   --kill-switch-path /run/hepta/ib-paper-control/kill-switch \
   --output /var/lib/heptatrader/evidence/ib-paper-host-preflight.json
 ```

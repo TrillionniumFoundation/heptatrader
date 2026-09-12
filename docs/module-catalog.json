@@ -260,7 +260,9 @@
         "tests/python/test_release_simulator_smoke.py",
         "tests/agent_simulator_e2e_tests.cpp",
         "tests/python/test_installed_runtime_processes.py",
-        "tests/python/test_gateway_symbol_boundary.py"
+        "tests/python/test_gateway_symbol_boundary.py",
+        "tests/python/test_preflight_single_pass.py",
+        "tests/systemd_simulator_smoke.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -283,7 +285,9 @@
         "tests/python/test_self_hosted_ib_availability.py",
         "tests/python/test_hepta_broker_egress_policy_atomic.py",
         "tests/python/test_release_simulator_smoke.py",
-        "tests/python/test_installed_runtime_processes.py"
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/systemd_simulator_smoke.py",
+        "tests/python/test_systemd_smoke_admission.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

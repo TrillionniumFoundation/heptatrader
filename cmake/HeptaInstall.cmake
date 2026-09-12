@@ -95,15 +95,20 @@ if(HEPTA_ENABLE_IBAPI)
         COMPONENT runtime)
 endif()
 
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/systemd/"
+# Install only runnable units for the selected profile. Examples remain inert.
+file(GLOB _hepta_units CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/systemd/*.service"
+    "${PROJECT_SOURCE_DIR}/systemd/*.socket"
+    "${PROJECT_SOURCE_DIR}/systemd/*.target"
+    "${PROJECT_SOURCE_DIR}/systemd/*.path"
+    "${PROJECT_SOURCE_DIR}/systemd/*.timer")
+if(NOT HEPTA_ENABLE_IBAPI)
+    list(FILTER _hepta_units EXCLUDE REGEX "(ib-paper|broker-egress-policy)\\.(service|socket)$")
+endif()
+install(FILES ${_hepta_units}
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/systemd/system"
-    COMPONENT runtime
-    FILES_MATCHING
-        PATTERN "*.service"
-        PATTERN "*.socket"
-        PATTERN "*.target"
-        PATTERN "*.path"
-        PATTERN "*.timer")
+    COMPONENT runtime)
+unset(_hepta_units)
 
 install(DIRECTORY "${PROJECT_SOURCE_DIR}/systemd/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/examples/systemd"
@@ -112,10 +117,14 @@ install(DIRECTORY "${PROJECT_SOURCE_DIR}/systemd/"
         PATTERN "*.example"
         PATTERN "*.json")
 
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/tmpfiles.d/"
+install(FILES "${PROJECT_SOURCE_DIR}/tmpfiles.d/heptatrader-agent-os.conf"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/tmpfiles.d"
-    COMPONENT runtime
-    FILES_MATCHING PATTERN "*.conf")
+    COMPONENT runtime)
+if(HEPTA_ENABLE_IBAPI)
+    install(FILES "${PROJECT_SOURCE_DIR}/tmpfiles.d/heptatrader-ib-paper.conf"
+        DESTINATION "${CMAKE_INSTALL_LIBDIR}/tmpfiles.d"
+        COMPONENT runtime)
+endif()
 
 if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")
     install(FILES "${PROJECT_SOURCE_DIR}/README.md"

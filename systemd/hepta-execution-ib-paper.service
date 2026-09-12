@@ -11,7 +11,7 @@ Sockets=hepta-execution-ib-paper.socket hepta-execution-events-ib-paper.socket
 User=hepta-ib-exec
 Group=hepta-ib-exec
 WorkingDirectory=/
-ExecStart=/usr/libexec/hepta-ib-executiond
+ExecStart=/usr/bin/hepta-ib-executiond
 Environment=HEPTA_IB_PAPER_CONTROL_DIRECTORY=/run/hepta/ib-paper-control
 EnvironmentFile=/etc/heptatrader/hepta-execution-ib-paper.env
 LoadCredential=hepta-execution-fence:/etc/heptatrader/credentials/hepta-execution-ib-paper-fence

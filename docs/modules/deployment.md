@@ -65,3 +65,13 @@ The repository still does not create organization teams, branch rulesets, protec
 ## Detailed development reference
 
 See [`installed-process-acceptance.md`](../technical/installed-process-acceptance.md) for concrete contracts, executable acceptance and the limits of that evidence.
+
+## Artifact-to-manager integration
+
+The canonical `/usr/bin` daemon paths and packaged private network-policy helper
+are validated against fresh CMake installation, including template units. Core
+installs no IB authority units or IB tmpfiles rule. The
+[systemd simulator acceptance](../technical/systemd-simulator-acceptance.md)
+uses real PID 1 on a disposable host, without copying loose build binaries,
+patching unit paths or weakening daemon sandboxing. Target-host and Broker
+acceptance remain distinct from this test.

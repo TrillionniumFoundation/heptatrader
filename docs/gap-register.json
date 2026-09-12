@@ -337,6 +337,23 @@
       "issue": null,
       "blocking_releases": [],
       "disposition": "Press feed coverage must end exactly at retrieval, never in the future; configured per-source freshness still applies. Calendar coverage must include evaluation time. This removes impossible future-news knowledge requirements without allowing stale/future evidence."
+    },
+    {
+      "id": "DEPLOYMENT-INSTALL-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Canonical daemon and credential-code paths now match the installed payload; core excludes unusable IB runtime assets.",
+      "evidence": [
+        "cmake/HeptaInstall.cmake",
+        "scripts/check_systemd_units.py",
+        "tests/python/test_cmake_install_integration.py",
+        "tests/python/test_systemd_units.py",
+        "tests/systemd_simulator_smoke.py",
+        "docs/technical/systemd-simulator-acceptance.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Fresh install regressions validate actual files and associations. Manager acceptance is bound to the exact CI artifact. No target trading host, IB network rule or PAPER account is certified by this source change."
     }
   ]
 }

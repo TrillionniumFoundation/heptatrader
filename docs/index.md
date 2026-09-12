@@ -57,6 +57,9 @@ This index is the canonical entry point for current development documentation. A
 - [`technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
 - [`technical/capability-advertising.md`](technical/capability-advertising.md)
 
+- [`technical/systemd-simulator-acceptance.md`](technical/systemd-simulator-acceptance.md)
+- [`technical/simulator-operator-walkthrough.md`](technical/simulator-operator-walkthrough.md)
+
 ## Operations
 
 - [`operations/install.md`](operations/install.md)
