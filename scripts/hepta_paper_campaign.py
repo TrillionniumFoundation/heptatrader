@@ -129,6 +129,60 @@ class CampaignStore:
                     pass
                 raise
 
+    def recover_completed(self, stage):
+        """Finish a local interrupted commit using complete retained evidence only.
+
+        Never call a host driver, send/cancel/flatten, or accept a wrapper exit
+        status as economic proof. Incomplete or conflicting evidence leaves the
+        active attempt fenced. Repeated recovery is an idempotent read/recheck.
+        """
+        if stage not in STAGES:
+            raise EvidenceError('unknown progressive stage')
+        with self.locked():
+            state=self.state()
+            before=STAGES[:STAGES.index(stage)]
+            previous_end=0
+            for previous in before:
+                if previous not in state['completed']:
+                    raise EvidenceError('preceding stage has not passed: '+previous)
+                receipt=self.reverify(previous,state['completed'][previous])
+                if receipt['start_at_ms'] < previous_end:
+                    raise EvidenceError('completed stages overlap in time')
+                previous_end=receipt['end_at_ms']
+            active=state['active']
+            if active is None:
+                if stage not in state['completed']:
+                    raise EvidenceError('no retained attempt to recover')
+                receipt=self.reverify(stage,state['completed'][stage])
+                if receipt['start_at_ms'] < previous_end:
+                    raise EvidenceError('completed stages overlap in time')
+                return receipt
+            if (not isinstance(active,dict) or set(active)!={'stage','attempt','status'} or
+                    active['stage']!=stage or active['status'] not in ('running','failed_or_interrupted')):
+                raise EvidenceError('active attempt does not match requested recovery stage')
+            if set(state['completed'])!=set(before):
+                raise EvidenceError('active attempt has inconsistent completed stages')
+            attempt=active['attempt']
+            if not isinstance(attempt,str) or not attempt.startswith(stage+'-') or '/' in attempt or '..' in attempt:
+                raise EvidenceError('invalid attempt path')
+            evidence=self.root/'attempts'/attempt
+            receipt=verify(evidence/'rollout-result.json',evidence,self.campaign['binding']['candidate_sha'],
+                           self.binary,self.harness,stage,campaign_path=self.identity)
+            if receipt['start_at_ms'] < previous_end:
+                raise EvidenceError('stage evidence predates previous terminal stage')
+            receipt_path=evidence/'rollout-verification.json'
+            try:
+                write_json(receipt_path,receipt)
+            except FileExistsError:
+                if load_json(receipt_path)!=receipt:
+                    raise EvidenceError('retained receipt disagrees with recovered evidence')
+            state['completed'][stage]=dict(attempt=attempt,receipt_sha256=sha256_file(receipt_path))
+            state['active']=None
+            # A failed state write still leaves either the original durable
+            # active identity or an already completed state. Neither resends.
+            write_json(self.state_path,state,replace=True)
+            return receipt
+
     def status(self):
         with self.locked():
             state=self.state()
@@ -152,12 +206,18 @@ def main(argv=None):
     parser.add_argument('--harness',type=Path,required=True)
     parser.add_argument('--stage',choices=STAGES)
     parser.add_argument('--artifact-dir',type=Path)
-    parser.add_argument('--status',action='store_true')
+    mode=parser.add_mutually_exclusive_group()
+    mode.add_argument('--status',action='store_true')
+    mode.add_argument('--recover-completed',choices=STAGES)
     args=parser.parse_args(argv)
     try:
+        if (args.status or args.recover_completed) and (args.stage or args.artifact_dir):
+            raise EvidenceError('inspection/recovery cannot be combined with a mutation stage')
         store=CampaignStore(args.store,args.campaign,args.binary,args.harness)
         if args.status:
             print(canonical_bytes(store.status()).decode(),end=''); return 0
+        if args.recover_completed:
+            print(canonical_bytes(store.recover_completed(args.recover_completed)).decode(),end=''); return 0
         if not args.stage or args.artifact_dir is None: raise EvidenceError('stage and artifact-dir are required')
         def operation(evidence):
             env=dict(os.environ,HEPTA_ROLLOUT_CAMPAIGN=str(store.identity.resolve()))
