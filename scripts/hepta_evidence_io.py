@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -34,9 +35,21 @@ def reject_constant(value):
     raise EvidenceError(f'non-finite JSON number: {value}')
 
 
+def finite_float(value: str) -> float:
+    """Do not let exponent overflow or nonzero underflow manufacture evidence."""
+    result = float(value)
+    if not math.isfinite(result):
+        raise EvidenceError(f'non-finite JSON number: {value}')
+    mantissa = value.lower().split('e', 1)[0]
+    if result == 0 and any(digit in '123456789' for digit in mantissa):
+        raise EvidenceError('nonzero JSON number underflows to zero')
+    return result
+
+
 def loads(data: bytes | str) -> Any:
     try:
-        return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant)
+        return json.loads(data, object_pairs_hook=unique_object, parse_constant=reject_constant,
+                          parse_float=finite_float)
     except (ValueError, UnicodeError) as exc:
         raise EvidenceError(f'invalid JSON: {exc}') from exc
 

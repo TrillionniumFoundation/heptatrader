@@ -223,11 +223,14 @@ def verify(result_path: Path, evidence_root: Path, expected_git_sha: str,
         commands = defaultdict(list)
         for row in journal_by_cycle[cid]:
             commands[row['command_id']].append(row)
-        require(bool(commands), 'cycle has no durable commands')
+        # The portable P1 harness issues one opening BUY and one exact exit.
+        # Counting barriers alone would let multiple round trips hide inside a
+        # single declared cycle while evading its operation budget.
+        require(len(commands) == 2, 'cycle must contain exactly two mutation legs')
         net = Decimal(0)
         total_fills = 0
         last_terminal = start
-        for command, rows in commands.items():
+        for leg, (command, rows) in enumerate(commands.items()):
             require(command not in seen_commands, 'command reused across cycles')
             seen_commands.add(command)
             require([r['event'] for r in rows] == ['intent', 'send_attempt', 'reconciled'],
@@ -245,6 +248,11 @@ def verify(result_path: Path, evidence_root: Path, expected_git_sha: str,
                     'unsupported P1 order')
             require(0 < quantity <= 1 and price > 0 and quantity * price <= 5000,
                     'order exceeds P1 quantity/notional envelope')
+            if leg == 0:
+                require(sent['side'] == 'BUY', 'P1 cycle requires an opening BUY')
+            else:
+                require(sent['side'] == 'SELL' and net > 0 and quantity == net,
+                        'exit must SELL the exact observed opening position')
             times = [integer(r['observed_at_ms'], 'journal timestamp') for r in rows]
             require(last_terminal <= times[0] <= times[1] <= times[2] <= end,
                     'journal timing/one-active-order violation')

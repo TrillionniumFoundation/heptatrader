@@ -66,3 +66,27 @@ rotate journals or clear unresolved order state.
 Main was protected by active ruleset `22597364` at inspection: two approvals, strict
 required checks and Merge Queue, with no bypass for the connected principal. This
 source change does not silently alter that rule or impersonate independent review.
+
+## Follow-up: bound the actual P1 operation envelope
+
+Review of integration head `d036a700fb3bdfaf04514b505a1319b460ca9dc2` found that
+one declared cycle could contain several economic round trips, or an exit order
+larger than the position that happened to fill only partially back to zero. The
+verifier now requires exactly two ordered mutation legs: an opening BUY and a SELL
+whose requested quantity equals the economically observed opening position. This
+matches the portable harness without imposing command-name spelling. Partial fills,
+exact duplicate execution reports and a partially filled/cancelled opening order
+followed by its exact exit remain supported. Heavy V5 qualification is unchanged.
+
+The shared JSON reader also rejects exponent overflow and nonzero underflow at
+ingestion. A nonzero quantity must not become a numeric zero and manufacture a flat
+snapshot. Genuine zero, ordinary finite numbers and representable subnormals remain
+valid. These are evidence semantics, not new trading authorization.
+
+Ten focused regression methods were added in `test_rollout_cycle_envelope.py` and
+`test_evidence_numeric_ingestion.py`. The isolated local run reproduced eight failed
+assertions/subcases on the prior implementation and passed all ten methods after
+the patch. Only controller-tree digest calculation was mocked in that local isolated
+run because the complete repository could not be cloned there; GitHub Core CI runs
+the tests against the actual full controller tree. Full CI results must still be
+read for the new exact head. No Broker was contacted by these tests.
