@@ -11,13 +11,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          ref: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          ref: 8a5f63a67715835638f2e3eb9f7cdea7b0582b2c
           fetch-depth: 1
           persist-credentials: false
-      - name: Export exact public source and Git object history
+      - name: Export exact public source and Git identity for local verification
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          test "$(git rev-parse HEAD)" = 8a5f63a67715835638f2e3eb9f7cdea7b0582b2c
           mkdir -p /tmp/hepta-source-export
           git archive --format=tar HEAD | gzip -n > /tmp/hepta-source-export/source.tar.gz
           git ls-files --stage > /tmp/hepta-source-export/index.txt
@@ -25,7 +25,7 @@ jobs:
           sha256sum /tmp/hepta-source-export/source.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: heptatrader-audit-source-d003f54c
+          name: heptatrader-audit-source-8a5f63a6
           path: /tmp/hepta-source-export/
           retention-days: 1
           if-no-files-found: error
