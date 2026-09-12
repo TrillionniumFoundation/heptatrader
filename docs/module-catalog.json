@@ -16,7 +16,8 @@
       ],
       "tests": [
         "tests/native_tool_client_tests.cpp",
-        "tests/unix_tool_server_tests.cpp"
+        "tests/unix_tool_server_tests.cpp",
+        "tests/python/test_mcp_bridge.py"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
@@ -111,8 +112,7 @@
       "status": "CURRENT",
       "document": "docs/modules/authoritative-state.md",
       "implementation": [
-        "HeptaTrade/state",
-        "HeptaTrade/reconcile"
+        "HeptaTrade/state"
       ],
       "tests": [
         "tests/authoritative_trading_snapshot_store_tests.cpp",
@@ -224,7 +224,9 @@
         "scripts/validate_hepta_strategy_decision_receipt.py"
       ],
       "tests": [
-        "tests/python/test_research_contract_smoke.py"
+        "tests/python/test_research_contract_smoke.py",
+        "tests/python/test_strategy_contracts.py",
+        "tests/python/test_research_behavior.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -288,12 +290,10 @@
         "scripts/README.md",
         "scripts/check_component_coverage.py",
         "scripts/check_documentation.py",
-        "scripts/check_documentation_core.py",
         "scripts/check_gap_register.py",
         "scripts/dev_core.sh",
         "scripts/verify_build_ownership.py",
-        "scripts/verify_exact_git_index.py",
-        "scripts/verify_source_gap_closures.py"
+        "scripts/verify_exact_git_index.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
@@ -313,15 +313,11 @@
         "HeptaSimulator",
         "Interface",
         "Tools",
-        "HeptaTrader.sln",
-        "HeptaTrader_Linux.sln",
         "HeptaTrade/FM_AdaGrad_cu2603.xml",
         "HeptaTrade/FM_AdaGrad_cu2605.xml",
         "HeptaTrade/HeptaDemoStrategyTrader.cpp",
-        "HeptaTrade/HeptaTrader.vcxproj",
         "HeptaTrade/HeptaTraderConfig.paper.xml",
         "HeptaTrade/HeptaTraderConfig.xml.example",
-        "HeptaTrade/HeptaTrader_Linux.vcxproj",
         "HeptaTrade/IBRisk.template.xml",
         "HeptaTrade/Instrument.xml",
         "HeptaTrade/ib_fx_multi_strategy.cpp",
@@ -329,7 +325,8 @@
         "HeptaTrade/openclaw_0dte_bridge.cpp",
         "HeptaTrade/openclaw_0dte_bridge.h",
         "HeptaTrade/order_watchdog.cpp",
-        "HeptaTrade/order_watchdog.h"
+        "HeptaTrade/order_watchdog.h",
+        "HeptaTrade/reconcile"
       ],
       "tests": [
         "tests/python/test_legacy_runtime_boundary.py",

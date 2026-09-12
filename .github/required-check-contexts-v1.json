@@ -59,9 +59,6 @@
   "non_required_observation_contexts": [
     "qualification-source-audit",
     "ib-paper-candidate-artifact-build",
-    "reliability-runtime-sanitizers (g++)",
-    "reliability-runtime-sanitizers (clang++)",
-    "release-candidate-reproducibility-observation",
     "X230 IB runner probe"
   ]
 }

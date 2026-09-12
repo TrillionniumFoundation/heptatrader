@@ -1,8 +1,8 @@
 # Session supervisor
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `HeptaTrade/tool_host/session_supervisor_protocol.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_store.cpp`, `HeptaTrade/tool_host/unix_session_supervisor_server.cpp`, `HeptaTrade/cli/hepta_sessionctl.cpp`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `HeptaTrade/tool_host/session_supervisor_protocol.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_store.cpp`, `HeptaTrade/tool_host/unix_session_supervisor_server.cpp`, `HeptaTrade/cli/hepta_sessionctl.cpp`
 Tests: `tests/unix_session_supervisor_server_tests.cpp`, `tests/session_supervisor_lease_store_migration_tests.cpp`
 
 ## Responsibilities
@@ -71,3 +71,11 @@ Tests cover provisioning, expiry, rotation, migration, stale-generation rejectio
 ## Known limitations
 
 The source tree supplies session primitives, not proof that a deployment has created the required OS users, directories, tokens, or protected operator paths. Those are host controls and remain fail-closed until independently verified.
+
+## Persistent and wire format reference
+
+[`Session lease format`](../technical/session-lease-format.md) separates the
+HSS1 wire protocol, encrypted store envelope and versioned plaintext records.
+It documents the actual migration restrictions, finalization states and failure
+points. Those format rules, not the illustrative logical state diagram above,
+are the compatibility contract for restart and rollback.

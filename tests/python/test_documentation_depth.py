@@ -1,63 +1,48 @@
-#!/usr/bin/env python3
+"""Structure/navigation tests intentionally do not score prose quality."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-SCRIPTS = ROOT / "scripts"
-if str(SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS))
-
-import check_documentation as documentation  # noqa: E402
+sys.path.insert(0, str(ROOT / "scripts"))
+import check_documentation as documentation
 
 
-class DocumentationDepthTests(unittest.TestCase):
-    def test_repository_documents_satisfy_depth_contract(self) -> None:
-        errors = documentation.validate(ROOT)
-        depth_errors = [
-            error
-            for error in errors
-            if "technical document is too shallow" in error
-            or "missing required engineering topics" in error
-            or "engineering topic groups" in error
-            or "substantive prose paragraphs" in error
-        ]
-        self.assertEqual(depth_errors, [])
+class DocumentationStructureTests(unittest.TestCase):
+    def test_repository_structure_and_navigation(self):
+        self.assertEqual(documentation.validate(ROOT), [])
 
-    def test_catalog_shaped_stub_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            path = root / "docs/modules/stub.md"
+    def test_missing_contract_metadata_is_rejected_without_word_quotas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = Path("docs/modules/example.md")
+            path = root / relative
             path.parent.mkdir(parents=True)
-            path.write_text(
-                "# Stub\n\n"
-                "Status: CURRENT\n"
-                "Applies to: repository HEAD\n"
-                "Implementation: `src`\n"
-                "Tests: `tests`\n\n"
-                "## Responsibilities\n\nExists.\n\n"
-                "## Tests\n\nExists.\n",
-                encoding="utf-8",
-            )
-            modules = {
-                "stub": {
-                    "id": "stub",
-                    "status": "CURRENT",
-                    "document": "docs/modules/stub.md",
-                    "implementation": ["src"],
-                    "tests": ["tests"],
-                    "broker_mutation": "NONE",
-                    "production_authorized": False,
-                }
-            }
-            errors: list[str] = []
-            documentation._validate_documentation_depth(root, modules, errors)
-            self.assertTrue(errors)
-            self.assertTrue(any("too shallow" in error for error in errors))
-            self.assertTrue(any("missing required engineering topics" in error for error in errors))
+            path.write_text("# Example\n\n## Interface\n\nSee the executable contract.\n")
+            errors = []
+            documentation._validate_doc_metadata(root, relative, {"status": "CURRENT"}, errors)
+            self.assertTrue(any("Status:" in error for error in errors))
+            path.write_text("# Example\nStatus: CURRENT\nApplies to: test\nImplementation: `src`\nTests: `tests`\n\n## Interface\n\nShort but specific.\n")
+            errors = []
+            documentation._validate_doc_metadata(root, relative, {"status": "CURRENT"}, errors)
+            self.assertEqual(errors, [])  # Only structure, never a design-quality claim.
+
+    def test_catalog_navigation_is_deterministic_and_detects_status_drift(self):
+        modules = {"example": {"id": "example", "status": "EXPERIMENTAL", "document": "docs/modules/example.md"}}
+        expected = documentation.render_module_table(modules)
+        self.assertEqual(expected, documentation.render_module_table(modules))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "docs").mkdir()
+            path = root / "docs/index.md"
+            path.write_text("# Index\n" + expected + "\n")
+            self.assertEqual(documentation.validate_generated_index(root, modules), [])
+            path.write_text("# Index\n" + expected.replace("EXPERIMENTAL", "CURRENT") + "\n")
+            self.assertTrue(documentation.validate_generated_index(root, modules))
 
 
 if __name__ == "__main__":

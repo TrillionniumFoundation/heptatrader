@@ -1,36 +1,67 @@
-# Gap register
+# Gap register and release scope
 
 Status: CURRENT
 Applies to: repository HEAD
 Machine source: [`gap-register.json`](gap-register.json)
 Verification: `python3 scripts/check_gap_register.py`
 
-HeptaTrader is an owner-operated, self-use system. Every gap in the supported baseline is closed in source and none blocks repository use. Source closure and Broker authorization remain separate claims.
+## Honest issue state
 
-The gap verifier checks concrete repository evidence, complementary CI ownership and executable-contract agreement. It deliberately does not treat duplicated workflow command strings, compatibility check names, issue labels or repository-governance ceremony as trading-safety evidence.
+Schema v2 permits new IDs and the states `OPEN`, `ACCEPTED`, `DEFERRED` and
+`CLOSED`, in either the REPOSITORY or EXTERNAL domain. Accepted, deferred and
+closed entries require a disposition. Closed entries require existing evidence
+paths. An issue number may remain attached after closure; reopening a real
+problem does not require rewriting a checker to keep CI green.
 
-## Complete supported-scope closure
+Evidence paths are navigation to implementation, tests or receipts. Checking
+that a path exists does not execute its tests or certify its contents. The
+checker does not search C++ source for function names, operators or test prose.
+Historical closure records describe bounded past work, not permanent guarantees
+about all future commits. The former unconditional `source_state=READY` claim
+has been removed. PAPER and LIVE authorization remain false.
 
-| Gap | State | Closure |
-|---|---|---|
-| DOC-001 | CLOSED_SOURCE | Canonical module/component ownership and substantive technical-document depth are machine-validated; the external PAPER harness interface and 12-scenario contract are reviewable source. |
-| CI-001 | CLOSED_SOURCE | Core Runtime owns full build/Python/install/package/preflight/lifecycle behavior; GCC/Clang lanes independently own sanitizer coverage; Documentation Control Plane owns source truth. Historical contexts retained solely for the live server-side ruleset are compatibility shims, not closure evidence. |
-| TEST-001 | CLOSED_SOURCE | Gap-critical executable/Python tests are inventoried by build facts, and the PAPER scenario document is machine-bound to the executable evidence verifier. |
-| RISK-001 | CLOSED_SOURCE | Generic snapshot, unit/notional, pending exposure, loss, drawdown and guarded-exit rules are implemented and tested. |
-| PENDING-EXPOSURE-001 | CLOSED_SOURCE | Pending exposure, exact V5 atomic flatten, machine-state nftables replacement/readback, deny-all fallback and Broker-observed qualification scenario/evidence contracts are behavior-bound. |
-| VENUE-001 | CLOSED_SOURCE | CTP and XT/QMT scaffolds cannot manufacture venue success; legacy runtimes remain default-off and non-authorizing. |
-| OMS-001 | CLOSED_SOURCE | Journal-before-send, uncertainty and authoritative reconciliation contracts match schema v4. |
-| BUILD-001 | CLOSED_SOURCE | Canonical target/translation-unit ownership comes from fresh CMake File API data and exact Git-index component coverage. |
-| RELEASE-001 | CLOSED_SOURCE | Canonical install, deterministic immutable publication, descriptor-pinned preflight, unprivileged systemd unit/readiness lint, installed simulator execution, and atomic pointer rollback/re-promotion mechanics are behavior-tested; N-1 schema compatibility remains a deployment prerequisite. |
+## Release admission is a separate question
 
-`source_state` is `READY`. `paper_authorized` and `live_authorized` remain `false`.
+An ordinary integrity check succeeds with valid open work. A release caller can
+request a particular supported profile:
 
-## Optional IB PAPER activation
+```bash
+python3 scripts/check_gap_register.py
+python3 scripts/check_gap_register.py --release-profile core
+python3 scripts/check_gap_register.py --release-profile ib-paper
+```
 
-IB PAPER is retained as a disabled, qualification-required capability, not as an unresolved project gap. Nothing in the repository enables it. An operator who later chooses to activate it must complete the exact dispatch-main, immutable-artifact, PAPER-only Broker campaign documented in [`modules/ib-paper.md`](modules/ib-paper.md), [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md), [`ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json), and [`adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md).
+The second/third commands reject unresolved entries whose `blocking_releases`
+contains that profile. `ACCEPTED` and `DEFERRED` are not automatic waivers: their
+listed release blockers still apply. Scope or disposition changes require an
+honest rationale and ordinary code review, not a synthetic all-closed invariant.
+The tagged core release workflow invokes the core-profile check before building.
 
-The external SDK, pinned credential-bearing harness, PAPER credentials, TWS/IB Gateway, root-owned host controls and Broker account are owner-controlled runtime inputs. Their absence is not a source-code gap; it simply leaves the optional capability disabled. A failed or absent campaign cannot be converted into partial authorization.
+Example of a newly discovered core release blocker:
 
-The qualification workflow requires the candidate SHA to equal `main` at workflow dispatch. After the immutable candidate is built, later `main` movement is not a candidate change and does not invalidate the campaign. Any change to the bound source/artifact/builder/SDK/harness/profile/account/host/scenario tuple requires a new campaign.
+```json
+{
+  "id": "EXAMPLE-001",
+  "domain": "REPOSITORY",
+  "state": "OPEN",
+  "summary": "A regression affects the core install path",
+  "evidence": [],
+  "issue": null,
+  "blocking_releases": ["core"],
+  "disposition": ""
+}
+```
 
-LIVE trading remains unavailable.
+## External and experimental work
+
+The register explicitly retains missing complete SHADOW integration evidence
+and target-host/prior-version rollback evidence. These are not claims that the
+core package cannot be built. Equally, a same-artifact pointer rollback smoke
+cannot be represented as a prior-version journal/lease migration test.
+
+Optional IB PAPER activation still requires the independently controlled SDK,
+harness, account, host isolation and an actual campaign bound to the exact
+immutable artifact. `--release-profile ib-paper` cannot replace or grant that
+qualification. Advancing `main` does not mutate an already admitted artifact;
+changing any bound campaign input does. See [the IB module](modules/ib-paper.md)
+and [the harness contract](technical/ib-paper-harness-contract.md).

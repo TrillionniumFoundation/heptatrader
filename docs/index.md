@@ -5,7 +5,7 @@ Applies to: repository HEAD
 Owner: HeptaTrader maintainers
 Verification: `python3 scripts/check_documentation.py` and `python3 scripts/check_component_coverage.py`
 
-This index is the canonical entry point for current development documentation. A document is operational only when its status is `CURRENT` and its implementation and test paths are present in `docs/module-catalog.json`. Production-path completeness is independently derived from the exact Git index by `scripts/check_component_coverage.py`.
+This index is the canonical entry point for current development documentation. A document is operational only when its status is `CURRENT` and its implementation and test paths are present in `docs/module-catalog.json`. Component ownership is independently derived from the Git index by `scripts/check_component_coverage.py`; ownership and structural lint are not proof of complete technical design or behavior.
 
 ## Status vocabulary
 
@@ -18,29 +18,35 @@ This index is the canonical entry point for current development documentation. A
 
 ## Canonical module documents
 
-| Module | Status | Document |
+<!-- module-catalog:begin -->
+| Module | Status | Development document |
 |---|---|---|
-| Agent entry and MCP bridge | CURRENT | [`modules/agent-entry.md`](modules/agent-entry.md) |
-| Tool Gateway and tool registry | CURRENT | [`modules/tool-gateway.md`](modules/tool-gateway.md) |
-| Session supervisor | CURRENT | [`modules/session-supervisor.md`](modules/session-supervisor.md) |
-| Execution Service | CURRENT | [`modules/execution-service.md`](modules/execution-service.md) |
-| OMS journal and recovery | CURRENT | [`modules/oms-journal.md`](modules/oms-journal.md) |
-| Risk engine | CURRENT | [`modules/risk-engine.md`](modules/risk-engine.md) |
-| Authoritative state | CURRENT | [`modules/authoritative-state.md`](modules/authoritative-state.md) |
-| Deterministic simulator | CURRENT | [`modules/simulator.md`](modules/simulator.md) |
-| IB PAPER runtime | QUALIFICATION_REQUIRED | [`modules/ib-paper.md`](modules/ib-paper.md) |
-| CTP adapter | EXPERIMENTAL | [`modules/ctp-adapter.md`](modules/ctp-adapter.md) |
-| XT/QMT adapter | EXPERIMENTAL | [`modules/xt-adapter.md`](modules/xt-adapter.md) |
-| SHADOW research pipeline | EXPERIMENTAL | [`modules/shadow-research.md`](modules/shadow-research.md) |
-| Release engineering and host preflight | CURRENT | [`modules/release-engineering.md`](modules/release-engineering.md) |
-| systemd deployment assets | CURRENT | [`modules/deployment.md`](modules/deployment.md) |
-| Repository control and source verification | CURRENT | [`modules/repository-control.md`](modules/repository-control.md) |
-| Historical monolith and compatibility assets | LEGACY | [`modules/legacy-runtime.md`](modules/legacy-runtime.md) |
+| `agent-entry` | CURRENT | [modules/agent-entry.md](modules/agent-entry.md) |
+| `tool-gateway` | CURRENT | [modules/tool-gateway.md](modules/tool-gateway.md) |
+| `session-supervisor` | CURRENT | [modules/session-supervisor.md](modules/session-supervisor.md) |
+| `execution-service` | CURRENT | [modules/execution-service.md](modules/execution-service.md) |
+| `oms-journal` | CURRENT | [modules/oms-journal.md](modules/oms-journal.md) |
+| `risk-engine` | CURRENT | [modules/risk-engine.md](modules/risk-engine.md) |
+| `authoritative-state` | CURRENT | [modules/authoritative-state.md](modules/authoritative-state.md) |
+| `simulator` | CURRENT | [modules/simulator.md](modules/simulator.md) |
+| `ib-paper` | QUALIFICATION_REQUIRED | [modules/ib-paper.md](modules/ib-paper.md) |
+| `ctp-adapter` | EXPERIMENTAL | [modules/ctp-adapter.md](modules/ctp-adapter.md) |
+| `xt-adapter` | EXPERIMENTAL | [modules/xt-adapter.md](modules/xt-adapter.md) |
+| `shadow-research` | EXPERIMENTAL | [modules/shadow-research.md](modules/shadow-research.md) |
+| `release-engineering` | CURRENT | [modules/release-engineering.md](modules/release-engineering.md) |
+| `deployment` | CURRENT | [modules/deployment.md](modules/deployment.md) |
+| `repository-control` | CURRENT | [modules/repository-control.md](modules/repository-control.md) |
+| `legacy-runtime` | LEGACY | [modules/legacy-runtime.md](modules/legacy-runtime.md) |
+<!-- module-catalog:end -->
 
 ## Development references
 
 - [`DEVELOPMENT-DOCUMENTATION-INDEX.md`](DEVELOPMENT-DOCUMENTATION-INDEX.md)
 - [`technical/runtime-engineering-map.md`](technical/runtime-engineering-map.md)
+- [`technical/agent-tool-protocol.md`](technical/agent-tool-protocol.md)
+- [`technical/session-lease-format.md`](technical/session-lease-format.md)
+- [`technical/shadow-pipeline-contract.md`](technical/shadow-pipeline-contract.md)
+- [`technical/legacy-retirement.md`](technical/legacy-retirement.md)
 - [`technical/execution-events.md`](technical/execution-events.md)
 - [`technical/reconciliation-engine.md`](technical/reconciliation-engine.md)
 - [`technical/service-lifecycle.md`](technical/service-lifecycle.md)
@@ -124,6 +130,6 @@ module document.
 
 ## Non-canonical material
 
-The historical `HeptaStrategy/`, `HeptaSimulator/`, old Visual Studio projects, large legacy data files, and deprecated bridges are explicitly owned by the LEGACY module and excluded from the default build. Their presence does not authorize deployment or provide an alternate order path.
+The historical `HeptaStrategy/`, `HeptaSimulator/`, legacy CSV reconciliation reporter, large data files and deprecated bridges remain explicitly owned by the LEGACY module. Eight unused Visual Studio assets were retired; shared `Interface/` and `Tools/` headers remain where required. See [`technical/legacy-retirement.md`](technical/legacy-retirement.md). Legacy presence does not authorize deployment or provide an alternate order path.
 
-All active supported-scope source gaps, including canonical release/install/preflight engineering, Git-discovered component ownership, documentation depth, and Broker-free release rollback smoke, are closed in source. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
+Open work and release-profile blockers are recorded in `gap-register.json`. A green source check validates structure and ownership, not universal project completeness. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.

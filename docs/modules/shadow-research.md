@@ -1,9 +1,9 @@
 # SHADOW research pipeline
 
-Status: EXPERIMENTAL  
-Applies to: repository HEAD  
-Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`  
-Tests: `tests/python/test_research_contract_smoke.py`
+Status: EXPERIMENTAL
+Applies to: repository HEAD
+Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`
+Tests: `tests/python/test_research_contract_smoke.py`, `tests/python/test_strategy_contracts.py`, `tests/python/test_research_behavior.py`
 
 ## Scope
 
@@ -37,8 +37,17 @@ Unsafe evidence paths, changed bytes, duplicate keys, unsupported schema, missin
 
 ## Testing
 
-The smoke test compiles/imports every catalogued research module and validates that no module imports broker or execution mutation adapters. Functional fixture suites should separately cover extractor formats, history recovery, bar boundaries, freshness, no-lookahead behavior, receipt tampering, transaction costs, and final audit.
+The smoke test compiles and imports the catalogued Python programs and lints explicit Broker SDK imports/calls; it is not a sandbox or economic test. `test_strategy_contracts.py` executes strict numeric, bounded-file and atomic-publication behavior. `test_research_behavior.py` executes strategy outcomes and vetoes, digest tampering, no-lookahead sampling, bar boundaries, fill/cost assumptions, holding/overlap limits and interrupted empty-history recovery. Full provider-format and sealed end-to-end campaign fixtures remain open as `SHADOW-INTEGRATION-001`, rather than being inferred from these component tests.
 
 ## Promotion boundary
 
 Before any PAPER canary consumes a research decision, a separate risk challenger, bounded campaign policy, execution-side preview, human/environment authorization, and broker-observed qualification are mandatory. Promotion changes the integration boundary; it is not achieved by changing the SHADOW document status alone.
+
+## Per-component development contract
+
+[`SHADOW pipeline contract`](../technical/shadow-pipeline-contract.md) maps every
+script to its artifact inputs/outputs, explains timestamp/unit and numeric
+rules, gives feature/resampling and bar algorithms, decision examples, durable
+history/runner boundaries and replay economics. It identifies which fixtures
+execute actual behavior and which full integration cases are still absent.
+Research status remains EXPERIMENTAL after this documentation and test work.

@@ -152,16 +152,15 @@ class ComponentCoverageTests(unittest.TestCase):
             errors = coverage.validate(root)
             self.assertTrue(any("owner drift" in item for item in errors), errors)
 
-    def test_development_index_must_name_every_module_document(self) -> None:
+    def test_new_top_level_runtime_directory_cannot_escape_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
-            index = root / "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md"
-            index.write_text("# Development documentation\n", encoding="utf-8")
-            subprocess.run(["git", "-C", str(root), "add", str(index)], check=True)
+            path = root / "new_runtime/worker.py"
+            path.parent.mkdir()
+            path.write_text("def worker(): pass\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "."], check=True)
             errors = coverage.validate(root)
-            self.assertTrue(
-                any("omits module document" in item for item in errors), errors
-            )
+            self.assertTrue(any("unowned production path: new_runtime/worker.py" in item for item in errors), errors)
 
 
 if __name__ == "__main__":

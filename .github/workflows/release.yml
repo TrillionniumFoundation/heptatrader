@@ -28,6 +28,8 @@ jobs:
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
           test "v${version}" = "${GITHUB_REF_NAME}"
+      - name: Check blockers declared for this release profile
+        run: python3 scripts/check_gap_register.py --release-profile core
       - name: Build tested core
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core

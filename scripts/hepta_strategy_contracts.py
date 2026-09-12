@@ -6,9 +6,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
+import stat
 import tempfile
 from typing import Any
 
@@ -33,6 +35,56 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _reject_constant(_value: str) -> None:
     raise ContractError("STRATEGY_JSON_NON_FINITE")
+
+
+def _finite_json_float(token: str) -> float:
+    """JSON constants and exponent overflow are different parser paths."""
+    value = float(token)
+    if not math.isfinite(value):
+        raise ContractError("STRATEGY_JSON_NON_FINITE")
+    if value == 0.0 and any(digit in "123456789" for digit in token.lower().split("e", 1)[0]):
+        raise ContractError("STRATEGY_JSON_NUMBER_UNDERFLOW")
+    return value
+
+
+def _file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _read_document_bytes(path: Path, label: str, maximum_bytes: int) -> bytes:
+    """Bound allocation and reject special/replaced leaves before parsing.
+
+    Parent directories remain caller-owned trust inputs; this is not a
+    privileged arbitrary-path loader or a substitute for deployment isolation.
+    """
+    if isinstance(maximum_bytes, bool) or not isinstance(maximum_bytes, int) or maximum_bytes < 1:
+        raise ContractError(f"{label}_LIMIT_INVALID")
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
+    try:
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                raise ContractError(f"{label}_FILE_INVALID")
+            if before.st_size > maximum_bytes:
+                raise ContractError(f"{label}_TOO_LARGE")
+            contents = bytearray()
+            while len(contents) <= maximum_bytes:
+                chunk = os.read(descriptor, min(65536, maximum_bytes + 1 - len(contents)))
+                if not chunk:
+                    break
+                contents.extend(chunk)
+            if len(contents) > maximum_bytes:
+                raise ContractError(f"{label}_TOO_LARGE")
+            if (_file_identity(before) != _file_identity(os.fstat(descriptor)) or
+                    _file_identity(before) != _file_identity(path.lstat())):
+                raise ContractError(f"{label}_FILE_CHANGED")
+            return bytes(contents)
+        finally:
+            os.close(descriptor)
+    except OSError as error:
+        raise ContractError(f"{label}_READ_FAILED") from error
 
 
 def canonical_bytes(document: Any) -> bytes:
@@ -68,19 +120,15 @@ def load_document(
     label: str,
     maximum_bytes: int = MAX_DOCUMENT_BYTES,
 ) -> dict[str, Any]:
-    try:
-        contents = path.read_bytes()
-    except OSError as error:
-        raise ContractError(f"{label}_READ_FAILED") from error
-    if len(contents) > maximum_bytes:
-        raise ContractError(f"{label}_TOO_LARGE")
+    contents = _read_document_bytes(path, label, maximum_bytes)
     try:
         value = json.loads(
             contents.decode("utf-8", errors="strict"),
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
+            parse_float=_finite_json_float,
         )
-    except (UnicodeError, json.JSONDecodeError, ValueError) as error:
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise ContractError(f"{label}_JSON_INVALID") from error
     if not isinstance(value, dict):
         raise ContractError(f"{label}_ROOT_INVALID")
@@ -90,23 +138,26 @@ def load_document(
 def atomic_write_json(path: Path, document: Any, mode: int = 0o600) -> None:
     contents = canonical_bytes(document)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        mode="wb",
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        delete=False,
-    ) as output:
-        temporary = Path(output.name)
-        os.fchmod(output.fileno(), mode)
-        output.write(contents)
-        output.flush()
-        os.fsync(output.fileno())
-    os.replace(temporary, path)
-    directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    temporary: Path | None = None
     try:
-        os.fsync(directory)
+        with tempfile.NamedTemporaryFile(
+            mode="wb", dir=path.parent, prefix=f".{path.name}.", delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            os.fchmod(output.fileno(), mode)
+            output.write(contents)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        temporary = None
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
-        os.close(directory)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def require_exact_fields(
@@ -165,7 +216,12 @@ def require_number(
 ) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ContractError(reason)
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ContractError(reason) from error
+    if not math.isfinite(number):
+        raise ContractError(reason)
     if positive and number <= 0.0:
         raise ContractError(reason)
     if minimum is not None and number < minimum:

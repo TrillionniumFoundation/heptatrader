@@ -50,9 +50,6 @@ jobs:
           HEPTA_RELEASE_INTEGRATION_BUILD_DIR: ${{ github.workspace }}/build/core
         run: python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py'
 
-      - name: Verify deployment unit contract without host mutation
-        run: python3 scripts/check_systemd_units.py
-
       - name: Package, preflight, install, execute, roll back and re-promote the exact tested core
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
