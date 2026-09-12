@@ -50,6 +50,7 @@ jobs:
           python3 scripts/verify_build_ownership.py
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
+          python3 scripts/run_python_tests.py --lane source
 
       - name: Reassert clean exact source
         if: always()

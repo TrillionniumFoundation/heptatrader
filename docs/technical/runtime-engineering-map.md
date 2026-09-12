@@ -100,9 +100,9 @@ Files ending in `.example` are templates, never authority. Runtime code should e
 
 Behavior-bearing evidence is intentionally assigned once:
 
-- **Core Runtime CI** owns the canonical build/CTest, full Python discovery, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
+- **Core Runtime CI** owns the canonical build/CTest, core/install/process Python partitions, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
 - **GCC/Clang reliability lanes** independently own sanitizer behavior.
-- **Documentation Control Plane** owns documentation depth, component/build ownership, capability truth and source-gap contracts without rerunning the behavior suite.
+- **Documentation Control Plane** owns documentation depth, component/build ownership, capability truth and source-gap contracts and its disjoint source Python partition.
 - **IB PAPER qualification** is an explicit owner-dispatched external Broker campaign and is not a routine merge gate.
 
 The required-check inventory contains only behavior-bearing contexts. Historical compatibility shims were removed so branch protection cannot mistake an empty job for engineering evidence.

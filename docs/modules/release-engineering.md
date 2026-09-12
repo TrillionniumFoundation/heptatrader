@@ -79,3 +79,7 @@ A release workflow must build the canonical CMake targets, install into an empty
 ## Known limitations
 
 Repository admission settings are optional engineering controls for this owner-operated system and are not Broker authorization. Static preflight deliberately stops before credentials, TWS/IB Gateway sessions and PAPER account effects. If the owner later enables optional IB PAPER, the dispatch-main qualification workflow must bind Broker-observed evidence to the exact immutable package/executable digest; later movement of `main` does not alter that artifact identity. Until then `paper_authorized=false`; LIVE remains unavailable.
+
+## Detailed development reference
+
+See [`installed-process-acceptance.md`](../technical/installed-process-acceptance.md) for concrete contracts, executable acceptance and the limits of that evidence.

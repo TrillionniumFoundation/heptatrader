@@ -2,8 +2,8 @@
 
 Status: EXPERIMENTAL
 Applies to: repository HEAD
-Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`
-Tests: `tests/python/test_research_contract_smoke.py`, `tests/python/test_strategy_contracts.py`, `tests/python/test_research_behavior.py`
+Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`, `scripts/hepta_shadow_finalize.py`
+Tests: `tests/python/test_research_contract_smoke.py`, `tests/python/test_strategy_contracts.py`, `tests/python/test_research_behavior.py`, `tests/python/test_shadow_pipeline_integration.py`, `tests/python/test_official_source_formats.py`
 
 ## Scope
 
@@ -37,7 +37,7 @@ Unsafe evidence paths, changed bytes, duplicate keys, unsupported schema, missin
 
 ## Testing
 
-The smoke test compiles and imports the catalogued Python programs and lints explicit Broker SDK imports/calls; it is not a sandbox or economic test. `test_strategy_contracts.py` executes strict numeric, bounded-file and atomic-publication behavior. `test_research_behavior.py` executes strategy outcomes and vetoes, digest tampering, no-lookahead sampling, bar boundaries, fill/cost assumptions, holding/overlap limits and interrupted empty-history recovery. Full provider-format and sealed end-to-end campaign fixtures remain open as `SHADOW-INTEGRATION-001`, rather than being inferred from these component tests.
+The smoke test compiles and imports the catalogued Python programs and lints explicit Broker SDK imports/calls; it is not a sandbox or economic test. `test_strategy_contracts.py` executes strict numeric, bounded-file and atomic-publication behavior. `test_research_behavior.py` executes strategy outcomes and vetoes, digest tampering, no-lookahead sampling, bar boundaries, fill/cost assumptions, holding/overlap limits and interrupted empty-history recovery. `test_official_source_formats.py` exercises all five pinned grammars using explicitly synthetic fixtures. The opt-in `test_shadow_pipeline_integration.py` executes retained-payload capture/extraction/normalization, 1,208 samples and four WATCH lease generations, materialized history, runner publication recovery, finalizer retry and sealed cost-sensitive filled replay under a separate reader UID. Only HTTP transport and external WATCH observations are fixture seams; provider uptime, live market truth and profit are not claimed.
 
 ## Promotion boundary
 
@@ -48,6 +48,5 @@ Before any PAPER canary consumes a research decision, a separate risk challenger
 [`SHADOW pipeline contract`](../technical/shadow-pipeline-contract.md) maps every
 script to its artifact inputs/outputs, explains timestamp/unit and numeric
 rules, gives feature/resampling and bar algorithms, decision examples, durable
-history/runner boundaries and replay economics. It identifies which fixtures
-execute actual behavior and which full integration cases are still absent.
+history/runner boundaries and replay economics. The [finalization contract](../technical/shadow-finalization.md) defines the source-level final audit producer, fixture scope and remaining external evidence limits.
 Research status remains EXPERIMENTAL after this documentation and test work.

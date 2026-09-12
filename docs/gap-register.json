@@ -30,7 +30,7 @@
         "scripts/check_documentation.py",
         "scripts/check_component_coverage.py",
         "tests/python/test_documentation_control_plane.py",
-        "tests/python/test_documentation_depth.py",
+        "tests/python/test_documentation_structure.py",
         "tests/python/test_component_coverage.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
@@ -269,15 +269,19 @@
     {
       "id": "SHADOW-INTEGRATION-001",
       "domain": "REPOSITORY",
-      "state": "OPEN",
-      "summary": "Complete collector-to-normalizer-to-history-to-runner-to-sealed-replay integration and official-source format fixtures remain to be validated.",
+      "state": "CLOSED",
+      "summary": "Synthetic provider capture through retained payload extraction, normalization, nonempty history, decision/state recovery, final audit and sealed economic replay are exercised end to end.",
       "evidence": [
-        "tests/python/test_research_behavior.py",
-        "docs/modules/shadow-research.md"
+        "scripts/hepta_shadow_finalize.py",
+        "scripts/hepta_market_context_builder.py",
+        "tests/python/test_shadow_pipeline_integration.py",
+        "tests/python/shadow_pipeline_fixture.py",
+        "tests/python/test_official_source_formats.py",
+        "docs/technical/shadow-finalization.md"
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "Experimental and not installed. Current tests prove component behavior, deterministic evaluation, no-lookahead sampling, bar/cost boundaries and interrupted empty-history recovery; they do not prove a complete observation campaign."
+      "disposition": "The opt-in multi-UID fixture executes 1,208 real persisted samples, four WATCH lease generations, 40 closed five-minute bars, a real SHADOW decision, record/head and receipt/state interruption recovery, immutable finalizer retry and a filled cost-sensitive sealed replay. Only HTTP transport and external WATCH observations are synthetic input fixtures. This proves source integration, not real provider availability, market truth, profit or Broker qualification."
     },
     {
       "id": "HOST-ROLLBACK-001",
@@ -286,11 +290,53 @@
       "summary": "Target-host startup and prior-version journal/lease migration evidence must accompany a real deployment.",
       "evidence": [
         "docs/operations/rollback-backup.md",
-        "docs/technical/release-simulator-smoke.md"
+        "docs/technical/release-simulator-smoke.md",
+        "docs/technical/installed-process-acceptance.md"
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "Not a core package-build blocker. Same-artifact rollback smoke does not prove N-1 persistent-schema compatibility or host readiness."
+      "disposition": "Source-level installed-process and distinct-source-artifact rollback is covered by RELEASE-PAIR-001. Actual target-host systemd, identities, network policy and deployment-specific prior-schema approval remain external evidence; no live deployment was attempted."
+    },
+    {
+      "id": "RELEASE-PAIR-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Installed production daemon/CLI/MCP behavior and one pinned prior-source artifact share persistent state across upgrade/rollback/re-promotion.",
+      "evidence": [
+        "tests/python/test_installed_runtime_processes.py",
+        ".github/workflows/core-ci.yml",
+        "docs/technical/installed-process-acceptance.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Separate unprivileged identities exercise native/MCP quote parity, wrong-UID rejection, preview-bound orders, no-resend duplicates, MCP cancel, journal and lease restart. Different digest/source artifacts preserve position 100 -> 75 -> 0 and exactly three sends. Not a universal N-1, unknown active-order migration, real systemd or production-host certification."
+    },
+    {
+      "id": "LINK-SURFACE-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Total Gateway symbols are advisory; privileged execution linkage remains a hard failure.",
+      "evidence": [
+        "cmake/verify_gateway_forbidden_symbols.cmake",
+        "tests/python/test_gateway_symbol_boundary.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Compile-and-inspect fixtures exceed 1,200 harmless symbols successfully while an actual ExecutionCoordinator symbol fails. No credential, network or execution authority boundary is relaxed."
+    },
+    {
+      "id": "SOURCE-TIME-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "RSS knowledge-at-fetch and calendar future schedule coverage use distinct temporal contracts.",
+      "evidence": [
+        "scripts/hepta_market_context_builder.py",
+        "tests/python/test_official_source_formats.py",
+        "tests/python/test_shadow_pipeline_integration.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Press feed coverage must end exactly at retrieval, never in the future; configured per-source freshness still applies. Calendar coverage must include evaluation time. This removes impossible future-news knowledge requirements without allowing stale/future evidence."
     }
   ]
 }

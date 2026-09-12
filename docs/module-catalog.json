@@ -17,7 +17,8 @@
       "tests": [
         "tests/native_tool_client_tests.cpp",
         "tests/unix_tool_server_tests.cpp",
-        "tests/python/test_mcp_bridge.py"
+        "tests/python/test_mcp_bridge.py",
+        "tests/python/test_installed_runtime_processes.py"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
@@ -221,12 +222,16 @@
         "scripts/hepta_market_official_source_extractor.py",
         "scripts/hepta_official_source_capture.py",
         "scripts/hepta_strategy_contracts.py",
-        "scripts/validate_hepta_strategy_decision_receipt.py"
+        "scripts/validate_hepta_strategy_decision_receipt.py",
+        "scripts/hepta_shadow_finalize.py"
       ],
       "tests": [
         "tests/python/test_research_contract_smoke.py",
         "tests/python/test_strategy_contracts.py",
-        "tests/python/test_research_behavior.py"
+        "tests/python/test_research_behavior.py",
+        "tests/python/test_shadow_data_behavior.py",
+        "tests/python/test_shadow_pipeline_integration.py",
+        "tests/python/test_official_source_formats.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -253,7 +258,9 @@
         "tests/python/test_preflight_complete_namespace.py",
         "tests/python/test_cmake_install_integration.py",
         "tests/python/test_release_simulator_smoke.py",
-        "tests/agent_simulator_e2e_tests.cpp"
+        "tests/agent_simulator_e2e_tests.cpp",
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/python/test_gateway_symbol_boundary.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -275,7 +282,8 @@
         "tests/python/test_hepta_broker_egress_policy.py",
         "tests/python/test_self_hosted_ib_availability.py",
         "tests/python/test_hepta_broker_egress_policy_atomic.py",
-        "tests/python/test_release_simulator_smoke.py"
+        "tests/python/test_release_simulator_smoke.py",
+        "tests/python/test_installed_runtime_processes.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -293,13 +301,16 @@
         "scripts/check_gap_register.py",
         "scripts/dev_core.sh",
         "scripts/verify_build_ownership.py",
-        "scripts/verify_exact_git_index.py"
+        "scripts/verify_exact_git_index.py",
+        "scripts/run_python_tests.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
         "tests/python/test_documentation_control_plane.py",
         "tests/python/test_gap_register.py",
-        "tests/python/test_qualification_trust_boundary.py"
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_documentation_structure.py",
+        "tests/python/test_python_test_partition.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -326,7 +337,8 @@
         "HeptaTrade/openclaw_0dte_bridge.h",
         "HeptaTrade/order_watchdog.cpp",
         "HeptaTrade/order_watchdog.h",
-        "HeptaTrade/reconcile"
+        "HeptaTrade/reconcile",
+        "cmake/HeptaLegacy.cmake"
       ],
       "tests": [
         "tests/python/test_legacy_runtime_boundary.py",

@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `scripts/check_documentation.py`
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_depth.py`
+Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_structure.py`
 
 ## Machine-verifiable facts
 
