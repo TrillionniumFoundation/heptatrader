@@ -1,0 +1,97 @@
+name: Apply verified integration tree
+on:
+  push:
+    branches: [integration/paper-runtime-closure-20260912]
+    paths: [.github/workflows/integration-apply.yml]
+permissions:
+  contents: write
+concurrency:
+  group: heptatrader-integration-apply
+  cancel-in-progress: false
+jobs:
+  apply:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.ref == 'refs/heads/integration/paper-runtime-closure-20260912'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Apply the digest-pinned locally tested source delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = TrillionniumFoundation/heptatrader
+          test "$GITHUB_REF" = refs/heads/integration/paper-runtime-closure-20260912
+          test "$(git rev-parse HEAD^)" = ce2730f792baec4b73311a30ed31d1b1c124fe9f
+          python3 - <<'PY'
+          import hashlib, json, lzma, os, shutil, subprocess
+          from pathlib import Path, PurePosixPath
+          base = 'ce2730f792baec4b73311a30ed31d1b1c124fe9f'
+          packed = b''.join(Path(f'.integration-transfer/chunk-{i:02d}.xz').read_bytes() for i in range(8))
+          assert hashlib.sha256(packed).hexdigest() == '2138bbfb130070df5268da7f94ad27337f98a631702e67175cae60447b761e6e'
+          decoder = lzma.LZMADecompressor()
+          raw = decoder.decompress(packed, max_length=202983)
+          assert decoder.eof and not decoder.unused_data and len(raw) == 202982
+          changes = json.loads(raw)
+          assert isinstance(changes, list) and len(changes) == 61
+          seen = set()
+          for change in changes:
+              path = change['path']
+              parts = PurePosixPath(path)
+              assert not parts.is_absolute() and path == str(parts)
+              assert not any(p in ('', '.', '..', '.git') for p in parts.parts)
+              assert path not in seen
+              seen.add(path)
+              target = Path(path)
+              if change.get('delete') is True:
+                  target.unlink()
+                  continue
+              original = subprocess.run(['git', 'show', f'{base}:{path}'], capture_output=True)
+              if original.returncode:
+                  assert not target.exists(), path
+                  lines = []
+              else:
+                  lines = original.stdout.decode('utf-8').splitlines(keepends=True)
+              end = len(lines)
+              for first, last, text in reversed(change['ops']):
+                  assert 0 <= first <= last <= end
+                  lines[first:last] = text.splitlines(keepends=True)
+                  end = first
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(''.join(lines).encode('utf-8'))
+              assert change['mode'] in ('100644', '100755')
+              os.chmod(target, 0o755 if change['mode'] == '100755' else 0o644)
+          shutil.rmtree('.integration-transfer')
+          Path('.github/workflows/integration-apply.yml').unlink()
+          PY
+          git add -A
+          git diff --cached --check
+          test "$(git write-tree)" = 2f2089a91194e081b84be167f7352837e25d853f
+      - name: Commit tested code and preserve incrementally reconciled branch ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: retain campaign evidence, verify rollout economics, restore real CI and continuous artifacts' -m 'Exact locally tested source tree 2f2089a91194e081b84be167f7352837e25d853f. Native core 25/25; Python 297 discovered (296 passed, one default integration skip); explicit install integration 4/4. No Broker campaign or new trading authorization. See docs/technical/integration-20260912.md.'
+          tree=$(git rev-parse HEAD^{tree})
+          parent=$(git rev-parse HEAD)
+          git diff --quiet 246070563260d9631fa0f86af01bd063881cdba0 6753c29e8f9be100462a63cbb6785c7651c29ca6
+          git diff --quiet 5a6770404d8a8feac83de6f6b62379a2c4e39f3a f7f0ded8852baf70a37c8934e211a5dba9c55839
+          parent=$(printf '%s\n' 'merge: retain immutable-artifact branch ancestry; exact tree already integrated by #64' | git commit-tree "$tree" -p "$parent" -p 246070563260d9631fa0f86af01bd063881cdba0)
+          parent=$(printf '%s\n' 'merge: retain compatibility-gates branch ancestry; exact tree already integrated by #66' | git commit-tree "$tree" -p "$parent" -p 5a6770404d8a8feac83de6f6b62379a2c4e39f3a)
+          parent=$(printf '%s\n' 'merge: reconcile progressive rollout v1 with v2 and tested evidence/CI repairs' 'Resolution: preserve v2 descendant baseline and documented fixes, not obsolete green sanitizer shims; see docs/technical/integration-20260912.md.' | git commit-tree "$tree" -p "$parent" -p 9b924c97cf78159547a2ebb9504372983548776b)
+          git reset --soft "$parent"
+          test "$(git rev-parse HEAD^{tree})" = 2f2089a91194e081b84be167f7352837e25d853f
+          git push origin HEAD:refs/heads/integration/paper-runtime-closure-20260912
+          printf 'Integration head: `%s`\n\nExact tested tree: `%s`\n' "$parent" "$tree" >> "$GITHUB_STEP_SUMMARY"
+          git bundle create "$RUNNER_TEMP/heptatrader-integrated.bundle" --all
+      - name: Preserve integrated source history for verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-integrated-source
+          path: ${{ runner.temp }}/heptatrader-integrated.bundle
+          retention-days: 1
+          if-no-files-found: error
