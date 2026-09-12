@@ -117,7 +117,8 @@ class IbPaperRolloutTests(unittest.TestCase):
         def mutate(f):
             for row in f.journal[3:]: row['side']='BUY'
             for row in f.callbacks[2:]: row['side']='BUY'
-        self.reject(mutate,'intermediate gross position')
+        # Wrong-side exits are now rejected before projecting their fills.
+        self.reject(mutate,'exit must SELL the exact observed opening position')
 
     def test_boolean_zero_is_not_valid_terminal_measurement(self):
         self.reject(lambda f: f.result.update(final_position_quantity=False),'number required')
