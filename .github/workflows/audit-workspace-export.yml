@@ -1,0 +1,36 @@
+name: Audit workspace export (temporary)
+on:
+  push:
+    branches: [remediation/audit-followthrough-20260912]
+    paths: [.github/workflows/audit-workspace-export.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read exact audited source without persisted credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export exact clean worktree and Git index
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          git diff --exit-code
+          git diff --cached --exit-code
+          tar -czf "$RUNNER_TEMP/heptatrader-audit-workspace.tar.gz" .
+          sha256sum "$RUNNER_TEMP/heptatrader-audit-workspace.tar.gz" > "$RUNNER_TEMP/heptatrader-audit-workspace.sha256"
+      - name: Retain read-only workspace briefly
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-audit-workspace-d003f54
+          path: |
+            ${{ runner.temp }}/heptatrader-audit-workspace.tar.gz
+            ${{ runner.temp }}/heptatrader-audit-workspace.sha256
+          retention-days: 1
+          if-no-files-found: error
+          compression-level: 0
