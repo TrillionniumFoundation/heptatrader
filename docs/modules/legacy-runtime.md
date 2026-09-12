@@ -36,3 +36,15 @@ Tests lock the default-off CMake options, experimental adapter no-transport beha
 ## Known limitations
 
 The legacy source is not comprehensively modernized, benchmarked, or supported across current compilers. Large data assets and old IDE projects should eventually be archived or moved to versioned external artifacts after reproducibility and licensing are documented.
+
+## Isolated build ownership and retirement
+
+Legacy-only translation-unit and proprietary-overlay declarations live in
+`cmake/HeptaLegacy.cmake`, included only when the monolith is explicitly enabled.
+The canonical profile does not evaluate that target declaration. Existing
+historical source and provenance remain available; no proprietary SDK or old
+binary is shipped or recreated by this cleanup.
+
+Physical source archival requires an owner-confirmed consumer inventory and a
+last-supported revision. No such consumer sign-off is implied by absence from
+the default build. CTP/XT refusal paths and the default-off flags remain tested.

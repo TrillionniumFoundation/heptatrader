@@ -3,7 +3,7 @@
 Status: CURRENT  
 Applies to: repository HEAD  
 Implementation: `scripts/check_documentation.py`  
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_depth.py`
+Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_documentation_structure.py`
 
 ## Required module contract
 
@@ -17,9 +17,19 @@ Every entry in `docs/module-catalog.json` must have:
 6. an explicit broker-mutation classification;
 7. an explicit production-authorization value.
 
-A module document is not considered complete merely because it exists or contains a technical heading. Maintained module documentation must contain substantive prose and cover the engineering topics needed to operate and change the component: purpose/responsibility, public contracts, state/persistence/recovery where applicable, failure semantics, security/authority boundaries, observability, executable testing, operations and limitations. Module-specific wording is allowed; the checker validates topic coverage rather than forcing one ceremonial template.
+## Structure is not technical completeness
 
-`CURRENT` and `QUALIFICATION_REQUIRED` documents must meet a higher depth threshold than `EXPERIMENTAL`, `LEGACY`, `PROPOSAL` or `UNAVAILABLE` material. A catalog-shaped stub that only repeats implementation and test paths fails the documentation gate.
+The automated gate checks metadata, file existence, references, lifecycle and
+capability consistency. It does not grade technical depth. There are no word,
+byte, paragraph or keyword quotas: padding prose cannot prove a correct design.
+A structural PASS is not an endorsement of the module's implementation or tests.
+
+For a maintained module, engineering review must be able to locate its public
+inputs/outputs, state transitions, concurrency ownership, failure/retry behavior,
+persistent format and upgrade rules, and the executable tests for those claims.
+These can live in linked technical references; do not duplicate one template
+per source file. Experimental modules document their actual boundary and missing
+behavior rather than inventing contracts for nonexistent implementations.
 
 ## Truthfulness rules
 
@@ -35,4 +45,4 @@ A module document is not considered complete merely because it exists or contain
 
 A pull request that changes a module implementation, public protocol, persistent schema, reason code, service unit, capability state, release contract or Broker qualification scenario must update the corresponding module/technical documentation and tests in the same pull request.
 
-`documentation-control-plane-exact-head` validates catalog ownership, links, lifecycle/capability truth and semantic documentation depth. It should not duplicate the complete runtime/release behavioral suite; those assertions belong to the behavior-bearing core/release gates.
+`documentation-control-plane-exact-head` validates catalog ownership, links, lifecycle/capability truth and documentation structure. `scripts/run_python_tests.py` assigns disjoint source, core and install test-file sets. The sanitizer compiler variants remain independent behavioral evidence.

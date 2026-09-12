@@ -65,3 +65,7 @@ Tests must cover every registered tool, required/forbidden fields, descriptor an
 ## Known limitations
 
 The current implementation is intentionally local-host and single-protocol-version. Remote Agent access, dynamic plugin loading, and broker-specific tools are not authorized. New tools must be represented in discovery and remain independent of direct venue APIs.
+
+## Detailed development reference
+
+See [`agent-tool-protocol.md`](../technical/agent-tool-protocol.md) for concrete contracts, executable acceptance and the limits of that evidence.

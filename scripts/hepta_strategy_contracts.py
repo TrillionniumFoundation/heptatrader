@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import hashlib
+import math
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -33,6 +35,15 @@ def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 def _reject_constant(_value: str) -> None:
     raise ContractError("STRATEGY_JSON_NON_FINITE")
+
+
+def _finite_float(value: str) -> float:
+    number = float(value)
+    if not math.isfinite(number):
+        raise ContractError("STRATEGY_JSON_NON_FINITE")
+    if number == 0.0 and not Decimal(value).is_zero():
+        raise ContractError("STRATEGY_JSON_NONZERO_UNDERFLOW")
+    return number
 
 
 def canonical_bytes(document: Any) -> bytes:
@@ -79,6 +90,7 @@ def load_document(
             contents.decode("utf-8", errors="strict"),
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
+            parse_float=_finite_float,
         )
     except (UnicodeError, json.JSONDecodeError, ValueError) as error:
         raise ContractError(f"{label}_JSON_INVALID") from error
@@ -165,7 +177,12 @@ def require_number(
 ) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ContractError(reason)
-    number = float(value)
+    try:
+        number = float(value)
+    except (OverflowError, ValueError) as error:
+        raise ContractError(reason) from error
+    if not math.isfinite(number):
+        raise ContractError(reason)
     if positive and number <= 0.0:
         raise ContractError(reason)
     if minimum is not None and number < minimum:

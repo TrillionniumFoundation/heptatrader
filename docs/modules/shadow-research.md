@@ -42,3 +42,7 @@ The smoke test compiles/imports every catalogued research module and validates t
 ## Promotion boundary
 
 Before any PAPER canary consumes a research decision, a separate risk challenger, bounded campaign policy, execution-side preview, human/environment authorization, and broker-observed qualification are mandatory. Promotion changes the integration boundary; it is not achieved by changing the SHADOW document status alone.
+
+## Detailed development reference
+
+See [`shadow-data-contracts.md`](../technical/shadow-data-contracts.md) for concrete contracts, executable acceptance and the limits of that evidence.

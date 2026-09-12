@@ -49,3 +49,9 @@ Compatibility fields that remain for historical source callers are not exempt fr
 Source status and trading authorization are separate: simulator is current, IB PAPER requires external broker-observed qualification, CTP/XT have no real transport, and LIVE is unavailable. A green documentation or repository-control check never implies Broker authorization.
 
 The PAPER qualification subject is the exact dispatch-time source plus the immutable candidate artifact and its bound runtime evidence. Later movement of `main` is not an artifact mutation and is deliberately not a qualification invalidator; see ADR 0003.
+
+## Interface and installed-process development references
+
+- [Agent tool protocol](technical/agent-tool-protocol.md)
+- [SHADOW data contracts](technical/shadow-data-contracts.md)
+- [Installed process acceptance](technical/installed-process-acceptance.md)

@@ -11,7 +11,7 @@
       "domain": "REPOSITORY",
       "state": "CLOSED_SOURCE",
       "blocking_authorization": false,
-      "summary": "Canonical module, capability, build ownership, Git-discovered component coverage, semantic documentation depth, detailed technical references and operations documentation exist and are machine-validated.",
+      "summary": "Historical documentation remediation: canonical module/capability ownership, file references and structural metadata are validated. Technical completeness is reviewed against interfaces and behavioral tests, not inferred from keyword or length thresholds.",
       "evidence": [
         "docs/DOCUMENTATION-POLICY.md",
         "docs/index.md",
@@ -33,7 +33,7 @@
         "scripts/check_component_coverage.py",
         "scripts/verify_source_gap_closures.py",
         "tests/python/test_documentation_control_plane.py",
-        "tests/python/test_documentation_depth.py",
+        "tests/python/test_documentation_structure.py",
         "tests/python/test_component_coverage.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",

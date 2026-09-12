@@ -53,3 +53,7 @@ Tests cover discovery, framing, schema-hash validation, result parsing, command-
 ## Known limitations
 
 The entry layer currently supports a local Unix transport only. It does not provide remote TLS, multi-host routing, or LIVE authority. Those capabilities must be introduced as separate trust domains rather than by exposing the broker API directly to an Agent.
+
+## Detailed development reference
+
+See [`agent-tool-protocol.md`](../technical/agent-tool-protocol.md) for concrete contracts, executable acceptance and the limits of that evidence.

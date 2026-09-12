@@ -49,3 +49,19 @@ Tests create hostile fixture repositories with newly tracked unowned components,
 ## Known limitations
 
 GitHub-side review, Ruleset, Merge Queue, environment, and runner controls remain server-side facts. The source tree can describe and verify their intended interfaces but cannot force a different principal to approve or make an offline runner available.
+
+## Validation ownership and limitations
+
+`python3 scripts/run_python_tests.py --lane source` owns source-contract
+regressions; `--lane core` owns the remaining behavior tests and `--lane install`
+owns the configured CMake installation tests. `--lane all` is the local complete
+suite; install-dependent tests explicitly skip without their build inputs.
+The runner derives the union from actual test files and rejects overlap or
+missing explicit files. Newly added tests default to core. There is no second
+hand-maintained list in workflow YAML. GCC and Clang sanitizer variants remain
+separate because they detect different runtime failures.
+
+The gap register is a historical repair baseline; active issues are tracked in
+GitHub Issues. Documentation structure checks do not certify design depth.
+
+The `process` partition owns opt-in installed multi-UID and exact-artifact-pair tests. It is disjoint from `core`, `source` and `install`; CI enables it on a disposable hosted runner. A normal local `all` run may skip these host-dependent scenarios and is not installed-process acceptance.

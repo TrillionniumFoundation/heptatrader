@@ -62,7 +62,8 @@ const char* kPreviewInputSchema =
     "\"sec_type\":{\"type\":\"string\"},\"exchange\":{\"type\":\"string\"}},\"additionalProperties\":false}";
 
 const char* kCancelInputSchema =
-    "{\"type\":\"object\",\"required\":[\"order_id\"],\"additionalProperties\":false}";
+    "{\"type\":\"object\",\"required\":[\"order_id\"],"
+    "\"properties\":{\"order_id\":{\"type\":\"integer\",\"minimum\":0}},\"additionalProperties\":false}";
 
 const char* kExecutionResultSchema =
     "{\"type\":\"object\",\"required\":[\"status\",\"command_id\",\"order_id\"],\"additionalProperties\":false}";

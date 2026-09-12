@@ -43,7 +43,7 @@ Worst-case gross requires the exposure section, including current gross notional
 
 ## Converted order-notional evidence
 
-An enabled per-order notional limit requires the same explicit fresh snapshot identity even when no portfolio limits are enabled. Per-order and gross-notional policies require `orderNotionalEvidence`; there is no generic quantity-times-price fallback. Historical names such as `baseCurrencyOrderNotionalPresent` and `baseCurrencyOrderNotional` are write-only, zero-state compatibility wrappers and cannot provide a scalar amount to either policy.
+An enabled per-order notional limit requires the same explicit fresh snapshot identity even when no portfolio limits are enabled. Per-order and gross-notional policies require `orderNotionalEvidence`; there is no generic quantity-times-price fallback. Historical direct-context scalar names have been removed; assigning to them is a compilation error. An unbound amount cannot provide evidence to either policy.
 
 The execution authority supplies trusted `instrumentContract`, `authorizedQuoteSourceId` and `authorizedFxSourceId` independently of the evidence. Instrument metadata contains a specification ID/version, full instrument identity, instrument kind, quantity unit, price unit, positive multiplier and quote currency. These fields are authoritative configuration or adapter metadata, never user order assertions. The evaluator supports only these explicit arithmetic contracts:
 
@@ -58,7 +58,7 @@ Converted evidence must bind the same subject, connection epoch, snapshot genera
 
 The evaluator validates the supplied amount against quantity × multiplier × price × FX rate using those supported unit contracts. Limit orders use the greater of the limit and authoritative reference price; market orders use the authoritative reference. An understated amount, omitted conversion/multiplier, unsupported units, mismatched instrument/currency/source, stale or future-dated quote/FX evidence, numeric overflow or non-finite value rejects. Floating-point rounding tolerance never lowers the charged notional: the decision uses the greater of the validated supplied and calculated amounts.
 
-Compatibility names retained in `PreTradeRiskContext` use `PreTradeRiskLegacyWriteOnly<T>`. They accept historical assignments but store no value and expose no primitive conversion, so aliases, pointers or templates cannot turn them into authoritative risk evidence. They exist only to keep assignment-only non-canonical legacy sources buildable during migration; see [`../technical/risk-legacy-compatibility.md`](../technical/risk-legacy-compatibility.md).
+The obsolete write-only compatibility fields have been physically removed after migrating all remaining test writers; no production writers remained. Use only the bound evidence types. Compile-time negative probes prevent reintroduction; see [`../technical/risk-legacy-compatibility.md`](../technical/risk-legacy-compatibility.md).
 
 ## IB PAPER policy
 

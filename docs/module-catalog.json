@@ -224,7 +224,8 @@
         "scripts/validate_hepta_strategy_decision_receipt.py"
       ],
       "tests": [
-        "tests/python/test_research_contract_smoke.py"
+        "tests/python/test_research_contract_smoke.py",
+        "tests/python/test_shadow_data_behavior.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -251,7 +252,8 @@
         "tests/python/test_preflight_complete_namespace.py",
         "tests/python/test_cmake_install_integration.py",
         "tests/python/test_release_simulator_smoke.py",
-        "tests/agent_simulator_e2e_tests.cpp"
+        "tests/agent_simulator_e2e_tests.cpp",
+        "tests/python/test_installed_runtime_processes.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -293,13 +295,16 @@
         "scripts/dev_core.sh",
         "scripts/verify_build_ownership.py",
         "scripts/verify_exact_git_index.py",
-        "scripts/verify_source_gap_closures.py"
+        "scripts/verify_source_gap_closures.py",
+        "scripts/run_python_tests.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
         "tests/python/test_documentation_control_plane.py",
         "tests/python/test_gap_register.py",
-        "tests/python/test_qualification_trust_boundary.py"
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_python_test_partition.py",
+        "tests/python/test_documentation_structure.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

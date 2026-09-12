@@ -74,6 +74,15 @@ class LegacyRuntimeBoundaryTests(unittest.TestCase):
         self.assertIn("if(HEPTA_BUILD_LEGACY_MONOLITH)", cmake)
         self.assertIn("if(HEPTA_BUILD_LEGACY_SIMULATOR)", cmake)
 
+    def test_legacy_target_declarations_are_outside_canonical_file(self) -> None:
+        canonical = (ROOT / "HeptaTrade/CMakeLists.txt").read_text(encoding="utf-8")
+        legacy = (ROOT / "cmake/HeptaLegacy.cmake").read_text(encoding="utf-8")
+        self.assertNotIn("set(DIR_SRC", canonical)
+        self.assertIn("add_executable(HeptaTrader ${DIR_SRC})", legacy)
+        self.assertIn("if(NOT HEPTA_BUILD_LEGACY_MONOLITH)", legacy)
+        self.assertRegex(canonical,
+            r'if\(HEPTA_BUILD_LEGACY_MONOLITH\)\s+include\("[^"\n]*HeptaLegacy.cmake"\)\s+endif\(\)')
+
     def test_module_catalog_marks_legacy_and_experimental_boundaries(self) -> None:
         catalog = json.loads(
             (ROOT / "docs/module-catalog.json").read_text(encoding="utf-8")

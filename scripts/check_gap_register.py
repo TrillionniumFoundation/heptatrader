@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate supported-scope gap closure from behavior-bearing source evidence.
+"""Validate the historical source-remediation baseline, not an active issue list.
 
 This validator separates three concerns:
 
@@ -285,22 +285,30 @@ def _require_workflow_role(
 
 def validate_ci_roles(root: Path) -> None:
     """Require one owner per CI evidence family and keep legacy shims inert."""
-    full_python = "python3 -m unittest discover -s tests/python -p 'test_*.py'"
+    full_python = "scripts/run_python_tests.py --lane core"
     dev_core = "./scripts/dev_core.sh"
     release_smoke = "scripts/run_release_simulator_smoke.py"
     package = "scripts/build_release_package.py"
     source_truth = (
-        "scripts/check_documentation.py",
         "scripts/check_component_coverage.py",
-        "scripts/verify_build_ownership.py",
-        "scripts/check_gap_register.py",
+        "scripts/verify_source_gap_closures.py",
+        "scripts/run_python_tests.py --lane source",
     )
+    # The runner computes actual disjoint file sets. Workflow command anchors
+    # only check wiring, and are not themselves evidence of test coverage.
+    import run_python_tests
+    try:
+        run_python_tests.partitions(root)
+    except ValueError as error:
+        raise GapRegisterError(str(error)) from error
     behavior_owned = (dev_core, full_python, package, release_smoke)
 
     _require_workflow_role(
         root,
         ".github/workflows/core-ci.yml",
-        (dev_core, full_python, package, "scripts/hepta_preflight.py", release_smoke),
+        (dev_core, full_python, "scripts/run_python_tests.py --lane install",
+         "scripts/run_python_tests.py --lane process",
+         package, "scripts/hepta_preflight.py", release_smoke),
     )
     _require_workflow_role(
         root,
@@ -440,7 +448,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
         if not isinstance(authorization, dict) or set(authorization) != AUTHORIZATION_KEYS:
             raise GapRegisterError("authorization fields are not canonical")
         if authorization.get("source_state") != "READY":
-            raise GapRegisterError("source_state must be READY after supported-scope closure")
+            raise GapRegisterError("historical baseline source_state must be READY; active defects belong in GitHub Issues")
         if authorization.get("paper_authorized") is not False:
             raise GapRegisterError("PAPER cannot be source-authorized")
         if authorization.get("live_authorized") is not False:
@@ -463,7 +471,7 @@ def validate(root: Path | str = ROOT) -> list[str]:
             if gap.get("domain") != "REPOSITORY":
                 raise GapRegisterError(f"{gap_id}: supported-scope register may contain REPOSITORY gaps only")
             if gap.get("state") != "CLOSED_SOURCE":
-                raise GapRegisterError(f"{gap_id}: repository gap must be CLOSED_SOURCE")
+                raise GapRegisterError(f"{gap_id}: historical baseline entry must be CLOSED_SOURCE; active defects belong in GitHub Issues")
             if gap.get("blocking_authorization") is not False:
                 raise GapRegisterError(f"{gap_id}: closed source gap cannot block authorization")
             if gap.get("issue") is not None:

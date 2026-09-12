@@ -126,4 +126,10 @@ module document.
 
 The historical `HeptaStrategy/`, `HeptaSimulator/`, old Visual Studio projects, large legacy data files, and deprecated bridges are explicitly owned by the LEGACY module and excluded from the default build. Their presence does not authorize deployment or provide an alternate order path.
 
-All active supported-scope source gaps, including canonical release/install/preflight engineering, Git-discovered component ownership, documentation depth, and Broker-free release rollback smoke, are closed in source. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
+The [historical remediation baseline](GAP-REGISTER.md) records previous source repairs, not all present or future defects. Documentation lint checks structure and references, not technical completeness. Active work belongs in [GitHub Issues](https://github.com/TrillionniumFoundation/heptatrader/issues). Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
+
+## Interface and installed-process development references
+
+- [Agent tool protocol](technical/agent-tool-protocol.md)
+- [SHADOW data contracts](technical/shadow-data-contracts.md)
+- [Installed process acceptance](technical/installed-process-acceptance.md)
