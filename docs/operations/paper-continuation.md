@@ -2,7 +2,8 @@
 
 Status: CURRENT
 Applies to: controlled owner-operated PAPER-V4 integration
-Implementation: `.github/workflows/ib-paper-qualification.yml`, `scripts/hepta_paper_rollout_host.py`
+Implementation: `.github/workflows/ib-paper-qualification.yml`, `scripts/hepta_paper_rollout_host.py`, `scripts/hepta_paper_campaign.py`
+Tests: `tests/python/test_paper_campaign.py`, `tests/python/test_campaign_completed_recovery.py`
 
 ## Preconditions and scope
 
@@ -91,8 +92,8 @@ state root. Do not place them in disposable checkout or RUNNER_TEMP directories.
 ## Failure procedure
 
 Stop adding risk. Keep the failed/running attempt, stable command IDs, driver calls,
-original OMS and callbacks. A failed campaign cannot be retried by the workflow: its
-active identity stays fenced. Use the existing runtime's command-status/reconciliation
+original OMS and callbacks. A failed campaign cannot be blindly retried by the workflow:
+its active identity stays fenced. Use the existing runtime's command-status/reconciliation
 and guarded exits under operator control; never guess the opposite side/quantity or
 wipe the store and retry. Preserve the final recovery evidence even when the root
 cause is only a lost workflow response.
@@ -101,6 +102,42 @@ Success and failure evidence are exported for Actions retention while host origi
 remain. An abrupt runner loss may prevent upload; the on-host attempt is still the
 recovery source. `campaign-exit.json` is wrapper diagnostics, not proof of flat state.
 Missing uploads or no receipt must never be interpreted as a successful round trip.
+
+### Recover an already completed stage without sending
+
+A narrower case needs no new Broker experiment: complete economic evidence exists,
+but the controller stopped before publishing the verification receipt or committing
+its completed state. Recover that exact retained attempt locally:
+
+```bash
+python3 scripts/hepta_paper_campaign.py \
+  --store /absolute/path/to/campaign-store \
+  --campaign /absolute/root-owned/campaign.json \
+  --binary /absolute/verified/hepta-ib-executiond \
+  --harness "$PWD/scripts/hepta_ib_paper_harness.py" \
+  --recover-completed canary
+```
+
+Use the actual active stage (`canary`, `pilot` or `extended`). Recovery acquires the
+same exclusive campaign lock, checks every preceding stage, then re-runs the complete
+v2 verifier on the retained snapshots, OMS and Broker callbacks. It neither starts a
+subprocess nor places, cancels or flattens an order. A pre-existing receipt must agree
+exactly with the newly verified result; a conflicting receipt is never overwritten.
+Only after those checks does it durably mark this same attempt completed. Repeating
+recovery simply reverifies the completed stage and does not send again.
+
+Incomplete evidence, missing terminal proof, binary/controller drift, overlapping
+stages or an inconsistent active identity leave the fence intact. This command does
+not clear arbitrary failures or settle unresolved Broker effects, and must not be
+combined with `--stage` or `--artifact-dir`. A failed local state write remains safely
+retryable by this evidence-only recovery operation. Subsequent PAPER stages still
+require normal host authorization and fresh pre-send authoritative barriers.
+
+Recovery emits the ordinary verification receipt with `authorization_effect=NONE`,
+`paper_authorized=false` and `live_authorized=false`. It does not claim that a historic
+flat barrier is current Broker truth. This implementation changes the portable
+controller digest, so existing campaigns require the normal reviewed controller
+migration; editing an old binding to bypass its unresolved state is not recovery.
 
 ## Heavy tests, maintenance and limits
 
