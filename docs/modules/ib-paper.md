@@ -1,8 +1,8 @@
 # IB PAPER runtime
 
-Status: QUALIFICATION_REQUIRED  
-Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`, `HeptaTrade/execution/ib_paper_execution_runtime_config.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_rollout.sh`, `scripts/verify_ib_paper_rollout.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `docs/ib-paper-rollout-policy-v1.json`  
+Status: QUALIFICATION_REQUIRED
+Applies to: repository HEAD
+Implementation: `HeptaTrade/adapter_ib/`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`, `HeptaTrade/execution/ib_paper_execution_runtime_config.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_rollout.sh`, `scripts/verify_ib_paper_rollout.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `docs/ib-paper-rollout-policy-v1.json`
 Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_rollout.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_self_hosted_ib_availability.py`
 
 ## Scope
@@ -69,36 +69,66 @@ Canonical deployment uses logical `hepta-ib-exec:2003` and the source-controlled
 
 The lightweight preflight pins the root-owned host probe and identity map, proves the Actions runner itself cannot reach the protected PAPER port, verifies the immutable candidate and pinned external harness, and checks the non-secret host boundary before any rollout mutation job is eligible. Canonical nftables replacement queries JSON machine state, retries only within a compiled bound and requires exact structural rule readback before either allow or deny-all is accepted. Any host-specific policy permitting the execution UID remains a root-owned deployment input; source tests or preflight do not install it or authorize a campaign. See [`../BROKER-NETWORK-ISOLATION.md`](../BROKER-NETWORK-ISOLATION.md).
 
-## Build-once artifact boundary
+## Build-once artifact boundary and continuous campaigns
 
-The owner-operated workflow deliberately separates artifact construction from every Broker experiment:
+The workflow offers a no-secret **build** operation and a distinct owner-dispatched
+**campaign** operation. Build requires the exact dispatch-main SHA and publishes
+one immutable artifact with its ID and archive SHA-256. Campaign selects that
+historical artifact ID and source SHA; it never rebuilds and never searches for
+"latest". The metadata resolver checks the original owner-dispatched builder and
+successful build job. Later movement of main does not invalidate unchanged bytes.
 
-1. a no-secret builder receives the exact dispatch-time `main` revision, a digest-pinned OCI image, a read-only SDK/BID snapshot, and bounded writable storage;
-2. it builds **one** immutable candidate artifact and uploads that artifact once;
-3. host preflight, canary, pilot, extended rollout, and optional certification each download and verify that same artifact identity rather than rebuilding source;
-4. the PAPER execution identity receives only the verified executable and runs it through a separately pinned external harness with PAPER-only Broker access.
+The target-host job downloads by artifact ID/run ID, verifies the archive and
+binary, runs the pinned root host probe on that same execution host, and consumes
+a root-admitted campaign manifest. Its binding covers source, archive, executable,
+portable controller closure, harness, root driver, effective profile, account,
+host and instrument identity. Current control-code/profile drift requires a new
+admission; ordinary unrelated main commits do not.
 
-The dispatch actor and rerun triggering actor must match the configured immutable owner identity before self-hosted allocation. The requested SHA must equal the dispatch-time `main` SHA, so an arbitrary branch cannot select qualification code or candidate bytes.
+One protected `ib-paper` environment surrounds the mutation job. Build and metadata
+resolution require no Broker environment. The runtime actor remains explicitly
+owner-dispatched; repository review/CI cannot create Broker authority.
 
-After exact source has been converted into the immutable artifact, later movement of `refs/heads/main` is intentionally irrelevant to that rollout. Branch movement cannot change the source SHA, executable digest, SDK digest, builder provenance, harness, profile, account, host, or evidence already bound to the candidate. Any change to a bound input requires a new artifact or campaign as appropriate. See [`../technical/ib-paper-harness-contract.md`](../technical/ib-paper-harness-contract.md) and ADR [`../adr/0003-immutable-artifact-paper-qualification.md`](../adr/0003-immutable-artifact-paper-qualification.md).
+## Reviewable harness and evidence
 
-## Progressive PAPER workflow
+The portable `scripts/hepta_ib_paper_harness.py` is now reviewable in this repository.
+It asks a separately pinned root-owned host driver to inspect the existing boundary,
+refresh a complete barrier, submit a bounded canonical Gateway request, await a
+terminal result, and use the Execution-owned guarded flatten path. It does not
+log in, provision a session, disarm a kill switch, load an SDK or send around the
+Execution Service. The host-driver contract is [documented separately](../technical/ib-paper-host-driver.md).
+A real host implementation and Broker-observed qualification remain external
+activation prerequisites; synthetic tests are never a substitute.
 
-The canonical owner-operated workflow is:
+The v2 rollout verifier rejects the old summary-only v1 format. Every cycle needs
+matching intent/send/reconciliation records, stable command/order identities,
+positive Broker execution IDs, terminal callbacks and complete flat before/after
+barriers. It deduplicates identical executions, rejects conflicting duplicates,
+enforces one active order and the unchanged one-unit P1 envelope, and derives the
+completed count from evidence. Canary/pilot/extended require exactly 1/3/10 cycles.
+Raw adapter semantics must be normalized without inventing missing events; see
+[the evidence contract](../technical/ib-paper-harness-contract.md).
 
-```text
-exact dispatch-main source
-  -> single no-secret immutable candidate build
-  -> lightweight target-host preflight
-  -> PAPER-V4 canary (1 flat round trip)
-  -> PAPER-V4 pilot (<=3 flat round trips)
-  -> PAPER-V4 extended (<=10 flat round trips)
-  -> optional PAPER-V5 full certification
-```
+## Durable continuation and failure handling
 
-`canary`, `pilot`, `extended`, and `qualify` use the protected GitHub environment `ib-paper`; build and non-mutating host preflight do not. Environment reviewers, deployment protection and external credential access remain server-side controls and must be configured independently. Merely naming the environment in source is not evidence that it exists or approved a campaign.
+`hepta_paper_campaign.py` holds a nonblocking campaign lock, records an attempt
+before any external operation, and revalidates all preceding stage receipts and
+evidence before promotion. Re-running a completed stage returns its verified
+receipt without sending again. Failed/interrupted attempts remain blocked rather
+than receiving fresh command IDs. Stage timestamps cannot overlap or precede a
+previous terminal stage. The persistent campaign store is not RUNNER_TEMP.
 
-A user may stop at any requested rollout stage. `certify` is the only selection that executes the heavy twelve-scenario V5 campaign, and it is reachable only after the same artifact passed extended P1 rollout. Ordinary application releases therefore do not need to rerun destructive resilience experiments merely to prove that an unchanged execution/risk/journal path still deploys.
+Both heavy and progressive wrappers create their final mode-0700 evidence directory
+before invoking a harness. Nonzero exits, TERM and KILL cannot delete already
+written diagnostics. A durable `campaign-exit.json` distinguishes running,
+failed/interrupted and harness-returned-success; none of those states grants
+PAPER authorization. Private HOME scratch is outside exported evidence. Host
+originals survive upload failure. Failure recovery must resolve the existing
+Execution command state; deleting the campaign store is not recovery.
+
+The `certify` selection is explicit, reuses the same artifact, requires verified
+extended rollout, and invokes the unchanged separate V5 twelve-scenario verifier.
+It is not part of ordinary canary/pilot/extended deployment.
 
 ## Runtime and recovery invariants
 
@@ -146,11 +176,11 @@ The canonical scenario contract remains [`../ib-paper-qualification-scenarios-v1
 
 Source tests must prove that the workflow builds exactly one candidate, every later stage names the same artifact identity, host preflight precedes mutation, P1 stages cannot widen the one-unit instantaneous limits, any non-flat or uncertain terminal result blocks promotion, and full certification is explicitly selected and sequenced after extended rollout.
 
-The existing runtime suites continue to own order lifecycle, kill switch, atomic flatten, reconciliation, idempotency, callback ordering, and journal-before-send behavior. Sanitizer and fault-heavy runtime testing runs in its dedicated periodic/high-risk-change lane rather than through duplicated compatibility workflow contexts.
+The existing runtime suites continue to own order lifecycle, kill switch, atomic flatten, reconciliation, idempotency, callback ordering, and journal-before-send behavior. Both required GCC/Clang contexts execute the shared real ASan/UBSan suite for code changes, including Gateway/Session/client and unknown paths. Documentation-only changes explicitly report not-applicable; nightly checks use the same implementation without duplicating PR triggers.
 
 ## Known limitations
 
-The repository does not supply the IB SDK, external harness, PAPER credentials, TWS/IB Gateway, root-owned x230 host policy, or Broker account. Those are owner-controlled runtime inputs and require separate evidence. The external pinned harness must implement the documented `p1-progressive-rollout` mode before canary/pilot/extended can execute on a real host. Aggregate pending-order notional and general multi-asset base-currency exposure remain prerequisites for relaxing the one-active-order/one-CASH-contract policy. LIVE is unavailable.
+The repository does not supply the IB SDK, external harness, PAPER credentials, TWS/IB Gateway, root-owned x230 host policy, or Broker account. Those are owner-controlled runtime inputs and require separate evidence. The portable P1 harness is included; the pinned root host driver must implement the documented Gateway/Execution evidence contract before a real host campaign can execute. Aggregate pending-order notional and general multi-asset base-currency exposure remain prerequisites for relaxing the one-active-order/one-CASH-contract policy. LIVE is unavailable.
 
 ## Gap-register relationship
 

@@ -1,5 +1,4 @@
 name: Canonical Full Suite
-
 on:
   pull_request:
     branches: [main]
@@ -7,75 +6,56 @@ on:
     branches: [main]
   merge_group:
     types: [checks_requested]
-
-permissions: {}
-
+permissions:
+  contents: read
 concurrency:
-  group: heptatrader-full-compat-${{ github.event_name }}-${{ github.ref }}
+  group: heptatrader-required-resilience-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
-# All three jobs below are temporary compatibility contexts for live ruleset
-# 22597364. They deliberately perform no source/build/test work. Core Runtime
-# CI owns canonical behavior/release evidence, Documentation Control Plane owns
-# source truth, and .github/workflows/resilience-periodic.yml owns the actual
-# GCC/Clang sanitizer executions.
-#
-# Transitional source-policy anchors consumed by the current gap validator.
-# These are comments only; executable ownership is in resilience-periodic.yml.
-# Remove these four anchors when that validator is migrated to the new lane:
-# cmake --build build/reliability-gcc --target hepta_core_test_binaries
-# ctest --test-dir build/reliability-gcc --output-on-failure -L core
-# cmake --build build/reliability-clang --target hepta_core_test_binaries
-# ctest --test-dir build/reliability-clang --output-on-failure -L core
-
 jobs:
+  # The server still requires this redundant historical core name. Core CI owns
+  # its real behavior; retire this one shim with the server-side context.
   core:
     name: canonical-full-suite-core
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
-      - name: Satisfy obsolete core context without duplicate verification
-        env:
-          EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
-          case "$GITHUB_EVENT_NAME" in
-            pull_request|push|merge_group) ;;
-            *) exit 1 ;;
-          esac
-          printf '%s\n' 'compatibility-only context: behavior owner is core-runtime-exact-head'
-
+      - name: Legacy core context pending ruleset retirement
+        run: echo 'compatibility-only context; real core owner is core-runtime-exact-head'
   reliability-gcc:
     name: canonical-full-suite-reliability (g++)
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 55
+    env:
+      BUILD_PARALLEL: '2'
+      HEPTA_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
     steps:
-      - name: Satisfy obsolete GCC sanitizer context without duplicate execution
-        env:
-          EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
-          case "$GITHUB_EVENT_NAME" in
-            pull_request|push|merge_group) ;;
-            *) exit 1 ;;
-          esac
-          printf '%s\n' 'compatibility-only context: GCC sanitizer owner is resilience-periodic.yml'
-
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install compiler dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++ clang
+      - name: Execute the behavior-bearing sanitizer lane
+        run: bash scripts/run_runtime_resilience.sh g++
   reliability-clang:
     name: canonical-full-suite-reliability (clang++)
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 55
+    env:
+      BUILD_PARALLEL: '2'
+      HEPTA_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
     steps:
-      - name: Satisfy obsolete Clang sanitizer context without duplicate execution
-        env:
-          EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
-          case "$GITHUB_EVENT_NAME" in
-            pull_request|push|merge_group) ;;
-            *) exit 1 ;;
-          esac
-          printf '%s\n' 'compatibility-only context: Clang sanitizer owner is resilience-periodic.yml'
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install compiler dependencies
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++ clang
+      - name: Execute the behavior-bearing sanitizer lane
+        run: bash scripts/run_runtime_resilience.sh clang++

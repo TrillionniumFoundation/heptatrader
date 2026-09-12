@@ -1,7 +1,7 @@
 # Runtime engineering map
 
-Status: CURRENT  
-Applies to: canonical Agent-native runtime  
+Status: CURRENT
+Applies to: canonical Agent-native runtime
 Primary architecture: [`../AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](../AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md)
 
 This document is a developer navigation map, not an additional approval or authorization gate. It connects the subsystem contracts that already own runtime behavior so a change can be traced from caller input to durable state, external effect, recovery, tests, and operations without inventing another control plane.
@@ -98,34 +98,20 @@ Files ending in `.example` are templates, never authority. Runtime code should e
 
 ## Test ownership
 
-Behavior-bearing evidence is intentionally assigned once:
+Core Runtime CI owns canonical CTest, full Python discovery, install/package/preflight
+and simulator lifecycle smoke. Required GCC/Clang contexts execute the common
+`run_runtime_resilience.sh` ASan/UBSan suite for any non-documentation change.
+Unknown paths are conservative code changes; Gateway/Session/client changes are
+not missed. Nightly runs use the same script and do not duplicate PR triggers.
+Source-model checks parse actual workflow jobs and run steps, not comments or
+command names embedded in prose. Native risk/OMS/venue/release source token gates
+have been removed; their behavioral owners remain CTest and Python regression.
 
-- **Core Runtime CI** owns the canonical build/CTest, full Python discovery, install inventory, deterministic package/preflight, and installed simulator lifecycle rollback/re-promotion.
-- **Periodic Runtime Resilience** owns the actual GCC/Clang ASan+UBSan executions. It runs daily and on pull requests that touch execution, risk, OMS, authoritative state/reconciliation, IB, simulator, test or build surfaces.
-- **Documentation Control Plane** owns documentation depth, component/build ownership, capability truth and source-gap contracts without rerunning the behavior suite.
-- **Qualification Source Audit** owns only the source-side PAPER artifact/rollout/certification trust boundary and is path-scoped to that surface.
-- **IB PAPER progressive rollout / certification** is explicit owner-dispatched external Broker work and is never a routine merge gate.
-
-The live repository ruleset `22597364` still names four historical contexts that no longer own behavior: `canonical-full-suite-core`, `canonical-full-suite-reliability (g++)`, `canonical-full-suite-reliability (clang++)`, and `exact-merge-candidate`. While that server-side rule remains active, those job names are retained only as **compatibility shims**. They intentionally do not checkout, install dependencies, build, package, run sanitizer binaries, rerun documentation, or assert Broker authority. Their only purpose is to stop obsolete repository-administration context names from deadlocking Merge Queue. They should be deleted when the live ruleset is updated. A green compatibility shim is not engineering evidence and never changes PAPER/LIVE authorization.
-
-The current gap validator still searches the historical sanitizer command tokens in `canonical-full-suite.yml`; those tokens are retained there only as comments during this ruleset/source-policy transition. `tests/python/test_resilience_workflow.py` separately proves that the comments are not executable and that the real sanitizer commands live in `resilience-periodic.yml`. The comments should disappear together with the old validator expectation, not become a permanent control mechanism.
-
-A new invariant belongs in the smallest behavior test that can falsify it. Repeating the same deterministic suite in another workflow is not independent evidence.
-
-## PAPER deployment and certification ownership
-
-PAPER deployment follows one artifact identity:
-
-```text
-single candidate build
-  -> lightweight host preflight
-  -> P1 canary
-  -> P1 pilot
-  -> P1 extended
-  -> optional V5 heavy certification
-```
-
-Canary/pilot/extended increase only the number of independently terminal flat PAPER-V4 cycles; they do not increase the one-unit instantaneous P1 exposure envelope. Heavy V5 fault experiments execute only when `certify` is explicitly selected. See [`../modules/ib-paper.md`](../modules/ib-paper.md) and [`ib-paper-harness-contract.md`](ib-paper-harness-contract.md).
+Server-side ruleset 22597364 still requires the redundant
+`canonical-full-suite-core` and `exact-merge-candidate` context names. Only those
+names remain temporary compatibility emitters; they are not additional evidence.
+Delete them together with the server-side required-context inventory, not before.
+The required sanitizer names retain actual test execution and failure propagation.
 
 ## Performance budget and measurement
 

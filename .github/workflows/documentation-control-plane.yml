@@ -39,6 +39,9 @@ jobs:
       # This lane owns source/document/build-model truth only. Core Runtime CI
       # owns the Python regression corpus and runtime/release behavior; those
       # tests are intentionally not repeated here.
+      - name: Install parsed workflow contract dependency
+        run: python3 -m pip install --disable-pip-version-check -r scripts/requirements-ci.txt
+
       - name: Validate source truth contracts once
         run: |
           set -euo pipefail

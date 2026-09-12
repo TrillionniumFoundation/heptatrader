@@ -1,8 +1,8 @@
 # Repository control and source verification
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `.github/`, `.agents/`, `scripts/`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `.github/`, `.agents/`, `scripts/`
 Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_gap_register.py`, `tests/python/test_qualification_trust_boundary.py`
 
 ## Responsibilities
@@ -25,10 +25,10 @@ Each expensive evidence family has one behavior-bearing owner:
 
 - **Core Runtime CI** owns the canonical core build, CTest behavior, Python regression corpus, install inventory, package/preflight and release simulator lifecycle smoke.
 - **Documentation Control Plane** owns source/document/module/build-model truth only. It does not rerun the full Python behavior corpus already owned by Core Runtime CI.
-- **Periodic Runtime Resilience** owns GCC and Clang ASan/UBSan resilience. It runs on a daily schedule and on pull requests that touch execution/risk/OMS/state/reconciliation/IB/simulator/test/build paths rather than on every repository change.
+- **Periodic Runtime Resilience** owns GCC and Clang ASan/UBSan resilience. It runs daily; required GCC/Clang contexts use the same implementation for all non-documentation PR changes. This includes Gateway, Session, client and newly introduced paths.
 - **Qualification Source Audit** owns only the owner-operated IB PAPER artifact/rollout/certification trust boundary and is path-scoped to that surface.
 
-The active GitHub ruleset still names historical `canonical-full-suite-*` and `exact-merge-candidate` contexts. Until server-side ruleset administration removes those names, the corresponding workflow jobs are compatibility-only context emitters. They must not rebuild, retest, reinstall dependencies or duplicate source validators. Keeping the context name is temporary migration compatibility, not evidence duplication.
+The active GitHub ruleset still names `canonical-full-suite-core` and `exact-merge-candidate` as compatibility contexts. The two `canonical-full-suite-reliability (...)` contexts are real executable sanitizer gates again. Until an administrator updates the server-side rule, only the redundant core/merge context names remain compatibility emitters. They must not rebuild, retest, reinstall dependencies or duplicate source validators. Keeping the context name is temporary migration compatibility, not evidence duplication.
 
 ## State and persistence
 
@@ -38,7 +38,7 @@ Canonical source truth is stored in versioned JSON and Markdown under `docs/` an
 
 Missing ownership, an unknown module, ambiguous longest-path ownership, build-inventory owner drift, an omitted module document, invalid JSON, a stale capability claim, a missing behavior-bearing owner, or a required server-side compatibility context failing to emit fails the applicable source gate. No failure is converted into PAPER or LIVE authorization.
 
-A compatibility context must never conceal failure of its behavior-bearing owner. The required Core Runtime and Documentation checks remain independent server-side contexts; sanitizer resilience is non-required observation evidence unless the ruleset is explicitly changed.
+A compatibility context must never conceal failure of its behavior-bearing owner. The required Core Runtime and Documentation checks remain independent server-side contexts; both required sanitizer contexts fail when their actual compiler/test process fails. Nightly observation does not replace a required result.
 
 ## Security boundaries
 

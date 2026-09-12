@@ -2221,7 +2221,7 @@ def _quote_bar(
     samples = [
         record for record in records
         if started_at_ms <= record["collection_started_at_ms"] <
-        finished_exclusive
+        finished_exclusive and record["quote_read_finished_at_ms"] < finished_exclusive
     ]
     expected = interval_ms // cadence_ms
     minimum_samples = math.ceil(

@@ -10,6 +10,7 @@ usage() {
 
 ARTIFACT_INPUT="$1"
 EXPECTED_SHA="$2"
+[[ ! -L "$3" ]] || exit 73
 EVIDENCE_DIR="$(realpath -m -- "$3")"
 STAGE="$4"
 TRUSTED_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -105,18 +106,26 @@ MAX_GROSS_POSITION="${STAGE_POLICY[4]}"
 [[ "$MAX_ACTIVE_ORDERS" == "1" ]] || exit 78
 [[ "$MAX_GROSS_POSITION" == "1.0" || "$MAX_GROSS_POSITION" == "1" ]] || exit 78
 
-[[ ! -e "$EVIDENCE_DIR" && ! -L "$EVIDENCE_DIR" ]] || exit 73
-PARENT="$(dirname -- "$EVIDENCE_DIR")"
-mkdir -p -- "$PARENT"
-PARENT="$(realpath -e -- "$PARENT")"
-WORK_DIR="$(mktemp -d --tmpdir="$PARENT" .hepta-ib-paper-rollout.XXXXXX)"
-chmod 0700 "$WORK_DIR"
-cleanup() { [[ -n "${WORK_DIR:-}" && -d "$WORK_DIR" ]] && rm -rf -- "$WORK_DIR"; }
-trap cleanup EXIT INT TERM HUP
+CAMPAIGN="${HEPTA_ROLLOUT_CAMPAIGN:-}"
+DRIVER="${HEPTA_ROLLOUT_DRIVER:-}"
+DRIVER_SHA="${HEPTA_ROLLOUT_DRIVER_SHA256:-}"
+[[ -n "$CAMPAIGN" && -n "$DRIVER" && "$DRIVER_SHA" =~ ^[0-9a-f]{64}$ ]] || {
+  echo "rollout requires an admitted campaign and pinned host driver" >&2; exit 78;
+}
+python3 - "$TRUSTED_ROOT/scripts" "$CAMPAIGN" "$EXPECTED_SHA" "$BINARY_SHA256" "$QUALIFIER_SHA256" "$DRIVER_SHA" <<'PY_CHECK'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from verify_ib_paper_rollout import load_campaign
+value=load_campaign(Path(sys.argv[2]))['binding']
+if (value['candidate_sha'],value['binary_sha256'],value['harness_sha256'],value['driver_sha256']) != tuple(sys.argv[3:]):
+    raise SystemExit("admitted campaign identity differs from candidate or harness")
+PY_CHECK
+
+source "$TRUSTED_ROOT/scripts/hepta_campaign_evidence.sh"
+campaign_evidence_init
 
 RESULT_PATH="$WORK_DIR/rollout-result.json"
-HARNESS_HOME="$WORK_DIR/harness-home"
-mkdir -m 0700 "$HARNESS_HOME"
 
 # The same independently pinned external qualifier owns Broker credentials for
 # both progressive rollout and full certification. This mode intentionally asks
@@ -143,6 +152,9 @@ env -i \
   --expected-binary-sha256 "$BINARY_SHA256" \
   --expected-git-sha "$EXPECTED_SHA" \
   --rollout-stage "$STAGE" \
+  --campaign "$CAMPAIGN" \
+  --driver "$DRIVER" \
+  --driver-sha256 "$DRIVER_SHA" \
   --max-mutation-cycles "$MAX_CYCLES" \
   --max-order-quantity "$MAX_ORDER_QUANTITY" \
   --max-order-notional "$MAX_ORDER_NOTIONAL" \
@@ -161,10 +173,4 @@ env -i \
   echo "external PAPER harness did not produce rollout-result.json" >&2
   exit 70
 }
-rmdir "$HARNESS_HOME" 2>/dev/null || true
-chmod 0700 "$WORK_DIR"
-mv -T -- "$WORK_DIR" "$EVIDENCE_DIR"
-WORK_DIR=""
-trap - EXIT INT TERM HUP
-printf 'IB PAPER progressive rollout evidence committed: stage=%s cycles<=%s path=%s\n' \
-  "$STAGE" "$MAX_CYCLES" "$EVIDENCE_DIR"
+# EXIT records the actual outcome; verifier success remains a separate fact.

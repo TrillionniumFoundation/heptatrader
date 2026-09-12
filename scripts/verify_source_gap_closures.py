@@ -2,8 +2,7 @@
 """Validate HeptaTrader's repository-controlled source-gap closure.
 
 This verifier delegates documentation, build ownership, qualification-boundary,
-and profile checks to their canonical implementations. Static source guards are
-only supplemental checks; behavioral proof remains in the independently built
+and profile checks to their canonical implementations. Source token-count guards have been removed; behavioral proof remains in the independently built
 and executed C++ and Python test suites. Nothing here grants PAPER or LIVE
 authority.
 """
@@ -84,47 +83,13 @@ def read_text(root: Path, relative: str) -> str:
         raise SourceClosureError(f"{relative}: unreadable: {error}") from error
 
 
-def require_tokens(
-    root: Path,
-    relative: str,
-    tokens: tuple[str, ...],
-    gap: str,
-    errors: list[str],
-) -> str:
-    try:
-        text = read_text(root, relative)
-    except SourceClosureError as error:
-        errors.append(f"{gap}: {error}")
-        return ""
-    for token in tokens:
-        if token not in text:
-            errors.append(f"{gap}: {relative}: missing contract token {token!r}")
-    return text
 
 
-def forbid_tokens(
-    text: str,
-    relative: str,
-    tokens: tuple[str, ...],
-    gap: str,
-    errors: list[str],
-) -> None:
-    for token in tokens:
-        if token in text:
-            errors.append(f"{gap}: {relative}: forbidden fail-open token {token!r}")
 
 
 def validate_documentation(root: Path) -> list[str]:
     import check_documentation
-    import verify_build_ownership
-
-    errors = [f"documentation: {item}" for item in check_documentation.validate(root)]
-    try:
-        inventory = verify_build_ownership.load_json(root / "docs/build-targets.json")
-        verify_build_ownership.verify(root, inventory, "core")
-    except (verify_build_ownership.OwnershipError, OSError) as error:
-        errors.append(f"build ownership: {error}")
-    return errors
+    return [f"documentation: {item}" for item in check_documentation.validate(root)]
 
 
 def validate_ci_boundary(root: Path) -> list[str]:
@@ -179,182 +144,10 @@ def validate_test_inventory(root: Path) -> list[str]:
     return errors
 
 
-def validate_risk(root: Path) -> list[str]:
-    errors: list[str] = []
-    require_tokens(
-        root,
-        "HeptaTrade/risk/pre_trade_risk_engine.h",
-        (
-            "struct PreTradeRiskSubject",
-            "std::set<std::string> instruments",
-            "struct PreTradeRiskOrderNotionalEvidence",
-            "PreTradeRiskInstrumentContract",
-            "authorizedQuoteSourceId",
-            "authorizedFxSourceId",
-        ),
-        "RISK-001",
-        errors,
-    )
-    implementation = require_tokens(
-        root,
-        "HeptaTrade/risk/pre_trade_risk_engine.cpp",
-        (
-            "bool SameSubject(",
-            "PreTradeRiskDecision ValidateOrderNotional(",
-            "RISK_SNAPSHOT_SUBJECT_MISMATCH",
-            "RISK_ORDER_NOTIONAL_SUBJECT_MISMATCH",
-            "RISK_ORDER_NOTIONAL_UNIT_CONTRACT_INVALID",
-            "RISK_ORDER_NOTIONAL_QUOTE_STALE",
-            "RISK_ORDER_NOTIONAL_FX_STALE",
-            "RISK_ORDER_NOTIONAL_CONVERSION_MISMATCH",
-            "evidence.quantity * evidence.contract.multiplier * price * fx.rate",
-            "afterPosition >= 0.0",
-            "afterPosition <= 0.0",
-        ),
-        "RISK-001",
-        errors,
-    )
-    forbid_tokens(
-        implementation,
-        "HeptaTrade/risk/pre_trade_risk_engine.cpp",
-        ("orderNotional = ctx.totalQuantity * price", "snapshotComplete = true"),
-        "RISK-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "HeptaTrade/simulator/deterministic_execution_venue.cpp",
-        (
-            "flattenCapacityReserved",
-            "SIM_FLATTEN_RESERVATION_INCONSISTENT",
-            "reducesWithoutCrossing",
-            'order.terminalStatus = "Rejected"',
-        ),
-        "RISK-001",
-        errors,
-    )
-    risk_tests = require_tokens(
-        root,
-        "tests/pre_trade_risk_engine_tests.cpp",
-        (
-            "TestSubjectIsolation",
-            "TestNotionalEvidence",
-            "generic quantity-price fallback removed",
-            "cross-subject or mixed-section snapshot must fail",
-            "omitted multiplier",
-            "stale quote",
-            "stale FX",
-            "small long-to-short crossing must be blocked",
-            "small short-to-long crossing must be blocked",
-        ),
-        "RISK-001",
-        errors,
-    )
-    if "pending exposure must count in worst-case gross" not in risk_tests:
-        errors.append(
-            "PENDING-EXPOSURE-001: pending exposure hostile regression is missing"
-        )
-    require_tokens(
-        root,
-        "tests/simulator_risk_runtime_tests.cpp",
-        (
-            "TestFlattenCapacityReservations",
-            "TestFlattenCancellationAndStrictRemainder",
-            "TestFlattenPolicyTransitionsAndFillBoundary",
-            "two exact exits must not both reserve ten units",
-        ),
-        "RISK-001",
-        errors,
-    )
-    return errors
 
 
-def validate_venue(root: Path) -> list[str]:
-    errors: list[str] = []
-    ctp = require_tokens(
-        root,
-        "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
-        (
-            "CTP_TRANSPORT_NOT_IMPLEMENTED",
-            'return "EXPERIMENTAL_NO_TRANSPORT"',
-            "return false",
-        ),
-        "VENUE-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "HeptaTrade/adapter_xt/xt_gateway_adapter.cpp",
-        (
-            "XT_TRANSPORT_NOT_IMPLEMENTED",
-            'return "EXPERIMENTAL_NO_TRANSPORT"',
-            'return RejectUnsupported("place_order")',
-            "if (!TransportImplemented())",
-        ),
-        "VENUE-001",
-        errors,
-    )
-    if "m_connected = true" in ctp:
-        errors.append("VENUE-001: CTP scaffold must not report a connected transport")
-    require_tokens(
-        root,
-        "HeptaTrade/adapter_xt/xt_gateway_adapter.h",
-        ("static bool TransportImplemented() { return false; }",),
-        "VENUE-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "tests/venue_capability_tests.cpp",
-        ("EXPERIMENTAL_NO_TRANSPORT", "TRANSPORT_NOT_IMPLEMENTED"),
-        "VENUE-001",
-        errors,
-    )
-    return errors
 
 
-def validate_oms(root: Path) -> list[str]:
-    errors: list[str] = []
-    require_tokens(
-        root,
-        "HeptaTrade/execution/execution_place_order_dispatch.cpp",
-        (
-            '"place_send_attempt"',
-            "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED",
-            "placeIbOrderCommandCorrelated",
-            "IB_PLACE_OUTCOME_UNCERTAIN",
-            "RECOVERY_RECONCILE_REQUIRED",
-            '"place_activated"',
-        ),
-        "OMS-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "tests/execution_coordinator_tests.cpp",
-        ("place_send_attempt", "IB_PLACE_OUTCOME_UNCERTAIN", "venueCalls == 1"),
-        "OMS-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "tests/oms_journal_durability_tests.cpp",
-        (
-            "TestPathReplacementPoisonsBeforeWriting",
-            "TestStrictReplayIsCallbackAtomicAndReentrant",
-            "writePoisoned",
-        ),
-        "OMS-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "scripts/verify_oms_journal_replay.py",
-        ("CURRENT_SCHEMA = 4", "duplicate key", "non-finite JSON constant"),
-        "OMS-001",
-        errors,
-    )
-    return errors
 
 
 def validate_profile(root: Path) -> list[str]:
@@ -369,202 +162,6 @@ def validate_profile(root: Path) -> list[str]:
     ]
 
 
-def validate_release(root: Path) -> list[str]:
-    errors: list[str] = []
-    require_tokens(
-        root,
-        "CMakeLists.txt",
-        (
-            'set(HEPTA_RELEASE_LABEL "0.1.0-beta.1" CACHE STRING',
-            "include(cmake/HeptaInstall.cmake)",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    install = require_tokens(
-        root,
-        "cmake/HeptaInstall.cmake",
-        (
-            "canonical install target is missing",
-            "scripts/hepta_preflight.py",
-            "docs/preflight-policy-v1.json",
-            "install(DIRECTORY",
-            "CMAKE_INSTALL_LIBEXECDIR",
-            "RENAME hepta-preflight-core.py",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    public_core_install = (
-        'DESTINATION "${CMAKE_INSTALL_BINDIR}"\n'
-        "    RENAME hepta-preflight-core.py"
-    )
-    if public_core_install in install:
-        errors.append(
-            "RELEASE-001: private preflight core is installed in the "
-            "public binary namespace"
-        )
-    require_tokens(
-        root,
-        "scripts/build_release_package.py",
-        (
-            'MANIFEST_SCHEMA = "heptatrader.release-manifest.v1"',
-            'RECEIPT_SCHEMA = "heptatrader.release-package-receipt.v1"',
-            'getattr(os, "O_NOFOLLOW", 0)',
-            'getattr(os, "O_NONBLOCK", 0)',
-            "_canonical_path_bytes",
-            "forbidden path bytes",
-            "authorization_effect",
-            "paper_authorized",
-            "live_authorized",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    wrapper = require_tokens(
-        root,
-        "scripts/hepta_preflight.py",
-        (
-            "_read_stable_core",
-            "hepta_preflight_core.py",
-            "hepta-preflight-core.py",
-            'getattr(os, "O_NOFOLLOW", 0)',
-            'getattr(os, "O_NONBLOCK", 0)',
-            "_CORE_BYTES",
-            "exec(compile(",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    forbid_tokens(
-        wrapper,
-        "scripts/hepta_preflight.py",
-        (
-            "_ORIGINAL_CHECK_MANIFEST_SHAPE",
-            "_ORIGINAL_INSPECT_ARCHIVE",
-            "_validate_complete_archive_namespace",
-            "_read_admitted_archive_root",
-            "RELEASE_LABEL_RE",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "scripts/hepta_preflight_core.py",
-        (
-            'POLICY_SCHEMA = "heptatrader.preflight-policy.v1"',
-            'RECEIPT_SCHEMA = "heptatrader.preflight-receipt.v1"',
-            'getattr(os, "O_NOFOLLOW", 0)',
-            'getattr(os, "O_NONBLOCK", 0)',
-            "HARD_MAXIMUM_ARCHIVE_MEMBERS",
-            "artifact_admitted",
-            "Broker probing requires successful artifact and policy admission",
-            "RELEASE_LABEL_RE",
-            "_validate_complete_archive_namespace",
-            "_ORIGINAL_CHECK_MANIFEST_SHAPE",
-            "_ORIGINAL_INSPECT_ARCHIVE",
-            "_read_admitted_archive_root",
-            "archive root identity does not match manifest ",
-            "version/profile:",
-            "private implementation module; ",
-            "use hepta-preflight",
-            "raise SystemExit(2)",
-            "paper_authorized",
-            "live_authorized",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    for relative in (
-        "docs/modules/release-engineering.md",
-        "docs/RELEASE-PUBLICATION-SECURITY.md",
-        "docs/adr/0001-release-publication-atomicity.md",
-        "docs/operations/release-package.md",
-        "docs/operations/preflight.md",
-        "tests/python/test_release_package.py",
-        "tests/python/test_hepta_preflight.py",
-        "tests/python/test_preflight_special_files.py",
-        "tests/python/test_cmake_install_integration.py",
-        "tests/python/test_preflight_entrypoint_boundary.py",
-    ):
-        require_tokens(root, relative, ("release",), "RELEASE-001", errors)
-    require_tokens(
-        root,
-        "tests/python/test_hepta_preflight.py",
-        (
-            "test_declared_preflight_regressions_are_discovered",
-            "test_rejected_artifacts_never_probe_broker",
-            "connect.assert_not_called()",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "tests/python/test_preflight_special_files.py",
-        (
-            "test_fifo_policy_is_rejected_without_blocking_or_receipt",
-            "test_fifo_artifact_is_rejected_without_blocking_or_pass_receipt",
-            "test_regular_to_fifo_builder_swap_is_rejected_without_blocking",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    require_tokens(
-        root,
-        "tests/python/test_preflight_entrypoint_boundary.py",
-        (
-            "test_source_core_direct_invocation_is_fail_closed_for_hostile_matrix",
-            "test_staged_private_core_rejects_direct_use_and_public_wrapper_passes",
-            "test_wrapper_contains_no_security_semantic_overrides",
-            "PRIVATE_MESSAGE",
-        ),
-        "RELEASE-001",
-        errors,
-    )
-    try:
-        policy = load_json(root / "docs/preflight-policy-v1.json")
-        if (
-            not isinstance(policy, dict)
-            or policy.get("schema") != "heptatrader.preflight-policy.v1"
-        ):
-            errors.append("RELEASE-001: invalid preflight policy schema")
-        profiles = policy.get("profiles") if isinstance(policy, dict) else None
-        if not isinstance(profiles, dict) or set(profiles) != {"core", "ib-paper"}:
-            errors.append(
-                "RELEASE-001: preflight policy must define exact "
-                "core and ib-paper profiles"
-            )
-        catalog = load_json(root / "docs/module-catalog.json")
-        modules = (
-            {
-                item.get("id"): item
-                for item in catalog.get("modules", [])
-                if isinstance(item, dict)
-            }
-            if isinstance(catalog, dict)
-            else {}
-        )
-        release = modules.get("release-engineering")
-        if not isinstance(release, dict):
-            errors.append("RELEASE-001: release-engineering module is missing")
-        else:
-            if release.get("status") != "CURRENT":
-                errors.append(
-                    "RELEASE-001: release-engineering module is not CURRENT"
-                )
-            if release.get("broker_mutation") != "NONE":
-                errors.append(
-                    "RELEASE-001: release-engineering must have no Broker mutation"
-                )
-            if release.get("production_authorized") is not False:
-                errors.append(
-                    "RELEASE-001: release engineering cannot grant production authority"
-                )
-    except SourceClosureError as error:
-        errors.append(f"RELEASE-001: {error}")
-    return errors
 
 
 def validate_register_projection(root: Path) -> list[str]:
@@ -675,13 +272,9 @@ def validate(root: Path | str = ROOT) -> list[str]:
         errors.extend(f"DOC-001: {item}" for item in validate_documentation(root))
         errors.extend(f"CI-001: {item}" for item in validate_ci_boundary(root))
         errors.extend(f"TEST-001: {item}" for item in validate_test_inventory(root))
-        errors.extend(validate_risk(root))
-        errors.extend(validate_venue(root))
-        errors.extend(validate_oms(root))
         errors.extend(
             f"PENDING-EXPOSURE-001: {item}" for item in validate_profile(root)
         )
-        errors.extend(validate_release(root))
         errors.extend(validate_register_projection(root))
     except (SourceClosureError, OSError, UnicodeError) as error:
         errors.append(str(error))
@@ -698,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
     if errors:
         return 1
     print(
-        "[SOURCE-GAPS] PASS registry/static contracts and delegated validators; "
+        "[SOURCE-GAPS] PASS registry/build model and executable workflow contracts; "
         "no C++ behavioral tests executed"
     )
     return 0

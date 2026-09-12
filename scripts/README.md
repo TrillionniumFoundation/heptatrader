@@ -40,3 +40,18 @@ The package digest is the identity carried into later qualification and deployme
 These trusted-main components do not make external runners, credentials, Broker sessions, host policy, external harness support or receipts exist; the verifiers fail when those controls are absent. The external harness remains an owner-controlled input and must implement the documented progressive-rollout mode before real P1 stages can execute.
 
 Do not add developer-specific paths, untrusted `eval`/`source`, Broker secrets, encoded transfer payloads, an alternate order path, or a branch-mutating remediation carrier to this directory.
+
+## PAPER continuation and operational diagnostics
+
+The source-controlled P1 orchestrator is `hepta_ib_paper_harness.py`; versioned,
+root-owned host custody is defined by `docs/technical/ib-paper-host-driver.md`.
+`hepta_paper_campaign.py` reuses completed stages without resending and blocks
+unresolved attempts; `hepta_paper_rollout_host.py` binds it to the admitted artifact
+and exports retained success/failure evidence. `resolve_ib_artifact.py` selects
+an exact prior artifact ID, not latest/main. `hepta_evidence_io.py` centralizes
+bounded descriptor-based I/O; `hepta_campaign_evidence.sh` retains failure data.
+
+`run_runtime_resilience.sh` is the single real GCC/Clang sanitizer implementation.
+`ci_workflow_contract.py` reads YAML job structure, not inert comments.
+`hepta_runtime_diagnostics.py` provides bounded read-only journal capacity metrics;
+its output never substitutes for Execution reconciliation.

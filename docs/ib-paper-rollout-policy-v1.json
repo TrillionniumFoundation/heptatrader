@@ -11,7 +11,8 @@
       "max_order_notional": 5000.0,
       "max_active_orders": 1,
       "max_gross_position": 1.0,
-      "require_flat_between_cycles": true
+      "require_flat_between_cycles": true,
+      "min_mutation_cycles": 1
     },
     {
       "id": "pilot",
@@ -20,7 +21,8 @@
       "max_order_notional": 5000.0,
       "max_active_orders": 1,
       "max_gross_position": 1.0,
-      "require_flat_between_cycles": true
+      "require_flat_between_cycles": true,
+      "min_mutation_cycles": 3
     },
     {
       "id": "extended",
@@ -29,7 +31,8 @@
       "max_order_notional": 5000.0,
       "max_active_orders": 1,
       "max_gross_position": 1.0,
-      "require_flat_between_cycles": true
+      "require_flat_between_cycles": true,
+      "min_mutation_cycles": 10
     }
   ],
   "terminal_requirements": {

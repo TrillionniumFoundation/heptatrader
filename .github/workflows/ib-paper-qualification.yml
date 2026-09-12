@@ -1,476 +1,251 @@
-name: IB PAPER Progressive Rollout and Certification
-
-on:
+name: IB PAPER Build Once and Continuous Campaign
+'on':
   workflow_dispatch:
     inputs:
       candidate_sha:
-        description: Exact dispatch-main SHA to roll out
-        required: true
+        description: Exact candidate source SHA (dispatch-main for a new build)
         type: string
+        required: true
+      artifact_id:
+        description: Existing immutable artifact ID; required for campaign stages
+        type: string
+        required: false
+        default: ''
       rollout_stage:
-        description: Highest PAPER stage to execute with this immutable artifact
-        required: true
+        description: Build once, then resume the same artifact at the selected stage
         type: choice
-        default: canary
-        options:
-          - canary
-          - pilot
-          - extended
-          - certify
-      mutation_mode:
-        description: Explicitly approve bounded real PAPER mutations
         required: true
+        default: build
+        options:
+        - build
+        - canary
+        - pilot
+        - extended
+        - certify
+      mutation_mode:
+        description: Explicitly authorize bounded PAPER experiment within host policy
         type: boolean
+        required: true
         default: false
-
 permissions:
   actions: read
   contents: read
-
 concurrency:
   group: heptatrader-ib-paper-rollout
   cancel-in-progress: false
-
 env:
   PYTHONDONTWRITEBYTECODE: '1'
-
 jobs:
   build-candidate:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader'
+      && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.rollout_stage == 'build'
+      && inputs.candidate_sha == github.sha
     name: ib-paper-candidate-artifact-build
     runs-on:
       group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-builder]
+      labels:
+      - self-hosted
+      - linux
+      - x64
+      - heptatrader-ib-builder
     timeout-minutes: 100
     env:
       HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
       HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
-      - name: Bind dispatch authority to immutable owner identity
-        env:
-          DISPATCH_ACTOR: ${{ github.actor }}
-          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-        run: |
-          set -euo pipefail
-          test "$DISPATCH_ACTOR" = 'ProfHepta'
-          test "$DISPATCH_ACTOR_ID" = '102159240'
-          test "$TRIGGERING_ACTOR" = 'ProfHepta'
-
-      - name: Require exact dispatch-main candidate identity
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: |
-          set -euo pipefail
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
-
-      - name: Checkout trusted dispatch-main builder
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: trusted
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-
-      - name: Checkout exact dispatch-main candidate as build input
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: candidate
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-          submodules: false
-
-      - name: Verify exact clean trusted and candidate trees before build
-        run: |
-          set -euo pipefail
-          python3 trusted/scripts/verify_exact_git_index.py --root trusted
-          python3 trusted/scripts/verify_exact_git_index.py --root candidate
-
-      - name: Build the single immutable candidate artifact
-        run: |
-          set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C candidate rev-parse HEAD)" = "$GITHUB_SHA"
-          artifact="$RUNNER_TEMP/ib-paper-candidate-$GITHUB_SHA.tar"
-          trusted/scripts/build_ib_candidate_artifact.sh candidate "$GITHUB_SHA" "$artifact"
-          test -s "$artifact"
-
-      - name: Reverify immutable checkouts after build
-        run: |
-          set -euo pipefail
-          python3 trusted/scripts/verify_exact_git_index.py --root trusted
-          python3 trusted/scripts/verify_exact_git_index.py --root candidate
-
-      - name: Upload the single immutable no-secret candidate
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar
-          if-no-files-found: error
-          retention-days: 7
-          compression-level: 0
-
-  preflight:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
-    needs: build-candidate
-    name: ib-paper-lightweight-host-preflight
-    runs-on:
-      group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
-    timeout-minutes: 15
-    permissions:
-      actions: read
-      contents: read
+    - name: Bind dispatch authority to immutable owner identity
+      env:
+        DISPATCH_ACTOR: ${{ github.actor }}
+        DISPATCH_ACTOR_ID: ${{ github.actor_id }}
+        TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+      run: |
+        set -euo pipefail
+        test "$DISPATCH_ACTOR" = 'ProfHepta'
+        test "$DISPATCH_ACTOR_ID" = '102159240'
+        test "$TRIGGERING_ACTOR" = 'ProfHepta'
+    - name: Require exact dispatch-main candidate identity
+      env:
+        CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      run: |
+        set -euo pipefail
+        [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+        test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+    - name: Checkout trusted dispatch-main builder
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: ${{ github.repository }}
+        ref: ${{ github.sha }}
+        path: trusted
+        fetch-depth: 1
+        persist-credentials: false
+        clean: true
+    - name: Checkout exact dispatch-main candidate as build input
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        repository: ${{ github.repository }}
+        ref: ${{ github.sha }}
+        path: candidate
+        fetch-depth: 1
+        persist-credentials: false
+        clean: true
+        submodules: false
+    - name: Verify exact clean trusted and candidate trees before build
+      run: |
+        set -euo pipefail
+        python3 trusted/scripts/verify_exact_git_index.py --root trusted
+        python3 trusted/scripts/verify_exact_git_index.py --root candidate
+    - name: Build the single immutable candidate artifact
+      run: |
+        set -euo pipefail
+        test "$(git -C trusted rev-parse HEAD)" = "$GITHUB_SHA"
+        test "$(git -C candidate rev-parse HEAD)" = "$GITHUB_SHA"
+        artifact="$RUNNER_TEMP/ib-paper-candidate-$GITHUB_SHA.tar"
+        trusted/scripts/build_ib_candidate_artifact.sh candidate "$GITHUB_SHA" "$artifact"
+        test -s "$artifact"
+    - name: Reverify immutable checkouts after build
+      run: |
+        set -euo pipefail
+        python3 trusted/scripts/verify_exact_git_index.py --root trusted
+        python3 trusted/scripts/verify_exact_git_index.py --root candidate
+    - name: Upload the single immutable no-secret candidate
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar
+        if-no-files-found: error
+        retention-days: 30
+        compression-level: 0
+      id: upload
+    - name: Report reusable immutable artifact identity
+      run: |
+        set -euo pipefail
+        printf 'artifact_id=%s
+        source_sha=%s
+        ' '${{ steps.upload.outputs.artifact-id }}' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+        sha256sum "$RUNNER_TEMP/ib-paper-candidate-$GITHUB_SHA.tar" >> "$GITHUB_STEP_SUMMARY"
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+  resolve-artifact:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader'
+      && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.rollout_stage != 'build'
+      && inputs.mutation_mode == true && inputs.artifact_id != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      artifact_id: ${{ steps.identity.outputs.artifact_id }}
+      run_id: ${{ steps.identity.outputs.run_id }}
     steps:
-      - name: Bind dispatch authority to immutable owner identity
-        env:
-          DISPATCH_ACTOR: ${{ github.actor }}
-          DISPATCH_ACTOR_ID: ${{ github.actor_id }}
-          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
-        run: |
-          set -euo pipefail
-          test "$DISPATCH_ACTOR" = 'ProfHepta'
-          test "$DISPATCH_ACTOR_ID" = '102159240'
-          test "$TRIGGERING_ACTOR" = 'ProfHepta'
-
-      - name: Checkout trusted preflight control code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: trusted
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-
-      - name: Download the exact artifact built once above
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-download
-
-      - name: Verify and extract the immutable artifact
-        env:
-          HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/candidate-download/ib-paper-candidate-$GITHUB_SHA.tar"
-          destination="$RUNNER_TEMP/preflight-verified-candidate"
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$archive" \
-            --expected-candidate-sha "$GITHUB_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$destination"
-          printf '%s\n' "$destination" > "$RUNNER_TEMP/preflight-candidate-dir"
-
-      - name: Verify target-host isolation and PAPER boundary only
-        env:
-          HOST_PROBE_SHA256: ${{ vars.HEPTA_IB_PAPER_HOST_PROBE_SHA256 }}
-          QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
-          QUALIFIER_PATH: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-        run: |
-          set -euo pipefail
-          probe=/usr/libexec/hepta-ib-paper-host-probe
-          [[ "$HOST_PROBE_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$QUALIFIER_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          test -f "$probe" && test -x "$probe" && test ! -L "$probe"
-          test "$(stat -c '%U:%G:%a:%h' "$probe")" = root:root:555:1
-          test "$(sha256sum "$probe" | awk '{print $1}')" = "$HOST_PROBE_SHA256"
-          test -f "$QUALIFIER_PATH" && test -x "$QUALIFIER_PATH" && test ! -L "$QUALIFIER_PATH"
-          test "$(stat -c '%h' "$QUALIFIER_PATH")" = 1
-          test "$(sha256sum "$QUALIFIER_PATH" | awk '{print $1}')" = "$QUALIFIER_SHA256"
-          if command -v nc >/dev/null 2>&1; then
-            ! nc -z -w 3 127.0.0.1 4002
-          else
-            ! timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
-          fi
-          "$probe" \
-            --paper-port 4002 \
-            --logical-execution-uid 2003 \
-            --execution-uid 995 \
-            --identity-map-sha256 b3459819dcaa86acfe3b3f1ebf5ef047ccbde367df75500b881fa4d0471eda30 \
-            --runner-uid "$(id -u)"
-          test -x "$(cat "$RUNNER_TEMP/preflight-candidate-dir")/hepta-ib-executiond"
-          printf 'lightweight PAPER host preflight passed for %s\n' "$GITHUB_SHA"
-
-  canary:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
-    needs: preflight
-    name: ib-paper-progressive-canary
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        path: trusted
+        fetch-depth: 1
+        persist-credentials: false
+        clean: true
+    - id: identity
+      name: Resolve selected historical artifact; never choose latest
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        ARTIFACT_ID: ${{ inputs.artifact_id }}
+        CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      run: |
+        set -euo pipefail
+        python3 trusted/scripts/resolve_ib_artifact.py --artifact-id "$ARTIFACT_ID" --candidate-sha "$CANDIDATE_SHA" --output "$GITHUB_OUTPUT"
+  campaign:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader'
+      && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.rollout_stage != 'build'
+      && inputs.mutation_mode == true && inputs.artifact_id != ''
+    needs: resolve-artifact
+    name: ib-paper-resumable-campaign
     environment: ib-paper
+    runs-on:
+      group: trillionnium-ib-paper
+      labels:
+      - self-hosted
+      - linux
+      - x64
+      - heptatrader-ib-paper
+    timeout-minutes: 180
     permissions:
       actions: read
       contents: read
-    runs-on:
-      group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
-    timeout-minutes: 30
-    steps:
-      - name: Checkout trusted rollout control code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: trusted
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-      - name: Download exact immutable candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-download
-      - name: Verify and extract candidate
-        env:
-          HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
-        run: |
-          set -euo pipefail
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$RUNNER_TEMP/candidate-download/ib-paper-candidate-$GITHUB_SHA.tar" \
-            --expected-candidate-sha "$GITHUB_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$RUNNER_TEMP/canary-candidate"
-      - name: Run one minimal terminal PAPER-V4 round trip
-        env:
-          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
-          HEPTA_QUALIFICATION_MUTATIONS: '1'
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/ib-paper-canary-evidence"
-          bash trusted/scripts/run_ib_paper_artifact_rollout.sh \
-            "$RUNNER_TEMP/canary-candidate" "$GITHUB_SHA" "$evidence" canary
-          python3 trusted/scripts/verify_ib_paper_rollout.py \
-            --result "$evidence/rollout-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "$GITHUB_SHA" \
-            --expected-binary "$RUNNER_TEMP/canary-candidate/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
-            --expected-stage canary \
-            --receipt "$evidence/rollout-verification.json"
-      - name: Upload canary evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: ib-paper-canary-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ib-paper-canary-evidence/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-  pilot:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha && (inputs.rollout_stage == 'pilot' || inputs.rollout_stage == 'extended' || inputs.rollout_stage == 'certify')
-    needs: canary
-    name: ib-paper-progressive-pilot
-    environment: ib-paper
-    permissions:
-      actions: read
-      contents: read
-    runs-on:
-      group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
-    timeout-minutes: 40
-    steps:
-      - name: Checkout trusted rollout control code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: trusted
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-      - name: Download exact immutable candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-download
-      - name: Verify and extract candidate
-        env:
-          HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
-        run: |
-          set -euo pipefail
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$RUNNER_TEMP/candidate-download/ib-paper-candidate-$GITHUB_SHA.tar" \
-            --expected-candidate-sha "$GITHUB_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$RUNNER_TEMP/pilot-candidate"
-      - name: Run three independently flat PAPER-V4 round trips
-        env:
-          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
-          HEPTA_QUALIFICATION_MUTATIONS: '1'
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/ib-paper-pilot-evidence"
-          bash trusted/scripts/run_ib_paper_artifact_rollout.sh \
-            "$RUNNER_TEMP/pilot-candidate" "$GITHUB_SHA" "$evidence" pilot
-          python3 trusted/scripts/verify_ib_paper_rollout.py \
-            --result "$evidence/rollout-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "$GITHUB_SHA" \
-            --expected-binary "$RUNNER_TEMP/pilot-candidate/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
-            --expected-stage pilot \
-            --receipt "$evidence/rollout-verification.json"
-      - name: Upload pilot evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: ib-paper-pilot-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ib-paper-pilot-evidence/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-  extended:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha && (inputs.rollout_stage == 'extended' || inputs.rollout_stage == 'certify')
-    needs: pilot
-    name: ib-paper-progressive-extended
-    environment: ib-paper
-    permissions:
-      actions: read
-      contents: read
-    runs-on:
-      group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
-    timeout-minutes: 55
-    steps:
-      - name: Checkout trusted rollout control code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: trusted
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-      - name: Download exact immutable candidate
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-download
-      - name: Verify and extract candidate
-        env:
-          HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
-        run: |
-          set -euo pipefail
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$RUNNER_TEMP/candidate-download/ib-paper-candidate-$GITHUB_SHA.tar" \
-            --expected-candidate-sha "$GITHUB_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$RUNNER_TEMP/extended-candidate"
-      - name: Run ten independently flat PAPER-V4 round trips
-        env:
-          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
-          HEPTA_QUALIFICATION_MUTATIONS: '1'
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/ib-paper-extended-evidence"
-          bash trusted/scripts/run_ib_paper_artifact_rollout.sh \
-            "$RUNNER_TEMP/extended-candidate" "$GITHUB_SHA" "$evidence" extended
-          python3 trusted/scripts/verify_ib_paper_rollout.py \
-            --result "$evidence/rollout-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "$GITHUB_SHA" \
-            --expected-binary "$RUNNER_TEMP/extended-candidate/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
-            --expected-stage extended \
-            --receipt "$evidence/rollout-verification.json"
-      - name: Upload extended evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: ib-paper-extended-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/ib-paper-extended-evidence/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-  qualify:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha && inputs.rollout_stage == 'certify'
-    needs: extended
-    name: ib-paper-exact-artifact-qualification
-    environment: ib-paper
-    permissions:
-      actions: read
-      attestations: write
-      contents: read
-      id-token: write
-    runs-on:
-      group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
-    timeout-minutes: 90
     env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      ROLLOUT_STAGE: ${{ inputs.rollout_stage }}
+      HEPTA_QUALIFICATION_MUTATIONS: '1'
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
-      - name: Checkout trusted certification control code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.repository }}
-          ref: ${{ github.sha }}
-          path: trusted
-          fetch-depth: 1
-          persist-credentials: false
-          clean: true
-      - name: Download the same immutable candidate used by every rollout stage
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/candidate-download
-      - name: Verify and extract candidate as hostile data
-        run: |
-          set -euo pipefail
-          destination="$RUNNER_TEMP/certification-candidate"
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$RUNNER_TEMP/candidate-download/ib-paper-candidate-$GITHUB_SHA.tar" \
-            --expected-candidate-sha "$GITHUB_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$destination"
-      - name: Run explicit heavy twelve-scenario PAPER certification
-        env:
-          HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-          HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
-          HEPTA_QUALIFICATION_MUTATIONS: '1'
-        run: |
-          set -euo pipefail
-          evidence="$RUNNER_TEMP/heptatrader-ib-certification-evidence"
-          trusted/scripts/run_ib_paper_artifact_qualification.sh \
-            "$RUNNER_TEMP/certification-candidate" "$GITHUB_SHA" "$evidence"
-          python3 trusted/scripts/verify_ib_paper_qualification.py \
-            --result "$evidence/qualification-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "$GITHUB_SHA" \
-            --expected-binary "$RUNNER_TEMP/certification-candidate/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
-            --receipt "$evidence/qualification-verification.json"
-      - name: Attest final exact-artifact certification receipt
-        id: attest-ib-paper-receipt
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
-        with:
-          subject-path: ${{ runner.temp }}/heptatrader-ib-certification-evidence/qualification-verification.json
-          show-summary: false
-      - name: Upload immutable certification evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: ib-paper-certification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            ${{ runner.temp }}/heptatrader-ib-certification-evidence/
-            ${{ steps.attest-ib-paper-receipt.outputs.bundle-path }}
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        ref: ${{ github.sha }}
+        path: trusted
+        fetch-depth: 1
+        persist-credentials: false
+        clean: true
+    - name: Download exact previous artifact ID
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        artifact-ids: ${{ needs.resolve-artifact.outputs.artifact_id }}
+        run-id: ${{ needs.resolve-artifact.outputs.run_id }}
+        github-token: ${{ github.token }}
+        path: ${{ runner.temp }}/candidate-download
+        merge-multiple: true
+    - name: Verify and extract selected immutable bytes
+      run: |
+        set -euo pipefail
+        python3 trusted/scripts/verify_exact_git_index.py --root trusted
+        python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
+          --archive "$RUNNER_TEMP/candidate-download/ib-paper-candidate-$CANDIDATE_SHA.tar" \
+          --expected-candidate-sha "$CANDIDATE_SHA" --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
+          --trusted-root trusted --destination "$RUNNER_TEMP/verified-candidate"
+    - name: Verify target-host isolation and PAPER boundary only
+      env:
+        HOST_PROBE_SHA256: ${{ vars.HEPTA_IB_PAPER_HOST_PROBE_SHA256 }}
+      run: |
+        set -euo pipefail
+        probe=/usr/libexec/hepta-ib-paper-host-probe
+        [[ "$HOST_PROBE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+        test -f "$probe" && test -x "$probe" && test ! -L "$probe"
+        test "$(stat -c '%U:%G:%a:%h' "$probe")" = root:root:555:1
+        test "$(sha256sum "$probe" | awk '{print $1}')" = "$HOST_PROBE_SHA256"
+        if command -v nc >/dev/null 2>&1; then
+          ! nc -z -w 3 127.0.0.1 4002
+        else
+          ! timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
+        fi
+        "$probe" \
+          --paper-port 4002 \
+          --logical-execution-uid 2003 \
+          --execution-uid 995 \
+          --identity-map-sha256 b3459819dcaa86acfe3b3f1ebf5ef047ccbde367df75500b881fa4d0471eda30 \
+          --runner-uid "$(id -u)"
+        test -x "$RUNNER_TEMP/verified-candidate/hepta-ib-executiond"
+        printf 'lightweight PAPER host preflight passed for %s\n' "$GITHUB_SHA"
+    - name: Resume verified stages and retain every failed attempt
+      env:
+        HEPTA_ROLLOUT_CAMPAIGN: ${{ vars.HEPTA_ROLLOUT_CAMPAIGN }}
+        HEPTA_ROLLOUT_DRIVER: ${{ vars.HEPTA_ROLLOUT_DRIVER }}
+        HEPTA_ROLLOUT_STATE_ROOT: ${{ vars.HEPTA_ROLLOUT_STATE_ROOT }}
+        HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
+        HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
+      run: |
+        set -euo pipefail
+        python3 trusted/scripts/hepta_paper_rollout_host.py \
+          --artifact-dir "$RUNNER_TEMP/verified-candidate" \
+          --archive "$RUNNER_TEMP/candidate-download/ib-paper-candidate-$CANDIDATE_SHA.tar" \
+          --campaign "$HEPTA_ROLLOUT_CAMPAIGN" --state-root "$HEPTA_ROLLOUT_STATE_ROOT" \
+          --driver "$HEPTA_ROLLOUT_DRIVER" --stage "$ROLLOUT_STAGE" \
+          --export "$RUNNER_TEMP/paper-campaign-evidence"
+    - name: Upload success or failure evidence; host originals remain durable
+      if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+      with:
+        name: ib-paper-evidence-${{ inputs.candidate_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/paper-campaign-evidence/
+        retention-days: 30
+        if-no-files-found: warn
+        compression-level: 0
+    - name: Reassert trusted control source
+      if: always()
+      run: python3 trusted/scripts/verify_exact_git_index.py --root trusted

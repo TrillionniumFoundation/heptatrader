@@ -473,3 +473,85 @@ bool PreTradeRiskEngine::IsFlatteningOrder(const PreTradeRiskContext& ctx) {
 
     return false;
 }
+
+
+PreTradeRiskPortfolioAssembly PreTradeRiskEngine::AssemblePortfolioExposure(
+    const PreTradeRiskSnapshotIdentity& identity,
+    const std::vector<PreTradeRiskPortfolioAsset>& assets,
+    const std::vector<PreTradeRiskPendingOrder>& pending,
+    bool positionsComplete, bool ordersComplete,
+    std::int64_t evaluatedAtMs, std::int64_t maxAgeMs) {
+    PreTradeRiskPortfolioAssembly output;
+    const auto fail = [&output](const char* reason) {
+        output.complete = false;
+        output.reasonCode = reason;
+        // Do not publish a partial sum as an authoritative zero/underestimate.
+        output.exposure = PreTradeRiskExposureSnapshot();
+        return output;
+    };
+    if (!positionsComplete || !ordersComplete || !ValidSnapshotIdentity(identity) ||
+        !ValidSubject(identity.subject) || maxAgeMs <= 0 || evaluatedAtMs != identity.evaluatedAtMs ||
+        !FreshEvidence(identity.observedAtMs, identity, maxAgeMs))
+        return fail("RISK_PORTFOLIO_BARRIER_INCOMPLETE");
+    PreTradeRiskConfig valuationPolicy;
+    valuationPolicy.enableOrderSubmission = true;
+    valuationPolicy.maxOrderQuantity = std::numeric_limits<double>::max();
+    valuationPolicy.maxOrderNotional = std::numeric_limits<double>::max();
+    valuationPolicy.maxSnapshotAgeMs = maxAgeMs;
+    valuationPolicy.maxDailyOrders = 1;
+    // Valuation does not admit a mutation. The actual final order is evaluated
+    // separately under its configured quantity, price, loss and rate policy.
+    valuationPolicy.maxPriceDeviationBps = std::numeric_limits<double>::max();
+    const auto value = [&](const PreTradeRiskContext& input) {
+        const PreTradeRiskSnapshotIdentity& other = input.authoritativeSnapshot.identity;
+        if (!SameSubject(input.authorizedSubject, identity.subject) ||
+            !SameSubject(other.subject, identity.subject) ||
+            other.connectionEpoch != identity.connectionEpoch || other.generation != identity.generation ||
+            other.observedAtMs != identity.observedAtMs || input.evaluatedAtMs != evaluatedAtMs ||
+            other.evaluatedAtMs != evaluatedAtMs || !input.paperAccount)
+            return Reject("RISK_PORTFOLIO_IDENTITY_MISMATCH", "valuation subject/epoch/clock mismatch");
+        PreTradeRiskContext context = input;
+        context.todayOrderCount = 0; // a pure mark, not an order admission
+        context.accountWhitelisted = true; // subject equality above is the valuation boundary
+        return Evaluate(valuationPolicy, context);
+    };
+    long double gross = 0.0L, buy = 0.0L, sell = 0.0L;
+    std::set<std::string> instruments, orders;
+    for (const auto& asset : assets) {
+        if (!std::isfinite(asset.signedQuantity) || asset.unitMark.totalQuantity != 1.0 ||
+            asset.unitMark.orderType != "MKT" || !instruments.insert(asset.unitMark.symbol).second)
+            return fail("RISK_PORTFOLIO_ASSET_INVALID");
+        const PreTradeRiskDecision marked = value(asset.unitMark);
+        if (!marked.allow) return fail(marked.reasonCode.c_str());
+        gross += std::fabs(static_cast<long double>(asset.signedQuantity)) * marked.orderNotional;
+    }
+    if (instruments != identity.subject.instruments)
+        return fail("RISK_PORTFOLIO_INSTRUMENT_COVERAGE");
+    for (const auto& order : pending) {
+        if (order.orderId.empty() || !orders.insert(order.orderId).second)
+            return fail("RISK_PORTFOLIO_ORDER_IDENTITY");
+        const PreTradeRiskDecision marked = value(order.valuation);
+        if (!marked.allow) return fail(marked.reasonCode.c_str());
+        if (order.valuation.action == "BUY") buy += marked.orderNotional;
+        else sell += marked.orderNotional; // Evaluate already rejects an unknown side
+    }
+    const auto roundUp = [](long double amount) {
+        double rounded = static_cast<double>(amount);
+        if (static_cast<long double>(rounded) < amount)
+            rounded = std::nextafter(rounded, std::numeric_limits<double>::infinity());
+        return rounded;
+    };
+    if (!std::isfinite(gross) || !std::isfinite(buy) || !std::isfinite(sell) ||
+        !std::isfinite(roundUp(gross)) || !std::isfinite(roundUp(buy)) || !std::isfinite(roundUp(sell)))
+        return fail("RISK_PORTFOLIO_NOTIONAL_OVERFLOW");
+    output.exposure.subject = identity.subject;
+    output.exposure.present = true;
+    output.exposure.connectionEpoch = identity.connectionEpoch;
+    output.exposure.generation = identity.generation;
+    output.exposure.currentGrossNotional = roundUp(gross);
+    output.exposure.pendingBuyNotional = roundUp(buy);
+    output.exposure.pendingSellNotional = roundUp(sell);
+    output.complete = true;
+    output.reasonCode = "RISK_OK";
+    return output;
+}

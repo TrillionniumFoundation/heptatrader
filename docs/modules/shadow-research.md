@@ -1,8 +1,8 @@
 # SHADOW research pipeline
 
-Status: EXPERIMENTAL  
-Applies to: repository HEAD  
-Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`  
+Status: EXPERIMENTAL
+Applies to: repository HEAD
+Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`
 Tests: `tests/python/test_research_contract_smoke.py`
 
 ## Scope
@@ -42,3 +42,16 @@ The smoke test compiles/imports every catalogued research module and validates t
 ## Promotion boundary
 
 Before any PAPER canary consumes a research decision, a separate risk challenger, bounded campaign policy, execution-side preview, human/environment authorization, and broker-observed qualification are mandatory. Promotion changes the integration boundary; it is not achieved by changing the SHADOW document status alone.
+
+## Functional research regressions
+
+`tests/python/test_research_behavior.py` executes actual resampling, gap detection,
+five-minute completeness, bid/ask touch plus both-side slippage, limit nonfill,
+intent overlap rejection, holding caps, drawdown, cost veto and storage-capacity
+logic. A quote whose read completes after a bar closes is excluded from that bar,
+including when collection began inside the earlier minute. Incomplete coverage
+stays incomplete rather than being repaired with future observations.
+
+These tests strengthen research correctness; they do not establish a profitable
+strategy, sample-out validation or realistic market-impact calibration. The full
+sealed-history/replay campaign still requires representative data and evidence.

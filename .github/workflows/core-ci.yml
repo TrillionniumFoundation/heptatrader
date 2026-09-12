@@ -39,6 +39,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
 
+      - name: Install parsed workflow contract dependency
+        run: python3 -m pip install --disable-pip-version-check -r scripts/requirements-ci.txt
+
       - name: Build and run canonical core tests
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core

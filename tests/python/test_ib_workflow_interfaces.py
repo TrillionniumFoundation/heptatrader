@@ -1,112 +1,43 @@
 from __future__ import annotations
-
+import copy
 from pathlib import Path
+import sys
 import unittest
-
-ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github/workflows/ib-paper-qualification.yml"
-
-
-class IbWorkflowInterfaceTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.workflow = WORKFLOW.read_text(encoding="utf-8")
-
-    def test_candidate_is_built_once_and_reused_everywhere(self) -> None:
-        self.assertEqual(
-            self.workflow.count("trusted/scripts/build_ib_candidate_artifact.sh"), 1
-        )
-        self.assertEqual(
-            self.workflow.count("Upload the single immutable no-secret candidate"), 1
-        )
-        artifact = (
-            "ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-"
-            "${{ github.run_attempt }}"
-        )
-        self.assertGreaterEqual(self.workflow.count(artifact), 6)
-        self.assertEqual(self.workflow.count("path: candidate"), 1)
-        self.assertNotIn("ref: ${{ inputs.candidate_sha }}", self.workflow)
-        self.assertNotIn("candidate/scripts/", self.workflow)
-
-    def test_exact_dispatch_main_becomes_immutable_artifact_identity(self) -> None:
-        self.assertGreaterEqual(
-            self.workflow.count("inputs.candidate_sha == github.sha"), 6
-        )
-        self.assertIn("Require exact dispatch-main candidate identity", self.workflow)
-        self.assertNotIn("git ls-remote --exit-code", self.workflow)
-        self.assertNotIn("main-before-campaign.txt", self.workflow)
-        self.assertNotIn("main-after-campaign.txt", self.workflow)
-
-    def test_lightweight_host_preflight_precedes_mutation(self) -> None:
-        preflight, canary = self.workflow.split("\n  preflight:\n", 1)[1].split(
-            "\n  canary:\n", 1
-        )
-        self.assertIn("ib-paper-lightweight-host-preflight", preflight)
-        self.assertIn("/usr/libexec/hepta-ib-paper-host-probe", preflight)
-        self.assertIn("HEPTA_IB_PAPER_HOST_PROBE_SHA256", preflight)
-        self.assertNotIn("environment: ib-paper", preflight)
-        self.assertIn("needs: preflight", canary)
-        self.assertIn("environment: ib-paper", canary)
-
-    def test_progressive_stages_do_not_widen_p1_exposure(self) -> None:
-        self.assertEqual(self.workflow.count("run_ib_paper_artifact_rollout.sh"), 3)
-        self.assertEqual(self.workflow.count("verify_ib_paper_rollout.py"), 3)
-        self.assertIn("--expected-stage canary", self.workflow)
-        self.assertIn("--expected-stage pilot", self.workflow)
-        self.assertIn("--expected-stage extended", self.workflow)
-        self.assertIn("Run one minimal terminal PAPER-V4 round trip", self.workflow)
-        self.assertIn("Run three independently flat PAPER-V4 round trips", self.workflow)
-        self.assertIn("Run ten independently flat PAPER-V4 round trips", self.workflow)
-
-    def test_heavy_certification_is_explicit_and_last(self) -> None:
-        qualify = self.workflow.split("\n  qualify:\n", 1)[1]
-        self.assertIn("inputs.rollout_stage == 'certify'", qualify)
-        self.assertIn("needs: extended", qualify)
-        self.assertEqual(qualify.count("run_ib_paper_artifact_qualification.sh"), 1)
-        self.assertEqual(qualify.count("verify_ib_paper_qualification.py"), 1)
-        self.assertIn("Run explicit heavy twelve-scenario PAPER certification", qualify)
-
-    def test_mutation_jobs_use_protected_environment(self) -> None:
-        self.assertEqual(self.workflow.count("\n    environment: ib-paper\n"), 4)
-        for job, next_job in (
-            ("canary", "pilot"),
-            ("pilot", "extended"),
-            ("extended", "qualify"),
-        ):
-            block = self.workflow.split(f"\n  {job}:\n", 1)[1].split(
-                f"\n  {next_job}:\n", 1
-            )[0]
-            self.assertIn("environment: ib-paper", block)
-        self.assertIn("environment: ib-paper", self.workflow.split("\n  qualify:\n", 1)[1])
-
-    def test_only_immutable_owner_can_allocate_self_hosted_jobs(self) -> None:
-        for token in (
-            "github.actor == 'ProfHepta'",
-            "github.actor_id == 102159240",
-            "github.triggering_actor == 'ProfHepta'",
-            "inputs.mutation_mode == true",
-            "inputs.candidate_sha == github.sha",
-        ):
-            self.assertGreaterEqual(self.workflow.count(token), 6)
-
-    def test_full_qualification_and_progressive_rollout_share_trusted_harness(self) -> None:
-        for token in (
-            "HEPTA_IB_PAPER_QUALIFIER",
-            "HEPTA_IB_PAPER_QUALIFIER_SHA256",
-            "HEPTA_QUALIFICATION_MUTATIONS: '1'",
-            "trusted/scripts/run_ib_paper_artifact_rollout.sh",
-            "trusted/scripts/run_ib_paper_artifact_qualification.sh",
-        ):
-            self.assertIn(token, self.workflow)
-
-    def test_repository_governance_is_not_broker_authority(self) -> None:
-        for token in (
-            "pull_number",
-            "CODEOWNERS",
-            "repository-governance",
-            "merge_queue",
-        ):
-            self.assertNotIn(token, self.workflow)
+ROOT=Path(__file__).resolve().parents[2]
+sys.path.insert(0,str(ROOT/'scripts'))
+from hepta_evidence_io import EvidenceError
+from resolve_ib_artifact import resolve
+from ci_workflow_contract import load_workflow
 
 
-if __name__ == "__main__":
-    unittest.main()
+class ArtifactReuseTests(unittest.TestCase):
+    def setUp(self):
+        self.artifact=dict(id=12,expired=False,workflow_run=dict(id=13,head_sha='a'*40,head_branch='main'))
+        self.run=dict(event='workflow_dispatch',head_sha='a'*40,path='.github/workflows/ib-paper-qualification.yml',
+                      actor=dict(id=102159240),triggering_actor=dict(login='ProfHepta'))
+        self.jobs=dict(jobs=[dict(name='ib-paper-candidate-artifact-build',conclusion='success')])
+    def fetch(self,path):
+        return self.artifact if '/artifacts/' in path else self.jobs if '/jobs?' in path else self.run
+    def test_previous_run_artifact_is_selected_without_rebuild(self):self.assertEqual(resolve('12','a'*40,self.fetch)['run_id'],13)
+    def test_campaign_failure_does_not_invalidate_successful_build(self):
+        self.run['conclusion']='failure';self.assertEqual(resolve('12','a'*40,self.fetch)['artifact_id'],12)
+    def test_expired_or_substituted_artifact_rejected(self):
+        self.artifact['expired']=True
+        with self.assertRaises(EvidenceError):resolve('12','a'*40,self.fetch)
+    def test_unknown_builder_cannot_supply_artifact(self):
+        self.jobs['jobs'][0]['conclusion']='failure'
+        with self.assertRaises(EvidenceError):resolve('12','a'*40,self.fetch)
+    def test_untrusted_source_or_actor_rejected(self):
+        for key,value in [('event','pull_request'),('head_sha','b'*40),('actor',{'id':1})]:
+            with self.subTest(key=key):
+                old=self.run[key];self.run[key]=value
+                with self.assertRaises(EvidenceError):resolve('12','a'*40,self.fetch)
+                self.run[key]=old
+    def test_new_build_has_no_broker_mutation_opt_in(self):
+        workflow=load_workflow(ROOT/'.github/workflows/ib-paper-qualification.yml')
+        self.assertEqual(workflow['on']['workflow_dispatch']['inputs']['rollout_stage']['default'],'build')
+        self.assertNotIn('mutation_mode',workflow['jobs']['build-candidate']['if'])
+        self.assertIn('inputs.candidate_sha == github.sha',workflow['jobs']['build-candidate']['if'])
+        self.assertNotIn('inputs.candidate_sha == github.sha',workflow['jobs']['campaign']['if'])
+
+if __name__=='__main__':unittest.main()
