@@ -1,0 +1,31 @@
+name: Temporary read-only audit source export
+on:
+  push:
+    branches: [audit/source-export-20260912]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export exact public source and Git object history
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          mkdir -p /tmp/hepta-source-export
+          git archive --format=tar HEAD | gzip -n > /tmp/hepta-source-export/source.tar.gz
+          git ls-files --stage > /tmp/hepta-source-export/index.txt
+          git cat-file commit HEAD > /tmp/hepta-source-export/commit.txt
+          sha256sum /tmp/hepta-source-export/source.tar.gz
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-audit-source-d003f54c
+          path: /tmp/hepta-source-export/
+          retention-days: 1
+          if-no-files-found: error
