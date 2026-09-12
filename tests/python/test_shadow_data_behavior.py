@@ -29,12 +29,15 @@ class ShadowDataBehaviorTests(unittest.TestCase):
     def test_nonzero_underflow_is_not_silently_observed_zero(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "evidence.json"
-            for number in ('1e-999', '-1e-999'):
+            for number in ('1e-999', '-1e-999', '1e-999999999999999999999999999',
+                           '-1E-999999999999999999999999999'):
                 path.write_text('{"x":' + number + '}')
                 with self.assertRaisesRegex(contracts.ContractError, "UNDERFLOW"):
                     contracts.load_document(path, "FIXTURE")
-            path.write_text('{"x":0e-999,"y":1.25}')
-            self.assertEqual(contracts.load_document(path, "FIXTURE"), {"x": 0, "y": 1.25})
+            for zero in ('0e-999', '0.000e-999999999999999999999999999',
+                         '-0E999999999999999999999999999'):
+                path.write_text('{"x":' + zero + ',"y":1.25}')
+                self.assertEqual(contracts.load_document(path, "FIXTURE"), {"x": 0, "y": 1.25})
 
     def test_number_contract_rejects_bool_nonfinite_and_huge_integer(self):
         for value in (True, float("nan"), float("inf"), -float("inf"), 10**1000):

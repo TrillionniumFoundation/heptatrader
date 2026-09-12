@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import hashlib
 import math
-from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -41,7 +40,11 @@ def _finite_float(value: str) -> float:
     number = float(value)
     if not math.isfinite(number):
         raise ContractError("STRATEGY_JSON_NON_FINITE")
-    if number == 0.0 and not Decimal(value).is_zero():
+    # json supplies a syntactically valid number. Inspect its significand
+    # directly: Decimal has a bounded exponent and would raise its own
+    # exception even for an actual zero with a very long valid exponent.
+    significand = value.lower().partition("e")[0]
+    if number == 0.0 and any(digit in "123456789" for digit in significand):
         raise ContractError("STRATEGY_JSON_NONZERO_UNDERFLOW")
     return number
 
