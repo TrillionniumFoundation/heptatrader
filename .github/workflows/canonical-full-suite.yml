@@ -19,29 +19,6 @@ env:
   BUILD_PARALLEL: "2"
 
 jobs:
-  # Temporary compatibility context for live ruleset 22597364. It deliberately
-  # performs no duplicate source/build/test work. Core Runtime CI owns the full
-  # behavior/release lane, Documentation Control Plane owns source truth, and
-  # the jobs below are independent sanitizer evidence. Delete this job after
-  # the obsolete server-side ruleset no longer names its context.
-  core:
-    name: canonical-full-suite-core
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - name: Satisfy obsolete ruleset context without duplicate verification
-        env:
-          EXPECTED_REPOSITORY: TrillionniumFoundation/heptatrader
-        run: |
-          set -euo pipefail
-          test "$GITHUB_REPOSITORY" = "$EXPECTED_REPOSITORY"
-          case "$GITHUB_EVENT_NAME" in
-            pull_request|push|merge_group) ;;
-            *) exit 1 ;;
-          esac
-          printf '%s\n' \
-            'compatibility-only context: no Broker authority and no duplicated behavior evidence'
-
   reliability-gcc:
     name: canonical-full-suite-reliability (g++)
     runs-on: ubuntu-24.04

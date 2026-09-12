@@ -5,6 +5,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = ROOT / ".github/workflows/ib-paper-qualification.yml"
+QUALIFICATION_SCRIPT = ROOT / "scripts/run_ib_paper_artifact_qualification.sh"
 
 
 class IbWorkflowInterfaceTests(unittest.TestCase):
@@ -81,6 +82,16 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
             "repository-governance",
         ):
             self.assertNotIn(token, self.workflow)
+
+    def test_external_qualification_harness_is_bounded_and_cleaned(self) -> None:
+        script = QUALIFICATION_SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("QUALIFICATION_TIMEOUT_SECONDS=900", script)
+        self.assertIn(
+            "timeout --foreground --signal=TERM --kill-after=30s",
+            script,
+        )
+        self.assertIn("trap cleanup EXIT INT TERM HUP", script)
+        self.assertIn("external PAPER harness exceeded", script)
 
 
 if __name__ == "__main__":

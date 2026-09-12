@@ -4,8 +4,10 @@ import gzip
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -61,6 +63,58 @@ def admitted_receipt(digest: str) -> dict:
 
 
 class ReleaseSimulatorSmokeTests(unittest.TestCase):
+    def test_smoke_relative_path_rejects_absolute_and_parent_escape(self) -> None:
+        for value in ("/bin/true", "../bin/true", "lib/../bin/true", ""):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(smoke.SmokeError, "path"):
+                    smoke._canonical_relative(value, "smoke-relative-path")
+
+    def test_installed_smoke_rejects_symlink_components(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            slot = root / "slot"
+            slot.mkdir()
+            current = root / "current"
+            os.symlink("slot", current)
+            target = root / "target"
+            target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            target.chmod(0o755)
+            os.symlink(target, slot / "smoke")
+            with self.assertRaisesRegex(smoke.SmokeError, "missing"):
+                smoke._run_installed_smoke(current, Path("smoke"))
+
+    def test_installed_smoke_rejects_absolute_path_before_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            current = Path(directory)
+            with self.assertRaisesRegex(smoke.SmokeError, "path escapes"):
+                smoke._run_installed_smoke(current, Path("/bin/true"))
+
+    def test_installed_smoke_uses_minimal_environment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            slot = root / "slot"
+            slot.mkdir()
+            current = root / "current"
+            os.symlink("slot", current)
+            executable = current / "smoke"
+            executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            executable.chmod(0o755)
+            completed = subprocess.CompletedProcess([], 0, stdout="ok\n")
+            with mock.patch.object(
+                smoke.subprocess, "run", return_value=completed
+            ) as run:
+                smoke._run_installed_smoke(current, Path("smoke"))
+            environment = run.call_args.kwargs["env"]
+            self.assertEqual(
+                environment,
+                {
+                    "PATH": "/usr/bin:/bin",
+                    "LC_ALL": "C",
+                    "HEPTA_RELEASE_SMOKE": "1",
+                },
+            )
+            self.assertTrue(run.call_args.kwargs["pass_fds"])
+
     def test_install_switch_rollback_and_repromotion(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -83,8 +137,8 @@ class ReleaseSimulatorSmokeTests(unittest.TestCase):
                 [item["id"] for item in record["checks"]],
                 [
                     "candidate.simulator-e2e",
-                    "rollback.simulator-e2e",
-                    "promotion.simulator-e2e",
+                    "rollback.pointer-switch",
+                    "promotion.pointer-switch",
                 ],
             )
             self.assertFalse(record["broker_mutation"])

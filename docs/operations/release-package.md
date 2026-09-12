@@ -44,6 +44,12 @@ An IB PAPER package must contain the real `hepta-ib-executiond`; the installed b
 
 ## Artifact admission
 
+For a distributable release, create a signed `v<version>` tag matching
+`VERSION`. The tagged release workflow builds the tested core once, runs
+artifact-only preflight, and publishes the package, receipts, manifest, and
+SHA-256 sidecars as one immutable evidence set. A tag workflow artifact still
+does not grant PAPER or LIVE authority.
+
 Before transfer or installation, verify the caller-approved SHA-256:
 
 ```bash

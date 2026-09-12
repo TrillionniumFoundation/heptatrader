@@ -80,6 +80,7 @@ trap cleanup EXIT INT TERM HUP
 
 RESULT_PATH="$WORK_DIR/qualification-result.json"
 REQUIRED_SCENARIOS="connect_authoritative_snapshot,disconnect_reconnect,partial_fill,duplicate_out_of_order_status,broker_reject,stale_quote,outcome_uncertain,cancel_race,reconcile_divergence,lease_fencing,kill_switch,terminal_recovery"
+QUALIFICATION_TIMEOUT_SECONDS=900
 HARNESS_HOME="$WORK_DIR/harness-home"
 mkdir -m 0700 "$HARNESS_HOME"
 
@@ -88,7 +89,11 @@ mkdir -m 0700 "$HARNESS_HOME"
 # credentials remain inside the harness implementation and are never inherited
 # by the candidate process. The harness must enforce the exact operation list,
 # broker-proxy-only networking and harness-only credential delivery.
-env -i \
+command -v timeout >/dev/null 2>&1 || {
+  echo "GNU timeout is required for bounded PAPER qualification" >&2
+  exit 78
+}
+if timeout --foreground --signal=TERM --kill-after=30s "${QUALIFICATION_TIMEOUT_SECONDS}s" env -i \
   PATH=/usr/bin:/bin \
   HOME="$HARNESS_HOME" \
   LC_ALL=C \
@@ -111,6 +116,17 @@ env -i \
   --evidence-dir "$WORK_DIR" \
   --result "$RESULT_PATH" \
   --mode bounded-mutations
+then
+  :
+else
+  STATUS=$?
+  if [[ "$STATUS" == "124" || "$STATUS" == "137" ]]; then
+    echo "external PAPER harness exceeded ${QUALIFICATION_TIMEOUT_SECONDS}s timeout" >&2
+    exit 124
+  fi
+  echo "external PAPER harness failed (exit=$STATUS)" >&2
+  exit "$STATUS"
+fi
 
 [[ -f "$RESULT_PATH" && ! -L "$RESULT_PATH" ]] || {
   echo "external PAPER harness did not produce qualification-result.json" >&2

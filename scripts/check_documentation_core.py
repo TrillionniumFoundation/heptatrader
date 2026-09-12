@@ -38,13 +38,24 @@ MODULE_KEYS = {
     "broker_mutation",
     "production_authorized",
 }
-CAPABILITY_KEYS = {
+CAPABILITY_KEYS_V1 = {
     "id",
     "status",
     "order_transport",
     "requires_external_qualification",
     "advertise_as_real_venue",
 }
+CAPABILITY_KEYS_V2 = {
+    "id",
+    "status",
+    "order_transport",
+    "requires_external_qualification",
+    "transport_implemented",
+    "advertisable",
+    "authorized",
+}
+# Public compatibility alias for tooling that imported the old constant.
+CAPABILITY_KEYS = CAPABILITY_KEYS_V2
 CANONICAL_FILES = (
     Path("README.md"),
     Path("docs/index.md"),
@@ -54,7 +65,7 @@ REQUIRED_WORKFLOWS = (
     Path(".github/workflows/documentation-control-plane.yml"),
     Path(".github/workflows/core-ci.yml"),
     Path(".github/workflows/canonical-full-suite.yml"),
-    Path(".github/workflows/merge-candidate.yml"),
+    Path(".github/workflows/release.yml"),
 )
 ID_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 LINK_RE = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
@@ -253,8 +264,12 @@ def _validate_capabilities(
     errors: list[str],
 ) -> None:
     value = _load_json(root / "docs/capabilities.json", errors)
-    if not isinstance(value, dict) or value.get("schema") != "heptatrader.capabilities.v1":
+    schema = value.get("schema") if isinstance(value, dict) else None
+    if schema not in {"heptatrader.capabilities.v1", "heptatrader.capabilities.v2"}:
         errors.append("docs/capabilities.json: unsupported schema")
+        return
+    if schema == "heptatrader.capabilities.v1" and root.resolve() == ROOT.resolve():
+        errors.append("docs/capabilities.json: checked-in capability data must use schema v2")
         return
     if value.get("live_trading_authorized") is not False:
         errors.append("docs/capabilities.json: LIVE must remain unauthorized")
@@ -265,8 +280,9 @@ def _validate_capabilities(
     capabilities: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(items):
         label = f"capability[{index}]"
-        if not isinstance(item, dict) or set(item) != CAPABILITY_KEYS:
-            errors.append(f"{label}: fields must be exactly {sorted(CAPABILITY_KEYS)}")
+        expected_keys = CAPABILITY_KEYS_V2 if schema.endswith(".v2") else CAPABILITY_KEYS_V1
+        if not isinstance(item, dict) or set(item) != expected_keys:
+            errors.append(f"{label}: fields must be exactly {sorted(expected_keys)}")
             continue
         capability_id = item["id"]
         if not isinstance(capability_id, str) or ID_RE.fullmatch(capability_id) is None:
@@ -282,10 +298,29 @@ def _validate_capabilities(
             errors.append(f"{label}: order_transport must be a non-empty string")
         if not isinstance(item["requires_external_qualification"], bool):
             errors.append(f"{label}: requires_external_qualification must be boolean")
-        if not isinstance(item["advertise_as_real_venue"], bool):
-            errors.append(f"{label}: advertise_as_real_venue must be boolean")
+        if schema.endswith(".v2"):
+            for field in ("transport_implemented", "advertisable", "authorized"):
+                if not isinstance(item[field], bool):
+                    errors.append(f"{label}: {field} must be boolean")
+            # Keep the three decisions independent and fail closed. A caller
+            # must never infer real venue authority from transport presence.
+            if item["advertisable"] and not item["transport_implemented"]:
+                errors.append(f"{label}: advertisable requires implemented transport")
+            if item["advertisable"] and not item["authorized"]:
+                errors.append(f"{label}: advertisable requires authorization")
+            if item["requires_external_qualification"] and item["authorized"]:
+                errors.append(f"{label}: externally qualified capability cannot be source-authorized")
+            if item["status"] != "CURRENT" and item["authorized"]:
+                errors.append(f"{label}: only CURRENT capabilities may be authorized")
+            if item["status"] in {"EXPERIMENTAL", "PROPOSAL", "UNAVAILABLE", "QUALIFICATION_REQUIRED"}:
+                if item["advertisable"] or item["authorized"]:
+                    errors.append(f"{label}: non-current capability must not be advertisable or authorized")
+        else:
+            if not isinstance(item["advertise_as_real_venue"], bool):
+                errors.append(f"{label}: advertise_as_real_venue must be boolean")
         if item["status"] in {"EXPERIMENTAL", "PROPOSAL", "UNAVAILABLE"}:
-            if item["order_transport"] != "NONE" or item["advertise_as_real_venue"]:
+            advertised = item.get("advertisable", item.get("advertise_as_real_venue"))
+            if item["order_transport"] != "NONE" or advertised:
                 errors.append(f"{label}: experimental/unavailable capability must fail closed")
 
     required = {

@@ -49,6 +49,7 @@ This index is the canonical entry point for current development documentation. A
 - [`technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
 - [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
 - [`technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
+- [`technical/capability-advertising.md`](technical/capability-advertising.md)
 
 ## Operations
 
@@ -69,6 +70,7 @@ This index is the canonical entry point for current development documentation. A
 - [`DOCUMENTATION-POLICY.md`](DOCUMENTATION-POLICY.md)
 - [`GAP-REGISTER.md`](GAP-REGISTER.md)
 - [`RELEASE-PUBLICATION-SECURITY.md`](RELEASE-PUBLICATION-SECURITY.md)
+- Tagged release workflow: [`.github/workflows/release.yml`](../.github/workflows/release.yml)
 - [`adr/0001-release-publication-atomicity.md`](adr/0001-release-publication-atomicity.md)
 - [`adr/0002-owner-operated-repository.md`](adr/0002-owner-operated-repository.md)
 - [`adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md)
@@ -78,6 +80,47 @@ This index is the canonical entry point for current development documentation. A
 - [`capabilities.json`](capabilities.json)
 - [`module-catalog.json`](module-catalog.json)
 - [`build-targets.json`](build-targets.json)
+
+## Supporting and historical references
+
+These documents are intentionally outside the module catalog because they are
+cross-cutting runbooks, research notes, or compatibility material. Their
+status line is authoritative: `CURRENT` documents describe maintained
+contracts, while `EXPERIMENTAL`, `PROPOSAL`, and `LEGACY` documents cannot
+authorize a venue or deployment path.
+
+### Current cross-cutting contracts
+
+- [`ALERT-RULES-BASELINE.md`](ALERT-RULES-BASELINE.md)
+- [`ITERATION.md`](ITERATION.md)
+- [`OBSERVABILITY-METRICS.md`](OBSERVABILITY-METRICS.md)
+- [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md)
+
+### Experimental and proposal material
+
+- [`EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md`](EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md)
+- [`IB-SYSTEM-LOW-LATENCY.md`](IB-SYSTEM-LOW-LATENCY.md)
+- [`QMT-SDK-REVIEW.md`](QMT-SDK-REVIEW.md)
+- [`STRATEGY-VALIDATION-PLAN.md`](STRATEGY-VALIDATION-PLAN.md)
+- [`XT-HEPTA-MAPPING.md`](XT-HEPTA-MAPPING.md)
+- [`XTQMT-VENUE-PLAN.md`](XTQMT-VENUE-PLAN.md)
+
+### Legacy compatibility notes
+
+- [`CONFIG-PROFILE-LOCK.md`](CONFIG-PROFILE-LOCK.md)
+- [`QMT-BRIDGE-MVP.md`](QMT-BRIDGE-MVP.md)
+- [`RECONCILE-RULES.md`](RECONCILE-RULES.md)
+- [`SIM-MD-FORMAT.md`](SIM-MD-FORMAT.md)
+- [`strategy-state-persist-min.md`](strategy-state-persist-min.md)
+
+The 2023 [`doc/HeptaTrader系统介绍.pdf`](../doc/HeptaTrader系统介绍.pdf) is
+archived historical material (its title and Windows monolith architecture do
+not describe the current Agent-native Linux runtime). It is retained for
+provenance only and is excluded from build, release, and authorization
+evidence. `SECURITY-HARDENING.md` at the repository root is likewise a legacy
+security note; current security contracts live in
+[`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md) and the deployment
+module document.
 
 ## Non-canonical material
 

@@ -21,7 +21,7 @@ The gap verifier checks concrete repository evidence, complementary CI ownership
 | VENUE-001 | CLOSED_SOURCE | CTP and XT/QMT scaffolds cannot manufacture venue success; legacy runtimes remain default-off and non-authorizing. |
 | OMS-001 | CLOSED_SOURCE | Journal-before-send, uncertainty and authoritative reconciliation contracts match schema v4. |
 | BUILD-001 | CLOSED_SOURCE | Canonical target/translation-unit ownership comes from fresh CMake File API data and exact Git-index component coverage. |
-| RELEASE-001 | CLOSED_SOURCE | Canonical install, deterministic immutable publication, descriptor-pinned preflight, installed simulator lifecycle rollback/re-promotion and stable engaged kill-switch validation are behavior-tested. |
+| RELEASE-001 | CLOSED_SOURCE | Canonical install, deterministic immutable publication, descriptor-pinned preflight, unprivileged systemd unit/readiness lint, installed simulator execution, and atomic pointer rollback/re-promotion mechanics are behavior-tested; N-1 schema compatibility remains a deployment prerequisite. |
 
 `source_state` is `READY`. `paper_authorized` and `live_authorized` remain `false`.
 

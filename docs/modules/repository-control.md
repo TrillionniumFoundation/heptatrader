@@ -27,6 +27,13 @@ Canonical source truth is stored in versioned JSON and Markdown under `docs/` an
 
 Missing ownership, an unknown module, ambiguous longest-path ownership, build-inventory owner drift, an omitted module document, invalid JSON, a stale capability claim, or a missing required check fails the source gate. No failure is converted into PAPER or LIVE authorization.
 
+Capability truth uses schema v2's separate `transport_implemented`,
+`advertisable`, and `authorized` fields. An implemented transport is evidence
+of code only; external qualification and host controls are required before a
+venue can be advertised or authorized. The control-plane validator rejects
+any matrix that collapses these decisions or marks a non-current capability as
+authorized.
+
 ## Security boundaries
 
 Repository credentials, review settings, CI status, host credentials, runner custody, and Broker evidence are separate trust domains. Source verification may prove repository properties only. It cannot synthesize independent review, Merge Queue admission, host identity, PAPER account mode, or a broker-observed campaign.

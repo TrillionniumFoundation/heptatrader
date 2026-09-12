@@ -21,7 +21,9 @@ class LegacyRuntimeBoundaryTests(unittest.TestCase):
                 "status": "CURRENT",
                 "order_transport": "LOCAL_DETERMINISTIC",
                 "requires_external_qualification": False,
-                "advertise_as_real_venue": False,
+                "transport_implemented": True,
+                "advertisable": False,
+                "authorized": False,
             },
         )
         self.assertEqual(capabilities["ib-paper"]["status"], "QUALIFICATION_REQUIRED")
@@ -30,10 +32,14 @@ class LegacyRuntimeBoundaryTests(unittest.TestCase):
             capability = capabilities[capability_id]
             self.assertEqual(capability["status"], "EXPERIMENTAL")
             self.assertEqual(capability["order_transport"], "NONE")
-            self.assertFalse(capability["advertise_as_real_venue"])
+            self.assertFalse(capability["transport_implemented"])
+            self.assertFalse(capability["advertisable"])
+            self.assertFalse(capability["authorized"])
         self.assertEqual(capabilities["live"]["status"], "UNAVAILABLE")
         self.assertEqual(capabilities["live"]["order_transport"], "NONE")
-        self.assertFalse(capabilities["live"]["advertise_as_real_venue"])
+        self.assertFalse(capabilities["live"]["transport_implemented"])
+        self.assertFalse(capabilities["live"]["advertisable"])
+        self.assertFalse(capabilities["live"]["authorized"])
 
     def test_experimental_adapters_cannot_report_transport_success(self) -> None:
         ctp = (ROOT / "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp").read_text(

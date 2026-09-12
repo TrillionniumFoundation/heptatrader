@@ -375,7 +375,8 @@ def validate_release(root: Path) -> list[str]:
         root,
         "CMakeLists.txt",
         (
-            'set(HEPTA_RELEASE_LABEL "0.1.0-beta.1" CACHE STRING',
+            'file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" HEPTA_RELEASE_LABEL',
+            'set(HEPTA_RELEASE_LABEL "${HEPTA_RELEASE_LABEL}" CACHE STRING',
             "include(cmake/HeptaInstall.cmake)",
         ),
         "RELEASE-001",
