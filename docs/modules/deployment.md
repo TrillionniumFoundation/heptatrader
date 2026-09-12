@@ -2,12 +2,21 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `systemd/`, `tmpfiles.d/`  
-Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`
+Implementation: `systemd/`, `tmpfiles.d/`, `scripts/check_systemd_units.py`
+Tests: `tests/python/test_systemd_units.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`
 
 ## Scope
 
 The repository contains source deployment units and examples for simulator execution, IB PAPER execution, the Tool Gateway, event sockets, session-supervisor sockets, service identities, trust-domain configuration, broker egress policy and runtime directories.
+
+`scripts/check_systemd_units.py` is the unprivileged deployment gate. It parses
+every checked-in unit and verifies executable paths, identity separation,
+socket associations, simulator network isolation, IB PAPER policy ordering,
+credential declarations, and deny-all stop behavior. It never contacts PID 1
+or changes host state. A target host should additionally run
+`systemd-analyze verify` and a disposable startup/readiness probe after
+installing the exact artifact; those checks are host evidence and cannot be
+replaced by a source-only green build.
 
 The top-level CMake project installs the maintained runtime into a canonical tree. [`release-package.md`](../operations/release-package.md) builds a deterministic archive from that tree and validates it with a read-only machine-readable preflight. These assets still do not prove that a particular host, GitHub environment or Broker account is qualified.
 
@@ -39,7 +48,7 @@ The IB PAPER service depends on the Broker egress policy, runtime directory crea
 
 Files ending in `.example` are templates. A deployment copies them to root-owned host paths, replaces placeholders, validates the resulting contract and records a digest. Secrets use systemd credentials or an equivalent protected facility rather than world-readable environment files.
 
-Run `hepta-preflight` twice: artifact-only before privileged transfer and static-host mode after installing the exact approved archive. The receipt always has `authorization_effect=NONE`; the protected Broker campaign remains a separate step.
+Run `hepta-preflight` twice: artifact-only before privileged transfer and static-host mode after installing the exact approved archive. Then run the unprivileged unit lint, `systemd-analyze verify`, and a disposable service startup/readiness probe. The receipt always has `authorization_effect=NONE`; the protected Broker campaign remains a separate step.
 
 ## Upgrade and rollback
 

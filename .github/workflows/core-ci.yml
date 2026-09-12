@@ -50,6 +50,9 @@ jobs:
           HEPTA_RELEASE_INTEGRATION_BUILD_DIR: ${{ github.workspace }}/build/core
         run: python3 -m unittest discover -s tests/python -p 'test_cmake_install_integration.py'
 
+      - name: Verify deployment unit contract without host mutation
+        run: python3 scripts/check_systemd_units.py
+
       - name: Package, preflight, install, execute, roll back and re-promote the exact tested core
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -57,22 +60,17 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
-          package="dist/heptatrader-0.1.0-beta.1-core-${EXPECTED_SHA}.tar.gz"
+          version="$(tr -d '[:space:]' < VERSION)"
+          test -n "$version"
+          package="dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
           python3 scripts/build_release_package.py \
             --build-dir build/core \
             --output "$package" \
-            --version 0.1.0-beta.1 \
+            --version "$version" \
             --profile core \
             --source-sha "$EXPECTED_SHA" \
             --source-date-epoch "$epoch"
           digest="$(cut -d' ' -f1 "$package.sha256")"
-          python3 scripts/hepta_preflight.py \
-            --artifact "$package" \
-            --expected-sha256 "$digest" \
-            --profile core \
-            --policy docs/preflight-policy-v1.json \
-            --artifact-only \
-            --output "dist/core-preflight-${EXPECTED_SHA}.json"
           python3 scripts/run_release_simulator_smoke.py \
             --artifact "$package" \
             --expected-sha256 "$digest" \

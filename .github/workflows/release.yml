@@ -1,0 +1,78 @@
+name: Tagged Release Evidence
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: tagged-release-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout tagged source without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+      - name: Assert tag and VERSION agree
+        run: |
+          set -euo pipefail
+          version="$(tr -d '[:space:]' < VERSION)"
+          test "v${version}" = "${GITHUB_REF_NAME}"
+      - name: Build tested core
+        env:
+          HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
+          HEPTA_JOBS: "2"
+        run: ./scripts/dev_core.sh
+      - name: Verify deployment unit contract
+        run: python3 scripts/check_systemd_units.py
+      - name: Build immutable release package and manifest
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          version="$(tr -d '[:space:]' < VERSION)"
+          epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
+          package="dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
+          python3 scripts/build_release_package.py \
+            --build-dir build/core \
+            --output "$package" \
+            --version "$version" \
+            --profile core \
+            --source-sha "$EXPECTED_SHA" \
+            --source-date-epoch "$epoch"
+          digest="$(cut -d' ' -f1 "$package.sha256")"
+          python3 scripts/hepta_preflight.py \
+            --artifact "$package" \
+            --expected-sha256 "$digest" \
+            --profile core \
+            --policy docs/preflight-policy-v1.json \
+            --artifact-only \
+            --output "dist/release-preflight.json"
+          python3 - "$package.receipt.json" "$EXPECTED_SHA" "$version" > dist/release-manifest.json <<'PY'
+          import json, pathlib, sys
+          receipt = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          manifest = {"schema": "heptatrader.tagged-release-manifest.v1",
+                      "tag": "v" + sys.argv[3], "source_sha": sys.argv[2],
+                      "artifact": receipt}
+          print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+          PY
+          sha256sum dist/release-manifest.json > dist/release-manifest.json.sha256
+      - name: Upload immutable release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: heptatrader-release-${{ github.ref_name }}-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0

@@ -10,6 +10,12 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
+os.umask(0o022)
+scripts_dir = ROOT / "scripts"
+scripts_dir.chmod(scripts_dir.stat().st_mode & ~0o022)
+(scripts_dir / "hepta_preflight_core.py").chmod(
+    (scripts_dir / "hepta_preflight_core.py").stat().st_mode & ~0o022
+)
 
 import build_release_package as release  # noqa: E402
 import hepta_preflight as preflight  # noqa: E402

@@ -57,14 +57,14 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             }],
         }
         capabilities = {
-            "schema": "heptatrader.capabilities.v1",
+            "schema": "heptatrader.capabilities.v2",
             "live_trading_authorized": False,
             "capabilities": [
-                {"id": "deterministic-simulator", "status": "CURRENT", "order_transport": "LOCAL_DETERMINISTIC", "requires_external_qualification": False, "advertise_as_real_venue": False},
-                {"id": "ib-paper", "status": "QUALIFICATION_REQUIRED", "order_transport": "IB_CPP_API", "requires_external_qualification": True, "advertise_as_real_venue": True},
-                {"id": "ctp", "status": "EXPERIMENTAL", "order_transport": "NONE", "requires_external_qualification": True, "advertise_as_real_venue": False},
-                {"id": "xt-qmt", "status": "EXPERIMENTAL", "order_transport": "NONE", "requires_external_qualification": True, "advertise_as_real_venue": False},
-                {"id": "live", "status": "UNAVAILABLE", "order_transport": "NONE", "requires_external_qualification": True, "advertise_as_real_venue": False},
+                {"id": "deterministic-simulator", "status": "CURRENT", "order_transport": "LOCAL_DETERMINISTIC", "requires_external_qualification": False, "transport_implemented": True, "advertisable": False, "authorized": False},
+                {"id": "ib-paper", "status": "QUALIFICATION_REQUIRED", "order_transport": "IB_CPP_API", "requires_external_qualification": True, "transport_implemented": True, "advertisable": False, "authorized": False},
+                {"id": "ctp", "status": "EXPERIMENTAL", "order_transport": "NONE", "requires_external_qualification": True, "transport_implemented": False, "advertisable": False, "authorized": False},
+                {"id": "xt-qmt", "status": "EXPERIMENTAL", "order_transport": "NONE", "requires_external_qualification": True, "transport_implemented": False, "advertisable": False, "authorized": False},
+                {"id": "live", "status": "UNAVAILABLE", "order_transport": "NONE", "requires_external_qualification": True, "transport_implemented": False, "advertisable": False, "authorized": False},
             ],
         }
         # Add matching catalog entries needed by capability cross-checks.
@@ -113,7 +113,7 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             for capability in value["capabilities"]:
                 if capability["id"] == "ctp":
                     capability["order_transport"] = "CTP_API"
-                    capability["advertise_as_real_venue"] = True
+                    capability["advertisable"] = True
             path.write_text(json.dumps(value), encoding="utf-8")
             errors = documentation.validate(root)
             self.assertTrue(any("must fail closed" in item for item in errors), errors)
@@ -127,6 +127,21 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             path.write_text(json.dumps(value), encoding="utf-8")
             errors = documentation.validate(root)
             self.assertTrue(any("LIVE must remain unauthorized" in item for item in errors), errors)
+
+    def test_v2_advertising_cannot_bypass_qualification(self) -> None:
+        value = json.loads((ROOT / "docs/capabilities.json").read_text(encoding="utf-8"))
+        for capability in value["capabilities"]:
+            if capability["id"] == "ib-paper":
+                capability["advertisable"] = True
+        with tempfile.TemporaryDirectory() as directory:
+            # Reuse the fixture's complete source tree, then replace only its
+            # capability document with the v2 matrix under test.
+            root = self.fixture(directory)
+            (root / "docs/capabilities.json").write_text(
+                json.dumps(value, indent=2) + "\n", encoding="utf-8"
+            )
+            errors = documentation.validate(root)
+            self.assertTrue(any("advertisable requires authorization" in item for item in errors), errors)
 
 
 if __name__ == "__main__":

@@ -337,33 +337,109 @@ def _atomic_switch(root: Path, target: Path) -> None:
 
 
 def _run_installed_smoke(current: Path, relative: Path) -> dict[str, Any]:
-    executable = current / relative
+    relative = _canonical_relative(relative.as_posix(), "smoke-relative-path")
+    # Open every path component without following attacker-controlled links and
+    # execute the pinned inode through /proc/self/fd.  This keeps an atomic
+    # current-slot switch (or a concurrent rename) from changing what runs
+    # between validation and exec.
+    parts = relative.parts
+    if not parts:
+        raise SmokeError("installed simulator smoke path is empty")
+    directory_fd = -1
+    executable_fd = -1
     try:
-        metadata = executable.stat(follow_symlinks=True)
-    except OSError as error:
-        raise SmokeError(f"installed simulator smoke is missing: {error}") from error
-    if not stat.S_ISREG(metadata.st_mode) or not (metadata.st_mode & 0o111):
-        raise SmokeError("installed simulator smoke is not an executable regular file")
-    result = subprocess.run(
-        [str(executable)],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=180,
-        check=False,
-        env={**os.environ, "HEPTA_RELEASE_SMOKE": "1"},
-    )
-    if result.returncode != 0:
-        raise SmokeError(
-            "installed simulator smoke failed "
-            f"(exit={result.returncode}): {result.stdout[-4096:]}"
+        # Resolve the current pointer textually, then walk the release slot
+        # from its parent directory without following any component links.
+        # This avoids validating one slot and executing another if current is
+        # atomically replaced while the smoke process is starting.
+        root_fd = os.open(
+            current.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
         )
-    return {
-        "exit_code": result.returncode,
-        "output_sha256": hashlib.sha256(
-            result.stdout.encode("utf-8", "replace")
-        ).hexdigest(),
-    }
+        directory_fd = root_fd
+        pointer = os.readlink(current.name, dir_fd=root_fd)
+        try:
+            pointer_relative = _canonical_relative(pointer, "current pointer")
+        except Exception:
+            os.close(directory_fd)
+            directory_fd = -1
+            raise
+        for component in pointer_relative.parts:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        for component in parts[:-1]:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            os.close(directory_fd)
+            directory_fd = next_fd
+        executable_fd = os.open(
+            parts[-1],
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory_fd,
+        )
+        metadata = os.fstat(executable_fd)
+    except OSError as error:
+        if executable_fd >= 0:
+            os.close(executable_fd)
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        raise SmokeError(f"installed simulator smoke is missing: {error}") from error
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or not (metadata.st_mode & 0o111)
+    ):
+        os.close(executable_fd)
+        os.close(directory_fd)
+        raise SmokeError("installed simulator smoke is not an executable regular file")
+    try:
+        result = subprocess.run(
+            [f"/proc/self/fd/{executable_fd}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=180,
+            check=False,
+            pass_fds=(executable_fd,),
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LC_ALL": "C",
+                "HEPTA_RELEASE_SMOKE": "1",
+            },
+        )
+        if result.returncode != 0:
+            raise SmokeError(
+                "installed simulator smoke failed "
+                f"(exit={result.returncode}): {result.stdout[-4096:]}"
+            )
+        return {
+            "exit_code": result.returncode,
+            "output_sha256": hashlib.sha256(
+                result.stdout.encode("utf-8", "replace")
+            ).hexdigest(),
+        }
+    finally:
+        os.close(executable_fd)
+        os.close(directory_fd)
 
 
 def _write_record(path: Path, value: dict[str, Any]) -> None:
@@ -448,6 +524,9 @@ def run_release_smoke(
 ) -> dict[str, Any]:
     if profile != "core":
         raise SmokeError("simulator release smoke supports only the core profile")
+    smoke_relative = _canonical_relative(
+        smoke_relative.as_posix(), "smoke-relative-path"
+    )
     if len(expected_sha256) != 64 or any(
         character not in "0123456789abcdef" for character in expected_sha256
     ):
@@ -459,7 +538,9 @@ def run_release_smoke(
     snapshot = _snapshot_artifact(
         artifact, input_directory / "release.tar.gz", expected_sha256
     )
-    _run_preflight(preflight, snapshot, expected_sha256, policy, profile)
+    preflight_receipt = _run_preflight(
+        preflight, snapshot, expected_sha256, policy, profile
+    )
 
     slots = work_root / "releases"
     slots.mkdir(mode=0o700)
@@ -472,6 +553,9 @@ def run_release_smoke(
 
     _atomic_switch(work_root, candidate)
     try:
+        # Execute the installed binary once.  The rollback and promotion
+        # phases validate only the atomic current-pointer transitions; rerun
+        # of the identical artifact adds no evidence and obscures failures.
         checks.append(
             {
                 "id": "candidate.simulator-e2e",
@@ -480,19 +564,23 @@ def run_release_smoke(
             }
         )
         _atomic_switch(work_root, previous)
+        if os.readlink(current) != previous.relative_to(work_root).as_posix():
+            raise SmokeError("rollback current pointer mismatch")
         checks.append(
             {
-                "id": "rollback.simulator-e2e",
+                "id": "rollback.pointer-switch",
                 "status": "PASS",
-                **_run_installed_smoke(current, smoke_relative),
+                "current": os.readlink(current),
             }
         )
         _atomic_switch(work_root, candidate)
+        if os.readlink(current) != candidate.relative_to(work_root).as_posix():
+            raise SmokeError("promotion current pointer mismatch")
         checks.append(
             {
-                "id": "promotion.simulator-e2e",
+                "id": "promotion.pointer-switch",
                 "status": "PASS",
-                **_run_installed_smoke(current, smoke_relative),
+                "current": os.readlink(current),
             }
         )
     except Exception:
@@ -515,11 +603,12 @@ def run_release_smoke(
             "snapshot": snapshot.relative_to(work_root).as_posix(),
             "archive_root": root_name,
         },
+        "preflight": preflight_receipt,
         "slots": {
             "candidate": candidate.relative_to(work_root).as_posix(),
             "previous": previous.relative_to(work_root).as_posix(),
             "current": os.readlink(current),
-            "previous_seed": "same_verified_artifact",
+            "previous_seed": "same_verified_artifact_pointer_only",
         },
         "checks": checks,
         "broker_mutation": False,

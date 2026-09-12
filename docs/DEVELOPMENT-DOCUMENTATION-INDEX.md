@@ -36,6 +36,7 @@ This index connects every registered module document with the deeper implementat
 - [`docs/technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
 - [`docs/technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
 - [`docs/technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
+- [`docs/technical/capability-advertising.md`](technical/capability-advertising.md)
 - [`docs/ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json)
 - [`docs/adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md)
 

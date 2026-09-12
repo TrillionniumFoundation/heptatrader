@@ -28,7 +28,7 @@ Shutdown first closes new mutation admission, drains accepted work, reconciles a
 
 ## Rollback
 
-Rollback selects the prior compatible slot, restarts the same service graph, replays journals, and reconciles again. It is forbidden across an incompatible journal or lease schema without a tested migration. The release simulator smoke executes candidate, rollback, and re-promotion through an installed E2E binary without Broker access.
+Rollback selects the prior compatible slot, restarts the same service graph, replays journals, and reconciles again. It is forbidden across an incompatible journal or lease schema without a tested migration. The release simulator smoke executes the candidate through the installed E2E binary and separately verifies atomic rollback/re-promotion pointer transitions without Broker access; it does not claim N-1 compatibility for an identical-artifact seed slot.
 
 ## Failure handling
 

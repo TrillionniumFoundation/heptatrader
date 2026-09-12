@@ -10,6 +10,7 @@ HeptaTrader is an owner-operated trading runtime focused on explicit execution a
 - **LIVE — UNAVAILABLE.**
 
 `paper_authorized=false` and `live_authorized=false` are deliberate defaults. Source, CI, review, release packaging, and preflight do not grant Broker authority.
+The machine-readable matrix uses separate transport, advertising, and authorization decisions; see [`docs/technical/capability-advertising.md`](docs/technical/capability-advertising.md).
 
 ## Architecture
 

@@ -312,26 +312,12 @@ def validate_ci_roles(root: Path) -> None:
         root,
         ".github/workflows/canonical-full-suite.yml",
         (
-            "compatibility-only context",
             "cmake --build build/reliability-gcc --target hepta_core_test_binaries",
             "ctest --test-dir build/reliability-gcc --output-on-failure -L core",
             "cmake --build build/reliability-clang --target hepta_core_test_binaries",
             "ctest --test-dir build/reliability-clang --output-on-failure -L core",
         ),
         forbidden=behavior_owned + source_truth,
-    )
-    _require_workflow_role(
-        root,
-        ".github/workflows/merge-candidate.yml",
-        ("compatibility-only context",),
-        forbidden=(
-            *behavior_owned,
-            *source_truth,
-            "actions/checkout@",
-            "apt-get",
-            "cmake ",
-            "ctest ",
-        ),
     )
 
 

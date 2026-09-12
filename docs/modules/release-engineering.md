@@ -74,7 +74,7 @@ The special-file suite uses timeout-bounded subprocesses for FIFO policy, artifa
 
 The install integration test consumes the same already-built canonical `build/core` directory, verifies its exact CMake profile, executes `cmake --install` under a fresh `DESTDIR`, asserts every policy-required regular file, rejects an IB-enabled daemon in the core profile, and checks installed build metadata. This prevents an install module that exists in source but is never registered from passing CI.
 
-A release workflow must build the canonical CMake targets, install into an empty staging root, package that root, run artifact-only preflight, and retain the package, digest and receipts as one immutable evidence set.
+A release workflow must build the canonical CMake targets, install into an empty staging root, package that root, run artifact-only preflight, and retain the package, digest and receipts as one immutable evidence set. The tagged `v*.*.*` workflow additionally requires the tag to equal `VERSION`, emits a `heptatrader.tagged-release-manifest.v1` binding the tag, source SHA and package receipt, and retains a digest sidecar for later signature or registry publication.
 
 ## Known limitations
 
