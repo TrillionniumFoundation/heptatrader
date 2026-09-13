@@ -571,6 +571,17 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
         }
         ++m_durableSyncWrites;
     }
+    if (m_capacityKnown)
+    {
+        if (record.size() > std::numeric_limits<std::uint64_t>::max() - m_capacityBytes ||
+            m_capacityRecords == std::numeric_limits<std::uint64_t>::max())
+            m_capacityKnown = false;
+        else
+        {
+            m_capacityBytes += record.size();
+            ++m_capacityRecords;
+        }
+    }
     ++m_flushedTotal;
     m_lastFlushMs = NowEpochMs();
     return true;
@@ -651,6 +662,10 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
         return false;
     }
     m_fd = fd;
+    // Existing bytes need a complete successful replay before counts are known.
+    m_capacityKnown = metadata.st_size == 0;
+    m_capacityBytes = 0;
+    m_capacityRecords = 0;
     return true;
 }
 
@@ -935,6 +950,19 @@ OmsJournalHealthSnapshot OmsJournal::GetHealthSnapshot() const
     out.replayObservedBytes = m_replayObservedBytes;
     out.replayValidatedRecords = m_replayValidatedRecords;
     out.replayReasonCode = m_replayReasonCode;
+    struct stat pinned, named;
+    out.capacityKnown = m_capacityKnown && !m_writePoisoned && m_fd >= 0 &&
+        StatFileDescriptor(m_fd, pinned) &&
+        StatPathWithoutFollowingLinks(m_path, named) &&
+        HasPrivateRegularFileMetadata(pinned) && HasPrivateRegularFileMetadata(named) &&
+        pinned.st_dev == named.st_dev && pinned.st_ino == named.st_ino &&
+        pinned.st_size >= 0 && named.st_size == pinned.st_size &&
+        static_cast<std::uint64_t>(pinned.st_size) == m_capacityBytes;
+    if (out.capacityKnown)
+    {
+        out.currentBytes = m_capacityBytes;
+        out.currentRecords = m_capacityRecords;
+    }
     return out;
 }
 
@@ -948,6 +976,7 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
 {
     std::unique_lock<std::mutex> lk(m_mtx);
     OmsJournal* const self = const_cast<OmsJournal*>(this);
+    self->m_capacityKnown = false;
     self->m_replayObservedBytes = 0;
     self->m_replayValidatedRecords = 0;
     self->m_replayReasonCode = "OMS_REPLAY_IO_OR_IDENTITY_FAILURE";
@@ -1060,6 +1089,9 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
     // No callback has run on ANY input/budget/allocation failure above. Keep
     // callbacks outside the journal mutex so existing reentrant readers work.
     self->m_replayReasonCode = "OMS_REPLAY_VALIDATED";
+    self->m_capacityBytes = static_cast<std::uint64_t>(metadata.st_size);
+    self->m_capacityRecords = static_cast<std::uint64_t>(events.size());
+    self->m_capacityKnown = true;
     lk.unlock();
     if (onEvent)
         for (std::vector<OmsJournalEvent>::const_iterator it = events.begin();

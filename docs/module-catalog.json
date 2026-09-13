@@ -82,13 +82,15 @@
         "HeptaTrade/oms_journal.h",
         "HeptaTrade/oms_recover.cpp",
         "HeptaTrade/oms_recover.h",
-        "scripts/verify_oms_journal_replay.py"
+        "scripts/verify_oms_journal_replay.py",
+        "HeptaTrade/oms_capacity_observation.h"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
         "tests/oms_journal_schema_v4_tests.cpp",
         "tests/execution_coordinator_tests.cpp",
-        "tests/python/test_oms_capacity.py"
+        "tests/python/test_oms_capacity.py",
+        "tests/oms_live_capacity_cases.h"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -254,7 +256,8 @@
         "scripts/hepta_preflight.py",
         "scripts/hepta_preflight_core.py",
         "scripts/run_release_simulator_smoke.py",
-        "docs/preflight-policy-v1.json"
+        "docs/preflight-policy-v1.json",
+        "scripts/accept_core_release.py"
       ],
       "tests": [
         "tests/python/test_release_package.py",
@@ -267,7 +270,9 @@
         "tests/python/test_installed_runtime_processes.py",
         "tests/python/test_gateway_symbol_boundary.py",
         "tests/python/test_preflight_single_pass.py",
-        "tests/systemd_simulator_smoke.py"
+        "tests/systemd_simulator_smoke.py",
+        "tests/python/test_release_workflow.py",
+        "tests/python/test_core_release_acceptance.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -312,7 +317,8 @@
         "scripts/verify_build_ownership.py",
         "scripts/verify_exact_git_index.py",
         "scripts/run_python_tests.py",
-        "scripts/render_protocol_reference.py"
+        "scripts/render_protocol_reference.py",
+        "scripts/plan_owner_ruleset.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
@@ -322,7 +328,8 @@
         "tests/python/test_documentation_structure.py",
         "tests/python/test_python_test_partition.py",
         "tests/python/test_ib_workflow_interfaces.py",
-        "tests/python/test_protocol_reference.py"
+        "tests/python/test_protocol_reference.py",
+        "tests/python/test_owner_ruleset_plan.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

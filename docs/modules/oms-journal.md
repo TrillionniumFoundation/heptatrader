@@ -67,3 +67,11 @@ See [`OMS recovery capacity`](../technical/oms-recovery-capacity.md) for explici
 byte/count/record limits, failure reasons, read-only capacity diagnostics and
 operator recovery actions. Budget failures preserve every journal byte and
 command identity; they are never permission to reset the ledger.
+
+## Online capacity observations
+
+Both Execution daemons emit identifier-free structured capacity observations.
+The [online capacity contract](../technical/oms-live-capacity.md) defines written
+bytes/records, pending records, unknown values, thresholds, sampling and safe
+restart/checkpoint actions. No capacity threshold truncates history or blocks
+exit evidence. The current persisted schema and recovery authority are unchanged.
