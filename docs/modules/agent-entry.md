@@ -1,9 +1,9 @@
 # Agent entry and MCP bridge
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli/`, `HeptaTrade/client/`  
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli/`, `HeptaTrade/client/`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`
 
 ## Responsibilities
 
@@ -53,3 +53,13 @@ Tests cover discovery, framing, schema-hash validation, result parsing, command-
 ## Known limitations
 
 The entry layer currently supports a local Unix transport only. It does not provide remote TLS, multi-host routing, or LIVE authority. Those capabilities must be introduced as separate trust domains rather than by exposing the broker API directly to an Agent.
+
+## Developer reference and executable vectors
+
+[`Agent tool protocol`](../technical/agent-tool-protocol.md) documents the framing,
+field IDs, discovery digest, exact envelope types, identity lifecycle and a
+working JSON-RPC cancel example. `tests/python/test_mcp_bridge.py` executes the
+real Python process against a fragmented local Unix responder, including an
+uncertain mutation followed by the same-ID duplicate retry. It also tests token
+file safety, catalog drift and strict JSON rejection. Native-client tests remain
+independent cross-language evidence; neither suite grants Broker authority.

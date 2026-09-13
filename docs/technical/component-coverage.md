@@ -1,21 +1,40 @@
-# Git-discovered component coverage
+# Git-discovered component ownership
 
-Status: CURRENT  
-Implementation: `scripts/check_component_coverage.py`  
+Status: CURRENT
+Implementation: `scripts/check_component_coverage.py`
 Tests: `tests/python/test_component_coverage.py`
 
-## Contract
+## Contract and discovery
 
-The verifier obtains the exact tracked file set from `git ls-files`; it does not accept a caller-authored list of supposedly complete components. Production paths are selected from maintained runtime, adapter, build, deployment, plugin, script, workflow, vendor, and legacy roots.
+The verifier reads `git ls-files`, not a caller-supplied source inventory.
+All tracked paths are classified as implementation candidates except explicit
+support namespaces (`docs/`, `doc/`, `tests/`, `pic/`) and named repository
+metadata/license files. A catalog-declared implementation under a support
+namespace, such as a runtime JSON policy under `docs/`, remains an owned
+production input. A new top-level runtime directory therefore cannot disappear
+because its prefix was not previously known.
 
-Each production path must match at least one `implementation` path in `docs/module-catalog.json`. The most specific matching path owns the file. Equal-specificity ownership by different modules is rejected. Every module must own at least one tracked production path and have a regular module document.
+Each candidate must match an `implementation` path in `docs/module-catalog.json`.
+The most specific path owns the file; equally specific different owners fail.
+Every module must own a tracked path and have a regular module document.
+Repository translation-unit owners in `docs/build-targets.json` must agree;
+external SDK units remain explicitly ownerless. Fresh CMake model comparison
+is separately owned by `verify_build_ownership.py`.
 
-For every repository implementation translation unit in `docs/build-targets.json`, the inferred Git/module owner must equal the CMake inventory owner. External SDK translation units remain explicitly ownerless.
+## Maintenance and limitations
 
-## Change procedure
+Use the narrowest durable implementation boundary. Directory ownership explains
+where a component belongs; it does not prove its API, state or tests are fully
+documented. Add or update the human developer contract when behavior changes,
+not merely a metadata row. One catalog generates module navigation in
+`docs/index.md`; the historical development index is a redirect, not a duplicate
+list that requires separate maintenance.
 
-A change that creates a new production root or component must update the module catalog and its technical documentation in the same commit. Expanding a broad catch-all solely to silence the checker is not acceptable; use the narrowest durable component boundary. The development documentation index must name every registered module document.
+The legacy CSV reporter now belongs to `legacy-runtime`; the maintained
+recovery coordinator is under `HeptaTrade/execution/`. Do not infer current
+behavior from a similarly named directory.
 
-## Hostile coverage
-
-Fixture tests add an unowned `HeptaTrade/new_component` path, an unowned runtime script, alter a CMake owner, and remove a module from the development index. Each case must fail with a path-specific reason.
+Fixture tests introduce an unowned runtime path, an unowned script and an
+unknown top-level runtime directory, and exercise conflicting/mismatched owners.
+Support exclusions are intentional and should remain narrow. Stage new files
+before invoking the Git-index check; untracked edits are not repository content.

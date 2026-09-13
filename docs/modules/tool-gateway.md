@@ -1,8 +1,8 @@
 # Tool Gateway and tool registry
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `HeptaTrade/tool_host/`, `HeptaTrade/tools/`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `HeptaTrade/tool_host/`, `HeptaTrade/tools/`
 Tests: `tests/trading_tool_host_tests.cpp`, `tests/trading_tool_registry_tests.cpp`, `tests/unix_tool_server_tests.cpp`
 
 ## Responsibilities
@@ -65,3 +65,13 @@ Tests must cover every registered tool, required/forbidden fields, descriptor an
 ## Known limitations
 
 The current implementation is intentionally local-host and single-protocol-version. Remote Agent access, dynamic plugin loading, and broker-specific tools are not authorized. New tools must be represented in discovery and remain independent of direct venue APIs.
+
+## Field-level development reference
+
+The shared [`Agent tool protocol`](../technical/agent-tool-protocol.md) gives the
+actual framing and field map, discovery/schema hashing and request/result
+examples. `system.tools.list` is the authoritative complete catalog; avoid
+maintaining a second handwritten copy of every tool schema in this document.
+Change the registry, both clients and positive/negative protocol vectors together
+when changing a wire contract. Renaming a private function does not require a
+new source-token gate.

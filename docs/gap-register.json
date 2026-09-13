@@ -1,7 +1,6 @@
 {
-  "schema": "heptatrader.gap-register.v1",
+  "schema": "heptatrader.gap-register.v2",
   "authorization": {
-    "source_state": "READY",
     "paper_authorized": false,
     "live_authorized": false
   },
@@ -9,9 +8,8 @@
     {
       "id": "DOC-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
-      "summary": "Canonical module, capability, build ownership, Git-discovered component coverage, semantic documentation depth, detailed technical references and operations documentation exist and are machine-validated.",
+      "state": "CLOSED",
+      "summary": "Initial module catalog, documentation navigation and structural checks are implemented. Technical design quality is reviewed, not inferred from bytes or keywords.",
       "evidence": [
         "docs/DOCUMENTATION-POLICY.md",
         "docs/index.md",
@@ -31,22 +29,22 @@
         "docs/ib-paper-qualification-scenarios-v1.json",
         "scripts/check_documentation.py",
         "scripts/check_component_coverage.py",
-        "scripts/verify_source_gap_closures.py",
         "tests/python/test_documentation_control_plane.py",
-        "tests/python/test_documentation_depth.py",
+        "tests/python/test_documentation_structure.py",
         "tests/python/test_component_coverage.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
         "tests/python/test_gap_register.py"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "CI-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
-      "summary": "Exact-revision CI has one owner per evidence family: Core Runtime owns the complete build/Python/install/package/preflight/simulator lifecycle path, GCC/Clang lanes own sanitizer behavior, and Documentation Control Plane owns source truth. Historical required contexts retained only for live-ruleset compatibility are explicitly not closure evidence.",
+      "state": "CLOSED",
+      "summary": "Stable Core, documentation and GCC/Clang job contexts are preserved. Python regressions execute in Core only; no empty compatibility jobs are required.",
       "evidence": [
         ".github/workflows/documentation-control-plane.yml",
         ".github/workflows/core-ci.yml",
@@ -55,30 +53,28 @@
         "scripts/check_component_coverage.py",
         "scripts/run_release_simulator_smoke.py",
         "scripts/check_qualification_trust_boundary.py",
-        "scripts/verify_source_gap_closures.py",
         "scripts/check_gap_register.py",
         "tests/python/test_component_coverage.py",
         "tests/python/test_release_simulator_smoke.py",
         "tests/python/test_gap_register.py"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "TEST-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "Gap-critical executable and Python behavior tests are explicitly inventoried and exercised by the canonical aggregate/discovery; the complete 12-scenario PAPER qualification contract is also reviewable source and machine-bound to the executable evidence verifier.",
       "evidence": [
         "tests/CMakeLists.txt",
         "tests/unix_session_supervisor_test_prelude.h",
         "docs/build-targets.json",
         "docs/ib-paper-qualification-scenarios-v1.json",
-        "scripts/verify_source_gap_closures.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
         "tests/python/test_gap_register.py",
-        "tests/python/test_behavior_bound_gap_evidence.py",
         "tests/python/test_component_coverage.py",
         "tests/python/test_release_simulator_smoke.py",
         "tests/python/test_legacy_runtime_boundary.py",
@@ -90,29 +86,30 @@
         "tests/python/test_hepta_broker_egress_policy.py",
         "tests/python/test_hepta_broker_egress_policy_atomic.py"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "RISK-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "Generic pre-trade risk binds subject, units, quotes and FX to a fresh authoritative generation and covers order/pending/worst-case notional, daily loss and drawdown with guarded exit semantics.",
       "evidence": [
         "HeptaTrade/risk/pre_trade_risk_engine.h",
         "HeptaTrade/risk/pre_trade_risk_engine.cpp",
         "tests/pre_trade_risk_engine_tests.cpp",
         "docs/modules/risk-engine.md",
-        "scripts/verify_source_gap_closures.py",
         "tests/python/test_gap_register.py"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "PENDING-EXPOSURE-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "Worst-case generic risk includes authoritative pending buy and sell notional. Simulator flatten-only admission reserves reducible quantity across unresolved same-direction orders with a fill-time zero-boundary check. Qualification V5 requires one active CASH order and max order quantity equal to max gross position, so every reachable signed or partial-fill exposure fits one exact atomic flatten. The PAPER campaign scenario/evidence contract is reviewable source while the credential-bearing external harness remains a separate trust domain. Canonical Broker egress binds the installed digest-pinned policy, obtains nftables table presence from JSON machine state, uses bounded create-or-replace retries, accepts only exact structural readback, and independently verifies the compiled deny-all fallback.",
       "evidence": [
         "HeptaTrade/risk/pre_trade_risk_engine.cpp",
@@ -126,9 +123,7 @@
         "scripts/verify_canonical_ib_paper_profile.py",
         "tests/python/test_canonical_ib_paper_profile.py",
         "systemd/hepta-execution-ib-paper.env.example",
-        "scripts/verify_source_gap_closures.py",
         "tests/python/test_gap_register.py",
-        "tests/python/test_behavior_bound_gap_evidence.py",
         "HeptaTrade/simulator/deterministic_execution_venue.cpp",
         "tests/simulator_risk_runtime_tests.cpp",
         "docs/modules/simulator.md",
@@ -146,13 +141,14 @@
         "tests/python/test_hepta_broker_egress_policy.py",
         "tests/python/test_hepta_broker_egress_policy_atomic.py"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "VENUE-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "CTP and XT/QMT scaffolds reject connection, query and mutation instead of manufacturing broker-like success; legacy runtime profiles are default-off and cannot be represented as canonical venue authority.",
       "evidence": [
         "HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp",
@@ -161,35 +157,35 @@
         "tests/python/test_legacy_runtime_boundary.py",
         "docs/modules/legacy-runtime.md",
         "docs/capabilities.json",
-        "scripts/verify_source_gap_closures.py",
         "tests/python/test_gap_register.py"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "OMS-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "The public OMS contract matches schema v4; a durable send-attempt precedes broker I/O and uncertain outcomes block mutation pending reconciliation.",
       "evidence": [
         "docs/OMS-EVENT-SCHEMA.md",
         "HeptaTrade/execution/execution_place_order_dispatch.cpp",
         "scripts/verify_oms_journal_replay.py",
-        "scripts/verify_source_gap_closures.py",
         "tests/oms_journal_durability_tests.cpp",
         "tests/oms_journal_schema_v4_tests.cpp",
         "tests/python/test_gap_register.py",
         "tests/execution_coordinator_tests.cpp",
         "docs/technical/reconciliation-engine.md"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "BUILD-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "Canonical Linux Core and IB SDK target membership and unique module ownership of compiled implementation translation units are verified from fresh CMake File API data, while the exact Git index closes production paths outside the CMake graph.",
       "evidence": [
         "HeptaTrade/CMakeLists.txt",
@@ -198,19 +194,19 @@
         "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md",
         "scripts/check_component_coverage.py",
         "tests/python/test_component_coverage.py",
-        "scripts/verify_source_gap_closures.py",
         "scripts/verify_build_ownership.py",
         "tests/python/test_build_ownership.py",
         "tests/python/test_gap_register.py",
         "docs/technical/build-supply-chain.md"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
     },
     {
       "id": "RELEASE-001",
       "domain": "REPOSITORY",
-      "state": "CLOSED_SOURCE",
-      "blocking_authorization": false,
+      "state": "CLOSED",
       "summary": "Canonical CMake install ownership, deterministic content-addressed packaging, descriptor-pinned fail-closed preflight, unprivileged systemd unit/readiness lint, installed Agent/Gateway/Execution/simulator execution, and atomic pointer rollback/re-promotion mechanics are behavior-tested; N-1 schema compatibility remains a deployment prerequisite.",
       "evidence": [
         "CMakeLists.txt",
@@ -236,12 +232,128 @@
         "tests/python/test_release_simulator_smoke.py",
         "tests/python/test_systemd_units.py",
         "tests/agent_simulator_e2e_tests.cpp",
-        "scripts/verify_source_gap_closures.py",
         "scripts/check_gap_register.py",
         ".github/workflows/core-ci.yml",
         "tmpfiles.d/heptatrader-ib-paper.conf"
       ],
-      "issue": null
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Historical source change retained; listed paths are navigation to evidence, not proof that every future version is correct."
+    },
+    {
+      "id": "INPUT-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Reject non-finite and underflowed research numbers and bound evidence reads before parsing.",
+      "evidence": [
+        "scripts/hepta_strategy_contracts.py",
+        "tests/python/test_strategy_contracts.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Actual helper tests cover numeric conversion, file-size bounds, links/FIFO, replacement and failed atomic publication."
+    },
+    {
+      "id": "MCP-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Exercise the Python MCP process, strict responses, token links and stable uncertain mutation retries.",
+      "evidence": [
+        "adapters/mcp/hepta_mcp_server.py",
+        "tests/python/test_mcp_bridge.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Process-level tests use real local Unix sockets without Broker access; no authorization scope is changed."
+    },
+    {
+      "id": "SHADOW-INTEGRATION-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Synthetic provider capture through retained payload extraction, normalization, nonempty history, decision/state recovery, final audit and sealed economic replay are exercised end to end.",
+      "evidence": [
+        "scripts/hepta_shadow_finalize.py",
+        "scripts/hepta_market_context_builder.py",
+        "tests/python/test_shadow_pipeline_integration.py",
+        "tests/python/shadow_pipeline_fixture.py",
+        "tests/python/test_official_source_formats.py",
+        "docs/technical/shadow-finalization.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "The opt-in multi-UID fixture executes 1,208 real persisted samples, four WATCH lease generations, 40 closed five-minute bars, a real SHADOW decision, record/head and receipt/state interruption recovery, immutable finalizer retry and a filled cost-sensitive sealed replay. Only HTTP transport and external WATCH observations are synthetic input fixtures. This proves source integration, not real provider availability, market truth, profit or Broker qualification."
+    },
+    {
+      "id": "HOST-ROLLBACK-001",
+      "domain": "EXTERNAL",
+      "state": "OPEN",
+      "summary": "Target-host startup and prior-version journal/lease migration evidence must accompany a real deployment.",
+      "evidence": [
+        "docs/operations/rollback-backup.md",
+        "docs/technical/release-simulator-smoke.md",
+        "docs/technical/installed-process-acceptance.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Source-level installed-process and distinct-source-artifact rollback is covered by RELEASE-PAIR-001. Actual target-host systemd, identities, network policy and deployment-specific prior-schema approval remain external evidence; no live deployment was attempted."
+    },
+    {
+      "id": "RELEASE-PAIR-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Installed production daemon/CLI/MCP behavior and one pinned prior-source artifact share persistent state across upgrade/rollback/re-promotion.",
+      "evidence": [
+        "tests/python/test_installed_runtime_processes.py",
+        ".github/workflows/core-ci.yml",
+        "docs/technical/installed-process-acceptance.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Separate unprivileged identities exercise native/MCP quote parity, wrong-UID rejection, preview-bound orders, no-resend duplicates, MCP cancel, journal and lease restart. Different digest/source artifacts preserve position 100 -> 75 -> 0 and exactly three sends. Not a universal N-1, unknown active-order migration, real systemd or production-host certification."
+    },
+    {
+      "id": "LINK-SURFACE-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Total Gateway symbols are advisory; privileged execution linkage remains a hard failure.",
+      "evidence": [
+        "cmake/verify_gateway_forbidden_symbols.cmake",
+        "tests/python/test_gateway_symbol_boundary.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Compile-and-inspect fixtures exceed 1,200 harmless symbols successfully while an actual ExecutionCoordinator symbol fails. No credential, network or execution authority boundary is relaxed."
+    },
+    {
+      "id": "SOURCE-TIME-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "RSS knowledge-at-fetch and calendar future schedule coverage use distinct temporal contracts.",
+      "evidence": [
+        "scripts/hepta_market_context_builder.py",
+        "tests/python/test_official_source_formats.py",
+        "tests/python/test_shadow_pipeline_integration.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Press feed coverage must end exactly at retrieval, never in the future; configured per-source freshness still applies. Calendar coverage must include evaluation time. This removes impossible future-news knowledge requirements without allowing stale/future evidence."
+    },
+    {
+      "id": "DEPLOYMENT-INSTALL-001",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Canonical daemon and credential-code paths now match the installed payload; core excludes unusable IB runtime assets.",
+      "evidence": [
+        "cmake/HeptaInstall.cmake",
+        "scripts/check_systemd_units.py",
+        "tests/python/test_cmake_install_integration.py",
+        "tests/python/test_systemd_units.py",
+        "tests/systemd_simulator_smoke.py",
+        "docs/technical/systemd-simulator-acceptance.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Fresh install regressions validate actual files and associations. Manager acceptance is bound to the exact CI artifact. No target trading host, IB network rule or PAPER account is certified by this source change."
     }
   ]
 }

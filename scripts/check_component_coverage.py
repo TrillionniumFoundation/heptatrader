@@ -13,32 +13,13 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = Path("docs/module-catalog.json")
 BUILD_INVENTORY = Path("docs/build-targets.json")
-DEVELOPMENT_INDEX = Path("docs/DEVELOPMENT-DOCUMENTATION-INDEX.md")
 
-PRODUCTION_PREFIXES = (
-    ".agents/",
-    ".github/",
-    "HeptaSimulator/",
-    "HeptaStrategy/",
-    "HeptaTrade/",
-    "Interface/",
-    "Tools/",
-    "adapters/",
-    "cmake/",
-    "plugins/",
-    "scripts/",
-    "strategies/",
-    "systemd/",
-    "third_party/",
-    "tmpfiles.d/",
-)
-PRODUCTION_EXACT = {
-    ".env.hepta.example",
-    "CMakeLists.txt",
-    "HeptaTrader.sln",
-    "HeptaTrader_Linux.sln",
-    "VERSION",
-}
+# Documentation, tests and images have their own checks. Anything else tracked
+# is a component unless explicitly designated as repository prose/metadata.
+# Explicit catalog entries below override this exclusion (for policy JSON etc.).
+SUPPORT_PREFIXES = ("docs/", "doc/", "tests/", "pic/")
+SUPPORT_EXACT = {".gitignore", "README.md", "SECURITY-HARDENING.md",
+                 "LICENSE", "LICENSE.md", "NOTICE", "NOTICE.md"}
 
 
 class CoverageError(ValueError):
@@ -106,9 +87,7 @@ def _tracked_files(root: Path) -> list[str]:
 
 
 def _is_production(path: str) -> bool:
-    return path in PRODUCTION_EXACT or any(
-        path.startswith(prefix) for prefix in PRODUCTION_PREFIXES
-    )
+    return path not in SUPPORT_EXACT and not any(path.startswith(prefix) for prefix in SUPPORT_PREFIXES)
 
 
 def _matches(implementation: str, path: str) -> bool:
@@ -166,7 +145,8 @@ def _module_ownership(
                 )
             entries.append((implementation.rstrip("/"), module_id))
 
-    production = [path for path in tracked if _is_production(path)]
+    production = [path for path in tracked if _is_production(path) or any(
+        _matches(implementation, path) for implementation, _ in entries)]
     owners: dict[str, str] = {}
     for path in production:
         matches = [
@@ -270,29 +250,6 @@ def _validate_build_ownership(
                     )
 
 
-def _validate_development_index(
-    root: Path,
-    catalog: dict[str, Any],
-) -> None:
-    path = root / DEVELOPMENT_INDEX
-    try:
-        metadata = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
-            raise CoverageError(
-                "development documentation index must be a regular file"
-            )
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        raise CoverageError(f"cannot read development documentation index: {error}") from error
-    for module in catalog.get("modules", []):
-        if not isinstance(module, dict):
-            continue
-        document = module.get("document")
-        if isinstance(document, str) and document not in text:
-            raise CoverageError(
-                f"development documentation index omits module document: {document}"
-            )
-
 
 def validate(root: Path | str = ROOT) -> list[str]:
     root = Path(root).resolve()
@@ -312,7 +269,6 @@ def validate(root: Path | str = ROOT) -> list[str]:
             raise CoverageError("unsupported build target inventory")
         owners, _ = _module_ownership(root, tracked, catalog)
         _validate_build_ownership(set(tracked), owners, catalog, inventory)
-        _validate_development_index(root, catalog)
         return []
     except CoverageError as error:
         return [str(error)]

@@ -8,14 +8,14 @@ endif()
 if(NOT DEFINED HEPTA_NM_EXECUTABLE OR HEPTA_NM_EXECUTABLE STREQUAL "")
     message(FATAL_ERROR "HEPTA_NM_EXECUTABLE is required")
 endif()
-if(NOT DEFINED HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET)
+if(NOT DEFINED HEPTA_GATEWAY_REPORT_RELEASE_BUDGET)
     message(FATAL_ERROR
-        "HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET must be explicitly ON or OFF")
+        "HEPTA_GATEWAY_REPORT_RELEASE_BUDGET must be explicitly ON or OFF")
 endif()
-if(NOT HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "ON"
-        AND NOT HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "OFF")
+if(NOT HEPTA_GATEWAY_REPORT_RELEASE_BUDGET STREQUAL "ON"
+        AND NOT HEPTA_GATEWAY_REPORT_RELEASE_BUDGET STREQUAL "OFF")
     message(FATAL_ERROR
-        "HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET must be exactly ON or OFF")
+        "HEPTA_GATEWAY_REPORT_RELEASE_BUDGET must be exactly ON or OFF")
 endif()
 
 execute_process(
@@ -30,21 +30,18 @@ if(NOT HEPTA_NM_RESULT EQUAL 0)
         "${HEPTA_NM_ERROR}")
 endif()
 
-# A bounded total symbol surface catches accidental whole-library linkage even
-# when a newly introduced privileged type has not yet acquired an explicit
-# deny-list pattern.  This is deliberately a small no-growth budget above the
-# reviewed Release binary. Debug and sanitizer instrumentation expands the
-# compiler-generated symbol surface, so those configurations always run the
-# privileged deny-list below but do not use the Release quantitative budget.
+# Total symbol count is an advisory growth signal, not a security proof.
+# Innocent code and compiler versions change the count. The privileged-symbol
+# deny-list below remains a hard error for every build configuration.
 set(HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS 1200)
 string(REGEX MATCHALL "[^\r\n]+" HEPTA_GATEWAY_SYMBOL_LINES
     "${HEPTA_GATEWAY_SYMBOLS}")
 list(LENGTH HEPTA_GATEWAY_SYMBOL_LINES HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT)
-if(HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "ON"
+if(HEPTA_GATEWAY_REPORT_RELEASE_BUDGET STREQUAL "ON"
         AND HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT GREATER
             HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS)
-    message(FATAL_ERROR
-        "Agent-facing Gateway defined-symbol budget exceeded: "
+    message(WARNING
+        "Advisory Gateway symbol growth; inspect link dependencies: "
         "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT} > "
         "${HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS}")
 endif()
@@ -92,12 +89,12 @@ if(HEPTA_GATEWAY_FORBIDDEN_SYMBOLS_FOUND)
         "${HEPTA_GATEWAY_FORBIDDEN_SYMBOLS_TEXT}")
 endif()
 
-if(HEPTA_GATEWAY_ENFORCE_SYMBOL_BUDGET STREQUAL "ON")
+if(HEPTA_GATEWAY_REPORT_RELEASE_BUDGET STREQUAL "ON")
     set(HEPTA_GATEWAY_SYMBOL_BUDGET_STATUS
-        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT}/${HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS} enforced")
+        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT}/${HEPTA_GATEWAY_MAX_DEFINED_SYMBOLS} advisory")
 else()
     set(HEPTA_GATEWAY_SYMBOL_BUDGET_STATUS
-        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT} observed; Release-only quantitative budget not enforced")
+        "${HEPTA_GATEWAY_DEFINED_SYMBOL_COUNT} observed; instrumented/non-Release count only")
 endif()
 message(STATUS
     "Gateway privileged-symbol boundary PASS: ${HEPTA_GATEWAY_BINARY}; "

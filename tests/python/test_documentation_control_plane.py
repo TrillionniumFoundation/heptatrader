@@ -93,6 +93,10 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
         (root / "docs/capabilities.json").write_text(
             json.dumps(capabilities, indent=2) + "\n", encoding="utf-8")
+        (root / "docs/index.md").write_text(
+            "# Index\n\n" + documentation.render_module_table(
+                {item["id"]: item for item in catalog["modules"]}) + "\n",
+            encoding="utf-8")
         return root
 
     def test_missing_implementation_is_rejected(self) -> None:

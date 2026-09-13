@@ -7,7 +7,7 @@ Applies to: canonical simulator and IB PAPER candidate
 
 1. Validate configuration, state directory, and socket ownership.
 2. Start simulator Execution and wait for readiness.
-3. Start the session-supervisor socket/service.
+3. Start the session-supervisor socket associated with the Tool Gateway (no separate supervisor daemon).
 4. Start the Tool Gateway and verify Execution/event connectivity.
 5. Provision a bounded Agent session.
 6. Discover tools and verify catalog/schema hashes.
@@ -39,3 +39,5 @@ Applies to: canonical simulator and IB PAPER candidate
 ## Crash restart
 
 Do not assume the prior process stopped before venue send. Replay command/send-attempt state, create a new connection epoch, obtain fresh authoritative barriers, and reconcile every unresolved mutation before reopening risk.
+
+The [simulator operator walkthrough](../technical/simulator-operator-walkthrough.md) gives installed paths, effective defaults, concrete commands and failure-to-action mappings. The [real systemd acceptance](../technical/systemd-simulator-acceptance.md) exercises those installed assets on a disposable VM.

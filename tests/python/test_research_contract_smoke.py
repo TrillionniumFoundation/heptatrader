@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 import py_compile
 import tempfile
@@ -77,10 +80,23 @@ class ResearchContractSmokeTests(unittest.TestCase):
                 )
                 self.assertEqual(set(calls) & FORBIDDEN_CALL_NAMES, set(), path)
 
-    def test_shadow_document_does_not_claim_missing_observer_is_installed(self) -> None:
-        text = (ROOT / "docs/modules/shadow-research.md").read_text(encoding="utf-8")
-        self.assertIn("does not contain a canonical `hepta_bounded_shadow_observer.py`", text)
-        self.assertNotIn("Installed Files", text)
+    def test_catalogued_research_programs_import_without_running_cli(self) -> None:
+        paths = [str(path) for path in self.research_paths() if path.suffix == ".py"]
+        code = """
+import importlib.util, pathlib, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1])))
+for index, name in enumerate(sys.argv[2:]):
+    spec = importlib.util.spec_from_file_location("research_smoke_" + str(index), name)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", code, str(ROOT / "scripts"), *paths],
+            capture_output=True, text=True, timeout=15,
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

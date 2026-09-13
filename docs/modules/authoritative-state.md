@@ -1,8 +1,8 @@
 # Authoritative state and recovery snapshots
 
-Status: CURRENT  
-Applies to: repository HEAD  
-Implementation: `HeptaTrade/state/`  
+Status: CURRENT
+Applies to: repository HEAD
+Implementation: `HeptaTrade/state/`
 Tests: `tests/authoritative_trading_snapshot_store_tests.cpp`, `tests/snapshot_refresh_coordinator_tests.cpp`
 
 ## Responsibilities
@@ -65,3 +65,12 @@ Expose current epoch/generation, completeness, snapshot age, refresh duration, c
 ## Test expectations
 
 Tests cover coherent publication, stale/invalid views, generation rollover, reconnect, out-of-order callbacks, duplicate/colliding correlations, refresh timeout, quote freshness, post-fill refresh, terminal freeze, and concurrent readers.
+
+## Assembly and recovery reference
+
+[`Execution recovery and reconciliation`](../technical/reconciliation-engine.md)
+describes the concrete refresh coordinator APIs and downstream resolution
+rules. Account-summary, positions and open-orders refreshes coalesce pending
+requests without overlapping ambiguous generations. Completion is an explicit
+barrier result, not the receipt of one callback. The similarly named legacy
+CSV reporter is owned by LEGACY and does not construct these snapshots.

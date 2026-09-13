@@ -50,18 +50,7 @@ jobs:
           python3 scripts/verify_build_ownership.py
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
-          python3 scripts/verify_source_gap_closures.py
-          python3 -m unittest discover -s tests/python -p 'test_documentation_control_plane.py'
-          python3 -m unittest discover -s tests/python -p 'test_documentation_depth.py'
-          python3 -m unittest discover -s tests/python -p 'test_component_coverage.py'
-          python3 -m unittest discover -s tests/python -p 'test_systemd_units.py'
-          python3 -m unittest discover -s tests/python -p 'test_build_ownership.py'
-          python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
-          python3 -m unittest discover -s tests/python -p 'test_behavior_bound_gap_evidence.py'
-          python3 -m unittest discover -s tests/python -p 'test_canonical_ib_paper_profile.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_paper_scenario_contract.py'
-          python3 -m unittest discover -s tests/python -p 'test_risk_legacy_compatibility_boundary.py'
-          python3 -m unittest discover -s tests/python -p 'test_legacy_runtime_boundary.py'
+          python3 scripts/run_python_tests.py --lane source
 
       - name: Reassert clean exact source
         if: always()

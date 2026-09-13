@@ -725,10 +725,20 @@ def _provenance_sources(
         content_sha256 = require_digest(source["content_sha256"], reason)
         coverage_start_ms = require_int(
             source["coverage_start_ms"], reason, minimum=0,
-            maximum=evaluated_at_ms)
+            maximum=retrieved_at_ms)
+        # A calendar declares future schedule coverage. An RSS feed instead
+        # proves which items existed at retrieval, never knowledge of future
+        # releases. Both outputs contain all five attested source families.
+        # Their age is independently bounded by _calendar/_information below.
+        is_press_feed = source_ref in {
+            evidence_normalizer.official_extractor.FED_PRESS_URL,
+            evidence_normalizer.official_extractor.ECB_PRESS_URL,
+        }
         coverage_end_ms = require_int(
             source["coverage_end_ms"], reason,
-            minimum=evaluated_at_ms)
+            minimum=retrieved_at_ms if is_press_feed else evaluated_at_ms)
+        if is_press_feed and coverage_end_ms != retrieved_at_ms:
+            raise ContractError(reason)
         currencies = source["currencies"]
         if (
                 not isinstance(currencies, list) or not currencies or

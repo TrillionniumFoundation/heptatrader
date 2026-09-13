@@ -8,7 +8,7 @@ Status: CURRENT
 - `check_documentation.py` validates module/capability truth and documentation links.
 - `check_component_coverage.py` derives the production file set from the exact Git index, assigns each path to the most-specific module implementation boundary, and compares repository CMake translation-unit owners with `docs/build-targets.json`.
 - `verify_build_ownership.py` compares fresh CMake File API target and translation-unit models with `docs/build-targets.json`; additions fail closed until they have an explicit canonical owner.
-- `verify_source_gap_closures.py` checks the gap registry and supplemental static risk/venue/OMS contracts, and executes documentation, fresh build-ownership, qualification-boundary and profile validators. It does not execute C++ behavioral tests or prove Broker-send ordering; those are checked by the separately built core suites. Its result cannot close external Broker qualification.
+- `check_gap_register.py` validates an extensible issue inventory; open work is allowed. `--release-profile core` or `ib-paper` additionally rejects explicitly scoped unresolved release blockers. It never grants Broker authority.
 - `resolve_hepta_config.py`, `validate_sim_data.py`, and `verify_oms_journal_replay.py` support configuration and recovery checks where applicable.
 
 ## Release and preflight

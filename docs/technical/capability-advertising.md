@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: `docs/capabilities.json` schema v2
-Implementation: `docs/capabilities.json`, `scripts/check_documentation_core.py`
+Implementation: `docs/capabilities.json`, `scripts/check_documentation.py`
 Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_legacy_runtime_boundary.py`
 
 ## Separate decisions
