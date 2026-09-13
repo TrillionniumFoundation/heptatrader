@@ -376,6 +376,76 @@
         "ib-paper"
       ],
       "disposition": "Closed against commit 89faa3a88e841ac1cca4cd14f0312904916a2a63, tree a5de9ebce0b04ad7cfd1c7f1f6d42d820b64f4e1, preserving PR73 and PR76. Exact-head attempt-1 GitHub runs passed: Core 34741212566, Documentation 34741212568, Qualification Source Audit 34741212565, and both full GCC/Clang sanitizer jobs in 34741212577. Core/source/install/process Python partitions executed 296+65+4+6=371 cases without skips; native CTest passed 25/25. Downloaded process and real PID1 systemd receipts bind candidate package SHA-256 5dcb0411d68760fac7608eff542c5b0cb0d314c4d6574a16cf5ed885f0b44913; distinct-source shared-state rollback, offline checkpoint recovery and the 1208-sample SHADOW pipeline passed. This closes integrated source validation only, not HOST-ROLLBACK-001, arbitrary schema compatibility, production SLOs or external IB qualification. PAPER/LIVE authorization remains false."
+    },
+    {
+      "id": "AUDIT-INTEGRATION-002",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "The complete integrated callback/index/OMS/Gateway/archive source passed exact-commit full Core, source, GCC/Clang sanitizer, installed-process and real PID1 acceptance.",
+      "evidence": [
+        "docs/technical/venue-placement-contract.md",
+        "docs/technical/oms-operational-report.md",
+        "tests/venue_placement_cases.h",
+        "tests/python/test_oms_operational_report.py",
+        "scripts/accept_core_release.py",
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/systemd_simulator_smoke.py",
+        ".github/workflows/core-ci.yml",
+        ".github/workflows/canonical-full-suite.yml"
+      ],
+      "issue": 81,
+      "blocking_releases": [],
+      "disposition": "Closed against source 95a1f7979000d54d4b0630a7cd9f9607d00fb30d, tree 1be3a2b6e14176fef64ccb17c252324b037cf1e5. Exact-head GitHub attempt-1 runs succeeded: Core 34759770341, Documentation 34759770412 and both sanitizer jobs in 34759770365. Downloaded artifact 10318417958 binds package SHA-256 e81001e514b15b4ae28f3cc9057724f50105e22eb11c126ee33745fa0bc8fb21 to install, core Python, simulator lifecycle, distinct-artifact process recovery and real systemd 255 acceptance. Both temporary data-import refs were removed after source/tree/parent readback; their code is absent from this source and its ancestry. This is disposable-host simulator evidence, not actual trading-host acceptance, indefinite log lifecycle, universal N-1 compatibility, external IB qualification or validation of the separate unpublished workflow-context patch. Later commits require their own CI."
+    },
+    {
+      "id": "OMS-LIFECYCLE-002",
+      "domain": "REPOSITORY",
+      "state": "OPEN",
+      "summary": "Lossless locked offline core archive and Gateway runtime metrics are implemented; indefinite active-journal growth/compaction and complete execution/state/risk time-series remain open.",
+      "evidence": [
+        "docs/technical/oms-operational-report.md",
+        "docs/OBSERVABILITY-METRICS.md",
+        "docs/technical/persistence-support-window.md",
+        "scripts/hepta_core_state_archive.py",
+        "tests/python/test_core_state_archive.py",
+        "docs/technical/core-state-archive.md",
+        "scripts/hepta_gateway_report.py",
+        "tests/python/test_gateway_observation.py",
+        "docs/technical/gateway-operational-observations.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "New functions require exact-candidate tests. Offline archives preserve all journal bytes and keep the key in separate custody. They do not truncate a live ledger, certify actual-host restoration, deliver host notifications, or implement all execution/risk metrics. No blanket closure is claimed."
+    },
+    {
+      "id": "OWNER-RULESET-002",
+      "domain": "EXTERNAL",
+      "state": "OPEN",
+      "summary": "Ruleset 22597364 still enforces two approvals, code-owner review and merge queue despite owner-operated intent.",
+      "evidence": [
+        "docs/technical/owner-ruleset-transition.md",
+        "docs/adr/0002-owner-operated-repository.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Server read on 2026-09-13 confirmed active rules; no administrative write or bypass performed."
+    },
+    {
+      "id": "WORKFLOW-CONTEXT-001",
+      "domain": "REPOSITORY",
+      "state": "OPEN",
+      "summary": "The optional IB PAPER workflow uses runner.temp in job-level env, where the runner context is unavailable; move the exact bound paths into their consuming steps and validate producer/consumer parity.",
+      "evidence": [
+        ".github/workflows/ib-paper-qualification.yml",
+        "scripts/check_qualification_trust_boundary.py",
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_ib_workflow_interfaces.py"
+      ],
+      "issue": 81,
+      "blocking_releases": [
+        "ib-paper"
+      ],
+      "disposition": "Observed GitHub workflow validation failure on 2026-09-13, without allocating a Broker job. A complete five-file local correction passed 31 targeted no-Broker tests, but remote publication of its checker change was blocked by the tool safety check. No alternate publication path was used; the published source still requires this fix and a new exact-head CI. Core engineering success does not imply this optional workflow is runnable or a PAPER account is qualified."
     }
   ]
 }

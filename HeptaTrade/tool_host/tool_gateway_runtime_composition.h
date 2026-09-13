@@ -46,6 +46,8 @@ public:
     bool Start(std::string& reason);
     void Stop();
     bool IsRunning() const;
+    // Main-thread local observation only; no new Agent RPC or credentials.
+    std::string OperationalObservation() const;
     bool ReapExpired(std::uint64_t nowMs,
                      std::size_t& reaped,
                      std::string& reason);

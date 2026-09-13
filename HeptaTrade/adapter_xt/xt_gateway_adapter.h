@@ -3,7 +3,6 @@
 #include <cstdint>
 #include <queue>
 #include <string>
-#include <unordered_map>
 
 // XT (MiniQMT/xtquant) event-shape scaffold. No real XT transport is present.
 enum class XTEventType {
@@ -76,8 +75,8 @@ public:
     bool RunPreflightChecks(std::string& reason) const;
 
     // Callback-shape API retained for a future reviewed transport binding.
-    // Calling these methods does not enable query or mutation methods while
-    // TransportImplemented() is false.
+    // Compatibility hooks only: no callback can enable a missing transport.
+    // Economic callbacks are inert until a separately reviewed implementation.
     void OnXtConnected();
     void OnXtDisconnected(const std::string& reason = "");
     void OnXtAccountStatus(const std::string& status);
@@ -97,7 +96,6 @@ public:
                                  const std::string& detail = "");
 
 private:
-    static bool TransportImplemented() { return false; }
     bool RejectUnsupported(const char* operation, long long id = 0);
     void PushEvent(const XTEvent& e);
     XTEvent MakeEvent(XTEventType type, long long id, const std::string& key,
@@ -106,10 +104,7 @@ private:
 
     HeptaXTConfig m_cfg;
     bool m_inited = false;
-    bool m_connected = false;
     std::string m_status = "XT_NOT_INIT";
     mutable std::string m_lastRejectReason;
     std::queue<XTEvent> m_events;
-    std::unordered_map<long long, std::string> m_orderSymbol;
-    std::unordered_map<long long, std::string> m_orderSide;
 };

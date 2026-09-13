@@ -20,6 +20,8 @@ jobs:
     name: core-runtime-exact-head
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout exact event subject without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -45,131 +47,24 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
-      - name: Verify registered CMake install inventory under fresh DESTDIR
-        env:
-          HEPTA_RELEASE_INTEGRATION_BUILD_DIR: ${{ github.workspace }}/build/core
-        run: python3 scripts/run_python_tests.py --lane install
-
-      - name: Package, preflight, component integration and same-artifact slot-switch smoke
+      - name: Accept the exact core artifact through installed processes and systemd
+        id: accept-core-artifact
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
-          version="$(tr -d '[:space:]' < VERSION)"
-          test -n "$version"
-          package="dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
-          python3 scripts/build_release_package.py \
-            --build-dir build/core \
-            --output "$package" \
-            --version "$version" \
-            --profile core \
-            --source-sha "$EXPECTED_SHA" \
-            --source-date-epoch "$epoch"
-          digest="$(cut -d' ' -f1 "$package.sha256")"
-          python3 scripts/run_release_simulator_smoke.py \
-            --artifact "$package" \
-            --expected-sha256 "$digest" \
-            --profile core \
-            --policy docs/preflight-policy-v1.json \
-            --preflight scripts/hepta_preflight.py \
-            --work-root "dist/release-simulator-smoke-${EXPECTED_SHA}" \
-            --output "dist/release-simulator-smoke-${EXPECTED_SHA}.json"
+        run: python3 scripts/accept_core_release.py --build-dir build/core --output-dir dist --source-sha "$EXPECTED_SHA"
 
-      - name: Build the reviewed rollback reference without credentials
-        env:
-          REFERENCE_SHA: d003f54c7c6c2bd19002627f2bcd9081228b01cd
-        run: |
-          set -euo pipefail
-          reference="$RUNNER_TEMP/hepta-rollback-reference"
-          git init "$reference"
-          git -C "$reference" remote add origin https://github.com/TrillionniumFoundation/heptatrader.git
-          git -C "$reference" fetch --no-tags --depth=1 origin "$REFERENCE_SHA"
-          git -C "$reference" checkout --detach FETCH_HEAD
-          test "$(git -C "$reference" rev-parse HEAD)" = "$REFERENCE_SHA"
-          cmake -S "$reference" -B "$RUNNER_TEMP/hepta-reference-build" -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DBUILD_IB_PROBE=OFF \
-            -DHEPTA_ENABLE_IBAPI=OFF -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
-            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
-          cmake --build "$RUNNER_TEMP/hepta-reference-build" \
-            --target hepta_core_test_binaries --parallel 2
-          python3 scripts/build_release_package.py \
-            --build-dir "$RUNNER_TEMP/hepta-reference-build" \
-            --output "dist/rollback-reference-${REFERENCE_SHA}.tar.gz" \
-            --version "$(tr -d '[:space:]' < "$reference/VERSION")" --profile core \
-            --source-sha "$REFERENCE_SHA" \
-            --source-date-epoch "$(git -C "$reference" show -s --format=%ct HEAD)"
-
-      - name: Run installed multi-UID processes and distinct-artifact rollback
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-          REFERENCE_SHA: d003f54c7c6c2bd19002627f2bcd9081228b01cd
-        run: |
-          set -euo pipefail
-          version="$(tr -d '[:space:]' < VERSION)"
-          candidate="$GITHUB_WORKSPACE/dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
-          previous="$GITHUB_WORKSPACE/dist/rollback-reference-${REFERENCE_SHA}.tar.gz"
-          # Hosted disposable runner only. Keep root's preflight trust anchor
-          # root-owned without changing ownership of the runner's checkout.
-          # Archive only the exact reviewed tracked source; exclude build state.
-          process_source="$(sudo mktemp -d /tmp/hepta-process-source.XXXXXXXX)"
-          trap 'sudo rm -rf -- "$process_source"' EXIT
-          git archive "$EXPECTED_SHA" | sudo tar -x --no-same-owner --no-same-permissions -C "$process_source"
-          sudo chmod 0755 "$process_source"
-          cd "$process_source"
-          # The fixture refuses an existing /run/hepta-agent and never starts
-          # a broker-capable executable. Production ownership checks stay on.
-          sudo env -i PATH=/usr/bin:/bin LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
-            HEPTA_ISOLATED_PROCESS_TESTS=1 \
-            HEPTA_PROCESS_CANDIDATE_ARTIFACT="$candidate" \
-            HEPTA_PROCESS_CANDIDATE_SHA256="$(cut -d' ' -f1 "$candidate.sha256")" \
-            HEPTA_PROCESS_PREVIOUS_ARTIFACT="$previous" \
-            HEPTA_PROCESS_PREVIOUS_SHA256="$(cut -d' ' -f1 "$previous.sha256")" \
-            HEPTA_PROCESS_EVIDENCE_DIR="$GITHUB_WORKSPACE/dist/process-evidence" \
-            python3 scripts/run_python_tests.py --lane process
-
-      - name: Retain exact-pair process evidence and failure logs
+      - name: Retain lifecycle diagnostics even on failure
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: installed-process-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/process-evidence/
+          name: core-lifecycle-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/process-evidence/
+            dist/systemd-evidence/
+            dist/core-acceptance.json
+            dist/release-simulator-smoke-*.json
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Exercise exact installed core through real PID1 systemd
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          version="$(tr -d '[:space:]' < VERSION)"
-          candidate="$GITHUB_WORKSPACE/dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
-          host_source="$(sudo mktemp -d /tmp/hepta-systemd-source.XXXXXXXX)"
-          trap 'sudo rm -rf -- "$host_source"' EXIT
-          git archive "$EXPECTED_SHA" | sudo tar -x --no-same-owner --no-same-permissions -C "$host_source"
-          sudo chmod 0755 "$host_source"
-          cd "$host_source"
-          sudo env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
-            HEPTA_DISPOSABLE_SYSTEMD_TEST=1 \
-            python3 tests/systemd_simulator_smoke.py \
-            --artifact "$candidate" \
-            --expected-sha256 "$(cut -d' ' -f1 "$candidate.sha256")" \
-            --evidence-dir "$GITHUB_WORKSPACE/dist/systemd-evidence"
-
-      - name: Retain real systemd lifecycle and failure evidence
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: systemd-simulator-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          path: dist/systemd-evidence/
-          if-no-files-found: warn
-          retention-days: 14
-
-      - name: Run core Python behavior partition (source and install run separately)
-        env:
-          PYTHONWARNINGS: error::ResourceWarning
-        run: python3 scripts/run_python_tests.py --lane core
 
       - name: Upload immutable main-branch core package evidence
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -181,6 +76,7 @@ jobs:
             dist/heptatrader-*-core-*.tar.gz.sha256
             dist/heptatrader-*-core-*.tar.gz.receipt.json
             dist/release-simulator-smoke-*.json
+            dist/core-acceptance.json
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

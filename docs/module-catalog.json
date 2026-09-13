@@ -29,12 +29,14 @@
       "document": "docs/modules/tool-gateway.md",
       "implementation": [
         "HeptaTrade/tool_host",
-        "HeptaTrade/tools"
+        "HeptaTrade/tools",
+        "scripts/hepta_gateway_report.py"
       ],
       "tests": [
         "tests/trading_tool_host_tests.cpp",
         "tests/trading_tool_registry_tests.cpp",
-        "tests/unix_tool_server_tests.cpp"
+        "tests/unix_tool_server_tests.cpp",
+        "tests/python/test_gateway_observation.py"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
@@ -68,7 +70,10 @@
       "tests": [
         "tests/execution_coordinator_tests.cpp",
         "tests/execution_event_feed_tests.cpp",
-        "tests/execution_decision_lease_authority_tests.cpp"
+        "tests/execution_decision_lease_authority_tests.cpp",
+        "tests/send_attempt_time_index_cases.h",
+        "tests/python/test_send_attempt_time_index.py",
+        "tests/venue_placement_cases.h"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
@@ -82,13 +87,20 @@
         "HeptaTrade/oms_journal.h",
         "HeptaTrade/oms_recover.cpp",
         "HeptaTrade/oms_recover.h",
-        "scripts/verify_oms_journal_replay.py"
+        "scripts/verify_oms_journal_replay.py",
+        "HeptaTrade/oms_capacity_observation.h",
+        "HeptaTrade/oms_latency_observation.h",
+        "scripts/hepta_oms_report.py"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
         "tests/oms_journal_schema_v4_tests.cpp",
         "tests/execution_coordinator_tests.cpp",
-        "tests/python/test_oms_capacity.py"
+        "tests/python/test_oms_capacity.py",
+        "tests/oms_live_capacity_cases.h",
+        "tests/oms_runtime_observation_cases.h",
+        "tests/python/test_oms_observation_faults.py",
+        "tests/python/test_oms_operational_report.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -254,7 +266,8 @@
         "scripts/hepta_preflight.py",
         "scripts/hepta_preflight_core.py",
         "scripts/run_release_simulator_smoke.py",
-        "docs/preflight-policy-v1.json"
+        "docs/preflight-policy-v1.json",
+        "scripts/accept_core_release.py"
       ],
       "tests": [
         "tests/python/test_release_package.py",
@@ -267,7 +280,10 @@
         "tests/python/test_installed_runtime_processes.py",
         "tests/python/test_gateway_symbol_boundary.py",
         "tests/python/test_preflight_single_pass.py",
-        "tests/systemd_simulator_smoke.py"
+        "tests/systemd_simulator_smoke.py",
+        "tests/python/test_release_workflow.py",
+        "tests/python/test_core_release_acceptance.py",
+        "tests/python/test_cmake_install_behavior.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -281,7 +297,8 @@
         "systemd",
         "tmpfiles.d",
         "scripts/resolve_hepta_config.py",
-        "scripts/check_systemd_units.py"
+        "scripts/check_systemd_units.py",
+        "scripts/hepta_core_state_archive.py"
       ],
       "tests": [
         "tests/python/test_documentation_control_plane.py",
@@ -292,7 +309,8 @@
         "tests/python/test_release_simulator_smoke.py",
         "tests/python/test_installed_runtime_processes.py",
         "tests/systemd_simulator_smoke.py",
-        "tests/python/test_systemd_smoke_admission.py"
+        "tests/python/test_systemd_smoke_admission.py",
+        "tests/python/test_core_state_archive.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -312,7 +330,8 @@
         "scripts/verify_build_ownership.py",
         "scripts/verify_exact_git_index.py",
         "scripts/run_python_tests.py",
-        "scripts/render_protocol_reference.py"
+        "scripts/render_protocol_reference.py",
+        "scripts/plan_owner_ruleset.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
@@ -322,7 +341,9 @@
         "tests/python/test_documentation_structure.py",
         "tests/python/test_python_test_partition.py",
         "tests/python/test_ib_workflow_interfaces.py",
-        "tests/python/test_protocol_reference.py"
+        "tests/python/test_protocol_reference.py",
+        "tests/python/test_owner_ruleset_plan.py",
+        "tests/python/test_source_workflow_commands.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

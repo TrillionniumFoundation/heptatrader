@@ -463,7 +463,8 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
             time.sleep(.025)
         measurements.update(resources_before=resources_before, resources_after=resources_after)
         recoveries = []
-        for iteration in range(4):
+        cycles = bounded_integer(os.environ.get("HEPTA_RECOVERY_CYCLES", "4"), 4, 100)
+        for iteration in range(cycles):
             command, fields, order = runtime.place("BUY", 10, "1.1002")
             runtime.wait_position(10)
             before = runtime.send_count()
@@ -480,12 +481,12 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
             runtime.place("SELL", 10, "1.1000")
             runtime.wait_position(0)
             runtime.wait_no_orders()
-        self.assertEqual(runtime.send_count(), 8)
-        self.record_success("bounded-load-recovery", runtime, ["fresh-authoritative-reads", "four-persisted-position-restarts", "stable-command-identities", "final-flat"])
+        self.assertEqual(runtime.send_count(), cycles * 2)
+        self.record_success("bounded-load-recovery", runtime, ["fresh-authoritative-reads", f"{cycles}-persisted-position-restarts", "stable-command-identities", "final-flat"])
         if self.evidence:
             measurements.update(scope="disposable-host;simulator;bounded-sample-run;not-a-production-SLO",
                 host={"system":platform.system(),"kernel":platform.release(),"machine":platform.machine()},
-                restart_to_authoritative_state_ms=recoveries, source_sha=self.manifests["CANDIDATE"]["source_sha"],
+                recovery_cycles=cycles, restart_to_authoritative_state_ms=recoveries, source_sha=self.manifests["CANDIDATE"]["source_sha"],
                 artifact_sha256=os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"],
                 broker_mutation=False, paper_authorized=False, live_authorized=False)
             with (self.evidence / "bounded-load-measurements.json").open("x") as output:
@@ -521,6 +522,165 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
             with (self.evidence / "checkpoint-digest-only.json").open("x") as output:
                 json.dump(report, output, sort_keys=True, indent=2)
                 output.flush(); os.fsync(output.fileno())
+
+    def test_installed_daemon_capacity_observations_survive_restart(self):
+        runtime = self.fixture("online-capacity")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+
+        def observe(minimum_records=0):
+            log = next(log for _, _, log, name in runtime.processes if name == "hepta-executiond")
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                for line in reversed(log.read_text().splitlines()):
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (isinstance(value, dict) and value.get("schema") == "heptatrader.oms-capacity.v1"
+                            and value.get("known") is True and value.get("records", -1) >= minimum_records):
+                        return value
+                time.sleep(.025)
+            self.fail("installed Execution daemon did not publish a current capacity observation")
+
+        initial = observe()
+        command, fields, order = runtime.place("BUY", 10, "1.1002")
+        runtime.wait_position(10)
+        runtime.wait_no_orders()
+        before = observe(initial["records"] + 1)
+        self.assertGreater(before["bytes"], initial["bytes"])
+        self.assertEqual(before["authorization_effect"], "NONE")
+        self.assertNotIn(command, json.dumps(before))
+        runtime.stop()
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.wait_position(10)
+        after = observe(before["records"])
+        self.assertGreaterEqual(after["bytes"], before["bytes"])
+        self.assertFalse(after["write_poisoned"])
+        self.assertEqual(runtime.call("trade.place_order", fields, call_id=command, duplicate=True)["order_id"], order)
+        self.assertEqual(runtime.send_count(), 1)
+        runtime.place("SELL", 10, "1.1000")
+        runtime.wait_position(0)
+        runtime.wait_no_orders()
+        self.assertTrue(before.get("service_epoch"))
+        self.assertNotEqual(before["service_epoch"], after["service_epoch"])
+        self.assertGreater(before["append_latency"]["samples"], 0)
+        self.assertGreater(before["data_sync_latency"]["samples"], 0)
+        self.assertGreater(after["replay_validation_latency"]["samples"], 0)
+        # Execute the verified INSTALLED reporter on a stable selected export.
+        # It must not splice rate/latency series across the actual restart.
+        exported = runtime.root / "capacity-export.jsonl"
+        exported.write_text("\n".join(json.dumps(v) for v in (initial, before, after)) + "\n")
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_oms_report.py"
+        command = [sys.executable, str(helper), "--input", str(exported), "--now-ms", str(after["observed_at_ms"])]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summary = json.loads(result.stdout)
+        self.assertIsNone(summary["trend"]["window_ms"])
+        self.assertEqual(summary["service_epoch"], after["service_epoch"])
+        metrics = subprocess.run(command + ["--format", "prometheus"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(metrics.returncode, 0, metrics.stderr)
+        self.assertIn("hepta_oms_data_sync_latency_seconds_count", metrics.stdout)
+        if self.evidence:
+            (self.evidence / "installed-oms-report.json").write_text(result.stdout)
+            (self.evidence / "installed-oms-metrics.prom").write_text(metrics.stdout)
+        self.record_success("online-capacity-restart", runtime,
+                            ["installed-json-observation", "real-histograms", "installed-report-and-prometheus", "restart-series-isolation", "written-ledger-growth", "restart-preserved-counts",
+                             "duplicate-no-resend", "final-flat"])
+
+
+    def test_gateway_observations_report_real_traffic_and_restart(self):
+        runtime = self.fixture("gateway-observation")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+        def observe(minimum):
+            log = next(log for _, _, log, name in runtime.processes if name == "hepta-tool-gatewayd")
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                for line in reversed(log.read_text().splitlines()):
+                    try: value = json.loads(line)
+                    except json.JSONDecodeError: continue
+                    if (isinstance(value, dict) and value.get("schema") == "heptatrader.gateway-observation.v1"
+                            and value.get("response_attempts", -1) >= minimum):
+                        return value
+                time.sleep(.025)
+            self.fail("installed Gateway did not emit its actual traffic observation")
+        initial = observe(0)
+        for _ in range(20):
+            runtime.call("market.get_quote", ["instrument=EUR.USD"])
+        runtime.call("market.get_quote", ["instrument=EUR.USD"], uid=OTHER_UID, reject=True)
+        traffic = observe(initial["response_attempts"] + 21)
+        self.assertGreater(traffic["result_counts"]["ok"], 0)
+        self.assertGreater(traffic["result_counts"]["permission_denied"], 0)
+        self.assertGreater(traffic["dispatch_latency"]["samples"], 0)
+        self.assertEqual(traffic["response_writes"] + traffic["response_write_failures"], traffic["response_attempts"])
+        runtime.stop();runtime.start(self.slots["CANDIDATE"])
+        restarted = observe(0)
+        self.assertNotEqual(traffic["service_epoch"], restarted["service_epoch"])
+        export = runtime.root / "gateway-export.jsonl"
+        export.write_text("\n".join(json.dumps(v) for v in (traffic, restarted)) + "\n")
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_gateway_report.py"
+        command = [sys.executable, str(helper), "--input", str(export), "--now-ms", str(restarted["observed_at_ms"])]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(json.loads(result.stdout)["interval"])
+        metrics = subprocess.run(command + ["--format", "prometheus"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(metrics.returncode, 0, metrics.stderr)
+        self.assertIn("hepta_gateway_reply_latency_seconds_count", metrics.stdout)
+        self.assertNotIn("smoke-agent", metrics.stdout)
+        self.assertNotIn("S" * 32, result.stdout + metrics.stdout)
+        if self.evidence:
+            (self.evidence / "installed-gateway-report.json").write_text(result.stdout)
+            (self.evidence / "installed-gateway-metrics.prom").write_text(metrics.stdout)
+            (self.evidence / "gateway-traffic-observation.json").write_text(json.dumps(traffic, sort_keys=True))
+        self.record_success("gateway-telemetry", runtime,
+                            ["real-read-traffic", "wrong-uid-denied-counted", "real-histograms", "installed-export", "restart-not-spliced"])
+
+    def test_operational_archive_uses_live_locks_and_restores_exact_core_state(self):
+        runtime = self.fixture("operational-archive")
+        runtime.start(self.slots["CANDIDATE"]);runtime.provision()
+        command_id, fields, order = runtime.place("BUY", 25, "1.1002")
+        runtime.wait_position(25);runtime.wait_no_orders()
+        # Backups never belong in uploaded release evidence. The private key
+        # remains at its fixture source; only its digest is retained in archive.
+        private = runtime.root / "private-archive";private.mkdir(mode=0o700)
+        target = private / "snapshot"
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_core_state_archive.py"
+        identities = ["--execution-uid", str(EXECUTION_UID), "--gateway-uid", str(GATEWAY_UID), "--gid", str(TEST_GID)]
+        snapshot = [sys.executable, str(helper), "snapshot", "--execution-state", str(runtime.root / "es"),
+                    "--lease", str(runtime.root / "gs/leases"), "--key", str(runtime.root / "gs/key"),
+                    "--output", str(target)] + identities
+        result = subprocess.run(snapshot, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)  # real live service flock
+        self.assertFalse(target.exists())
+        runtime.stop()
+        result = subprocess.run(snapshot, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(json.loads(result.stdout)["replay_validated"])
+        self.assertEqual({p.name for p in target.iterdir()}, {"manifest.json", "journal.jsonl.gz", "lease.bin"})
+        restored_tree = private / "restored"
+        result = subprocess.run([sys.executable, str(helper), "restore", "--archive", str(target),
+                    "--key", str(runtime.root / "gs/key"), "--output", str(restored_tree)] + identities,
+                    capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Bind the freshly restored directories into a NEW disposable fixture.
+        # Never overwrite a previous runtime or restore an old lease alone.
+        restored = self.fixture("operational-archive-restored")
+        self.assertEqual(list((restored.root / "es").iterdir()), [])
+        self.assertEqual({p.name for p in (restored.root / "gs").iterdir()}, {"key"})
+        self.assertEqual((restored.root / "gs/key").read_bytes(), (runtime.root / "gs/key").read_bytes())
+        (restored.root / "gs/key").rename(restored_tree / "gateway/key")
+        (restored.root / "es").rmdir();(restored.root / "gs").rmdir()
+        (restored_tree / "execution").rename(restored.root / "es")
+        (restored_tree / "gateway").rename(restored.root / "gs")
+        restored.start(self.slots["CANDIDATE"]);restored.wait_position(25)
+        self.assertEqual(restored.call("trade.place_order", fields, call_id=command_id, duplicate=True)["order_id"], order)
+        self.assertEqual(restored.send_count(), 1)
+        restored.place("SELL", 25, "1.1000");restored.wait_position(0);restored.wait_no_orders()
+        self.assertEqual(restored.send_count(), 2)
+        self.record_success("operational-core-archive", restored,
+                            ["live-flock-refusal", "lossless-compressed-journal", "key-outside-archive", "new-tree-only",
+                             "native-replay-original-lease-position-command", "duplicate-no-resend", "guarded-final-flat"])
 
 
 if __name__ == "__main__":

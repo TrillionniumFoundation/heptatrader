@@ -96,3 +96,17 @@ is not a canonical recovery entry point.
 specifies HEX1 v10's exact per-operation field sets, value representations,
 identity requirements and failure actions. Its in-memory golden vectors use
 real C++ codecs, not a documentation keyword check.
+
+## Send-attempt query cost
+
+The in-memory [send-attempt index](../technical/runtime-cost-observations.md)
+avoids a full-history scan for account/domain time-window queries while
+preserving insertion order, clock-regression behavior, all retained history
+and the coordinator's existing synchronization and recovery boundaries.
+
+## Typed venue binding
+
+[Venue placement contract](../technical/venue-placement-contract.md) specifies
+the single Immediate/Reserving dependency, typed outcomes, constructor rejection,
+lock-bound IB result capture, migrated callers and uncertainty/replay tests.
+Existing durable and wire contracts are unchanged.

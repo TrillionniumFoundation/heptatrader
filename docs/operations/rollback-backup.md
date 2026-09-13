@@ -36,3 +36,11 @@ A binary rollback is allowed only when the older binary can read the current jou
 ## Restore failure
 
 A missing, corrupt, incompatible, or partially restored journal/lease store is a fail-closed condition. Never synthesize an empty state to make startup pass when a broker account may still contain positions or orders.
+
+## Executable core archive
+
+For stopped simulator/Gateway state, the installed
+[lossless core-state archive](../technical/core-state-archive.md) provides
+locked snapshot, bounded verification and new-tree-only restore. It does not
+include the decryption key, roll back live state, truncate the journal or
+change the preceding deployment/qualification requirements.

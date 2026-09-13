@@ -1,6 +1,7 @@
 #pragma once
 
 #include "tool_decision_audit.h"
+#include "gateway_observation.h"
 #include "trading_tool_host.h"
 #include "unix_socket_path_identity.h"
 
@@ -25,6 +26,8 @@ struct UnixToolServerHealth
     std::uint64_t ownerBackpressureRejections = 0;
     std::uint64_t deadlineRejections = 0;
     std::uint64_t cancelledRequests = 0;
+    std::size_t workerLimit = 0, pendingLimit = 0;
+    GatewayActivity activity;
 };
 
 class UnixToolServer
@@ -68,6 +71,7 @@ private:
         TradingToolHostRequest request;
         bool mutation = false;
         std::uint64_t deadlineAtMs = 0;
+        std::chrono::steady_clock::time_point queuedAt;
     };
 
     void AcceptLoop();
@@ -127,4 +131,7 @@ private:
     std::vector<std::thread> m_executionWorkers;
     std::unordered_map<std::string, std::size_t> m_activeByOwner;
     BackpressureObserver m_backpressureObserver;
+    mutable std::mutex m_activityMutex;
+    GatewayActivity m_activity;
+    std::size_t m_workerLimit = 0;
 };

@@ -691,3 +691,33 @@ bool ToolGatewayRuntimeComposition::FenceRevokedOwner(
     failureReason.clear();
     return true;
 }
+
+std::string ToolGatewayRuntimeComposition::OperationalObservation() const
+{
+    if (!m_agentOs) return std::string();
+    // Runtime lifetime is owned by the daemon's main thread. Snapshots release
+    // queue/metric locks before formatting or log I/O; no lock spans a socket.
+    const UnixToolServerHealth h = m_agentOs->ToolServer().GetHealth();
+    const auto wall = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    const auto mono = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::ostringstream out;
+    out.imbue(std::locale::classic());
+    out << "{\"schema\":\"heptatrader.gateway-observation.v1\",\"service_epoch\":"
+        << JsonString(m_gatewayEpoch) << ",\"observed_at_ms\":" << wall
+        << ",\"monotonic_ms\":" << mono << ",\"running\":"
+        << (m_agentOs->ToolServer().IsRunning() ? "true" : "false")
+        << ",\"pending_connections\":" << h.pendingConnections
+        << ",\"active_requests\":" << h.activeRequests
+        << ",\"ready_owners\":" << h.readyOwners
+        << ",\"worker_limit\":" << h.workerLimit
+        << ",\"pending_limit\":" << h.pendingLimit
+        << ",\"queue_rejections\":" << h.queueBackpressureRejections
+        << ",\"owner_rejections\":" << h.ownerBackpressureRejections
+        << ",\"deadline_rejections\":" << h.deadlineRejections
+        << ",\"cancelled_requests\":" << h.cancelledRequests << ',';
+    WriteGatewayActivity(out, h.activity);
+    out << ",\"authorization_effect\":\"NONE\"}";
+    return out.str();
+}

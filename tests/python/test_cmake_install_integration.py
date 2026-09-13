@@ -33,49 +33,6 @@ def cmake_cache(path: Path) -> dict[str, str]:
 
 
 class CMakeInstallIntegrationTests(unittest.TestCase):
-    def test_readme_is_optional_but_docs_remain_installed(self) -> None:
-        install_module = (ROOT / "cmake/HeptaInstall.cmake").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn(
-            'if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")',
-            install_module,
-        )
-        self.assertIn(
-            'install(DIRECTORY "${PROJECT_SOURCE_DIR}/docs/"',
-            install_module,
-        )
-
-    def test_preflight_core_uses_private_install_namespace(self) -> None:
-        install_module = (ROOT / "cmake/HeptaInstall.cmake").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn(
-            'DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"\n'
-            '    RENAME hepta-preflight-core.py',
-            install_module,
-        )
-        self.assertNotIn(
-            'DESTINATION "${CMAKE_INSTALL_BINDIR}"\n'
-            '    RENAME hepta-preflight-core.py',
-            install_module,
-        )
-
-    def test_tested_release_registers_installed_simulator_smoke(self) -> None:
-        top = (ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
-        install_module = (ROOT / "cmake/HeptaInstall.cmake").read_text(
-            encoding="utf-8"
-        )
-        self.assertLess(
-            top.index("if(BUILD_TESTING)"),
-            top.index("include(cmake/HeptaInstall.cmake)"),
-        )
-        self.assertIn("if(TARGET hepta_agent_simulator_e2e_tests)", install_module)
-        self.assertIn(
-            'RUNTIME DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/heptatrader"',
-            install_module,
-        )
-
     @unittest.skipUnless(os.environ.get(BUILD_ENV), f"{BUILD_ENV} is not set")
     def test_registered_core_install_has_closed_inventory(self) -> None:
         build = Path(os.environ[BUILD_ENV]).resolve()
@@ -142,6 +99,21 @@ class CMakeInstallIntegrationTests(unittest.TestCase):
                 self.assertFalse(target.is_symlink(), relative)
                 self.assertTrue(stat.S_ISREG(metadata.st_mode), relative)
                 self.assertEqual(metadata.st_nlink, 1, relative)
+
+            # Candidate-only extension: older accepted artifacts intentionally do
+            # not need the new optional diagnostic/backup helpers. Never widen
+            # the shared v1 admission policy and silently reject rollback pairs.
+            for helper in ("hepta_oms_report.py", "hepta_gateway_report.py",
+                           "hepta_core_state_archive.py"):
+                installed = install_root / "libexec/heptatrader" / helper
+                metadata = installed.lstat()
+                self.assertTrue(stat.S_ISREG(metadata.st_mode))
+                self.assertEqual(metadata.st_nlink, 1)
+                self.assertEqual(stat.S_IMODE(metadata.st_mode), 0o755)
+                self.assertEqual(installed.read_bytes(), (ROOT / "scripts" / helper).read_bytes())
+                probe = subprocess.run([sys.executable, str(installed), "--help"],
+                                       capture_output=True, text=True, timeout=10)
+                self.assertEqual(probe.returncode, 0, probe.stderr)
 
             public_entrypoint = install_root / "bin/hepta-preflight"
             private_core = (

@@ -430,6 +430,13 @@ void TestSocketRoundTripAndStrictProtocol()
 	assert(pressureRejected.load() >= 1);
 	assert(ownerHealthEvents.load() == pressureRejected.load());
 	const UnixToolServerHealth toolHealth = server.GetHealth();
+    assert(toolHealth.activity.responses > 0);
+    assert(toolHealth.activity.responses == toolHealth.activity.written + toolHealth.activity.writeFailures);
+    assert(toolHealth.activity.reply.samples == toolHealth.activity.responses);
+    assert(toolHealth.activity.dispatch.samples > 0);
+    assert(toolHealth.activity.queueWait.samples == toolHealth.activity.dispatch.samples);
+    assert(toolHealth.activity.ingress.samples >= toolHealth.activity.dispatch.samples);
+    assert(toolHealth.workerLimit > 0 && toolHealth.pendingLimit > 0);
 	assert(toolHealth.ownerBackpressureRejections >=
 		static_cast<std::uint64_t>(pressureRejected.load()));
     server.Stop();

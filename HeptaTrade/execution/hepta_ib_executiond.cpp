@@ -1,3 +1,4 @@
+#include "../oms_capacity_observation.h"
 #include "ib_paper_execution_runtime_composition.h"
 #include "ib_paper_execution_runtime_config.h"
 
@@ -56,8 +57,13 @@ int main(int argc, char**)
     }
     std::cerr << "IB PAPER execution runtime ready" << '\n';
     int received = 0;
+    OmsCapacityCadence capacityCadence;
     for (;;)
     {
+        if (capacityCadence.Due(std::chrono::steady_clock::now()))
+            std::cerr << OmsCapacityObservation(runtime.JournalHealth(), OmsJournal::NowEpochMs(),
+                runtime.ServiceEpoch(), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count())) << '\n';
         struct timespec timeout;
         timeout.tv_sec = 1;
         timeout.tv_nsec = 0;

@@ -117,11 +117,12 @@ void TestServerBoundIdentityAndCapabilities()
     int placeCalls = 0;
     DecisionLeaseManager leases;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* orderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        *orderId = 8801;
-        return true;
-    };
+        venueOrderId = 8801;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.cancelIbOrder = [](long) { return true; };
     callbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
                                           const std::string& instrument,
@@ -465,10 +466,11 @@ void TestMultiInstrumentMutationOwnerHandoff()
 	long nextOrderId = 9900;
 	std::vector<std::uint64_t> fencingTokens;
 	ExecutionCoordinatorCallbacks callbacks;
-	callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* orderId) {
-		*orderId = ++nextOrderId;
-		return true;
-	};
+	callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
+		venueOrderId = ++nextOrderId;
+		return VenuePlaceResult::Submitted(venueOrderId);
+	});
 	callbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
 		const std::string& instrument, std::string* reason) {
 		DecisionLeaseKey key;
@@ -1212,11 +1214,11 @@ void TestEntryCancelAndFlattenBudgetsAreIndependent()
 	assert(journal.Init(path));
 	DecisionLeaseManager leases;
 	ExecutionCoordinatorCallbacks callbacks;
-	callbacks.placeIbOrder = [](const IBContractLite&, const IBOrderLite&,
-		long* orderId) {
-		*orderId = 9901;
-		return true;
-	};
+	callbacks.placement = VenuePlacement::Immediate([](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
+		venueOrderId = 9901;
+		return VenuePlaceResult::Submitted(venueOrderId);
+	});
 	callbacks.cancelIbOrder = [](long) { return true; };
 	callbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
 		const std::string& instrument, std::string* reason) {

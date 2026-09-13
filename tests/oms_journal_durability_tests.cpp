@@ -1,4 +1,6 @@
 #include "../HeptaTrade/oms_journal.h"
+#include "../HeptaTrade/oms_capacity_observation.h"
+#include "oms_runtime_observation_cases.h"
 
 #include <cstdlib>
 #include <fcntl.h>
@@ -439,10 +441,13 @@ void TestCountBudgetBoundsManySmallEventsAndDoesNotBlockExitAppend()
     REQUIRE(::rmdir(directory.c_str()) == 0);
 }
 
+#include "oms_live_capacity_cases.h"
+
 }
 
 int main()
 {
+    hepta_observation_test::Run();
     TestReplayLimitsAreInclusiveAndCallbackAtomic();
     TestMalformedReplayBudgetsDoNotCreateFiles();
     TestOversizedAndTornRecordsDoNotApplyValidPrefix();
@@ -455,5 +460,8 @@ int main()
     TestStrictReplayIsCallbackAtomicAndReentrant();
     TestAsyncQueueAndBufferAccounting();
     TestUnsafePermissionsLinksAndTornFilesFailClosed();
+    TestLiveCapacityAndCheckpointRecovery();
+    TestCapacityUnknownAndPendingAreNotHealthyZero();
+    TestCapacitySerializationAndCadenceBoundaries();
     return 0;
 }

@@ -99,7 +99,8 @@ void TestJournalBeforeSendAndDuplicate()
     bool sawIntentBeforeSend = false;
     bool sawAttemptBeforeSend = false;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
         int intents = 0;
         int attempts = 0;
@@ -111,9 +112,9 @@ void TestJournalBeforeSendAndDuplicate()
         });
         sawIntentBeforeSend = intents == 1;
         sawAttemptBeforeSend = attempts == 1;
-        *outOrderId = 42;
-        return true;
-    };
+        venueOrderId = 42;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) {
         return true;
     };
@@ -456,10 +457,11 @@ void TestJournalFailurePreventsBrokerSend()
     OmsJournal journal;
     int placeCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long*) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        return true;
-    };
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     ExecutionCoordinator coordinator(journal, callbacks);
     const ExecutionCommandResult result = coordinator.PlaceIbOrder(MakePlace("call-no-journal"));
     assert(result.status == ExecutionCommandStatus::Rejected);
@@ -477,12 +479,12 @@ void TestVenueCorrelationBindsCommandIdentity()
     assert(journal.Init(path));
     std::vector<std::string> correlations;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrderCorrelated = [&](const IBContractLite&, const IBOrderLite&,
-                                            const std::string& correlation, long* orderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& correlation) -> VenuePlaceResult {
+        long venueOrderId = -1;
         correlations.push_back(correlation);
-        *orderId = 600 + static_cast<long>(correlations.size());
-        return true;
-    };
+        venueOrderId = 600 + static_cast<long>(correlations.size());
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     ExecutionCoordinator coordinator(journal, callbacks);
     IbPlaceOrderCommand first = MakePlace("correlation-a");
     IbPlaceOrderCommand second = first;
@@ -507,9 +509,9 @@ void TestVenueCorrelationBindsCommandIdentity()
 enum PlaceOutcomeMode
 {
     PlaceThrowsAfterSideEffect,
-    PlaceReturnsFalseWithoutReason,
-    PlaceRejectReasonReaderThrows,
-    PlaceReturnsTrueWithoutOrderId
+    PlaceReturnsRejectedWithoutReason,
+    PlaceResultAssemblyThrows,
+    PlaceReturnsSubmittedWithoutOrderId
 };
 
 void ExerciseUncertainPlaceOutcome(
@@ -523,28 +525,24 @@ void ExerciseUncertainPlaceOutcome(
     int venueCalls = 0;
     int rejectReasonReads = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrderCorrelated =
-        [&](const IBContractLite&, const IBOrderLite&,
-            const std::string&, long* orderId) -> bool {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
             ++venueCalls;
             if (mode == PlaceThrowsAfterSideEffect)
             {
-                *orderId = 630;
+                venueOrderId = 630;
                 throw std::runtime_error(
                     "simulated place exception after venue side effect");
             }
-            if (mode == PlaceReturnsTrueWithoutOrderId)
-                return true;
-            return false;
-        };
+            if (mode == PlaceResultAssemblyThrows)
+                throw std::runtime_error("simulated place result assembly exception");
+            if (mode == PlaceReturnsSubmittedWithoutOrderId)
+                return VenuePlaceResult::Submitted(venueOrderId);
+            return VenuePlaceResult::Rejected("");
+        });
     callbacks.lastIbRejectReason = [&]() {
         ++rejectReasonReads;
-        if (mode == PlaceRejectReasonReaderThrows)
-            throw std::runtime_error(
-                "simulated place rejection reader exception");
-        if (mode == PlaceReturnsFalseWithoutReason)
-            return std::string();
-        return std::string("misleading adapter rejection");
+        return std::string("unrelated cancel rejection must never classify placement");
     };
     const IbPlaceOrderCommand command = MakePlace(callId);
     ExecutionCoordinator coordinator(journal, callbacks);
@@ -554,9 +552,7 @@ void ExerciseUncertainPlaceOutcome(
     assert(first.reasonCode == "IB_PLACE_OUTCOME_UNCERTAIN");
     assert(first.detail.find(expectedDetail) != std::string::npos);
     assert(venueCalls == 1);
-    assert(rejectReasonReads ==
-           (mode == PlaceReturnsFalseWithoutReason ||
-            mode == PlaceRejectReasonReaderThrows ? 1 : 0));
+    assert(rejectReasonReads == 0);
     assert(coordinator.IsMutationBlocked());
     const ExecutionCommandResult retry =
         coordinator.PlaceIbOrder(command);
@@ -648,13 +644,13 @@ void TestPlaceCallbackUncertaintyAndReliableReject()
         PlaceThrowsAfterSideEffect, "after venue side effect");
     ExerciseUncertainPlaceOutcome(
         "place-false-empty-reason",
-        PlaceReturnsFalseWithoutReason, "without a reliable rejection");
+        PlaceReturnsRejectedWithoutReason, "without a reliable rejection");
     ExerciseUncertainPlaceOutcome(
-        "place-reject-reader-throws",
-        PlaceRejectReasonReaderThrows, "rejection reader exception");
+        "place-result-assembly-throws",
+        PlaceResultAssemblyThrows, "result assembly exception");
     ExerciseUncertainPlaceOutcome(
         "place-true-invalid-order-id",
-        PlaceReturnsTrueWithoutOrderId, "without an order id");
+        PlaceReturnsSubmittedWithoutOrderId, "without an order id");
 
     const std::string path = TempJournalPath();
     OmsJournal journal;
@@ -662,15 +658,15 @@ void TestPlaceCallbackUncertaintyAndReliableReject()
     int venueCalls = 0;
     int reasonReads = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrderCorrelated =
-        [&](const IBContractLite&, const IBOrderLite&,
-            const std::string&, long*) {
+    callbacks.placement = VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&, const std::string&) {
             ++venueCalls;
-            return false;
-        };
-    callbacks.lastIbRejectReason = [&]() {
-        ++reasonReads;
-        return std::string("explicit reliable adapter rejection");
+            ++reasonReads;
+            return VenuePlaceResult::Rejected("explicit reliable adapter rejection");
+        });
+    callbacks.lastIbRejectReason = []() -> std::string {
+        assert(false && "placement must not consult the cancel error reader");
+        return "";
     };
     const IbPlaceOrderCommand command =
         MakePlace("place-explicit-reject");
@@ -712,10 +708,11 @@ void TestIdempotencyIsScopedPerAgentSession()
     assert(journal.Init(path));
     int placeCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
-        *outOrderId = 500 + (++placeCalls);
-        return true;
-    };
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
+        venueOrderId = 500 + (++placeCalls);
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     ExecutionCoordinator coordinator(journal, callbacks);
 
     IbPlaceOrderCommand first = MakePlace("same-call-id", "agent-a");
@@ -740,11 +737,12 @@ void TestIdempotencyPayloadAndOperationConflict()
     int placeCalls = 0;
     int cancelCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        *outOrderId = 610;
-        return true;
-    };
+        venueOrderId = 610;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.cancelIbOrder = [&](long) {
         ++cancelCalls;
         return true;
@@ -787,11 +785,12 @@ void TestIdempotencyConflictSurvivesReplayAndLegacyHashIsCompatible()
         assert(journal.Init(path));
         int placeCalls = 0;
         ExecutionCoordinatorCallbacks callbacks;
-        callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
+        callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
             ++placeCalls;
-            *outOrderId = 620;
-            return true;
-        };
+            venueOrderId = 620;
+            return VenuePlaceResult::Submitted(venueOrderId);
+        });
         ExecutionCoordinator coordinator(journal, callbacks);
         assert(coordinator.PlaceIbOrder(original).status == ExecutionCommandStatus::Accepted);
         assert(placeCalls == 1);
@@ -802,10 +801,11 @@ void TestIdempotencyConflictSurvivesReplayAndLegacyHashIsCompatible()
         assert(journal.Init(path));
         int placeCalls = 0;
         ExecutionCoordinatorCallbacks callbacks;
-        callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long*) {
+        callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
             ++placeCalls;
-            return true;
-        };
+            return VenuePlaceResult::Submitted(venueOrderId);
+        });
         ExecutionCoordinator recovered(journal, callbacks);
         std::string reason;
         assert(recovered.RecoverFromJournal(reason));
@@ -845,10 +845,11 @@ void TestIdempotencyConflictSurvivesReplayAndLegacyHashIsCompatible()
 
     int legacyDispatches = 0;
     ExecutionCoordinatorCallbacks legacyCallbacks;
-    legacyCallbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long*) {
+    legacyCallbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++legacyDispatches;
-        return true;
-    };
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     ExecutionCoordinator legacyRecovered(legacyJournal, legacyCallbacks);
     std::string legacyReason;
     assert(legacyRecovered.RecoverFromJournal(legacyReason));
@@ -871,10 +872,11 @@ void TestOwnershipAndCancel()
     int placedProjectionCalls = 0;
     int cancelProjectionCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
-        *outOrderId = 99;
-        return true;
-    };
+    callbacks.placement = VenuePlacement::Immediate([](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
+        venueOrderId = 99;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
     callbacks.cancelIbOrder = [&](long orderId) {
         ++cancelCalls;
@@ -948,10 +950,11 @@ void TestRecoveryBlocksUncertainIntent()
 
     int placeCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long*) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        return true;
-    };
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     ExecutionCoordinator coordinator(journal, callbacks);
     std::string reason;
     assert(!coordinator.RecoverFromJournal(reason));
@@ -978,11 +981,12 @@ void TestProjectionFailureBlocksFurtherMutations()
 
     int placeCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        *outOrderId = 701;
-        return true;
-    };
+        venueOrderId = 701;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.onIbOrderPlaced = [](const IbPlaceOrderCommand&, long, std::string* reason) {
         if (reason != nullptr) *reason = "snapshot write rejected";
         return false;
@@ -1063,10 +1067,11 @@ void TestCancelProjectionFailureIsUncertain()
     assert(journal.Init(path));
 
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [](const IBContractLite&, const IBOrderLite&, long* outOrderId) {
-        *outOrderId = 801;
-        return true;
-    };
+    callbacks.placement = VenuePlacement::Immediate([](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
+        venueOrderId = 801;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.onIbOrderPlaced = [](const IbPlaceOrderCommand&, long, std::string*) { return true; };
     callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
     callbacks.cancelIbOrder = [](long orderId) { return orderId == 801; };
@@ -1750,11 +1755,12 @@ void TestRevokedSessionOwnerIsFenced()
     assert(journal.Init(path));
     int placeCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* orderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        *orderId = 901;
-        return true;
-    };
+        venueOrderId = 901;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) {
         return true;
     };
@@ -1806,12 +1812,12 @@ void TestRecoveryOnlySessionOwnerIsDurableAndAllowsOwnedCancel()
     int placeCalls = 0;
     int cancelCalls = 0;
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite&,
-        const IBOrderLite&, long* orderId) {
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        *orderId = 902;
-        return true;
-    };
+        venueOrderId = 902;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     callbacks.cancelIbOrder = [&](long orderId) {
         assert(orderId == 902);
         ++cancelCalls;
@@ -1886,10 +1892,11 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
         int activations = 0;
         bool projected = false;
         ExecutionCoordinatorCallbacks callbacks;
-        callbacks.placeIbOrder = [&](const InstrumentRef&, const OrderIntent&, long* id) {
+        VenuePlacement::Submit reserve = [&](const PlaceOrderCommand&, const std::string&) -> VenuePlaceResult {
+        long venueOrderId = -1;
             ++reservations;
-            *id = 1701;
-            return true;
+            venueOrderId = 1701;
+            return VenuePlaceResult::Reserved(venueOrderId);
         };
         callbacks.onIbOrderPlaced = [&](const IbPlaceOrderCommand&, long, std::string*) {
             projected = true;
@@ -1897,7 +1904,8 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
             if (outcome == 4) assert(::unlink(path.c_str()) == 0);
             return outcome != 3;
         };
-        callbacks.activatePlacedOrder = [&](long id, std::string* reason) {
+        callbacks.placement = VenuePlacement::Reserving(reserve, [&](long id) -> VenueActivationResult {
+            std::string reason;
             ++activations;
             assert(id == 1701 && projected);
             int receipts = 0;
@@ -1916,10 +1924,10 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
             assert(interrupted.GetCommandStatus("agent-a", "session-1", "two-phase", interruptedStatus));
             assert(interruptedStatus.status == ExecutionCommandStatus::Uncertain);
             if (outcome == 2) throw std::runtime_error("activation threw");
-            if (outcome == 1) *reason = "activation rejected";
+            if (outcome == 1) reason = "activation rejected";
             if (outcome == 5) assert(::unlink(path.c_str()) == 0);
-            return outcome == 0 || outcome == 5;
-        };
+            return outcome == 0 || outcome == 5 ? VenueActivationResult::Activated() : VenueActivationResult::Uncertain(reason);
+        });
         ExecutionCoordinator coordinator(journal, callbacks);
         const IbPlaceOrderCommand command = MakePlace("two-phase");
         const ExecutionCommandResult result = coordinator.PlaceIbOrder(command);
@@ -1978,8 +1986,11 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
 
 } // namespace
 
+#include "venue_placement_cases.h"
+
 int main()
 {
+    TestVenuePlacementConstructionAndResultContract();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();
     TestJournalFailurePreventsBrokerSend();

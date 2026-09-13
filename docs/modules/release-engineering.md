@@ -99,3 +99,13 @@ inside that same descriptor-pinned inspector. It does not re-open and re-hash
 the artifact to add a second root-identity check. Regression tests preserve
 identity substitution rejection and early rejection, not private variable
 spellings or a particular formatting of an assignment.
+
+## One acceptance implementation for main and tags
+
+`scripts/accept_core_release.py` is the shared disposable-host package and
+installed acceptance driver. Both core CI and tagged release pass the actual
+package digest through simulator smoke, multi-UID process/rollback and real
+PID 1 systemd tests. The tag manifest is written only after successful acceptance
+and rehashing those same package bytes. See
+[core release acceptance](../technical/core-release-acceptance.md). This is not
+a Broker qualification or a production-host installer.

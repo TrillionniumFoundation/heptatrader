@@ -19,7 +19,7 @@ GITLINK = "160000"
 CRITICAL_PATHS = (
     ".github/required-check-contexts-v1.json",
     ".github/workflows/ib-paper-qualification.yml",
-    ".github/workflows/qualification-source-audit.yml",
+    ".github/workflows/documentation-control-plane.yml",
     "docs/capabilities.json",
     "docs/gap-register.json",
     "docs/ib-paper-profile-policy-v1.json",

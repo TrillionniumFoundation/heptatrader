@@ -33,3 +33,13 @@ Until the real transport is installed and qualified, `Connect`, account/position
 ## Observability and tests
 
 The scaffold reports its capability status and last failure reason. The current test verifies that it remains disconnected and rejects mutation. A future implementation requires callback ordering, duplicate event, partial fill, reconnect, account mismatch, invalid price type, and uncertain send tests before status promotion.
+
+## Retained compatibility surface
+
+Callback signatures remain source-compatible but economic callbacks are inert.
+The unreachable synthetic success branches and unused order-symbol/side maps
+have been removed. `OnXtConnected` explicitly rejects the missing transport;
+`OnXtDisconnected` only resets local scaffold status. Error diagnostics retain
+the newest 64 events. Capability tests call every callback and verify that none
+produces economic evidence or enables placement. No SDK, wire protocol or
+persistent reader was retired by this change.

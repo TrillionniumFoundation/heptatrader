@@ -2337,15 +2337,10 @@ int main()
 		return true;
 	};
 	ExecutionCoordinatorCallbacks executionCallbacks;
-	executionCallbacks.placeIbOrder = [](const IBContractLite& contract, const IBOrderLite& order, long* orderId) {
-		return m_ibAdapter.PlaceOrder(contract, order, orderId);
-	};
-	executionCallbacks.placeIbOrderCorrelated = [](const IBContractLite& contract,
-		const IBOrderLite& order, const std::string& venueCorrelationId,
-		long* orderId) {
-		return m_ibAdapter.PlaceOrderCorrelated(
-			contract, order, venueCorrelationId, orderId);
-	};
+	executionCallbacks.placement = VenuePlacement::Immediate(
+        [](const PlaceOrderCommand& command, const std::string& correlation) {
+            return m_ibAdapter.PlaceOrderWithResult(command.contract, command.order, correlation);
+        });
 	executionCallbacks.cancelIbOrder = [](long orderId) {
 		return m_ibAdapter.CancelOrder(orderId);
 	};

@@ -51,8 +51,9 @@ static std::string JsonNumber(double v)
     return oss.str();
 }
 
-static bool SyncFileData(int fd)
+static bool SyncFileData(int fd, OmsLatencySummary& observation)
 {
+    OmsScopedLatencySample timing(observation);
     int result;
     do
     {
@@ -562,7 +563,7 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
 
     if (durable)
     {
-        if (!SyncFileData(m_fd))
+        if (!SyncFileData(m_fd, m_dataSyncLatency))
         {
             m_writePoisoned = true;
             ++m_writeFailTotal;
@@ -570,6 +571,17 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
             return false;
         }
         ++m_durableSyncWrites;
+    }
+    if (m_capacityKnown)
+    {
+        if (record.size() > std::numeric_limits<std::uint64_t>::max() - m_capacityBytes ||
+            m_capacityRecords == std::numeric_limits<std::uint64_t>::max())
+            m_capacityKnown = false;
+        else
+        {
+            m_capacityBytes += record.size();
+            ++m_capacityRecords;
+        }
     }
     ++m_flushedTotal;
     m_lastFlushMs = NowEpochMs();
@@ -626,7 +638,7 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
     }
     // Persist the file inode before the directory entry.  This is required for
     // a newly created empty journal and harmless for an existing journal.
-    if (!SyncFileData(fd))
+    if (!SyncFileData(fd, m_dataSyncLatency))
     {
         ::close(fd);
         return false;
@@ -651,6 +663,10 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
         return false;
     }
     m_fd = fd;
+    // Existing bytes need a complete successful replay before counts are known.
+    m_capacityKnown = metadata.st_size == 0;
+    m_capacityBytes = 0;
+    m_capacityRecords = 0;
     return true;
 }
 
@@ -658,7 +674,7 @@ bool OmsJournal::ClosePinnedFileLocked()
 {
     if (m_fd < 0) return true;
     bool ok = true;
-    if (!m_writePoisoned && !SyncFileData(m_fd))
+    if (!m_writePoisoned && !SyncFileData(m_fd, m_dataSyncLatency))
     {
         m_writePoisoned = true;
         ++m_writeFailTotal;
@@ -840,7 +856,9 @@ bool OmsJournal::Init(const std::string& path)
 
 bool OmsJournal::Append(const OmsJournalEvent& evt)
 {
+    const auto started = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(m_mtx);
+    OmsScopedLatencySample timing(m_appendLatency, started);
     if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
         evt.eventType.empty() || !std::isfinite(evt.qty) ||
         !std::isfinite(evt.price) ||
@@ -935,6 +953,22 @@ OmsJournalHealthSnapshot OmsJournal::GetHealthSnapshot() const
     out.replayObservedBytes = m_replayObservedBytes;
     out.replayValidatedRecords = m_replayValidatedRecords;
     out.replayReasonCode = m_replayReasonCode;
+    out.appendLatency = m_appendLatency;
+    out.dataSyncLatency = m_dataSyncLatency;
+    out.replayValidationLatency = m_replayValidationLatency;
+    struct stat pinned, named;
+    out.capacityKnown = m_capacityKnown && !m_writePoisoned && m_fd >= 0 &&
+        StatFileDescriptor(m_fd, pinned) &&
+        StatPathWithoutFollowingLinks(m_path, named) &&
+        HasPrivateRegularFileMetadata(pinned) && HasPrivateRegularFileMetadata(named) &&
+        pinned.st_dev == named.st_dev && pinned.st_ino == named.st_ino &&
+        pinned.st_size >= 0 && named.st_size == pinned.st_size &&
+        static_cast<std::uint64_t>(pinned.st_size) == m_capacityBytes;
+    if (out.capacityKnown)
+    {
+        out.currentBytes = m_capacityBytes;
+        out.currentRecords = m_capacityRecords;
+    }
     return out;
 }
 
@@ -946,15 +980,18 @@ std::string OmsJournal::GetPath() const
 
 int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEvent) const
 {
+    const auto started = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lk(m_mtx);
     OmsJournal* const self = const_cast<OmsJournal*>(this);
+    OmsScopedLatencySample timing(self->m_replayValidationLatency, started);
+    self->m_capacityKnown = false;
     self->m_replayObservedBytes = 0;
     self->m_replayValidatedRecords = 0;
     self->m_replayReasonCode = "OMS_REPLAY_IO_OR_IDENTITY_FAILURE";
     if (!self->FlushQueuedNoLock() || !self->FlushBufferedLocked() ||
         m_path.empty() || m_fd < 0 || m_writePoisoned ||
         !self->ValidatePinnedPathLocked()) return -1;
-    if (!SyncFileData(m_fd))
+    if (!SyncFileData(m_fd, self->m_dataSyncLatency))
     {
         self->m_writePoisoned = true;
         ++self->m_writeFailTotal;
@@ -1060,6 +1097,10 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
     // No callback has run on ANY input/budget/allocation failure above. Keep
     // callbacks outside the journal mutex so existing reentrant readers work.
     self->m_replayReasonCode = "OMS_REPLAY_VALIDATED";
+    self->m_capacityBytes = static_cast<std::uint64_t>(metadata.st_size);
+    self->m_capacityRecords = static_cast<std::uint64_t>(events.size());
+    self->m_capacityKnown = true;
+    timing.Finish(); // publish validation latency before reentrant callbacks
     lk.unlock();
     if (onEvent)
         for (std::vector<OmsJournalEvent>::const_iterator it = events.begin();

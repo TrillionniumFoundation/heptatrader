@@ -72,6 +72,9 @@ public:
     bool IsMutationBlocked(std::string* reason = nullptr) const;
     bool HasFatalRuntimeError(std::string* reason = nullptr) const;
     const std::string& RecoveryReason() const;
+    // Local process observability only; not an Agent command or admission gate.
+    const std::string& ServiceEpoch() const { return m_serviceIdentity.serviceEpoch; }
+    OmsJournalHealthSnapshot JournalHealth() const { return m_journal.GetHealthSnapshot(); }
 
     HeptaIBGatewayAdapter& Adapter();
     ExecutionCoordinator& Coordinator();
