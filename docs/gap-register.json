@@ -358,20 +358,24 @@
     {
       "id": "CLEANUP-INTEGRATED-VALIDATION-001",
       "domain": "REPOSITORY",
-      "state": "OPEN",
-      "summary": "Validate this cleanup as an integrated exact-main descendant before accepting its new PAPER controller and publication path.",
+      "state": "CLOSED",
+      "summary": "Behavior-first cleanup is integrated with PR76 and verified on a complete exact-source GitHub revision.",
       "evidence": [
         "scripts/run_ib_paper_campaign.py",
         "tests/python/test_paper_campaign_evidence.py",
         "tests/python/test_paper_evidence_publication.py",
         "tests/python/test_qualification_trust_boundary.py",
-        "tests/oms_journal_durability_tests.cpp"
+        "tests/oms_journal_durability_tests.cpp",
+        ".github/workflows/core-ci.yml",
+        ".github/workflows/canonical-full-suite.yml",
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/systemd_simulator_smoke.py"
       ],
-      "issue": null,
+      "issue": 77,
       "blocking_releases": [
         "ib-paper"
       ],
-      "disposition": "Implemented and locally tested in the delivered patch. Repository writes were blocked in the editing session; no remote exact-revision CI, Broker campaign or host deployment is asserted. Close only with integrated repository validation, not by changing authorization defaults."
+      "disposition": "Closed against commit 89faa3a88e841ac1cca4cd14f0312904916a2a63, tree a5de9ebce0b04ad7cfd1c7f1f6d42d820b64f4e1, preserving PR73 and PR76. Exact-head attempt-1 GitHub runs passed: Core 34741212566, Documentation 34741212568, Qualification Source Audit 34741212565, and both full GCC/Clang sanitizer jobs in 34741212577. Core/source/install/process Python partitions executed 296+65+4+6=371 cases without skips; native CTest passed 25/25. Downloaded process and real PID1 systemd receipts bind candidate package SHA-256 5dcb0411d68760fac7608eff542c5b0cb0d314c4d6574a16cf5ed885f0b44913; distinct-source shared-state rollback, offline checkpoint recovery and the 1208-sample SHADOW pipeline passed. This closes integrated source validation only, not HOST-ROLLBACK-001, arbitrary schema compatibility, production SLOs or external IB qualification. PAPER/LIVE authorization remains false."
     }
   ]
 }
