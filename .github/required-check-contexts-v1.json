@@ -1,64 +1,44 @@
 {
   "schema": "heptatrader.required-check-contexts.v1",
-  "policy": {
-    "explicit_job_names": true,
-    "globally_unique_contexts": true,
-    "dynamic_context_expressions": "matrix-only",
-    "required_contexts_must_be_event_reachable": true,
-    "skipped_or_missing_is_not_success": true,
-    "merge_group_cancel_in_progress": "forbidden",
-    "all_pages_must_be_collected": true,
-    "check_run_must_bind_workflow_and_non_empty_job": true
-  },
-  "required_branch_contexts": [
-    "documentation-control-plane-exact-head",
-    "core-runtime-exact-head",
-    "canonical-full-suite-reliability (g++)",
-    "canonical-full-suite-reliability (clang++)"
-  ],
-  "required_pull_request_contexts": [
-    "documentation-control-plane-exact-head",
-    "core-runtime-exact-head",
-    "canonical-full-suite-reliability (g++)",
-    "canonical-full-suite-reliability (clang++)"
-  ],
-  "required_merge_group_contexts": [
-    "documentation-control-plane-exact-head",
-    "core-runtime-exact-head",
-    "canonical-full-suite-reliability (g++)",
-    "canonical-full-suite-reliability (clang++)"
-  ],
-  "required_check_provenance": {
-    "integration_id": 15368,
-    "contexts": {
-      "documentation-control-plane-exact-head": {
-        "workflow_id": 346626270,
-        "workflow_path": ".github/workflows/documentation-control-plane.yml",
-        "job_name": "documentation-control-plane-exact-head"
-      },
-      "core-runtime-exact-head": {
-        "workflow_id": 345160803,
-        "workflow_path": ".github/workflows/core-ci.yml",
-        "job_name": "core-runtime-exact-head"
-      },
-      "canonical-full-suite-reliability (g++)": {
-        "workflow_id": 346064356,
-        "workflow_path": ".github/workflows/canonical-full-suite.yml",
-        "job_name": "canonical-full-suite-reliability (g++)"
-      },
-      "canonical-full-suite-reliability (clang++)": {
-        "workflow_id": 346064356,
-        "workflow_path": ".github/workflows/canonical-full-suite.yml",
-        "job_name": "canonical-full-suite-reliability (clang++)"
-      }
+  "contexts": [
+    {
+      "name": "documentation-control-plane-exact-head",
+      "state": "IMPLEMENTED",
+      "required": true,
+      "workflow": ".github/workflows/documentation-control-plane.yml",
+      "gate_contract": "docs/DOCUMENTATION-POLICY.md",
+      "description": "Pins exact head and validates exact Git-index integrity, shell syntax, maintained module documentation, capability truth, Git/build component ownership, source/Python safety contracts, deployment assets and the extensible gap issue inventory."
+    },
+    {
+      "name": "core-runtime-exact-head",
+      "state": "IMPLEMENTED",
+      "required": true,
+      "workflow": ".github/workflows/core-ci.yml",
+      "gate_contract": "docs/GAP-REGISTER.md",
+      "description": "Canonical full C++ build/CTest plus the disjoint core, install and isolated-process Python partitions, installed artifact preflight/rollback/restore and real systemd execution."
+    },
+    {
+      "name": "canonical-full-suite-reliability (g++)",
+      "state": "IMPLEMENTED",
+      "required": true,
+      "workflow": ".github/workflows/canonical-full-suite.yml",
+      "gate_contract": "docs/technical/runtime-engineering-map.md"
+    },
+    {
+      "name": "canonical-full-suite-reliability (clang++)",
+      "state": "IMPLEMENTED",
+      "required": true,
+      "workflow": ".github/workflows/canonical-full-suite.yml",
+      "gate_contract": "docs/technical/runtime-engineering-map.md"
+    },
+    {
+      "name": "ib-paper-qualification",
+      "state": "OWNER_DISPATCHED",
+      "required": false,
+      "workflow": ".github/workflows/ib-paper-qualification.yml",
+      "gate_contract": "docs/adr/0003-immutable-artifact-paper-qualification.md",
+      "qualification_authority": "dispatch_main_immutable_artifact",
+      "description": "Optional owner-dispatched exact-artifact PAPER evidence. Builds the dispatch-time main revision and qualifies that immutable artifact; later main movement is not a candidate change. Required only before activating the bounded IB PAPER runtime. It is not a general CI completion blocker."
     }
-  },
-  "external_qualification_contexts": [
-    "ib-paper-exact-artifact-qualification"
-  ],
-  "non_required_observation_contexts": [
-    "qualification-source-audit",
-    "ib-paper-candidate-artifact-build",
-    "X230 IB runner probe"
   ]
 }
