@@ -34,6 +34,17 @@ jobs:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Retain exact tracked source for reproducible diagnosis
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          source="dist/heptatrader-source-${EXPECTED_SHA}.tar.gz"
+          git archive --format=tar.gz --output="$source" "$EXPECTED_SHA"
+          sha256sum "$source" > "$source.sha256"
+          git cat-file commit "$EXPECTED_SHA" > "$source.git-commit"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -85,11 +96,11 @@ jobs:
           PYTHONWARNINGS: error::ResourceWarning
         run: python3 -m unittest discover -s tests/python -p 'test_*.py'
 
-      - name: Upload immutable main-branch core package evidence
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      - name: Retain exact source, package and diagnostics on success or failure
+        if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: heptatrader-core-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: heptatrader-core-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
