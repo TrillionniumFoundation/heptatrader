@@ -76,6 +76,10 @@ struct OmsJournalHealthSnapshot {
     std::size_t replayObservedBytes = 0;
     std::size_t replayValidatedRecords = 0;
     std::string replayReasonCode;
+    // Online written-ledger capacity; false is unknown, never an observed zero.
+    bool capacityKnown = false;
+    std::uint64_t currentBytes = 0;
+    std::uint64_t currentRecords = 0;
 };
 
 class OmsJournal {
@@ -120,6 +124,9 @@ private:
     std::size_t m_replayObservedBytes = 0;
     std::size_t m_replayValidatedRecords = 0;
     std::string m_replayReasonCode;
+    bool m_capacityKnown = false;
+    std::uint64_t m_capacityBytes = 0;
+    std::uint64_t m_capacityRecords = 0;
 
 
     std::vector<std::string> m_bufferedLines;

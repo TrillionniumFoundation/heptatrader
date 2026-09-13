@@ -31,10 +31,16 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Assert exact source identity
+      - name: Assert exact source identity and shell syntax
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          python3 scripts/verify_exact_git_index.py --root .
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
 
       - name: Install build-model validation dependencies
         run: |
@@ -60,6 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          python3 scripts/verify_exact_git_index.py --root .
           git diff --check
           git diff --exit-code -- .
           git diff --cached --exit-code -- .

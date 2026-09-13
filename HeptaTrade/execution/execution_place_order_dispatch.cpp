@@ -220,73 +220,19 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
         return RejectLocked(
             context, "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED",
             "broker send was not attempted", -1, dispatch.requestHash);
-    if (m_placeSendAttemptKeys.insert(dispatch.requestKey).second)
-    {
-        PlaceSendAttempt attempt;
-        attempt.requestKey = dispatch.requestKey;
-        attempt.account = context.account;
-        attempt.executionDomain = context.executionDomain;
-        attempt.tsMs = sendAttempt.tsMs;
-        m_placeSendAttempts.push_back(attempt);
-    }
+    m_placeSendAttempts.Record(dispatch.requestKey, context.account,
+        context.executionDomain, sendAttempt.tsMs);
     ExecutionCommandResult preVenueRejection;
     if (!PreVenuePlaceAllowedLocked(command, dispatch, preVenueRejection))
         return preVenueRejection;
-    std::string rejectReason;
-    long orderId = -1;
-    bool placed = false;
-    bool callbackThrew = false;
-    try
+    const VenueSubmissionResult submission =
+        m_submitPlace(command, dispatch.venueCorrelationId);
+    const long orderId = submission.orderId;
+    const std::string& rejectReason = submission.reason;
+    if (submission.status == VenueSubmissionStatus::Uncertain)
+        return UncertainPlaceOutcomeLocked(command, dispatch, orderId, rejectReason);
+    if (submission.status == VenueSubmissionStatus::Rejected)
     {
-        if (m_callbacks.placeIbOrderCommandCorrelated)
-            placed = m_callbacks.placeIbOrderCommandCorrelated(
-                command, dispatch.venueCorrelationId, &orderId);
-        else
-            placed = m_callbacks.placeIbOrderCorrelated ?
-                m_callbacks.placeIbOrderCorrelated(command.contract,
-                    command.order, dispatch.venueCorrelationId, &orderId) :
-                m_callbacks.placeIbOrder(command.contract, command.order,
-                    &orderId);
-    }
-    catch (const std::exception& error)
-    {
-        callbackThrew = true;
-        rejectReason = error.what();
-    }
-    catch (...)
-    {
-        callbackThrew = true;
-        rejectReason = "unknown IB place exception";
-    }
-    if (callbackThrew)
-        return UncertainPlaceOutcomeLocked(
-            command, dispatch, orderId, rejectReason.empty() ?
-                "IB place callback threw after dispatch" : rejectReason);
-    if (!placed)
-    {
-        bool reliableReject = false;
-        if (m_callbacks.lastIbRejectReason)
-        {
-            try
-            {
-                rejectReason = m_callbacks.lastIbRejectReason();
-                reliableReject = !rejectReason.empty();
-            }
-            catch (const std::exception& error)
-            {
-                rejectReason = error.what();
-            }
-            catch (...)
-            {
-                rejectReason =
-                    "IB place rejection reader threw";
-            }
-        }
-        if (!reliableReject)
-            return UncertainPlaceOutcomeLocked(
-                command, dispatch, orderId, rejectReason.empty() ?
-                    "adapter returned false without a reliable rejection reason" :
-                    rejectReason);
         static const std::set<std::string> exactRejectCodes = {
             "IB_PAPER_KILL_SWITCH_ENGAGED", "IB_POST_FILL_RISK_REFRESH_PENDING",
             "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN",
@@ -304,9 +250,5 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
             context, rejectCode, rejectReason, orderId,
             dispatch.requestHash);
     }
-    if (orderId < 0)
-        return UncertainPlaceOutcomeLocked(
-            command, dispatch, orderId,
-            "adapter accepted place without an order id");
     return CompletePlaceOrderLocked(command, dispatch, orderId);
 }

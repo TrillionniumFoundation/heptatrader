@@ -116,6 +116,40 @@ std::string PlaceRequestHash(const IbPlaceOrderCommand& command)
     return Sha256(canonical);
 }
 
+std::function<VenueSubmissionResult(const IbPlaceOrderCommand&, const std::string&)>
+NormalizePlaceSubmission(const ExecutionCoordinatorCallbacks& callbacks)
+{
+    // Retain source compatibility and the historical precedence, but choose
+    // once at startup. Full-command PAPER bindings must not be narrowed.
+    std::function<bool(const IbPlaceOrderCommand&, const std::string&, long*)> send;
+    if (callbacks.placeIbOrderCommandCorrelated)
+        send = callbacks.placeIbOrderCommandCorrelated;
+    else if (callbacks.placeIbOrderCorrelated)
+    {
+        const auto correlated = callbacks.placeIbOrderCorrelated;
+        send = [correlated](const IbPlaceOrderCommand& command,
+                            const std::string& correlation, long* id) {
+            return correlated(command.contract, command.order, correlation, id);
+        };
+    }
+    else if (callbacks.placeIbOrder)
+    {
+        const auto simple = callbacks.placeIbOrder;
+        send = [simple](const IbPlaceOrderCommand& command,
+                        const std::string&, long* id) {
+            return simple(command.contract, command.order, id);
+        };
+    }
+    if (!send) return {};
+    const auto rejection = callbacks.lastIbRejectReason;
+    return [send, rejection](const IbPlaceOrderCommand& command,
+                              const std::string& correlation) {
+        return ObserveVenueSubmission([&](long* id) {
+            return send(command, correlation, id);
+        }, rejection);
+    };
+}
+
 } // namespace
 
 std::string CancelRequestHash(const IbCancelOrderCommand& command)
@@ -131,7 +165,8 @@ std::string CancelRequestHash(const IbCancelOrderCommand& command)
 
 ExecutionCoordinator::ExecutionCoordinator(OmsJournal& journal,
                                            const ExecutionCoordinatorCallbacks& callbacks)
-    : m_journal(journal), m_callbacks(callbacks)
+    : m_journal(journal), m_callbacks(callbacks),
+      m_submitPlace(NormalizePlaceSubmission(callbacks))
 {
 }
 
@@ -393,7 +428,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
             -1, requestHash);
     if (m_mutationBlocked)
         return RejectLocked(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1, requestHash);
-    if (!m_callbacks.placeIbOrder && !m_callbacks.placeIbOrderCorrelated && !m_callbacks.placeIbOrderCommandCorrelated)
+    if (!m_submitPlace)
         return RejectLocked(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
                             -1, requestHash);
     if (command.expiresAtMs > 0 && OmsJournal::NowEpochMs() > command.expiresAtMs)
@@ -484,14 +519,7 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
     std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    out.clear();
-    for (std::vector<PlaceSendAttempt>::const_iterator it =
-             m_placeSendAttempts.begin(); it != m_placeSendAttempts.end(); ++it)
-    {
-        if (it->account == account && it->executionDomain == executionDomain &&
-            it->tsMs > cutoffMs)
-            out.push_back(it->tsMs);
-    }
+    m_placeSendAttempts.Query(account, executionDomain, cutoffMs, out);
 }
 
 void ExecutionCoordinator::ResetRecoveryProjectionLocked()
@@ -500,8 +528,7 @@ void ExecutionCoordinator::ResetRecoveryProjectionLocked()
     m_orderOwners.clear();
     m_fencedSessionOwners.clear();
     m_recoveryOnlySessionOwners.clear();
-    m_placeSendAttempts.clear();
-    m_placeSendAttemptKeys.clear();
+    m_placeSendAttempts.Clear();
     m_mutationBlocked = false;
     m_mutationBlockReason.clear();
     m_paperTerminalFencePresent = false;
@@ -586,13 +613,9 @@ void ExecutionCoordinator::TrackRecoveredSendAttemptLocked(
         event.eventType == "place_sent" ||
         event.eventType == "flatten_send_attempt" ||
         event.eventType == "flatten_sent";
-    if (!sendAttempt || !m_placeSendAttemptKeys.insert(requestKey).second) return;
-    PlaceSendAttempt attempt;
-    attempt.requestKey = requestKey;
-    attempt.account = event.account;
-    attempt.executionDomain = event.executionDomain;
-    attempt.tsMs = event.tsMs;
-    m_placeSendAttempts.push_back(attempt);
+    if (sendAttempt)
+        m_placeSendAttempts.Record(requestKey, event.account,
+            event.executionDomain, event.tsMs);
 }
 
 bool ExecutionCoordinator::HydrateRecoveredRecordLocked(
@@ -691,6 +714,7 @@ bool ExecutionCoordinator::ApplyRecoveredCommandStateLocked(
         if (record.operation.empty()) record.operation = "place";
         record.status = event.status == "accepted" ?
             ExecutionCommandStatus::Accepted : ExecutionCommandStatus::Rejected;
+        record.orderId = event.orderId;
         record.reasonCode = event.riskCode;
         record.detail = event.reason;
         if (record.status == ExecutionCommandStatus::Accepted && event.orderId >= 0)

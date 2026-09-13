@@ -45,6 +45,28 @@ int main() {
         xt.OnXtConnected();
         Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
                 "manual callback must not enable a missing transport");
+        xt.OnXtAccountStatus("connected");
+        xt.OnXtAsset(1000000.0, 1000000.0);
+        xt.OnXtPosition("600000.SH", 100.0);
+        xt.OnXtOrderStatus(1, "Filled", "not Broker evidence");
+        xt.OnXtTrade(1, "600000.SH", "BUY", 100.0, 10.0);
+        xt.OnXtOrderError(1, "error", "detail");
+        xt.OnXtCancelError(1, "error", "detail");
+        xt.OnXtAsyncOrderResponse(1, true, "not an acknowledgement");
+        xt.OnXtAsyncCancelResponse(1, true, "not an acknowledgement");
+        XTEvent event;
+        while (xt.TryDequeueEvent(event))
+            Require(event.type == XTEventType::Error, "callbacks cannot create economic evidence");
+        for (int i = 0; i < 10000; ++i) xt.Connect();
+        int diagnostics = 0;
+        while (xt.TryDequeueEvent(event))
+        {
+            ++diagnostics;
+            Require(event.type == XTEventType::Error, "unsupported events are errors only");
+        }
+        Require(diagnostics > 0 && diagnostics <= 64, "unsupported diagnostic queue must be bounded");
+        xt.OnXtDisconnected();
+        Require(!xt.PollOnce(0), "scaffold never becomes a transport");
         Require(!xt.CancelOrder(1), "XT scaffold must reject cancellation");
         Require(!xt.ReqAccountSummary() && !xt.ReqPositions() &&
                     !xt.ReqMktData("600000.SH"),

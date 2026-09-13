@@ -30,6 +30,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: Verify trusted manual main invocation
+        id: check-dispatch
         shell: bash
         env:
           PROBE_REASON: ${{ inputs.reason }}
@@ -46,6 +47,7 @@ jobs:
             "$PROBE_REASON"
 
       - name: Verify broker isolation and root-owned PAPER host health
+        id: check-isolation
         shell: bash
         env:
           HOST_PROBE_SHA256: ${{ vars.HEPTA_IB_PAPER_HOST_PROBE_SHA256 }}
@@ -59,9 +61,15 @@ jobs:
           test "$(stat -c '%U:%G:%a:%h' "$probe")" = root:root:555:1
           test "$(sha256sum "$probe" | awk '{print $1}')" = "$HOST_PROBE_SHA256"
           if command -v nc >/dev/null 2>&1; then
-            ! nc -z -w 3 127.0.0.1 4002
+            if nc -z -w 3 127.0.0.1 4002; then
+              echo "runner can reach protected Broker port" >&2
+              exit 1
+            fi
           else
-            ! timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'
+            if timeout 3 bash -c '</dev/tcp/127.0.0.1/4002'; then
+              echo "runner can reach protected Broker port" >&2
+              exit 1
+            fi
           fi
           # This digest is the reviewed
           # systemd/hepta-x230-paper-host-identity-map-v1.json. The root probe
