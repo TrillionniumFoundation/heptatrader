@@ -14,18 +14,22 @@ jobs:
           ref: ce3acda95edb02d93d43c26985bdc7549197e75b
           fetch-depth: 1
           persist-credentials: false
-      - name: Export exact public source and Git object history
+      - name: Export pinned public integration inputs without running product code
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = ce3acda95edb02d93d43c26985bdc7549197e75b
-          mkdir -p /tmp/hepta-source-export
-          git archive --format=tar HEAD | gzip -n > /tmp/hepta-source-export/source.tar.gz
-          git ls-files --stage > /tmp/hepta-source-export/index.txt
-          git cat-file commit HEAD > /tmp/hepta-source-export/commit.txt
-          sha256sum /tmp/hepta-source-export/source.tar.gz
+          for sha in ce3acda95edb02d93d43c26985bdc7549197e75b 010d83cfc709d174017f9e582b46cf844305cbc5; do
+            git fetch --no-tags --depth=1 origin "$sha"
+            test "$(git rev-parse FETCH_HEAD)" = "$sha"
+            destination="/tmp/hepta-source-export/$sha"
+            mkdir -p "$destination"
+            git archive --format=tar "$sha" | gzip -n > "$destination/source.tar.gz"
+            git ls-tree -r "$sha" > "$destination/tree.txt"
+            git cat-file commit "$sha" > "$destination/commit.txt"
+            sha256sum "$destination/source.tar.gz"
+          done
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: heptatrader-audit-source-ce3acda9
+          name: heptatrader-integration-inputs-ce3acda9-010d83cf
           path: /tmp/hepta-source-export/
           retention-days: 1
           if-no-files-found: error
