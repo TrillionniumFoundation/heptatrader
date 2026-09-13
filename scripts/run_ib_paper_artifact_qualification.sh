@@ -10,6 +10,7 @@ usage() {
 
 ARTIFACT_INPUT="$1"
 EXPECTED_SHA="$2"
+[[ ! -L "$3" ]] || { echo "evidence destination must not be a symlink" >&2; exit 73; }
 EVIDENCE_DIR="$(realpath -m -- "$3")"
 QUALIFIER_INPUT="${HEPTA_IB_PAPER_QUALIFIER:-}"
 EXPECTED_QUALIFIER_SHA="${HEPTA_IB_PAPER_QUALIFIER_SHA256:-}"
@@ -73,16 +74,74 @@ PY
 PARENT="$(dirname -- "$EVIDENCE_DIR")"
 mkdir -p -- "$PARENT"
 PARENT="$(realpath -e -- "$PARENT")"
-WORK_DIR="$(mktemp -d --tmpdir="$PARENT" .hepta-ib-paper-campaign.XXXXXX)"
-chmod 0700 "$WORK_DIR"
-cleanup() { [[ -n "${WORK_DIR:-}" && -d "$WORK_DIR" ]] && rm -rf -- "$WORK_DIR"; }
-trap cleanup EXIT INT TERM HUP
-
+# Reserve the final evidence namespace before any possible Broker side effect.
+# A failed, interrupted, or killed campaign is never automatically re-executed
+# under this identity. The directory remains available even after SIGKILL.
+mkdir -m 0700 -- "$EVIDENCE_DIR" || exit 73
+WORK_DIR="$EVIDENCE_DIR"
+HARNESS_HOME=""
+HARNESS_PID=""
+CAMPAIGN_STATE=INCOMPLETE
+QUALIFICATION_TIMEOUT_SECONDS=900
 RESULT_PATH="$WORK_DIR/qualification-result.json"
 REQUIRED_SCENARIOS="connect_authoritative_snapshot,disconnect_reconnect,partial_fill,duplicate_out_of_order_status,broker_reject,stale_quote,outcome_uncertain,cancel_race,reconcile_divergence,lease_fencing,kill_switch,terminal_recovery"
-QUALIFICATION_TIMEOUT_SECONDS=900
-HARNESS_HOME="$WORK_DIR/harness-home"
-mkdir -m 0700 "$HARNESS_HOME"
+
+write_campaign_record() {
+  python3 - "$WORK_DIR" "$1" "$2" "$3" "$EXPECTED_SHA" "$BINARY_SHA256" "$QUALIFIER_SHA256" <<'RECORD'
+import json, os, sys, time
+root, name, state, code, source, binary, harness = sys.argv[1:]
+value = {
+    "schema": "heptatrader.paper-campaign-attempt.v1",
+    "state": state, "exit_code": int(code), "recorded_at_unix": int(time.time()),
+    "candidate_sha": source, "binary_sha256": binary, "harness_sha256": harness,
+    "authorization_effect": "NONE", "paper_authorized": False, "live_authorized": False,
+}
+# Exclusive creation prevents the harness from replacing a wrapper-owned receipt.
+dirfd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+try:
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=dirfd)
+    with os.fdopen(fd, "w", encoding="utf-8") as output:
+        json.dump(value, output, sort_keys=True)
+        output.write("\n")
+        output.flush()
+        os.fsync(output.fileno())
+    os.fsync(dirfd)
+finally:
+    os.close(dirfd)
+RECORD
+}
+
+finish_campaign() {
+  local status="$1"
+  trap - EXIT INT TERM HUP
+  if [[ "$status" == 0 && "$CAMPAIGN_STATE" != COMPLETED ]]; then status=70; fi
+  if ! write_campaign_record campaign-status.json "$CAMPAIGN_STATE" "$status"; then
+    echo "campaign status could not be committed; retained evidence: $WORK_DIR" >&2
+    [[ "$status" != 0 ]] || status=74
+  fi
+  # Credential/private HOME scratch is deliberately outside the uploaded tree.
+  # Never delete WORK_DIR: it may be the only record of a possible send.
+  if [[ -n "$HARNESS_HOME" ]]; then rm -rf -- "$HARNESS_HOME" || status=74; fi
+  printf 'PAPER campaign %s; retained evidence: %s\n' "$CAMPAIGN_STATE" "$WORK_DIR" >&2
+  exit "$status"
+}
+
+interrupt_campaign() {
+  local status="$1"
+  trap '' INT TERM HUP
+  if [[ -n "$HARNESS_PID" ]]; then
+    kill -TERM "$HARNESS_PID" 2>/dev/null || true
+    wait "$HARNESS_PID" 2>/dev/null || true
+  fi
+  exit "$status"
+}
+trap 'finish_campaign "$?"' EXIT
+trap 'interrupt_campaign 130' INT
+trap 'interrupt_campaign 143' TERM
+trap 'interrupt_campaign 129' HUP
+write_campaign_record campaign-start.json RUNNING 0
+HARNESS_HOME="$(mktemp -d --tmpdir="$PARENT" .hepta-ib-harness-home.XXXXXX)"
+chmod 0700 "$HARNESS_HOME"
 
 # Only the independently pinned external harness may launch the candidate.
 # It starts from an empty environment. Raw Actions, runner, GitHub and Broker
@@ -93,7 +152,7 @@ command -v timeout >/dev/null 2>&1 || {
   echo "GNU timeout is required for bounded PAPER qualification" >&2
   exit 78
 }
-if timeout --foreground --signal=TERM --kill-after=30s "${QUALIFICATION_TIMEOUT_SECONDS}s" env -i \
+timeout --foreground --signal=TERM --kill-after=30s "${QUALIFICATION_TIMEOUT_SECONDS}s" env -i \
   PATH=/usr/bin:/bin \
   HOME="$HARNESS_HOME" \
   LC_ALL=C \
@@ -115,11 +174,13 @@ if timeout --foreground --signal=TERM --kill-after=30s "${QUALIFICATION_TIMEOUT_
   --credential-delivery harness-only \
   --evidence-dir "$WORK_DIR" \
   --result "$RESULT_PATH" \
-  --mode bounded-mutations
-then
-  :
+  --mode bounded-mutations &
+HARNESS_PID=$!
+if wait "$HARNESS_PID"; then
+  HARNESS_PID=""
 else
   STATUS=$?
+  HARNESS_PID=""
   if [[ "$STATUS" == "124" || "$STATUS" == "137" ]]; then
     echo "external PAPER harness exceeded ${QUALIFICATION_TIMEOUT_SECONDS}s timeout" >&2
     exit 124
@@ -132,9 +193,5 @@ fi
   echo "external PAPER harness did not produce qualification-result.json" >&2
   exit 70
 }
-rmdir "$HARNESS_HOME" 2>/dev/null || true
-chmod 0700 "$WORK_DIR"
-mv -T -- "$WORK_DIR" "$EVIDENCE_DIR"
-WORK_DIR=""
-trap - EXIT INT TERM HUP
-printf 'IB PAPER broker campaign evidence committed for post-campaign admission: %s\n' "$EVIDENCE_DIR"
+CAMPAIGN_STATE=COMPLETED
+printf 'IB PAPER campaign evidence retained for separate verification: %s\n' "$EVIDENCE_DIR"
