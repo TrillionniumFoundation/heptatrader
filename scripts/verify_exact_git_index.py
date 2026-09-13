@@ -26,6 +26,7 @@ CRITICAL_PATHS = (
     "scripts/build_ib_candidate_artifact.sh",
     "scripts/check_qualification_trust_boundary.py",
     "scripts/run_ib_paper_artifact_qualification.sh",
+    "scripts/run_ib_paper_campaign.py",
     "scripts/verify_exact_git_index.py",
     "scripts/verify_ib_candidate_artifact.py",
     "scripts/verify_ib_paper_qualification.py",

@@ -438,6 +438,66 @@ void AwaitStatus(ExecutionServiceRuntimeComposition& runtime,
     assert(false && "production simulator pump did not deliver status");
 }
 
+// Expiry is measured in the injected venue clock, independently of whether
+// an instrumented CI worker happens to be scheduled within 100 ms.
+void TestExactQuoteExpiryWithoutSchedulerAssumptions()
+{
+    std::uint64_t now = 10000;
+    DeterministicExecutionVenue venue([&]() { return now; });
+    auto risk = Risk();
+    risk.maxSnapshotAgeMs = 100;
+    venue.SetRiskConfig(risk);
+    venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    const auto contract = Contract();
+    const auto order = Order();
+    assert(venue.PreviewRisk(contract, order).allow);
+    now = 10100; // Inclusive freshness boundary.
+    assert(venue.GetQuoteSnapshot("EUR.USD", now).IsFresh(now));
+    assert(venue.PreviewRisk(contract, order).allow);
+    now = 10101;
+    assert(!venue.GetQuoteSnapshot("EUR.USD", now).IsFresh(now));
+    const auto expired = venue.PreviewRisk(contract, order);
+    assert(!expired.allow && expired.reasonCode == "SIM_QUOTE_STALE");
+    long rejectedId = -1;
+    assert(!venue.PlaceOrder(contract, order, &rejectedId));
+    assert(venue.LastRejectReason() == expired.reasonCode);
+    assert(rejectedId == -1 && venue.ActiveOrderIds().empty());
+    assert(venue.Position("EUR.USD") == 0.0);
+
+    // A past preview cannot authorize a later send. No clock manipulation
+    // reaches the production daemon or configuration.
+    venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    assert(venue.PreviewRisk(contract, order).allow);
+    now += 101;
+    assert(!venue.PlaceOrder(contract, order, &rejectedId));
+    assert(rejectedId == -1 && venue.ActiveOrderIds().empty());
+    venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    long id = -1;
+    assert(venue.PlaceOrder(contract, order, &id));
+    now += 101;
+    venue.Process(); // Expired quotes cannot economically fill an order.
+    assert(venue.Position("EUR.USD") == 0.0);
+    assert(venue.ExecutionOrderIds().empty());
+    venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    venue.Process();
+    assert(venue.Position("EUR.USD") == 100.0);
+    assert(venue.ExecutionOrderIds() == std::set<long>({id}));
+}
+
+void AwaitNewQuoteObservation(ExecutionServiceRuntimeComposition& runtime,
+                             std::uint64_t after)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        const auto now = static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
+        const auto quote = runtime.Venue().GetQuoteSnapshot("EUR.USD", now);
+        if (quote.observedAtMs > after && quote.IsFresh(now)) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    assert(false && "production quote feed did not advance its observation");
+}
+
 void TestProductionRuntimePumpsAndJournalsEvents()
 {
     // The production server deliberately rejects a root Gateway identity.
@@ -467,7 +527,8 @@ void TestProductionRuntimePumpsAndJournalsEvents()
     config.stateDirectory = path;
     config.journalPath = path + "/oms-journal.jsonl";
     config.fenceCredentialPath = credential;
-    config.simulatorQuoteTtlMs = 100;
+    // Keep the unchanged production TTL. The injected-clock test above owns
+    // expiry; this IPC test owns real pumping, journal/replay and refresh.
     config.simulatorQuoteRefreshIntervalMs = 20;
     long filledId = -1;
     long cancelledId = -1;
@@ -493,8 +554,14 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         std::uint64_t cursor = 0;
         AwaitStatus(runtime, cursor, filledId, "Filled");
         assert(runtime.Venue().Position("EUR.USD") == 100.0);
-        // Quote refresh remains live after multiple original quote TTLs.
-        std::this_thread::sleep_for(std::chrono::milliseconds(220));
+        // Observe two actual refreshes rather than assuming a sleep scheduled
+        // the publisher. These bounded waits repeat reads only, not mutations.
+        const auto observation = runtime.Venue().GetQuoteSnapshot("EUR.USD",
+            static_cast<std::uint64_t>(OmsJournal::NowEpochMs())).observedAtMs;
+        AwaitNewQuoteObservation(runtime, observation);
+        const auto nextObservation = runtime.Venue().GetQuoteSnapshot("EUR.USD",
+            static_cast<std::uint64_t>(OmsJournal::NowEpochMs())).observedAtMs;
+        AwaitNewQuoteObservation(runtime, nextObservation);
         command.context.toolCallId = "preview-resting";
         command.order.orderType = "LMT";
         command.order.lmtPrice = 1.0;
@@ -593,6 +660,7 @@ int main()
     TestFlattenCancellationAndStrictRemainder();
     TestFlattenPolicyTransitionsAndFillBoundary();
     TestPreviewAndFinalAdmissionRejectSameRisk();
+    TestExactQuoteExpiryWithoutSchedulerAssumptions();
     TestProductionRuntimePumpsAndJournalsEvents();
     std::cout << "simulator risk, reservation, activation and production runtime tests passed\n";
     return 0;

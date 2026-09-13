@@ -89,3 +89,10 @@ specifies refresh coalescing, owner terminalization and decision lease roles.
 [`Execution events`](../technical/execution-events.md) owns the stream cursor and
 backpressure contract. The legacy CSV reporter under `HeptaTrade/reconcile/`
 is not a canonical recovery entry point.
+
+## Wire fields and versioned examples
+
+[`wire-operation-contracts.md`](../technical/wire-operation-contracts.md)
+specifies HEX1 v10's exact per-operation field sets, value representations,
+identity requirements and failure actions. Its in-memory golden vectors use
+real C++ codecs, not a documentation keyword check.

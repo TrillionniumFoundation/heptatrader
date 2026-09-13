@@ -37,6 +37,7 @@ TRUSTED_BUILDER_FILES = (
     "scripts/build_ib_candidate_artifact.sh",
     "scripts/verify_ib_candidate_artifact.py",
     "scripts/run_ib_paper_artifact_qualification.sh",
+    "scripts/run_ib_paper_campaign.py",
     "scripts/verify_ib_paper_qualification.py",
     "docs/ib-paper-profile-policy-v1.json",
     ".github/workflows/ib-paper-qualification.yml",

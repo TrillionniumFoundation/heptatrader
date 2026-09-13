@@ -52,12 +52,23 @@ GitHub-side review, Ruleset, Merge Queue, environment, and runner controls remai
 
 ## CI responsibility and limits
 
-Core Runtime CI owns full Python regression discovery once, native behavior,
-installation and installed simulator lifecycle. The documentation lane runs
-structural, ownership and configuration checks without repeating Python subsets.
-GCC and Clang sanitizers remain real independent native executions. Existing
-required context names are unchanged; service-side protection settings are not
-modified by this source cleanup.
+Python ownership is defined once by `scripts/run_python_tests.py`: core,
+source, install and isolated process are disjoint and exhaustive partitions.
+Core Runtime CI executes core/install/process plus native and real systemd
+acceptance; Documentation Control Plane executes source plus structural checks.
+Qualification Source Audit retains syntax/exact-index observation only; it does
+not repeat those unittest files. GCC and Clang sanitizers remain independent
+native executions, not duplicate Python discovery.
+
+The optional PAPER workflow is parsed as YAML by
+`scripts/check_qualification_trust_boundary.py` (development dependency:
+`python3-yaml`). It checks supported execution phases, exact bindings, protected
+runner/environment custody and publication paths. Human step names and harmless
+condition ordering are not contracts. It deliberately accepts only a restricted
+direct-command shell form, not arbitrary Bash. Subprocess tests execute the
+actual workflow command blocks using inert stubs and require nonzero failure to
+propagate. This is source-side engineering evidence, not proof of a live Broker
+campaign or of every possible GitHub Actions expression.
 
 The former static source-token closure verifier has been removed. Behavioral
 correctness belongs to executed tests, not required private function names,

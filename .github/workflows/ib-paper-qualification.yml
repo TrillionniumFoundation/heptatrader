@@ -31,11 +31,13 @@ jobs:
     timeout-minutes: 100
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      CANDIDATE_ARCHIVE: ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar
       HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
       HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
       - name: Bind dispatch authority to immutable owner identity
+        id: bind-owner
         env:
           DISPATCH_ACTOR: ${{ github.actor }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
@@ -45,14 +47,6 @@ jobs:
           test "$DISPATCH_ACTOR" = 'ProfHepta'
           test "$DISPATCH_ACTOR_ID" = '102159240'
           test "$TRIGGERING_ACTOR" = 'ProfHepta'
-
-      - name: Require exact dispatch-main candidate identity
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-        run: |
-          set -euo pipefail
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
 
       - name: Checkout trusted dispatch-main builder
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -76,27 +70,25 @@ jobs:
           submodules: false
 
       - name: Verify exact clean trusted and candidate trees before build
+        id: verify-source-before-build
         run: |
           set -euo pipefail
           python3 trusted/scripts/verify_exact_git_index.py --root trusted
           python3 trusted/scripts/verify_exact_git_index.py --root candidate
 
       - name: Build content-addressed binary
-        run: |
-          set -euo pipefail
-          test "$(git -C trusted rev-parse HEAD)" = "$GITHUB_SHA"
-          test "$(git -C candidate rev-parse HEAD)" = "$GITHUB_SHA"
-          artifact="$RUNNER_TEMP/ib-paper-candidate-$GITHUB_SHA.tar"
-          trusted/scripts/build_ib_candidate_artifact.sh candidate "$GITHUB_SHA" "$artifact"
-          test -s "$artifact"
+        id: build-artifact
+        run: trusted/scripts/build_ib_candidate_artifact.sh candidate "$GITHUB_SHA" "$CANDIDATE_ARCHIVE"
 
       - name: Reverify immutable checkouts after build
+        id: verify-source-after-build
         run: |
           set -euo pipefail
           python3 trusted/scripts/verify_exact_git_index.py --root trusted
           python3 trusted/scripts/verify_exact_git_index.py --root candidate
 
       - name: Upload immutable no-secret candidate artifact
+        id: upload-candidate
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -121,9 +113,13 @@ jobs:
     timeout-minutes: 90
     env:
       PYTHONDONTWRITEBYTECODE: '1'
+      ARTIFACT_DIR: ${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+      EVIDENCE_DIR: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+      CANDIDATE_ARCHIVE: ${{ runner.temp }}/candidate-download/ib-paper-candidate-${{ github.sha }}.tar
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
       - name: Bind dispatch authority to immutable owner identity
+        id: bind-owner
         env:
           DISPATCH_ACTOR: ${{ github.actor }}
           DISPATCH_ACTOR_ID: ${{ github.actor_id }}
@@ -145,76 +141,73 @@ jobs:
           clean: true
 
       - name: Verify exact clean trusted harness before Broker campaign
+        id: verify-source-before-campaign
         run: |
           set -euo pipefail
           python3 trusted/scripts/verify_exact_git_index.py --root trusted
 
       - name: Download immutable candidate artifact
+        id: download-candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/candidate-download
 
       - name: Verify and extract candidate as hostile data
-        run: |
-          set -euo pipefail
-          archive="$RUNNER_TEMP/candidate-download/ib-paper-candidate-$GITHUB_SHA.tar"
-          destination="$RUNNER_TEMP/verified-ib-candidate-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          python3 trusted/scripts/verify_ib_candidate_artifact.py verify \
-            --archive "$archive" \
-            --expected-candidate-sha "$GITHUB_SHA" \
-            --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE" \
-            --trusted-root trusted \
-            --destination "$destination"
-          printf '%s\n' "$destination" > "$RUNNER_TEMP/verified-ib-candidate-dir"
+        id: verify-artifact
+        run: >-
+          python3 trusted/scripts/verify_ib_candidate_artifact.py verify
+          --archive "$CANDIDATE_ARCHIVE"
+          --expected-candidate-sha "$GITHUB_SHA"
+          --expected-builder-image "$HEPTA_IB_BUILDER_IMAGE"
+          --trusted-root trusted
+          --destination "$ARTIFACT_DIR"
 
       - name: Run controlled PAPER campaign through trusted external harness
+        id: run-campaign
         env:
           HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
           HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
           HEPTA_QUALIFICATION_MUTATIONS: '1'
-        run: |
-          set -euo pipefail
-          artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
-          evidence="$RUNNER_TEMP/heptatrader-ib-evidence-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          trusted/scripts/run_ib_paper_artifact_qualification.sh \
-            "$artifact_dir" "$GITHUB_SHA" "$evidence"
-          printf '%s\n' "$evidence" > "$RUNNER_TEMP/heptatrader-ib-evidence-dir"
+        run: trusted/scripts/run_ib_paper_artifact_qualification.sh "$ARTIFACT_DIR" "$GITHUB_SHA" "$EVIDENCE_DIR"
 
       - name: Reverify immutable trusted harness after Broker campaign
+        id: verify-source-after-campaign
         run: |
           set -euo pipefail
           python3 trusted/scripts/verify_exact_git_index.py --root trusted
 
       - name: Issue final exact-artifact Broker receipt
+        id: verify-qualification
         env:
           HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
-        run: |
-          set -euo pipefail
-          artifact_dir="$(cat "$RUNNER_TEMP/verified-ib-candidate-dir")"
-          evidence="$(cat "$RUNNER_TEMP/heptatrader-ib-evidence-dir")"
-          python3 trusted/scripts/verify_ib_paper_qualification.py \
-            --result "$evidence/qualification-result.json" \
-            --evidence-root "$evidence" \
-            --expected-git-sha "$GITHUB_SHA" \
-            --expected-binary "$artifact_dir/hepta-ib-executiond" \
-            --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" \
-            --receipt "$evidence/qualification-verification.json"
+        run: >-
+          python3 trusted/scripts/verify_ib_paper_qualification.py
+          --result "$EVIDENCE_DIR/evidence/qualification-result.json"
+          --evidence-root "$EVIDENCE_DIR/evidence"
+          --expected-git-sha "$GITHUB_SHA"
+          --expected-binary "$ARTIFACT_DIR/hepta-ib-executiond"
+          --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
+          --receipt "$EVIDENCE_DIR/evidence/qualification-verification.json"
+          --attempt "$EVIDENCE_DIR/attempt.json"
+          --publication-archive "$EVIDENCE_DIR/verified-evidence.tar"
 
       - name: Attest final exact-artifact PAPER receipt
         id: attest-ib-paper-receipt
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
         with:
-          subject-path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/qualification-verification.json
+          subject-path: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/evidence/qualification-verification.json
           show-summary: false
 
       - name: Upload immutable qualification evidence
+        id: publish-evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: ib-paper-qualification-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/
+            ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/attempt.json
+            ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}/verified-evidence.tar
             ${{ steps.attest-ib-paper-receipt.outputs.bundle-path }}
           if-no-files-found: error
           retention-days: 30

@@ -122,3 +122,12 @@ The repository does not supply the IB SDK, external harness, PAPER credentials, 
 ## Gap-register relationship
 
 IB PAPER is optional and disabled by default. Its real Broker campaign is an activation prerequisite, not an unresolved supported-scope source gap. Closing repository gaps never asserts that the campaign happened. Until a valid current receipt exists for the selected artifact/profile/environment tuple, `paper_authorized=false`; `live_authorized=false` remains invariant.
+
+## Campaign evidence implementation
+
+The attempt controller, separated private HOME, failure retention and verified
+publication contract are specified in
+[`ib-paper-harness-contract.md`](../technical/ib-paper-harness-contract.md).
+The stable shell entry delegates to `scripts/run_ib_paper_campaign.py`;
+publication remains part of the existing result verifier. Source-only
+subprocess regressions do not make an IB account qualified or authorized.

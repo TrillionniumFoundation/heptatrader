@@ -38,12 +38,6 @@ jobs:
           python3 scripts/verify_exact_git_index.py --root .
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
-          python3 scripts/check_qualification_trust_boundary.py --self-test
-          python3 -m unittest discover -s tests/python -p 'test_qualification_trust_boundary.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_workflow_interfaces.py'
-          python3 -m unittest discover -s tests/python -p 'test_ib_paper_qualification.py'
-          python3 -m unittest discover -s tests/python -p 'test_gap_register.py'
-          python3 -m unittest discover -s tests/python -p 'test_git_index_authority.py'
 
       - name: Reassert immutable event subject
         if: always()

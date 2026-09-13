@@ -65,7 +65,9 @@ Record the fixture identity, deterministic seed/configuration, command ID, venue
 
 The end-to-end suite verifies tool discovery, preview, place, duplicate replay, status, cancel, events, snapshots, owner fencing, and fault recovery. New Execution states must first be made reproducible in the simulator before broker qualification.
 
-The risk/runtime suite verifies concurrent monetary and flatten-quantity admission, long and short partial exits, strict fractional remainders, pending cancellation, policy transitions, fill-time rejection without execution evidence, preview/final parity, unsupported units, stale evidence, activation ordering and reentrant event sinks. It also starts the actual runtime composition, places and cancels through authenticated local IPC, observes automatically pumped events after quote TTL rollover, and replays terminal owner records. The production IPC portion requires a non-root Gateway identity, matching the daemon policy.
+The risk/runtime suite verifies concurrent monetary and flatten-quantity admission, long and short partial exits, strict fractional remainders, pending cancellation, policy transitions, fill-time rejection without execution evidence, preview/final parity, unsupported units, stale evidence, activation ordering and reentrant event sinks. It also starts the actual runtime composition, places and cancels through authenticated local IPC, observes automatically pumped events and two actual quote refreshes, and replays terminal owner records. The production IPC portion requires a non-root Gateway identity, matching the daemon policy.
+
+The exact quote-expiry boundary is tested with an injected venue clock, not a 100 ms wall-clock scheduling assumption. Bounded real-process load, resource measurements and offline lease/journal restore are covered by the [runtime acceptance reference](../technical/bounded-runtime-acceptance.md).
 
 ## Known limitations
 

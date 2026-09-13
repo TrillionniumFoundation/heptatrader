@@ -69,6 +69,13 @@ struct OmsJournalHealthSnapshot {
     long long maxQueueDepth = 0;
     long long lastFlushMs = 0;
     bool writePoisoned = false;
+    // Capacity is a recovery admission budget, never permission to truncate.
+    std::size_t replayMaxBytes = 0;
+    std::size_t replayMaxRecords = 0;
+    std::size_t replayMaxRecordBytes = 0;
+    std::size_t replayObservedBytes = 0;
+    std::size_t replayValidatedRecords = 0;
+    std::string replayReasonCode;
 };
 
 class OmsJournal {
@@ -107,6 +114,13 @@ private:
     int m_fd = -1;
     bool m_writePoisoned = false;
     mutable std::mutex m_mtx;
+    std::size_t m_replayMaxBytes = 64U * 1024U * 1024U;
+    std::size_t m_replayMaxRecords = 65536U;
+    std::size_t m_replayMaxRecordBytes = 256U * 1024U;
+    std::size_t m_replayObservedBytes = 0;
+    std::size_t m_replayValidatedRecords = 0;
+    std::string m_replayReasonCode;
+
 
     std::vector<std::string> m_bufferedLines;
     std::deque<std::string> m_asyncQueue;

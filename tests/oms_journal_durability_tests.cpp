@@ -264,10 +264,190 @@ void TestUnsafePermissionsLinksAndTornFilesFailClosed()
     REQUIRE(::unlink(publicPath.c_str()) == 0);
     REQUIRE(::rmdir(directory.c_str()) == 0);
 }
+
+void ClearReplayBudgets()
+{
+    ::unsetenv("HEPTA_OMS_REPLAY_MAX_BYTES");
+    ::unsetenv("HEPTA_OMS_REPLAY_MAX_RECORDS");
+    ::unsetenv("HEPTA_OMS_REPLAY_MAX_RECORD_BYTES");
+}
+
+void TestReplayLimitsAreInclusiveAndCallbackAtomic()
+{
+    ClearReplayBudgets();
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/bounded.jsonl";
+    const std::string record = "{\"schema_version\":4,\"event\":\"place_send_attempt\","
+        "\"ts_ms\":1,\"req_id\":\"stable-identity\"}";
+    const std::string bytes = record + "\n" + record + "\n";
+    WritePrivateFile(path, bytes);
+    const std::string byteBudget = std::to_string(bytes.size());
+    const std::string recordBudget = std::to_string(record.size());
+    ::setenv("HEPTA_OMS_REPLAY_MAX_BYTES", byteBudget.c_str(), 1);
+    ::setenv("HEPTA_OMS_REPLAY_MAX_RECORDS", "2", 1);
+    ::setenv("HEPTA_OMS_REPLAY_MAX_RECORD_BYTES", recordBudget.c_str(), 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        int callbacks = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& event) {
+            ++callbacks;
+            REQUIRE(event.reqId == "stable-identity");
+            REQUIRE(event.eventType == "place_send_attempt");
+            REQUIRE(journal.GetHealthSnapshot().replayReasonCode == "OMS_REPLAY_VALIDATED");
+        }) == 2);
+        REQUIRE(callbacks == 2); // no deduplication or mutation identity deletion
+        const OmsJournalHealthSnapshot health = journal.GetHealthSnapshot();
+        REQUIRE(health.replayObservedBytes == bytes.size());
+        REQUIRE(health.replayValidatedRecords == 2);
+    }
+    const char* variables[] = {"HEPTA_OMS_REPLAY_MAX_BYTES",
+        "HEPTA_OMS_REPLAY_MAX_RECORDS", "HEPTA_OMS_REPLAY_MAX_RECORD_BYTES"};
+    const char* reasons[] = {"OMS_REPLAY_BYTE_LIMIT", "OMS_REPLAY_RECORD_COUNT_LIMIT",
+        "OMS_REPLAY_RECORD_BYTE_LIMIT"};
+    const std::size_t exact[] = {bytes.size(), 2, record.size()};
+    for (int i = 0; i < 3; ++i)
+    {
+        const std::string lower = std::to_string(exact[i] - 1);
+        ::setenv(variables[i], lower.c_str(), 1);
+        {
+            OmsJournal journal;
+            REQUIRE(journal.Init(path));
+            int callbacks = 0;
+            REQUIRE(journal.Replay([&](const OmsJournalEvent&) { ++callbacks; }) == -1);
+            REQUIRE(callbacks == 0);
+            REQUIRE(journal.GetHealthSnapshot().replayReasonCode == reasons[i]);
+            REQUIRE(!journal.GetHealthSnapshot().writePoisoned);
+        }
+        ::setenv(variables[i], std::to_string(exact[i]).c_str(), 1);
+    }
+    ClearReplayBudgets();
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Replay({}) == 2); // rejection never truncates the journal
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestMalformedReplayBudgetsDoNotCreateFiles()
+{
+    const char* values[] = {"", "0", "-1", "+1", " 1", "1 ", "1x", "9999999999999999999999999"};
+    const char* names[] = {"HEPTA_OMS_REPLAY_MAX_BYTES", "HEPTA_OMS_REPLAY_MAX_RECORDS",
+        "HEPTA_OMS_REPLAY_MAX_RECORD_BYTES"};
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/not-created.jsonl";
+    for (const char* name : names)
+        for (const char* value : values)
+        {
+            ClearReplayBudgets();
+            ::setenv(name, value, 1);
+            OmsJournal journal;
+            REQUIRE(!journal.Init(path));
+            REQUIRE(journal.GetHealthSnapshot().replayReasonCode == "OMS_REPLAY_INVALID_BUDGET");
+            REQUIRE(::access(path.c_str(), F_OK) != 0);
+        }
+    ClearReplayBudgets();
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestOversizedAndTornRecordsDoNotApplyValidPrefix()
+{
+    ClearReplayBudgets();
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/prefix.jsonl";
+    const std::string first = "{\"event\":\"place_send_attempt\",\"ts_ms\":1}\n";
+    // A line split across more than one 8192-byte read must obey the same limit.
+    ::setenv("HEPTA_OMS_REPLAY_MAX_RECORD_BYTES", "16384", 1);
+    WritePrivateFile(path, first + std::string(16385, 'x') + "\n");
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        int callbacks = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent&) { ++callbacks; }) == -1);
+        REQUIRE(callbacks == 0);
+        REQUIRE(journal.GetHealthSnapshot().replayReasonCode == "OMS_REPLAY_RECORD_BYTE_LIMIT");
+    }
+    WritePrivateFile(path, first);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        // External truncation/partial write after Init, not a fixture that Init rejects.
+        { std::ofstream file(path, std::ios::app); file << "{\"event\":"; }
+        int callbacks = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent&) { ++callbacks; }) == -1);
+        REQUIRE(callbacks == 0);
+    }
+    ClearReplayBudgets();
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestAppendRejectsOversizedRecordWithoutIdentityLoss()
+{
+    ClearReplayBudgets();
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/append.jsonl";
+    ::setenv("HEPTA_OMS_REPLAY_MAX_RECORD_BYTES", "2048", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Append(MakeCriticalEvent("stable-first")));
+        OmsJournalEvent large = MakeCriticalEvent("not-sent");
+        large.brokerMessage.assign(4096, 'x');
+        REQUIRE(!journal.Append(large));
+        REQUIRE(journal.Append(MakeCriticalEvent("stable-second")));
+        int index = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent& e) {
+            REQUIRE(e.reqId == (index++ == 0 ? "stable-first" : "stable-second"));
+        }) == 2);
+    }
+    ClearReplayBudgets();
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
+void TestCountBudgetBoundsManySmallEventsAndDoesNotBlockExitAppend()
+{
+    ClearReplayBudgets();
+    const std::string directory = MakeTempDirectory();
+    const std::string path = directory + "/many.jsonl";
+    const std::string record = "{\"event\":\"place_send_attempt\",\"ts_ms\":1}\n";
+    std::string data;
+    for (int i = 0; i < 4097; ++i) data += record;
+    WritePrivateFile(path, data);
+    ::setenv("HEPTA_OMS_REPLAY_MAX_RECORDS", "4096", 1);
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        int callbacks = 0;
+        REQUIRE(journal.Replay([&](const OmsJournalEvent&) { ++callbacks; }) == -1);
+        REQUIRE(callbacks == 0);
+        REQUIRE(journal.GetHealthSnapshot().replayValidatedRecords == 4096);
+        OmsJournalEvent exit = MakeCriticalEvent("guarded-exit");
+        exit.eventType = "cancel_send_attempt";
+        REQUIRE(journal.Append(exit)); // budget is NOT a blanket journal write cutoff
+    }
+    ClearReplayBudgets();
+    {
+        OmsJournal journal;
+        REQUIRE(journal.Init(path));
+        REQUIRE(journal.Replay({}) == 4098);
+    }
+    REQUIRE(::unlink(path.c_str()) == 0);
+    REQUIRE(::rmdir(directory.c_str()) == 0);
+}
+
 }
 
 int main()
 {
+    TestReplayLimitsAreInclusiveAndCallbackAtomic();
+    TestMalformedReplayBudgetsDoNotCreateFiles();
+    TestOversizedAndTornRecordsDoNotApplyValidPrefix();
+    TestAppendRejectsOversizedRecordWithoutIdentityLoss();
+    TestCountBudgetBoundsManySmallEventsAndDoesNotBlockExitAppend();
     TestPathReplacementPoisonsBeforeWriting();
     TestMissingPathPoisonsBeforeWriting();
     TestSymlinkReplacementPoisonsBeforeWriting();

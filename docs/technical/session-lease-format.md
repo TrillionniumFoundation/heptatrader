@@ -80,3 +80,12 @@ permissions, durable replacement or rollback requirements.
 peer, rotation, stale-generation, tombstone and terminal-ack fixtures. Use their
 old-format fixtures to add a migration case; do not manufacture a new fixture
 by serializing only the current format and calling it an old-version test.
+
+## Exact layout and support scope
+
+The ordered HSL8 `R` and `A` fields and the deployment-pair retirement policy are
+specified in [`persistence-support-window.md`](persistence-support-window.md).
+The complete request field/operation reference is
+[`wire-operation-contracts.md`](wire-operation-contracts.md), with generated
+numeric tags and producer bindings. Existing historical migration tests remain
+required behavior; format support is not removed by this documentation cleanup.

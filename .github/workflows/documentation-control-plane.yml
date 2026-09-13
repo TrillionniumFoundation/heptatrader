@@ -39,12 +39,13 @@ jobs:
       - name: Install build-model validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev
+          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev python3-yaml
 
       - name: Validate documentation and source truth contracts
         run: |
           set -euo pipefail
           python3 scripts/check_documentation.py
+          python3 scripts/check_qualification_trust_boundary.py
           python3 scripts/check_component_coverage.py
           python3 scripts/check_systemd_units.py
           python3 scripts/verify_build_ownership.py
