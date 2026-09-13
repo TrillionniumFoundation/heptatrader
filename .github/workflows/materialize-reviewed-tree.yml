@@ -1,0 +1,116 @@
+name: Temporary reviewed tree materialization
+on:
+  push:
+    branches: [audit/materialize-integration-20260913]
+    paths: [.github/workflows/materialize-reviewed-tree.yml]
+permissions:
+  contents: write
+jobs:
+  objects:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.ref == 'refs/heads/audit/materialize-integration-20260913' && github.actor == 'ProfHepta' && github.actor_id == 102159240
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 010d83cfc709d174017f9e582b46cf844305cbc5
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify public patch and create only unreferenced Git objects
+        env:
+          OBJECT_API_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 -I - <<'PY'
+          import base64, bz2, hashlib, json, os, pathlib, re, subprocess, urllib.request
+          REPO = 'TrillionniumFoundation/heptatrader'
+          BASE = '010d83cfc709d174017f9e582b46cf844305cbc5'
+          BASE_TREE = '9ed445be1089490ac2f70f3bddb6b739f623b3e1'
+          EXPECTED_TREE = 'a5de9ebce0b04ad7cfd1c7f1f6d42d820b64f4e1'
+          CHUNKS = [
+              ('c7fa78f0c93353c45d3cfdab6b4086cf8007891d', 9000),
+              ('1e63166dae6921fb083886aa9c1f5a39cb38693e', 9000),
+              ('0a3ab88fcbae66e3f7464a74061abcd5ec76dd53', 9000),
+              ('03724171a1af8066dd93a62ca718ca64265db9cf', 9000),
+              ('405735c143f349b22de32b2a7cd62b8b25a4a876', 9000),
+              ('55ff9656f8990a555073615625b23cc9c20440fe', 3177),
+          ]
+          token = os.environ.pop('OBJECT_API_TOKEN')
+          child_env = {'PATH': '/usr/bin:/bin', 'HOME': os.environ['HOME'],
+                       'LC_ALL': 'C', 'GIT_CONFIG_NOSYSTEM': '1'}
+          def git(*args, data=None):
+              return subprocess.run(['git', '-c', 'core.hooksPath=/dev/null',
+                                     '-c', 'core.fsmonitor=false', *args],
+                                    input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    env=child_env, check=True, timeout=60).stdout
+          def api(path, body=None):
+              # No ref, commit, workflow, permission or secret endpoint is allowed.
+              if body is None:
+                  assert re.fullmatch(r'git/blobs/[0-9a-f]{40}', path)
+              else:
+                  assert path in {'git/blobs', 'git/trees'}
+              data = None if body is None else json.dumps(body).encode()
+              request = urllib.request.Request('https://api.github.com/repos/' + REPO + '/' + path,
+                  data=data, headers={'Authorization': 'Bearer ' + token,
+                                      'Accept': 'application/vnd.github+json',
+                                      'Content-Type': 'application/json',
+                                      'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  assert response.geturl().startswith('https://api.github.com/repos/' + REPO + '/')
+                  payload = response.read(4 << 20)
+              return json.loads(payload)
+          def blob_sha(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+          assert git('rev-parse', 'HEAD').decode().strip() == BASE
+          assert git('rev-parse', 'HEAD^{tree}').decode().strip() == BASE_TREE
+          assert not git('status', '--porcelain', '--untracked-files=all')
+          parts = []
+          for sha, size in CHUNKS:
+              value = api('git/blobs/' + sha)
+              assert value['encoding'] == 'base64'
+              part = base64.b64decode(''.join(value['content'].split()), validate=True)
+              assert len(part) == size and blob_sha(part) == sha
+              parts.append(part)
+          packed = b''.join(parts)
+          assert len(packed) == 48177
+          assert hashlib.sha256(packed).hexdigest() == 'a020d5100a7ce5f52f33d62577d3b205e94c79aa642d3fbdef025f0b63786005'
+          decoder = bz2.BZ2Decompressor()
+          patch = decoder.decompress(packed, max_length=215590)
+          assert decoder.eof and not decoder.unused_data and len(patch) == 215589
+          assert hashlib.sha256(patch).hexdigest() == 'fcae7817d21472e71d5b53359b8305edc229217aeb6e7c6df7b71bde02d28094'
+          git('apply', '--index', '--unidiff-zero', '--check', '-', data=patch)
+          git('apply', '--index', '--unidiff-zero', '-', data=patch)
+          assert git('write-tree').decode().strip() == EXPECTED_TREE
+          paths = git('diff', '--cached', '--name-only', '-z', BASE).decode().strip('\0').split('\0')
+          assert len(paths) == 46 and len(set(paths)) == 46
+          entries = []
+          for path in paths:
+              assert re.fullmatch(r'[A-Za-z0-9_.\-/]+', path)
+              assert not pathlib.PurePosixPath(path).is_absolute() and '..' not in pathlib.PurePosixPath(path).parts
+              row = git('ls-files', '--stage', '--', path).decode().strip()
+              assert row, 'this reviewed patch contains no deletions'
+              metadata, actual_path = row.split('\t', 1)
+              mode, sha, stage = metadata.split()
+              assert actual_path == path and stage == '0' and mode in {'100644', '100755'}
+              data = git('cat-file', 'blob', sha)
+              assert blob_sha(data) == sha and len(data) <= 200000
+              created = api('git/blobs', {'content': base64.b64encode(data).decode(), 'encoding': 'base64'})
+              assert created['sha'] == sha
+              entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': sha})
+          created_tree = api('git/trees', {'base_tree': BASE_TREE, 'tree': entries})
+          assert created_tree['sha'] == EXPECTED_TREE
+          evidence = {'schema': 'heptatrader.read-only-input-tree-materialization.v1',
+                      'base_commit': BASE, 'base_tree': BASE_TREE, 'tree': EXPECTED_TREE,
+                      'patch_sha256': hashlib.sha256(patch).hexdigest(), 'entries': entries,
+                      'product_code_executed': False, 'refs_modified': False,
+                      'broker_access': False, 'credentials_given_to_product': False}
+          output = pathlib.Path(os.environ['RUNNER_TEMP']) / 'materialization-evidence.json'
+          output.write_text(json.dumps(evidence, sort_keys=True, indent=2) + '\n')
+          print(json.dumps({'tree': EXPECTED_TREE, 'files': len(entries), 'refs_modified': False}))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: reviewed-integration-tree-a5de9ebc
+          path: ${{ runner.temp }}/materialization-evidence.json
+          if-no-files-found: error
+          retention-days: 3
