@@ -28,13 +28,30 @@ jobs:
         with:
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Assert exact source identity
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+
+      - name: Prepare exact tracked-source evidence for offline reproduction
+        run: |
+          set -euo pipefail
+          git bundle create "$RUNNER_TEMP/heptatrader-source.bundle" HEAD
+          git bundle verify "$RUNNER_TEMP/heptatrader-source.bundle"
+          git rev-parse HEAD > "$RUNNER_TEMP/heptatrader-source.sha"
+
+      - name: Retain source evidence without workspace or host state
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-evidence-${{ github.sha }}-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/heptatrader-source.bundle
+            ${{ runner.temp }}/heptatrader-source.sha
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Install build-model validation dependencies
         run: |
