@@ -445,5 +445,83 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
                             ["previous:100", "candidate:100-to-75", "previous:75-to-flat", "candidate:flat"])
 
 
+    def test_bounded_read_load_and_repeated_recovery(self):
+        from runtime_acceptance_support import bounded_integer, measure_reads, process_resources
+        import platform
+        samples = bounded_integer(os.environ.get("HEPTA_SOAK_SAMPLES", "256"), 128, 2000)
+        runtime = self.fixture("bounded-load")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+        for _ in range(20): runtime.call("market.get_quote", ["instrument=EUR.USD"])
+        resources_before = process_resources(runtime)
+        measurements = measure_reads(lambda: runtime.call("market.get_quote", ["instrument=EUR.USD"])["payload"], samples)
+        deadline = time.monotonic() + 3
+        while True:
+            resources_after = process_resources(runtime)
+            if all(resources_after[name]["fd_count"] <= value["fd_count"] for name, value in resources_before.items()): break
+            if time.monotonic() >= deadline: self.fail("fixture descriptors did not return to the warmed idle baseline")
+            time.sleep(.025)
+        measurements.update(resources_before=resources_before, resources_after=resources_after)
+        recoveries = []
+        for iteration in range(4):
+            command, fields, order = runtime.place("BUY", 10, "1.1002")
+            runtime.wait_position(10)
+            before = runtime.send_count()
+            self.assertEqual(runtime.call("trade.place_order", fields, call_id=command, duplicate=True)["order_id"], order)
+            self.assertEqual(runtime.send_count(), before)
+            runtime.stop()
+            started = time.perf_counter_ns()
+            runtime.start(self.slots["CANDIDATE"])
+            runtime.wait_position(10)
+            status = runtime.call("execution.get_command_status", [f"command_id={command}"])["payload"]
+            self.assertEqual(status["order_id"], order)
+            self.assertEqual(runtime.send_count(), before)
+            recoveries.append((time.perf_counter_ns() - started) / 1_000_000)
+            runtime.place("SELL", 10, "1.1000")
+            runtime.wait_position(0)
+            runtime.wait_no_orders()
+        self.assertEqual(runtime.send_count(), 8)
+        self.record_success("bounded-load-recovery", runtime, ["fresh-authoritative-reads", "four-persisted-position-restarts", "stable-command-identities", "final-flat"])
+        if self.evidence:
+            measurements.update(scope="disposable-host;simulator;bounded-sample-run;not-a-production-SLO",
+                host={"system":platform.system(),"kernel":platform.release(),"machine":platform.machine()},
+                restart_to_authoritative_state_ms=recoveries, source_sha=self.manifests["CANDIDATE"]["source_sha"],
+                artifact_sha256=os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"],
+                broker_mutation=False, paper_authorized=False, live_authorized=False)
+            with (self.evidence / "bounded-load-measurements.json").open("x") as output:
+                json.dump(measurements, output, sort_keys=True, indent=2)
+                output.flush(); os.fsync(output.fileno())
+
+    def test_offline_checkpoint_restores_lease_position_and_command_identity(self):
+        from runtime_acceptance_support import checkpoint_stopped_fixture, restore_new_fixture
+        source = self.fixture("checkpoint-source")
+        source.start(self.slots["CANDIDATE"])
+        source.provision()
+        command, fields, order = source.place("BUY", 25, "1.1002")
+        source.wait_position(25)
+        source.wait_no_orders()
+        source.stop()
+        checkpoint = self.root / "private-test-checkpoint"
+        checkpoint_stopped_fixture(source, checkpoint)
+        restored = self.fixture("checkpoint-restored")
+        report = restore_new_fixture(checkpoint, restored)
+        restored.start(self.slots["CANDIDATE"])
+        restored.wait_position(25) # no new provision; signed lease and key restored
+        status = restored.call("execution.get_command_status", [f"command_id={command}"])["payload"]
+        self.assertEqual(status["order_id"], order)
+        self.assertEqual(restored.send_count(), 1)
+        restored.call("trade.place_order", fields, call_id=command, duplicate=True)
+        self.assertEqual(restored.send_count(), 1)
+        restored.place("SELL", 25, "1.1000")
+        restored.wait_position(0)
+        restored.wait_no_orders()
+        self.assertEqual(restored.send_count(), 2)
+        self.record_success("offline-checkpoint-restore", restored, ["stop-before-copy", "verify-entire-checkpoint", "new-private-namespace", "same-lease-position-command", "duplicate-no-resend", "final-flat"])
+        if self.evidence:
+            with (self.evidence / "checkpoint-digest-only.json").open("x") as output:
+                json.dump(report, output, sort_keys=True, indent=2)
+                output.flush(); os.fsync(output.fileno())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

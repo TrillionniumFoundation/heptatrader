@@ -38,3 +38,7 @@ python3 scripts/run_python_tests.py --lane process
 ```
 
 Without the opt-in, an explicit process-lane invocation fails rather than reporting skipped scenarios as a successful acceptance. `--lane all` remains a local development convenience and reports these tests as skipped when the isolated host is not supplied. In CI the process lane is enabled, so missing artifacts, invalid digests, unsafe host state, startup errors, incorrect state, unexpected duplicates or shutdown failures fail the job. Per-scenario PASS records are written only after successful assertions and clean shutdown; failure logs are retained separately and cannot stand in for PASS evidence.
+
+## Bounded load and offline restore
+
+The same process lane also measures bounded authenticated quote reads, checks warmed descriptor counts, executes four persisted-position restart cycles, and restores an offline checkpoint into a new private fixture without re-provisioning or resending the recovered command. Set `HEPTA_SOAK_SAMPLES=1000` for a 1000-call observation; the default is 256. See [clock/load/restore acceptance](bounded-runtime-acceptance.md) for the measurement boundary, backup trust scope and limits. These are bounded simulator tests, not a long-duration production certification.
