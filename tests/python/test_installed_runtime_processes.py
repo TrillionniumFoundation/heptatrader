@@ -522,6 +522,50 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
                 json.dump(report, output, sort_keys=True, indent=2)
                 output.flush(); os.fsync(output.fileno())
 
+    def test_installed_daemon_capacity_observations_survive_restart(self):
+        runtime = self.fixture("online-capacity")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+
+        def observe(minimum_records=0):
+            log = next(log for _, _, log, name in runtime.processes if name == "hepta-executiond")
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                for line in reversed(log.read_text().splitlines()):
+                    try:
+                        value = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if (isinstance(value, dict) and value.get("schema") == "heptatrader.oms-capacity.v1"
+                            and value.get("known") is True and value.get("records", -1) >= minimum_records):
+                        return value
+                time.sleep(.025)
+            self.fail("installed Execution daemon did not publish a current capacity observation")
+
+        initial = observe()
+        command, fields, order = runtime.place("BUY", 10, "1.1002")
+        runtime.wait_position(10)
+        runtime.wait_no_orders()
+        before = observe(initial["records"] + 1)
+        self.assertGreater(before["bytes"], initial["bytes"])
+        self.assertEqual(before["authorization_effect"], "NONE")
+        self.assertNotIn(command, json.dumps(before))
+        runtime.stop()
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.wait_position(10)
+        after = observe(before["records"])
+        self.assertGreaterEqual(after["bytes"], before["bytes"])
+        self.assertFalse(after["write_poisoned"])
+        self.assertEqual(runtime.call("trade.place_order", fields, call_id=command, duplicate=True)["order_id"], order)
+        self.assertEqual(runtime.send_count(), 1)
+        runtime.place("SELL", 10, "1.1000")
+        runtime.wait_position(0)
+        runtime.wait_no_orders()
+        self.record_success("online-capacity-restart", runtime,
+                            ["installed-json-observation", "written-ledger-growth", "restart-preserved-counts",
+                             "duplicate-no-resend", "final-flat"])
+
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

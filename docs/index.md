@@ -143,3 +143,9 @@ Open work and release-profile blockers are recorded in `gap-register.json`. A gr
 - [`technical/wire-field-reference.md`](technical/wire-field-reference.md)
 - [`technical/oms-recovery-capacity.md`](technical/oms-recovery-capacity.md)
 - [`technical/persistence-support-window.md`](technical/persistence-support-window.md)
+
+## Behavior-first maintenance references
+
+- [`technical/core-release-acceptance.md`](technical/core-release-acceptance.md)
+- [`technical/oms-live-capacity.md`](technical/oms-live-capacity.md)
+- [`technical/owner-ruleset-transition.md`](technical/owner-ruleset-transition.md)

@@ -30,6 +30,8 @@ public:
     bool IsRunning() const;
     bool IsMutationBlocked(std::string* reason = nullptr) const;
     const std::string& RecoveryReason() const;
+    // Local process observability only; not an Agent command or admission gate.
+    OmsJournalHealthSnapshot JournalHealth() const { return m_journal.GetHealthSnapshot(); }
 
     ExecutionCoordinator& Coordinator();
     DeterministicExecutionVenue& Venue();

@@ -22,8 +22,9 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev python3-yaml
       - name: Assert tag and VERSION agree
+        id: check-release-tag
         run: |
           set -euo pipefail
           version="$(tr -d '[:space:]' < VERSION)"
@@ -37,44 +38,69 @@ jobs:
         run: ./scripts/dev_core.sh
       - name: Verify deployment unit contract
         run: python3 scripts/check_systemd_units.py
-      - name: Build immutable release package and manifest
+      - name: Accept this release artifact through the canonical installed lifecycle
+        id: accept-core-artifact
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
+        run: python3 scripts/accept_core_release.py --build-dir build/core --output-dir dist --source-sha "$EXPECTED_SHA"
+      - name: Bind tag to the accepted package digest
+        id: bind-release-manifest
         env:
           EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          mkdir -p dist
-          version="$(tr -d '[:space:]' < VERSION)"
-          epoch="$(git show -s --format=%ct "$EXPECTED_SHA")"
-          package="dist/heptatrader-${version}-core-${EXPECTED_SHA}.tar.gz"
-          python3 scripts/build_release_package.py \
-            --build-dir build/core \
-            --output "$package" \
-            --version "$version" \
-            --profile core \
-            --source-sha "$EXPECTED_SHA" \
-            --source-date-epoch "$epoch"
-          digest="$(cut -d' ' -f1 "$package.sha256")"
-          python3 scripts/hepta_preflight.py \
-            --artifact "$package" \
-            --expected-sha256 "$digest" \
-            --profile core \
-            --policy docs/preflight-policy-v1.json \
-            --artifact-only \
-            --output "dist/release-preflight.json"
-          python3 - "$package.receipt.json" "$EXPECTED_SHA" "$version" > dist/release-manifest.json <<'PY'
-          import json, pathlib, sys
-          receipt = json.loads(pathlib.Path(sys.argv[1]).read_text())
-          manifest = {"schema": "heptatrader.tagged-release-manifest.v1",
-                      "tag": "v" + sys.argv[3], "source_sha": sys.argv[2],
-                      "artifact": receipt}
-          print(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
-          PY
+          python3 - "$EXPECTED_SHA" "$GITHUB_REF_NAME" <<'PYTHON'
+          import hashlib, json, pathlib, sys
+          source, tag = sys.argv[1:]
+          version = pathlib.Path("VERSION").read_text().strip()
+          if tag != "v" + version:
+              raise SystemExit("tag/version mismatch")
+          package = pathlib.Path("dist") / f"heptatrader-{version}-core-{source}.tar.gz"
+          receipt = json.loads(pathlib.Path(str(package) + ".receipt.json").read_text())
+          acceptance = json.loads(pathlib.Path("dist/core-acceptance.json").read_text())
+          sha = hashlib.sha256()
+          with package.open("rb") as stream:
+              for block in iter(lambda: stream.read(1 << 20), b""):
+                  sha.update(block)
+          for evidence in (receipt, acceptance):
+              if (evidence.get("source_sha") != source or evidence.get("version") != version
+                  or evidence.get("profile") != "core" or evidence.get("package_sha256") != sha.hexdigest()
+                  or evidence.get("authorization_effect") != "NONE"
+                  or evidence.get("paper_authorized") is not False or evidence.get("live_authorized") is not False):
+                  raise SystemExit("release and accepted artifact identities disagree")
+          if acceptance.get("schema") != "heptatrader.core-artifact-acceptance.v1" or acceptance.get("result") != "PASS":
+              raise SystemExit("missing successful installed acceptance")
+          manifest = {"schema": "heptatrader.tagged-release-manifest.v1", "tag": tag,
+                      "source_sha": source, "artifact": receipt, "acceptance": acceptance}
+          with pathlib.Path("dist/release-manifest.json").open("x") as stream:
+              json.dump(manifest, stream, sort_keys=True, separators=(",", ":"))
+              stream.write("\n")
+          PYTHON
           sha256sum dist/release-manifest.json > dist/release-manifest.json.sha256
+      - name: Retain failed lifecycle diagnostics without publishing a release
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: failed-release-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/process-evidence/
+            dist/systemd-evidence/
+          if-no-files-found: warn
+          retention-days: 14
       - name: Upload immutable release evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: heptatrader-release-${{ github.ref_name }}-${{ github.sha }}
-          path: dist/
+          path: |
+            dist/heptatrader-*-core-*.tar.gz
+            dist/heptatrader-*-core-*.tar.gz.sha256
+            dist/heptatrader-*-core-*.tar.gz.receipt.json
+            dist/core-acceptance.json
+            dist/release-manifest.json
+            dist/release-manifest.json.sha256
+            dist/release-simulator-smoke-*.json
+            dist/process-evidence/
+            dist/systemd-evidence/
           if-no-files-found: error
           retention-days: 90
           compression-level: 0

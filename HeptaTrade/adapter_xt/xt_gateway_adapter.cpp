@@ -17,7 +17,6 @@ HeptaXTGatewayAdapter::~HeptaXTGatewayAdapter() = default;
 bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
 {
     m_cfg = cfg;
-    m_connected = false;
     if (m_cfg.mode != "XT")
     {
         m_inited = false;
@@ -44,14 +43,12 @@ bool HeptaXTGatewayAdapter::Connect()
 
 void HeptaXTGatewayAdapter::Disconnect()
 {
-    m_connected = false;
     m_status = m_inited ? "XT_EXPERIMENTAL_NO_TRANSPORT" : "XT_NOT_INIT";
 }
 
 bool HeptaXTGatewayAdapter::PollOnce(int /*timeoutMs*/)
 {
-    if (!TransportImplemented()) return false;
-    return m_connected;
+    return false;
 }
 
 bool HeptaXTGatewayAdapter::TryDequeueEvent(XTEvent& outEvent)
@@ -146,7 +143,6 @@ bool HeptaXTGatewayAdapter::RunPreflightChecks(std::string& reason) const
 
 bool HeptaXTGatewayAdapter::RejectUnsupported(const char* operation, long long id)
 {
-    m_connected = false;
     m_status = "XT_TRANSPORT_NOT_IMPLEMENTED";
     m_lastRejectReason = "XT_TRANSPORT_NOT_IMPLEMENTED";
     PushEvent(MakeEvent(XTEventType::Error, id,
@@ -156,135 +152,33 @@ bool HeptaXTGatewayAdapter::RejectUnsupported(const char* operation, long long i
     return false;
 }
 
+// Retain callback signatures for source compatibility, not unreachable fake
+// transport branches. Legacy callers and capability tests remain fail-closed.
 void HeptaXTGatewayAdapter::OnXtConnected()
 {
-    if (!TransportImplemented())
-    {
-        RejectUnsupported("callback_connected");
-        return;
-    }
-    m_connected = true;
-    m_status = "XT_CONNECTED";
-    PushEvent(MakeEvent(XTEventType::Connected, 0, "xt", "connected", 0.0,
-                        "xt.cb.on_connected"));
+    RejectUnsupported("callback_connected");
 }
 
-void HeptaXTGatewayAdapter::OnXtDisconnected(const std::string& reason)
+void HeptaXTGatewayAdapter::OnXtDisconnected(const std::string&)
 {
-    m_connected = false;
-    m_status = "XT_DISCONNECTED";
-    PushEvent(MakeEvent(XTEventType::Disconnected, 0, "xt",
-                        reason.empty() ? "disconnected" : reason,
-                        0.0, "xt.cb.on_disconnected"));
+    Disconnect();
 }
 
-void HeptaXTGatewayAdapter::OnXtAccountStatus(const std::string& status)
-{
-    if (!TransportImplemented()) return;
-    PushEvent(MakeEvent(XTEventType::Account, 0, "account_status", status,
-                        0.0, "xt.cb.on_account_status"));
-}
-
-void HeptaXTGatewayAdapter::OnXtAsset(double totalAsset, double cash)
-{
-    if (!TransportImplemented()) return;
-    PushEvent(MakeEvent(XTEventType::Account, 0, "total_asset", "asset_update",
-                        totalAsset, "xt.cb.on_stock_asset"));
-    PushEvent(MakeEvent(XTEventType::Account, 0, "cash", "asset_update", cash,
-                        "xt.cb.on_stock_asset"));
-}
-
-void HeptaXTGatewayAdapter::OnXtPosition(const std::string& instrument,
-                                         double volume)
-{
-    if (!TransportImplemented()) return;
-    PushEvent(MakeEvent(XTEventType::Position, 0, instrument, "position_update",
-                        volume, "xt.cb.on_stock_position"));
-}
-
-void HeptaXTGatewayAdapter::OnXtOrderStatus(
-    long long orderId, const std::string& status, const std::string& detail)
-{
-    if (!TransportImplemented()) return;
-    std::string key = "order_status";
-    const auto itSym = m_orderSymbol.find(orderId);
-    const auto itSide = m_orderSide.find(orderId);
-    if (itSym != m_orderSymbol.end())
-    {
-        key = itSym->second;
-        if (itSide != m_orderSide.end()) key += ":" + itSide->second;
-    }
-    std::string value = status;
-    if (!detail.empty()) value += "|" + detail;
-    PushEvent(MakeEvent(XTEventType::OrderStatus, orderId, key, value, 0.0,
-                        "xt.cb.on_stock_order"));
-}
-
-void HeptaXTGatewayAdapter::OnXtTrade(
-    long long orderId, const std::string& instrument,
-    const std::string& side, double qty, double price)
-{
-    if (!TransportImplemented()) return;
-    m_orderSymbol[orderId] = instrument;
-    m_orderSide[orderId] = side;
-    PushEvent(MakeEvent(XTEventType::OrderStatus, orderId,
-                        instrument + ":" + side, "trade", qty,
-                        "xt.cb.on_stock_trade"));
-    PushEvent(MakeEvent(XTEventType::OrderStatus, orderId,
-                        instrument + ":" + side, "trade_price", price,
-                        "xt.cb.on_stock_trade"));
-}
-
-void HeptaXTGatewayAdapter::OnXtOrderError(
-    long long orderId, const std::string& errorCode,
-    const std::string& detail)
-{
-    if (!TransportImplemented()) return;
-    std::string value = errorCode;
-    if (!detail.empty()) value += "|" + detail;
-    PushEvent(MakeEvent(XTEventType::Error, orderId, "order_error", value,
-                        0.0, "xt.cb.on_order_error"));
-}
-
-void HeptaXTGatewayAdapter::OnXtCancelError(
-    long long orderId, const std::string& errorCode,
-    const std::string& detail)
-{
-    if (!TransportImplemented()) return;
-    std::string value = errorCode;
-    if (!detail.empty()) value += "|" + detail;
-    PushEvent(MakeEvent(XTEventType::Error, orderId, "cancel_error", value,
-                        0.0, "xt.cb.on_cancel_error"));
-}
-
-void HeptaXTGatewayAdapter::OnXtAsyncOrderResponse(
-    long long orderId, bool ok, const std::string& detail)
-{
-    if (!TransportImplemented()) return;
-    PushEvent(MakeEvent(XTEventType::OrderAck, orderId, "order_async",
-                        ok ? "ok" : "fail", 0.0,
-                        "xt.cb.on_order_stock_async_response"));
-    if (!detail.empty())
-        PushEvent(MakeEvent(XTEventType::OrderAck, orderId,
-                            "order_async_detail", detail, 0.0,
-                            "xt.cb.on_order_stock_async_response"));
-}
-
-void HeptaXTGatewayAdapter::OnXtAsyncCancelResponse(
-    long long orderId, bool ok, const std::string& detail)
-{
-    if (!TransportImplemented()) return;
-    PushEvent(MakeEvent(XTEventType::CancelAck, orderId, "cancel_async",
-                        ok ? "ok" : "fail", 0.0,
-                        "xt.cb.on_cancel_order_stock_async_response"));
-    if (!detail.empty())
-        PushEvent(MakeEvent(XTEventType::CancelAck, orderId,
-                            "cancel_async_detail", detail, 0.0,
-                            "xt.cb.on_cancel_order_stock_async_response"));
-}
+void HeptaXTGatewayAdapter::OnXtAccountStatus(const std::string&) {}
+void HeptaXTGatewayAdapter::OnXtAsset(double, double) {}
+void HeptaXTGatewayAdapter::OnXtPosition(const std::string&, double) {}
+void HeptaXTGatewayAdapter::OnXtOrderStatus(long long, const std::string&, const std::string&) {}
+void HeptaXTGatewayAdapter::OnXtTrade(long long, const std::string&, const std::string&, double, double) {}
+void HeptaXTGatewayAdapter::OnXtOrderError(long long, const std::string&, const std::string&) {}
+void HeptaXTGatewayAdapter::OnXtCancelError(long long, const std::string&, const std::string&) {}
+void HeptaXTGatewayAdapter::OnXtAsyncOrderResponse(long long, bool, const std::string&) {}
+void HeptaXTGatewayAdapter::OnXtAsyncCancelResponse(long long, bool, const std::string&) {}
 
 void HeptaXTGatewayAdapter::PushEvent(const XTEvent& e)
 {
+    // Only diagnostic errors exist in this unsupported adapter. Keep the
+    // newest bounded window, not an unbounded queue under repeated calls.
+    if (m_events.size() >= 64U) m_events.pop();
     m_events.push(e);
 }
 
