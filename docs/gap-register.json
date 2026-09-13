@@ -380,17 +380,22 @@
     {
       "id": "AUDIT-INTEGRATION-002",
       "domain": "REPOSITORY",
-      "state": "OPEN",
-      "summary": "Complete integrated callback/index/OMS/Gateway/archive source needs exact-commit full build, installed-process, both sanitizers and remote PID1 evidence.",
+      "state": "CLOSED",
+      "summary": "The complete integrated callback/index/OMS/Gateway/archive source passed exact-commit full Core, source, GCC/Clang sanitizer, installed-process and real PID1 acceptance.",
       "evidence": [
         "docs/technical/venue-placement-contract.md",
         "docs/technical/oms-operational-report.md",
         "tests/venue_placement_cases.h",
-        "tests/python/test_oms_operational_report.py"
+        "tests/python/test_oms_operational_report.py",
+        "scripts/accept_core_release.py",
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/systemd_simulator_smoke.py",
+        ".github/workflows/core-ci.yml",
+        ".github/workflows/canonical-full-suite.yml"
       ],
-      "issue": null,
+      "issue": 81,
       "blocking_releases": [],
-      "disposition": "Each new source commit has its own verification obligation. Prior local or PR-head evidence is not promoted to new remote or host acceptance."
+      "disposition": "Closed against source 95a1f7979000d54d4b0630a7cd9f9607d00fb30d, tree 1be3a2b6e14176fef64ccb17c252324b037cf1e5. Exact-head GitHub attempt-1 runs succeeded: Core 34759770341, Documentation 34759770412 and both sanitizer jobs in 34759770365. Downloaded artifact 10318417958 binds package SHA-256 e81001e514b15b4ae28f3cc9057724f50105e22eb11c126ee33745fa0bc8fb21 to install, core Python, simulator lifecycle, distinct-artifact process recovery and real systemd 255 acceptance. Both temporary data-import refs were removed after source/tree/parent readback; their code is absent from this source and its ancestry. This is disposable-host simulator evidence, not actual trading-host acceptance, indefinite log lifecycle, universal N-1 compatibility, external IB qualification or validation of the separate unpublished workflow-context patch. Later commits require their own CI."
     },
     {
       "id": "OMS-LIFECYCLE-002",
@@ -424,6 +429,23 @@
       "issue": null,
       "blocking_releases": [],
       "disposition": "Server read on 2026-09-13 confirmed active rules; no administrative write or bypass performed."
+    },
+    {
+      "id": "WORKFLOW-CONTEXT-001",
+      "domain": "REPOSITORY",
+      "state": "OPEN",
+      "summary": "The optional IB PAPER workflow uses runner.temp in job-level env, where the runner context is unavailable; move the exact bound paths into their consuming steps and validate producer/consumer parity.",
+      "evidence": [
+        ".github/workflows/ib-paper-qualification.yml",
+        "scripts/check_qualification_trust_boundary.py",
+        "tests/python/test_qualification_trust_boundary.py",
+        "tests/python/test_ib_workflow_interfaces.py"
+      ],
+      "issue": 81,
+      "blocking_releases": [
+        "ib-paper"
+      ],
+      "disposition": "Observed GitHub workflow validation failure on 2026-09-13, without allocating a Broker job. A complete five-file local correction passed 31 targeted no-Broker tests, but remote publication of its checker change was blocked by the tool safety check. No alternate publication path was used; the published source still requires this fix and a new exact-head CI. Core engineering success does not imply this optional workflow is runnable or a PAPER account is qualified."
     }
   ]
 }
