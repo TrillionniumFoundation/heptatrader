@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import math
 import os
@@ -12,6 +13,7 @@ from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
+import tarfile
 import tempfile
 import time
 from typing import Any
@@ -281,7 +283,8 @@ def stable_regular_bytes(
     allowed_owners: frozenset[int],
     require_single_link: bool = True,
 ) -> tuple[bytes, os.stat_result]:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
@@ -653,6 +656,67 @@ def atomic_private_json(path: Path, payload: dict[str, Any]) -> None:
             pass
 
 
+def publish_verified_archive(root: Path, result_data: bytes,
+                             receipt: dict[str, Any], destination: Path) -> None:
+    """Atomically publish only already verified references, never a directory walk.
+
+    An interrupted/failed verifier cannot expose a partial archive. Failure
+    evidence remains on the host; its small attempt receipt is uploaded separately.
+    """
+    destination = Path(os.path.abspath(destination))
+    try:
+        destination.relative_to(root)
+    except ValueError:
+        pass
+    else:
+        raise QualificationError("publication must be outside the raw evidence root")
+    parent, parent_before = secure_evidence_root(destination.parent)
+    if destination.exists() or destination.is_symlink():
+        raise QualificationError("publication destination already exists")
+    descriptor, name = tempfile.mkstemp(prefix=".verified-evidence-", dir=parent)
+    temporary = Path(name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as output:
+            descriptor = -1
+            with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
+                def add(relative: str, data: bytes) -> None:
+                    info = tarfile.TarInfo(relative)
+                    info.size, info.mode, info.mtime = len(data), 0o600, 0
+                    archive.addfile(info, io.BytesIO(data))
+
+                add("qualification-result.json", result_data)
+                for scenario in receipt["scenarios"]:
+                    for reference in scenario["evidence"]:
+                        relative = canonical_evidence_path(reference["path"], scenario["id"])
+                        path = verify_path_components(root, relative)
+                        data, _ = stable_regular_bytes(
+                            path, label="publication evidence", maximum=MAX_EVIDENCE_FILE_BYTES,
+                            allowed_owners=frozenset({os.geteuid()}))
+                        if len(data) != reference["size"] or file_digest(data) != reference["sha256"]:
+                            raise QualificationError("evidence changed before publication")
+                        add(relative, data)
+                add("qualification-verification.json",
+                    (json.dumps(receipt, indent=2, sort_keys=True) + "\n").encode("utf-8"))
+            output.flush()
+            os.fsync(output.fileno())
+        _, parent_after = secure_evidence_root(parent)
+        if (parent_before.st_dev, parent_before.st_ino) != (parent_after.st_dev, parent_after.st_ino):
+            raise QualificationError("publication parent was replaced")
+        # No replace: do not overwrite an earlier attempt/publication.
+        os.link(temporary, destination, follow_symlinks=False)
+        temporary.unlink()
+        directory_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--result", type=Path, required=True)
@@ -661,6 +725,9 @@ def main() -> int:
     parser.add_argument("--expected-binary", type=Path, required=True)
     parser.add_argument("--expected-harness", type=Path, required=True)
     parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--attempt", type=Path, help="bind workflow verification to a completed controller attempt")
+    parser.add_argument("--publication-archive", type=Path,
+                        help="optional no-overwrite allowlisted TAR outside raw evidence")
     args = parser.parse_args()
 
     try:
@@ -700,6 +767,23 @@ def main() -> int:
         if root_before.st_dev != root_after.st_dev or root_before.st_ino != root_after.st_ino:
             raise QualificationError("evidence root was replaced during verification")
         receipt["result_sha256"] = file_digest(result_data)
+        if args.attempt is not None:
+            if Path(os.path.abspath(args.attempt)) != root.parent / "attempt.json":
+                raise QualificationError("attempt metadata must be adjacent to this evidence root")
+            attempt_data, _ = stable_regular_bytes(
+                args.attempt, label="controller attempt", maximum=64 * 1024,
+                allowed_owners=frozenset({os.geteuid()}))
+            attempt = parse_json(attempt_data, "controller attempt")
+            if (attempt.get("schema") != "hepta.ib-paper-attempt.v1"
+                    or attempt.get("state") != "HARNESS_SUCCEEDED_AWAITING_VERIFICATION"
+                    or type(attempt.get("returncode")) is not int or attempt["returncode"] != 0
+                    or attempt.get("private_cleanup_failed", False) is not False
+                    or attempt.get("paper_authorized") is not False
+                    or attempt.get("live_authorized") is not False
+                    or attempt.get("source_sha") != expected_git_sha
+                    or attempt.get("binary_sha256") != binary_sha256
+                    or attempt.get("harness_sha256") != harness_sha256):
+                raise QualificationError("controller attempt is incomplete, failed or has different immutable bindings")
         receipt_path = args.receipt or root / "qualification-verification.json"
         receipt_path = Path(os.path.abspath(os.fspath(receipt_path)))
         if receipt_path != root / "qualification-verification.json":
@@ -707,6 +791,8 @@ def main() -> int:
                 "verification receipt must be evidence-root/qualification-verification.json"
             )
         atomic_private_json(receipt_path, receipt)
+        if args.publication_archive is not None:
+            publish_verified_archive(root, result_data, receipt, args.publication_archive)
     except (OSError, QualificationError) as error:
         print(f"ERROR: IB PAPER qualification rejected: {error}", file=sys.stderr)
         return 1

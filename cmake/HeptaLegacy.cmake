@@ -73,38 +73,36 @@ set(DIR_SRC
     state/ib_contract_identity.cpp
     state/snapshot_refresh_coordinator.cpp)
 
-if(HEPTA_BUILD_LEGACY_MONOLITH)
-    add_library(CTPTradeLIB UNKNOWN IMPORTED)
-    set_property(TARGET CTPTradeLIB PROPERTY IMPORTED_LOCATION
-        "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thosttraderapi_se.so")
-    add_library(CTPMdLIB UNKNOWN IMPORTED)
-    set_property(TARGET CTPMdLIB PROPERTY IMPORTED_LOCATION
-        "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thostmduserapi_se.so")
+add_library(CTPTradeLIB UNKNOWN IMPORTED)
+set_property(TARGET CTPTradeLIB PROPERTY IMPORTED_LOCATION
+    "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thosttraderapi_se.so")
+add_library(CTPMdLIB UNKNOWN IMPORTED)
+set_property(TARGET CTPMdLIB PROPERTY IMPORTED_LOCATION
+    "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thostmduserapi_se.so")
 
-    set(HEPTA_CTP_OVERLAY_INPUTS
-        "${PROJECT_SOURCE_DIR}/../third_party/ctp/6.7.7/include/ThostFtdcTraderApi.h")
-    if(WIN32)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(HEPTA_CTP_PLATFORM_DIRECTORY "CTPTradeApi64")
-        else()
-            set(HEPTA_CTP_PLATFORM_DIRECTORY "CTPTradeApi32")
-        endif()
-        list(APPEND HEPTA_CTP_OVERLAY_INPUTS
-            "${PROJECT_SOURCE_DIR}/../Interface/${HEPTA_CTP_PLATFORM_DIRECTORY}/thosttraderapi_se.lib"
-            "${PROJECT_SOURCE_DIR}/../Interface/${HEPTA_CTP_PLATFORM_DIRECTORY}/thostmduserapi_se.lib")
+set(HEPTA_CTP_OVERLAY_INPUTS
+    "${PROJECT_SOURCE_DIR}/../third_party/ctp/6.7.7/include/ThostFtdcTraderApi.h")
+if(WIN32)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(HEPTA_CTP_PLATFORM_DIRECTORY "CTPTradeApi64")
     else()
-        list(APPEND HEPTA_CTP_OVERLAY_INPUTS
-            "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thosttraderapi_se.so"
-            "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thostmduserapi_se.so")
+        set(HEPTA_CTP_PLATFORM_DIRECTORY "CTPTradeApi32")
     endif()
-    foreach(HEPTA_CTP_OVERLAY_INPUT IN LISTS HEPTA_CTP_OVERLAY_INPUTS)
-        if(NOT EXISTS "${HEPTA_CTP_OVERLAY_INPUT}")
-            message(FATAL_ERROR
-                "The legacy monolith requires the separately reviewed, "
-                "nonredistributable CTP 6.7.7 overlay; missing "
-                "${HEPTA_CTP_OVERLAY_INPUT}")
-        endif()
-    endforeach()
+    list(APPEND HEPTA_CTP_OVERLAY_INPUTS
+        "${PROJECT_SOURCE_DIR}/../Interface/${HEPTA_CTP_PLATFORM_DIRECTORY}/thosttraderapi_se.lib"
+        "${PROJECT_SOURCE_DIR}/../Interface/${HEPTA_CTP_PLATFORM_DIRECTORY}/thostmduserapi_se.lib")
+else()
+    list(APPEND HEPTA_CTP_OVERLAY_INPUTS
+        "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thosttraderapi_se.so"
+        "${PROJECT_SOURCE_DIR}/../Interface/CTPTradeApiLinux/thostmduserapi_se.so")
 endif()
+foreach(HEPTA_CTP_OVERLAY_INPUT IN LISTS HEPTA_CTP_OVERLAY_INPUTS)
+    if(NOT EXISTS "${HEPTA_CTP_OVERLAY_INPUT}")
+        message(FATAL_ERROR
+            "The legacy monolith requires the separately reviewed, "
+            "nonredistributable CTP 6.7.7 overlay; missing "
+            "${HEPTA_CTP_OVERLAY_INPUT}")
+    endif()
+endforeach()
 
 add_executable(HeptaTrader ${DIR_SRC})

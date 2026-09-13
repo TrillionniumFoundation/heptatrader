@@ -66,3 +66,13 @@ The controls that materially protect trading behavior remain non-negotiable: jou
 ## Repository model
 
 This is an owner-operated, self-use repository. Pull requests, reviews, CI checks, and branch settings are engineering aids rather than trading authorization. See [`docs/adr/0002-owner-operated-repository.md`](docs/adr/0002-owner-operated-repository.md) and [`docs/adr/0003-immutable-artifact-paper-qualification.md`](docs/adr/0003-immutable-artifact-paper-qualification.md).
+
+### Source-check development dependency
+
+Install `python3-yaml` together with the existing compiler/CMake/OpenSSL tools
+when running the workflow-structure checker or the complete Python suite.
+This is a development dependency, not an Execution runtime dependency.
+`scripts/run_python_tests.py` is the single Python partition inventory; do not
+copy its test lists into another workflow. See
+[`docs/technical/wire-operation-contracts.md`](docs/technical/wire-operation-contracts.md)
+and [`docs/technical/oms-recovery-capacity.md`](docs/technical/oms-recovery-capacity.md).

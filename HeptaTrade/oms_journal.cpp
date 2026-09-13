@@ -11,6 +11,8 @@
 #include <limits>
 #include <locale>
 #include <map>
+#include <new>
+#include <stdexcept>
 #include <set>
 #include <sstream>
 #include <sys/stat.h>
@@ -18,6 +20,27 @@
 #include <utility>
 
 namespace {
+
+// Environment is supplied by the Execution service's deployment identity, not
+// a request. Reject malformed/zero/unbounded budgets instead of atoi fallback.
+static bool ReadRecoveryBudget(const char* name, std::size_t fallback,
+                               std::size_t maximum, std::size_t& output)
+{
+    const char* input = std::getenv(name);
+    if (!input) { output = fallback; return true; }
+    if (!*input) return false;
+    std::size_t value = 0;
+    for (const char* p = input; *p; ++p)
+    {
+        if (*p < '0' || *p > '9') return false;
+        const std::size_t digit = static_cast<std::size_t>(*p - '0');
+        if (value > (maximum - digit) / 10U) return false;
+        value = value * 10U + digit;
+    }
+    if (value == 0 || value > maximum) return false;
+    output = value;
+    return true;
+}
 
 static std::string JsonNumber(double v)
 {
@@ -559,7 +582,7 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
     const std::string parent = slash == std::string::npos ? "." :
         (slash == 0 ? "/" : path.substr(0, slash));
 
-    int flags = O_RDWR | O_APPEND;
+    int flags = O_RDWR | O_APPEND | O_NONBLOCK;
 #ifdef O_CLOEXEC
     flags |= O_CLOEXEC;
 #endif
@@ -747,6 +770,19 @@ bool OmsJournal::Init(const std::string& path)
     // or worker could discard queued records or replace a joinable thread.
     if (m_fd >= 0 || !m_path.empty() || m_worker.joinable()) return false;
 
+    m_replayObservedBytes = 0;
+    m_replayValidatedRecords = 0;
+    m_replayReasonCode.clear();
+    if (!ReadRecoveryBudget("HEPTA_OMS_REPLAY_MAX_BYTES", 64U * 1024U * 1024U,
+                            1024U * 1024U * 1024U, m_replayMaxBytes) ||
+        !ReadRecoveryBudget("HEPTA_OMS_REPLAY_MAX_RECORDS", 65536U,
+                            1000000U, m_replayMaxRecords) ||
+        !ReadRecoveryBudget("HEPTA_OMS_REPLAY_MAX_RECORD_BYTES", 256U * 1024U,
+                            1024U * 1024U, m_replayMaxRecordBytes))
+    {
+        m_replayReasonCode = "OMS_REPLAY_INVALID_BUDGET";
+        return false;
+    }
     m_writePoisoned = false;
     m_bufferedLines.clear();
     m_asyncQueue.clear();
@@ -813,6 +849,9 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
     if (!ValidatePinnedPathLocked()) return false;
 
     std::string line = BuildJsonLine(evt);
+    // Do not create a record this deployment's reader refuses. The total-file
+    // replay budget does NOT stop exit/terminal records or rotate identities.
+    if (line.size() > m_replayMaxRecordBytes) return false;
     OmsJournalEvent checked;
     if (!ParseJsonLine(line, checked)) return false;
     const bool critical = IsCriticalEventType(evt.eventType);
@@ -890,6 +929,12 @@ OmsJournalHealthSnapshot OmsJournal::GetHealthSnapshot() const
     out.maxQueueDepth = m_maxQueueDepth;
     out.lastFlushMs = m_lastFlushMs;
     out.writePoisoned = m_writePoisoned;
+    out.replayMaxBytes = m_replayMaxBytes;
+    out.replayMaxRecords = m_replayMaxRecords;
+    out.replayMaxRecordBytes = m_replayMaxRecordBytes;
+    out.replayObservedBytes = m_replayObservedBytes;
+    out.replayValidatedRecords = m_replayValidatedRecords;
+    out.replayReasonCode = m_replayReasonCode;
     return out;
 }
 
@@ -903,6 +948,9 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
 {
     std::unique_lock<std::mutex> lk(m_mtx);
     OmsJournal* const self = const_cast<OmsJournal*>(this);
+    self->m_replayObservedBytes = 0;
+    self->m_replayValidatedRecords = 0;
+    self->m_replayReasonCode = "OMS_REPLAY_IO_OR_IDENTITY_FAILURE";
     if (!self->FlushQueuedNoLock() || !self->FlushBufferedLocked() ||
         m_path.empty() || m_fd < 0 || m_writePoisoned ||
         !self->ValidatePinnedPathLocked()) return -1;
@@ -915,37 +963,103 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
     }
 
     struct stat metadata;
-    if (!StatFileDescriptor(m_fd, metadata) || !S_ISREG(metadata.st_mode)) return -1;
-    std::vector<OmsJournalEvent> events;
-    std::string pending;
-    pending.reserve(8192);
-    char buffer[8192];
-    off_t offset = 0;
-    while (offset < metadata.st_size)
+    if (!StatFileDescriptor(m_fd, metadata) || !S_ISREG(metadata.st_mode) ||
+        metadata.st_size < 0) return -1;
+    self->m_replayObservedBytes = static_cast<std::size_t>(metadata.st_size);
+    if (static_cast<std::uint64_t>(metadata.st_size) > m_replayMaxBytes)
     {
-        const off_t remaining = metadata.st_size - offset;
-        const std::size_t wanted = remaining > static_cast<off_t>(sizeof(buffer)) ?
-            sizeof(buffer) : static_cast<std::size_t>(remaining);
-        const ssize_t count = ReadAt(m_fd, buffer, wanted, offset);
-        if (count <= 0) return -1;
-        offset += count;
-        pending.append(buffer, static_cast<std::size_t>(count));
-
-        std::size_t newline = std::string::npos;
-        while ((newline = pending.find('\n')) != std::string::npos)
+        self->m_replayReasonCode = "OMS_REPLAY_BYTE_LIMIT";
+        return -1;
+    }
+    std::vector<OmsJournalEvent> events;
+    try
+    {
+        std::string pending;
+        pending.reserve(std::min<std::size_t>(8192, m_replayMaxRecordBytes));
+        char buffer[8192];
+        off_t offset = 0;
+        while (offset < metadata.st_size)
         {
-            const std::string line = pending.substr(0, newline);
-            pending.erase(0, newline + 1);
-            if (line.empty()) return -1;
-            OmsJournalEvent evt;
-            if (!ParseJsonLine(line, evt)) return -1;
-            events.push_back(evt);
+            const off_t remaining = metadata.st_size - offset;
+            const std::size_t wanted = remaining > static_cast<off_t>(sizeof(buffer)) ?
+                sizeof(buffer) : static_cast<std::size_t>(remaining);
+            const ssize_t count = ReadAt(m_fd, buffer, wanted, offset);
+            if (count <= 0) return -1;
+            offset += count;
+            // Bound pending BEFORE allocation, including a record split across
+            // blocks or an unterminated final record. Never accumulate a giant
+            // hostile line and only then discover that it exceeds the limit.
+            std::size_t begin = 0;
+            for (std::size_t i = 0; i < static_cast<std::size_t>(count); ++i)
+            {
+                if (buffer[i] != '\n') continue;
+                const std::size_t length = i - begin;
+                if (length > m_replayMaxRecordBytes - pending.size())
+                {
+                    self->m_replayReasonCode = "OMS_REPLAY_RECORD_BYTE_LIMIT";
+                    return -1;
+                }
+                pending.append(buffer + begin, length);
+                if (events.size() == m_replayMaxRecords)
+                {
+                    self->m_replayReasonCode = "OMS_REPLAY_RECORD_COUNT_LIMIT";
+                    return -1;
+                }
+                OmsJournalEvent event;
+                if (pending.empty() || !ParseJsonLine(pending, event))
+                {
+                    self->m_replayReasonCode = "OMS_REPLAY_INVALID_RECORD";
+                    return -1;
+                }
+                // Explicit bounded growth avoids vector's implementation-defined
+                // overshoot. File/record/count caps jointly bound materialization;
+                // they are not a promise about allocator overhead or process RSS.
+                if (events.size() == events.capacity())
+                    events.reserve(std::min(m_replayMaxRecords,
+                        std::max<std::size_t>(16U, events.capacity() * 2U)));
+                events.push_back(std::move(event));
+                self->m_replayValidatedRecords = events.size();
+                pending.clear();
+                begin = i + 1;
+            }
+            const std::size_t trailing = static_cast<std::size_t>(count) - begin;
+            if (trailing > m_replayMaxRecordBytes - pending.size())
+            {
+                self->m_replayReasonCode = "OMS_REPLAY_RECORD_BYTE_LIMIT";
+                return -1;
+            }
+            pending.append(buffer + begin, trailing);
+        }
+        if (!pending.empty())
+        {
+            self->m_replayReasonCode = "OMS_REPLAY_TORN_RECORD";
+            return -1;
         }
     }
-    if (!pending.empty()) return -1;
-    if (!self->ValidatePinnedPathLocked()) return -1;
-    if (events.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+    catch (const std::bad_alloc&)
+    {
+        self->m_replayReasonCode = "OMS_REPLAY_ALLOCATION_FAILURE";
         return -1;
+    }
+    catch (const std::length_error&)
+    {
+        self->m_replayReasonCode = "OMS_REPLAY_ALLOCATION_FAILURE";
+        return -1;
+    }
+    struct stat after;
+    if (!self->ValidatePinnedPathLocked() || !StatFileDescriptor(m_fd, after) ||
+        after.st_size != metadata.st_size ||
+        after.st_mtim.tv_sec != metadata.st_mtim.tv_sec ||
+        after.st_mtim.tv_nsec != metadata.st_mtim.tv_nsec ||
+        after.st_ctim.tv_sec != metadata.st_ctim.tv_sec ||
+        after.st_ctim.tv_nsec != metadata.st_ctim.tv_nsec)
+    {
+        self->m_replayReasonCode = "OMS_REPLAY_SNAPSHOT_CHANGED";
+        return -1;
+    }
+    // No callback has run on ANY input/budget/allocation failure above. Keep
+    // callbacks outside the journal mutex so existing reentrant readers work.
+    self->m_replayReasonCode = "OMS_REPLAY_VALIDATED";
     lk.unlock();
     if (onEvent)
         for (std::vector<OmsJournalEvent>::const_iterator it = events.begin();

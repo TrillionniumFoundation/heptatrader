@@ -6,11 +6,17 @@ import argparse
 from collections import Counter
 import json
 import math
+import os
+import stat
 from pathlib import Path
 import sys
 from typing import Any
 
 CURRENT_SCHEMA = 4
+DEFAULT_MAX_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_RECORDS = 65536
+DEFAULT_MAX_RECORD_BYTES = 256 * 1024
+
 NUMERIC_FIELDS = (
     "qty",
     "price",
@@ -105,28 +111,81 @@ def validate_event(value: Any, line: int) -> dict[str, Any]:
     return value
 
 
-def load_events(path: Path) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
+def read_records(path: Path, *, max_bytes: int = DEFAULT_MAX_BYTES,
+                 max_records: int = DEFAULT_MAX_RECORDS,
+                 max_record_bytes: int = DEFAULT_MAX_RECORD_BYTES,
+                 observations: dict[str, Any] | None = None):
+    """Bounded read-only parser. Never opens a special file for blocking I/O.
+
+    Callers must consume to EOF before publishing a successful summary. The
+    iterator is for offline diagnostics, not an incremental runtime projector.
+    """
+    for name, value, ceiling in (("bytes", max_bytes, 1024**3),
+                                 ("records", max_records, 1000000),
+                                 ("record bytes", max_record_bytes, 1024**2)):
+        if type(value) is not int or not 1 <= value <= ceiling:
+            raise JournalError(f"invalid {name} budget")
+    metrics = observations if observations is not None else {}
+    metrics.update(bytes=0, records=0, largest_record_bytes=0,
+                   limits={"bytes": max_bytes, "records": max_records,
+                           "record_bytes": max_record_bytes})
+    fd = -1
     try:
-        with path.open("r", encoding="utf-8") as stream:
-            for line_number, raw in enumerate(stream, 1):
-                text = raw.rstrip("\r\n")
-                if not text:
-                    continue
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise JournalError("journal must be a regular non-symlink file")
+        if before.st_size > max_bytes:
+            raise JournalError("OMS_REPLAY_BYTE_LIMIT")
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            for number in range(1, max_records + 2):
+                raw = stream.readline(max_record_bytes + 2)
+                if not raw:
+                    break
+                metrics["bytes"] += len(raw)
+                if metrics["bytes"] > max_bytes:
+                    raise JournalError("OMS_REPLAY_BYTE_LIMIT")
+                if number > max_records:
+                    raise JournalError("OMS_REPLAY_RECORD_COUNT_LIMIT")
+                length = len(raw) - (1 if raw.endswith(b"\n") else 0)
+                if length > max_record_bytes:
+                    raise JournalError("OMS_REPLAY_RECORD_BYTE_LIMIT")
+                if not raw.endswith(b"\n"):
+                    raise JournalError("OMS_REPLAY_TORN_RECORD")
+                if length == 0:
+                    raise JournalError(f"line {number}: empty record")
                 try:
-                    value = json.loads(
-                        text,
-                        object_pairs_hook=unique_object,
-                        parse_constant=reject_constant,
-                    )
+                    value = json.loads(raw[:-1].decode("utf-8"),
+                                       object_pairs_hook=unique_object,
+                                       parse_constant=reject_constant)
                 except (json.JSONDecodeError, UnicodeError, JournalError) as error:
-                    raise JournalError(f"line {line_number}: invalid JSON: {error}") from error
-                events.append(validate_event(value, line_number))
-    except OSError as error:
-        raise JournalError(f"cannot read {path}: {error}") from error
-    if not events:
+                    raise JournalError(f"line {number}: invalid JSON: {error}") from error
+                metrics["records"] = number
+                metrics["largest_record_bytes"] = max(metrics["largest_record_bytes"], length)
+                yield validate_event(value, number)
+            after = os.fstat(stream.fileno())
+            current = os.stat(path, follow_symlinks=False)
+            identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+            if identity(before) != identity(after) or identity(after) != identity(current):
+                raise JournalError("OMS_REPLAY_SNAPSHOT_CHANGED")
+    except (OSError, OverflowError) as error:
+        raise JournalError(f"cannot safely read journal: {error}") from error
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if not metrics["records"]:
         raise JournalError("journal contains no events")
-    return events
+    metrics["warning_at_80_percent"] = (
+        metrics["bytes"] * 5 >= max_bytes * 4 or
+        metrics["records"] * 5 >= max_records * 4 or
+        metrics["largest_record_bytes"] * 5 >= max_record_bytes * 4)
+    metrics["paper_authorized"] = False
+    metrics["live_authorized"] = False
+
+
+def load_events(path: Path, **budgets: Any) -> list[dict[str, Any]]:
+    return list(read_records(path, **budgets))
 
 
 def dedup_key(event: dict[str, Any]) -> tuple[Any, ...]:
@@ -198,12 +257,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--journal", type=Path, default=Path("runtime-logs/oms_journal.jsonl"))
     parser.add_argument("--minimum-schema", type=int, default=1)
     parser.add_argument("--require-event", action="append", default=[])
+    parser.add_argument("--max-bytes", type=int, default=DEFAULT_MAX_BYTES)
+    parser.add_argument("--max-records", type=int, default=DEFAULT_MAX_RECORDS)
+    parser.add_argument("--max-record-bytes", type=int, default=DEFAULT_MAX_RECORD_BYTES)
+    parser.add_argument("--capacity-json", action="store_true",
+                        help="stream a bounded read-only capacity summary; no order identities")
     args = parser.parse_args(argv)
     if args.minimum_schema < 1 or args.minimum_schema > CURRENT_SCHEMA:
         parser.error(f"--minimum-schema must be between 1 and {CURRENT_SCHEMA}")
 
     try:
-        events = load_events(args.journal)
+        budgets = dict(max_bytes=args.max_bytes, max_records=args.max_records,
+                       max_record_bytes=args.max_record_bytes)
+        if args.capacity_json:
+            metrics: dict[str, Any] = {}
+            seen_events = set()
+            for event in read_records(args.journal, observations=metrics, **budgets):
+                if event.get("schema_version", 1) < args.minimum_schema:
+                    raise JournalError("record below required minimum schema")
+                if event["event"] in args.require_event:
+                    seen_events.add(event["event"])
+            if set(args.require_event) - seen_events:
+                raise JournalError("required event types missing")
+            print(json.dumps(metrics, sort_keys=True, separators=(",", ":")))
+            return 0
+        events = load_events(args.journal, **budgets)
         below = [event["_line"] for event in events if event.get("schema_version", 1) < args.minimum_schema]
         if below:
             raise JournalError(

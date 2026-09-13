@@ -67,3 +67,13 @@ checks. A new proposed deletion must be checked against includes, CMake sources,
 installation rules and test fixtures, not only directory ownership. This
 cleanup does not change on-disk journal/lease formats, Broker profiles,
 credentials, network permissions or authorization defaults.
+
+## Additional cleanup and retained consumers
+
+The redundant second `HEPTA_BUILD_LEGACY_MONOLITH` branch inside
+`cmake/HeptaLegacy.cmake` is unnecessary because inclusion already requires that
+option and the file rejects disabled use at entry. It is removed without
+changing any target, source or overlay requirement. Existing optional runtime
+sources and shared `Interface/`/`Tools/` consumers are retained. No historical
+lease reader is removed without a deployment-state inventory; see
+[`persistence-support-window.md`](persistence-support-window.md).

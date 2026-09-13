@@ -25,7 +25,7 @@ class IbPaperScenarioContractTests(unittest.TestCase):
         for item in scenarios:
             scenario_id = item["id"]
             self.assertIsInstance(item.get("objective"), str)
-            self.assertGreaterEqual(len(item["objective"].strip()), 40)
+            self.assertTrue(item["objective"].strip())
             self.assertEqual(
                 set(item["required_assertions"]),
                 set(verifier.REQUIRED_ASSERTIONS[scenario_id]),

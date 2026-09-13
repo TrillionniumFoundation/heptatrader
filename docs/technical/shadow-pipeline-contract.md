@@ -148,10 +148,14 @@ evaluator, vetoes, tamper rejection, no-lookahead sampling, OHLC boundaries,
 missing bars, two-sided fill/slippage, holding/overlap/drawdown, immutable
 publication and interrupted **empty** history-head recovery.
 
-`test_research_contract_smoke.py` remains import/syntax and forbidden-SDK lint;
-it is not behavioral proof or a sandbox. The full capture→extract→normalize→
-nonempty history→runner→sealed replay/final-audit campaign and provider-format
-fixtures remain `SHADOW-INTEGRATION-001` in the gap register. The tests above do
-not close that integration gap. Promotion still requires a separately bounded
-execution boundary and Broker-observed qualification; PAPER and LIVE authority
-remain false.
+`test_research_contract_smoke.py` is import/syntax and forbidden-SDK lint,
+not behavioral proof or a sandbox. The synthetic capture → extraction →
+normalization → nonempty history → runner → final-audit/sealed replay scenario
+is exercised by `test_shadow_pipeline_integration.py` and
+`shadow_pipeline_fixture.py`; see [finalization](shadow-finalization.md).
+The current work status and scoped evidence are maintained only under
+`SHADOW-INTEGRATION-001` in [`../gap-register.json`](../gap-register.json),
+not copied into this protocol contract. Synthetic transport/provider fixtures
+do not certify current provider availability, real market truth or profit.
+Promotion still requires a separately bounded execution boundary and
+Broker-observed qualification. No source test grants PAPER or LIVE authority.

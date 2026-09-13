@@ -73,3 +73,59 @@ The repository deliberately does not claim that the external harness, credential
 Any mismatch between the reviewable scenario contract and the executable verifier fails source CI. Any mismatch between the pinned harness, candidate identity, operation allowlist, Broker environment, evidence contract or terminal state fails qualification. Missing external infrastructure leaves `paper_authorized=false`; LIVE remains unavailable.
 
 Branch-pointer movement after immutable candidate admission is not a failure condition. It is repository navigation state, not a mutation of the candidate bytes. See [`../adr/0003-immutable-artifact-paper-qualification.md`](../adr/0003-immutable-artifact-paper-qualification.md).
+
+## Attempt custody and verified publication
+
+`run_ib_paper_artifact_qualification.sh` is the stable entry point; its isolated
+Python controller is `scripts/run_ib_paper_campaign.py`. The controller reserves
+an attempt directory before launching the separately digest-pinned harness.
+Existing attempt paths, including failed attempts, cannot be reused. The trusted
+attempt parent must already exist. Reservation fsyncs the parent directory as
+well as the attempt metadata before any harness child can start.
+
+```text
+attempt/attempt.json                  # bounded source/binary/harness/status metadata
+attempt/evidence/                    # retained private raw evidence; never recursively uploaded
+attempt/evidence/qualification-result.json
+attempt/evidence/qualification-verification.json  # only after full verifier acceptance
+attempt/verified-evidence.tar         # verified explicit file allowlist only
+sibling .hepta-paper-private-*/       # private HOME; outside every publication path
+```
+
+States are RESERVED, RUNNING, HARNESS_SUCCEEDED_AWAITING_VERIFICATION,
+HARNESS_FAILED, TIMEOUT, INTERRUPTED or CONTROLLER_FAILED. None grants trading
+authorization. The fixed timeout is 900 seconds plus at most 30 seconds for
+termination; test-only calls may shorten, never enlarge, the bounds. The child
+runs in a separate process group with a cleared environment. INT/TERM/HUP and
+timeout stop the child group and retain attempt/raw evidence. A hard kill or
+power loss can leave RESERVED/RUNNING: treat it as incomplete, not as safe to
+resend. The separately pinned host harness remains responsible for cgroup,
+network/proxy, credentials, durable bounded evidence and final Broker cleanup.
+
+Private HOME is removed separately after child termination. stdout/stderr are
+not replayed into Actions logs because they may contain Broker secrets; the
+external harness must emit bounded sanitized machine evidence. Failures retain
+raw files on the trusted host for operator investigation. Source code cannot
+infer that arbitrary raw text is secret-free. Retention/quotas and secure host
+cleanup require operational ownership, not a blanket `rm -rf` trap.
+
+The final verifier receives `--attempt`, checks successful controller state and
+matching immutable bindings, then validates the result and every referenced
+scenario file. `--publication-archive` atomically creates a no-overwrite tar
+containing only the result, verification receipt and the verified referenced
+files. It rechecks file identity/digests while reading them. Extra files, links,
+FIFOs, drift and failed results do not get published. The workflow uploads only
+attempt metadata, that archive and the receipt attestation bundle. A failed
+attempt normally has no verified archive; its private raw directory stays on
+host and is not an Actions artifact.
+
+Behavior is exercised without Broker I/O by `test_paper_campaign_evidence.py`,
+`test_paper_evidence_publication.py` and executable workflow-block tests in
+`test_ib_workflow_interfaces.py`. The structure checker is not a replacement
+for those behaviors or external qualification.
+
+The controller is included in both exact-index critical paths and the candidate
+builder's trusted-file digest set. Changing it requires new provenance and a
+new candidate/qualification binding; an old receipt lacking that file is not
+silently accepted. `test_campaign_provenance.py` changes actual fixture bytes
+and verifies digest drift/rejection rather than counting source tokens.

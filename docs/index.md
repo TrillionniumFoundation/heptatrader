@@ -136,3 +136,10 @@ module document.
 The historical `HeptaStrategy/`, `HeptaSimulator/`, legacy CSV reconciliation reporter, large data files and deprecated bridges remain explicitly owned by the LEGACY module. Eight unused Visual Studio assets were retired; shared `Interface/` and `Tools/` headers remain where required. See [`technical/legacy-retirement.md`](technical/legacy-retirement.md). Legacy presence does not authorize deployment or provide an alternate order path.
 
 Open work and release-profile blockers are recorded in `gap-register.json`. A green source check validates structure and ownership, not universal project completeness. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
+
+## Detailed wire and recovery references
+
+- [`technical/wire-operation-contracts.md`](technical/wire-operation-contracts.md)
+- [`technical/wire-field-reference.md`](technical/wire-field-reference.md)
+- [`technical/oms-recovery-capacity.md`](technical/oms-recovery-capacity.md)
+- [`technical/persistence-support-window.md`](technical/persistence-support-window.md)

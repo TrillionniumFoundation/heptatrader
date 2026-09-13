@@ -12,7 +12,10 @@ Those controls do not match the actual ownership model. They also do not mitigat
 
 ## Decision
 
-The repository is owner-operated.
+The intended repository operating model is owner-operated. This decision is
+policy intent, not a statement that hosted Rulesets have already been removed.
+The permissions below are desired operating choices and remain subject to the
+actual server-side rules until the owner changes them explicitly.
 
 - The owner may commit, merge, revert, tag, or release directly.
 - Pull requests, reviews, CI checks, and branch settings are optional engineering aids.
@@ -27,6 +30,19 @@ LIVE remains unavailable.
 
 ## Consequences
 
-Routine development and release no longer depend on organization-administration APIs or artificial reviewer identities. The owner accepts repository-change risk and may use CI or review when useful. Execution authority, journal-before-send, risk checks, credential isolation, artifact integrity, kill-switch behavior, uncertain-outcome recovery, PAPER-only scope, and final Broker reconciliation remain unchanged.
+The intended simplified model does not require organization-administration
+APIs or artificial reviewer identities. Source changes cannot enact that server
+configuration, and no review identity or successful merge may be fabricated. The owner accepts repository-change risk and may use CI or review when useful. Execution authority, journal-before-send, risk checks, credential isolation, artifact integrity, kill-switch behavior, uncertain-outcome recovery, PAPER-only scope, and final Broker reconciliation remain unchanged.
 
 For the current qualification identity model, see [`0003-immutable-artifact-paper-qualification.md`](0003-immutable-artifact-paper-qualification.md).
+
+## Observed implementation gap (2026-09-13)
+
+The live Ruleset read during the audit, ID `22597364`, remained active with two
+approvals, code-owner/last-push review requirements and Merge Queue. It retained
+the real core, documentation and GCC/Clang required contexts. This conflicts
+with the optional-review/direct-owner intent above. No server rule was changed
+by the cleanup. Until an explicit owner decision and actual administrative
+change, contributors must follow the enforced settings. This observation is a
+dated fact, not a permanent new source gate. Record a later server decision here
+rather than asserting that editing an ADR changed GitHub permissions.

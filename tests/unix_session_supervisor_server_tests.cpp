@@ -657,7 +657,12 @@ SessionSupervisorResult Call(const std::string& socketPath,
 	std::string body;
 	std::string reason;
 	assert(SessionSupervisorProtocol::EncodeRequest(request, body, reason));
-	assert(TypedToolProtocol::WriteFrame(client, body, 1000, reason));
+	if (!TypedToolProtocol::WriteFrame(client, body, 1000, reason))
+	{
+		std::cerr << "WriteFrame failed: operation="
+			<< static_cast<int>(request.operation) << " reason=" << reason << std::endl;
+		assert(false);
+	}
 	std::string response;
 	assert(TypedToolProtocol::ReadFrame(client, 16384, 5000, response, reason));
 	SessionSupervisorResult result;
@@ -1014,9 +1019,17 @@ void TestSupervisorPeerCredentialAndLifecycle()
 		[](const SessionSupervisorRequest&, TradingToolHostSessionBinding&, std::string&) {
 			return false;
 		}, reason, 4096, 1000));
-	result = Call(socketPath, provision);
+	// Peer authentication precedes frame reads. The server may send its
+	// rejection and close before an unauthorized caller can write anything.
+	// Requiring WriteFrame success here races that correct early rejection.
+	const int deniedClient = Connect(socketPath);
+	std::string deniedBody;
+	assert(TypedToolProtocol::ReadFrame(deniedClient, 16384, 5000, deniedBody, reason));
+	assert(SessionSupervisorProtocol::DecodeResult(deniedBody, result, reason));
+	close(deniedClient);
 	assert(!result.accepted);
 	assert(result.ReasonCode() == "SUPERVISOR_PEER_UID_DENIED");
+	assert(host.SessionCount() == 0);
 	server.Stop();
 
 	const int activatedFd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);

@@ -29,3 +29,11 @@ Publishers and waiters are synchronized without holding a lock across Broker I/O
 ## Tests and diagnostics
 
 `tests/execution_event_hub_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/agent_simulator_e2e_tests.cpp`, and Gateway composition tests cover ordering, cursor behavior, owner isolation, timeout, transport shutdown, and full simulator lifecycle. Metrics should expose published events, dropped/rejected events, retained depth, oldest/newest sequence, active waiters, and drain duration.
+
+## Exact wire reference
+
+See [`wire-operation-contracts.md`](wire-operation-contracts.md) for HEV2 v2
+framing, exact Wait/identity request fields, timeout units and golden examples;
+[`wire-field-reference.md`](wire-field-reference.md) contains generated field
+tags and producer bindings. Sequence continuity, service identity and read
+status must be evaluated together before treating an event as current state.

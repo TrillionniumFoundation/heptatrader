@@ -60,3 +60,10 @@ Expose append latency, fsync latency, file size, replay duration, records read, 
 ## Test expectations
 
 Tests inject path replacement and I/O failure, verify synchronous critical durability, callback-atomic replay, same-command replay, conflicting-command rejection, malformed records, restart recovery, and complete v4 broker-field round trips. New schema fields require both old-fixture and current-writer tests.
+
+## Recovery resource contract
+
+See [`OMS recovery capacity`](../technical/oms-recovery-capacity.md) for explicit
+byte/count/record limits, failure reasons, read-only capacity diagnostics and
+operator recovery actions. Budget failures preserve every journal byte and
+command identity; they are never permission to reset the ledger.
