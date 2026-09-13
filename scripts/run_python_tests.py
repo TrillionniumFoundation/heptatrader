@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TESTS = frozenset({
     "test_documentation_control_plane.py",
     "test_documentation_structure.py",
+    "test_source_workflow_commands.py",
     "test_component_coverage.py",
     "test_systemd_units.py",
     "test_build_ownership.py",

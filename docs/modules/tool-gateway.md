@@ -75,3 +75,10 @@ maintaining a second handwritten copy of every tool schema in this document.
 Change the registry, both clients and positive/negative protocol vectors together
 when changing a wire contract. Renaming a private function does not require a
 new source-token gate.
+
+## Actual operational observations
+
+The [Gateway observation contract](../technical/gateway-operational-observations.md)
+maps actual server counters, bounded histograms, five-second daemon output and
+the installed read-only reporter. These are process observations, not a second
+execution or authorization interface.

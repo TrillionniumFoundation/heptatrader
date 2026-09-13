@@ -75,3 +75,11 @@ installs no IB authority units or IB tmpfiles rule. The
 uses real PID 1 on a disposable host, without copying loose build binaries,
 patching unit paths or weakening daemon sandboxing. Target-host and Broker
 acceptance remain distinct from this test.
+
+## Stopped core-state custody
+
+The [offline core-state archive](../technical/core-state-archive.md) uses the
+actual execution and supervisor locks and restores only a new private tree.
+The complete journal and encrypted lease are preserved; keys remain in separate
+secret custody. It is not live compaction, a general IB backup, or proof of
+actual-host acceptance.

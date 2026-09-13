@@ -54,6 +54,7 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
         raise ValueError("invalid release version")
     candidate = output / f"heptatrader-{version}-core-{source}.tar.gz"
     environment = dict(os.environ)
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["HEPTA_RELEASE_INTEGRATION_BUILD_DIR"] = str(build)
     environment["PYTHONWARNINGS"] = "error::ResourceWarning"
     for lane in ("install", "core"):

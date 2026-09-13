@@ -133,6 +133,8 @@ ExecutionCoordinator::ExecutionCoordinator(OmsJournal& journal,
                                            const ExecutionCoordinatorCallbacks& callbacks)
     : m_journal(journal), m_callbacks(callbacks)
 {
+    if (callbacks.placement.RequiresActivation() && !callbacks.onIbOrderPlaced)
+        throw std::invalid_argument("reserving venue requires owner projection");
 }
 
 const char* ExecutionCoordinator::StatusName(ExecutionCommandStatus status)
@@ -393,7 +395,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
             -1, requestHash);
     if (m_mutationBlocked)
         return RejectLocked(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1, requestHash);
-    if (!m_callbacks.placeIbOrder && !m_callbacks.placeIbOrderCorrelated && !m_callbacks.placeIbOrderCommandCorrelated)
+    if (!m_callbacks.placement.Configured())
         return RejectLocked(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
                             -1, requestHash);
     if (command.expiresAtMs > 0 && OmsJournal::NowEpochMs() > command.expiresAtMs)
@@ -484,14 +486,7 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
     std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    out.clear();
-    for (std::vector<PlaceSendAttempt>::const_iterator it =
-             m_placeSendAttempts.begin(); it != m_placeSendAttempts.end(); ++it)
-    {
-        if (it->account == account && it->executionDomain == executionDomain &&
-            it->tsMs > cutoffMs)
-            out.push_back(it->tsMs);
-    }
+    m_placeSendAttempts.ReadTimes(account, executionDomain, cutoffMs, out);
 }
 
 void ExecutionCoordinator::ResetRecoveryProjectionLocked()

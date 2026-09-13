@@ -56,8 +56,8 @@ Python ownership is defined once by `scripts/run_python_tests.py`: core,
 source, install and isolated process are disjoint and exhaustive partitions.
 Core Runtime CI executes core/install/process plus native and real systemd
 acceptance; Documentation Control Plane executes source plus structural checks.
-Qualification Source Audit retains syntax/exact-index observation only; it does
-not repeat those unittest files. GCC and Clang sanitizers remain independent
+Documentation Control Plane also owns the shell-syntax and before/after
+exact-index observations; the standalone Qualification Source Audit is retired. GCC and Clang sanitizers remain independent
 native executions, not duplicate Python discovery.
 
 The optional PAPER workflow is parsed as YAML by

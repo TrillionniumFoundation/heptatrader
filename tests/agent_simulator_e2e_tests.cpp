@@ -183,11 +183,12 @@ void TestAgentToolSocketToSimulatorLifecycle()
     std::map<long, IBOrderLite> submittedOrders;
 
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrder = [&](const IBContractLite& contract, const IBOrderLite& order, long* orderId) {
-        const bool placed = venue.PlaceOrder(contract, order, orderId);
-        if (placed && orderId != nullptr) submittedOrders[*orderId] = order;
-        return placed;
-    };
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand& command, const std::string& correlation) -> VenuePlaceResult {
+        const VenuePlaceResult result = venue.PlaceOrderWithResult(command.contract, command.order, correlation, true);
+        if (result.disposition == VenuePlaceDisposition::Submitted)
+            submittedOrders[result.orderId] = command.order;
+        return result;
+    });
     callbacks.canCancelIbOrder = [&](long orderId, std::string* reason) { return venue.CanCancelOrder(orderId, reason); };
     callbacks.cancelIbOrder = [&](long orderId) { return venue.CancelOrder(orderId); };
     callbacks.lastIbRejectReason = [&]() { return venue.LastRejectReason(); };

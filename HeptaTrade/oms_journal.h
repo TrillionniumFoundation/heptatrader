@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include "oms_latency_observation.h"
+
 #include <cstdint>
 #include <functional>
 #include <mutex>
@@ -76,6 +78,9 @@ struct OmsJournalHealthSnapshot {
     std::size_t replayObservedBytes = 0;
     std::size_t replayValidatedRecords = 0;
     std::string replayReasonCode;
+    OmsLatencySummary appendLatency;
+    OmsLatencySummary dataSyncLatency;
+    OmsLatencySummary replayValidationLatency;
     // Online written-ledger capacity; false is unknown, never an observed zero.
     bool capacityKnown = false;
     std::uint64_t currentBytes = 0;
@@ -124,6 +129,9 @@ private:
     std::size_t m_replayObservedBytes = 0;
     std::size_t m_replayValidatedRecords = 0;
     std::string m_replayReasonCode;
+    OmsLatencySummary m_appendLatency;
+    OmsLatencySummary m_dataSyncLatency;
+    OmsLatencySummary m_replayValidationLatency;
     bool m_capacityKnown = false;
     std::uint64_t m_capacityBytes = 0;
     std::uint64_t m_capacityRecords = 0;

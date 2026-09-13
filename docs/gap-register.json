@@ -376,6 +376,54 @@
         "ib-paper"
       ],
       "disposition": "Closed against commit 89faa3a88e841ac1cca4cd14f0312904916a2a63, tree a5de9ebce0b04ad7cfd1c7f1f6d42d820b64f4e1, preserving PR73 and PR76. Exact-head attempt-1 GitHub runs passed: Core 34741212566, Documentation 34741212568, Qualification Source Audit 34741212565, and both full GCC/Clang sanitizer jobs in 34741212577. Core/source/install/process Python partitions executed 296+65+4+6=371 cases without skips; native CTest passed 25/25. Downloaded process and real PID1 systemd receipts bind candidate package SHA-256 5dcb0411d68760fac7608eff542c5b0cb0d314c4d6574a16cf5ed885f0b44913; distinct-source shared-state rollback, offline checkpoint recovery and the 1208-sample SHADOW pipeline passed. This closes integrated source validation only, not HOST-ROLLBACK-001, arbitrary schema compatibility, production SLOs or external IB qualification. PAPER/LIVE authorization remains false."
+    },
+    {
+      "id": "AUDIT-INTEGRATION-002",
+      "domain": "REPOSITORY",
+      "state": "OPEN",
+      "summary": "Complete integrated callback/index/OMS/Gateway/archive source needs exact-commit full build, installed-process, both sanitizers and remote PID1 evidence.",
+      "evidence": [
+        "docs/technical/venue-placement-contract.md",
+        "docs/technical/oms-operational-report.md",
+        "tests/venue_placement_cases.h",
+        "tests/python/test_oms_operational_report.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Each new source commit has its own verification obligation. Prior local or PR-head evidence is not promoted to new remote or host acceptance."
+    },
+    {
+      "id": "OMS-LIFECYCLE-002",
+      "domain": "REPOSITORY",
+      "state": "OPEN",
+      "summary": "Lossless locked offline core archive and Gateway runtime metrics are implemented; indefinite active-journal growth/compaction and complete execution/state/risk time-series remain open.",
+      "evidence": [
+        "docs/technical/oms-operational-report.md",
+        "docs/OBSERVABILITY-METRICS.md",
+        "docs/technical/persistence-support-window.md",
+        "scripts/hepta_core_state_archive.py",
+        "tests/python/test_core_state_archive.py",
+        "docs/technical/core-state-archive.md",
+        "scripts/hepta_gateway_report.py",
+        "tests/python/test_gateway_observation.py",
+        "docs/technical/gateway-operational-observations.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "New functions require exact-candidate tests. Offline archives preserve all journal bytes and keep the key in separate custody. They do not truncate a live ledger, certify actual-host restoration, deliver host notifications, or implement all execution/risk metrics. No blanket closure is claimed."
+    },
+    {
+      "id": "OWNER-RULESET-002",
+      "domain": "EXTERNAL",
+      "state": "OPEN",
+      "summary": "Ruleset 22597364 still enforces two approvals, code-owner review and merge queue despite owner-operated intent.",
+      "evidence": [
+        "docs/technical/owner-ruleset-transition.md",
+        "docs/adr/0002-owner-operated-repository.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Server read on 2026-09-13 confirmed active rules; no administrative write or bypass performed."
     }
   ]
 }

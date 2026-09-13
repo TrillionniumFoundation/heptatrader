@@ -8,7 +8,8 @@
 
 // Bounded, identifier-free process telemetry. It grants no authority and does
 // not certify schema validity, checksums, successful replay or economic state.
-inline std::string OmsCapacityObservation(const OmsJournalHealthSnapshot& h, long long observedAtMs)
+inline std::string OmsCapacityObservation(const OmsJournalHealthSnapshot& h, long long observedAtMs,
+    const std::string& serviceEpoch = std::string(), std::uint64_t monotonicMs = 0)
 {
     const std::uint64_t maximum = std::numeric_limits<std::uint64_t>::max();
     const bool pendingFits = h.queueDepth <= maximum - h.bufferedDepth;
@@ -37,6 +38,18 @@ inline std::string OmsCapacityObservation(const OmsJournalHealthSnapshot& h, lon
             << ",\"byte_headroom\":" << (h.currentBytes < h.replayMaxBytes ? h.replayMaxBytes - h.currentBytes : 0)
             << ",\"record_headroom\":" << (projected < h.replayMaxRecords ? h.replayMaxRecords - projected : 0);
     else out << ",\"bytes\":null,\"records\":null,\"byte_headroom\":null,\"record_headroom\":null";
+    const bool safeEpoch = !serviceEpoch.empty() && serviceEpoch.size() <= 128 &&
+        serviceEpoch.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_:.") == std::string::npos;
+    out << ",\"service_epoch\":";
+    if (safeEpoch) out << '\"' << serviceEpoch << '\"';
+    else out << "null";
+    out << ",\"monotonic_ms\":" << monotonicMs;
+    out << ",\"append_latency\":";
+    WriteOmsLatencyJson(out, h.appendLatency);
+    out << ",\"data_sync_latency\":";
+    WriteOmsLatencyJson(out, h.dataSyncLatency);
+    out << ",\"replay_validation_latency\":";
+    WriteOmsLatencyJson(out, h.replayValidationLatency);
     out << ",\"authorization_effect\":\"NONE\"}";
     return out.str();
 }

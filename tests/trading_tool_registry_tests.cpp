@@ -118,11 +118,12 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
     int cancelCalls = 0;
     DecisionLeaseManager leases;
     ExecutionCoordinatorCallbacks executionCallbacks;
-    executionCallbacks.placeIbOrder = [&](const IBContractLite&, const IBOrderLite&, long* orderId) {
+    executionCallbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
+        long venueOrderId = -1;
         ++placeCalls;
-        *orderId = 701;
-        return true;
-    };
+        venueOrderId = 701;
+        return VenuePlaceResult::Submitted(venueOrderId);
+    });
     executionCallbacks.cancelIbOrder = [&](long orderId) {
         ++cancelCalls;
         return orderId == 701;

@@ -799,15 +799,15 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     simulatorRisk.maxSnapshotAgeMs = static_cast<std::int64_t>(m_config.simulatorQuoteTtlMs);
     m_venue.SetRiskConfig(simulatorRisk);
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.placeIbOrderCorrelated = [this](const InstrumentRef& contract,
-                                              const OrderIntent& order,
-                                              const std::string& correlationId,
-                                              long* orderId) {
-        return m_venue.PlaceOrderCorrelated(contract, order, correlationId, orderId, false);
-    };
-    callbacks.activatePlacedOrder = [this](long orderId, std::string* detail) {
-        return m_venue.ActivateOrder(orderId, detail);
-    };
+    callbacks.placement = VenuePlacement::Reserving(
+        [this](const PlaceOrderCommand& command, const std::string& correlation) {
+            return m_venue.PlaceOrderWithResult(command.contract, command.order, correlation, false);
+        },
+        [this](long orderId) {
+            std::string detail;
+            return m_venue.ActivateOrder(orderId, &detail)
+                ? VenueActivationResult::Activated() : VenueActivationResult::Uncertain(detail);
+        });
     callbacks.cancelIbOrder = [this](long orderId) { return m_venue.CancelOrder(orderId); };
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
         return m_venue.CanCancelOrder(orderId, detail);

@@ -27,11 +27,11 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
                     "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN" : reason;
             return !blocked;
         };
-    callbacks.placeIbOrderCommandCorrelated = [this](
+    callbacks.placement = VenuePlacement::Immediate([this](
         const IbPlaceOrderCommand& command,
-        const std::string& correlation, long* orderId) {
+        const std::string& correlation) {
         NotifyTestStage("before_venue_send");
-        bool placed = false;
+        VenuePlaceResult outcome;
         {
             std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
             const AuthoritativePlaceQuoteBinding& quote = command.authoritativeQuoteBinding;
@@ -42,12 +42,12 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
             context.quoteBid = quote.bid; context.quoteAsk = quote.ask;
             context.quoteObservedAtMs = quote.observedAtMs;
             context.quoteStaleAfterMs = quote.staleAfterMs;
-            placed = m_adapter->PlaceOrderCorrelated(
-                command.contract, command.order, correlation, orderId, &context);
+            outcome = m_adapter->PlaceOrderWithResult(
+                command.contract, command.order, correlation, &context);
         }
-        if (placed) NotifyTestStage("after_venue_send");
-        return placed;
-    };
+        if (outcome.disposition == VenuePlaceDisposition::Submitted) NotifyTestStage("after_venue_send");
+        return outcome;
+    });
     callbacks.cancelIbOrder = [this](long orderId) {
         NotifyTestStage("before_cancel_venue_send");
         const bool cancelled = m_adapter->CancelOrder(orderId);

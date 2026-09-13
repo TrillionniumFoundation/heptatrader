@@ -85,8 +85,14 @@ int main(int argc, char**)
               << '\n';
 
     int received = 0;
+    auto nextObservation = std::chrono::steady_clock::now();
     for (;;)
     {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextObservation) {
+            std::cerr << runtime.OperationalObservation() << '\n';
+            nextObservation = now + std::chrono::seconds(5);
+        }
         struct timespec timeout;
         timeout.tv_sec = 1;
         timeout.tv_nsec = 0;

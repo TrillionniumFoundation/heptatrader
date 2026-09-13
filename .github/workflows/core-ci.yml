@@ -20,6 +20,8 @@ jobs:
     name: core-runtime-exact-head
     runs-on: ubuntu-24.04
     timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
     steps:
       - name: Checkout exact event subject without credentials
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262

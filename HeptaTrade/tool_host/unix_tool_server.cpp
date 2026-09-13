@@ -104,6 +104,7 @@ bool UnixToolServer::Activate(int fd, const std::string& socketPath, bool unlink
     {
         reason = "invalid server limits"; ::close(m_listenFd.exchange(-1)); return false;
     }
+    m_workerLimit = workerCount;
     m_maxRequestBytes = maxRequestBytes; m_ioTimeoutMs = ioTimeoutMs;
     m_maxPendingConnections = maxPendingConnections; m_maxConcurrentPerOwner = maxConcurrentPerOwner;
     m_maxPendingPerOwner = maxPendingPerOwner;
@@ -239,6 +240,12 @@ UnixToolServerHealth UnixToolServer::GetHealth() const
     health.ownerBackpressureRejections = m_ownerBackpressureRejections.load();
     health.deadlineRejections = m_deadlineRejections.load();
     health.cancelledRequests = m_cancelledRequests.load();
+    health.workerLimit = m_workerLimit;
+    health.pendingLimit = m_maxPendingConnections;
+    {
+        std::lock_guard<std::mutex> lock(m_activityMutex);
+        health.activity = m_activity;
+    }
     return health;
 }
 
@@ -383,6 +390,7 @@ bool UnixToolServer::DecodeIngress(
     bool& peerCredentialAvailable,
     bool& decodedRequest)
 {
+    const auto ingressStarted = std::chrono::steady_clock::now();
     struct ucred credentials;
     socklen_t credentialsLength = sizeof(credentials);
     std::string body;
@@ -416,6 +424,11 @@ bool UnixToolServer::DecodeIngress(
     else if (rejection.reasonCode.empty())
     {
         decodedRequest = true;
+    }
+    const auto elapsed = GatewayElapsedNs(ingressStarted);
+    {
+        std::lock_guard<std::mutex> lock(m_activityMutex);
+        m_activity.ingress.Observe(elapsed);
     }
     return rejection.reasonCode.empty();
 }
@@ -594,6 +607,7 @@ void UnixToolServer::QueueRequest(
 {
     const TradingToolHostRequest& request = pending.request;
     const int clientFd = pending.clientFd;
+    pending.queuedAt = std::chrono::steady_clock::now();
     BackpressureObserver observer;
     bool accepted = false;
     bool stopped = false;
@@ -654,6 +668,8 @@ void UnixToolServer::QueueRequest(
 
 void UnixToolServer::Execute(PendingRequest pending)
 {
+    const auto dispatchStarted = std::chrono::steady_clock::now();
+    const auto queueElapsed = GatewayElapsedNs(pending.queuedAt);
     ++m_activeRequests;
     const std::uint64_t nowMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -667,6 +683,12 @@ void UnixToolServer::Execute(PendingRequest pending)
         result.reasonCode = "QUEUE_DEADLINE_EXCEEDED";
     }
     else result = m_host.Invoke(pending.peerUid, pending.request);
+    const auto elapsed = GatewayElapsedNs(dispatchStarted);
+    {
+        std::lock_guard<std::mutex> lock(m_activityMutex);
+        m_activity.queueWait.Observe(queueElapsed);
+        m_activity.dispatch.Observe(elapsed);
+    }
     --m_activeRequests;
     m_decisionAudit.AppendOutcome(true, pending.peerUid, &pending.request,
         &pending.binding, pending.mutation, result);
@@ -684,8 +706,14 @@ void UnixToolServer::Execute(PendingRequest pending)
 void UnixToolServer::ReplyAndClose(int clientFd, const TradingToolResult& result)
 {
     std::string reason;
-    TypedToolProtocol::WriteFrame(clientFd,
+    const auto started = std::chrono::steady_clock::now();
+    const bool written = TypedToolProtocol::WriteFrame(clientFd,
         TypedToolProtocol::EncodeResultJson(result), m_ioTimeoutMs, reason);
+    const auto elapsed = GatewayElapsedNs(started);
+    {
+        std::lock_guard<std::mutex> lock(m_activityMutex);
+        m_activity.RecordReply(result.status, written, elapsed);
+    }
     ::shutdown(clientFd, SHUT_RDWR);
     ::close(clientFd);
 }

@@ -55,7 +55,9 @@ Broker `Filled` text alone is not economic fill proof when the venue contract re
 
 ## Observability
 
-Expose append latency, fsync latency, file size, replay duration, records read, duplicates skipped, corrupt records, unresolved send attempts, current schema version, last durable sequence, and poisoned-writer state. Application logs may refer to journal sequence and command ID but must not duplicate secrets.
+Implemented capacity output exposes written bytes/records, headroom, pending records and poisoned/unknown state. The [runtime cost contract](../technical/runtime-cost-observations.md) adds process-instance append, file-data-sync and replay-validation counts, total/maximum/last nanoseconds. Failed attempts are measured too; these are not durability receipts or latency percentiles.
+
+A complete interface for deduplication/corruption/unresolved-command counters, durable sequence and full recovery SLOs remains subject to the [metric inventory](../OBSERVABILITY-METRICS.md). Validation latency excludes application callbacks and Broker reconciliation. Never duplicate secrets in application logs.
 
 ## Test expectations
 
@@ -75,3 +77,10 @@ The [online capacity contract](../technical/oms-live-capacity.md) defines writte
 bytes/records, pending records, unknown values, thresholds, sampling and safe
 restart/checkpoint actions. No capacity threshold truncates history or blocks
 exit evidence. The current persisted schema and recovery authority are unchanged.
+
+## Operational reporting
+
+The installed [OMS report](../technical/oms-operational-report.md) reads bounded
+service-log exports, estimates same-epoch growth and produces executable alert
+classification and fixed-cardinality histogram text. It never changes journal
+bytes or grants admission. Deployment notification delivery remains external.
