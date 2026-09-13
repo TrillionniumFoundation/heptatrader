@@ -238,15 +238,8 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
             context, "OMS_FLATTEN_SEND_ATTEMPT_WRITE_FAILED",
             "flatten broker send was not attempted", -1,
             dispatch.requestHash);
-    if (m_placeSendAttemptKeys.insert(dispatch.requestKey).second)
-    {
-        PlaceSendAttempt attempt;
-        attempt.requestKey = dispatch.requestKey;
-        attempt.account = context.account;
-        attempt.executionDomain = context.executionDomain;
-        attempt.tsMs = sendAttempt.tsMs;
-        m_placeSendAttempts.push_back(attempt);
-    }
+    m_placeSendAttempts.Record(dispatch.requestKey, context.account,
+        context.executionDomain, sendAttempt.tsMs);
 
     std::string venueReason;
     if (m_callbacks.preVenueFlattenCheck)
@@ -276,66 +269,20 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
         }
     }
 
-    long orderId = -1;
-    bool placed = false;
-    bool callbackThrew = false;
-    try
-    {
-        placed = m_callbacks.placeIbReduceOnlyOrderCorrelated(
-            plan, dispatch.venueCorrelationId, &orderId);
-    }
-    catch (const std::exception& error)
-    {
-        callbackThrew = true;
-        venueReason = error.what();
-    }
-    catch (...)
-    {
-        callbackThrew = true;
-        venueReason = "unknown authoritative flatten exception";
-    }
-    if (callbackThrew)
+    const VenueSubmissionResult submission = ObserveVenueSubmission(
+        [&](long* orderId) {
+            return m_callbacks.placeIbReduceOnlyOrderCorrelated(
+                plan, dispatch.venueCorrelationId, orderId);
+        }, m_callbacks.lastIbRejectReason);
+    const long orderId = submission.orderId;
+    if (submission.status == VenueSubmissionStatus::Rejected)
+        return RejectAuthoritativeFlattenLocked(
+            command, plan, dispatch,
+            IsCanonicalFlattenVenueRejectCode(submission.reason) ?
+                submission.reason : "IB_FLATTEN_REJECT", submission.reason);
+    if (submission.status == VenueSubmissionStatus::Uncertain)
         return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, orderId,
-            venueReason.empty() ?
-                "authoritative flatten callback threw after dispatch" :
-                venueReason);
-    if (!placed)
-    {
-        bool reliableReject = false;
-        if (m_callbacks.lastIbRejectReason)
-        {
-            try
-            {
-                venueReason = m_callbacks.lastIbRejectReason();
-                reliableReject = !venueReason.empty();
-            }
-            catch (const std::exception& error)
-            {
-                venueReason = error.what();
-            }
-            catch (...)
-            {
-                venueReason =
-                    "authoritative flatten rejection reader threw";
-            }
-        }
-        if (reliableReject)
-            return RejectAuthoritativeFlattenLocked(
-                command, plan, dispatch,
-                IsCanonicalFlattenVenueRejectCode(venueReason) ?
-                    venueReason : "IB_FLATTEN_REJECT",
-                venueReason);
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, orderId,
-            venueReason.empty() ?
-                "adapter returned false without a reliable rejection reason" :
-                venueReason);
-    }
-    if (orderId < 0)
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, orderId,
-            "adapter accepted authoritative flatten without an order id");
+            command, plan, dispatch, orderId, submission.reason);
     return CompleteAuthoritativeFlattenLocked(
         command, plan, dispatch, orderId);
 }

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "execution_authority.h"
+#include "send_attempt_time_index.h"
+#include "venue_submission_result.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../oms_journal.h"
 
@@ -226,14 +228,6 @@ private:
         bool durableMutationIntent = false;
     };
 
-    struct PlaceSendAttempt
-    {
-        std::string requestKey;
-        std::string account;
-        std::string executionDomain;
-        std::int64_t tsMs = 0;
-    };
-
     struct PlaceOrderDispatchContext
     {
         std::string requestKey;
@@ -375,14 +369,17 @@ private:
 private:
     OmsJournal& m_journal;
     ExecutionCoordinatorCallbacks m_callbacks;
+    // Compatibility callback selection is fixed at construction. Dispatch
+    // consumes one typed result, not three optional transport interfaces.
+    const std::function<VenueSubmissionResult(
+        const IbPlaceOrderCommand&, const std::string&)> m_submitPlace;
     mutable std::mutex m_mutex;
     std::unordered_map<std::string, RequestRecord> m_requests;
     std::unordered_map<long, ExecutionOrderOwner> m_orderOwners;
     std::unordered_set<std::string> m_fencedSessionOwners;
     std::unordered_map<std::string, std::uint64_t>
         m_recoveryOnlySessionOwners;
-    std::vector<PlaceSendAttempt> m_placeSendAttempts;
-    std::unordered_set<std::string> m_placeSendAttemptKeys;
+    SendAttemptTimeIndex m_placeSendAttempts;
     bool m_mutationBlocked = false;
     std::string m_mutationBlockReason;
     bool m_paperTerminalFencePresent = false;
