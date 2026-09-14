@@ -1,0 +1,26 @@
+name: Import reviewed source objects
+on:
+  push:
+    branches: [staging/reviewed-source-import-20260914]
+permissions:
+  contents: write
+jobs:
+  import-objects:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.actor_id == '102159240'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: transport
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: f88b204115c46dba03bbd0416c13c3fa8c81984f
+          path: source
+          persist-credentials: false
+      - name: Verify and import only content-addressed Git objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I transport/.source-import/import.py --transport transport/.source-import --source source --publish
