@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
 import sys
 from typing import Any
+
+from source_json import SourceJsonError, load_source_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = Path("docs/module-catalog.json")
@@ -26,30 +27,10 @@ class CoverageError(ValueError):
     pass
 
 
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise CoverageError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise CoverageError(f"non-finite JSON number: {value}")
-
-
 def _load_json(path: Path) -> Any:
     try:
-        metadata = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-            raise CoverageError(f"{path}: expected a regular single-link file")
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return load_source_json(path)
+    except SourceJsonError as error:
         raise CoverageError(f"cannot load {path}: {error}") from error
 
 

@@ -1,5 +1,5 @@
 #include "../HeptaTrade/execution/execution_coordinator.h"
-#include "../HeptaTrade/oms_recover.h"
+#include "compat/oms_recover.h"
 
 #include <cassert>
 #include <cmath>
@@ -743,9 +743,9 @@ void TestIdempotencyPayloadAndOperationConflict()
         venueOrderId = 610;
         return VenuePlaceResult::Submitted(venueOrderId);
     });
-    callbacks.cancelIbOrder = [&](long) {
+    callbacks.cancelOrder = [&](long) {
         ++cancelCalls;
-        return true;
+        return VenueCancelResult::Submitted();
     };
     callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
 
@@ -878,9 +878,9 @@ void TestOwnershipAndCancel()
         return VenuePlaceResult::Submitted(venueOrderId);
     });
     callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
-    callbacks.cancelIbOrder = [&](long orderId) {
+    callbacks.cancelOrder = [&](long orderId) {
         ++cancelCalls;
-        return orderId == 99;
+        return orderId == 99 ? VenueCancelResult::Submitted() : VenueCancelResult::RejectedBeforeSend("TEST_NO_SEND");
     };
     callbacks.onIbOrderPlaced = [&](const IbPlaceOrderCommand& command, long orderId, std::string*) {
         ++placedProjectionCalls;
@@ -1074,7 +1074,7 @@ void TestCancelProjectionFailureIsUncertain()
     });
     callbacks.onIbOrderPlaced = [](const IbPlaceOrderCommand&, long, std::string*) { return true; };
     callbacks.canCancelIbOrder = [](long, std::string*) { return true; };
-    callbacks.cancelIbOrder = [](long orderId) { return orderId == 801; };
+    callbacks.cancelOrder = [](long orderId) { return orderId == 801 ? VenueCancelResult::Submitted() : VenueCancelResult::RejectedBeforeSend("TEST_NO_SEND"); };
     callbacks.onIbCancelSent = [](const IbCancelOrderCommand&, std::string* reason) {
         if (reason != nullptr) *reason = "cancel snapshot write rejected";
         return false;
@@ -1818,10 +1818,10 @@ void TestRecoveryOnlySessionOwnerIsDurableAndAllowsOwnedCancel()
         venueOrderId = 902;
         return VenuePlaceResult::Submitted(venueOrderId);
     });
-    callbacks.cancelIbOrder = [&](long orderId) {
+    callbacks.cancelOrder = [&](long orderId) {
         assert(orderId == 902);
         ++cancelCalls;
-        return true;
+        return VenueCancelResult::Submitted();
     };
     callbacks.validateDecisionLease = [](const AgentExecutionContext&,
         const std::string&, std::string*) { return true; };
@@ -1988,9 +1988,28 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
 
 #include "venue_placement_cases.h"
 #include "pre_intent_refusal_cases.h"
+#include "cancel_uncertainty_cases.h"
+#include "oms_recovery_growth_probe.h"
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc != 1)
+    {
+        if (argc != 3 || std::string(argv[1]) != "--recovery-growth") return 2;
+        unsigned count = 0;
+        for (const char* p = argv[2]; *p; ++p)
+        {
+            if (*p < '0' || *p > '9' || count > 2000) return 2;
+            count = count * 10 + static_cast<unsigned>(*p - '0');
+        }
+        if (!count || count > 20000) return 2;
+        return RunRecoveryGrowthProbe(count);
+    }
+    RunRecoveryGrowthProbe(16); // exercise the same producer in normal CTest
+
+    TestCancelUncertaintySurvivesReplayAndRequiresTerminalProof();
+    TestCancelPreSendRefusalIsDistinctFromDeferred();
+    TestCancelUncertainReceiptFailurePreservesAttempt();
     TestPreIntentRefusalsDoNotRetainCommandIdentities();
     TestBlockedRefusalFloodDoesNotEraseUncertainIdentity();
     TestCoordinatorMeasurementsPreserveExceptionsAndFlattenRejection();

@@ -124,9 +124,9 @@ void TestCapabilityFilteredRegistryAndDirectTrade()
         venueOrderId = 701;
         return VenuePlaceResult::Submitted(venueOrderId);
     });
-    executionCallbacks.cancelIbOrder = [&](long orderId) {
+    executionCallbacks.cancelOrder = [&](long orderId) {
         ++cancelCalls;
-        return orderId == 701;
+        return orderId == 701 ? VenueCancelResult::Submitted() : VenueCancelResult::RejectedBeforeSend("TEST_NO_SEND");
     };
     executionCallbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
                                                     const std::string& instrument,

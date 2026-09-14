@@ -377,9 +377,9 @@
           ],
           "translation_units": [
             {
-              "path": "HeptaTrade/oms_recover.cpp",
-              "kind": "implementation",
-              "owner": "oms-journal",
+              "path": "tests/compat/oms_recover.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_coordinator_tests",
               "language": "CXX",
               "standard": "11"
             },
@@ -2102,9 +2102,9 @@
           ],
           "translation_units": [
             {
-              "path": "HeptaTrade/oms_recover.cpp",
-              "kind": "implementation",
-              "owner": "oms-journal",
+              "path": "tests/compat/oms_recover.cpp",
+              "kind": "test",
+              "owner": "hepta_execution_coordinator_tests",
               "language": "CXX",
               "standard": "11"
             },

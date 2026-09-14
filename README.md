@@ -86,3 +86,8 @@ and [`docs/technical/oms-recovery-capacity.md`](docs/technical/oms-recovery-capa
 Optional lossless OMS storage maintenance requires the zlib development package
 (`zlib1g-dev` on Ubuntu) and runtime libz. See
 [`docs/technical/oms-archive-lifecycle.md`](docs/technical/oms-archive-lifecycle.md).
+
+Canonical configuration also needs a Python 3 interpreter for installed-document
+link generation. For an independently verified source archive without `.git`,
+pass `-DHEPTA_DOCUMENTATION_SOURCE_SHA=<exact-40-hex-source-sha>` to CMake. This
+pins source-only references; it does not replace release source verification.

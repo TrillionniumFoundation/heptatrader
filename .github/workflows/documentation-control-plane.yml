@@ -1,4 +1,4 @@
-name: Documentation Control Plane
+name: Source and Monitoring CI
 
 on:
   pull_request:
@@ -40,6 +40,36 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev zlib1g-dev python3-yaml
+
+      - name: Validate complete Actions syntax and expression contexts
+        run: |
+          set -euo pipefail
+          lint_dir="$(mktemp -d "$RUNNER_TEMP/hepta-actionlint.XXXXXX")"
+          trap 'rm -rf "$lint_dir"' EXIT
+          curl --fail --location --retry 2 --connect-timeout 10 --max-time 120 \
+            --output "$lint_dir/actionlint.tar.gz" \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $lint_dir/actionlint.tar.gz" | sha256sum --check --strict
+          tar -xzf "$lint_dir/actionlint.tar.gz" -C "$lint_dir" actionlint
+          "$lint_dir/actionlint" -shellcheck= -pyflakes=
+          # Prove the actual validator rejects the context error that escaped
+          # shell-only tests. This fixture has no runner allocation or secrets.
+          cat > "$lint_dir/invalid.yml" <<'YAML'
+          on: workflow_dispatch
+          jobs:
+            invalid:
+              runs-on: ubuntu-24.04
+              env:
+                BAD: CONTEXT_MARKER
+              steps:
+                - run: echo inert
+          YAML
+          sed -i 's/CONTEXT_MARKER/$\x7b\x7b runner.temp \x7d\x7d/' "$lint_dir/invalid.yml"
+          if "$lint_dir/actionlint" -shellcheck= -pyflakes= "$lint_dir/invalid.yml" > "$lint_dir/rejection.txt" 2>&1; then
+            echo 'actionlint accepted an invalid job-level runner context' >&2
+            exit 1
+          fi
+          grep -q 'runner' "$lint_dir/rejection.txt"
 
       - name: Validate documentation and source truth contracts
         run: |

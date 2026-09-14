@@ -35,6 +35,8 @@ EXECUTION_RESULTS = ("accepted", "rejected", "duplicate", "uncertain", "exceptio
 EXECUTION_GAUGES = ("retained_commands", "order_owners", "fenced_owners",
                     "recovery_only_owners", "retained_send_attempts")
 EXECUTION_LATENCIES = ("place_latency", "cancel_latency", "flatten_latency", "recovery_latency")
+EXECUTION_TIMING_EXTENSION = tuple(name + suffix for name in EXECUTION_LATENCIES[:3]
+                                   for suffix in ("_lock_wait", "_total"))
 UINT64_MAX = (1 << 64) - 1
 MAX_BYTES, MAX_LINE, MAX_LINES = 64 << 20, 65536, 100000
 
@@ -108,6 +110,20 @@ def validate_execution(value):
         if not value["metrics_saturated"] and not latency["saturated"] and sum(row) != latency["samples"]:
             raise ValueError("execution result/latency accounting mismatch")
     validate_latency(value.get("recovery_latency"))
+    for name in EXECUTION_LATENCIES[:3]:
+        pair = (name + "_lock_wait", name + "_total")
+        if not any(key in value for key in pair):
+            continue  # Old/idle producer: absence is not a measured zero.
+        for key in pair:
+            validate_latency(value.get(key))
+        held, wait, total = value[name], value[pair[0]], value[pair[1]]
+        if not any(metric["saturated"] for metric in (held, wait, total)):
+            if held["samples"] != wait["samples"] or held["samples"] != total["samples"]:
+                raise ValueError("execution timing sample accounting mismatch")
+            if total["total_ns"] != held["total_ns"] + wait["total_ns"]:
+                raise ValueError("execution timing scope accounting mismatch")
+            if total["last_ns"] != held["last_ns"] + wait["last_ns"]:
+                raise ValueError("execution timing last-sample accounting mismatch")
     return value
 
 
@@ -277,7 +293,7 @@ def report(samples, now_ms, max_age_ms=15000, planning_seconds=0):
     if execution is not None:
         # A deliberate terminal/maintenance fence is not necessarily an incident.
         # Export the block gauge; existing writer/recovery evidence owns severity.
-        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES):
+        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION if k in execution):
             alert("EXECUTION_METRIC_SATURATED", "P2")
     return {"schema": "heptatrader.oms-operational-report.v1", "fresh": fresh, "sample_age_ms": age,
             "capacity_status": latest["status"], "known": latest["known"], "service_epoch": latest.get("service_epoch"),
@@ -321,7 +337,11 @@ def prometheus(latest, summary):
             for op, row in zip(EXECUTION_OPERATIONS, execution["results"]):
                 for result, count in zip(EXECUTION_RESULTS, row):
                     lines.append(f'hepta_execution_commands_total{{operation="{op}",result="{result}"}} {count}')
-        for name in EXECUTION_LATENCIES:
+        for operation, name in zip(EXECUTION_OPERATIONS, EXECUTION_LATENCIES):
+            lines.append(f'hepta_execution_operation_timing_present{{operation="{operation}"}} {int(name + "_total" in execution)}')
+        for name in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION:
+            if name not in execution:
+                continue  # An older producer did not observe this scope.
             value = execution[name]
             if value["saturated"] or "bucket_counts" not in value:
                 continue

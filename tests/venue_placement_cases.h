@@ -63,8 +63,8 @@ void TestCapacityPausePreservesExitsAndReplay()
             ++placeCalls;
             return VenuePlaceResult::Submitted(42);
         });
-    callbacks.cancelIbOrder = [&](long id) {
-        assert(id == 42); ++cancelCalls; return true;
+    callbacks.cancelOrder = [&](long id) {
+        assert(id == 42); ++cancelCalls; return VenueCancelResult::Submitted();
     };
     callbacks.validateDecisionLease = [](const AgentExecutionContext&,
         const std::string&, std::string*) { return true; };
@@ -141,9 +141,69 @@ void TestCapacityPausePreservesExitsAndReplay()
     std::remove(path.c_str());
 }
 
+// A diagnostic edit must not reclassify a persisted command. Exercise the
+// real coordinator and journal, including old producer and replay semantics.
+void TestVenuePlaceRejectionIdentity()
+{
+    const VenuePlaceRejection reasons[] = {
+        VenuePlaceRejection::Generic, VenuePlaceRejection::KillSwitchEngaged,
+        VenuePlaceRejection::PostFillRefreshPending, VenuePlaceRejection::KillSwitchUncertain,
+        VenuePlaceRejection::QuoteBindingRequired, VenuePlaceRejection::ContractMismatch,
+        VenuePlaceRejection::QuoteChangedBeforeSend};
+    for (const auto code : reasons)
+    {
+        const std::string expected = VenuePlaceRejectionCode(code);
+        const std::string path = TempJournalPath();
+        const auto command = MakePlace("typed-rejection");
+        int calls = 0;
+        ExecutionCoordinatorCallbacks callbacks;
+        callbacks.placement = VenuePlacement::Immediate(
+            [&](const PlaceOrderCommand&, const std::string&) {
+                ++calls;
+                auto outcome = VenuePlaceResult::Rejected(expected);
+                assert(outcome.rejection == code);
+                outcome.detail = "a human explanation, not a machine code";
+                return outcome;
+            });
+        {
+            OmsJournal journal;
+            assert(journal.Init(path));
+            ExecutionCoordinator coordinator(journal, callbacks);
+            const auto result = coordinator.PlaceOrder(command);
+            assert(result.status == ExecutionCommandStatus::Rejected);
+            assert(result.reasonCode == expected);
+            assert(result.detail == "a human explanation, not a machine code");
+            assert(coordinator.PlaceOrder(command).status == ExecutionCommandStatus::Duplicate);
+            int rejectionRecords = 0;
+            assert(journal.Replay([&](const OmsJournalEvent& event) {
+                if (event.eventType == "reject") {
+                    ++rejectionRecords;
+                    assert(event.riskCode == expected);
+                    assert(event.reason == result.detail);
+                }
+            }) > 0);
+            assert(rejectionRecords == 1);
+        }
+        {
+            OmsJournal journal;
+            assert(journal.Init(path));
+            ExecutionCoordinator recovered(journal, callbacks);
+            std::string reason;
+            assert(recovered.RecoverFromJournal(reason));
+            assert(recovered.PlaceOrder(command).status == ExecutionCommandStatus::Duplicate);
+            auto conflict = command;
+            conflict.order.totalQuantity += 1;
+            assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
+            assert(calls == 1);
+        }
+        std::remove(path.c_str());
+    }
+}
+
 // Runs inside the existing real coordinator suite in both sanitizer lanes.
 void TestVenuePlacementConstructionAndResultContract()
 {
+    TestVenuePlaceRejectionIdentity();
     TestNewEntryCapacityBoundaries();
     TestCapacityPausePreservesExitsAndReplay();
     int rejected = 0;
@@ -167,7 +227,7 @@ void TestVenuePlacementConstructionAndResultContract()
 
     // Invalid/ambiguous outcomes retain intent/correlation and NEVER activate
     // or retry. Test real journal recovery, not merely enum conversion.
-    for (int mode = 0; mode < 5; ++mode)
+    for (int mode = 0; mode < 6; ++mode)
     {
         const std::string path = TempJournalPath();
         OmsJournal journal;
@@ -181,6 +241,8 @@ void TestVenuePlacementConstructionAndResultContract()
             if (mode == 1) return VenuePlaceResult::Submitted(901);
             if (mode == 2) return VenuePlaceResult::Submitted(-1);
             if (mode == 3) return VenuePlaceResult::Rejected("");
+            if (mode == 5) return VenuePlaceResult::Rejected(
+                static_cast<VenuePlaceRejection>(777), "not trustworthy");
             VenuePlaceResult invalidResult;
             invalidResult.disposition = static_cast<VenuePlaceDisposition>(777);
             return invalidResult;

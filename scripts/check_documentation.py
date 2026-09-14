@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import re
 import stat
 import sys
 from typing import Any
+
+from source_json import SourceJsonError, load_source_json
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_STATUSES = {
@@ -73,35 +74,10 @@ USER_ABSOLUTE_RE = re.compile(
 )
 
 
-class DuplicateKeyError(ValueError):
-    pass
-
-
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise DuplicateKeyError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON number: {value}")
-
-
 def _load_json(path: Path, errors: list[str]) -> Any:
     try:
-        info = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            errors.append(f"{path}: must be a regular single-link file")
-            return None
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        return load_source_json(path)
+    except SourceJsonError as error:
         errors.append(f"{path}: invalid JSON: {error}")
         return None
 

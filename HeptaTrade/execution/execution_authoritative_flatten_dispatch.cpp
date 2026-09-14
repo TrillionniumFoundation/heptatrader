@@ -117,10 +117,6 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
     owner.instrument = command.instrument;
     owner.side = plan.order.action;
     m_orderOwners[orderId] = owner;
-    if (m_callbacks.trackOrder)
-        m_callbacks.trackOrder(
-            context.venue.empty() ? "IB" : context.venue, orderId, "",
-            command.instrument, plan.order.action, context.strategy);
 
     bool projectionOk = true;
     std::string projectionReason;

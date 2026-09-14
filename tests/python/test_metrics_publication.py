@@ -34,7 +34,9 @@ def observation(now=NOW):
 
 class MetricsPublicationTests(unittest.TestCase):
     def setUp(self):
-        self.scratch = tempfile.TemporaryDirectory(prefix="hepta-metrics-", dir="/tmp")
+        # Honor the operator-selected scratch filesystem; retain real sync and
+        # namespace checks rather than mocking durability to suit a host.
+        self.scratch = tempfile.TemporaryDirectory(prefix="hepta-metrics-")
         self.root = Path(self.scratch.name)
         self.output = self.root / "metrics"
         self.output.mkdir(mode=0o755)

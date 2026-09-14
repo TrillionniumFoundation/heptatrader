@@ -31,7 +31,6 @@ jobs:
     timeout-minutes: 100
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      CANDIDATE_ARCHIVE: ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar
       HEPTA_IB_BUILD_SDK_ROOT: ${{ vars.HEPTA_IB_BUILD_SDK_ROOT }}
       HEPTA_IB_BUILD_QUOTA_ROOT: ${{ vars.HEPTA_IB_BUILD_QUOTA_ROOT }}
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
@@ -78,6 +77,8 @@ jobs:
 
       - name: Build content-addressed binary
         id: build-artifact
+        env:
+          CANDIDATE_ARCHIVE: ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar
         run: trusted/scripts/build_ib_candidate_artifact.sh candidate "$GITHUB_SHA" "$CANDIDATE_ARCHIVE"
 
       - name: Reverify immutable checkouts after build
@@ -113,9 +114,6 @@ jobs:
     timeout-minutes: 90
     env:
       PYTHONDONTWRITEBYTECODE: '1'
-      ARTIFACT_DIR: ${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}
-      EVIDENCE_DIR: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-      CANDIDATE_ARCHIVE: ${{ runner.temp }}/candidate-download/ib-paper-candidate-${{ github.sha }}.tar
       HEPTA_IB_BUILDER_IMAGE: ${{ vars.HEPTA_IB_BUILDER_IMAGE }}
     steps:
       - name: Bind dispatch authority to immutable owner identity
@@ -155,6 +153,9 @@ jobs:
 
       - name: Verify and extract candidate as hostile data
         id: verify-artifact
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          CANDIDATE_ARCHIVE: ${{ runner.temp }}/candidate-download/ib-paper-candidate-${{ github.sha }}.tar
         run: >-
           python3 trusted/scripts/verify_ib_candidate_artifact.py verify
           --archive "$CANDIDATE_ARCHIVE"
@@ -166,6 +167,8 @@ jobs:
       - name: Run controlled PAPER campaign through trusted external harness
         id: run-campaign
         env:
+          ARTIFACT_DIR: ${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          EVIDENCE_DIR: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
           HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
           HEPTA_QUALIFICATION_MUTATIONS: '1'
@@ -180,6 +183,8 @@ jobs:
       - name: Issue final exact-artifact Broker receipt
         id: verify-qualification
         env:
+          ARTIFACT_DIR: ${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}
+          EVIDENCE_DIR: ${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
         run: >-
           python3 trusted/scripts/verify_ib_paper_qualification.py

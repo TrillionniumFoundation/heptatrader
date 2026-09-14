@@ -2,7 +2,7 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_recover.cpp`  
+Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`
 Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`
 
 ## Responsibilities
@@ -43,7 +43,12 @@ Startup replay reconstructs command state and fences before mutation admission o
 
 Broker `Filled` text alone is not economic fill proof when the venue contract requires an execution ID and positive execution evidence. Terminal and active correlations remain separate until reconciliation proves their relationship.
 
-`OmsRecover` remains a lightweight compatibility projection used by selected tests. Its old CSV-reporter consumer has been retired; the reader itself is preserved. It is not the complete canonical PAPER recovery authority.
+`OmsRecover` is a test-only lightweight compatibility projection in
+`tests/compat/oms_recover.h/.cpp`. The coordinator regression target compiles it
+explicitly; installed runtime targets do not. Its historical event and
+deduplication behavior is retained unchanged. Production schema 1–4 reading
+remains in `OmsJournal`; moving this test helper does not retire a persisted
+format or introduce another PAPER recovery authority.
 
 ## Failure semantics
 
