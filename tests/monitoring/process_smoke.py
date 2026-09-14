@@ -34,7 +34,7 @@ HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def get(url: str):
     with HTTP.open(url, timeout=2) as response:
         data = response.read(1 << 20)
-        return json.loads(data) if response.headers.get("Content-Type", "").startswith("application/json") else data
+        return json.loads(data) if response.headers.get("Content-Type", "").startswith("application/json") else response.status == 200
 
 
 def wait_until(predicate, what: str, seconds: float = 30):
@@ -140,6 +140,18 @@ def main():
         for name, value in (("prometheus", prom_config), ("alertmanager", alert_config)):
             (root / (name + ".json")).write_text(json.dumps(value))
         processes = []
+        completed = [False]
+
+        def diagnostics():
+            if completed[0]:
+                return
+            for name in bins:
+                path = root / (name + ".log")
+                if path.is_file():
+                    with path.open("rb") as stream:
+                        stream.seek(max(0, path.stat().st_size - 8192))
+                        print(name + ": " + stream.read(8192).decode("utf-8", "replace"), file=sys.stderr)
+        stack.callback(diagnostics)
 
         def stop(child):
             if child.poll() is None:
@@ -208,6 +220,7 @@ def main():
         with args.output.open("x") as stream:
             json.dump(record, stream, indent=2); stream.write("\n")
         print(json.dumps(record, sort_keys=True))
+        completed[0] = True
     return 0
 
 
