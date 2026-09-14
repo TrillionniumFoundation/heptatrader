@@ -1,0 +1,5 @@
+# Only the existing named self-hosted roles; no wildcard runner acceptance.
+self-hosted-runner:
+  labels:
+    - heptatrader-ib-builder
+    - heptatrader-ib-paper
