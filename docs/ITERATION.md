@@ -8,7 +8,10 @@ builds canonical native targets and runs the core CTest label. Python test
 ownership is defined once by `scripts/run_python_tests.py`; core, source, install
 and isolated process partitions are disjoint. Use `--lane core` or `--lane source`
 for ordinary unprivileged development. Install/process prerequisites are real
-and must not be converted into successful skips.
+and must not be converted into successful skips. The partition runner rejects
+missing install/process prerequisites before importing tests; `--lane all`
+requires both. A selected skipped test makes the runner fail rather than claim
+complete acceptance. `--list` remains read-only and needs no fixture opt-in.
 
 `python3 scripts/check_documentation.py` validates navigation and capability
 facts, not prose depth. Structural checks do not prove implementation correctness;

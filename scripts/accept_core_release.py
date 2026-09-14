@@ -16,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 
+from verify_build_ownership import canonical_path, load_json
+
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_SHA = "d003f54c7c6c2bd19002627f2bcd9081228b01cd"
 CHECKS = ("install", "core-python", "simulator-lifecycle", "distinct-artifact-process", "pid1-systemd")
@@ -27,6 +29,50 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             result.update(block)
     return result.hexdigest()
+
+
+def installed_executable_targets(source: Path, build: Path) -> list[str]:
+    """Use fresh CMake install ownership, not a second handwritten target list.
+
+    The reference still installs and participates in real process rollback.
+    Uninstalled historical test binaries are not needed to build its payload.
+    """
+    reply = build / ".cmake/api/v1/reply"
+    indexes = list(reply.glob("index-*.json"))
+    if len(indexes) != 1:
+        raise ValueError("reference requires one fresh CMake File API index")
+
+    def document(name):
+        leaf = canonical_path(name)
+        if "/" in leaf:
+            raise ValueError("CMake reply must name a local JSON leaf")
+        return load_json(reply / leaf)
+
+    try:
+        index = load_json(indexes[0])
+        model = document(index["reply"]["codemodel-v2"]["jsonFile"])
+        if (Path(model["paths"]["source"]).resolve() != source.resolve()
+                or Path(model["paths"]["build"]).resolve() != build.resolve()):
+            raise ValueError("reference CMake model source/build mismatch")
+        configurations = model["configurations"]
+        if len(configurations) != 1 or configurations[0]["name"] != "Release":
+            raise ValueError("reference requires one Release configuration")
+        targets = []
+        seen = set()
+        for entry in configurations[0]["targets"]:
+            target = document(entry["jsonFile"])
+            name = entry["name"]
+            if (not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.+-]*", name)
+                    or target["name"] != name or name in seen):
+                raise ValueError("invalid or duplicate reference target identity")
+            seen.add(name)
+            if target["type"] == "EXECUTABLE" and target.get("install", {}).get("destinations"):
+                targets.append(name)
+        if not targets:
+            raise ValueError("reference CMake model has no installed executable targets")
+        return sorted(targets)
+    except (KeyError, TypeError) as error:
+        raise ValueError("incomplete reference CMake model") from error
 
 
 def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
@@ -84,11 +130,15 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
         command(["git", "-C", reference, "checkout", "--detach", "FETCH_HEAD"])
         if text(["git", "-C", reference, "rev-parse", "HEAD"]) != REFERENCE_SHA:
             raise ValueError("rollback reference source mismatch")
+        query = reference_build / ".cmake/api/v1/query"
+        query.mkdir(parents=True)
+        (query / "codemodel-v2").touch()
         command(["cmake", "-S", reference, "-B", reference_build, "-G", "Ninja",
                  "-DCMAKE_BUILD_TYPE=Release", "-DBUILD_TESTING=ON", "-DBUILD_IB_PROBE=OFF",
                  "-DHEPTA_ENABLE_IBAPI=OFF", "-DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF",
                  "-DHEPTA_BUILD_LEGACY_MONOLITH=OFF", "-DHEPTA_BUILD_LEGACY_SIMULATOR=OFF"])
-        command(["cmake", "--build", reference_build, "--target", "hepta_core_test_binaries", "--parallel", "2"])
+        reference_targets = installed_executable_targets(reference, reference_build)
+        command(["cmake", "--build", reference_build, "--target", *reference_targets, "--parallel", "2"])
         previous = output / f"rollback-reference-{REFERENCE_SHA}.tar.gz"
         command([sys.executable, "scripts/build_release_package.py", "--build-dir", reference_build,
                  "--output", previous, "--version", (reference / "VERSION").read_text().strip(),

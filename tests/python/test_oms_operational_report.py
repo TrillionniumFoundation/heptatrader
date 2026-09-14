@@ -138,6 +138,77 @@ class OmsReportTests(unittest.TestCase):
             report.validate(s)
             self.assertIsNone(report.quantile_upper(actual)) # p99 is in +Inf, not an invented 10s value
 
+    def execution_sample(self):
+        value = sample()
+        value["execution_metrics"] = dict(results=[[1, 2, 3, 4, 0], [0]*5, [0]*5],
+            metrics_saturated=False, mutation_blocked=False,
+            **{key: 1 for key in report.EXECUTION_GAUGES},
+            place_latency=metric(10), cancel_latency=metric(0), flatten_latency=metric(0),
+            recovery_latency=metric(1))
+        # Empty histograms have no duration observations.
+        for name in ("cancel_latency", "flatten_latency"):
+            value["execution_metrics"][name]["max_ns"] = 0
+            value["execution_metrics"][name]["last_ns"] = 0
+        return value
+
+    def test_execution_optional_metrics_accounting_and_fixed_cardinality(self):
+        value = self.execution_sample()
+        summary = report.report([value], 1000)
+        output = report.prometheus(value, summary)
+        self.assertTrue(summary["execution_present"])
+        self.assertIn('hepta_execution_commands_total{operation="place",result="uncertain"} 4', output)
+        self.assertEqual(output.count('hepta_execution_commands_total{'), 15)
+        self.assertIn("hepta_execution_recovery_latency_seconds_count 1", output)
+        old = sample()
+        old_output = report.prometheus(old, report.report([old], 1000))
+        self.assertIn("hepta_execution_metrics_present 0", old_output)
+        self.assertNotIn("hepta_execution_commands_total", old_output)
+        self.assertNotIn("hepta_execution_mutation_blocked", old_output)
+        self.assertFalse(report.report([value, old], 1000)["execution_present"])
+
+    def test_execution_invalid_partial_and_saturated_metrics(self):
+        for field, bad in (("results", [[1]*5]), ("retained_commands", True),
+                           ("mutation_blocked", 0), ("results", [[1]*5]*3)):
+            with self.subTest(field=field):
+                value = self.execution_sample()
+                value["execution_metrics"][field] = bad
+                with self.assertRaises(ValueError): report.validate(value)
+        value = self.execution_sample()
+        value["service_epoch"] = None
+        with self.assertRaises(ValueError): report.validate(value)
+        value = self.execution_sample()
+        value["execution_metrics"]["metrics_saturated"] = True
+        value["execution_metrics"]["mutation_blocked"] = True
+        value["execution_metrics"]["place_latency"]["saturated"] = True
+        summary = report.report([value], 1000)
+        rules = {a["rule_id"] for a in summary["alerts"]}
+        self.assertNotIn("EXECUTION_MUTATION_BLOCKED", rules)
+        self.assertIn("EXECUTION_METRIC_SATURATED", rules)
+        output = report.prometheus(value, summary)
+        self.assertNotIn("hepta_execution_commands_total", output)
+        self.assertNotIn("hepta_execution_place_latency_seconds_count", output)
+        self.assertIn("hepta_execution_mutation_blocked 1", output)
+
+    def test_real_cpp_execution_observation_wire_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, binary = Path(tmp)/"execution.cpp", Path(tmp)/"execution"
+            source.write_text(r'''#include "HeptaTrade/execution/execution_runtime_observation.h"
+#include <iostream>
+int main() {
+    OmsJournalHealthSnapshot j; j.maxPendingBytes=1048576; j.maxPendingRecords=256; ExecutionRuntimeObservation x;
+    x.present=true; x.retainedCommands=7; x.operations[0].Observe(ExecutionCommandStatus::Accepted);
+    x.operations[0].latency.Observe(1000); x.recoveryLatency.Observe(10000);
+    std::cout << ExecutionCapacityObservation(j,x,1000,"fixture-epoch",1000);
+}''')
+            subprocess.run(["g++", "-std=c++11", "-I", str(ROOT), str(source), "-o", str(binary)],
+                           check=True, capture_output=True, timeout=30)
+            value = json.loads(subprocess.check_output([str(binary)], timeout=5))
+            report.validate(value)
+            self.assertEqual(value["execution_metrics"]["results"][0], [1, 0, 0, 0, 0])
+            self.assertEqual(value["execution_metrics"]["retained_commands"], 7)
+            self.assertEqual(value["execution_metrics"]["recovery_latency"]["samples"], 1)
+            self.assertNotIn("account", value["execution_metrics"])
+
 
 if __name__ == "__main__":
     unittest.main()

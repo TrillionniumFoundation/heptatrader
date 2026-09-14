@@ -17,13 +17,11 @@ public:
     bool Connect();
     void Disconnect();
 
-    bool IsConnected() const { return m_connected; }
+    bool IsConnected() const { return false; }
     const char* CapabilityStatus() const;
     const std::string& LastError() const { return m_lastError; }
 
 private:
-    HeptaCTPConfig m_cfg;
     bool m_initialized = false;
-    bool m_connected = false;
     std::string m_lastError = "CTP_NOT_INITIALIZED";
 };

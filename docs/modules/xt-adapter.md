@@ -7,7 +7,7 @@ Tests: `tests/venue_capability_tests.cpp`
 
 ## Current capability
 
-The XT/QMT adapter stabilizes a prospective event and configuration shape, but it has no real XT transport. It must fail closed for connect, query, place, and cancel operations and must not emit synthetic accepted/submitted events that resemble broker evidence.
+The XT/QMT adapter is a minimal negative-capability boundary, not a prospective SDK or event model. It has no real XT transport. It must fail closed for connect, query, place, and cancel operations and must not emit synthetic accepted/submitted events that resemble broker evidence.
 
 The earlier API mapping was based on a developer-local Python `xtquant` installation. That mapping is research input, not a pinned redistributable SDK contract.
 
@@ -28,18 +28,26 @@ A Python sidecar is acceptable only if its local IPC protocol, package digest, i
 
 ## Failure semantics
 
-Until the real transport is installed and qualified, `Connect`, account/position/quote queries, order placement, and cancellation return false with an `XT_TRANSPORT_NOT_IMPLEMENTED` reason. No method may manufacture a broker order ID or submitted status.
+Until a real transport is implemented and qualified, `Connect`, account/position/quote queries, order placement and cancellation return false. The reason is `XT_NOT_INITIALIZED` before valid initialization and `XT_TRANSPORT_NOT_IMPLEMENTED` afterwards. `Init` rejects a mode other than `XT` and resets initialized state. `IsConnected` is always false. Place clears an optional output order ID to zero and never manufactures acceptance.
 
 ## Observability and tests
 
 The scaffold reports its capability status and last failure reason. The current test verifies that it remains disconnected and rejects mutation. A future implementation requires callback ordering, duplicate event, partial fill, reconnect, account mismatch, invalid price type, and uncertain send tests before status promotion.
 
-## Retained compatibility surface
+## Deliberately minimal source surface
 
-Callback signatures remain source-compatible but economic callbacks are inert.
-The unreachable synthetic success branches and unused order-symbol/side maps
-have been removed. `OnXtConnected` explicitly rejects the missing transport;
-`OnXtDisconnected` only resets local scaffold status. Error diagnostics retain
-the newest 64 events. Capability tests call every callback and verify that none
-produces economic evidence or enables placement. No SDK, wire protocol or
-persistent reader was retired by this change.
+The retired monolith was the old callback consumer. A whole-tree consumer
+search found only this scaffold and `venue_capability_tests.cpp` using its
+callback/event API. Empty economic callbacks, a diagnostic event queue and
+configuration pretending to supply account/session/risk policy have therefore
+been removed, rather than retained solely for tests of an unimplemented venue.
+There is no pinned SDK, deployed transport or persistent format behind them.
+
+The negative-capability methods remain to reject accidental venue selection.
+Tests execute repeated requests, unsupported numeric inputs and invalid-mode
+reinitialization; all remain disconnected with no order ID or send. A future
+transport must introduce its real SDK contract and behavior tests rather than
+revive these speculative placeholders. External users of the former experimental
+C++ callback API must migrate explicitly; no universal source compatibility is
+claimed. CTP similarly no longer stores an unused configuration copy or mutable
+connected flag. No current OMS/HSL reader or authority guard was removed.

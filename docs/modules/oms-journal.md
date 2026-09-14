@@ -43,7 +43,7 @@ Startup replay reconstructs command state and fences before mutation admission o
 
 Broker `Filled` text alone is not economic fill proof when the venue contract requires an execution ID and positive execution evidence. Terminal and active correlations remain separate until reconciliation proves their relationship.
 
-`OmsRecover` is a lightweight compatibility projection used by legacy reconciliation and selected tests. It is not the complete canonical PAPER recovery authority.
+`OmsRecover` remains a lightweight compatibility projection used by selected tests. Its old CSV-reporter consumer has been retired; the reader itself is preserved. It is not the complete canonical PAPER recovery authority.
 
 ## Failure semantics
 

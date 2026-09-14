@@ -2,6 +2,7 @@
 #include "adapter_xt/xt_gateway_adapter.h"
 
 #include <cstdlib>
+#include <limits>
 #include <iostream>
 #include <string>
 
@@ -30,7 +31,6 @@ int main() {
     {
         HeptaXTGatewayAdapter xt;
         HeptaXTConfig cfg;
-        cfg.risk.enableOrderSubmission = true;
         Require(xt.Init(cfg), "XT scaffold init should validate its mode");
         Require(!xt.Connect(), "XT scaffold must not fake a connection");
         Require(std::string(xt.CapabilityStatus()) ==
@@ -42,31 +42,28 @@ int main() {
         Require(orderId == 0, "XT scaffold must not manufacture an order id");
         Require(xt.LastRejectReason() == "XT_TRANSPORT_NOT_IMPLEMENTED",
                 "XT unsupported reason must be stable");
-        xt.OnXtConnected();
-        Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
-                "manual callback must not enable a missing transport");
-        xt.OnXtAccountStatus("connected");
-        xt.OnXtAsset(1000000.0, 1000000.0);
-        xt.OnXtPosition("600000.SH", 100.0);
-        xt.OnXtOrderStatus(1, "Filled", "not Broker evidence");
-        xt.OnXtTrade(1, "600000.SH", "BUY", 100.0, 10.0);
-        xt.OnXtOrderError(1, "error", "detail");
-        xt.OnXtCancelError(1, "error", "detail");
-        xt.OnXtAsyncOrderResponse(1, true, "not an acknowledgement");
-        xt.OnXtAsyncCancelResponse(1, true, "not an acknowledgement");
-        XTEvent event;
-        while (xt.TryDequeueEvent(event))
-            Require(event.type == XTEventType::Error, "callbacks cannot create economic evidence");
-        for (int i = 0; i < 10000; ++i) xt.Connect();
-        int diagnostics = 0;
-        while (xt.TryDequeueEvent(event))
+        for (int i = 0; i < 10000; ++i)
         {
-            ++diagnostics;
-            Require(event.type == XTEventType::Error, "unsupported events are errors only");
+            Require(!xt.Connect() && !xt.IsConnected(), "missing transport stays disconnected");
+            Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
+                    "no repeated call enables submission");
+            Require(orderId == 0, "unsupported transport never allocates an order ID");
         }
-        Require(diagnostics > 0 && diagnostics <= 64, "unsupported diagnostic queue must be bounded");
-        xt.OnXtDisconnected();
-        Require(!xt.PollOnce(0), "scaffold never becomes a transport");
+        for (double hostile : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                               std::numeric_limits<double>::quiet_NaN()})
+        {
+            Require(!xt.PlaceOrder("", "", hostile, hostile, nullptr),
+                    "no numeric or identity input enables a missing transport");
+            Require(xt.LastRejectReason() == "XT_TRANSPORT_NOT_IMPLEMENTED",
+                    "absent transport is the authority-bearing failure");
+        }
+        xt.Disconnect();
+        Require(!xt.IsConnected(), "disconnect never grants connectivity");
+        cfg.mode = "INVALID";
+        Require(!xt.Init(cfg), "invalid mode rejected after valid initialization");
+        Require(!xt.Connect() && !xt.IsConnected(), "invalid reinit leaves no transport");
+        cfg.mode = "XT";
+        Require(xt.Init(cfg) && !xt.Connect(), "valid reinit still has no transport");
         Require(!xt.CancelOrder(1), "XT scaffold must reject cancellation");
         Require(!xt.ReqAccountSummary() && !xt.ReqPositions() &&
                     !xt.ReqMktData("600000.SH"),

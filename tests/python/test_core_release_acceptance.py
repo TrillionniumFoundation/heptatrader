@@ -34,6 +34,19 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                 reference = Path(argv[2])
                 reference.mkdir()
                 (reference / "VERSION").write_text("0.3.0\n")
+            elif argv[:2] == ["cmake", "-S"]:
+                reference = Path(argv[argv.index("-S") + 1])
+                build = Path(argv[argv.index("-B") + 1])
+                reply = build / ".cmake/api/v1/reply"
+                reply.mkdir(parents=True)
+                (reply / "index-fixture.json").write_text(json.dumps({
+                    "reply": {"codemodel-v2": {"jsonFile": "model.json"}}}))
+                (reply / "model.json").write_text(json.dumps({
+                    "paths": {"source": str(reference), "build": str(build)},
+                    "configurations": [{"name": "Release", "targets": [
+                        {"name": "fixture-app", "jsonFile": "app.json"}]}]}))
+                (reply / "app.json").write_text(json.dumps({"name": "fixture-app",
+                    "type": "EXECUTABLE", "install": {"destinations": [{"path": "bin"}]}}))
             elif argv[:3] == ["sudo", "mktemp", "-d"]:
                 stdout = "/tmp/hepta-accept-source.ABCDef12\n"
             phase = None
@@ -96,6 +109,67 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     self.assertTrue(any(c[:3] == ["sudo", "rm", "-rf"] for c in calls))
                 if phase == "process":
                     self.assertFalse(any("tests/systemd_simulator_smoke.py" in c for c in calls))
+
+
+class ReferenceInstallTargetsTests(unittest.TestCase):
+    def configure(self, root):
+        source, build = root / "source", root / "build"
+        source.mkdir()
+        query = build / ".cmake/api/v1/query"
+        query.mkdir(parents=True)
+        (query / "codemodel-v2").touch()
+        (source / "app.cpp").write_text("int main() { return 0; }\n")
+        (source / "unused.cpp").write_text("#error unrelated historical target must not build\n")
+        (source / "CMakeLists.txt").write_text(
+            "cmake_minimum_required(VERSION 3.16)\nproject(InstallSlice LANGUAGES CXX)\n"
+            "add_executable(installed-app app.cpp)\n"
+            "add_executable(uninstalled-test unused.cpp)\n"
+            "install(TARGETS installed-app RUNTIME DESTINATION bin)\n")
+        subprocess.run(["cmake", "-S", source, "-B", build, "-DCMAKE_BUILD_TYPE=Release"],
+                       check=True, capture_output=True, timeout=60)
+        return source, build
+
+    def test_real_install_omits_unrelated_broken_test_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, build = self.configure(root)
+            targets = acceptance.installed_executable_targets(source, build)
+            self.assertEqual(targets, ["installed-app"])
+            subprocess.run(["cmake", "--build", build, "--target", *targets],
+                           check=True, capture_output=True, timeout=60)
+            stage = root / "stage"
+            subprocess.run(["cmake", "--install", build, "--prefix", stage],
+                           check=True, capture_output=True, timeout=60)
+            subprocess.run([stage / "bin/installed-app"], check=True, timeout=10)
+            self.assertFalse((build / "uninstalled-test").exists())
+
+    def test_new_installed_target_is_discovered_without_another_list(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source, build = self.configure(Path(directory))
+            with (source / "CMakeLists.txt").open("a") as stream:
+                stream.write("add_executable(second-app app.cpp)\n"
+                             "install(TARGETS second-app RUNTIME DESTINATION bin)\n")
+            subprocess.run(["cmake", "-S", source, "-B", build],
+                           check=True, capture_output=True, timeout=60)
+            self.assertEqual(acceptance.installed_executable_targets(source, build),
+                             ["installed-app", "second-app"])
+
+    def test_missing_foreign_and_empty_models_cannot_skip_reference_build(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaises(ValueError):
+                acceptance.installed_executable_targets(root, root / "absent")
+            source, build = self.configure(root)
+            with self.assertRaisesRegex(ValueError, "source/build mismatch"):
+                acceptance.installed_executable_targets(root / "foreign", build)
+            reply = build / ".cmake/api/v1/reply"
+            index = json.loads(next(reply.glob("index-*.json")).read_text())
+            model_path = reply / index["reply"]["codemodel-v2"]["jsonFile"]
+            model = json.loads(model_path.read_text())
+            model["configurations"][0]["targets"] = []
+            model_path.write_text(json.dumps(model))
+            with self.assertRaisesRegex(ValueError, "no installed executable"):
+                acceptance.installed_executable_targets(source, build)
 
 
 if __name__ == "__main__":

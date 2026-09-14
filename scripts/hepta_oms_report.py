@@ -30,6 +30,11 @@ RESULT_NAMES = ("ok", "permission_denied", "invalid_tool", "rejected", "duplicat
 BOUNDS_NS = (1000, 10000, 100000, 1000000, 5000000, 10000000,
              50000000, 100000000, 1000000000, 10000000000)
 LATENCIES = ("append_latency", "data_sync_latency", "replay_validation_latency")
+EXECUTION_OPERATIONS = ("place", "cancel", "flatten")
+EXECUTION_RESULTS = ("accepted", "rejected", "duplicate", "uncertain", "exception")
+EXECUTION_GAUGES = ("retained_commands", "order_owners", "fenced_owners",
+                    "recovery_only_owners", "retained_send_attempts")
+EXECUTION_LATENCIES = ("place_latency", "cancel_latency", "flatten_latency", "recovery_latency")
 UINT64_MAX = (1 << 64) - 1
 MAX_BYTES, MAX_LINE, MAX_LINES = 64 << 20, 65536, 100000
 
@@ -82,6 +87,30 @@ def validate_latency(metric):
             raise ValueError("histogram sample accounting mismatch")
 
 
+def validate_execution(value):
+    if not isinstance(value, dict):
+        raise ValueError("invalid execution telemetry")
+    for flag in ("metrics_saturated", "mutation_blocked"):
+        if type(value.get(flag)) is not bool:
+            raise ValueError("invalid execution telemetry presence")
+    for key in EXECUTION_GAUGES:
+        uint(value.get(key))
+    results = value.get("results")
+    if not isinstance(results, list) or len(results) != len(EXECUTION_OPERATIONS):
+        raise ValueError("invalid execution operation inventory")
+    for row, name in zip(results, EXECUTION_LATENCIES):
+        if not isinstance(row, list) or len(row) != len(EXECUTION_RESULTS):
+            raise ValueError("invalid execution result inventory")
+        for count in row:
+            uint(count)
+        latency = value.get(name)
+        validate_latency(latency)
+        if not value["metrics_saturated"] and not latency["saturated"] and sum(row) != latency["samples"]:
+            raise ValueError("execution result/latency accounting mismatch")
+    validate_latency(value.get("recovery_latency"))
+    return value
+
+
 def validate(sample):
     if not isinstance(sample, dict) or sample.get("schema") != SCHEMA:
         raise ValueError("unsupported telemetry schema")
@@ -130,6 +159,10 @@ def validate(sample):
         if metric is None:  # Prior artifact has no histogram; never synthesize zeros.
             continue
         validate_latency(metric)
+    if "execution_metrics" in sample:
+        if not epoch or not sample.get("monotonic_ms"):
+            raise ValueError("execution metrics require a service incarnation and clock")
+        validate_execution(sample["execution_metrics"])
     return sample
 
 
@@ -240,9 +273,16 @@ def report(samples, now_ms, max_age_ms=15000, planning_seconds=0):
                                "p999_upper_ns": quantile_upper(metric, 999, 1000) if metric["samples"] >= 1000 else None}
             if metric["saturated"]:
                 alert("OMS_METRIC_SATURATED", "P2")
+    execution = latest.get("execution_metrics")
+    if execution is not None:
+        # A deliberate terminal/maintenance fence is not necessarily an incident.
+        # Export the block gauge; existing writer/recovery evidence owns severity.
+        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES):
+            alert("EXECUTION_METRIC_SATURATED", "P2")
     return {"schema": "heptatrader.oms-operational-report.v1", "fresh": fresh, "sample_age_ms": age,
             "capacity_status": latest["status"], "known": latest["known"], "service_epoch": latest.get("service_epoch"),
-            "trend": trend, "latencies": latencies, "alerts": alerts, "authorization_effect": "NONE"}
+            "trend": trend, "latencies": latencies, "execution_present": execution is not None,
+            "alerts": alerts, "authorization_effect": "NONE"}
 
 
 def prometheus(latest, summary):
@@ -269,6 +309,30 @@ def prometheus(latest, summary):
             bound = str(BOUNDS_NS[i] / 1e9) if i < len(BOUNDS_NS) else "+Inf"
             lines.append(f'{metric}_bucket{{le="{bound}"}} {cumulative}')
         lines += [f"{metric}_count {value['samples']}", f"{metric}_sum {value['total_ns'] / 1e9}"]
+    execution = latest.get("execution_metrics")
+    lines.append(f"hepta_execution_metrics_present {int(execution is not None)}")
+    if execution is not None:
+        lines.append(f"hepta_execution_mutation_blocked {int(execution['mutation_blocked'])}")
+        lines.append(f"hepta_execution_metrics_saturated {int(execution['metrics_saturated'])}")
+        for key in EXECUTION_GAUGES:
+            lines.append(f"hepta_execution_{key} {execution[key]}")
+        if not execution["metrics_saturated"]:
+            lines.append("# TYPE hepta_execution_commands_total counter")
+            for op, row in zip(EXECUTION_OPERATIONS, execution["results"]):
+                for result, count in zip(EXECUTION_RESULTS, row):
+                    lines.append(f'hepta_execution_commands_total{{operation="{op}",result="{result}"}} {count}')
+        for name in EXECUTION_LATENCIES:
+            value = execution[name]
+            if value["saturated"] or "bucket_counts" not in value:
+                continue
+            metric = "hepta_execution_" + name + "_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for i, count in enumerate(value["bucket_counts"]):
+                cumulative += count
+                bound = str(BOUNDS_NS[i] / 1e9) if i < len(BOUNDS_NS) else "+Inf"
+                lines.append(f'{metric}_bucket{{le="{bound}"}} {cumulative}')
+            lines += [f"{metric}_count {value['samples']}", f"{metric}_sum {value['total_ns'] / 1e9}"]
     return "\n".join(lines) + "\n"
 
 

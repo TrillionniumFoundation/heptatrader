@@ -30,7 +30,7 @@ include(CTest)
 # Instrumented libraries must retain RTTI for UBSan's vptr checks. Detect both
 # compile and link flags because supported validation profiles set both, while
 # custom sanitizer builds may specify only one side. The ordinary Release
-# executable keeps its reviewed optimization and quantitative symbol budget.
+# executable keeps its reviewed optimization and advisory symbol count.
 set(HEPTA_INSTRUMENTED_BUILD OFF)
 set(_hepta_instrumentation_flags
     "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE} ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${CMAKE_SHARED_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS_RELEASE}")
@@ -42,7 +42,7 @@ add_subdirectory(HeptaTrade)
 
 # Preserve RTTI for instrumented Release builds. Removing the optimization
 # unconditionally also expanded the ordinary production Gateway beyond its
-# reviewed symbol budget; the verifier must remain active for both variants.
+# privileged-symbol boundary; the verifier must remain active for both variants.
 function(hepta_remove_legacy_no_rtti target)
     get_target_property(_hepta_compile_options ${target} COMPILE_OPTIONS)
     if(_hepta_compile_options AND

@@ -331,11 +331,11 @@ ExecutionCommandResult ExecutionCoordinator::IdempotencyConflictLocked(
     return result;
 }
 
-ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionContext& context,
-                                                          const std::string& reasonCode,
-                                                          const std::string& detail,
-                                                          long orderId,
-                                                          const std::string& requestHash)
+ExecutionCommandResult ExecutionCoordinator::RefuseBeforeIntent(
+    const AgentExecutionContext& context,
+    const std::string& reasonCode,
+    const std::string& detail,
+    long orderId)
 {
     ExecutionCommandResult result;
     result.status = ExecutionCommandStatus::Rejected;
@@ -343,6 +343,17 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
     result.orderId = orderId;
     result.reasonCode = reasonCode;
     result.detail = detail;
+    return result;
+}
+
+ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionContext& context,
+                                                          const std::string& reasonCode,
+                                                          const std::string& detail,
+                                                          long orderId,
+                                                          const std::string& requestHash)
+{
+    ExecutionCommandResult result = RefuseBeforeIntent(
+        context, reasonCode, detail, orderId);
     if (!context.toolCallId.empty())
     {
         const std::string key = RequestKey(
@@ -367,14 +378,18 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
 
 ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    return ObserveCommand(0U, [&]() { return PlaceOrderLocked(command); });
+}
+
+ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCommand& command)
+{
     const AgentExecutionContext& context = command.context;
 
     if (context.toolCallId.empty() || context.agentId.empty() || context.sessionId.empty())
-        return RejectLocked(context, "INVALID_AGENT_CONTEXT", "agent_id, session_id and tool_call_id are required");
+        return RefuseBeforeIntent(context, "INVALID_AGENT_CONTEXT", "agent_id, session_id and tool_call_id are required");
     const std::string requestHash = PlaceRequestHash(command);
     if (requestHash.empty())
-        return RejectLocked(context, "REQUEST_HASH_FAILED", "canonical request hashing failed");
+        return RefuseBeforeIntent(context, "REQUEST_HASH_FAILED", "canonical request hashing failed");
     const std::string requestKey = RequestKey(context.agentId, context.sessionId, context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
         m_requests.find(requestKey);
@@ -386,36 +401,36 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
     }
     if (m_fencedSessionOwners.find(OwnerKey(context.agentId, context.sessionId)) !=
         m_fencedSessionOwners.end())
-        return RejectLocked(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
+                            -1);
     if (m_recoveryOnlySessionOwners.find(
             OwnerKey(context.agentId, context.sessionId)) !=
         m_recoveryOnlySessionOwners.end())
-        return RejectLocked(context, "SESSION_RECOVERY_ONLY",
+        return RefuseBeforeIntent(context, "SESSION_RECOVERY_ONLY",
             "root custodian disabled new entry for this session owner",
-            -1, requestHash);
+            -1);
     if (m_mutationBlocked)
-        return RejectLocked(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1, requestHash);
+        return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1);
     if (!m_callbacks.placement.Configured())
-        return RejectLocked(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
+                            -1);
     if (command.expiresAtMs > 0 && OmsJournal::NowEpochMs() > command.expiresAtMs)
-        return RejectLocked(context, "TOOL_CALL_EXPIRED", "order command expired before execution",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "TOOL_CALL_EXPIRED", "order command expired before execution",
+                            -1);
     if (command.contract.symbol.empty() || command.order.totalQuantity <= 0.0 || !IsBuyOrSell(command.order.action))
-        return RejectLocked(context, "INVALID_ORDER", "symbol, BUY/SELL action and positive quantity are required",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "INVALID_ORDER", "symbol, BUY/SELL action and positive quantity are required",
+                            -1);
 
     const std::string instrument = command.instrument.empty() ? command.contract.symbol : command.instrument;
     if (!context.executionDomain.empty())
     {
         if (context.decisionLeaseFencingToken == 0 || context.decisionLeaseGeneration == 0 ||
             !m_callbacks.validateDecisionLease)
-            return RejectLocked(context, "DECISION_LEASE_REQUIRED", "Agent mutation lacks a server-validated lease",
-                                -1, requestHash);
+            return RefuseBeforeIntent(context, "DECISION_LEASE_REQUIRED", "Agent mutation lacks a server-validated lease",
+                                -1);
         std::string leaseReason;
         if (!m_callbacks.validateDecisionLease(context, instrument, &leaseReason))
-            return RejectLocked(context, "DECISION_LEASE_INVALID", leaseReason, -1, requestHash);
+            return RefuseBeforeIntent(context, "DECISION_LEASE_INVALID", leaseReason, -1);
     }
     // Idempotent replay above must remain available even at capacity. Do not
     // set the global mutation block here: cancel/authoritative flatten keep
@@ -785,9 +800,24 @@ bool ExecutionCoordinator::ValidateRecoveredProjectionLocked(
     return true;
 }
 
+ExecutionRuntimeObservation ExecutionCoordinator::RuntimeObservation() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto result = m_observation;
+    result.present = true;
+    result.retainedCommands = m_requests.size();
+    result.orderOwners = m_orderOwners.size();
+    result.fencedOwners = m_fencedSessionOwners.size();
+    result.recoveryOnlyOwners = m_recoveryOnlySessionOwners.size();
+    result.retainedSendAttempts = m_placeSendAttempts.size();
+    result.mutationBlocked = m_mutationBlocked;
+    return result;
+}
+
 bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    OmsScopedLatencySample recoveryTimer(m_observation.recoveryLatency);
     ResetRecoveryProjectionLocked();
 
     try

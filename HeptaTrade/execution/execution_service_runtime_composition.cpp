@@ -1010,3 +1010,8 @@ ExecutionEventHub& ExecutionServiceRuntimeComposition::EventHub()
 {
     return *m_eventHub;
 }
+
+ExecutionRuntimeObservation ExecutionServiceRuntimeComposition::CoordinatorObservation() const
+{
+    return m_coordinator ? m_coordinator->RuntimeObservation() : ExecutionRuntimeObservation();
+}

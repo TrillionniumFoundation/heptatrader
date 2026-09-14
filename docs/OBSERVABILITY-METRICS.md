@@ -12,6 +12,7 @@ it does not mean every requested metric or host integration has been delivered.
 |---|---|---|
 | OMS append, data-sync and replay-validation timing | `OmsJournal::GetHealthSnapshot`, five-second Execution observations | counts, nanoseconds and bounded histograms, including failed attempts; not complete recovery SLOs; [measurement boundaries](technical/runtime-cost-observations.md) |
 | OMS capacity and pending queues | same snapshot/observation stream | decoded bytes, records, pending count/bytes, budgets, poison/unknown state; physical gzip size is separate; [online capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md) |
+| Coordinator operations, local recovery and state size | `ExecutionCoordinator::RuntimeObservation`, additive `execution_metrics` in Execution observations and the installed report | fixed outcome counts, lock-held operation/replay-projection histograms and O(1) identity/owner/index sizes; no per-ID labels; [exact scopes](technical/runtime-cost-observations.md) |
 | Gateway scheduling, results and writes | actual Unix Gateway observations | fixed result bins, pending/active/ready gauges, delivery failures and three latency histograms; application success is distinct from socket delivery; [contract](technical/gateway-runtime-observability.md) |
 | Read-only OMS/Gateway report | installed `hepta_oms_report.py`, `--kind oms` or `gateway` | validated samples, epoch-bounded growth, advisory headroom, fixed alert classification and classic Prometheus text; no network listener |
 | Atomic metrics textfile publication | same helper, `--format prometheus --output-dir` | fixed names, writer exclusion, atomic replacement, collection/sample timestamps and explicit failure; [publication contract](technical/oms-operational-report.md) |
@@ -31,7 +32,7 @@ supplied rules independently evaluate collection and source timestamps.
 
 ## Requirements not yet delivered as a complete interface
 
-Per-reason execution lifecycle counters, full recovery duration/SLOs, callback
+Per-reason execution lifecycle counters, full Broker reconciliation duration/SLOs, callback
 lag, all snapshot ages/generations, portfolio notional/PnL/drawdown, connection/
 refresh duration and network-policy state still need individually specified
 names, types, units, cardinality bounds, collection points and behavior tests.

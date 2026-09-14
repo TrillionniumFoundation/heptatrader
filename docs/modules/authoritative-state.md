@@ -72,5 +72,6 @@ Tests cover coherent publication, stale/invalid views, generation rollover, reco
 describes the concrete refresh coordinator APIs and downstream resolution
 rules. Account-summary, positions and open-orders refreshes coalesce pending
 requests without overlapping ambiguous generations. Completion is an explicit
-barrier result, not the receipt of one callback. The similarly named legacy
-CSV reporter is owned by LEGACY and does not construct these snapshots.
+barrier result, not the receipt of one callback. The similarly named historical
+CSV reporter has been [retired](../technical/legacy-retirement.md) and is not
+part of the maintained snapshot construction.

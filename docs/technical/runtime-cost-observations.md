@@ -98,3 +98,47 @@ Bounded software tests do not establish multiday stability, target-host memory/
 recovery SLOs, arbitrary historical compatibility, all-runtime telemetry, actual
 notification delivery or IB PAPER qualification. See [bounded acceptance](bounded-runtime-acceptance.md),
 [persistence support](persistence-support-window.md) and the [metric inventory](../OBSERVABILITY-METRICS.md).
+
+## Coordinator operations and complete local recovery
+
+`ExecutionCoordinator::RuntimeObservation` copies fixed counters and O(1)
+container sizes under its existing mutex. It never scans historical commands to
+publish telemetry. Place, cancel and authoritative flatten record one of five
+fixed outcomes (accepted, rejected, duplicate, uncertain, escaping exception).
+The operation histogram starts after acquiring the coordinator lock and ends
+before releasing it; it includes local durability and venue callback work but
+excludes lock wait, outer policy/preview validation, socket delivery and later
+Broker callbacks. An exception is counted and rethrown, not made successful.
+Planless flatten and policy-layer early returns are not coordinator operations.
+
+Recovery latency wraps the complete `RecoverFromJournal` execution, including
+validation, projection and failure cleanup, after its lock acquisition. It is
+not just journal parser timing; neither is it end-to-end Broker reconciliation.
+Attempts returning false are measured. Counters are process-instance data, not
+reconstructed from history, and reset on process restart; projections still
+recover their original command identities. Saturating counters/histograms are
+explicitly marked and never wrapped to apparent zero.
+
+Both Execution daemons publish the additive `execution_metrics` object in their
+existing five-second `heptatrader.oms-capacity.v1` observations. It has three
+`results` rows (place, cancel, flatten), each with the five outcomes above;
+`place_latency`, `cancel_latency`, `flatten_latency`, `recovery_latency` use the
+same nanosecond histogram format. `retained_commands`, `order_owners`,
+`fenced_owners`, `recovery_only_owners`, `retained_send_attempts` are counts, and
+`mutation_blocked` is a boolean. The record contains no identifiers or secrets.
+Journal and coordinator snapshots are obtained separately: do not infer a joint
+transactional snapshot or an exact invariant spanning both objects.
+
+The installed report validates fixed inventories, integer/boolean types and
+result-to-latency accounting. It emits 15 `hepta_execution_commands_total`
+series (three fixed operation labels, five fixed result labels), four latency
+histograms in seconds, the count gauges, and explicit presence/saturation/block
+flags. Missing old-artifact metrics have presence zero and omit all value series;
+saturated counters or histograms are omitted. Saturation is an explicit report
+alert. A deliberate terminal or maintenance block is not automatically paged:
+the block gauge needs operational context; existing writer incidents keep their
+separate severity. No additional collector daemon or listener is required.
+Native operation/refusal/uncertainty/exception tests, compiled C++ serializer
+vectors, hostile Python report tests and actual installed-daemon restart/report
+acceptance exercise these paths. Source fixtures do not certify a target host,
+a universal recovery SLO, bounded lifetime storage or delivered notifications.

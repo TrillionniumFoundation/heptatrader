@@ -20,7 +20,13 @@ persisted state. There is only one orchestration implementation for these steps.
 
 The fixed previous source remains `d003f54c7c6c2bd19002627f2bcd9081228b01cd`.
 This is an explicit regression pair, not universal historical compatibility.
-The reference is built without credentials. Updating it still requires the
+The reference is built without credentials. A fresh CMake File API codemodel
+selects its actually installed executable targets and their build dependencies.
+It does not recompile unrelated old test programs merely to assemble the prior
+payload, nor maintain a second hardcoded target list. Missing, empty, foreign
+or ambiguous build models fail before reference acceptance. Current native and
+Python suites still run in full, and the actual prior package still installs
+and participates in the same shared-state rollback test. Updating it still requires the
 [persistence support decision](persistence-support-window.md).
 
 ## Success, failure and publication
@@ -45,7 +51,10 @@ manifest shell blocks with private fixture files. Commented-out tag checks,
 swallowed mismatch failures, absent acceptance and substituted bytes are tested.
 `test_core_release_acceptance.py` executes the production orchestrator with
 inert process seams, verifies argument/digest continuity, failure propagation
-and cleanup. These unit seams do not replace the real installed fixtures invoked
+and cleanup. Additional real CMake fixtures build/install/run the selected
+executable, discover a newly installed executable without a list edit, and leave
+an intentionally uncompilable uninstalled test outside the reference build.
+These unit seams do not replace the real installed fixtures invoked
 by the actual workflow.
 
 The privileged driver must run only on a disposable CI VM. The existing fixtures

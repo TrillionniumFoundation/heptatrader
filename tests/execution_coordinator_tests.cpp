@@ -1987,9 +1987,13 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
 } // namespace
 
 #include "venue_placement_cases.h"
+#include "pre_intent_refusal_cases.h"
 
 int main()
 {
+    TestPreIntentRefusalsDoNotRetainCommandIdentities();
+    TestBlockedRefusalFloodDoesNotEraseUncertainIdentity();
+    TestCoordinatorMeasurementsPreserveExceptionsAndFlattenRejection();
     TestVenuePlacementConstructionAndResultContract();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();

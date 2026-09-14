@@ -75,7 +75,8 @@
         "tests/python/test_send_attempt_time_index.py",
         "tests/venue_placement_cases.h",
         "tests/recovery_projection_faults.cpp",
-        "tests/python/test_recovery_projection.py"
+        "tests/python/test_recovery_projection.py",
+        "tests/pre_intent_refusal_cases.h"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false

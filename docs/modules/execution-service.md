@@ -76,11 +76,33 @@ The coordinator serializes command identity and durable state transitions. Venue
 
 ## Observability
 
-Required records include command ID, owner/session, execution domain, normalized instrument, lifecycle state, journal sequence, send-attempt state, venue order correlation, reason code, and timing. Metrics must separate accepted, rejected, duplicate, uncertain, journal failure, send failure, reconciliation, and recovery duration.
+Required records include command ID, owner/session, execution domain, normalized instrument, lifecycle state, journal sequence, send-attempt state, venue order correlation, reason code, and timing. The actual coordinator now exposes fixed place/cancel/authoritative-flatten
+result bins, operation latency, full coordinator replay/projection latency and
+O(1) container-size gauges through the existing daemon observation/report path.
+See [runtime cost observations](../technical/runtime-cost-observations.md).
+Detailed per-reason lifecycle, end-to-end Broker reconciliation and other missing
+metrics remain in the [implementation inventory](../OBSERVABILITY-METRICS.md).
 
 ## Test expectations
 
 Tests cover idempotency, journal-before-send, conflicting command IDs, send exceptions, cancel, reconnect, recovery, owner fencing, event ordering, transport failure, simulator end-to-end behavior, and terminal paths. Every new mutation state needs restart tests at each durable boundary.
+
+### Pre-intent refusals versus retained command identity
+
+Place/cancel context, ownership, expiry, missing-capability and blocked-entry
+refusals before any journal intent return a typed rejection without inserting a
+new command into the permanent projection. Invalid-context/hash flatten refusals
+also have no retained identity. Status lookup is absent for such never-admitted
+IDs. The same normalized intent can be evaluated again after the actual required
+authority changes; the client still must not replace a possibly-sent command ID.
+
+Durably rejected, accepted and uncertain commands are not evicted. Flatten
+rejections using the dedicated durable `flatten_reject` path are retained too;
+they must not be confused with no-record refusals. `RejectLocked` remains the
+post-intent/persistent rejection helper. Executable regressions flood pre-intent
+refusals and preserve accepted/conflicting/uncertain/post-intent-rejected
+identities and no-resend behavior across replay. This bounds neither permanent
+historical identities nor full-history replay: those remain lifecycle work.
 
 ## Known limitations
 

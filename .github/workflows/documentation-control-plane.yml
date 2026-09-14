@@ -36,24 +36,6 @@ jobs:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
-      - name: Export only tracked source for offline validation
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/hepta-tracked-source"
-          git archive --format=tar HEAD > "$RUNNER_TEMP/hepta-tracked-source/source.tar"
-          git cat-file commit HEAD > "$RUNNER_TEMP/hepta-tracked-source/commit.txt"
-          git ls-tree -r HEAD > "$RUNNER_TEMP/hepta-tracked-source/tree.txt"
-          git rev-parse HEAD > "$RUNNER_TEMP/hepta-tracked-source/source-sha.txt"
-          (cd "$RUNNER_TEMP/hepta-tracked-source" && sha256sum source.tar commit.txt tree.txt source-sha.txt > SHA256SUMS)
-
-      - name: Transfer tracked source without credentials or runtime state
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: tracked-source-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/hepta-tracked-source/
-          if-no-files-found: error
-          retention-days: 1
-
       - name: Install build-model validation dependencies
         run: |
           sudo apt-get update

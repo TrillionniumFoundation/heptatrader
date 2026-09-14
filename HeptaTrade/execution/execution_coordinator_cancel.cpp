@@ -4,14 +4,18 @@
 
 ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    return ObserveCommand(1U, [&]() { return CancelOrderLocked(command); });
+}
+
+ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrderCommand& command)
+{
     const AgentExecutionContext& context = command.context;
 
     if (context.toolCallId.empty() || context.agentId.empty() || context.sessionId.empty())
-        return RejectLocked(context, "INVALID_AGENT_CONTEXT", "agent_id, session_id and tool_call_id are required", command.orderId);
+        return RefuseBeforeIntent(context, "INVALID_AGENT_CONTEXT", "agent_id, session_id and tool_call_id are required", command.orderId);
     const std::string requestHash = CancelRequestHash(command);
     if (requestHash.empty())
-        return RejectLocked(context, "REQUEST_HASH_FAILED", "canonical request hashing failed", command.orderId);
+        return RefuseBeforeIntent(context, "REQUEST_HASH_FAILED", "canonical request hashing failed", command.orderId);
     const std::string requestKey = RequestKey(context.agentId, context.sessionId, context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
         m_requests.find(requestKey);
@@ -23,26 +27,26 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderComman
     }
     if (m_fencedSessionOwners.find(OwnerKey(context.agentId, context.sessionId)) !=
         m_fencedSessionOwners.end())
-        return RejectLocked(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
-                            command.orderId, requestHash);
+        return RefuseBeforeIntent(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
+                            command.orderId);
     if (m_mutationBlocked)
-        return RejectLocked(context, "MUTATION_BLOCKED", m_mutationBlockReason, command.orderId, requestHash);
+        return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, command.orderId);
     if (command.orderId < 0 || !m_callbacks.cancelIbOrder)
-        return RejectLocked(context, "INVALID_CANCEL", "valid order_id and cancel callback are required",
-                            command.orderId, requestHash);
+        return RefuseBeforeIntent(context, "INVALID_CANCEL", "valid order_id and cancel callback are required",
+                            command.orderId);
 
     const std::unordered_map<long, ExecutionOrderOwner>::const_iterator ownerIt = m_orderOwners.find(command.orderId);
     if (!context.allowCancelAny)
     {
         if (ownerIt == m_orderOwners.end())
-            return RejectLocked(context, "ORDER_OWNER_UNKNOWN", "order is not owned by this coordinator",
-                                command.orderId, requestHash);
+            return RefuseBeforeIntent(context, "ORDER_OWNER_UNKNOWN", "order is not owned by this coordinator",
+                                command.orderId);
         if (ownerIt->second.agentId != context.agentId ||
             ownerIt->second.sessionId != context.sessionId ||
             ownerIt->second.account != context.account ||
             ownerIt->second.executionDomain != context.executionDomain)
-            return RejectLocked(context, "ORDER_OWNER_MISMATCH", "agent cannot cancel another agent's order",
-                                command.orderId, requestHash);
+            return RefuseBeforeIntent(context, "ORDER_OWNER_MISMATCH", "agent cannot cancel another agent's order",
+                                command.orderId);
     }
 
     std::string suppressReason;
@@ -53,7 +57,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderComman
         // and dispatches it on acknowledgement; all other guard failures
         // remain fail-closed.
         suppressReason != "NO_BROKER_ACK")
-        return RejectLocked(context, "IB_CANCEL_SUPPRESSED", suppressReason, command.orderId, requestHash);
+        return RefuseBeforeIntent(context, "IB_CANCEL_SUPPRESSED", suppressReason, command.orderId);
 
     const std::string instrument = !command.instrument.empty() ? command.instrument :
         (ownerIt != m_orderOwners.end() ? ownerIt->second.instrument : "");

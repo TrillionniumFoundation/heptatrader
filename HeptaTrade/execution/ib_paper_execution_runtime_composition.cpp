@@ -678,3 +678,8 @@ const std::string& IbPaperExecutionRuntimeComposition::RecoveryReason() const
 HeptaIBGatewayAdapter& IbPaperExecutionRuntimeComposition::Adapter() { return *m_adapter; }
 ExecutionCoordinator& IbPaperExecutionRuntimeComposition::Coordinator() { return *m_coordinator; }
 ExecutionEventHub& IbPaperExecutionRuntimeComposition::EventHub() { return *m_eventHub; }
+
+ExecutionRuntimeObservation IbPaperExecutionRuntimeComposition::CoordinatorObservation() const
+{
+    return m_coordinator ? m_coordinator->RuntimeObservation() : ExecutionRuntimeObservation();
+}

@@ -671,6 +671,11 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
         self.assertGreater(before["append_latency"]["samples"], 0)
         self.assertGreater(before["data_sync_latency"]["samples"], 0)
         self.assertGreater(after["replay_validation_latency"]["samples"], 0)
+        self.assertEqual(before["execution_metrics"]["results"][0][0], 1)
+        self.assertEqual(before["execution_metrics"]["place_latency"]["samples"], 1)
+        self.assertGreater(after["execution_metrics"]["recovery_latency"]["samples"], 0)
+        self.assertEqual(after["execution_metrics"]["results"][0], [0, 0, 0, 0, 0])
+        self.assertGreater(after["execution_metrics"]["retained_commands"], 0)
         # Execute the verified INSTALLED reporter on a stable selected export.
         # It must not splice rate/latency series across the actual restart.
         exported = runtime.root / "capacity-export.jsonl"
@@ -685,6 +690,8 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
         metrics = subprocess.run(command + ["--format", "prometheus"], capture_output=True, text=True, timeout=5)
         self.assertEqual(metrics.returncode, 0, metrics.stderr)
         self.assertIn("hepta_oms_data_sync_latency_seconds_count", metrics.stdout)
+        self.assertIn("hepta_execution_recovery_latency_seconds_count", metrics.stdout)
+        self.assertIn('hepta_execution_commands_total{operation="place",result="accepted"} 0', metrics.stdout)
         if self.evidence:
             (self.evidence / "installed-oms-report.json").write_text(result.stdout)
             (self.evidence / "installed-oms-metrics.prom").write_text(metrics.stdout)

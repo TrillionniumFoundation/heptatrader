@@ -1,5 +1,7 @@
 #pragma once
 
+#include "execution_runtime_observation.h"
+
 #include "execution_authority.h"
 #include "ib_paper_execution_runtime_config.h"
 #include "paper_terminal_mutation_manifest.h"
@@ -75,6 +77,7 @@ public:
     // Local process observability only; not an Agent command or admission gate.
     const std::string& ServiceEpoch() const { return m_serviceIdentity.serviceEpoch; }
     OmsJournalHealthSnapshot JournalHealth() const { return m_journal.GetHealthSnapshot(); }
+    ExecutionRuntimeObservation CoordinatorObservation() const;
 
     HeptaIBGatewayAdapter& Adapter();
     ExecutionCoordinator& Coordinator();

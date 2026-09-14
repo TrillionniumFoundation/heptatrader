@@ -1,4 +1,4 @@
-#include "../oms_capacity_observation.h"
+#include "execution_runtime_observation.h"
 #include "execution_service_runtime_composition.h"
 #include "execution_service_runtime_config.h"
 
@@ -60,7 +60,7 @@ int main(int argc, char**)
     for (;;)
     {
         if (capacityCadence.Due(std::chrono::steady_clock::now()))
-            std::cerr << OmsCapacityObservation(runtime.JournalHealth(), OmsJournal::NowEpochMs(),
+            std::cerr << ExecutionCapacityObservation(runtime.JournalHealth(), runtime.CoordinatorObservation(), OmsJournal::NowEpochMs(),
                 runtime.ServiceEpoch(), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now().time_since_epoch()).count())) << '\n';
         const struct timespec timeout = {1, 0};

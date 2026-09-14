@@ -5,6 +5,7 @@
 #include "send_attempt_time_index.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../oms_journal.h"
+#include "execution_runtime_observation.h"
 
 #include <functional>
 #include <cstdint>
@@ -116,6 +117,7 @@ public:
     // An intent without a terminal/send receipt is UNCERTAIN and blocks new
     // mutations until the caller completes broker reconciliation.
     bool RecoverFromJournal(std::string& reason);
+    ExecutionRuntimeObservation RuntimeObservation() const;
 
     bool IsMutationBlocked(std::string* reason = nullptr) const;
     bool BeginBrokerReconnectFence(std::string& reason);
@@ -244,6 +246,13 @@ private:
     ExecutionCommandResult DuplicateResultLocked(const AgentExecutionContext& context) const;
     ExecutionCommandResult IdempotencyConflictLocked(const AgentExecutionContext& context,
                                                       long orderId) const;
+    // A refusal before any durable intent has no mutation identity to retain.
+    // Never use this helper after appending an intent/send/terminal record.
+    static ExecutionCommandResult RefuseBeforeIntent(
+        const AgentExecutionContext& context,
+        const std::string& reasonCode,
+        const std::string& detail,
+        long orderId = -1);
     ExecutionCommandResult RejectLocked(const AgentExecutionContext& context,
                                         const std::string& reasonCode,
                                         const std::string& detail,
@@ -363,6 +372,29 @@ private:
                                           const std::string& requestHash);
 
 private:
+    ExecutionCommandResult PlaceOrderLocked(const PlaceOrderCommand& command);
+    ExecutionCommandResult CancelOrderLocked(const CancelOrderCommand& command);
+    ExecutionCommandResult ExecuteAuthoritativeFlattenLocked(
+        const FlattenPositionCommand& command, const AuthoritativeFlattenPlan& plan);
+    template <typename Action>
+    ExecutionCommandResult ObserveCommand(std::size_t operation, Action action)
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto& observation = m_observation.operations[operation];
+        OmsScopedLatencySample timer(observation.latency);
+        try
+        {
+            auto result = action();
+            observation.Observe(result.status);
+            return result;
+        }
+        catch (...)
+        {
+            observation.Observe(4U);
+            throw; // measurement cannot manufacture a result or clear a fence
+        }
+    }
+    ExecutionRuntimeObservation m_observation;
     OmsJournal& m_journal;
     ExecutionCoordinatorCallbacks m_callbacks;
     mutable std::mutex m_mutex;

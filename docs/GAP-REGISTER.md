@@ -54,10 +54,12 @@ Example of a newly discovered core release blocker:
 
 ## External and experimental work
 
-The register explicitly retains missing complete SHADOW integration evidence
-and target-host/prior-version rollback evidence. These are not claims that the
-core package cannot be built. Equally, a same-artifact pointer rollback smoke
-cannot be represented as a prior-version journal/lease migration test.
+The register separates completed synthetic SHADOW source integration and a
+verified fixed prior-source artifact pair from still-open target-host rollback,
+long-term journal lifecycle and actual server-side governance changes. A completed
+fixture is not real provider availability, multi-day operation or arbitrary
+historical schema compatibility. Refer to the machine register for current
+states rather than maintaining a second handwritten all-closed checklist.
 
 Optional IB PAPER activation still requires the independently controlled SDK,
 harness, account, host isolation and an actual campaign bound to the exact

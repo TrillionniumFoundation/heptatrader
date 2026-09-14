@@ -50,8 +50,14 @@ Canonical local validation:
 ```bash
 ./scripts/dev_core.sh
 python3 scripts/check_documentation.py
-python3 -m unittest discover -s tests/python -p 'test_*.py'
+python3 scripts/run_python_tests.py --lane core
+python3 scripts/run_python_tests.py --lane source
 ```
+
+Run these as an unprivileged developer. Install and isolated process tests have
+explicit build/artifact/identity prerequisites; the full disposable-host driver
+is documented in [`core release acceptance`](docs/technical/core-release-acceptance.md).
+Do not run that privileged driver on a trading host.
 
 The canonical documentation entry point is [`docs/index.md`](docs/index.md). The cross-module implementation map is [`docs/technical/runtime-engineering-map.md`](docs/technical/runtime-engineering-map.md).
 
