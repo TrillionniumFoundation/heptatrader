@@ -81,3 +81,10 @@ and a documented support-window decision, not merely a changed SHA constant.
 Current deployment work belongs in [`../gap-register.json`](../gap-register.json),
 including `HOST-ROLLBACK-001`. This support contract does not copy issue status
 or declare actual-host acceptance from a source check.
+
+## Optional gzip storage compatibility
+
+See [lossless stopped-state maintenance](oms-archive-lifecycle.md) for optional gzip storage,
+writer exclusion, decoded recovery budgets, crash handling and explicit
+expansion before downgrade. It preserves all event bytes and command identities;
+it is not online truncation or a general N-1 compatibility claim.

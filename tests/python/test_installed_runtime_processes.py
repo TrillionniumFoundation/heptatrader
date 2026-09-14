@@ -7,6 +7,7 @@ Artifacts MUST be digest-pinned core packages, not arbitrary binary directories.
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import os
 from pathlib import Path
@@ -292,7 +293,9 @@ class InstalledRuntime:
         return command, exact, result["order_id"]
 
     def send_count(self) -> int:
-        records = [json.loads(line) for line in (self.root / "es/oms-journal.jsonl").read_text().splitlines()]
+        data = (self.root / "es/oms-journal.jsonl").read_bytes()
+        if data.startswith(b"\x1f\x8b"): data = gzip.decompress(data)
+        records = [json.loads(line) for line in data.splitlines()]
         return sum(record.get("event") == "place_sent" for record in records)
 
 
@@ -445,6 +448,68 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
                             ["previous:100", "candidate:100-to-75", "previous:75-to-flat", "candidate:flat"])
 
 
+    def test_installed_archive_replay_and_explicit_downgrade_restore(self):
+        runtime = self.fixture("archive-downgrade")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+        command, fields, order = runtime.place("BUY", 25, "1.1002")
+        runtime.wait_position(25)
+        runtime.wait_no_orders()
+        journal = runtime.root / "es/oms-journal.jsonl"
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_oms_archive.py"
+        def maintain(operation, success=True):
+            result = subprocess.run([sys.executable, "-S", str(helper), "--journal", str(journal),
+                "--operation", operation, "--stopped-state"], env=CLEAN_ENV,
+                user=EXECUTION_UID, group=TEST_GID, extra_groups=[],
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode == 0, success, result.stderr)
+            return json.loads(result.stdout) if success else result
+        maintain("compact", success=False)  # acknowledgement cannot bypass active runtime lock
+        runtime.stop()
+        original = journal.read_bytes()
+        receipt = maintain("compact")
+        self.assertEqual(receipt["logical_sha256"], hashlib.sha256(original).hexdigest())
+        self.assertEqual(gzip.decompress(journal.read_bytes()), original)
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.wait_position(25)
+        self.assertEqual(runtime.call("trade.place_order", fields, call_id=command, duplicate=True)["order_id"], order)
+        self.assertEqual(runtime.send_count(), 1)
+        runtime.place("SELL", 5, "1.1000")
+        runtime.wait_position(20)
+        runtime.wait_no_orders()
+        runtime.stop()
+        compressed = journal.read_bytes()
+        expanded = gzip.decompress(compressed)
+        # Direct downgrade must fail before readiness, not silently skip history.
+        with self.assertRaisesRegex(AssertionError, "failed startup"):
+            runtime.start(self.slots["PREVIOUS"])
+        self.assertEqual(len(runtime.processes), 1)
+        process, output, log, name = runtime.processes[0]
+        self.assertIsNotNone(process.poll())
+        self.assertNotEqual(process.returncode, 0)
+        output.close()
+        runtime.processes.clear()  # explicitly accounted-for expected failure only
+        self.assertEqual(journal.read_bytes(), compressed)
+        receipt = maintain("expand")
+        self.assertEqual(journal.read_bytes(), expanded)
+        self.assertEqual(receipt["logical_sha256"], hashlib.sha256(expanded).hexdigest())
+        runtime.start(self.slots["PREVIOUS"])
+        runtime.wait_position(20)
+        status = runtime.call("execution.get_command_status", [f"command_id={command}"])["payload"]
+        self.assertEqual(status["order_id"], order)
+        self.assertEqual(runtime.send_count(), 2)
+        runtime.place("SELL", 20, "1.1000")
+        runtime.wait_position(0)
+        runtime.wait_no_orders()
+        runtime.stop()
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.wait_position(0)
+        self.assertEqual(runtime.send_count(), 3)
+        self.record_success("archive-downgrade", runtime,
+            ["active-writer-refused", "lossless-offline-compression", "candidate-replay-same-lease",
+             "duplicate-no-resend", "compressed-new-fill", "old-binary-refused-without-mutation",
+             "explicit-lossless-expansion", "old-binary-recovered-position-and-command", "repromoted-flat"])
+
     def test_bounded_read_load_and_repeated_recovery(self):
         from runtime_acceptance_support import bounded_integer, measure_reads, process_resources
         import platform
@@ -463,7 +528,8 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
             time.sleep(.025)
         measurements.update(resources_before=resources_before, resources_after=resources_after)
         recoveries = []
-        for iteration in range(4):
+        cycles = bounded_integer(os.environ.get("HEPTA_RECOVERY_CYCLES", "4"), 4, 100)
+        for iteration in range(cycles):
             command, fields, order = runtime.place("BUY", 10, "1.1002")
             runtime.wait_position(10)
             before = runtime.send_count()
@@ -480,12 +546,12 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
             runtime.place("SELL", 10, "1.1000")
             runtime.wait_position(0)
             runtime.wait_no_orders()
-        self.assertEqual(runtime.send_count(), 8)
-        self.record_success("bounded-load-recovery", runtime, ["fresh-authoritative-reads", "four-persisted-position-restarts", "stable-command-identities", "final-flat"])
+        self.assertEqual(runtime.send_count(), cycles * 2)
+        self.record_success("bounded-load-recovery", runtime, ["fresh-authoritative-reads", f"{cycles}-persisted-position-restarts", "stable-command-identities", "final-flat"])
         if self.evidence:
             measurements.update(scope="disposable-host;simulator;bounded-sample-run;not-a-production-SLO",
                 host={"system":platform.system(),"kernel":platform.release(),"machine":platform.machine()},
-                restart_to_authoritative_state_ms=recoveries, source_sha=self.manifests["CANDIDATE"]["source_sha"],
+                recovery_cycles=cycles, restart_to_authoritative_state_ms=recoveries, source_sha=self.manifests["CANDIDATE"]["source_sha"],
                 artifact_sha256=os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"],
                 broker_mutation=False, paper_authorized=False, live_authorized=False)
             with (self.evidence / "bounded-load-measurements.json").open("x") as output:
@@ -521,6 +587,45 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
             with (self.evidence / "checkpoint-digest-only.json").open("x") as output:
                 json.dump(report, output, sort_keys=True, indent=2)
                 output.flush(); os.fsync(output.fileno())
+
+    def test_installed_gateway_metrics_and_report(self):
+        runtime = self.fixture("gateway-metrics")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+        for _ in range(12): runtime.call("market.get_quote", ["instrument=EUR.USD"])
+        log = next(log for _, _, log, name in runtime.processes if name == "hepta-tool-gatewayd")
+        deadline = time.monotonic() + 12
+        measured = None
+        while time.monotonic() < deadline:
+            for line in reversed(log.read_text().splitlines()):
+                try: value = json.loads(line)
+                except json.JSONDecodeError: continue
+                if (value.get("schema") == "heptatrader.gateway-metrics.v1" and
+                        value.get("responses_delivered", 0) >= 12):
+                    measured = value; break
+            if measured is not None: break
+            time.sleep(.025)
+        self.assertIsNotNone(measured, "actual installed Gateway produced no measured replies")
+        self.assertGreaterEqual(measured["execution_latency"]["samples"], 12)
+        self.assertEqual(measured["response_write_failures"], 0)
+        self.assertGreater(measured["response_write_latency"]["total_ns"], 0)
+        self.assertNotIn("S" * 32, json.dumps(measured))
+        exported = runtime.root / "gateway-export.jsonl"
+        exported.write_text(json.dumps(measured) + "\n")
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_oms_report.py"
+        command = [sys.executable, str(helper), "--kind", "gateway", "--input", str(exported),
+                   "--now-ms", str(measured["observed_at_ms"])]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["service_epoch"], measured["service_epoch"])
+        metrics = subprocess.run(command + ["--format", "prometheus"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(metrics.returncode, 0, metrics.stderr)
+        self.assertIn("hepta_gateway_execution_latency_seconds_count", metrics.stdout)
+        if self.evidence:
+            (self.evidence / "installed-gateway-observation.json").write_text(json.dumps(measured, indent=2))
+            (self.evidence / "installed-gateway-metrics.prom").write_text(metrics.stdout)
+        self.record_success("gateway-metrics", runtime,
+                            ["real-installed-gateway", "measured-replies", "installed-report", "no-secrets"])
 
     def test_installed_daemon_capacity_observations_survive_restart(self):
         runtime = self.fixture("online-capacity")
@@ -561,8 +666,30 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
         runtime.place("SELL", 10, "1.1000")
         runtime.wait_position(0)
         runtime.wait_no_orders()
+        self.assertTrue(before.get("service_epoch"))
+        self.assertNotEqual(before["service_epoch"], after["service_epoch"])
+        self.assertGreater(before["append_latency"]["samples"], 0)
+        self.assertGreater(before["data_sync_latency"]["samples"], 0)
+        self.assertGreater(after["replay_validation_latency"]["samples"], 0)
+        # Execute the verified INSTALLED reporter on a stable selected export.
+        # It must not splice rate/latency series across the actual restart.
+        exported = runtime.root / "capacity-export.jsonl"
+        exported.write_text("\n".join(json.dumps(v) for v in (initial, before, after)) + "\n")
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_oms_report.py"
+        command = [sys.executable, str(helper), "--input", str(exported), "--now-ms", str(after["observed_at_ms"])]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        summary = json.loads(result.stdout)
+        self.assertIsNone(summary["trend"]["window_ms"])
+        self.assertEqual(summary["service_epoch"], after["service_epoch"])
+        metrics = subprocess.run(command + ["--format", "prometheus"], capture_output=True, text=True, timeout=5)
+        self.assertEqual(metrics.returncode, 0, metrics.stderr)
+        self.assertIn("hepta_oms_data_sync_latency_seconds_count", metrics.stdout)
+        if self.evidence:
+            (self.evidence / "installed-oms-report.json").write_text(result.stdout)
+            (self.evidence / "installed-oms-metrics.prom").write_text(metrics.stdout)
         self.record_success("online-capacity-restart", runtime,
-                            ["installed-json-observation", "written-ledger-growth", "restart-preserved-counts",
+                            ["installed-json-observation", "real-histograms", "installed-report-and-prometheus", "restart-series-isolation", "written-ledger-growth", "restart-preserved-counts",
                              "duplicate-no-resend", "final-flat"])
 
 

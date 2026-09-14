@@ -1,6 +1,8 @@
 #pragma once
 
 #include "execution_authority.h"
+#include "venue_placement.h"
+#include "send_attempt_time_index.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../oms_journal.h"
 
@@ -44,25 +46,13 @@ struct ExecutionOwnedActiveOrderProjection
 
 struct ExecutionCoordinatorCallbacks
 {
-    std::function<bool(const InstrumentRef&, const OrderIntent&, long*)> placeIbOrder;
-    std::function<bool(const InstrumentRef&, const OrderIntent&,
-                       const std::string&, long*)> placeIbOrderCorrelated;
-    // PAPER-only full-command dispatch preserves the privileged quote binding
-    // across the durable intent/send-attempt writes. Generic and simulator
-    // venues continue to use the narrower callbacks above.
-    std::function<bool(const IbPlaceOrderCommand&, const std::string&, long*)>
-        placeIbOrderCommandCorrelated;
+    VenuePlacement placement;
     // Durable pre-adapter risk-increase check after the send-attempt marker.
     // PAPER installs a second check inside the adapter send lock immediately
     // before broker IO, so lock wait and adapter preflight cannot stale this
     // earlier observation.
     std::function<bool(const IbPlaceOrderCommand&, std::string*)>
         preVenuePlaceCheck;
-    // Optional two-phase venue activation. A reserving venue must keep the
-    // order inert until this callback runs after owner projection and the
-    // durable place_sent receipt. Called under the coordinator lock; must not
-    // re-enter the coordinator. Failure is a durable uncertain outcome.
-    std::function<bool(long, std::string*)> activatePlacedOrder;
     std::function<bool(const FlattenPositionCommand&,
                        const AuthoritativeFlattenPlan&, std::string*)>
         preVenueFlattenCheck;
@@ -381,7 +371,7 @@ private:
     std::unordered_set<std::string> m_fencedSessionOwners;
     std::unordered_map<std::string, std::uint64_t>
         m_recoveryOnlySessionOwners;
-    std::vector<PlaceSendAttempt> m_placeSendAttempts;
+    SendAttemptTimeIndex<PlaceSendAttempt> m_placeSendAttempts;
     std::unordered_set<std::string> m_placeSendAttemptKeys;
     bool m_mutationBlocked = false;
     std::string m_mutationBlockReason;

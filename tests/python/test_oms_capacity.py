@@ -10,6 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "scripts"))
 SCRIPT = ROOT / "scripts/verify_oms_journal_replay.py"
 spec = importlib.util.spec_from_file_location("oms_capacity_subject", SCRIPT)
 subject = importlib.util.module_from_spec(spec)

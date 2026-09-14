@@ -1,3 +1,4 @@
+#include "../HeptaTrade/tool_host/gateway_observation.h"
 #include "../HeptaTrade/tool_host/typed_tool_protocol.h"
 #include "../HeptaTrade/client/native_tool_client.h"
 #include "../HeptaTrade/execution/execution_coordinator.h"
@@ -433,6 +434,20 @@ void TestSocketRoundTripAndStrictProtocol()
 	assert(toolHealth.ownerBackpressureRejections >=
 		static_cast<std::uint64_t>(pressureRejected.load()));
     server.Stop();
+    const auto measured = server.GetHealth();
+    std::uint64_t resultCount = 0;
+    for (auto count : measured.results) resultCount += count;
+    assert(resultCount == measured.responsesDelivered + measured.responseWriteFailures);
+    assert(measured.responsesDelivered > 0);
+    assert(measured.results[0] > 0 && measured.results[1] > 0 && measured.results[3] > 0);
+    assert(measured.responseWriteLatency.samples == resultCount);
+    assert(measured.executionLatency.samples > 0);
+    assert(measured.queueWaitLatency.samples == measured.executionLatency.samples);
+    assert(measured.executionLatency.totalNs > 0);
+    assert(GatewayObservation(measured, "unsafe\"epoch", 1, 1).empty());
+    const auto exported = GatewayObservation(measured, "fixture-epoch", 1, 1);
+    assert(exported.find(binding.token) == std::string::npos);
+    assert(exported.find("response_write_latency") != std::string::npos);
     assert(access(socketPath.c_str(), F_OK) != 0);
     std::uint64_t decisionRecords = 0;
     assert(SessionSupervisorAuditJournal::Verify(

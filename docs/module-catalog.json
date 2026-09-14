@@ -34,7 +34,9 @@
       "tests": [
         "tests/trading_tool_host_tests.cpp",
         "tests/trading_tool_registry_tests.cpp",
-        "tests/unix_tool_server_tests.cpp"
+        "tests/unix_tool_server_tests.cpp",
+        "tests/python/test_gateway_observability.py",
+        "tests/python/test_installed_runtime_processes.py"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
@@ -68,7 +70,10 @@
       "tests": [
         "tests/execution_coordinator_tests.cpp",
         "tests/execution_event_feed_tests.cpp",
-        "tests/execution_decision_lease_authority_tests.cpp"
+        "tests/execution_decision_lease_authority_tests.cpp",
+        "tests/send_attempt_time_index_cases.h",
+        "tests/python/test_send_attempt_time_index.py",
+        "tests/venue_placement_cases.h"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
@@ -83,14 +88,25 @@
         "HeptaTrade/oms_recover.cpp",
         "HeptaTrade/oms_recover.h",
         "scripts/verify_oms_journal_replay.py",
-        "HeptaTrade/oms_capacity_observation.h"
+        "HeptaTrade/oms_capacity_observation.h",
+        "HeptaTrade/oms_latency_observation.h",
+        "scripts/hepta_oms_report.py",
+        "HeptaTrade/oms_archive_codec.h",
+        "scripts/oms_archive_codec.py",
+        "scripts/hepta_oms_archive.py"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
         "tests/oms_journal_schema_v4_tests.cpp",
         "tests/execution_coordinator_tests.cpp",
         "tests/python/test_oms_capacity.py",
-        "tests/oms_live_capacity_cases.h"
+        "tests/oms_live_capacity_cases.h",
+        "tests/oms_runtime_observation_cases.h",
+        "tests/python/test_oms_observation_faults.py",
+        "tests/python/test_oms_operational_report.py",
+        "tests/oms_queue_budget_cases.h",
+        "tests/oms_archive_cases.h",
+        "tests/python/test_oms_archive.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -272,7 +288,8 @@
         "tests/python/test_preflight_single_pass.py",
         "tests/systemd_simulator_smoke.py",
         "tests/python/test_release_workflow.py",
-        "tests/python/test_core_release_acceptance.py"
+        "tests/python/test_core_release_acceptance.py",
+        "tests/python/test_cmake_install_behavior.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -329,7 +346,8 @@
         "tests/python/test_python_test_partition.py",
         "tests/python/test_ib_workflow_interfaces.py",
         "tests/python/test_protocol_reference.py",
-        "tests/python/test_owner_ruleset_plan.py"
+        "tests/python/test_owner_ruleset_plan.py",
+        "tests/python/test_source_workflow_commands.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

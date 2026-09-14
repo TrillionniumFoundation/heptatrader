@@ -76,3 +76,7 @@ This is a development dependency, not an Execution runtime dependency.
 copy its test lists into another workflow. See
 [`docs/technical/wire-operation-contracts.md`](docs/technical/wire-operation-contracts.md)
 and [`docs/technical/oms-recovery-capacity.md`](docs/technical/oms-recovery-capacity.md).
+
+Optional lossless OMS storage maintenance requires the zlib development package
+(`zlib1g-dev` on Ubuntu) and runtime libz. See
+[`docs/technical/oms-archive-lifecycle.md`](docs/technical/oms-archive-lifecycle.md).

@@ -1,4 +1,6 @@
-﻿#pragma once
+#pragma once
+
+#include "oms_latency_observation.h"
 
 #include <cstdint>
 #include <functional>
@@ -76,10 +78,19 @@ struct OmsJournalHealthSnapshot {
     std::size_t replayObservedBytes = 0;
     std::size_t replayValidatedRecords = 0;
     std::string replayReasonCode;
+    OmsLatencySummary appendLatency;
+    OmsLatencySummary dataSyncLatency;
+    OmsLatencySummary replayValidationLatency;
     // Online written-ledger capacity; false is unknown, never an observed zero.
     bool capacityKnown = false;
     std::uint64_t currentBytes = 0;
     std::uint64_t currentRecords = 0;
+    std::uint64_t storageBytes = 0; // physical bytes, never charged as decoded recovery budget
+    bool gzipStorage = false;
+    std::size_t pendingBytes = 0;
+    std::size_t maxPendingBytes = 0;
+    std::size_t maxPendingRecords = 0;
+    std::uint64_t queueCapacityRejections = 0;
 };
 
 class OmsJournal {
@@ -100,6 +111,7 @@ public:
 private:
     static bool IsCriticalEventType(const std::string& eventType);
     bool FlushBufferedLocked();
+    bool QueueLineLocked(std::string line, bool asynchronous);
     bool FlushQueuedNoLock();
     bool WriteLineDirect(const std::string& line);
     bool WriteLineToPinnedFileLocked(const std::string& line, bool durable);
@@ -124,11 +136,20 @@ private:
     std::size_t m_replayObservedBytes = 0;
     std::size_t m_replayValidatedRecords = 0;
     std::string m_replayReasonCode;
+    OmsLatencySummary m_appendLatency;
+    OmsLatencySummary m_dataSyncLatency;
+    OmsLatencySummary m_replayValidationLatency;
     bool m_capacityKnown = false;
     std::uint64_t m_capacityBytes = 0;
     std::uint64_t m_capacityRecords = 0;
+    std::uint64_t m_storageBytes = 0;
+    bool m_gzipStorage = false;
 
 
+    std::size_t m_pendingBytes = 0;
+    std::size_t m_maxPendingBytes = 8U * 1024U * 1024U;
+    std::size_t m_maxPendingRecords = 8192U;
+    std::uint64_t m_queueCapacityRejections = 0;
     std::vector<std::string> m_bufferedLines;
     std::deque<std::string> m_asyncQueue;
     std::size_t m_batchSize = 1;

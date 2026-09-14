@@ -87,3 +87,11 @@ Production acceptance still requires its actual previous/candidate artifacts,
 protected state custody and host-specific evidence. Keep `HOST-ROLLBACK-001`
 open for that deployment-specific work; neither passing tests nor this document
 creates Broker authority. PAPER/LIVE defaults remain unchanged.
+
+## Extended recovery-cycle sampling
+
+The installed process test accepts `HEPTA_RECOVERY_CYCLES` from 4 through 100,
+default 4. Each cycle restores a filled position and the original lease/command,
+proves no-resend duplication, then exits flat. Evidence reports the actual cycle
+count and requires exactly two sends per cycle. More bounded cycles are not a
+24-hour soak and do not change CI defaults or production risk budgets.

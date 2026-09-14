@@ -75,3 +75,10 @@ maintaining a second handwritten copy of every tool schema in this document.
 Change the registry, both clients and positive/negative protocol vectors together
 when changing a wire contract. Renaming a private function does not require a
 new source-token gate.
+
+## Measured gateway runtime
+
+See [Gateway runtime observations](../technical/gateway-runtime-observability.md)
+for actual producers, lock boundaries, fixed result bins, latency scopes and
+installed reporting. Application results and local socket-write outcomes are
+counted independently; neither grants trading authority.

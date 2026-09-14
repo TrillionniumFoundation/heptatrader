@@ -3,6 +3,8 @@
 #include "tool_decision_audit.h"
 #include "trading_tool_host.h"
 #include "unix_socket_path_identity.h"
+#include "../oms_latency_observation.h"
+#include <array>
 
 #include <atomic>
 #include <cstddef>
@@ -25,6 +27,14 @@ struct UnixToolServerHealth
     std::uint64_t ownerBackpressureRejections = 0;
     std::uint64_t deadlineRejections = 0;
     std::uint64_t cancelledRequests = 0;
+    std::size_t maxPendingConnections = 0;
+    std::uint64_t responsesDelivered = 0;
+    std::uint64_t responseWriteFailures = 0;
+    std::array<std::uint64_t, 7> results{};
+    bool metricsSaturated = false;
+    OmsLatencySummary queueWaitLatency;
+    OmsLatencySummary executionLatency;
+    OmsLatencySummary responseWriteLatency;
 };
 
 class UnixToolServer
@@ -68,6 +78,7 @@ private:
         TradingToolHostRequest request;
         bool mutation = false;
         std::uint64_t deadlineAtMs = 0;
+        std::chrono::steady_clock::time_point queuedAt;
     };
 
     void AcceptLoop();
@@ -127,4 +138,7 @@ private:
     std::vector<std::thread> m_executionWorkers;
     std::unordered_map<std::string, std::size_t> m_activeByOwner;
     BackpressureObserver m_backpressureObserver;
+    // Never held across host invocation, socket I/O or the scheduling mutex.
+    mutable std::mutex m_metricsMutex;
+    UnixToolServerHealth m_metrics;
 };

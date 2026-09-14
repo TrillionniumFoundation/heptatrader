@@ -301,6 +301,17 @@ bool DeterministicExecutionVenue::PlaceOrderCorrelated(
     const InstrumentRef& contract, const OrderIntent& order,
     const std::string& correlationId, long* orderId, bool activate)
 {
+    const VenuePlaceResult result = PlaceOrderWithResult(contract, order, correlationId, activate);
+    const bool accepted = result.disposition == VenuePlaceDisposition::Submitted ||
+                          result.disposition == VenuePlaceDisposition::Reserved;
+    if (accepted && orderId) *orderId = result.orderId;
+    return accepted;
+}
+
+VenuePlaceResult DeterministicExecutionVenue::PlaceOrderWithResult(
+    const InstrumentRef& contract, const OrderIntent& order,
+    const std::string& correlationId, bool activate)
+{
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::string instrument = Instrument(contract);
     const std::uint64_t now = m_clock();
@@ -308,13 +319,13 @@ bool DeterministicExecutionVenue::PlaceOrderCorrelated(
     if (!risk.allow)
     {
         m_lastRejectReason = risk.reasonCode;
-        return false;
+        return VenuePlaceResult::Rejected(m_lastRejectReason);
     }
     if (m_nextOrderId == std::numeric_limits<long>::max() ||
         m_admittedOrderCount == std::numeric_limits<std::uint64_t>::max())
     {
         m_lastRejectReason = "SIM_ORDER_ID_EXHAUSTED";
-        return false;
+        return VenuePlaceResult::Rejected(m_lastRejectReason);
     }
     Order stored;
     stored.id = m_nextOrderId++;
@@ -326,9 +337,8 @@ bool DeterministicExecutionVenue::PlaceOrderCorrelated(
     m_orders[stored.id] = stored;
     ++m_admittedOrderCount;
     ++m_generation;
-    if (orderId) *orderId = stored.id;
     m_lastRejectReason.clear();
-    return true;
+    return activate ? VenuePlaceResult::Submitted(stored.id) : VenuePlaceResult::Reserved(stored.id);
 }
 
 bool DeterministicExecutionVenue::ActivateOrder(long orderId, std::string* reason)

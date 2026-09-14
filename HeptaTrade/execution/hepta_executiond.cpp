@@ -60,7 +60,9 @@ int main(int argc, char**)
     for (;;)
     {
         if (capacityCadence.Due(std::chrono::steady_clock::now()))
-            std::cerr << OmsCapacityObservation(runtime.JournalHealth(), OmsJournal::NowEpochMs()) << '\n';
+            std::cerr << OmsCapacityObservation(runtime.JournalHealth(), OmsJournal::NowEpochMs(),
+                runtime.ServiceEpoch(), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count())) << '\n';
         const struct timespec timeout = {1, 0};
         const int signal = ::sigtimedwait(&terminationSignals, nullptr, &timeout);
         if (signal == SIGTERM || signal == SIGINT) { receivedSignal = signal; break; }

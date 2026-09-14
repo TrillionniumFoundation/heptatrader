@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from oms_archive_codec import ArchiveError, decoded_chunks
 from collections import Counter
 import json
 import math
@@ -111,64 +112,77 @@ def validate_event(value: Any, line: int) -> dict[str, Any]:
     return value
 
 
-def read_records(path: Path, *, max_bytes: int = DEFAULT_MAX_BYTES,
-                 max_records: int = DEFAULT_MAX_RECORDS,
-                 max_record_bytes: int = DEFAULT_MAX_RECORD_BYTES,
-                 observations: dict[str, Any] | None = None):
-    """Bounded read-only parser. Never opens a special file for blocking I/O.
-
-    Callers must consume to EOF before publishing a successful summary. The
-    iterator is for offline diagnostics, not an incremental runtime projector.
-    """
+def validated_raw_records(fd: int, size: int, *, max_bytes: int = DEFAULT_MAX_BYTES,
+                          max_records: int = DEFAULT_MAX_RECORDS,
+                          max_record_bytes: int = DEFAULT_MAX_RECORD_BYTES,
+                          observations: dict[str, Any] | None = None):
+    """Yield byte-identical newline records and parsed values; caller pins fd."""
     for name, value, ceiling in (("bytes", max_bytes, 1024**3),
                                  ("records", max_records, 1000000),
                                  ("record bytes", max_record_bytes, 1024**2)):
         if type(value) is not int or not 1 <= value <= ceiling:
             raise JournalError(f"invalid {name} budget")
     metrics = observations if observations is not None else {}
-    metrics.update(bytes=0, records=0, largest_record_bytes=0,
+    metrics.update(bytes=0, records=0, largest_record_bytes=0, storage_bytes=size,
+                   gzip_storage=os.pread(fd, 2, 0) == b"\x1f\x8b",
                    limits={"bytes": max_bytes, "records": max_records,
                            "record_bytes": max_record_bytes})
+    pending = bytearray()
+    try:
+        for chunk in decoded_chunks(fd, size, max_bytes):
+            metrics["bytes"] += len(chunk)
+            start = 0
+            while start < len(chunk):
+                end = chunk.find(b"\n", start)
+                fragment = chunk[start:end if end >= 0 else len(chunk)]
+                if len(fragment) > max_record_bytes - len(pending):
+                    raise JournalError("OMS_REPLAY_RECORD_BYTE_LIMIT")
+                pending.extend(fragment)
+                if end < 0:
+                    break
+                number = metrics["records"] + 1
+                if number > max_records:
+                    raise JournalError("OMS_REPLAY_RECORD_COUNT_LIMIT")
+                if not pending:
+                    raise JournalError(f"line {number}: empty record")
+                raw = bytes(pending)
+                try:
+                    value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
+                                       parse_constant=reject_constant)
+                except (json.JSONDecodeError, UnicodeError, RecursionError) as error:
+                    raise JournalError(f"line {number}: invalid JSON") from error
+                value = validate_event(value, number)
+                metrics["records"] = number
+                metrics["largest_record_bytes"] = max(metrics["largest_record_bytes"], len(raw))
+                yield raw + b"\n", value
+                pending.clear()
+                start = end + 1
+        if pending:
+            raise JournalError("OMS_REPLAY_TORN_RECORD")
+    except ArchiveError as error:
+        raise JournalError(str(error)) from error
+
+
+def read_records(path: Path, *, max_bytes: int = DEFAULT_MAX_BYTES,
+                 max_records: int = DEFAULT_MAX_RECORDS,
+                 max_record_bytes: int = DEFAULT_MAX_RECORD_BYTES,
+                 observations: dict[str, Any] | None = None):
+    """Consume to EOF before publishing a summary. No incremental projection."""
+    metrics = observations if observations is not None else {}
     fd = -1
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
             raise JournalError("journal must be a regular non-symlink file")
-        if before.st_size > max_bytes:
-            raise JournalError("OMS_REPLAY_BYTE_LIMIT")
-        with os.fdopen(fd, "rb") as stream:
-            fd = -1
-            for number in range(1, max_records + 2):
-                raw = stream.readline(max_record_bytes + 2)
-                if not raw:
-                    break
-                metrics["bytes"] += len(raw)
-                if metrics["bytes"] > max_bytes:
-                    raise JournalError("OMS_REPLAY_BYTE_LIMIT")
-                if number > max_records:
-                    raise JournalError("OMS_REPLAY_RECORD_COUNT_LIMIT")
-                length = len(raw) - (1 if raw.endswith(b"\n") else 0)
-                if length > max_record_bytes:
-                    raise JournalError("OMS_REPLAY_RECORD_BYTE_LIMIT")
-                if not raw.endswith(b"\n"):
-                    raise JournalError("OMS_REPLAY_TORN_RECORD")
-                if length == 0:
-                    raise JournalError(f"line {number}: empty record")
-                try:
-                    value = json.loads(raw[:-1].decode("utf-8"),
-                                       object_pairs_hook=unique_object,
-                                       parse_constant=reject_constant)
-                except (json.JSONDecodeError, UnicodeError, JournalError) as error:
-                    raise JournalError(f"line {number}: invalid JSON: {error}") from error
-                metrics["records"] = number
-                metrics["largest_record_bytes"] = max(metrics["largest_record_bytes"], length)
-                yield validate_event(value, number)
-            after = os.fstat(stream.fileno())
-            current = os.stat(path, follow_symlinks=False)
-            identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
-            if identity(before) != identity(after) or identity(after) != identity(current):
-                raise JournalError("OMS_REPLAY_SNAPSHOT_CHANGED")
+        for _, value in validated_raw_records(fd, before.st_size, max_bytes=max_bytes,
+                max_records=max_records, max_record_bytes=max_record_bytes, observations=metrics):
+            yield value
+        after = os.fstat(fd)
+        current = os.stat(path, follow_symlinks=False)
+        identity = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        if identity(before) != identity(after) or identity(after) != identity(current):
+            raise JournalError("OMS_REPLAY_SNAPSHOT_CHANGED")
     except (OSError, OverflowError) as error:
         raise JournalError(f"cannot safely read journal: {error}") from error
     finally:

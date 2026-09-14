@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(HeptaTrade LANGUAGES CXX)
 
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 include(GNUInstallDirs)
 
@@ -246,7 +247,7 @@ target_link_libraries(hepta_execution_core PUBLIC
     hepta_execution_client
     hepta_agent_execution_support
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto ZLIB::ZLIB)
 
 add_library(hepta_trading_tool_core STATIC
     state/ib_contract_identity.cpp
@@ -301,7 +302,7 @@ target_link_libraries(hepta_agent_os_core PUBLIC
     hepta_execution_client
     hepta_agent_execution_support
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto ZLIB::ZLIB)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(hepta_agent_os_core PRIVATE
@@ -370,7 +371,7 @@ target_include_directories(hepta_sessionctl PRIVATE
 target_link_libraries(hepta_sessionctl PRIVATE
     hepta_session_supervisor_core
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto ZLIB::ZLIB)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(hepta_paper_terminal_latch_committer
@@ -383,7 +384,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_features(hepta_paper_terminal_latch_committer PRIVATE
         cxx_std_11)
     target_link_libraries(hepta_paper_terminal_latch_committer PRIVATE
-        OpenSSL::Crypto)
+        OpenSSL::Crypto ZLIB::ZLIB)
 endif()
 
 add_executable(hepta_tool_gatewayd
@@ -504,6 +505,7 @@ if(HEPTA_BUILD_LEGACY_MONOLITH)
     target_link_libraries(HeptaTrader PRIVATE
         Threads::Threads
         OpenSSL::Crypto
+        ZLIB::ZLIB
         HeptaStrategy
         libheptaHeptaDLL_Linux.a
         libTinyXml_Linux.a

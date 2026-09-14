@@ -1,5 +1,8 @@
 #include "../HeptaTrade/oms_journal.h"
+#include "../HeptaTrade/oms_archive_codec.h"
+#include <sys/file.h>
 #include "../HeptaTrade/oms_capacity_observation.h"
+#include "oms_runtime_observation_cases.h"
 
 #include <cstdlib>
 #include <fcntl.h>
@@ -441,11 +444,17 @@ void TestCountBudgetBoundsManySmallEventsAndDoesNotBlockExitAppend()
 }
 
 #include "oms_live_capacity_cases.h"
+#include "oms_archive_cases.h"
+#include "oms_queue_budget_cases.h"
 
 }
 
 int main()
 {
+    TestArchiveReplayAppendAndLogicalBudgets();
+    TestArchiveCorruptionIsCallbackAtomic();
+    TestArchiveMaintenanceLockExcludesRuntime();
+    hepta_observation_test::Run();
     TestReplayLimitsAreInclusiveAndCallbackAtomic();
     TestMalformedReplayBudgetsDoNotCreateFiles();
     TestOversizedAndTornRecordsDoNotApplyValidPrefix();
@@ -461,5 +470,7 @@ int main()
     TestLiveCapacityAndCheckpointRecovery();
     TestCapacityUnknownAndPendingAreNotHealthyZero();
     TestCapacitySerializationAndCadenceBoundaries();
+    TestQueueBudgetsPreserveAdmittedRecordsAndCriticalExit();
+    TestQueueByteBudgetAndMalformedConfiguration();
     return 0;
 }

@@ -149,3 +149,19 @@ Open work and release-profile blockers are recorded in `gap-register.json`. A gr
 - [`technical/core-release-acceptance.md`](technical/core-release-acceptance.md)
 - [`technical/oms-live-capacity.md`](technical/oms-live-capacity.md)
 - [`technical/owner-ruleset-transition.md`](technical/owner-ruleset-transition.md)
+
+## Runtime cost observations
+
+- [`technical/runtime-cost-observations.md`](technical/runtime-cost-observations.md)
+
+## Placement and operational diagnostics
+
+- [`technical/venue-placement-contract.md`](technical/venue-placement-contract.md)
+- [`technical/oms-operational-report.md`](technical/oms-operational-report.md)
+
+## Runtime observations and pending-memory limits
+
+- [Gateway measurements](technical/gateway-runtime-observability.md)
+- [OMS pending queue](technical/oms-pending-queue.md)
+
+- [`technical/oms-archive-lifecycle.md`](technical/oms-archive-lifecycle.md)
