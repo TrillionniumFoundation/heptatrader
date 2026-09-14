@@ -147,7 +147,7 @@ A command ID is the mutation idempotency key. `event_id` is an event deduplicati
 
 The current writer emits v4. The parser retains missing-field defaults for historical records and preserves the raw line for audit. It validates the complete journal before invoking any consumer callback; a malformed later record causes replay to fail without publishing an earlier partial projection. Higher-level recovery code must use only fields it understands and must not promote an unresolved send attempt to rejection or success.
 
-The lightweight `OmsRecover` helper is retained for legacy v1/v2-style projections. Canonical Execution recovery uses the richer command journal, venue correlations, broker callback evidence, connection epochs, and authoritative barriers.
+The test-only `OmsRecover` helper under `tests/compat/` is retained for legacy v1/v2-style regression projections. Canonical Execution recovery uses the richer command journal, venue correlations, broker callback evidence, connection epochs, and authoritative barriers.
 
 Schema changes must be additive or have an explicit migration. Every new field or event requires:
 

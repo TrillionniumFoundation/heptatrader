@@ -39,7 +39,7 @@ hepta_register_core_test(hepta_native_tool_client_tests)
 
 add_executable(hepta_execution_coordinator_tests
     execution_coordinator_tests.cpp
-    ../HeptaTrade/oms_recover.cpp)
+    compat/oms_recover.cpp)
 target_link_libraries(hepta_execution_coordinator_tests
     hepta_execution_core)
 hepta_register_core_test(hepta_execution_coordinator_tests)

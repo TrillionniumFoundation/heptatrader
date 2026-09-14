@@ -8,7 +8,19 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <new>
+#include <cstdlib>
+#include <stdexcept>
 #include <unistd.h>
+
+namespace { bool failNextCancelAllocation = false; }
+void* operator new(std::size_t size) {
+    if (failNextCancelAllocation) { failNextCancelAllocation = false; throw std::bad_alloc(); }
+    if (void* result = std::malloc(size ? size : 1)) return result;
+    throw std::bad_alloc();
+}
+void operator delete(void* ptr) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
 
 namespace {
 void TestWrapperQuantityTrackerCannotMixBrokerClients() {
@@ -67,6 +79,7 @@ void TestWrapperQuantityTrackerCannotMixBrokerClients() {
 class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;
+    int cancelFault = 0, placeFault = 0, places = 0;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
     bool Connect(const IBConnectParams&) override {connected=true;return true;}
@@ -82,9 +95,19 @@ public:
     bool ReqMktData(int,const IBContractLite&) override {return true;}
     bool CancelMktData(int) override {return true;}
     bool PlaceOrder(long id,const IBContractLite& c,const IBOrderLite& o) override {
-        orderId=id;contract=c;submitted=o;return true;
+        ++places; orderId=id;contract=c;submitted=o;
+        if (placeFault == 1) throw std::runtime_error("after flatten send");
+        if (placeFault == 2) return false;
+        if (placeFault == 3) failNextCancelAllocation = true;
+        return true;
     }
-    bool CancelOrder(long) override {++cancels;return true;}
+    bool CancelOrder(long) override {
+        ++cancels;
+        if (cancelFault == 1) throw std::runtime_error("after cancel send");
+        if (cancelFault == 2) return false;
+        if (cancelFault == 3) failNextCancelAllocation = true;
+        return true;
+    }
     bool PollOnce(int) override {return true;}
     bool TryDequeueEvent(IBEvent& event) override {
         if(events.empty()) return false;
@@ -146,9 +169,79 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestTypedFlattenCapturesResultAtSendBoundary() {
+    // Generic adapter fixture only. This does not expand the deployed PAPER
+    // profile to STK or bypass any runtime profile/quote/kill-switch check.
+    for (int fault = 0; fault < 4; ++fault) {
+        Fixture f;
+        IBContractLite contract; contract.symbol="XYZ"; contract.secType="STK";
+        contract.exchange="SMART"; contract.currency="USD";
+        assert(f.adapter.ReqRiskRefresh());
+        auto position=f.Event(IBEventType::PositionSnapshotItem);
+        position.key="XYZ"; position.number=1; position.contract=contract; f.Push(position);
+        f.FinishRiskRefresh();
+        const auto risk=f.adapter.GetAuthoritativeRiskSnapshot();
+        assert(risk.accountComplete && risk.positionsComplete && risk.fxCashComplete);
+        IBOrderLite order; order.action="SELL"; order.orderType="LMT";
+        order.lmtPrice=1.18; order.totalQuantity=1;
+        const auto send = [&](double quantity) {
+            return f.adapter.PlaceReduceOnlyOrderCorrelated(contract,order,"XYZ",quantity,
+                risk.connectionEpoch,risk.positionsGeneration,"fixture-quote",1,100,
+                "hepta-v1-sha256:"+std::string(64,'b'),1.18,1.19);
+        };
+        const auto rejected=send(2);
+        assert(rejected.disposition==VenueFlattenDisposition::RejectedBeforeSend);
+        assert(rejected.rejection==VenueFlattenRejection::PositionChangedBeforeSend);
+        assert(f.broker->places==0);
+        f.broker->placeFault=fault;
+        const auto result=send(1);
+        assert(!failNextCancelAllocation && f.broker->places==1);
+        assert(result.disposition==(fault==0 ? VenueFlattenDisposition::Submitted :
+            VenueFlattenDisposition::Uncertain));
+        if(fault==0 || fault==3) assert(result.orderId==f.broker->orderId);
+        if(fault==2) assert(result.detail=="IB_FLATTEN_API_OUTCOME_UNCERTAIN");
+        // Change the adapter's mutable legacy diagnostic after result capture.
+        // Neither the returned rejection nor the send outcome is reclassified.
+        auto invalid=order; invalid.orderRef="reserved";
+        assert(!f.adapter.PlaceOrder(contract,invalid));
+        assert(f.adapter.GetLastRejectReason()=="IB_ORDER_REF_RESERVED");
+        assert(rejected.detail=="IB_FLATTEN_POSITION_CHANGED_BEFORE_SEND");
+        assert(result.disposition==(fault==0 ? VenueFlattenDisposition::Submitted :
+            VenueFlattenDisposition::Uncertain));
+        assert(f.broker->places==1);
+    }
+}
+void TestTypedCancelAndDeferredNoResendAfterException() {
+    for (int fault = 0; fault < 4; ++fault) {
+        Fixture f;
+        const long id = f.Place();
+        f.Push(f.Status("Submitted", 0));
+        f.broker->cancelFault = fault;
+        const auto result = f.adapter.CancelOrder(id);
+        assert(result.disposition == (fault == 0 ? VenueCancelDisposition::Submitted : VenueCancelDisposition::Uncertain));
+        assert(!failNextCancelAllocation && f.broker->cancels == 1);
+    }
+    Fixture disconnected;
+    disconnected.adapter.Disconnect();
+    assert(disconnected.adapter.CancelOrder(41).disposition == VenueCancelDisposition::RejectedBeforeSend);
+    assert(disconnected.broker->cancels == 0);
+    Fixture deferred;
+    const long id = deferred.Place();
+    assert(deferred.adapter.CancelOrder(id).disposition == VenueCancelDisposition::Deferred);
+    assert(deferred.broker->cancels == 0);
+    deferred.broker->cancelFault = 1;
+    bool threw = false;
+    try { deferred.Push(deferred.Status("Submitted", 0)); }
+    catch (const std::runtime_error&) { threw = true; }
+    assert(threw && deferred.broker->cancels == 1);
+    deferred.broker->cancelFault = 0;
+    deferred.Push(deferred.Status("Submitted", 0));
+    deferred.Push(deferred.Status("Submitted", 0));
+    assert(deferred.broker->cancels == 1);
+}
 void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     Fixture f;const auto initial=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
-    const long id=f.Place();assert(f.adapter.CancelOrder(id));
+    const long id=f.Place();assert(f.adapter.CancelOrder(id).disposition == VenueCancelDisposition::Deferred);
     assert(f.adapter.GetLastRejectReason()=="IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK");
     f.Push(f.Status());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().executionOrderIds.empty());
@@ -322,6 +415,8 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestTypedFlattenCapturesResultAtSendBoundary();
+    TestTypedCancelAndDeferredNoResendAfterException();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();

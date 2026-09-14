@@ -44,7 +44,7 @@ public:
                 return VenuePlaceResult::Uncertain("venue placement mode mismatch", result.orderId);
             return result;
         case VenuePlaceDisposition::Rejected:
-            if (!result.detail.empty()) return result;
+            if (!result.detail.empty() && VenuePlaceRejectionCode(result.rejection)) return result;
             return VenuePlaceResult::Uncertain("venue rejected without a reliable rejection reason", result.orderId);
         case VenuePlaceDisposition::Uncertain:
             if (result.detail.empty()) result.detail = "venue outcome uncertain";

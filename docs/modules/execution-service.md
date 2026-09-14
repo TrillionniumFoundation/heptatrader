@@ -137,4 +137,33 @@ and the coordinator's existing synchronization and recovery boundaries.
 [Venue placement contract](../technical/venue-placement-contract.md) specifies
 the single Immediate/Reserving dependency, typed outcomes, constructor rejection,
 lock-bound IB result capture, migrated callers and uncertainty/replay tests.
+Rejection classification is independent of diagnostic prose; the existing wire
+and journal reason strings are unchanged. Unknown classifications remain uncertain.
+
+[Venue cancellation contract](../technical/venue-cancellation-contract.md)
+defines Submitted, Deferred, RejectedBeforeSend and Uncertain. The single typed
+cancel dependency replaces a Boolean and mutable last-error lookup. Exceptions
+after a possible send remain journaled as pending and are never retried blindly;
+positive authoritative terminal evidence, not absence alone, resolves them.
 Existing durable and wire contracts are unchanged.
+
+## Measured wait and retired callback
+
+The [cost contract](../technical/runtime-cost-observations.md) now distinguishes
+coordinator lock wait, lock-held work and inclusive local-operation time with
+old-producer presence handling. `trackOrder` and its two optional dispatch calls
+were removed after their watchdog consumer was retired. Actual owner projection,
+`onIbOrderPlaced`, durable receipts, uncertain outcomes and reconciliation remain
+unchanged. This private composition cleanup is not a promise of source
+compatibility with an independently maintained experimental caller.
+
+## Atomic authoritative-flatten result
+
+The [flatten result contract](../technical/venue-flatten-contract.md) completes
+the typed placement/cancellation boundary. The coordinator no longer carries
+`lastIbRejectReason` or a Boolean/out-ID flatten callback. The adapter captures
+classification, detail and known order identity under the send lock; possible
+SDK calls and post-send bookkeeping failures remain durably uncertain. The
+existing no-op proof, schema, owner fences, guarded exits and reconciliation are
+unchanged. The existing OMS stream also exports bounded coordinator reason bins;
+these are not complete profile/risk or Broker lifecycle telemetry.

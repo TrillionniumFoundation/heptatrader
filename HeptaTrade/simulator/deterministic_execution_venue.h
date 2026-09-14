@@ -2,6 +2,7 @@
 
 #include "../execution/trading_contract.h"
 #include "../execution/venue_place_result.h"
+#include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
 #include <functional>
@@ -61,7 +62,7 @@ public:
         const std::string& correlationId, bool activate);
     bool ActivateOrder(long orderId, std::string* reason = nullptr);
     bool CanCancelOrder(long orderId, std::string* reason) const;
-    bool CancelOrder(long orderId);
+    VenueCancelResult CancelOrder(long orderId);
     std::string LastRejectReason() const;
     void RestoreNextOrderIdAtLeast(long nextOrderId);
     bool RestoreRiskState(const std::map<std::string, double>& positions,

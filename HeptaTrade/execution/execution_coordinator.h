@@ -2,6 +2,8 @@
 
 #include "execution_authority.h"
 #include "venue_placement.h"
+#include "venue_cancel_result.h"
+#include "venue_flatten_result.h"
 #include "send_attempt_time_index.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../oms_journal.h"
@@ -66,12 +68,11 @@ struct ExecutionCoordinatorCallbacks
         const AuthoritativeFlattenPlan&,
         const std::function<bool()>&,
         bool*, std::string*)> proveAndCommitIbFlatNoop;
-    std::function<bool(long)> cancelIbOrder;
-    std::function<bool(const AuthoritativeFlattenPlan&, const std::string&,
-                       long*)> placeIbReduceOnlyOrderCorrelated;
+    // One lock-bound result; never sample a mutable last-error after sending.
+    std::function<VenueCancelResult(long)> cancelOrder;
+    std::function<VenueFlattenResult(const AuthoritativeFlattenPlan&,
+                                     const std::string&)> flattenOrder;
     std::function<bool(long, std::string*)> canCancelIbOrder;
-    std::function<std::string()> lastIbRejectReason;
-    std::function<void(const std::string&, long, const std::string&, const std::string&, const std::string&, const std::string&)> trackOrder;
     std::function<bool(const AgentExecutionContext&, const std::string&, std::string*)> validateDecisionLease;
     std::function<bool(const IbPlaceOrderCommand&, long, std::string*)> onIbOrderPlaced;
     std::function<bool(const IbCancelOrderCommand&, std::string*)> onIbCancelSent;
@@ -310,7 +311,11 @@ private:
         const std::string& requestHash,
         const std::string& requestKey,
         RequestRecord& pending);
-    bool TryCancelAtVenueLocked(long orderId, std::string& rejectReason);
+    VenueCancelResult TryCancelAtVenueLocked(long orderId);
+    ExecutionCommandResult UncertainCancelOutcomeLocked(
+        const CancelOrderCommand& command, const std::string& instrument,
+        const std::string& side, const std::string& requestHash,
+        const std::string& requestKey, const std::string& detail);
     ExecutionCommandResult CompleteAuthoritativeFlattenNoopLocked(
         const FlattenPositionCommand& command,
         const AuthoritativeFlattenPlan& plan,
@@ -379,13 +384,15 @@ private:
     template <typename Action>
     ExecutionCommandResult ObserveCommand(std::size_t operation, Action action)
     {
+        const auto entered = OmsScopedLatencySample::Clock::now();
         std::lock_guard<std::mutex> lock(m_mutex);
+        const auto acquired = OmsScopedLatencySample::Clock::now();
         auto& observation = m_observation.operations[operation];
-        OmsScopedLatencySample timer(observation.latency);
+        ExecutionOperationTiming timer(observation, entered, acquired);
         try
         {
             auto result = action();
-            observation.Observe(result.status);
+            observation.Observe(result);
             return result;
         }
         catch (...)

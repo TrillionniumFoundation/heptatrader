@@ -19,13 +19,27 @@ env:
   BUILD_PARALLEL: "2"
 
 jobs:
-  reliability-gcc:
-    name: canonical-full-suite-reliability (g++)
+  reliability:
+    name: canonical-full-suite-reliability (${{ matrix.cxx }})
     runs-on: ubuntu-24.04
     timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cc: gcc
+            cxx: g++
+            build: reliability-gcc
+            package: g++
+          - cc: clang
+            cxx: clang++
+            build: reliability-clang
+            package: clang
     env:
-      CC: gcc
-      CXX: g++
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+      BUILD_DIR: build/${{ matrix.build }}
+      COMPILER_PACKAGE: ${{ matrix.package }}
       CXXFLAGS: -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
       ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
       UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
@@ -40,10 +54,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev g++
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev "$COMPILER_PACKAGE"
       - name: Configure sanitizer build
         run: |
-          cmake -S . -B build/reliability-gcc -G Ninja \
+          cmake -S . -B "$BUILD_DIR" -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined' \
             -DCMAKE_SHARED_LINKER_FLAGS='-fsanitize=address,undefined' \
@@ -54,43 +68,5 @@ jobs:
             -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
       - name: Build and run sanitizer tests
         run: |
-          cmake --build build/reliability-gcc --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
-          ctest --test-dir build/reliability-gcc --output-on-failure -L core --parallel "$BUILD_PARALLEL"
-
-  reliability-clang:
-    name: canonical-full-suite-reliability (clang++)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 55
-    env:
-      CC: clang
-      CXX: clang++
-      CXXFLAGS: -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer
-      ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:check_initialization_order=1
-      UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
-    steps:
-      - name: Checkout exact event subject without credentials
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev clang
-      - name: Configure sanitizer build
-        run: |
-          cmake -S . -B build/reliability-clang -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined' \
-            -DCMAKE_SHARED_LINKER_FLAGS='-fsanitize=address,undefined' \
-            -DBUILD_TESTING=ON \
-            -DHEPTA_ENABLE_IBAPI=OFF \
-            -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
-            -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
-            -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
-      - name: Build and run sanitizer tests
-        run: |
-          cmake --build build/reliability-clang --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
-          ctest --test-dir build/reliability-clang --output-on-failure -L core --parallel "$BUILD_PARALLEL"
+          cmake --build "$BUILD_DIR" --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
+          ctest --test-dir "$BUILD_DIR" --output-on-failure -L core --parallel "$BUILD_PARALLEL"

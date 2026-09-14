@@ -8,12 +8,13 @@ regressions run in Core Runtime CI; package admission is a separate caller.
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path, PurePosixPath
 import re
 import stat
 import sys
 from typing import Any
+
+from source_json import SourceJsonError, load_source_json
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "heptatrader.gap-register.v2"
@@ -29,27 +30,10 @@ class GapRegisterError(ValueError):
     pass
 
 
-def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise GapRegisterError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def reject_constant(value: str) -> None:
-    raise GapRegisterError(f"non-finite JSON number: {value}")
-
-
 def load_json(path: Path) -> Any:
     try:
-        info = path.lstat()
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise GapRegisterError(f"{path}: expected a regular single-link file")
-        return json.loads(path.read_text(encoding="utf-8"),
-                          object_pairs_hook=unique_object, parse_constant=reject_constant)
-    except (OSError, UnicodeError, ValueError, RecursionError) as error:
+        return load_source_json(path)
+    except SourceJsonError as error:
         raise GapRegisterError(f"cannot load {path}: {error}") from error
 
 

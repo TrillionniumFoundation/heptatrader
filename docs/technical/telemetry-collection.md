@@ -140,3 +140,27 @@ Prometheus rule testing and Alertmanager routing use their official contracts:
 https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 and https://prometheus.io/docs/alerting/latest/configuration/ . Journald JSON
 producer fields are defined by systemd's journalctl and journal-fields manuals.
+
+## Target-host acceptance sequence (not executed by source CI)
+
+A real deployment must bind the exact artifact, host configuration and service
+invocation before collecting evidence. Use the existing collector and reporter;
+do not add a second daemon or fabricate a host receipt from a loopback fixture.
+Keep PAPER/LIVE disabled for observer setup and perform destructive fault drills
+only on a disposable clone with stopped-state copies, never on a trading ledger.
+
+| Acceptance | Evidence to retain | Rejection condition |
+|---|---|---|
+| Actual service collection | OMS and Gateway invocation IDs, source/collection timestamps, artifact digest and successful scrapes | Either source absent, stale, future-dated or mapped to the wrong unit |
+| Collector failure | Stop publication while leaving the last healthy textfile intact; observe the independent timestamp alert | Old health remains trusted after the specified age |
+| Publication failure | Denied output or writer contention on the disposable clone; failure status and bounded exit | A success receipt or stale health is substituted for failure |
+| Operator delivery | Approved actual receiver, firing, delivery failure/retry and resolved notification | Only a local log or an unapproved test receiver was observed |
+| Sustained load and restart | Measured CPU/RSS, event/byte growth, lock wait, local-operation tails, recovery duration and retained identities | Budget breach, unexplained growth, duplicate send, stale ownership or missing failure detection |
+
+Choose the observation period and numeric acceptance budgets from the target
+host and expected command/callback load before starting; record the actual
+elapsed coverage, gaps and failures. Do not label a short accelerated fixture
+as multiday evidence. The source-side defaults remain baselines, not verified
+host SLOs. A monitoring drill must not disarm a kill switch, rotate an Agent
+session or authorize Broker mutations. `HOST-OPERATIONS-003` remains OPEN until
+the actual host and actual operator delivery are observed and reviewed.

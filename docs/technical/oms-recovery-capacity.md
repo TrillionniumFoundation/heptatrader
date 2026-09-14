@@ -112,3 +112,54 @@ journal with unchanged command identities. Existing journal-write failure and
 exit-risk tests remain required. `test_oms_capacity.py` covers offline bounds,
 special files, snapshot drift and non-mutating diagnostics. These tests are not
 a multiday soak or proof that a production ledger fits the defaults.
+
+## Bounded recovery-growth measurement
+
+The canonical coordinator test executable has an optional synthetic producer:
+
+```bash
+build/core/tests/hepta_execution_coordinator_tests --recovery-growth 1000
+build/core/tests/hepta_execution_coordinator_tests --recovery-growth 10000
+build/core/tests/hepta_execution_coordinator_tests --recovery-growth 20000
+```
+
+Run it as an ordinary test identity on a disposable filesystem. It creates only
+a fresh private test journal; no existing path or Broker connection is accepted.
+The count is bounded to 1–20,000. Each generated order uses the real coordinator,
+intent/send/receipt writes and durable owner terminalization; its venue and
+terminal observation are explicitly synthetic. The real new-entry capacity
+pause can stop generation before the requested count. Restart reconstructs all
+retained commands and send-attempt identities, and duplicate checks on the oldest
+and newest command must not invoke the venue again. A small fixture executes in
+the existing CTest binary without a second workflow or a duplicated test list.
+
+Output reports actual accepted count, records, decoded bytes, replay time and
+process-lifetime peak RSS in KiB on Linux. Run each size in a fresh process; RSS
+is not a per-container allocation or Broker recovery metric. Record compiler,
+filesystem, source revision, executable digest and all effective OMS budgets
+with the measurements. In-memory filesystem results prove logic only, not
+physical durability or target-host latency. A complete four-record synthetic
+order lifecycle is not the real record cost of every order/callback/cancel.
+
+This producer measures the existing limitation. It does not implement or close
+`OMS-LIFECYCLE-002`: full-history materialization and permanent in-memory command
+identity still grow. Gzip cannot change that computational bound.
+
+### Required next persistence design, not implemented by this probe
+
+A long-running replacement needs an immutable journal segment manifest with
+verified lineage; a versioned, atomic checkpoint of every unresolved command,
+owner fence and recovery generation; and a durable exact index for all older
+command identities and normalized request hashes. Only then can restart validate
+a checkpoint and replay a suffix while a bounded in-memory cache retrieves old
+identities on demand. Checkpoints must not omit uncertain sends, assume missing
+orders were cancelled or expire older keys.
+
+The index and checkpoint transaction must be tied to the same durable journal
+boundary. Crash tests are required before/after each write, file sync, rename
+and directory sync, plus interrupted migration/downgrade, unavailable/corrupt
+index, duplicate and conflicting ancient IDs, multiple owners, and appended
+suffix corruption. No optimization may apply a valid prefix before discovering
+invalid later evidence. Until that integrated design is implemented and tested,
+retain the existing capacity warning, pause, preservation and host-maintenance
+contract rather than claiming unlimited runtime from a benchmark or archive.

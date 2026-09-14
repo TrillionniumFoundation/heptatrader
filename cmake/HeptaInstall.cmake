@@ -129,17 +129,39 @@ if(HEPTA_ENABLE_IBAPI)
         COMPONENT runtime)
 endif()
 
-if(EXISTS "${PROJECT_SOURCE_DIR}/README.md")
-    install(FILES "${PROJECT_SOURCE_DIR}/README.md"
-        DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
-        COMPONENT documentation)
+# Keep the public documentation namespace stable, but render source-relative
+# links for that installed layout. Out-of-package references bind this source.
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+set(HEPTA_DOCUMENTATION_SOURCE_SHA "" CACHE STRING
+    "Exact source SHA for documentation links when building from a source archive")
+if(HEPTA_DOCUMENTATION_SOURCE_SHA STREQUAL "")
+    execute_process(COMMAND git rev-parse HEAD WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}"
+        RESULT_VARIABLE _hepta_git_result OUTPUT_VARIABLE _hepta_doc_sha
+        OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+    if(NOT _hepta_git_result EQUAL 0)
+        message(FATAL_ERROR "Supply HEPTA_DOCUMENTATION_SOURCE_SHA for an exported source build")
+    endif()
+else()
+    set(_hepta_doc_sha "${HEPTA_DOCUMENTATION_SOURCE_SHA}")
 endif()
-install(DIRECTORY "${PROJECT_SOURCE_DIR}/docs/"
+file(GLOB_RECURSE _hepta_doc_inputs CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/docs/*.md" "${PROJECT_SOURCE_DIR}/docs/*.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    ${_hepta_doc_inputs} "${PROJECT_SOURCE_DIR}/README.md"
+    "${PROJECT_SOURCE_DIR}/cmake/render_installed_documentation.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}"
+    "${PROJECT_SOURCE_DIR}/cmake/render_installed_documentation.py"
+    --source "${PROJECT_SOURCE_DIR}"
+    --output "${PROJECT_BINARY_DIR}/installed-documentation"
+    --source-sha "${_hepta_doc_sha}"
+    RESULT_VARIABLE _hepta_doc_result)
+if(NOT _hepta_doc_result EQUAL 0)
+    message(FATAL_ERROR "Installed documentation generation failed")
+endif()
+install(DIRECTORY "${PROJECT_BINARY_DIR}/installed-documentation/"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/heptatrader"
-    COMPONENT documentation
-    FILES_MATCHING
-        PATTERN "*.md"
-        PATTERN "*.json")
+    COMPONENT documentation)
+
 
 unset(_hepta_runtime_targets)
 unset(_hepta_runtime_helpers)

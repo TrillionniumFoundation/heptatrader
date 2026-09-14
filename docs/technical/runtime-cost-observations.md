@@ -142,3 +142,61 @@ Native operation/refusal/uncertainty/exception tests, compiled C++ serializer
 vectors, hostile Python report tests and actual installed-daemon restart/report
 acceptance exercise these paths. Source fixtures do not certify a target host,
 a universal recovery SLO, bounded lifetime storage or delivered notifications.
+
+## Coordinator contention and inclusive local-operation timing
+
+The existing `place_latency`, `cancel_latency` and `flatten_latency` meanings
+are preserved: lock acquired through return/exception, before lock release.
+For each observed operation the additive `<name>_lock_wait` measures function
+entry to lock acquisition; `<name>_total` measures entry through the same finish
+point as the held scope. Thus `place_latency_lock_wait` and
+`place_latency_total` separate contention from work without changing execution
+order, the mutex hierarchy, persistence or authority. The total includes wait,
+not outer risk preview, transport delivery or asynchronous Broker callbacks.
+It is not an end-to-end trading SLO. Recovery keeps its separate existing scope.
+
+All three durations use sequential `steady_clock` observations. Updates happen
+under the coordinator mutex; exception unwinding completes each sample exactly
+once before unlock and still propagates the exception. Fixed histogram buckets,
+saturation and secret-free cardinality are unchanged. No new daemon is needed.
+A per-operation presence marker controls serialization: an old producer or an
+operation not yet measured omits both extension objects, rather than asserting
+that the unobserved wait was zero.
+
+The installed report accepts old observations unchanged. If either new object
+is present, both must be valid. For unsaturated scopes it checks identical sample
+counts and `total = held + wait` for cumulative and last-sample nanoseconds.
+New histograms follow the same seconds export convention, including
+`hepta_execution_place_latency_lock_wait_seconds` and
+`hepta_execution_place_latency_total_seconds`; three fixed
+`hepta_execution_operation_timing_present{operation="place|cancel|flatten"}`
+gauges make absence explicit. Missing or saturated histograms remain omitted.
+
+`test_execution_latency_boundaries.py` compiles the real C++ timer/serializer,
+uses exact clock points, tests exception unwinding and repeated completion,
+then feeds its bytes to the real Python report. It rejects incomplete and
+inconsistent new fields and retains old-producer compatibility. Full native
+and installed-process suites remain the coordinator integration evidence; this
+helper test alone is not a real contention benchmark or host qualification.
+
+## Bounded coordinator result reasons
+
+The existing `execution_metrics` object adds `reason_schema_version=1` and three
+`reason_counts` rows (place, cancel, authoritative flatten). Each row has 41 fixed
+bins declared by `ExecutionReasonNames()` and mirrored by the installed report's
+`EXECUTION_REASONS`. An executed cross-language test compares the complete order.
+Empty result reasons use NONE, exception unwinding uses EXCEPTION and all unknown
+strings use OTHER. No request, account, instrument or diagnostic becomes a label.
+
+The installed reporter emits `hepta_execution_command_reasons_total` with only
+`operation` and the fixed `reason` labels, and an explicit
+`hepta_execution_reason_metrics_present` gauge. Old producers lacking both
+fields remain readable but do not acquire synthetic zero counters. Partial
+extensions, unsupported versions, invalid counts and inconsistent result/reason
+sums fail parsing. Saturation is visible and suppresses affected counter export.
+
+These counts describe calls that reach the coordinator. They do not include all
+preview/profile/risk-policy refusals upstream, snapshot ages, callback lag or
+Broker reconciliation durations. They are process-instance counters, not durable
+trade counts or completed fills. RUNTIME-TELEMETRY-003 remains open for those
+other scopes.

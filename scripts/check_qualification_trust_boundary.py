@@ -202,6 +202,34 @@ OWNER_COMMANDS = ['test "$DISPATCH_ACTOR" = ProfHepta',
                   'test "$TRIGGERING_ACTOR" = ProfHepta']
 
 
+def phase_environment(job: str, phase: str) -> dict[str, str]:
+    """Runner-dependent paths are valid only at step scope, never job env.
+
+    These are bindings for the small qualification protocol, not a substitute
+    for the independent full-workflow actionlint syntax/context check.
+    """
+    if phase == "bind-owner":
+        return {"DISPATCH_ACTOR": "${{ github.actor }}",
+                "DISPATCH_ACTOR_ID": "${{ github.actor_id }}",
+                "TRIGGERING_ACTOR": "${{ github.triggering_actor }}"}
+    artifact = "${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}"
+    evidence = "${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}"
+    if job == "build-candidate" and phase == "build-artifact":
+        return {"CANDIDATE_ARCHIVE": "${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar"}
+    if job == "qualify" and phase == "verify-artifact":
+        return {"ARTIFACT_DIR": artifact,
+                "CANDIDATE_ARCHIVE": "${{ runner.temp }}/candidate-download/ib-paper-candidate-${{ github.sha }}.tar"}
+    if job == "qualify" and phase in {"run-campaign", "verify-qualification"}:
+        result = {"ARTIFACT_DIR": artifact, "EVIDENCE_DIR": evidence,
+                  "HEPTA_IB_PAPER_QUALIFIER": "${{ vars.HEPTA_IB_PAPER_QUALIFIER }}"}
+        if phase == "run-campaign":
+            result.update(HEPTA_IB_PAPER_QUALIFIER_SHA256="${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}",
+                          HEPTA_QUALIFICATION_MUTATIONS="1")
+        return result
+    return {}
+
+
+
 def validate_workflow(workflow: dict) -> list[str]:
     try:
         _require(set(workflow.get("on", {})) == {"workflow_dispatch"}, "qualification must be owner-dispatched only")
@@ -228,8 +256,8 @@ def validate_workflow(workflow: dict) -> list[str]:
             _require(job.get("permissions") == expected_permissions, "job credential scope changed")
             timeout = job.get("timeout-minutes")
             _require(type(timeout) is int and 0 < timeout <= (100 if name == "build-candidate" else 90), "job must retain its bounded timeout")
-            allowed_env = ({"PYTHONDONTWRITEBYTECODE", "CANDIDATE_ARCHIVE", "HEPTA_IB_BUILD_SDK_ROOT", "HEPTA_IB_BUILD_QUOTA_ROOT", "HEPTA_IB_BUILDER_IMAGE"}
-                           if name == "build-candidate" else {"PYTHONDONTWRITEBYTECODE", "ARTIFACT_DIR", "EVIDENCE_DIR", "CANDIDATE_ARCHIVE", "HEPTA_IB_BUILDER_IMAGE"})
+            allowed_env = ({"PYTHONDONTWRITEBYTECODE", "HEPTA_IB_BUILD_SDK_ROOT", "HEPTA_IB_BUILD_QUOTA_ROOT", "HEPTA_IB_BUILDER_IMAGE"}
+                           if name == "build-candidate" else {"PYTHONDONTWRITEBYTECODE", "HEPTA_IB_BUILDER_IMAGE"})
             _require(set(job.get("env", {})) == allowed_env, "unexpected job environment override")
             steps = job["steps"]
             _require(isinstance(steps, list) and all(isinstance(s, dict) for s in steps), "steps must be explicit mappings")
@@ -238,8 +266,8 @@ def validate_workflow(workflow: dict) -> list[str]:
                     allowed_phases = ({"bind-owner", "verify-source-before-build", "build-artifact", "verify-source-after-build"}
                                       if name == "build-candidate" else {"bind-owner", "verify-source-before-campaign", "verify-artifact", "run-campaign", "verify-source-after-campaign", "verify-qualification"})
                     _require(step.get("id") in allowed_phases, "unreviewed executable phase in authority workflow")
-                    if step.get("id") not in {"bind-owner", "run-campaign", "verify-qualification"}:
-                        _require("env" not in step, "critical phase must not override its bound environment")
+                    _require(step.get("env", {}) == phase_environment(name, step.get("id")),
+                             "phase environment must bind its exact artifact/attempt/owner inputs")
                 if "uses" in step:
                     action, separator, revision = step["uses"].partition("@")
                     _require(bool(separator) and ACTION_SHA.fullmatch(revision) is not None, "actions must be SHA-pinned")
@@ -263,9 +291,6 @@ def validate_workflow(workflow: dict) -> list[str]:
                          and options.get("persist-credentials") is False and options.get("clean") is True,
                          "checkouts must be exact dispatch source without persisted credentials")
             owner_index = _phase(steps, "bind-owner", OWNER_COMMANDS)
-            owner_env = steps[owner_index].get("env", {})
-            _require(owner_env == {"DISPATCH_ACTOR": "${{ github.actor }}", "DISPATCH_ACTOR_ID": "${{ github.actor_id }}",
-                                   "TRIGGERING_ACTOR": "${{ github.triggering_actor }}"}, "owner recheck must use event identity")
             _require(owner_index < min(i for i, _ in checkouts), "owner check must precede checkout")
             verify = "python3 trusted/scripts/verify_exact_git_index.py --root "
             if name == "build-candidate":
@@ -281,7 +306,6 @@ def validate_workflow(workflow: dict) -> list[str]:
                 _require(upload_index > after and candidate_upload.get("uses", "").startswith("actions/upload-artifact@"), "candidate upload must follow post-build verification")
                 _require(candidate_upload.get("with", {}).get("name") == "ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", "candidate publication must bind the same run and attempt")
                 _require(candidate_upload.get("with", {}).get("path") == "${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar", "candidate upload must not include source or private files")
-                _require(job["env"]["CANDIDATE_ARCHIVE"] == "${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar", "candidate archive must bind source")
             else:
                 _require(job.get("needs") in ("build-candidate", ["build-candidate"]), "qualification must depend on candidate build")
                 _require(job.get("environment") == "ib-paper", "protected ib-paper environment is required")
@@ -292,15 +316,6 @@ def validate_workflow(workflow: dict) -> list[str]:
                 final = _phase(steps, "verify-qualification", ['python3 trusted/scripts/verify_ib_paper_qualification.py --result "$EVIDENCE_DIR/evidence/qualification-result.json" --evidence-root "$EVIDENCE_DIR/evidence" --expected-git-sha "$GITHUB_SHA" --expected-binary "$ARTIFACT_DIR/hepta-ib-executiond" --expected-harness "$HEPTA_IB_PAPER_QUALIFIER" --receipt "$EVIDENCE_DIR/evidence/qualification-verification.json" --attempt "$EVIDENCE_DIR/attempt.json" --publication-archive "$EVIDENCE_DIR/verified-evidence.tar"'])
                 _require(max(i for i, _ in checkouts) < before < artifact < campaign < after < final,
                          "candidate, campaign and final verification must retain authority order")
-                expected_env = {"ARTIFACT_DIR": "${{ runner.temp }}/verified-ib-candidate-${{ github.run_id }}-${{ github.run_attempt }}",
-                                "EVIDENCE_DIR": "${{ runner.temp }}/heptatrader-ib-evidence-${{ github.run_id }}-${{ github.run_attempt }}",
-                                "CANDIDATE_ARCHIVE": "${{ runner.temp }}/candidate-download/ib-paper-candidate-${{ github.sha }}.tar"}
-                _require(all(job.get("env", {}).get(k) == v for k, v in expected_env.items()), "paths must bind immutable run/attempt identity")
-                _require(steps[campaign].get("env") == {
-                    "HEPTA_IB_PAPER_QUALIFIER": "${{ vars.HEPTA_IB_PAPER_QUALIFIER }}",
-                    "HEPTA_IB_PAPER_QUALIFIER_SHA256": "${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}",
-                    "HEPTA_QUALIFICATION_MUTATIONS": "1"}, "campaign must use pinned harness and explicit mutation opt-in")
-                _require(steps[final].get("env") == {"HEPTA_IB_PAPER_QUALIFIER": "${{ vars.HEPTA_IB_PAPER_QUALIFIER }}"}, "verifier must use the pinned harness binding")
                 attesters = [(i, s) for i, s in enumerate(steps) if s.get("id") == "attest-ib-paper-receipt"]
                 _require(len(attesters) == 1, "one receipt attestation is required")
                 attest_index, attest = attesters[0]
