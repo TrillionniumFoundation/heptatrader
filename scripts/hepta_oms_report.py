@@ -9,12 +9,14 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import hashlib
+import fcntl
 import json
 import math
 import os
 from pathlib import Path
 import re
 import stat
+import secrets
 import sys
 import time
 
@@ -364,6 +366,136 @@ def gateway_prometheus(latest, summary):
     return "\n".join(lines) + "\n"
 
 
+
+def _open_metrics_directory(path: Path) -> int:
+    """Pin a caller-owned namespace; do not create/chmod host directories."""
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("absolute metrics directory required")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open("/", flags)
+    try:
+        for index, part in enumerate(path.parts[1:], 1):
+            child = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child
+            info = os.fstat(fd)
+            final = index == len(path.parts) - 1
+            sticky_root = not final and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+            if info.st_uid not in {0, os.geteuid()} or info.st_mode & 0o022 and not sticky_root:
+                raise ValueError("untrusted metrics directory")
+        info = os.fstat(fd)
+        if info.st_uid != os.geteuid() or info.st_mode & 0o022:
+            raise ValueError("metrics directory must be privately writable by publisher")
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _metric_file_identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+            info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def _metric_leaf(directory_fd, name, mode):
+    try:
+        info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+            info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != mode):
+        raise ValueError("unsafe metrics output or lock")
+    return _metric_file_identity(info)
+
+
+def publish_metrics(directory: Path, kind: str, text: str) -> None:
+    """Replace one fixed textfile atomically under a nonblocking writer lock.
+
+    Failure after replace/fsync is uncertain: never claim the old file survived.
+    This is a telemetry output, not journal state or a trading-authority receipt.
+    """
+    if kind not in {"oms", "gateway"} or not isinstance(text, str):
+        raise ValueError("invalid metrics publication")
+    data = text.encode("utf-8")
+    if not data or len(data) > 1 << 20 or not data.endswith(b"\n"):
+        raise ValueError("invalid metrics output bound")
+    directory_fd = _open_metrics_directory(directory)
+    lock_fd = temporary_fd = None
+    temporary = None
+    try:
+        name, lock_name = f"hepta_{kind}.prom", f".hepta_{kind}.lock"
+        lock_fd = os.open(lock_name, os.O_RDWR | os.O_CREAT | os.O_NONBLOCK |
+                          os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+        locked = _metric_leaf(directory_fd, lock_name, 0o600)
+        if locked != _metric_file_identity(os.fstat(lock_fd)):
+            raise ValueError("metrics lock identity changed")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        previous = _metric_leaf(directory_fd, name, 0o644)
+        temporary = f".hepta_{kind}.{secrets.token_hex(16)}.tmp"
+        temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                               os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+        os.fchmod(temporary_fd, 0o644)
+        offset = 0
+        while offset < len(data):
+            written = os.write(temporary_fd, data[offset:])
+            if written <= 0:
+                raise OSError("short metrics write")
+            offset += written
+        os.fsync(temporary_fd)
+        if _metric_leaf(directory_fd, temporary, 0o644) != _metric_file_identity(os.fstat(temporary_fd)):
+            raise ValueError("metrics temporary identity changed")
+        check_fd = _open_metrics_directory(directory)
+        try:
+            old, current = os.fstat(directory_fd), os.fstat(check_fd)
+            if (old.st_dev, old.st_ino) != (current.st_dev, current.st_ino):
+                raise ValueError("metrics namespace changed")
+        finally:
+            os.close(check_fd)
+        if (_metric_leaf(directory_fd, name, 0o644) != previous or
+                _metric_leaf(directory_fd, lock_name, 0o600) != locked):
+            raise ValueError("metrics output or lock changed")
+        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary = None
+        os.fsync(directory_fd)
+    finally:
+        # Do not unlink the lock: another process may already hold its inode.
+        # Never remove a substituted temporary or an already published output.
+        if temporary is not None and temporary_fd is not None:
+            try:
+                named = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+                pinned = os.fstat(temporary_fd)
+                if (named.st_dev, named.st_ino) == (pinned.st_dev, pinned.st_ino):
+                    os.unlink(temporary, dir_fd=directory_fd)
+            except OSError:
+                pass
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(directory_fd)
+
+
+def collection_metrics(kind: str, now_ms: int, latest=None) -> str:
+    """Collection success is not runtime health; timestamps expose dead collectors."""
+    if kind not in {"oms", "gateway"}:
+        raise ValueError("invalid metrics kind")
+    uint(now_ms)
+    prefix = f"hepta_{kind}"
+    lines = [f"# TYPE {prefix}_collector_success gauge",
+             f"{prefix}_collector_success {int(latest is not None)}",
+             f"# TYPE {prefix}_collector_timestamp_seconds gauge",
+             f"{prefix}_collector_timestamp_seconds {now_ms // 1000}.{now_ms % 1000:03d}"]
+    if latest is None:
+        # Drop the old healthy series on malformed/missing input. Unknown
+        # positions, latency or capacity must never become synthetic zeros.
+        lines.append(f"{prefix}_telemetry_fresh 0")
+    else:
+        observed = uint(latest["observed_at_ms"])
+        lines += [f"# TYPE {prefix}_sample_timestamp_seconds gauge",
+                  f"{prefix}_sample_timestamp_seconds {observed // 1000}.{observed % 1000:03d}"]
+    return "\n".join(lines) + "\n"
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
@@ -372,10 +504,14 @@ def main(argv=None):
     parser.add_argument("--max-age-ms", type=int, default=15000)
     parser.add_argument("--planning-seconds", type=int, default=0, help="explicit planning horizon; 0 disables forecast alert")
     parser.add_argument("--format", choices=("json", "prometheus"), default="json")
+    parser.add_argument("--output-dir", type=Path, default=None,
+                        help="atomically publish hepta_<kind>.prom in an existing trusted directory")
     args = parser.parse_args(argv)
+    if args.output_dir is not None and (args.format != "prometheus" or args.now_ms is not None):
+        parser.error("publication requires --format prometheus and the real wall clock")
+    now = int(time.time() * 1000) if args.now_ms is None else args.now_ms
     try:
         samples, digest = read_samples(args.input, args.kind)
-        now = int(time.time() * 1000) if args.now_ms is None else args.now_ms
         if args.kind == "gateway":
             if args.planning_seconds:
                 raise ValueError("OMS planning does not apply to gateway")
@@ -385,13 +521,26 @@ def main(argv=None):
             summary = report(samples, now, args.max_age_ms, args.planning_seconds)
             render = prometheus
         summary["input_sha256"] = digest
-        print(render(samples[-1], summary) if args.format == "prometheus" else
-              json.dumps(summary, sort_keys=True, allow_nan=False), end="\n" if args.format == "json" else "")
-        return 1 if summary["alerts"] else 0
+        output = render(samples[-1], summary) if args.format == "prometheus" else json.dumps(summary, sort_keys=True, allow_nan=False)
+        result = 1 if summary["alerts"] else 0
+        if args.output_dir is not None:
+            output += collection_metrics(args.kind, now, samples[-1])
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         # Do not print attacker-controlled lines, secret values or paths.
         print("GATEWAY_TELEMETRY_INPUT_INVALID" if args.kind == "gateway" else "OMS_TELEMETRY_INPUT_INVALID", file=sys.stderr)
-        return 2
+        if args.output_dir is None:
+            return 2
+        result = 2
+        output = collection_metrics(args.kind, now)
+    if args.output_dir is not None:
+        try:
+            publish_metrics(args.output_dir, args.kind, output)
+        except (OSError, ValueError):
+            print("METRICS_PUBLICATION_FAILED", file=sys.stderr)
+            return 2
+    if result != 2:
+        print(output, end="\n" if args.format == "json" else "")
+    return result
 
 
 if __name__ == "__main__":

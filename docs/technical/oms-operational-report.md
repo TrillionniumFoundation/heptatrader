@@ -1,116 +1,154 @@
 # OMS operational report and histogram export
 
 Status: CURRENT
-Applies to: read-only reporting of one Execution service's capacity observations
+Applies to: read-only OMS/Gateway observations and optional metrics textfile publication
 Implementation: `scripts/hepta_oms_report.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`
-Tests: `tests/python/test_oms_operational_report.py`, `tests/python/test_installed_runtime_processes.py`
+Tests: `tests/python/test_oms_operational_report.py`, `tests/python/test_metrics_publication.py`, `tests/python/test_installed_runtime_processes.py`
 
 ## Producer and collection boundary
 
-Both Execution daemons publish capacity and actual append/data-sync/replay
-validation measurements through the existing five-second observation stream.
-Messages include the immutable service_epoch and monotonic_ms from the running
-process. This epoch is a process identity, not a token, account, command or new
-trading permission. It resets on service restart. Existing capacity/latency
-units and exclusions are in [runtime costs](runtime-cost-observations.md).
+Both Execution daemons emit real capacity and append/data-sync/replay-validation
+measurements every five seconds. Gateway emits its own result/write/queue
+observations. Messages carry process `service_epoch`, `observed_at_ms` and
+`monotonic_ms`; epoch changes on restart and is not a credential or permission.
+[Runtime costs](runtime-cost-observations.md) and [Gateway observations](gateway-runtime-observability.md)
+define each measurement's scope and exclusions.
 
-CMake installs hepta_oms_report.py in libexec/heptatrader. It reads a consistent
-regular-file export of ONE service's JSON messages and writes stdout only.
-It never opens the OMS journal, changes admission, contacts PID 1, sends a
-notification, opens a listener, or calls a Broker. Deployment owns collection
-from service-manager stdout, routing, retention and atomic publication into its
-existing monitoring system. This component does not invent another daemon.
-
-Example against an already collected, stable service-log snapshot:
+The installed `/usr/libexec/heptatrader/hepta_oms_report.py` reads a consistent
+regular-file export of ONE service's JSON messages. It does not read the OMS
+journal, follow logs, contact PID 1, open a listener, send notifications or call
+a Broker. Deployment supplies the log snapshot and scheduling. The same helper
+can print a report or safely replace one metrics textfile; no extra daemon is
+introduced.
 
 ```sh
 /usr/libexec/heptatrader/hepta_oms_report.py --input /var/tmp/oms-observations.jsonl
 /usr/libexec/heptatrader/hepta_oms_report.py --input /var/tmp/oms-observations.jsonl --format prometheus
 ```
 
-These commands use current wall time. `--now-ms` is for a deliberately historical
-audit/test and must not be used to make a stale operational sample look fresh.
-The input is at most 64 MiB, each line at most 65,536 bytes, at most 100,000 lines;
-only the latest 120 relevant observations are held. Leaf symlinks, hard links,
-FIFOs, duplicate JSON keys, numeric overflow/underflow and file replacement are
-rejected. Non-JSON log lines and unrelated JSON schemas are ignored. Parent
-namespace custody belongs to the caller. No raw input or pathname is echoed in
-errors; unknown extra fields, even secrets, are not copied into output.
+Without `--output-dir`, stdout behavior is unchanged. `--now-ms` is available
+only for deliberate historical audits/tests, never for operational publication.
+Input bounds are 64 MiB, 65,536 bytes/line and 100,000 lines; only the latest 120
+matching observations are held. Symlinks, hard links, FIFOs, duplicate keys,
+unrepresentable numbers and changed file identity fail. Unrelated schemas and
+non-JSON lines are ignored. The caller owns the input parent namespace. Errors
+never echo raw data or paths; extra fields are not copied into metrics.
 
-## Growth and operational decisions
+## Atomic publication and failure semantics
 
-Capacity presence, pending counts, written bytes/records, thresholds and
-headroom are revalidated. Unknown data is not a healthy zero. Freshness defaults
-to 15,000 ms; the inclusive boundary is accepted, later samples are stale and
-future wall timestamps report a clock anomaly. A caller may specify a positive
-`--max-age-ms` for its explicit collection budget; this is not a quote TTL.
+Prepare an existing publisher-owned output directory, separate from journals,
+credentials and tokens. A read-only monitoring identity may traverse/read it.
+For example, after a host administrator creates and assigns such a directory:
 
-Growth uses the oldest contiguous valid observation in the bounded same-epoch,
-same-capacity-policy suffix. Inter-sample monotonic time must increase and be
-within the freshness budget; bytes/records cannot regress. Restarts, unknowns,
-gaps, policy changes and counter decreases reset the trend. The output has
-window_ms, bytes_per_second, records_per_second and an advisory minimum
-headroom-seconds estimate. No growth gives null ETA, not proof of infinite
-capacity. Single samples or missing legacy epoch evidence give null trend.
-The estimate is not a safe-to-restart decision or a prediction of future load.
+```sh
+/usr/libexec/heptatrader/hepta_oms_report.py \
+  --input /var/tmp/oms-observations.jsonl --kind oms --format prometheus \
+  --output-dir /var/lib/hepta-metrics
+/usr/libexec/heptatrader/hepta_oms_report.py \
+  --input /var/tmp/gateway-observations.jsonl --kind gateway --format prometheus \
+  --output-dir /var/lib/hepta-metrics
+```
 
-`--planning-seconds N` enables a planning warning for the explicitly selected
-horizon. Default 0 disables prediction-based alerts. Exit 0 means a valid report
-with no alerts, 1 means a valid report containing alerts, 2 means invalid input.
-The command emits stable rule IDs, not executable trade or shell commands:
+Outputs are exactly `hepta_oms.prom` and `hepta_gateway.prom`. Publication requires
+Prometheus format and the real wall clock; `--now-ms` is rejected before writes.
+The helper never creates/chowns directories or grants the publisher journal or
+Broker access. Output parents are opened descriptor-wise, no symlinks; root or
+publisher ownership and no other-writer permission are required. Root-owned
+sticky intermediates support disposable `/tmp` tests. The final directory must
+belong to the publisher. This is a trusted same-UID namespace, not isolation
+from malicious code already running as that UID.
 
-| Rule | Severity | Operator meaning |
-|---|---|---|
-| OMS_WRITER_POISONED | P1 | durability is untrustworthy; preserve state and follow fenced recovery |
-| OMS_CAPACITY_WARNING / EXCEEDED | P2 | plan capacity before restart; exit evidence must remain writable |
-| OMS_HEADROOM_PLANNING | P2 | measured recent growth crosses the explicit planning horizon |
-| OMS_CAPACITY_UNKNOWN | P2 | inspect missing/invalid capacity; do not substitute zero |
-| OMS_TELEMETRY_STALE / CLOCK | P2 | verify collection/time; no healthy-silence interpretation |
-| OMS_METRIC_SATURATED | P2 | do not use saturated counters for ratios/distributions |
+A fixed private mode-0600 lock file and nonblocking exclusive flock serialize
+writers per kind. The lock is not unlinked. New numeric output is bounded to
+1 MiB, written to an exclusive same-directory temporary, set to mode 0644 and
+fsynced. Pinned temporary/target/lock/directory identities are checked before
+atomic replacement and directory fsync. Existing links, special files, wrong
+owners/modes and namespace substitutions fail. Failure before replace preserves
+the previous file; failure after replace/directory-sync is uncertain and never
+claims old bytes survived. Process interruption may leave a private temporary,
+not a partially published `.prom` file.
 
-Alert delivery and response drills remain host acceptance, not a consequence
-of generating JSON. A collector must treat tool failure and missing exports as
-failures; retaining a last successful .prom file without freshness monitoring
-would conceal an outage. Protect exported files, publish atomically using the
-existing collector, and keep numeric scrape timestamps/freshness visible.
+| Situation | Output / exit |
+|---|---|
+| Valid fresh input, no alerts | numeric report and collection timestamps; exit 0 |
+| Valid input with alerts, including stale/future data | report with `telemetry_fresh=0` where applicable; exit 1 |
+| Missing/malformed input | atomically replace old series with collection failure and `telemetry_fresh=0`; no invented capacity/latency zeros; exit 2 |
+| Unsafe/unwritable output or another writer holds lock | no claimed successful publication; exit 2; retain last file if replace did not occur |
+| Publisher stops running | no rewrite; consumers MUST detect old timestamps or absent expected series |
+
+`hepta_<kind>_collector_success` means parsing completed, not service health.
+`collector_timestamp_seconds` is the invocation's current wall time;
+`sample_timestamp_seconds` is the source observation time and is omitted on
+invalid input. A valid stale sample has collector success 1 but telemetry fresh
+0. Timestamps are gauge values, not Prometheus exposition sample timestamps.
+They contain no unbounded service/account/order labels.
+
+## Host alert and delivery acceptance
+
+A last successful file can outlive the publisher. For EACH expected host/service,
+monitor collector timestamp age, source timestamp age, missing series, collector
+failure, telemetry freshness and writer poison/capacity status. Merely checking
+that a node exporter is reachable, or that a frozen `telemetry_fresh` equals 1,
+is insufficient. Use an expected-target inventory so disappearance of one host
+is not masked by another host still emitting the same metric name.
+
+The 15-second source-age default is inclusive and corresponds to the current
+five-second source cadence; collection and scrape budgets must be chosen and
+measured on the actual host. Alert evaluation must also reject future source or
+collector timestamps according to the host's clock policy. No default here is
+a certified production SLA. Configure the existing monitoring system, not a new
+trading-authority gate.
+
+The target-host drill must stop/restart the publisher, feed missing, malformed
+and stale snapshots, deny an output write, exercise a writer-poison observation
+and capacity warning, and verify actual operator notification and recovery.
+Capture artifact, service and timestamp identities. Source tests demonstrate
+safe file behavior, not installed scheduling, scraping, retention or delivery.
+
+## Growth and alert classification
+
+Known/pending counts, decoded bytes, thresholds and headroom are revalidated.
+Unknown is never zero. Growth uses the oldest contiguous valid same-epoch,
+same-policy suffix. Monotonic time must increase within the freshness budget;
+counts/bytes must not regress. Restart, gaps, policy changes and unknown values
+reset the trend. No growth yields null ETA, not infinite capacity. The estimate
+is neither permission to restart nor a prediction of future load.
+
+`--planning-seconds N` enables an explicit planning horizon; zero disables it.
+This option applies only to OMS. Stable rules include OMS_WRITER_POISONED (P1),
+OMS_CAPACITY_WARNING/EXCEEDED, OMS_HEADROOM_PLANNING, OMS_CAPACITY_UNKNOWN,
+OMS_TELEMETRY_STALE/CLOCK, OMS_METRIC_SATURATED and pending-queue alerts (P2).
+Gateway has separate clock/staleness, saturation, backpressure and write-failure
+rules. Exact alert classification remains in the existing tested report code.
 
 ## Histogram semantics
 
-Each real latency observation increments one bounded internal bucket. Finite
-inclusive upper bounds in nanoseconds are 1,000; 10,000; 100,000; 1,000,000;
-5,000,000; 10,000,000; 50,000,000; 100,000,000; 1,000,000,000; 10,000,000,000.
-The eleventh bucket is unbounded. Internal bucket_counts are noncumulative;
-bucket_upper_ns includes null for infinity. All increments saturate, never wrap.
-The JSON reporter provides nearest-rank p99 and (with >=1,000 samples) p99.9
-BUCKET UPPER BOUNDS, not exact or interpolated latency percentiles. An unbounded
-bucket, missing distribution or saturated metric yields null.
+Internal buckets are noncumulative, with inclusive nanosecond upper bounds
+1,000; 10,000; 100,000; 1,000,000; 5,000,000; 10,000,000; 50,000,000;
+100,000,000; 1,000,000,000; 10,000,000,000; then infinity. Counters saturate.
+Reported p99 and p99.9 (only with at least 1,000 samples) are nearest-rank BUCKET
+UPPER BOUNDS, not exact/interpolated percentiles. Infinity, missing distributions
+and saturated metrics yield null bounds, not invented samples.
 
-The Prometheus text mode emits cumulative inclusive le buckets in seconds,
-with +Inf equal to _count and _sum in seconds. Names begin
-hepta_oms_append_latency_seconds, hepta_oms_data_sync_latency_seconds and
-hepta_oms_replay_validation_latency_seconds. No high-cardinality command,
-account, reason or epoch labels are created. Absent/saturated histograms are
-omitted, not manufactured as zeros. The numeric capacity/freshness gauges use
-fixed names and explicit known/fresh signals. This implements classic histogram
-text, not an OpenMetrics/native-histogram server. See Prometheus's official
-[metric-types contract](https://prometheus.io/docs/concepts/metric_types/) for
-cumulative bucket/count/sum semantics (checked 2026-09-13).
+Prometheus text emits cumulative `le` buckets in seconds, with `+Inf` equal to
+`_count`, and `_sum` in seconds. OMS names begin `hepta_oms_append_latency_seconds`,
+`hepta_oms_data_sync_latency_seconds` and `hepta_oms_replay_validation_latency_seconds`.
+Gateway names and fixed labels are in its owning contract. Absent/saturated
+histograms are omitted. This is classic histogram text, not an OpenMetrics or
+native-histogram server.
 
 ## Journal lifecycle and evidence limits
 
-Capacity warning is preventive observation, not compaction. Before restarting,
-preserve the stopped-state journal/lease/key as one trusted consistent unit,
-measure memory and full recovery duration on a copy with a proposed supported
-budget, and verify the chosen previous/candidate artifact pair. Raising a
-budget does not repair corruption, prove terminal economic state or resolve an
-uncertain external send. At maximum supported budget, plan a reviewed schema/
-checkpoint transition before it is reached; there is no automatic safe ledger
-reset. Never logrotate/copytruncate the authority journal or expire command IDs.
+Capacity warning/publication is not compaction. Follow [recovery capacity](oms-recovery-capacity.md)
+for the new-entry pause, guarded exits and measured recovery. Preserve stopped
+journal/lease/key identities and verify the actual artifact pair. Never apply
+logrotate/copytruncate to the authority journal or expire command IDs. Raising
+a budget does not prove integrity, terminal flatness or a resolved send.
 
-The installed-process test invokes the actual installed helper using actual
-capacity messages before/after a persisted-state restart, checks histogram
-counters and verifies that the restarted epoch resets growth. Other fixtures
-exercise the real C++ histogram formatter and hostile report input, actual
-fsync failure, SIGKILL after persistence, scoped rate histories and bounded
-recovery cycles. They do not establish multi-day stability, real notification
-delivery, unlimited ledger retention, all-runtime metrics or IB qualification.
+Existing installed-process acceptance invokes the installed helper on real
+before/after-restart daemon observations. New publication tests execute real
+file/CLI behavior, writer contention, malicious paths, failure-only replacement,
+clock restrictions and injected sync/substitution faults. Native journal tests
+retain crash/replay/durability coverage. These do not prove multi-day stability,
+all-runtime metric coverage, target-host alert delivery, unlimited retention or
+IB PAPER qualification. Existing host/lifecycle gaps remain open.
