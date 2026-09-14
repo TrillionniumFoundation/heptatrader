@@ -75,6 +75,9 @@ def main():
         "alertmanager": binary(args.tools_root, "prometheus-alertmanager", "alertmanager"),
         "node_exporter": binary(args.tools_root, "prometheus-node-exporter", "node_exporter"),
     }
+    template = args.tools_root.resolve() / "usr/share/prometheus/alertmanager/default.tmpl"
+    if not template.is_file():
+        raise ValueError("missing extracted Alertmanager default template")
     subprocess.run([str(bins["promtool"]), "test", "rules", "rules.test.yml"],
                    cwd=ROOT / "tests/monitoring", check=True, timeout=45)
     source_sha = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -180,7 +183,8 @@ def main():
         launch("node_exporter", [f"--web.listen-address=127.0.0.1:{p_node}", "--collector.disable-defaults",
                                  "--collector.textfile", f"--collector.textfile.directory={textfiles}"])
         launch("alertmanager", [f"--web.listen-address=127.0.0.1:{p_alert}", "--cluster.listen-address=",
-                                f"--config.file={root}/alertmanager.json", f"--storage.path={root}/alerts"])
+                                f"--config.file={root}/alertmanager.json", f"--storage.path={root}/alerts",
+                                f"--template.default={template}"])
         launch("prometheus", [f"--web.listen-address=127.0.0.1:{p_prom}", f"--config.file={root}/prometheus.json",
                               f"--storage.tsdb.path={root}/tsdb", "--storage.tsdb.retention.time=2h"])
         def query(expression):
@@ -213,6 +217,7 @@ def main():
             "checks": ["exact-production-promtool-rules", "actual-textfile-scrape", "failed-input-firing",
                        "receiver-503-retry", "resolved-delivery", "stopped-collector-with-unchanged-file"],
             "rule_sha256": hashlib.sha256((ROOT / "systemd/monitoring/hepta.rules.yml.example").read_bytes()).hexdigest(),
+            "template_sha256": hashlib.sha256(template.read_bytes()).hexdigest(),
             "binaries": {key: hashlib.sha256(value.read_bytes()).hexdigest() for key, value in bins.items()},
             "receiver_rejected_attempts": len(rejected), "receiver_accepted_requests": len(accepted),
         }

@@ -21,6 +21,7 @@ HELPERS = (
     "scripts/verify_canonical_ib_paper_profile.py", "scripts/verify_oms_journal_replay.py",
     "adapters/mcp/hepta_mcp_server.py", "scripts/hepta_oms_report.py",
     "scripts/hepta_oms_archive.py", "scripts/oms_archive_codec.py",
+    "scripts/hepta_telemetry_collect.py",
 )
 
 @contextmanager
@@ -44,6 +45,7 @@ def installed_fixture(*, readme: bool = False):
         write("tmpfiles.d/heptatrader-agent-os.conf", "# inert\n")
         for unit in ("hepta-execution.service", "hepta-execution-ib-paper.service", "hepta-broker-egress-policy.service"):
             write("systemd/" + unit, "[Service]\nExecStart=/bin/false\n")
+        write("systemd/monitoring/hepta-telemetry@.service.example", "# inert observer example\n")
         if readme:
             write("README.md", "# optional fixture README\n")
         write("fixture.c", '#include <stdio.h>\nint main(void) { puts("install-fixture-only"); return 0; }\n')
@@ -85,6 +87,12 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertTrue(os.access(tree / "bin/hepta-preflight", os.X_OK))
             self.assertFalse((tree / "lib/systemd/system/hepta-execution-ib-paper.service").exists())
             self.assertFalse((tree / "lib/systemd/system/hepta-broker-egress-policy.service").exists())
+
+    def test_collector_is_executable_but_observer_unit_remains_inert(self):
+        with installed_fixture() as tree:
+            self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_telemetry_collect.py", os.X_OK))
+            self.assertTrue((tree / "share/heptatrader/examples/systemd/monitoring/hepta-telemetry@.service.example").is_file())
+            self.assertFalse((tree / "lib/systemd/system/hepta-telemetry@.service").exists())
 
     def test_smoke_target_is_installed_and_executable(self) -> None:
         with installed_fixture() as tree:
