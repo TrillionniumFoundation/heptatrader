@@ -153,9 +153,11 @@ not behavioral proof or a sandbox. The synthetic capture → extraction →
 normalization → nonempty history → runner → final-audit/sealed replay scenario
 is exercised by `test_shadow_pipeline_integration.py` and
 `shadow_pipeline_fixture.py`; see [finalization](shadow-finalization.md).
-The current work status and scoped evidence are maintained only under
-`SHADOW-INTEGRATION-001` in [`../gap-register.json`](../gap-register.json),
-not copied into this protocol contract. Synthetic transport/provider fixtures
+The current implemented source scope is described by the
+[finalization contract](shadow-finalization.md) and its executable fixtures.
+The historical `SHADOW-INTEGRATION-001` closure is retained in the exact
+[pre-cleanup register](https://github.com/TrillionniumFoundation/heptatrader/blob/5409e0911afa405f2413d69e33d0c0df3cf1fcad/docs/gap-register.json),
+not in the current open-work register and not as permanent HEAD certification. Synthetic transport/provider fixtures
 do not certify current provider availability, real market truth or profit.
 Promotion still requires a separately bounded execution boundary and
 Broker-observed qualification. No source test grants PAPER or LIVE authority.

@@ -43,10 +43,6 @@ void TestCancelUncertaintySurvivesReplayAndRequiresTerminalProof()
             }
             return VenueCancelResult::Uncertain("lost reply after send");
         };
-        // A leftover flatten-only diagnostic callback must not affect cancel.
-        callbacks.lastIbRejectReason = []() -> std::string {
-            throw std::runtime_error("cancel must not query mutable last-error");
-        };
         {
             OmsJournal journal;
             assert(journal.Init(path));
@@ -115,7 +111,6 @@ void TestCancelPreSendRefusalIsDistinctFromDeferred()
             return deferred ? VenueCancelResult::Deferred() :
                 VenueCancelResult::RejectedBeforeSend("KNOWN_PRE_SEND_REFUSAL");
         };
-        callbacks.lastIbRejectReason = []() -> std::string { throw 42; };
         ExecutionCoordinator coordinator(journal, callbacks);
         const auto place = MakePlace("cancel-presend-place");
         assert(coordinator.PlaceOrder(place).status == ExecutionCommandStatus::Accepted);

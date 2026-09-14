@@ -17,7 +17,7 @@
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "Source-level installed-process and distinct-source-artifact rollback is covered by RELEASE-PAIR-001. Actual target-host systemd, identities, network policy and deployment-specific prior-schema approval remain external evidence; no live deployment was attempted."
+      "disposition": "Source-level installed-process and distinct-source-artifact rollback is covered by the current installed-process contract and the historical RELEASE-PAIR-001 closure in the fixed pre-cleanup register linked by docs/GAP-REGISTER.md. Actual target-host systemd, identities, network policy and deployment-specific prior-schema approval remain external evidence; no live deployment was attempted."
     },
     {
       "id": "OMS-LIFECYCLE-002",
@@ -55,11 +55,12 @@
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/technical/runtime-cost-observations.md",
-        "tests/python/test_execution_latency_boundaries.py"
+        "tests/python/test_execution_latency_boundaries.py",
+        "tests/python/test_execution_reason_metrics.py"
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "Split from the observability portion of OMS-LIFECYCLE-002 without closing or waiving it. Coordinator lock wait and entry-to-exit latency are now additive measured scopes, not full Broker or wire latency. The missing metric families still require bounded identifiers, presence/freshness and behavior tests."
+      "disposition": "Split from the observability portion of OMS-LIFECYCLE-002 without closing or waiving it. Coordinator lock wait and entry-to-exit latency are now additive measured scopes, not full Broker or wire latency. The missing metric families still require bounded identifiers, presence/freshness and behavior tests. Coordinator local outcomes now have 41 fixed reason bins with unknown-to-OTHER mapping, explicit producer presence, saturation and cross-language accounting checks. This is not complete profile/preview risk, snapshot, callback or Broker reconciliation telemetry."
     },
     {
       "id": "HOST-OPERATIONS-003",

@@ -138,3 +138,11 @@ The adapter returns [typed cancellation results](../technical/venue-cancellation
 under its API mutex. Post-send exceptions remain uncertain. A deferred attempt
 is removed before external invocation so repeated acknowledgements cannot resend
 an exception-interrupted cancellation. This source change does not grant PAPER authority.
+
+## Authoritative-flatten result boundary
+
+[Typed flatten results](../technical/venue-flatten-contract.md) retain the
+existing position/quote/kill-switch checks while removing the unlocked mutable
+error read. SDK-entry false returns and exceptions remain uncertain; allocation
+failure in post-send duplicate-signature construction no longer silently reports
+success. Synthetic adapter regressions are not real SDK/Broker qualification.

@@ -3,6 +3,7 @@
 #include "execution_authority.h"
 #include "venue_placement.h"
 #include "venue_cancel_result.h"
+#include "venue_flatten_result.h"
 #include "send_attempt_time_index.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../oms_journal.h"
@@ -69,10 +70,9 @@ struct ExecutionCoordinatorCallbacks
         bool*, std::string*)> proveAndCommitIbFlatNoop;
     // One lock-bound result; never sample a mutable last-error after sending.
     std::function<VenueCancelResult(long)> cancelOrder;
-    std::function<bool(const AuthoritativeFlattenPlan&, const std::string&,
-                       long*)> placeIbReduceOnlyOrderCorrelated;
+    std::function<VenueFlattenResult(const AuthoritativeFlattenPlan&,
+                                     const std::string&)> flattenOrder;
     std::function<bool(long, std::string*)> canCancelIbOrder;
-    std::function<std::string()> lastIbRejectReason;
     std::function<bool(const AgentExecutionContext&, const std::string&, std::string*)> validateDecisionLease;
     std::function<bool(const IbPlaceOrderCommand&, long, std::string*)> onIbOrderPlaced;
     std::function<bool(const IbCancelOrderCommand&, std::string*)> onIbCancelSent;
@@ -392,7 +392,7 @@ private:
         try
         {
             auto result = action();
-            observation.Observe(result.status);
+            observation.Observe(result);
             return result;
         }
         catch (...)
