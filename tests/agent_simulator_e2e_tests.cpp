@@ -28,6 +28,21 @@ namespace {
 
 constexpr int kLocalSocketTimeoutMs = 5000;
 
+// Observe actual fixture state rather than assuming a sleep allowed another
+// thread to enter a callback or finish ingress. The deadline detects deadlocks;
+// it never decides whether cancellation succeeded.
+template <typename Predicate>
+void WaitForFixture(Predicate ready)
+{
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(kLocalSocketTimeoutMs);
+    while (!ready())
+    {
+        assert(std::chrono::steady_clock::now() < deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
 std::string TempPath(const char* pattern)
 {
     std::string value(pattern);
@@ -267,17 +282,25 @@ void TestAgentToolSocketToSimulatorLifecycle()
 
     std::atomic<bool> expiryBlockerEntered(false);
     std::atomic<bool> releaseExpiryBlocker(false);
+    std::atomic<bool> cancelBlockerEntered(false);
+    std::atomic<bool> releaseCancelBlocker(false);
     TradingToolReadCallbacks reads;
     reads.marketGetQuote = [&](const TradingToolSession& session, const TradingToolCall& call,
                                std::string& payload, std::string& reason) {
 		if (session.executionContext.toolCallId == "block-expiry-inflight")
 		{
 			expiryBlockerEntered.store(true, std::memory_order_release);
-			while (!releaseExpiryBlocker.load(std::memory_order_acquire))
-				usleep(1000);
-		}
-		else if (session.executionContext.toolCallId.find("block-") == 0)
-			usleep(250000);
+            WaitForFixture([&]() {
+                return releaseExpiryBlocker.load(std::memory_order_acquire);
+            });
+        }
+        else if (session.executionContext.toolCallId == "block-integrated-restart")
+        {
+            cancelBlockerEntered.store(true, std::memory_order_release);
+            WaitForFixture([&]() {
+                return releaseCancelBlocker.load(std::memory_order_acquire);
+            });
+        }
         const std::uint64_t nowMs = static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
         const AuthoritativeQuoteRecord quote = snapshots.GetQuote(call.instrument, nowMs, 5000);
         if (quote.state.availability != AuthoritativeSnapshotAvailability::Fresh)
@@ -607,7 +630,7 @@ void TestAgentToolSocketToSimulatorLifecycle()
 	std::thread expiryBlockerThread([&]() {
 		expiryBlockerResponse = InvokeSocket(socketPath, registry, expiryBlocker);
 	});
-	while (!expiryBlockerEntered.load(std::memory_order_acquire)) usleep(1000);
+	WaitForFixture([&]() { return expiryBlockerEntered.load(std::memory_order_acquire); });
 	TradingToolHostRequest expiryQueued = expiryBlocker;
 	expiryQueued.toolCallId = "expiry-queued";
 	std::string expiryQueuedResponse;
@@ -622,7 +645,7 @@ void TestAgentToolSocketToSimulatorLifecycle()
 			expiredSessions, reason);
 		reapFinished.store(true, std::memory_order_release);
 	});
-	while (!reapStarted.load(std::memory_order_acquire)) usleep(1000);
+	WaitForFixture([&]() { return reapStarted.load(std::memory_order_acquire); });
 	usleep(50000);
 	assert(!reapFinished.load(std::memory_order_acquire));
 	releaseExpiryBlocker.store(true, std::memory_order_release);
@@ -641,14 +664,21 @@ void TestAgentToolSocketToSimulatorLifecycle()
 	std::thread blocker([&]() {
 		blockerResponse = InvokeSocket(socketPath, registry, blockerQuote);
 	});
-	while (server.GetHealth().activeRequests == 0) usleep(1000);
+	WaitForFixture([&]() { return cancelBlockerEntered.load(std::memory_order_acquire); });
 	TradingToolHostRequest queuedQuote = blockerQuote;
 	queuedQuote.toolCallId = "integrated-cancel-target";
 	std::string queuedResponse;
 	std::thread queued([&]() {
 		queuedResponse = InvokeSocket(socketPath, registry, queuedQuote);
 	});
-	while (server.GetHealth().pendingConnections == 0) usleep(1000);
+    // pendingConnections includes accepted sockets still being decoded by the
+    // two ingress workers; cancellation could overtake that decoding. With the
+    // sole execution worker held in the callback, readyOwners == 1 proves the
+    // target has reached the owner queue and cannot start before cancellation.
+    WaitForFixture([&]() {
+        const auto health = server.GetHealth();
+        return health.pendingConnections == 1 && health.readyOwners == 1;
+    });
 	TradingToolHostRequest cancelQueued;
 	cancelQueued.sessionToken = restartSession.token;
 	cancelQueued.toolCallId = "integrated-cancel-command";
@@ -656,6 +686,13 @@ void TestAgentToolSocketToSimulatorLifecycle()
 	cancelQueued.cancelToolCallId = queuedQuote.toolCallId;
 	const std::string cancelResponse =
 		InvokeSocket(socketPath, registry, cancelQueued);
+    // The control ingress must cancel the queued read while the execution
+    // worker remains blocked. Releasing it on a timer would make this test
+    // depend on sanitizer/host scheduling and could execute the target first.
+    assert(!releaseCancelBlocker.load(std::memory_order_acquire));
+    assert(server.GetHealth().activeRequests == 1);
+    assert(server.GetHealth().readyOwners == 0);
+    releaseCancelBlocker.store(true, std::memory_order_release);
 	queued.join();
 	assert(server.Drain(1000));
 	blocker.join();
