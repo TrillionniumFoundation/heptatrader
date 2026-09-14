@@ -1,0 +1,91 @@
+name: Reviewed source object transfer (temporary)
+on:
+  push:
+    branches: [refactor/step-five-operations-20260914]
+    paths:
+      - .github/reviewed-source-transfer.*
+      - .github/workflows/reviewed-source-transfer.yml
+permissions:
+  contents: write
+jobs:
+  materialize:
+    if: github.repository_id == '1350235228' && github.actor_id == '102159240'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Materialize only digest-bound public Git objects, never execute candidate or move refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, pathlib, subprocess, urllib.request
+          BASE = '8b7142317aca2700986aedff345e1c8840e7eca6'
+          TREE = '5a9032de2e31533fe5c74daa265ea4dc90a11cc9'
+          PATCH_SHA = '2d04bc6903f243a663901adf069643b629682ef99cfcd356e7b019346e3fcc27'
+          GZIP_SHA = 'cf37dc2cec42d9863fc2c7b2b3120310f824f156b98a1ad1043f3e2a82446266'
+          REPO = 'TrillionniumFoundation/heptatrader'
+          assert os.environ['GITHUB_REPOSITORY'] == REPO
+          assert os.environ['GITHUB_REF'] == 'refs/heads/refactor/step-five-operations-20260914'
+          assert os.environ['GITHUB_ACTOR_ID'] == '102159240'
+          def git(*args, data=None):
+              return subprocess.run(['git', *args], input=data, check=True, stdout=subprocess.PIPE).stdout
+          assert git('rev-parse', 'HEAD^').decode().strip() == BASE
+          compressed = b''.join(pathlib.Path(f'.github/reviewed-source-transfer.{i}').read_bytes() for i in range(14))
+          assert len(compressed) == 27419 and hashlib.sha256(compressed).hexdigest() == GZIP_SHA
+          patch = gzip.decompress(compressed)
+          assert len(patch) == 100155 and hashlib.sha256(patch).hexdigest() == PATCH_SHA
+          git('read-tree', BASE)
+          git('apply', '--cached', '--check', data=patch)
+          git('apply', '--cached', data=patch)
+          assert git('write-tree').decode().strip() == TREE
+          def inventory(tree):
+              result = {}
+              for row in git('ls-tree', '-r', '-z', tree).split(b'\0'):
+                  if not row: continue
+                  identity, name = row.split(b'\t', 1)
+                  mode, kind, sha = identity.decode().split()
+                  assert kind == 'blob' and mode in ('100644', '100755')
+                  result[name.decode('utf-8')] = (mode, sha)
+              return result
+          def post(endpoint, payload):
+              assert endpoint in ('blobs', 'trees')
+              request = urllib.request.Request('https://api.github.com/repos/' + REPO + '/git/' + endpoint,
+                  data=json.dumps(payload).encode(), method='POST', headers={
+                  'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                  'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json',
+                  'X-GitHub-Api-Version': '2022-11-28'})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          before, after = inventory(BASE), inventory(TREE)
+          entries = []
+          for path in sorted(set(before) | set(after)):
+              if before.get(path) == after.get(path): continue
+              if path not in after:
+                  entries.append({'path': path, 'mode': before[path][0], 'type': 'blob', 'sha': None})
+                  continue
+              mode, sha = after[path]
+              data = git('cat-file', 'blob', sha)
+              created = post('blobs', {'encoding': 'base64', 'content': base64.b64encode(data).decode()})
+              assert created['sha'] == sha
+              entries.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': sha})
+          assert len(entries) == 41
+          base_tree = git('rev-parse', BASE + '^{tree}').decode().strip()
+          created = post('trees', {'base_tree': base_tree, 'tree': entries})
+          assert created['sha'] == TREE
+          receipt = {'result': 'PASS', 'base_source_sha': BASE, 'tree_sha': TREE,
+              'patch_sha256': PATCH_SHA, 'changed_files': len(entries), 'refs_modified': False,
+              'candidate_executed': False, 'authorization_effect': 'NONE'}
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'source-object-receipt.json').write_text(json.dumps(receipt, indent=2)+'\n')
+          print(json.dumps(receipt))
+          PY
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: source-objects-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/source-object-receipt.json
+          if-no-files-found: error
+          retention-days: 1
