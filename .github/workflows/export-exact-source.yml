@@ -1,0 +1,34 @@
+name: Export exact reviewed source
+on:
+  push:
+    branches: [work/exact-source-export-20260914]
+permissions:
+  contents: read
+jobs:
+  export:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.actor_id == '102159240'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 049d9fa5d5d4602c1661a844b0800e6a309b0e33
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Export tracked bytes without executing repository code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = 049d9fa5d5d4602c1661a844b0800e6a309b0e33
+          out="$RUNNER_TEMP/exact-source"
+          mkdir -m 0700 "$out"
+          git archive --format=tar HEAD > "$out/source.tar"
+          git cat-file commit HEAD > "$out/commit.txt"
+          git rev-parse HEAD HEAD^{tree} > "$out/identity.txt"
+          (cd "$out" && sha256sum source.tar commit.txt identity.txt > SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: exact-source-049d9fa-${{ github.run_id }}
+          path: ${{ runner.temp }}/exact-source/
+          if-no-files-found: error
+          retention-days: 1
