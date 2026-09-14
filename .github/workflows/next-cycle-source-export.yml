@@ -1,0 +1,33 @@
+name: Pinned next-cycle source export
+on:
+  push:
+    branches: [work/next-cycle-source-20260915]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: e918ca815290f7bcbb3a06257e0a5f34dcc3095c
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export tracked bytes without executing candidate code
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = e918ca815290f7bcbb3a06257e0a5f34dcc3095c
+          mkdir "$RUNNER_TEMP/hepta-source"
+          git archive --format=tar HEAD | gzip -n > "$RUNNER_TEMP/hepta-source/source.tar.gz"
+          git cat-file commit HEAD > "$RUNNER_TEMP/hepta-source/commit.raw"
+          git ls-tree -r --full-tree HEAD > "$RUNNER_TEMP/hepta-source/tree.txt"
+          cd "$RUNNER_TEMP/hepta-source"
+          sha256sum source.tar.gz commit.raw tree.txt > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pinned-source-e918ca815290f7bcbb3a06257e0a5f34dcc3095c
+          path: ${{ runner.temp }}/hepta-source/
+          if-no-files-found: error
+          retention-days: 3
