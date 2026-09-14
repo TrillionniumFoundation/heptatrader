@@ -1,4 +1,4 @@
-name: Documentation Control Plane
+name: Source and Monitoring CI
 
 on:
   pull_request:

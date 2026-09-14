@@ -1,5 +1,5 @@
 #include "../HeptaTrade/execution/execution_coordinator.h"
-#include "../HeptaTrade/oms_recover.h"
+#include "compat/oms_recover.h"
 
 #include <cassert>
 #include <cmath>

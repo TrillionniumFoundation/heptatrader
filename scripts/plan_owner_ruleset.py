@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 import sys
 
+from source_json import load_source_json
+
 REPOSITORY = "TrillionniumFoundation/heptatrader"
 RULESET_ID = 22597364
 REQUIRED_CHECKS = frozenset({"documentation-control-plane-exact-head", "core-runtime-exact-head",
@@ -20,16 +22,9 @@ REQUIRED_CHECKS = frozenset({"documentation-control-plane-exact-head", "core-run
 FIELDS = ("name", "target", "enforcement", "conditions", "rules", "bypass_actors")
 
 
-def strict_object(items):
-    result = {}
-    for key, value in items:
-        if key in result:
-            raise ValueError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
 def plan(observed: dict) -> dict:
+    if not isinstance(observed, dict):
+        raise ValueError("observed ruleset must be an object")
     if (observed.get("id") != RULESET_ID or observed.get("source") != REPOSITORY
             or observed.get("target") != "branch" or observed.get("enforcement") != "active"
             or observed.get("conditions") != {"ref_name": {"exclude": [], "include": ["~DEFAULT_BRANCH"]}}
@@ -59,6 +54,8 @@ def plan(observed: dict) -> dict:
 
 
 def verify_applied(observed: dict, actual: dict) -> bool:
+    if not isinstance(actual, dict):
+        return False
     expected = plan(observed)
     # Ignore REST metadata, never ignore any writable field or added bypass.
     return (actual.get("id") == RULESET_ID and actual.get("source") == REPOSITORY
@@ -73,10 +70,10 @@ def main() -> int:
     group.add_argument("--verify-after", type=Path)
     args = parser.parse_args()
     try:
-        before = json.loads(args.observed.read_text(), object_pairs_hook=strict_object)
+        before = load_source_json(args.observed)
         payload = plan(before)
         if args.verify_after:
-            after = json.loads(args.verify_after.read_text(), object_pairs_hook=strict_object)
+            after = load_source_json(args.verify_after)
             if not verify_applied(before, after):
                 raise ValueError("server readback differs from reviewed transition")
             print("Ruleset readback matches; this grants no Broker authority")

@@ -92,8 +92,6 @@
       "implementation": [
         "HeptaTrade/oms_journal.cpp",
         "HeptaTrade/oms_journal.h",
-        "HeptaTrade/oms_recover.cpp",
-        "HeptaTrade/oms_recover.h",
         "scripts/verify_oms_journal_replay.py",
         "HeptaTrade/oms_capacity_observation.h",
         "HeptaTrade/oms_latency_observation.h",
@@ -113,7 +111,9 @@
         "tests/python/test_oms_operational_report.py",
         "tests/oms_queue_budget_cases.h",
         "tests/oms_archive_cases.h",
-        "tests/python/test_oms_archive.py"
+        "tests/python/test_oms_archive.py",
+        "tests/compat/oms_recover.cpp",
+        "tests/compat/oms_recover.h"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -344,7 +344,8 @@
         "scripts/verify_exact_git_index.py",
         "scripts/run_python_tests.py",
         "scripts/render_protocol_reference.py",
-        "scripts/plan_owner_ruleset.py"
+        "scripts/plan_owner_ruleset.py",
+        "scripts/source_json.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
@@ -356,7 +357,8 @@
         "tests/python/test_ib_workflow_interfaces.py",
         "tests/python/test_protocol_reference.py",
         "tests/python/test_owner_ruleset_plan.py",
-        "tests/python/test_source_workflow_commands.py"
+        "tests/python/test_source_workflow_commands.py",
+        "tests/python/test_source_json.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

@@ -55,8 +55,8 @@ GitHub-side review, Ruleset, Merge Queue, environment, and runner controls remai
 Python ownership is defined once by `scripts/run_python_tests.py`: core,
 source, install and isolated process are disjoint and exhaustive partitions.
 Core Runtime CI executes core/install/process plus native and real systemd
-acceptance; Documentation Control Plane executes source plus structural checks.
-Documentation Control Plane also owns the shell-syntax and before/after
+acceptance; Source and Monitoring CI executes source plus structural checks.
+Source and Monitoring CI also owns the shell-syntax and before/after
 exact-index observations; the standalone Qualification Source Audit is retired. GCC and Clang sanitizers remain independent
 native executions, not duplicate Python discovery.
 
@@ -86,3 +86,19 @@ workflow and are validated at each consuming phase. Shell subprocess tests still
 own argv binding and failure propagation; they are not an Actions expression
 interpreter. This uses the existing required source lane rather than adding a
 new approval gate or repeating the runtime suites.
+
+## Shared development JSON reader
+
+`source_json.py` supplies JSON input to documentation, component ownership,
+build ownership, gap-register and owner-Ruleset planning tools. Each caller
+still owns its schema and diagnostic category. The shared reader rejects
+escaped duplicate keys, non-finite/overflowed numbers, nonzero underflow,
+invalid UTF-8, links and changed input; its default bound is 16 MiB per file.
+The bound applies before parsing, including fresh CMake File API input. An
+observed numeric zero remains valid where the caller's schema permits it.
+
+This helper assumes caller-trusted checkout/build parent directories. It is not
+installed and is not reused by credentials, Broker qualification, privileged
+preflight or journal readers with different trust and compatibility contracts.
+The source Python partition executes its file/numeric regressions and existing
+consumer tests once; no extra workflow, approval or prose-depth gate is added.
