@@ -1,0 +1,100 @@
+name: Materialize verified next-cycle Git objects
+on:
+  push:
+    branches: [work/next-cycle-source-20260915]
+permissions:
+  contents: write
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: e918ca815290f7bcbb3a06257e0a5f34dcc3095c
+          path: source
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Verify patch and create content-addressed blobs and tree only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request, zlib
+          parent = 'e918ca815290f7bcbb3a06257e0a5f34dcc3095c'
+          expected_tree = '7d75e8609732b72bd928357f234cbee3e4ff20b8'
+          expected_patch = 'd29a8a4844645278746fd6bf087723497b70d05bf40c75a0bf0853dd064a21e7'
+          source = pathlib.Path('source').resolve()
+          def git(*args, data=None):
+              return subprocess.run(['git','-C',str(source),*args], input=data,
+                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, timeout=60).stdout
+          if git('rev-parse','HEAD').decode().strip() != parent:
+              raise RuntimeError('unexpected source revision')
+          chunks = [pathlib.Path(f'control/.next-cycle-transfer/part-{i}.b64').read_bytes() for i in range(4)]
+          if sum(map(len,chunks)) != 29696:
+              raise RuntimeError('unexpected encoded patch length')
+          packed = base64.b64decode(b''.join(chunks), validate=True)
+          decoder = zlib.decompressobj()
+          patch = decoder.decompress(packed, 200001)
+          if len(patch) > 200000 or not decoder.eof or decoder.unused_data or decoder.unconsumed_tail:
+              raise RuntimeError('invalid bounded patch stream')
+          if hashlib.sha256(patch).hexdigest() != expected_patch:
+              raise RuntimeError('patch digest mismatch')
+          git('apply','--index','--check','-',data=patch)
+          git('apply','--index','-',data=patch)
+          if git('write-tree').decode().strip() != expected_tree:
+              raise RuntimeError('resulting tree differs from tested local tree')
+          changed = set(git('diff','--cached','--name-only','-z').decode().strip('\0').split('\0'))
+          if len(changed) != 28:
+              raise RuntimeError('unexpected change inventory')
+          entries = []
+          def post(kind, payload):
+              if kind not in ('blobs','trees'):
+                  raise RuntimeError('only immutable Git objects may be created')
+              request = urllib.request.Request(
+                  'https://api.github.com/repos/TrillionniumFoundation/heptatrader/git/'+kind,
+                  data=json.dumps(payload).encode(), method='POST', headers={
+                    'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                    'Accept':'application/vnd.github+json',
+                    'X-GitHub-Api-Version':'2022-11-28',
+                    'Content-Type':'application/json'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          for row in git('ls-files','--stage','-z').split(b'\0'):
+              if not row: continue
+              metadata, raw_path = row.split(b'\t',1)
+              path = raw_path.decode('utf-8')
+              if path not in changed: continue
+              mode, sha, stage = metadata.decode().split()
+              if stage != '0' or mode not in ('100644','100755'):
+                  raise RuntimeError('unsupported source entry')
+              data = git('cat-file','blob',sha)
+              if len(data) > 1048576:
+                  raise RuntimeError('unexpected source size')
+              actual = post('blobs',{'content':base64.b64encode(data).decode(),'encoding':'base64'})['sha']
+              if actual != sha:
+                  raise RuntimeError('remote blob identity mismatch')
+              entries.append({'path':path,'mode':mode,'type':'blob','sha':actual})
+          if len(entries) != len(changed):
+              raise RuntimeError('incomplete materialization')
+          result = post('trees',{'base_tree':'ef2594681c48fe0a327c234e7795cc9110b62890','tree':entries})
+          if result['sha'] != expected_tree:
+              raise RuntimeError('remote tree identity mismatch')
+          receipt = {'parent':parent,'tree':result['sha'],'patch_sha256':expected_patch,
+                     'changed_files':len(entries),'candidate_code_executed':False,'refs_updated':False}
+          print(json.dumps(receipt,sort_keys=True))
+          pathlib.Path(os.environ['RUNNER_TEMP'],'materialized-tree.json').write_text(json.dumps(receipt,sort_keys=True)+'\n')
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: next-cycle-materialized-tree
+          path: ${{ runner.temp }}/materialized-tree.json
+          if-no-files-found: error
+          retention-days: 3
