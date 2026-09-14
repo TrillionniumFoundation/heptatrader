@@ -20,7 +20,7 @@ jobs:
           ref: f88b204115c46dba03bbd0416c13c3fa8c81984f
           path: source
           persist-credentials: false
-      - name: Verify and import only content-addressed Git objects
+      - name: Verify and import only ordinary content-addressed Git objects
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 -I transport/.source-import/import.py --transport transport/.source-import --source source --publish
+        run: python3 -I transport/.source-import/import_content.py
