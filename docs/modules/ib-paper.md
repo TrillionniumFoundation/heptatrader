@@ -131,3 +131,10 @@ publication contract are specified in
 The stable shell entry delegates to `scripts/run_ib_paper_campaign.py`;
 publication remains part of the existing result verifier. Source-only
 subprocess regressions do not make an IB account qualified or authorized.
+
+## Cancellation result boundary
+
+The adapter returns [typed cancellation results](../technical/venue-cancellation-contract.md)
+under its API mutex. Post-send exceptions remain uncertain. A deferred attempt
+is removed before external invocation so repeated acknowledgements cannot resend
+an exception-interrupted cancellation. This source change does not grant PAPER authority.

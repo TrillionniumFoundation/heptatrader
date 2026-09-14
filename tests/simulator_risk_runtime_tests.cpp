@@ -227,7 +227,7 @@ void TestFlattenCancellationAndStrictRemainder()
 {
     FlattenFixture f(10.0);
     const long held = f.Admit("SELL", 10.0);
-    assert(f.venue.CancelOrder(held));
+    assert(f.venue.CancelOrder(held).disposition == VenueCancelDisposition::Submitted);
     f.venue.Process(); // Unactivated cancel request is still unresolved.
     f.Block("SELL", 1.0);
     assert(f.venue.TerminalOrderStatuses().empty());

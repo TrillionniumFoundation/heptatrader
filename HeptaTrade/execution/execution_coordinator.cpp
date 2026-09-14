@@ -260,25 +260,18 @@ ExecutionCommandResult ExecutionCoordinator::HandleDeferredCancelLocked(
     return result;
 }
 
-bool ExecutionCoordinator::TryCancelAtVenueLocked(
-    long orderId, std::string& rejectReason)
+VenueCancelResult ExecutionCoordinator::TryCancelAtVenueLocked(long orderId)
 {
     try
     {
-        const bool cancelled = m_callbacks.cancelIbOrder(orderId);
-        if (m_callbacks.lastIbRejectReason)
-            rejectReason = m_callbacks.lastIbRejectReason();
-        return cancelled;
-    }
-    catch (const std::exception& ex)
-    {
-        rejectReason = ex.what();
+        return m_callbacks.cancelOrder(orderId);
     }
     catch (...)
     {
-        rejectReason = "unknown IB cancel exception";
+        // Also covers allocation failures after an effect. The empty default
+        // result does not allocate while translating an arbitrary exception.
+        return VenueCancelResult();
     }
-    return false;
 }
 
 std::string ExecutionCoordinator::RequestKey(const std::string& agentId,

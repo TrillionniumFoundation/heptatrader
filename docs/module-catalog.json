@@ -77,7 +77,10 @@
         "tests/recovery_projection_faults.cpp",
         "tests/python/test_recovery_projection.py",
         "tests/pre_intent_refusal_cases.h",
-        "tests/python/test_execution_latency_boundaries.py"
+        "tests/python/test_execution_latency_boundaries.py",
+        "tests/cancel_uncertainty_cases.h",
+        "tests/oms_recovery_growth_probe.h",
+        "tests/python/test_venue_place_rejection.py"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false

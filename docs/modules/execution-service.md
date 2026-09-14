@@ -137,6 +137,14 @@ and the coordinator's existing synchronization and recovery boundaries.
 [Venue placement contract](../technical/venue-placement-contract.md) specifies
 the single Immediate/Reserving dependency, typed outcomes, constructor rejection,
 lock-bound IB result capture, migrated callers and uncertainty/replay tests.
+Rejection classification is independent of diagnostic prose; the existing wire
+and journal reason strings are unchanged. Unknown classifications remain uncertain.
+
+[Venue cancellation contract](../technical/venue-cancellation-contract.md)
+defines Submitted, Deferred, RejectedBeforeSend and Uncertain. The single typed
+cancel dependency replaces a Boolean and mutable last-error lookup. Exceptions
+after a possible send remain journaled as pending and are never retried blindly;
+positive authoritative terminal evidence, not absence alone, resolves them.
 Existing durable and wire contracts are unchanged.
 
 ## Measured wait and retired callback
