@@ -74,5 +74,34 @@ inline void RandomizedReferenceParity() {
     }
     Check(index.size()==history.size(), "queries never discard durable history");
 }
-inline void Run() { ExactBoundariesAndOrder(); ScopePairsCannotCollide(); RandomizedReferenceParity(); }
+// A time query cannot need ownership of the source record. Deleted copy/move
+// constructors make accidental reintroduction of per-record identity storage
+// a compiler error rather than a heap-size or source-token assertion.
+struct NonCopyAttempt {
+    std::string requestKey, account, executionDomain;
+    std::int64_t tsMs = 0;
+    NonCopyAttempt() = default;
+    NonCopyAttempt(const NonCopyAttempt&) = delete;
+    NonCopyAttempt& operator=(const NonCopyAttempt&) = delete;
+};
+inline void OwnsOnlyTheTimeProjection() {
+    SendAttemptTimeIndex<NonCopyAttempt> index;
+    {
+        NonCopyAttempt source;
+        source.requestKey.assign(1024 * 1024, 'x');
+        source.account = "account"; source.executionDomain = "domain";
+        source.tsMs = 100; index.push_back(source);
+        source.tsMs = 50; index.push_back(source);
+        source.account = "changed"; source.executionDomain.clear();
+        source.tsMs = -1;
+    }
+    std::vector<std::int64_t> out;
+    index.ReadTimes("account", "domain", 0, out);
+    Check(out == std::vector<std::int64_t>({100, 50}), "owned time/scope survives source destruction");
+    Check(index.size() == 2, "time projection retains every send");
+}
+inline void Run() {
+    ExactBoundariesAndOrder(); ScopePairsCannotCollide();
+    RandomizedReferenceParity(); OwnsOnlyTheTimeProjection();
+}
 } // namespace hepta_send_index_test

@@ -2,50 +2,46 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <map>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
 
-// In-memory secondary index only. The coordinator still owns synchronization,
-// durable identity and deduplication. Neither insertion nor querying expires a
-// request or changes the journal. Out-of-order wall clocks are supported.
+// Secondary time projection only. The coordinator and journal, not this
+// index, own durable command identities and deduplication. Never expire a send.
 template <typename Record>
 class SendAttemptTimeIndex
 {
 public:
     void push_back(const Record& record)
     {
+        if (m_size == std::numeric_limits<std::size_t>::max())
+            throw std::overflow_error("send-attempt index size overflow");
         const Scope scope(record.account, record.executionDomain);
         const auto inserted = m_byScope.emplace(scope, Timeline());
         try
         {
-            m_records.push_back(record);
+            // Store time and insertion ordinal once; copying the whole Record
+            // would duplicate request keys and scope strings for every send.
+            inserted.first->second.emplace(record.tsMs, m_size);
         }
         catch (...)
         {
             if (inserted.second) m_byScope.erase(inserted.first);
             throw;
         }
-        try
-        {
-            inserted.first->second.emplace(record.tsMs, m_records.size() - 1);
-        }
-        catch (...)
-        {
-            m_records.pop_back();
-            if (inserted.second) m_byScope.erase(inserted.first);
-            throw;
-        }
+        ++m_size;
     }
 
     void clear()
     {
         m_byScope.clear();
-        m_records.clear();
+        m_size = 0;
     }
 
-    std::size_t size() const { return m_records.size(); }
+    std::size_t size() const { return m_size; }
 
     void ReadTimes(const std::string& account, const std::string& domain,
                    std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
@@ -54,20 +50,19 @@ public:
         const auto scope = m_byScope.find(Scope(account, domain));
         if (scope == m_byScope.end()) return;
         const Timeline& timeline = scope->second;
-        std::vector<std::size_t> selected;
+        std::vector<std::pair<std::size_t, std::int64_t>> selected;
         for (auto it = timeline.upper_bound(cutoffMs); it != timeline.end(); ++it)
-            selected.push_back(it->second);
-        // Preserve the old vector API's insertion order, including equal or
-        // backwards timestamps. Sorting only the matching window avoids an
-        // all-history scan and does not presume a monotonic wall clock.
+            selected.emplace_back(it->second, it->first);
+        // Preserve insertion order under equal/backwards wall clocks. Only the
+        // matching window is sorted; queries never delete historical entries.
         std::sort(selected.begin(), selected.end());
         out.reserve(selected.size());
-        for (const auto index : selected) out.push_back(m_records[index].tsMs);
+        for (const auto& entry : selected) out.push_back(entry.second);
     }
 
 private:
     using Scope = std::pair<std::string, std::string>;
     using Timeline = std::multimap<std::int64_t, std::size_t>;
-    std::vector<Record> m_records;
     std::map<Scope, Timeline> m_byScope;
+    std::size_t m_size = 0;
 };
