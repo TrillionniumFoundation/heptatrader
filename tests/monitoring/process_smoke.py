@@ -76,8 +76,10 @@ def main():
         "node_exporter": binary(args.tools_root, "prometheus-node-exporter", "node_exporter"),
     }
     template = args.tools_root.resolve() / "usr/share/prometheus/alertmanager/default.tmpl"
-    if not template.is_file():
-        raise ValueError("missing extracted Alertmanager default template")
+    installed_template = Path("/usr/share/prometheus/alertmanager/default.tmpl")
+    if (not template.is_file() or not installed_template.is_file() or
+            template.read_bytes() != installed_template.read_bytes()):
+        raise ValueError("Alertmanager packaged template was not staged exactly")
     subprocess.run([str(bins["promtool"]), "test", "rules", "rules.test.yml"],
                    cwd=ROOT / "tests/monitoring", check=True, timeout=45)
     source_sha = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -183,8 +185,7 @@ def main():
         launch("node_exporter", [f"--web.listen-address=127.0.0.1:{p_node}", "--collector.disable-defaults",
                                  "--collector.textfile", f"--collector.textfile.directory={textfiles}"])
         launch("alertmanager", [f"--web.listen-address=127.0.0.1:{p_alert}", "--cluster.listen-address=",
-                                f"--config.file={root}/alertmanager.json", f"--storage.path={root}/alerts",
-                                f"--template.default={template}"])
+                                f"--config.file={root}/alertmanager.json", f"--storage.path={root}/alerts"])
         launch("prometheus", [f"--web.listen-address=127.0.0.1:{p_prom}", f"--config.file={root}/prometheus.json",
                               f"--storage.tsdb.path={root}/tsdb", "--storage.tsdb.retention.time=2h"])
         def query(expression):

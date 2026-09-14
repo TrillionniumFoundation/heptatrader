@@ -69,6 +69,7 @@ This index is the canonical entry point for current development documentation. A
 - [`operations/startup-shutdown.md`](operations/startup-shutdown.md)
 - [`operations/incident.md`](operations/incident.md)
 - [`operations/rollback-backup.md`](operations/rollback-backup.md)
+- [`technical/telemetry-collection.md`](technical/telemetry-collection.md)
 
 ## Cross-cutting contracts
 
@@ -133,7 +134,13 @@ module document.
 
 ## Non-canonical material
 
-The historical `HeptaStrategy/`, `HeptaSimulator/`, legacy CSV reconciliation reporter, large data files and deprecated bridges remain explicitly owned by the LEGACY module. Eight unused Visual Studio assets were retired; shared `Interface/` and `Tools/` headers remain where required. See [`technical/legacy-retirement.md`](technical/legacy-retirement.md). Legacy presence does not authorize deployment or provide an alternate order path.
+The historical monolith, `HeptaStrategy/`, `HeptaSimulator/`, dedicated CSV
+reporter, bridges and XML configuration have been retired together with their
+exclusive CMake graph. Enabled legacy build flags now fail explicitly; explicit
+OFF remains accepted by canonical builds. Shared `Interface/` and `Tools/`
+material remains owned by the LEGACY module pending separate consumer/licensing
+review. See [`technical/legacy-retirement.md`](technical/legacy-retirement.md).
+Retirement is not a deployed-state migration or an alternate order path.
 
 Open work and release-profile blockers are recorded in `gap-register.json`. A green source check validates structure and ownership, not universal project completeness. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
 

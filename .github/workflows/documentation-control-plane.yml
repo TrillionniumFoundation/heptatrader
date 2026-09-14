@@ -66,6 +66,17 @@ jobs:
           for package in "$tools"/debs/*.deb; do
             dpkg-deb --extract "$package" "$tools"
           done
+          # Ubuntu's patched Alertmanager reads packaged templates at a fixed
+          # /usr/share path; this version has no --template.default override.
+          # Stage data only on this disposable runner, never install/start the
+          # monitoring services or overwrite a preexisting template directory.
+          template_dir=/usr/share/prometheus/alertmanager
+          test ! -e "$template_dir"
+          sudo install -d -m 0755 "$template_dir"
+          for template in "$tools"/usr/share/prometheus/alertmanager/*.tmpl; do
+            test -f "$template"
+            sudo install -m 0644 "$template" "$template_dir/"
+          done
 
       - name: Exercise real textfile scrape and alert delivery
         run: |

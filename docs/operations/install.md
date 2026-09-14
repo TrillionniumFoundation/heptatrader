@@ -12,7 +12,7 @@ Applies to: source development and controlled host integration
 | IB PAPER | optional separately built SDK-linked candidate; fixed qualified profile and exact artifact/account/host tuple | ordinary core deployment enabling PAPER, multiple contracts/active orders or LIVE |
 | SHADOW | read-only research components and synthetic integration acceptance | installed unattended controller, verified live provider availability or execution authority |
 | CTP / XT-QMT | explicitly disconnected experimental interfaces | real transport, order routing or completed broker integration |
-| Legacy | default-off compatibility sources and retained shared consumers | supported canonical deployment or alternate order authority |
+| Legacy | retained shared compatibility material; old monolith, strategy and Pegasus products are retired | supported old build profiles, automatic migration or alternate order authority |
 
 Use the [simulator contract](../modules/simulator.md), [IB scope](../modules/ib-paper.md)
 and [SHADOW contract](../modules/shadow-research.md) for exact limits. The simulator's
@@ -43,6 +43,8 @@ ctest --test-dir build/core --output-on-failure -L core
 
 `./scripts/dev_core.sh` performs the supported core loop. Python partition
 ownership stays in `scripts/run_python_tests.py`; do not duplicate its lists.
+Enabled historical monolith, simulator or 0DTE bridge flags now fail explicitly
+at both CMake entry points. The explicit OFF values above remain accepted.
 
 ## Canonical install tree
 
@@ -64,9 +66,12 @@ that tree, or use the builder's `--build-dir`; see [packaging](release-package.m
 Daemons/CLIs install under `/usr/bin`, private Python helpers under
 `/usr/libexec/heptatrader`, and units under `/usr/lib/systemd/system`. Actual
 executable/credential-code payloads are cross-checked. Core omits unusable
-IB/policy units and IB kill-switch tmpfiles. Monitoring publication uses the
-already installed helper; prepare its separate trusted directory and actual
-collection/alert routing as in [reporting](../technical/oms-operational-report.md).
+IB/policy units and IB kill-switch tmpfiles. The reporter and bounded journald
+collector are installed together. Observer timer, scrape and alert examples
+remain inert under `/usr/share/heptatrader/examples/systemd/monitoring`.
+Provision the separate trusted observer and approve actual receiver/routing
+before activation; see [collection](../technical/telemetry-collection.md) and
+[reporting](../technical/oms-operational-report.md).
 
 ## IB build boundary
 
@@ -99,10 +104,12 @@ stopped state with the approved newer helper before an explicitly tested
 downgrade. See [rollback](rollback-backup.md) and [support window](../technical/persistence-support-window.md).
 Never retire an old reader without a deployment-state inventory and migration.
 
-Shared `Interface/` and `Tools/` consumers and default-off historical platforms
-are retained until includes, CMake profiles, install rules, fixtures and data
-licensing have been checked. A LEGACY directory label is not deletion evidence.
-Do not restore synthetic CTP/XT success for compatibility; see [retirement](../technical/legacy-retirement.md).
+The old optional products and their exclusive source/configuration graph have
+been retired together; their exact historical source remains in Git. Shared
+`Interface/` and `Tools/` material remains pending separate consumer/licensing
+review. This source retirement is not a migration of a running old deployment.
+Do not restore synthetic CTP/XT success for compatibility; see
+[retirement](../technical/legacy-retirement.md).
 
 The [operator walkthrough](../technical/simulator-operator-walkthrough.md) and
 [real systemd acceptance](../technical/systemd-simulator-acceptance.md) describe

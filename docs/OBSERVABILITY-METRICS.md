@@ -6,7 +6,7 @@ Applies to: canonical runtime; source implementation is distinct from deployed c
 This table is the current inventory. CURRENT means this contract is maintained;
 it does not mean every requested metric or host integration has been delivered.
 
-## Implemented outputs
+## Implemented outputs and collection
 
 | Output | Producer / access | Meaning and limits |
 |---|---|---|
@@ -14,17 +14,20 @@ it does not mean every requested metric or host integration has been delivered.
 | OMS capacity and pending queues | same snapshot/observation stream | decoded bytes, records, pending count/bytes, budgets, poison/unknown state; physical gzip size is separate; [online capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md) |
 | Gateway scheduling, results and writes | actual Unix Gateway observations | fixed result bins, pending/active/ready gauges, delivery failures and three latency histograms; application success is distinct from socket delivery; [contract](technical/gateway-runtime-observability.md) |
 | Read-only OMS/Gateway report | installed `hepta_oms_report.py`, `--kind oms` or `gateway` | validated samples, epoch-bounded growth, advisory headroom, fixed alert classification and classic Prometheus text; no network listener |
-| Atomic metrics textfile publication | same helper, `--format prometheus --output-dir` | fixed output names, writer exclusion, atomic replacement, collection/sample timestamps, explicit failure on missing/invalid input; not a scheduler, log follower or notification service; [publication contract](technical/oms-operational-report.md) |
+| Atomic metrics textfile publication | same helper, `--format prometheus --output-dir` | fixed names, writer exclusion, atomic replacement, collection/sample timestamps and explicit failure; [publication contract](technical/oms-operational-report.md) |
+| Bounded journald collection | installed `hepta_telemetry_collect.py` | fixed service profiles, trusted journal unit/invocation identity, bounded command output/deadline and serialization of read plus publication; [collection contract](technical/telemetry-collection.md) |
+| Scheduling, scrape and alert integration examples | `systemd/monitoring/` | inert observer timer, node_exporter/Prometheus/Alertmanager configuration and executable rules; packaging does not activate a host or supply a real receiver |
 | Ordered execution events | execution event hub and HEV2 feed | service/stream identity, sequence and gap handling; [event contract](technical/execution-events.md) |
-| Command and read status | Execution protocol via Gateway | stable command identity and typed results; capacity-only new-entry refusal is not a global cancel/flatten fence; [capacity guard](technical/oms-recovery-capacity.md) |
+| Command and read status | Execution protocol via Gateway | stable command identity and typed results; capacity-only entry refusal is not a global cancel/flatten fence; [capacity guard](technical/oms-recovery-capacity.md) |
 | Owner-scoped health | `owner_scoped_health_publisher.cpp` | owner-scoped event delivery, not complete portfolio state or a general exporter |
 | Package and qualification receipts | release/qualification verifiers | exact source/artifact/harness/profile evidence; package success is never PAPER/LIVE authorization |
 
-Telemetry presence and freshness must be checked before numerical values. A
-valid explicit zero is different from a missing series. Missing/saturated
-histograms are omitted; unknown positions or capacity must not be synthesized.
+Presence and freshness must be checked before numerical values. Missing or
+saturated histograms are omitted; unknown state must not become observed zero.
 `collector_success=1` means input was parsed, not that the service is healthy.
 A valid stale sample still has `telemetry_fresh=0` and a nonzero report exit code.
+A surviving file with `telemetry_fresh=1` can outlive a dead collector, so the
+supplied rules independently evaluate collection and source timestamps.
 
 ## Requirements not yet delivered as a complete interface
 
@@ -34,27 +37,33 @@ refresh duration and network-policy state still need individually specified
 names, types, units, cardinality bounds, collection points and behavior tests.
 Existing C++ fields do not automatically constitute exported metrics.
 
-The reporter now owns safe textfile replacement; deployment still owns the
-service-log snapshot producer, scheduling, scrape configuration, retention and
-notification routing. No source test proves these are installed on a trading
-host. Each expected service/host needs missing-series and timestamp-age checks;
-a surviving file with `telemetry_fresh=1` can outlive a dead collector.
+The source now supplies collection and integration examples. Deployment still
+owns the trusted observer identity, actual installation/activation, target
+mapping, retention, approved receiver and protected receiver credentials. The
+current collector covers one named canonical pair, not arbitrary multi-instance
+services. Examples and source CI cannot prove a trading host is configured.
 
-## Host acceptance
+## Behavioral and host acceptance
 
-Use one existing monitoring stack rather than adding a second control plane.
-On the target host, demonstrate collection of real daemon output, a stopped
-publisher, stale/missing/malformed input, a denied output write, writer poison,
-capacity warning and notification delivery to the actual operator. Preserve
-service/artifact identity and measured timestamps. Test OMS and Gateway
-independently; the default baseline emits observations every five seconds and
-uses a 15-second input-age budget, not a universal host SLA.
+`test_telemetry_collection.py` exercises the real parser, publisher, subprocess
+limits and failure behavior using synthetic journal envelopes. The process
+acceptance launches real node_exporter, Prometheus and Alertmanager and requires
+loopback webhook firing, HTTP 503 retry, resolution and dead-collector detection
+with an unchanged old healthy file. Promtool tests execute the same production
+rule file, including exact time and capacity boundaries. See the collection
+contract for the evidence scope; no synthetic receipt is target-host evidence.
 
-The native durability and queue tests, report tests,
-`test_metrics_publication.py`, Gateway tests and installed-process acceptance
-cover their stated source behavior. Multi-day stability and real alert delivery
-remain external evidence under the existing lifecycle/host gaps. Do not close
-those gaps merely because textfile publication is implemented.
+On the target host, demonstrate collection of actual daemon output, stopped
+publication, stale/missing/malformed input, denied output writes, writer poison,
+capacity warning and delivery to the actual operator. Preserve service/artifact
+identity and measured timestamps. Test OMS and Gateway independently. The
+five-second observations, 15-second source age and 30-second collector age are
+explicit baseline choices, not a universal host SLA or latency promise.
+
+Native durability/queue tests, report and publication tests, Gateway tests and
+installed-process acceptance remain required. Actual host notification,
+multiday stability and complete runtime telemetry remain open host/lifecycle
+work. Do not close those gaps merely because the source-side chain is tested.
 
 ## Alert and authority boundary
 
