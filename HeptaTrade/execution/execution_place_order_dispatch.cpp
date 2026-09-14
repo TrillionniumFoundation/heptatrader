@@ -49,11 +49,6 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
     owner.instrument = dispatch.instrument;
     owner.side = command.order.action;
     m_orderOwners[orderId] = owner;
-    // Track before receipt IO so watchdog coverage survives a write failure.
-    if (m_callbacks.trackOrder)
-        m_callbacks.trackOrder(
-            context.venue.empty() ? "IB" : context.venue, orderId, "",
-            dispatch.instrument, command.order.action, context.strategy);
     bool projectionOk = true;
     std::string projectionReason;
     if (m_callbacks.onIbOrderPlaced)

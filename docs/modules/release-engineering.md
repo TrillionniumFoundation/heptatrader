@@ -109,3 +109,21 @@ PID 1 systemd tests. The tag manifest is written only after successful acceptanc
 and rehashing those same package bytes. See
 [core release acceptance](../technical/core-release-acceptance.md). This is not
 a Broker qualification or a production-host installer.
+
+## Relocatable installed documentation
+
+`cmake/render_installed_documentation.py` prepares documentation in the build
+tree before installation. It preserves the established flat installed layout,
+rewrites local document links to that layout, and pins source-only references
+(such as workflow files and the historical PDF) to the exact source SHA on GitHub.
+It does not rewrite source Markdown, fetch remote links, install old source
+assets or certify prose/fragment semantics. Missing source file destinations and
+broken generated local destinations fail the build rather than silently shipping
+unusable navigation. The real CMake install fixture inspects the installed tree.
+
+CMake requires a Python 3 interpreter for this build-time transformation. Git
+checkouts use `git rev-parse HEAD`; a source archive without Git metadata must
+supply `-DHEPTA_DOCUMENTATION_SOURCE_SHA=<exact-40-hex-source-sha>`. This value
+binds documentation references only, not the package manifest or trading authority.
+An override is not evidence that an unverified archive has that source identity.
+The usual release artifact/source checks still own that proof.

@@ -67,3 +67,15 @@ immutable artifact. `--release-profile ib-paper` cannot replace or grant that
 qualification. Advancing `main` does not mutate an already admitted artifact;
 changing any bound campaign input does. See [the IB module](modules/ib-paper.md)
 and [the harness contract](technical/ib-paper-harness-contract.md).
+
+## Historical closure records
+
+The current machine register lists actionable open work. The 18 historical
+CLOSED records are retained in the [exact pre-cleanup register](https://github.com/TrillionniumFoundation/heptatrader/blob/5409e0911afa405f2413d69e33d0c0df3cf1fcad/docs/gap-register.json),
+not copied into another archive or revalidated as permanent HEAD certification.
+No implementation, regression test or persistent-format reader is removed by
+this inventory cleanup. Runtime telemetry and actual-host operations were split
+out of the broad OMS lifecycle issue without closing either outstanding scope.
+Future regression reports receive their own issue and behavior test; successful
+CI remains evidence for its own source/artifact rather than a recurring paperwork
+gap. There is no requirement for every issue to be CLOSED.

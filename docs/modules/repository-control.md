@@ -75,3 +75,14 @@ correctness belongs to executed tests, not required private function names,
 formula spelling or historical test messages. A valid issue inventory may
 contain OPEN, ACCEPTED or DEFERRED work. A green structural check does not
 constitute universal project completeness or external qualification.
+
+## Actions configuration versus executable shell checks
+
+The existing source workflow runs digest-pinned actionlint over every complete
+workflow, including dispatch-only IB qualification. The verifier itself must
+reject a synthetic job-level `runner.temp` context before the lane can pass.
+Runner-dependent artifact/evidence paths are step-scoped in the qualification
+workflow and are validated at each consuming phase. Shell subprocess tests still
+own argv binding and failure propagation; they are not an Actions expression
+interpreter. This uses the existing required source lane rather than adding a
+new approval gate or repeating the runtime suites.

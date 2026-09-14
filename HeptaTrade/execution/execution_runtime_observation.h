@@ -11,7 +11,10 @@ struct ExecutionOperationObservation
 {
     // accepted, rejected, duplicate, uncertain, exception (in that order).
     std::array<std::uint64_t, 5> results{};
-    OmsLatencySummary latency;
+    OmsLatencySummary latency; // Existing lock-held work scope, preserved.
+    bool timingPresent = false;
+    OmsLatencySummary lockWait;
+    OmsLatencySummary totalLatency; // Call entry through result/exception, before unlock.
     bool saturated = false;
     void Observe(std::size_t result) noexcept
     {
@@ -29,6 +32,33 @@ struct ExecutionOperationObservation
         default: Observe(4U); break;
         }
     }
+};
+
+// Construct and finish while holding the same coordinator mutex. The start
+// timestamp is captured before acquiring it, without touching shared counters.
+// Explicit time points make boundaries testable without scheduler sleeps.
+class ExecutionOperationTiming
+{
+public:
+    using Clock = OmsScopedLatencySample::Clock;
+    ExecutionOperationTiming(ExecutionOperationObservation& target,
+                             Clock::time_point entered,
+                             Clock::time_point acquired) noexcept
+        : m_held(target.latency, acquired), m_total(target.totalLatency, entered)
+    {
+        target.timingPresent = true;
+        OmsScopedLatencySample wait(target.lockWait, entered);
+        wait.Finish(acquired);
+    }
+    ~ExecutionOperationTiming() noexcept { Finish(); }
+    void Finish(Clock::time_point now = Clock::now()) noexcept
+    {
+        m_held.Finish(now);
+        m_total.Finish(now);
+    }
+private:
+    OmsScopedLatencySample m_held;
+    OmsScopedLatencySample m_total;
 };
 
 struct ExecutionRuntimeObservation
@@ -84,6 +114,13 @@ inline std::string ExecutionCapacityObservation(
     {
         out << ",\"" << names[i] << "\":";
         WriteOmsLatencyJson(out, execution.operations[i].latency);
+        if (execution.operations[i].timingPresent)
+        {
+            out << ",\"" << names[i] << "_lock_wait\":";
+            WriteOmsLatencyJson(out, execution.operations[i].lockWait);
+            out << ",\"" << names[i] << "_total\":";
+            WriteOmsLatencyJson(out, execution.operations[i].totalLatency);
+        }
     }
     out << ",\"recovery_latency\":";
     WriteOmsLatencyJson(out, execution.recoveryLatency);

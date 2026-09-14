@@ -88,3 +88,67 @@ See [lossless stopped-state maintenance](oms-archive-lifecycle.md) for optional 
 writer exclusion, decoded recovery budgets, crash handling and explicit
 expansion before downgrade. It preserves all event bytes and command identities;
 it is not online truncation or a general N-1 compatibility claim.
+
+## Long-term lifecycle design: PROPOSAL, not an installed capability
+
+The current supported runtime still replays a bounded complete journal and
+retains every durable command identity in memory. The 80-percent entry pause
+and stopped-state gzip maintenance do not change that contract. A deployment
+must measure its actual event/byte growth and recovery RSS/time, arrange
+maintenance before the bounded envelope is exhausted, and preserve guarded
+exit evidence. No default budget is a proven multiday SLA and no automatic
+budget increase, identity expiry or ledger deletion is introduced here.
+
+The next lifecycle implementation must replace both full event materialization
+and the all-history in-memory command projection. Optimizing only one leaves
+the other unbounded. The intended components and ownership are:
+
+| Component | Durable contents | Required behavior |
+|---|---|---|
+| Immutable sealed journal segments | Original event bytes, range and digest | Preserve audit history; stream validation without a full event vector |
+| Versioned checkpoint | Projection at one verified durable cut, open/uncertain commands, owners, fences and terminal witnesses | No partly applied generation becomes visible |
+| Disk-backed historical command index | Full owner/session/command key, normalized request hash, durable outcome and source correlation | Exact old-ID duplicate/conflict lookup without retaining every historical record in RAM |
+| Active journal and hot projection | Events after the committed cut, mutable/unresolved identities | Bounded incremental replay; unresolved possible sends cannot be evicted |
+| Generation manifest | Ordered segment/index/checkpoint identities, byte/range bounds and parent generation | One atomic pointer selects a complete, mutually consistent generation |
+
+The historical index cannot use a hash alone as identity. Lookups must compare
+the complete normalized key and payload hash; hash collision, corrupt row or
+missing source range is failure, never "not found" followed by a new send.
+An accepted command is not disposable merely because its order is terminal.
+Known rejected commands, successful cancels, exact flatten no-ops, owner fences
+and terminal acknowledgements all retain their current replay semantics.
+Late callbacks must resolve against the retained venue/connection correlation;
+unknown, conflicting or incomplete evidence keeps the existing admission fence.
+
+Initial migration should be stopped-state, with the same writer exclusion and
+trusted namespace requirements as lossless archive maintenance. Validate the
+entire source ledger before deriving the cut; write new checkpoint/index files,
+validate producer/reader parity, synchronize each file, write and synchronize a
+manifest, then atomically publish the generation pointer and synchronize its
+directory. Keep the previous generation and all source segments. A failed step
+must leave either the previous committed generation usable or an explicit
+fail-closed incident, never permission to guess a newer authority state.
+Startup verifies generation identity, supported format, bounds, ordered ranges,
+checksums and index/checkpoint agreement before projecting the active tail.
+A corrupt current committed generation must not silently fall back to an older
+fence or command history. Orphan temporary files confer no authority.
+
+A checkpoint must not be called complete until execution identity, send-attempt
+rate history, owner/session fences and HSL terminal acknowledgement bindings
+are recoverable together. The one-artifact rollback fixture must prove both the
+upgrade and an explicit downgrade/export path. Older readers must reject new
+formats rather than interpreting a missing active log as an empty clean ledger.
+Retaining a gzip file or copying an old lease alone is not this migration.
+
+Implementation acceptance requires real-source old/new fixtures covering each
+crash point, torn/changed manifests, missing or reordered segments, index hash
+collisions, late callbacks, all durable boundaries of an uncertain send,
+old-ID duplicate/conflict queries, fenced/terminal owners, cancellations and
+flatten at capacity, and restart/rollback with identical economic outcomes.
+Scale tests must report decoded bytes, record and identity counts, peak RSS,
+lookup latency and recovery time as history grows; a hard-coded small fixture
+or a renamed "checkpoint" file does not demonstrate bounded resource use.
+
+Until those producers, readers and regressions are implemented and accepted,
+`OMS-LIFECYCLE-002` remains OPEN. This proposal neither changes a persistent
+schema nor enables an alternative order path, retention policy or trading mode.

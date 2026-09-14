@@ -142,3 +142,39 @@ Native operation/refusal/uncertainty/exception tests, compiled C++ serializer
 vectors, hostile Python report tests and actual installed-daemon restart/report
 acceptance exercise these paths. Source fixtures do not certify a target host,
 a universal recovery SLO, bounded lifetime storage or delivered notifications.
+
+## Coordinator contention and inclusive local-operation timing
+
+The existing `place_latency`, `cancel_latency` and `flatten_latency` meanings
+are preserved: lock acquired through return/exception, before lock release.
+For each observed operation the additive `<name>_lock_wait` measures function
+entry to lock acquisition; `<name>_total` measures entry through the same finish
+point as the held scope. Thus `place_latency_lock_wait` and
+`place_latency_total` separate contention from work without changing execution
+order, the mutex hierarchy, persistence or authority. The total includes wait,
+not outer risk preview, transport delivery or asynchronous Broker callbacks.
+It is not an end-to-end trading SLO. Recovery keeps its separate existing scope.
+
+All three durations use sequential `steady_clock` observations. Updates happen
+under the coordinator mutex; exception unwinding completes each sample exactly
+once before unlock and still propagates the exception. Fixed histogram buckets,
+saturation and secret-free cardinality are unchanged. No new daemon is needed.
+A per-operation presence marker controls serialization: an old producer or an
+operation not yet measured omits both extension objects, rather than asserting
+that the unobserved wait was zero.
+
+The installed report accepts old observations unchanged. If either new object
+is present, both must be valid. For unsaturated scopes it checks identical sample
+counts and `total = held + wait` for cumulative and last-sample nanoseconds.
+New histograms follow the same seconds export convention, including
+`hepta_execution_place_latency_lock_wait_seconds` and
+`hepta_execution_place_latency_total_seconds`; three fixed
+`hepta_execution_operation_timing_present{operation="place|cancel|flatten"}`
+gauges make absence explicit. Missing or saturated histograms remain omitted.
+
+`test_execution_latency_boundaries.py` compiles the real C++ timer/serializer,
+uses exact clock points, tests exception unwinding and repeated completion,
+then feeds its bytes to the real Python report. It rejects incomplete and
+inconsistent new fields and retains old-producer compatibility. Full native
+and installed-process suites remain the coordinator integration evidence; this
+helper test alone is not a real contention benchmark or host qualification.

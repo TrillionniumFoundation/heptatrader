@@ -71,7 +71,6 @@ struct ExecutionCoordinatorCallbacks
                        long*)> placeIbReduceOnlyOrderCorrelated;
     std::function<bool(long, std::string*)> canCancelIbOrder;
     std::function<std::string()> lastIbRejectReason;
-    std::function<void(const std::string&, long, const std::string&, const std::string&, const std::string&, const std::string&)> trackOrder;
     std::function<bool(const AgentExecutionContext&, const std::string&, std::string*)> validateDecisionLease;
     std::function<bool(const IbPlaceOrderCommand&, long, std::string*)> onIbOrderPlaced;
     std::function<bool(const IbCancelOrderCommand&, std::string*)> onIbCancelSent;
@@ -379,9 +378,11 @@ private:
     template <typename Action>
     ExecutionCommandResult ObserveCommand(std::size_t operation, Action action)
     {
+        const auto entered = OmsScopedLatencySample::Clock::now();
         std::lock_guard<std::mutex> lock(m_mutex);
+        const auto acquired = OmsScopedLatencySample::Clock::now();
         auto& observation = m_observation.operations[operation];
-        OmsScopedLatencySample timer(observation.latency);
+        ExecutionOperationTiming timer(observation, entered, acquired);
         try
         {
             auto result = action();

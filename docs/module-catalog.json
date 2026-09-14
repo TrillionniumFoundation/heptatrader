@@ -76,7 +76,8 @@
         "tests/venue_placement_cases.h",
         "tests/recovery_projection_faults.cpp",
         "tests/python/test_recovery_projection.py",
-        "tests/pre_intent_refusal_cases.h"
+        "tests/pre_intent_refusal_cases.h",
+        "tests/python/test_execution_latency_boundaries.py"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false

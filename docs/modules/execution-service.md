@@ -138,3 +138,13 @@ and the coordinator's existing synchronization and recovery boundaries.
 the single Immediate/Reserving dependency, typed outcomes, constructor rejection,
 lock-bound IB result capture, migrated callers and uncertainty/replay tests.
 Existing durable and wire contracts are unchanged.
+
+## Measured wait and retired callback
+
+The [cost contract](../technical/runtime-cost-observations.md) now distinguishes
+coordinator lock wait, lock-held work and inclusive local-operation time with
+old-producer presence handling. `trackOrder` and its two optional dispatch calls
+were removed after their watchdog consumer was retired. Actual owner projection,
+`onIbOrderPlaced`, durable receipts, uncertain outcomes and reconciliation remain
+unchanged. This private composition cleanup is not a promise of source
+compatibility with an independently maintained experimental caller.

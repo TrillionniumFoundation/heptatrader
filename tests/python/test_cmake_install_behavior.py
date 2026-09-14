@@ -7,6 +7,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from pathlib import Path
 import os
+import importlib.util
 import shutil
 import stat
 import subprocess
@@ -17,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
     "scripts/hepta_broker_egress_policy.py", "scripts/resolve_hepta_config.py",
-    "scripts/run_release_simulator_smoke.py", "scripts/validate_sim_data.py",
+    "scripts/run_release_simulator_smoke.py",
     "scripts/verify_canonical_ib_paper_profile.py", "scripts/verify_oms_journal_replay.py",
     "adapters/mcp/hepta_mcp_server.py", "scripts/hepta_oms_report.py",
     "scripts/hepta_oms_archive.py", "scripts/oms_archive_codec.py",
@@ -35,6 +36,7 @@ def installed_fixture(*, readme: bool = False):
             path.write_text(value, encoding="utf-8")
         write("cmake/heptatrader-build-info.json.in", '{"fixture_only":true}\n')
         shutil.copyfile(ROOT / "cmake/HeptaInstall.cmake", source / "cmake/HeptaInstall.cmake")
+        shutil.copyfile(ROOT / "cmake/render_installed_documentation.py", source / "cmake/render_installed_documentation.py")
         write("scripts/hepta_preflight.py", "# public fixture, never run as preflight\n")
         write("scripts/hepta_preflight_core.py", "# private fixture implementation\n")
         for helper in HELPERS:
@@ -47,7 +49,7 @@ def installed_fixture(*, readme: bool = False):
             write("systemd/" + unit, "[Service]\nExecStart=/bin/false\n")
         write("systemd/monitoring/hepta-telemetry@.service.example", "# inert observer example\n")
         if readme:
-            write("README.md", "# optional fixture README\n")
+            write("README.md", "# optional fixture README\n[Guide](docs/developer.md)\n[Build source](CMakeLists.txt)\n")
         write("fixture.c", '#include <stdio.h>\nint main(void) { puts("install-fixture-only"); return 0; }\n')
         write("CMakeLists.txt", """cmake_minimum_required(VERSION 3.16)
 project(InstallFixture VERSION 0.1.0 LANGUAGES C)
@@ -60,7 +62,8 @@ include(cmake/HeptaInstall.cmake)
         environment = dict(os.environ, DESTDIR=str(stage))
         for command in (
             ["cmake", "-S", str(source), "-B", str(build), "-DCMAKE_INSTALL_PREFIX=/usr",
-                "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_INSTALL_LIBEXECDIR=libexec"],
+                "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_INSTALL_LIBEXECDIR=libexec",
+                "-DHEPTA_DOCUMENTATION_SOURCE_SHA=" + "a" * 40],
             ["cmake", "--build", str(build), "--parallel", "2"],
             ["cmake", "--install", str(build)],
         ):
@@ -99,6 +102,47 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             binary = tree / "libexec/heptatrader/hepta_agent_simulator_e2e_tests"
             completed = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5, check=True)
             self.assertEqual(completed.stdout, "install-fixture-only\n")
+
+
+    def test_actual_installed_links_are_relocatable_and_source_links_are_pinned(self):
+        spec = importlib.util.spec_from_file_location("installed_docs", ROOT / "cmake/render_installed_documentation.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with installed_fixture(readme=True) as tree:
+            docs = tree / "share/doc/heptatrader"
+            self.assertEqual(module.validate_installed_links(docs), [])
+            readme = (docs / "README.md").read_text()
+            self.assertIn("[Guide](developer.md)", readme)
+            self.assertIn("/blob/" + "a" * 40 + "/CMakeLists.txt", readme)
+            (docs / "developer.md").unlink()
+            self.assertTrue(module.validate_installed_links(docs))
+
+    def test_render_actual_repository_without_mutating_source(self):
+        spec = importlib.util.spec_from_file_location("installed_docs", ROOT / "cmake/render_installed_documentation.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        original = (ROOT / "README.md").read_bytes()
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "docs"
+            module.render(ROOT, output, "b" * 40)
+            self.assertEqual(module.validate_installed_links(output), [])
+            self.assertIn("/blob/" + "b" * 40 + "/.github/workflows/release.yml", (output / "index.md").read_text())
+            self.assertEqual((ROOT / "README.md").read_bytes(), original)
+            self.assertFalse((output / ".github").exists())
+            self.assertFalse((output / "doc").exists())
+
+    def test_renderer_rejects_broken_source_and_invalid_identity(self):
+        spec = importlib.util.spec_from_file_location("installed_docs", ROOT / "cmake/render_installed_documentation.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "source"
+            (source / "docs").mkdir(parents=True)
+            (source / "docs/index.md").write_text("[Missing](missing.md)\n")
+            for identity in ("a" * 40, "main", "a" * 39):
+                with self.subTest(identity=identity), self.assertRaises(ValueError):
+                    module.render(source, Path(folder) / "output", identity)
+            self.assertFalse((Path(folder) / "output").exists())
 
 if __name__ == "__main__":
     unittest.main()
