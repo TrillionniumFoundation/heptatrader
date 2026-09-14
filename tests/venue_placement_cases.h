@@ -63,8 +63,8 @@ void TestCapacityPausePreservesExitsAndReplay()
             ++placeCalls;
             return VenuePlaceResult::Submitted(42);
         });
-    callbacks.cancelIbOrder = [&](long id) {
-        assert(id == 42); ++cancelCalls; return true;
+    callbacks.cancelOrder = [&](long id) {
+        assert(id == 42); ++cancelCalls; return VenueCancelResult::Submitted();
     };
     callbacks.validateDecisionLease = [](const AgentExecutionContext&,
         const std::string&, std::string*) { return true; };

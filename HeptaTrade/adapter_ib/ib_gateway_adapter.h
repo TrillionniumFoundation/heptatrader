@@ -16,6 +16,7 @@
 #include "ib_api_wrapper.h"
 #include "ib_order_lifecycle.h"
 #include "../execution/venue_place_result.h"
+#include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
 struct HeptaIBRiskConfig {
@@ -246,7 +247,7 @@ public:
         const std::function<bool()>& durableCommit,
         bool* commitAttempted,
         std::string* reason = nullptr);
-    bool CancelOrder(long orderId);
+    VenueCancelResult CancelOrder(long orderId);
     bool CanCancelOrder(long orderId, std::string* suppressReason = nullptr) const;
     const char* GetStatusString() const;
     std::string GetPositionSummary() const;

@@ -8,7 +8,19 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <new>
+#include <cstdlib>
+#include <stdexcept>
 #include <unistd.h>
+
+namespace { bool failNextCancelAllocation = false; }
+void* operator new(std::size_t size) {
+    if (failNextCancelAllocation) { failNextCancelAllocation = false; throw std::bad_alloc(); }
+    if (void* result = std::malloc(size ? size : 1)) return result;
+    throw std::bad_alloc();
+}
+void operator delete(void* ptr) noexcept { std::free(ptr); }
+void operator delete(void* ptr, std::size_t) noexcept { std::free(ptr); }
 
 namespace {
 void TestWrapperQuantityTrackerCannotMixBrokerClients() {
@@ -67,6 +79,7 @@ void TestWrapperQuantityTrackerCannotMixBrokerClients() {
 class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;
+    int cancelFault = 0;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
     bool Connect(const IBConnectParams&) override {connected=true;return true;}
@@ -84,7 +97,13 @@ public:
     bool PlaceOrder(long id,const IBContractLite& c,const IBOrderLite& o) override {
         orderId=id;contract=c;submitted=o;return true;
     }
-    bool CancelOrder(long) override {++cancels;return true;}
+    bool CancelOrder(long) override {
+        ++cancels;
+        if (cancelFault == 1) throw std::runtime_error("after cancel send");
+        if (cancelFault == 2) return false;
+        if (cancelFault == 3) failNextCancelAllocation = true;
+        return true;
+    }
     bool PollOnce(int) override {return true;}
     bool TryDequeueEvent(IBEvent& event) override {
         if(events.empty()) return false;
@@ -146,9 +165,37 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestTypedCancelAndDeferredNoResendAfterException() {
+    for (int fault = 0; fault < 4; ++fault) {
+        Fixture f;
+        const long id = f.Place();
+        f.Push(f.Status("Submitted", 0));
+        f.broker->cancelFault = fault;
+        const auto result = f.adapter.CancelOrder(id);
+        assert(result.disposition == (fault == 0 ? VenueCancelDisposition::Submitted : VenueCancelDisposition::Uncertain));
+        assert(!failNextCancelAllocation && f.broker->cancels == 1);
+    }
+    Fixture disconnected;
+    disconnected.adapter.Disconnect();
+    assert(disconnected.adapter.CancelOrder(41).disposition == VenueCancelDisposition::RejectedBeforeSend);
+    assert(disconnected.broker->cancels == 0);
+    Fixture deferred;
+    const long id = deferred.Place();
+    assert(deferred.adapter.CancelOrder(id).disposition == VenueCancelDisposition::Deferred);
+    assert(deferred.broker->cancels == 0);
+    deferred.broker->cancelFault = 1;
+    bool threw = false;
+    try { deferred.Push(deferred.Status("Submitted", 0)); }
+    catch (const std::runtime_error&) { threw = true; }
+    assert(threw && deferred.broker->cancels == 1);
+    deferred.broker->cancelFault = 0;
+    deferred.Push(deferred.Status("Submitted", 0));
+    deferred.Push(deferred.Status("Submitted", 0));
+    assert(deferred.broker->cancels == 1);
+}
 void TestSameEpochPostBootstrapLiveFillAndDeferredCancel() {
     Fixture f;const auto initial=f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
-    const long id=f.Place();assert(f.adapter.CancelOrder(id));
+    const long id=f.Place();assert(f.adapter.CancelOrder(id).disposition == VenueCancelDisposition::Deferred);
     assert(f.adapter.GetLastRejectReason()=="IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK");
     f.Push(f.Status());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().executionOrderIds.empty());
@@ -322,6 +369,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestTypedCancelAndDeferredNoResendAfterException();
     TestWrapperQuantityTrackerCannotMixBrokerClients();
     TestSameEpochPostBootstrapLiveFillAndDeferredCancel();TestCancelledAndPartialCancelled();
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
