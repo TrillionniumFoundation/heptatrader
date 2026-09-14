@@ -790,21 +790,37 @@ bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
     std::lock_guard<std::mutex> lock(m_mutex);
     ResetRecoveryProjectionLocked();
 
-    std::vector<OmsJournalEvent> events;
-    const int replayed = m_journal.Replay(
-        [&events](const OmsJournalEvent& event) {
-            events.push_back(event);
-        });
-    if (replayed < 0)
+    try
     {
-        reason = "OMS_REPLAY_FAILED";
-        BlockMutationsLocked(reason);
+        // Replay validates and materializes the COMPLETE pinned journal before
+        // its first callback. Consume that frozen sequence directly instead of
+        // allocating a second vector of every event and all its strings.
+        // Only in-memory projections are touched here, never venue callbacks.
+        const int replayed = m_journal.Replay(
+            [this](const OmsJournalEvent& event) {
+                ApplyRecoveredEventLocked(event);
+            });
+        if (replayed < 0)
+        {
+            ResetRecoveryProjectionLocked();
+            reason = "OMS_REPLAY_FAILED";
+            BlockMutationsLocked(reason);
+            return false;
+        }
+        return ValidateRecoveredProjectionLocked(reason);
+    }
+    catch (...)
+    {
+        // An allocation/projection exception must not expose a valid prefix
+        // through public reads or leave the coordinator open for mutations.
+        // Set the boolean fence before allocating diagnostic strings; sustained
+        // OOM may still propagate but can never leave an unfenced coordinator.
+        ResetRecoveryProjectionLocked();
+        m_mutationBlocked = true;
+        m_mutationBlockReason = "OMS_RECOVERY_PROJECTION_FAILED";
+        reason = m_mutationBlockReason;
         return false;
     }
-    for (std::vector<OmsJournalEvent>::const_iterator it = events.begin();
-         it != events.end(); ++it)
-        ApplyRecoveredEventLocked(*it);
-    return ValidateRecoveredProjectionLocked(reason);
 }
 
 bool ExecutionCoordinator::ResolveUncertainPlaceCommands(
