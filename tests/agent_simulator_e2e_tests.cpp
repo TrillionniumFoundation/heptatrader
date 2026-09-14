@@ -205,7 +205,7 @@ void TestAgentToolSocketToSimulatorLifecycle()
         return result;
     });
     callbacks.canCancelIbOrder = [&](long orderId, std::string* reason) { return venue.CanCancelOrder(orderId, reason); };
-    callbacks.cancelIbOrder = [&](long orderId) { return venue.CancelOrder(orderId); };
+    callbacks.cancelOrder = [&](long orderId) { return venue.CancelOrder(orderId); };
     callbacks.lastIbRejectReason = [&]() { return venue.LastRejectReason(); };
     callbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
                                           const std::string& instrument,

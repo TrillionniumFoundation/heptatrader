@@ -689,9 +689,9 @@ void TestWatchRejectionAndDescriptorEffectAudit()
     assert(journal.Init(journalPath));
     std::atomic<int> dispatches(0);
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.cancelIbOrder = [&](long) {
+    callbacks.cancelOrder = [&](long) {
         ++dispatches;
-        return true;
+        return VenueCancelResult::Submitted();
     };
     ExecutionCoordinator execution(journal, callbacks);
     TradingToolRegistry registry(execution);
@@ -907,14 +907,14 @@ void TestMutationOutcomeAuditFailureIsUncertain()
     assert(journal.Init(journalPath));
     std::atomic<int> dispatches(0);
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.cancelIbOrder = [&](long) {
+    callbacks.cancelOrder = [&](long) {
         ++dispatches;
         assert(rename(auditPath.c_str(), displacedAuditPath.c_str()) == 0);
         const int replacement = open(
             auditPath.c_str(), O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
         assert(replacement >= 0);
         close(replacement);
-        return true;
+        return VenueCancelResult::Submitted();
     };
     ExecutionCoordinator execution(journal, callbacks);
     TradingToolRegistry registry(execution);
@@ -990,9 +990,9 @@ void TestStopPreservesDurableMutationIntent()
         return true;
     };
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.cancelIbOrder = [&](long) {
+    callbacks.cancelOrder = [&](long) {
         ++mutationDispatches;
-        return true;
+        return VenueCancelResult::Submitted();
     };
     ExecutionCoordinator execution(journal, callbacks);
     TradingToolRegistry registry(execution, reads);
@@ -1317,7 +1317,7 @@ void TestMutationRateLimitDecisionAudit()
     OmsJournal journal;
     assert(journal.Init(journalPath));
     ExecutionCoordinatorCallbacks callbacks;
-    callbacks.cancelIbOrder = [](long) { return true; };
+    callbacks.cancelOrder = [](long) { return VenueCancelResult::Submitted(); };
     ExecutionCoordinator execution(journal, callbacks);
     TradingToolRegistry registry(execution);
     TradingToolHost host(registry);

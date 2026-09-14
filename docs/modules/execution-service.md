@@ -138,3 +138,9 @@ and the coordinator's existing synchronization and recovery boundaries.
 the single Immediate/Reserving dependency, typed outcomes, constructor rejection,
 lock-bound IB result capture, migrated callers and uncertainty/replay tests.
 Existing durable and wire contracts are unchanged.
+
+## Typed cancellation
+
+[Venue cancellation contract](../technical/venue-cancellation-contract.md) defines
+the single typed result, uncertain-after-send behavior, same-ID restart recovery
+and positive terminal reconciliation. An adapter exception cannot prove rejection.

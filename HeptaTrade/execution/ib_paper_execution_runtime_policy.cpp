@@ -48,11 +48,12 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
         if (outcome.disposition == VenuePlaceDisposition::Submitted) NotifyTestStage("after_venue_send");
         return outcome;
     });
-    callbacks.cancelIbOrder = [this](long orderId) {
+    callbacks.cancelOrder = [this](long orderId) {
         NotifyTestStage("before_cancel_venue_send");
-        const bool cancelled = m_adapter->CancelOrder(orderId);
-        if (cancelled) NotifyTestStage("after_cancel_venue_send");
-        return cancelled;
+        const VenueCancelResult outcome = m_adapter->CancelOrder(orderId);
+        if (outcome.disposition == VenueCancelDisposition::Submitted)
+            NotifyTestStage("after_cancel_venue_send");
+        return outcome;
     };
     callbacks.placeIbReduceOnlyOrderCorrelated =
         [this](const AuthoritativeFlattenPlan& plan,
