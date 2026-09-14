@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/execution/`, `HeptaTrade/agent/decision_lease_manager.cpp`, `HeptaTrade/events/execution_event_hub.cpp`, `HeptaTrade/events/owner_scoped_health_publisher.cpp`
-Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`
+Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`
 
 ## Responsibilities
 
@@ -49,6 +49,12 @@ Protocol fields and reason codes are versioned. Unknown fields, unsupported vers
 
 The OMS journal is the durable mutation ledger. Startup replays it before accepting mutations. The service reconstructs command identities, send attempts, owner fences, and terminal states, then reconciles with the selected venue. State that cannot be proven from journal plus authoritative venue data remains blocked.
 
+The coordinator consumes the journal's fully validated event sequence without
+copying it into another full-history vector. Allocation/projection exceptions
+clear partial projections and fence mutations; valid uncertain commands remain
+available for reconciliation. See [recovery memory and exception semantics](../technical/coordinator-recovery-memory.md).
+This does not implement checkpoints or bounded permanent identity storage.
+
 Journal failure before send rejects the mutation. Journal failure after a possible send blocks further risk and requires command-status/reconciliation recovery.
 
 The simulator uses two-phase placement: reserve an inert order, establish its owner and projection, durably append `place_sent` with status `activation_pending`, then activate it and durably append `place_activated`. Reserved orders count toward pending risk but cannot submit or fill. A crash without the final activation receipt replays as uncertain. Activation failure or exception appends a later critical `place_outcome_uncertain`, fences mutations, and survives replay; the pending receipt cannot overwrite that uncertainty. Immediate broker adapters leave the optional activation callback unset.
@@ -87,8 +93,8 @@ maps entry points and tests, explains exact correlation resolution and guarded
 absence handling, distinguishes cancel resolution from economic fills, and
 specifies refresh coalescing, owner terminalization and decision lease roles.
 [`Execution events`](../technical/execution-events.md) owns the stream cursor and
-backpressure contract. The legacy CSV reporter under `HeptaTrade/reconcile/`
-is not a canonical recovery entry point.
+backpressure contract. The old monolith's CSV reporter has been
+[retired](../technical/legacy-retirement.md); maintained recovery is unchanged.
 
 ## Wire fields and versioned examples
 

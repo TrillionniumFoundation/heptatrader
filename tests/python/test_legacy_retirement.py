@@ -59,6 +59,21 @@ class LegacyRetirementTests(unittest.TestCase):
             targets = {t['name'] for c in model['configurations'] for t in c['targets']}
             self.assertTrue({'hepta_executiond', 'hepta_tool_gatewayd', 'heptactl'}.issubset(targets))
             self.assertFalse({'HeptaTrader', 'HeptaStrategy', 'HeptaSimulator'} & targets)
+            # Inspect the generated build model, not source spelling: removed
+            # overlays must not survive as inherited include requirements.
+            retired_roots = [(ROOT / name).resolve() for name in ('Interface', 'Tools')]
+            inspected = 0
+            for configuration in model['configurations']:
+                for target in configuration['targets']:
+                    detail = json.loads((replies[0].parent / target['jsonFile']).read_text())
+                    for group in detail.get('compileGroups', []):
+                        for include in group.get('includes', []):
+                            path = Path(include['path']).resolve()
+                            self.assertFalse(any(path == old or old in path.parents
+                                                 for old in retired_roots),
+                                             f"retired include in {target['name']}: {path}")
+                            inspected += 1
+            self.assertGreater(inspected, 0, 'positive include-inventory control')
 
 
 if __name__ == '__main__':

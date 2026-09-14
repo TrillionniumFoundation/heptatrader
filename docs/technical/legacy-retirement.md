@@ -1,76 +1,70 @@
-# Retired execution assets and retained compatibility boundaries
+# Retired assets and retained compatibility boundaries
 
 Status: CURRENT
-Applies to: source retirement; no trading authorization or persistent-schema change
+Applies to: source retirement; no deployed-state or persistent-schema migration
 Implementation: `CMakeLists.txt`, `HeptaTrade/CMakeLists.txt`, `cmake/HeptaLegacy.cmake`
-Tests: `tests/python/test_legacy_retirement.py`, canonical build and installed acceptance
+Tests: `tests/python/test_legacy_retirement.py`, `tests/python/test_legacy_runtime_boundary.py`, `tests/python/test_cmake_install_integration.py`
 
-## Retirement decision and consumer closure
+## Retired products and consumers
 
-The maintained product is the canonical Agent/Gateway/Execution composition,
-not a second monolithic multi-venue application. The optional historical
-monolith and Pegasus simulator are now retired instead of remaining nominally
-supported default-off options requiring private binary overlays.
+The historical multi-venue monolith, HeptaStrategy composition, Pegasus
+simulator, JSONL 0DTE bridge, strategy orchestration, order watchdog and CSV
+reconciliation reporter have been removed with their exclusive build graph.
+The remaining root `Interface/` and `Tools/` collections are now removed too.
 
-| Retired assets | Previous in-repository consumer | Disposition |
-|---|---|---|
-| `HeptaStrategy/` | root monolith branch; old simulator; monolith target link | retire the optional library and both consumers together |
-| `HeptaSimulator/` | root `HEPTA_BUILD_LEGACY_SIMULATOR` branch | retire old simulator, not `HeptaTrade/simulator/` |
-| `HeptaDemoStrategyTrader.cpp`, `ib_fx_multi_strategy.*` | `cmake/HeptaLegacy.cmake` monolith source list | retire orchestration, not canonical coordinator/IB adapter |
-| `openclaw_0dte_bridge.*`, `order_watchdog.*`, `reconcile/` | monolith source/include graph | remove dedicated bridge/watchdog/CSV reporter |
-| top-level FM XML, Instrument XML, old HeptaTraderConfig and IBRisk template | legacy-only configuration; absent from canonical install | remove with retired execution paths |
-| CTP overlay link/import branches, old include/link directories, legacy DLL target branch | optional monolith CMake graph only | remove machinery, not a new overlay download or fallback |
+| Retired asset | Known consumer / decision |
+|---|---|
+| `Interface/include/hepta*.h` | Old monolith, HeptaStrategy, Pegasus and watchdog; these applications were already retired. Canonical execution uses its own contract/state/risk types. |
+| `Interface/include/tinyxml.h`, `tinystr.h` | Old XML composition in the retired monolith; not canonical service configuration. |
+| `Interface/oneapi/` | Old vendored concurrency headers in the retired overlay; no canonical target includes or links this collection. |
+| `Interface/CTPTradeApi32`, `CTPTradeApi64`, `CTPTradeApiLinux` | Identical legacy SDK placeholders, not functioning Broker transports. Current CTP capability stubs remain separate. |
+| `Tools/` configuration, instrument XML and dated market samples | Retired simulator/monolith configuration and example data; not installed canonical input or authoritative live history. |
+| `scripts/validate_sim_data.py` | Personal Windows-path XML/CSV sample-row checker; wrongly carried in the runtime helper list. Removed with its catalog and install entries, not replaced by a success-shaped validator. |
 
-This is an explicit retirement of those optional products, not a claim that
-no external user has ever used their headers or files. Exact pre-retirement
-source is retained in commit `3ada6d3157d603e63a47f660d41bfb3937bbec9c`:
+The complete last pre-removal asset tree is recoverable from source
+`6cdae64e04a92d234852aa14670a54538e9e5f9c`. For example:
 
 ```sh
-git show 3ada6d3157d603e63a47f660d41bfb3937bbec9c:cmake/HeptaLegacy.cmake
+git show 6cdae64e04a92d234852aa14670a54538e9e5f9c:Interface/include/heptaBasicStrategy.h
 ```
 
-No redundant archive of the removed source is shipped in release packages.
-Git history is not rewritten. Canonical targets, source lists, SDK ABI probe,
-security checks, installed paths, Broker profiles and schemas are unchanged.
+Do not copy the retired data/SDK overlay into new packages. Embedded upstream
+notices remain with their historical source; retirement does not assert new
+redistribution rights, erase existing legal obligations or certify all external
+consumers. No data, header archive or dummy replacement folder is added.
+`HeptaTrade/tools/` is maintained Gateway code, not the removed root `Tools/`.
 
-## Explicit failure instead of compatibility theatre
+## Explicit old-build failure
 
+Root and standalone HeptaTrade entry points reject enabled
 `HEPTA_BUILD_LEGACY_MONOLITH`, `HEPTA_BUILD_LEGACY_SIMULATOR` and
-`HEPTA_ENABLE_LEGACY_0DTE_BRIDGE` set to ON fail both root and standalone
-HeptaTrade configuration with `HEPTA_LEGACY_RUNTIME_RETIRED`. Explicit OFF values
-remain accepted. The old include path retains only a fatal diagnostic. Nothing
-silently compiles a different service or grants it old configuration authority.
+`HEPTA_ENABLE_LEGACY_0DTE_BRIDGE` with `HEPTA_LEGACY_RUNTIME_RETIRED`.
+Explicit OFF flags remain accepted for existing canonical automation.
+`cmake/HeptaLegacy.cmake` remains only as an executable failure diagnostic for
+old include callers. No success-shaped stub target or SDK fallback recreates
+the retired trading products.
 
-The regression test runs actual CMake configurations and reads the resulting
-File API codemodel. It does not assert source spelling, arbitrary line counts
-or the absence of every historical word. Full canonical compilation and install
-acceptance detect remaining transitive build consumers; SDK-free results do not
-claim that a new real Broker campaign was performed.
+## Previously completed cleanup
 
-## Earlier completed cleanup
+Eight unused Visual Studio assets were retired previously; their provenance
+remains at `d003f54c7c6c2bd19002627f2bcd9081228b01cd`. The twelve assignment-only
+risk sinks and `PreTradeRiskLegacyWriteOnly` were removed with compiler tests
+for the supported API. Documentation wrapper duplication, source-token closure
+checks and spelling-only meta-tests were also retired. These are not newly
+claimed deletions in the remaining-assets change.
 
-Eight unused Visual Studio solution/project assets were previously retired.
-Their earlier provenance is commit `d003f54c7c6c2bd19002627f2bcd9081228b01cd`.
-The twelve assignment-only risk sinks and `PreTradeRiskLegacyWriteOnly`, the
-redundant documentation wrapper/core split and token-presence gap-closure
-machinery were also removed previously. This change does not count those
-historical deletions as new work or resurrect their artificial gates.
+## Acceptance and limits
 
-## Retained intentionally
+The existing CMake behavior tests reject the old flags/include and inspect
+fresh codemodel targets and include paths. The full canonical compile and tests,
+GCC/Clang sanitizer lanes, Git/CMake ownership, fresh installation and installed
+process/PID1 acceptance must pass on the exact resulting revision. Removing
+files first and then weakening a failing build/test is not accepted cleanup.
+The separately supplied IB SDK remains pinned outside the repository; core CI
+is not a claim that the SDK-enabled Broker campaign ran.
 
-Shared `Interface/` and `Tools/` source/data remain labelled LEGACY pending
-separate retained-consumer/licensing review; they are not canonical deployment
-products. The 2023 PDF remains historical provenance. No licence permission is
-inferred from a directory name or a green build.
-
-Maintained OMS readers, HSL migration layouts, command deduplication and terminal
-recovery remain intact. These preserve deployed state and are not deleted with
-an old application. See [persistence support](persistence-support-window.md).
-Canonical reconciliation remains [the authoritative engine](reconciliation-engine.md),
-not the removed CSV reporter. The restricted CTP/XT stubs and SHADOW pipeline
-remain separately experimental; no new live venue capability is claimed.
-
-A deployed legacy installation must retain its source, immutable executable and
-protected journal/lease/key state until an independently validated migration.
-This source retirement does not authorize a binary rollback, rewrite any host
-file, erase history or expand PAPER/LIVE permission.
+OMS schema readers, encrypted HSL historical layouts, durable command identity,
+owner fences, terminal witnesses and authoritative reconciliation remain
+maintained behavior. Source age is not evidence that persisted state is unused.
+See [persistence support](persistence-support-window.md). Deleting old source
+never migrates a host, revokes an old artifact or authorizes trading.

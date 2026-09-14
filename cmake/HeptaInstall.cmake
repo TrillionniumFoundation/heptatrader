@@ -67,7 +67,6 @@ set(_hepta_runtime_helpers
     scripts/hepta_broker_egress_policy.py
     scripts/resolve_hepta_config.py
     scripts/run_release_simulator_smoke.py
-    scripts/validate_sim_data.py
     scripts/verify_canonical_ib_paper_profile.py
     scripts/hepta_oms_report.py
     scripts/hepta_telemetry_collect.py

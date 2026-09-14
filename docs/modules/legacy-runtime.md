@@ -1,52 +1,51 @@
-# Retained shared compatibility material
+# Retired runtime compatibility entry
 
 Status: LEGACY
-Applies to: retained shared headers/data, not a buildable trading runtime
-Implementation: `Interface/`, `Tools/`, `cmake/HeptaLegacy.cmake`
+Applies to: explicit rejection of the old CMake include; no buildable runtime
+Implementation: `cmake/HeptaLegacy.cmake`
 Tests: `tests/python/test_legacy_runtime_boundary.py`, `tests/python/test_legacy_retirement.py`, `tests/venue_capability_tests.cpp`
 
-## Retired execution paths
+## Retired execution paths and assets
 
-The old monolith, HeptaStrategy static-library composition, Pegasus simulator,
-JSONL 0DTE bridge, legacy strategy orchestration, watchdog and CSV reconciliation
-reporter have been removed with their dedicated XML configuration/data. Their
-CMake include/link/overlay machinery is removed too, not hidden behind another
-success flag. Historical source remains in Git at
-`3ada6d3157d603e63a47f660d41bfb3937bbec9c`.
+The old monolith, HeptaStrategy composition, Pegasus simulator, JSONL 0DTE
+bridge, watchdog and CSV reconciliation reporter have been removed with their
+exclusive CMake graph. The remaining root `Interface/` headers, oneTBB copy,
+CTP placeholders and root `Tools/` XML/configuration/market samples are also
+retired. No replacement archive, empty compatibility directory or alternative
+order transport is installed. Historical source and embedded notices remain
+in Git; the final pre-asset-removal source is
+`6cdae64e04a92d234852aa14670a54538e9e5f9c`.
+
+The maintained `HeptaTrade/tools/` directory is unrelated and remains intact.
+Current CTP/XT capability stubs and `third_party/ctp` are not promoted to real
+transports by removing old placeholders.
+
+## The remaining compatibility behavior
 
 Root and standalone HeptaTrade configuration reject enabled historical flags
 with `HEPTA_LEGACY_RUNTIME_RETIRED`. Existing explicit OFF invocations still
-configure the canonical runtime. There is no automatic redirection of a legacy
-configuration or order request into the maintained execution service.
-
-## Intentionally retained boundary
-
-`Interface/` and `Tools/` remain a separately labelled compatibility/provenance
-collection. Their presence does not claim a supported binary, deployment or
-redistribution licence. This retirement does not assert that every third-party
-header/data consumer or external deployment has been inventoried. A later
-removal must check the retained consumers and licensing separately.
-
-The tiny `cmake/HeptaLegacy.cmake` file is an explicit failure diagnostic for
-old include callers, not a second build definition. Default builds do not load
-it. No CTP SDK overlay, alternate Broker runtime or mutable download replaces
-the retired targets.
+configure canonical targets. The small `cmake/HeptaLegacy.cmake` entry provides
+the same explicit failure to an old include caller. It is tested behavior,
+not an active second build graph or an empty module completion marker.
 
 ## Maintained recovery is not Legacy
 
-OMS schema readers, encrypted HSL lease migrations, stable command identity,
-terminal witnesses and authoritative reconciliation remain maintained runtime
-behavior. They were not removed with the old CSV reporter or monolith. Do not
-infer that an old on-disk tag is unused because an old application was retired.
-Canonical CTP/XT fail-closed capability stubs and the separate SHADOW research
-components are also unchanged.
+OMS historical readers, encrypted HSL migrations, stable command identities,
+terminal witnesses and authoritative reconciliation are unchanged. No old
+persistent format is retired by this source cleanup. Users of old applications
+must retain their exact artifact/state and arrange a separate migration.
 
-## Acceptance and migration
+## Consumer and acceptance boundary
 
-See [retirement scope and evidence](../technical/legacy-retirement.md). Tests
-execute the real CMake entry points: enabled retired flags fail explicitly,
-while supported configuration with OFF flags produces the canonical targets.
-The full core build, GCC/Clang sanitizer suites, source ownership inventory,
-fresh install and real process acceptance remain the integration checks.
-Users of an old binary must retain its exact source/artifact and state and
-perform an explicit migration; deleting source is not a state migration.
+See [retirement scope and evidence](../technical/legacy-retirement.md) for the
+consumer map. The retired application and watchdog were the known users of
+`hepta*.h` and TinyXML. Canonical targets declare their own includes and use an
+external pinned IB SDK, not these root overlays. Removal is tested by the real
+core build, both sanitizer lanes, fresh install/process acceptance and the
+existing CMake entry-point tests. Those tests also inspect generated include
+paths to prevent the retired directories from being an implicit dependency.
+
+This supports the maintained source profiles, not every external fork, old
+binary or independently licensed dataset. Historical contents are not copied
+into new release or evidence archives. Target-host rollback and separately
+supplied SDK-linked IB qualification remain independent acceptance scopes.

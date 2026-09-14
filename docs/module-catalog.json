@@ -73,7 +73,9 @@
         "tests/execution_decision_lease_authority_tests.cpp",
         "tests/send_attempt_time_index_cases.h",
         "tests/python/test_send_attempt_time_index.py",
-        "tests/venue_placement_cases.h"
+        "tests/venue_placement_cases.h",
+        "tests/recovery_projection_faults.cpp",
+        "tests/python/test_recovery_projection.py"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
@@ -147,8 +149,7 @@
       "document": "docs/modules/simulator.md",
       "implementation": [
         "HeptaTrade/simulator",
-        "HeptaTrade/execution/hepta_executiond.cpp",
-        "scripts/validate_sim_data.py"
+        "HeptaTrade/execution/hepta_executiond.cpp"
       ],
       "tests": [
         "tests/agent_simulator_e2e_tests.cpp",
@@ -360,8 +361,6 @@
       "status": "LEGACY",
       "document": "docs/modules/legacy-runtime.md",
       "implementation": [
-        "Interface",
-        "Tools",
         "cmake/HeptaLegacy.cmake"
       ],
       "tests": [
