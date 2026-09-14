@@ -812,7 +812,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
         return m_venue.CanCancelOrder(orderId, detail);
     };
-    callbacks.lastIbRejectReason = [this]() { return m_venue.LastRejectReason(); };
     callbacks.onIbOrderPlaced = [this](const IbPlaceOrderCommand& command,
                                        long orderId, std::string*) {
         ExecutionEvent event;

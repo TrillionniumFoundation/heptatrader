@@ -76,6 +76,7 @@ std::string NormalizeIbOptionRight(std::string right) {
 
 std::string ContractDuplicateKey(const IBContractLite& c) {
     std::ostringstream oss;
+    oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << c.symbol << "|" << c.secType << "|" << c.exchange << "|" << c.primaryExchange << "|"
         << c.currency << "|" << c.lastTradeDateOrContractMonth << "|" << NormalizeIbOptionRight(c.right) << "|"
         << std::fixed << std::setprecision(8) << c.strike << "|"
@@ -1318,6 +1319,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
     }
 
     std::ostringstream oss;
+    oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity;
@@ -1340,6 +1342,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
 
 void HeptaIBGatewayAdapter::RememberLastOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) {
     std::ostringstream oss;
+    oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity << "|" << o.lmtPrice;

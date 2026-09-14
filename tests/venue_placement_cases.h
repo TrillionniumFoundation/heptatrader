@@ -70,10 +70,10 @@ void TestCapacityPausePreservesExitsAndReplay()
         const std::string&, std::string*) { return true; };
     callbacks.onIbOrderPlaced = [](const IbPlaceOrderCommand&, long,
         std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan& plan, const std::string&, long* id) {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan& plan, const std::string&) {
             assert(plan.order.action == "SELL" && plan.order.totalQuantity == 100.0);
-            ++flattenCalls; *id = 43; return true;
+            ++flattenCalls; return VenueFlattenResult::Submitted(43);
         };
     {
         OmsJournal journal;

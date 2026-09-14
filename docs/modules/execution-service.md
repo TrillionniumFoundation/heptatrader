@@ -156,3 +156,14 @@ were removed after their watchdog consumer was retired. Actual owner projection,
 `onIbOrderPlaced`, durable receipts, uncertain outcomes and reconciliation remain
 unchanged. This private composition cleanup is not a promise of source
 compatibility with an independently maintained experimental caller.
+
+## Atomic authoritative-flatten result
+
+The [flatten result contract](../technical/venue-flatten-contract.md) completes
+the typed placement/cancellation boundary. The coordinator no longer carries
+`lastIbRejectReason` or a Boolean/out-ID flatten callback. The adapter captures
+classification, detail and known order identity under the send lock; possible
+SDK calls and post-send bookkeeping failures remain durably uncertain. The
+existing no-op proof, schema, owner fences, guarded exits and reconciliation are
+unchanged. The existing OMS stream also exports bounded coordinator reason bins;
+these are not complete profile/risk or Broker lifecycle telemetry.

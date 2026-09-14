@@ -55,26 +55,22 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
             NotifyTestStage("after_cancel_venue_send");
         return outcome;
     };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [this](const AuthoritativeFlattenPlan& plan,
-               const std::string& correlation, long* orderId) {
+    callbacks.flattenOrder =
+        [this](const AuthoritativeFlattenPlan& plan, const std::string& correlation) {
             NotifyTestStage("before_flatten_venue_send");
-            bool placed = false;
+            VenueFlattenResult outcome;
             {
-            std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
-                placed = m_adapter->PlaceReduceOnlyOrderCorrelated(
+                std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
+                outcome = m_adapter->PlaceReduceOnlyOrderCorrelated(
                     plan.contract, plan.order, plan.instrument,
                     plan.expectedPositionQuantity,
-                    plan.positionConnectionEpoch,
-                    plan.positionGeneration,
-                    plan.quoteSubscriptionId,
-                    plan.quoteObservedAtMs,
-                    plan.quoteStaleAfterMs,
-                    correlation, orderId,
-                    plan.quoteBid, plan.quoteAsk);
+                    plan.positionConnectionEpoch, plan.positionGeneration,
+                    plan.quoteSubscriptionId, plan.quoteObservedAtMs,
+                    plan.quoteStaleAfterMs, correlation, plan.quoteBid, plan.quoteAsk);
             }
-            if (placed) NotifyTestStage("after_flatten_venue_send");
-            return placed;
+            if (outcome.disposition == VenueFlattenDisposition::Submitted)
+                NotifyTestStage("after_flatten_venue_send");
+            return outcome;
         };
     callbacks.proveAndCommitIbFlatNoop =
         [this](const AuthoritativeFlattenPlan& plan,
@@ -90,7 +86,6 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
         return m_adapter->CanCancelOrder(orderId, detail);
     };
-    callbacks.lastIbRejectReason = [this]() { return m_adapter->GetLastRejectReason(); };
     callbacks.validateDecisionLease = [this](const AgentExecutionContext& context,
         const std::string& instrument, std::string* detail) {
         return m_decisionLeases->Validate(context, instrument, detail);

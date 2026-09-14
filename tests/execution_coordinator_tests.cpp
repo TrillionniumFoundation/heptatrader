@@ -523,7 +523,6 @@ void ExerciseUncertainPlaceOutcome(
     OmsJournal journal;
     assert(journal.Init(path));
     int venueCalls = 0;
-    int rejectReasonReads = 0;
     ExecutionCoordinatorCallbacks callbacks;
     callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
         long venueOrderId = -1;
@@ -540,10 +539,6 @@ void ExerciseUncertainPlaceOutcome(
                 return VenuePlaceResult::Submitted(venueOrderId);
             return VenuePlaceResult::Rejected("");
         });
-    callbacks.lastIbRejectReason = [&]() {
-        ++rejectReasonReads;
-        return std::string("unrelated cancel rejection must never classify placement");
-    };
     const IbPlaceOrderCommand command = MakePlace(callId);
     ExecutionCoordinator coordinator(journal, callbacks);
     const ExecutionCommandResult first =
@@ -552,7 +547,6 @@ void ExerciseUncertainPlaceOutcome(
     assert(first.reasonCode == "IB_PLACE_OUTCOME_UNCERTAIN");
     assert(first.detail.find(expectedDetail) != std::string::npos);
     assert(venueCalls == 1);
-    assert(rejectReasonReads == 0);
     assert(coordinator.IsMutationBlocked());
     const ExecutionCommandResult retry =
         coordinator.PlaceIbOrder(command);
@@ -664,10 +658,6 @@ void TestPlaceCallbackUncertaintyAndReliableReject()
             ++reasonReads;
             return VenuePlaceResult::Rejected("explicit reliable adapter rejection");
         });
-    callbacks.lastIbRejectReason = []() -> std::string {
-        assert(false && "placement must not consult the cancel error reader");
-        return "";
-    };
     const IbPlaceOrderCommand command =
         MakePlace("place-explicit-reject");
     ExecutionCoordinator coordinator(journal, callbacks);
@@ -1134,12 +1124,10 @@ void TestFlattenLifecycleRecoveryAndRateProjection()
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&,
            std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan&, const std::string&,
-            long* orderId) {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
             ++venueSends;
-            *orderId = 880;
-            return true;
+            return VenueFlattenResult::Submitted(880);
         };
     callbacks.proveAndCommitIbFlatNoop =
         [](const AuthoritativeFlattenPlan&,
@@ -1262,12 +1250,10 @@ void TestQualificationExternalFlattenIsExactAndAbsolutelyBounded()
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&,
            std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan&, const std::string&,
-            long* orderId) {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
             ++venueSends;
-            *orderId = 1880;
-            return true;
+            return VenueFlattenResult::Submitted(1880);
         };
     callbacks.onIbOrderPlaced =
         [](const IbPlaceOrderCommand&, long, std::string*) {
@@ -1327,11 +1313,10 @@ void TestFlattenRejectsSubToleranceOverCloseAndStaleNoop()
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&,
            std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan&, const std::string&,
-            long*) {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
             ++venueSends;
-            return true;
+            return VenueFlattenResult::Submitted(1881);
         };
     callbacks.proveAndCommitIbFlatNoop =
         [&](const AuthoritativeFlattenPlan&,
@@ -1446,14 +1431,12 @@ void TestFlattenVenueRejectCodeAllowlist()
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&,
            std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan&, const std::string&,
-            long*) {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
             ++venueCalls;
-            return false;
+            return VenueFlattenResult::RejectedBeforeSend(
+                VenueFlattenRejectionFromReasonCode(venueReason), venueReason);
         };
-    callbacks.lastIbRejectReason =
-        [&]() { return venueReason; };
     ExecutionCoordinator coordinator(journal, callbacks);
 
     const FlattenPositionCommand untrustedCommand =
@@ -1578,12 +1561,10 @@ void TestFlattenProjectionFailureBlocksAndRecovers()
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&,
            std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan&, const std::string&,
-            long* orderId) {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
             ++venueSends;
-            *orderId = 882;
-            return true;
+            return VenueFlattenResult::Submitted(882);
         };
     callbacks.onIbOrderPlaced =
         [](const IbPlaceOrderCommand&, long, std::string* reason) {
@@ -1659,16 +1640,14 @@ void TestFlattenCallbackExceptionIsDurablyUncertain()
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&,
            std::string*) { return true; };
-    callbacks.placeIbReduceOnlyOrderCorrelated =
-        [&](const AuthoritativeFlattenPlan&, const std::string&,
-            long* orderId) -> bool {
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
             ++venueSideEffects;
-            *orderId = 883;
-            throw std::runtime_error(
-                "simulated exception after venue side effect");
+            // The adapter catches after-send exceptions while the assigned ID
+            // is still in scope; the coordinator receives that single result.
+            return VenueFlattenResult::Uncertain(
+                "simulated exception after venue side effect", 883);
         };
-    callbacks.lastIbRejectReason =
-        []() { return std::string("misleading rejection"); };
     const FlattenPositionCommand command =
         MakeFlatten("flatten-callback-uncertain");
     const AuthoritativeFlattenPlan plan = MakeFlattenPlan(command);
@@ -1989,6 +1968,7 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
 #include "venue_placement_cases.h"
 #include "pre_intent_refusal_cases.h"
 #include "cancel_uncertainty_cases.h"
+#include "flatten_result_cases.h"
 #include "oms_recovery_growth_probe.h"
 
 int main(int argc, char** argv)
@@ -2032,6 +2012,8 @@ int main(int argc, char** argv)
     TestFlattenOrphanIntentRequiresDurableReconciliation();
     TestFlattenProjectionFailureBlocksAndRecovers();
     TestFlattenCallbackExceptionIsDurablyUncertain();
+    TestTypedFlattenResultPreservesDurableUncertainty();
+    TestTypedFlattenReasonIsIndependentOfDiagnosticText();
     TestFlattenRejectsSubToleranceOverCloseAndStaleNoop();
     TestFlattenNoopJournalFailureIsUncertain();
     TestRevokedSessionOwnerIsFenced();

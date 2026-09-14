@@ -178,3 +178,25 @@ then feeds its bytes to the real Python report. It rejects incomplete and
 inconsistent new fields and retains old-producer compatibility. Full native
 and installed-process suites remain the coordinator integration evidence; this
 helper test alone is not a real contention benchmark or host qualification.
+
+## Bounded coordinator result reasons
+
+The existing `execution_metrics` object adds `reason_schema_version=1` and three
+`reason_counts` rows (place, cancel, authoritative flatten). Each row has 41 fixed
+bins declared by `ExecutionReasonNames()` and mirrored by the installed report's
+`EXECUTION_REASONS`. An executed cross-language test compares the complete order.
+Empty result reasons use NONE, exception unwinding uses EXCEPTION and all unknown
+strings use OTHER. No request, account, instrument or diagnostic becomes a label.
+
+The installed reporter emits `hepta_execution_command_reasons_total` with only
+`operation` and the fixed `reason` labels, and an explicit
+`hepta_execution_reason_metrics_present` gauge. Old producers lacking both
+fields remain readable but do not acquire synthetic zero counters. Partial
+extensions, unsupported versions, invalid counts and inconsistent result/reason
+sums fail parsing. Saturation is visible and suppresses affected counter export.
+
+These counts describe calls that reach the coordinator. They do not include all
+preview/profile/risk-policy refusals upstream, snapshot ages, callback lag or
+Broker reconciliation durations. They are process-instance counters, not durable
+trade counts or completed fills. RUNTIME-TELEMETRY-003 remains open for those
+other scopes.
