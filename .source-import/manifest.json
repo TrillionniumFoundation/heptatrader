@@ -1,0 +1,22 @@
+{
+  "base": "f88b204115c46dba03bbd0416c13c3fa8c81984f",
+  "base_tree": "e4a6c435c084e6544fbd310e45a77bde7b4610e5",
+  "expected_tree": "7494130ae33134a179611957676b1875583fd569",
+  "patch_bytes": 286901,
+  "patch_sha256": "a2a982633c2099a76f21512b4e2c4c6961082660f53d533fd40d713958033e27",
+  "xz_bytes": 63196,
+  "xz_sha256": "ff2b9e82dff45c714b1ab646657b80e288b752c52da701f610ac730318639ceb",
+  "chunks": [
+    {"path":"patch.00","bytes":8193,"sha256":"8fb85cd453ac639092c9cb0662ee0f49e6a099c5b8e8373d62671b48f0b8a139","blob_sha":"71b1db2e17e9a3f59938babcf623a2539cb12152"},
+    {"path":"patch.01","bytes":8193,"sha256":"081c9829075eba29c8cb4d18e7cb1dd2d4e78a74f61af3350815b9a9d4841a21","blob_sha":"c0193a2a63ec34011dc771c0cf20ca814b5266c1"},
+    {"path":"patch.02","bytes":8193,"sha256":"396bee9ee67ba81addcba16556426fc7a8a331b6e8f9fb8d48bf7cecb7ea9c9d","blob_sha":"19f53786464025649e40ef34c325d380530b9043"},
+    {"path":"patch.03","bytes":8193,"sha256":"336981d2b267c7193fcaf18a8022c42ab0da53b6780f3bcd8ffad94419bd52f9","blob_sha":"9ffa13572bfe9622f3dab34a3f420f8758ae96f5"},
+    {"path":"patch.04","bytes":8193,"sha256":"be8594ad0d427fb09b879affbc3ac0763359a80edb1dae4bcfa2b7955514070c","blob_sha":"480237abb9be4ef1408983dbdc04ef7611b327b2"},
+    {"path":"patch.05","bytes":8193,"sha256":"46349b1a2f57f30004f135748de3c271f74e1e0214fe805030222d3d252433cf","blob_sha":"a4a6567e4d3ca926d47434c515bd82a818d30bb5"},
+    {"path":"patch.06","bytes":8193,"sha256":"db8fdae124c5f2bf68d3ed90b749b3f43aae5cf5ecac9fd32e55613aff53b622","blob_sha":"97eb57b27eddd4ebf3e66f05b77312f74870c39d"},
+    {"path":"patch.07","bytes":8193,"sha256":"cae87002a27bbd7ff8a3c04a808cf6cccbb16ab7a2ef6852789d2d90c2c7930c","blob_sha":"fd5411880bafacc62a1b935978364fc4c95edcae"},
+    {"path":"patch.08","bytes":8193,"sha256":"740323f2bf2983bac86b4b4db7191e73a3f4dc7b41e0115a6d723c21a48e401b","blob_sha":"6d1f0cab7cb6ba569e2c08fd549eddf3b553f614"},
+    {"path":"patch.09","bytes":8193,"sha256":"3355aebac831b9bb2d86702a6d372d657ebfc0fdcb8f0e63eba83d81b366612c","blob_sha":"08e26a82cf125129a34c148895b4aff767574b1a"},
+    {"path":"patch.10","bytes":2345,"sha256":"c7cd7e07b7ae28fbb8712a3323631f0102c18b38e316ef9e202c7f2497d7a52b","blob_sha":"4ca13a59c0e4e0cd66b9a3b2a0087884ed54fb68"}
+  ]
+}
