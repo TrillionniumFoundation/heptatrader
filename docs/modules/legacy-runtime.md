@@ -1,38 +1,52 @@
-# Legacy runtime boundary
+# Retained shared compatibility material
 
 Status: LEGACY
-Applies to: repository HEAD
-Implementation: `HeptaStrategy/`, `HeptaSimulator/`, `Interface/`, `Tools/`, `HeptaTrade/reconcile/`, selected top-level legacy files under `HeptaTrade/`
-Tests: `tests/python/test_legacy_runtime_boundary.py`, `tests/venue_capability_tests.cpp`
+Applies to: retained shared headers/data, not a buildable trading runtime
+Implementation: `Interface/`, `Tools/`, `cmake/HeptaLegacy.cmake`
+Tests: `tests/python/test_legacy_runtime_boundary.py`, `tests/python/test_legacy_retirement.py`, `tests/venue_capability_tests.cpp`
 
-## Responsibilities
+## Retired execution paths
 
-This module records the historical monolith, strategy platform, Pegasus simulator, vendored compatibility headers, large static instrument data, and deprecated bridges that remain in the repository. Its purpose is compatibility and migration analysis, not canonical runtime delivery.
+The old monolith, HeptaStrategy static-library composition, Pegasus simulator,
+JSONL 0DTE bridge, legacy strategy orchestration, watchdog and CSV reconciliation
+reporter have been removed with their dedicated XML configuration/data. Their
+CMake include/link/overlay machinery is removed too, not hidden behind another
+success flag. Historical source remains in Git at
+`3ada6d3157d603e63a47f660d41bfb3937bbec9c`.
 
-## Public interfaces
+Root and standalone HeptaTrade configuration reject enabled historical flags
+with `HEPTA_LEGACY_RUNTIME_RETIRED`. Existing explicit OFF invocations still
+configure the canonical runtime. There is no automatic redirection of a legacy
+configuration or order request into the maintained execution service.
 
-Legacy build profiles are exposed only through explicit CMake options. They are off by default. No legacy project file, configuration example, adapter scaffold, or historical binary is an authority-bearing installation interface.
+## Intentionally retained boundary
 
-## State and persistence
+`Interface/` and `Tools/` remain a separately labelled compatibility/provenance
+collection. Their presence does not claim a supported binary, deployment or
+redistribution licence. This retirement does not assert that every third-party
+header/data consumer or external deployment has been inventoried. A later
+removal must check the retained consumers and licensing separately.
 
-Legacy XML, market-data examples, and compatibility headers are repository assets. They are not read automatically by the maintained Agent OS runtime unless a separately documented legacy profile is enabled.
+The tiny `cmake/HeptaLegacy.cmake` file is an explicit failure diagnostic for
+old include callers, not a second build definition. Default builds do not load
+it. No CTP SDK overlay, alternate Broker runtime or mutable download replaces
+the retired targets.
 
-## Failure semantics
+## Maintained recovery is not Legacy
 
-A legacy component that is absent, incompatible, or disabled must not cause the canonical core build to fall back to a historical order path. CTP and XT/QMT scaffolds return explicit no-transport failures rather than manufacturing connection, query, or order success.
+OMS schema readers, encrypted HSL lease migrations, stable command identity,
+terminal witnesses and authoritative reconciliation remain maintained runtime
+behavior. They were not removed with the old CSV reporter or monolith. Do not
+infer that an old on-disk tag is unused because an old application was retired.
+Canonical CTP/XT fail-closed capability stubs and the separate SHADOW research
+components are also unchanged.
 
-## Security boundaries
+## Acceptance and migration
 
-The maintained Execution Service remains the sole order authority. Legacy monoliths, strategies, bridges, and project files may not bypass the Tool Gateway, journal-before-send, risk, kill switch, or reconciliation boundaries. `production_authorized=false` is permanent for this module.
-
-## Observability
-
-Capability output distinguishes CURRENT, QUALIFICATION_REQUIRED, EXPERIMENTAL, LEGACY, and UNAVAILABLE. Operators should treat a legacy build flag, imported project, or example configuration as a compatibility signal rather than a deployment-ready status.
-
-## Test expectations
-
-Tests lock the default-off CMake options, experimental adapter no-transport behavior, PAPER qualification requirement, and LIVE unavailability. Component coverage also requires every retained legacy production path to have an explicit owner instead of being silently omitted.
-
-## Known limitations
-
-The legacy source is not comprehensively modernized, benchmarked, or supported across current compilers. Eight unused Visual Studio solution/project assets have been removed; their exact provenance and the shared sources deliberately retained are documented in [`../technical/legacy-retirement.md`](../technical/legacy-retirement.md). Large data assets remain pending consumer and licensing analysis rather than being blindly deleted.
+See [retirement scope and evidence](../technical/legacy-retirement.md). Tests
+execute the real CMake entry points: enabled retired flags fail explicitly,
+while supported configuration with OFF flags produces the canonical targets.
+The full core build, GCC/Clang sanitizer suites, source ownership inventory,
+fresh install and real process acceptance remain the integration checks.
+Users of an old binary must retain its exact source/artifact and state and
+perform an explicit migration; deleting source is not a state migration.

@@ -18,10 +18,12 @@ project(HeptaTrader VERSION "${_hepta_project_version}" LANGUAGES CXX)
 set(HEPTA_RELEASE_LABEL "${HEPTA_RELEASE_LABEL}" CACHE STRING
     "Version label recorded in installed HeptaTrader build metadata" FORCE)
 option(BUILD_IB_PROBE "Build the IB/TWS connectivity probe" OFF)
-option(HEPTA_BUILD_LEGACY_MONOLITH
-       "Build the deprecated multi-venue composition binary" OFF)
-option(HEPTA_BUILD_LEGACY_SIMULATOR
-       "Build the deprecated Pegasus simulator" OFF)
+
+# Historical targets are retired, not silently mapped to the canonical service.
+# Explicit OFF remains accepted for existing core build invocations.
+if(HEPTA_BUILD_LEGACY_MONOLITH OR HEPTA_BUILD_LEGACY_SIMULATOR OR HEPTA_ENABLE_LEGACY_0DTE_BRIDGE)
+    message(FATAL_ERROR "HEPTA_LEGACY_RUNTIME_RETIRED: use the canonical Agent/Execution service; see docs/technical/legacy-retirement.md")
+endif()
 
 include(CTest)
 
@@ -34,10 +36,6 @@ set(_hepta_instrumentation_flags
     "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE} ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${CMAKE_SHARED_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS_RELEASE}")
 if(_hepta_instrumentation_flags MATCHES "(^|[ ;])-fsanitize[= ]")
     set(HEPTA_INSTRUMENTED_BUILD ON)
-endif()
-
-if(HEPTA_BUILD_LEGACY_MONOLITH)
-    add_subdirectory(HeptaStrategy)
 endif()
 
 add_subdirectory(HeptaTrade)
@@ -59,10 +57,6 @@ endfunction()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND HEPTA_INSTRUMENTED_BUILD)
     hepta_remove_legacy_no_rtti(hepta_agent_os_core)
     hepta_remove_legacy_no_rtti(hepta_tool_gatewayd)
-endif()
-
-if(HEPTA_BUILD_LEGACY_SIMULATOR)
-    add_subdirectory(HeptaSimulator)
 endif()
 
 if(BUILD_IB_PROBE)

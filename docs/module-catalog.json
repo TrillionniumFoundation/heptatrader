@@ -360,29 +360,14 @@
       "status": "LEGACY",
       "document": "docs/modules/legacy-runtime.md",
       "implementation": [
-        "HeptaStrategy",
-        "HeptaSimulator",
         "Interface",
         "Tools",
-        "HeptaTrade/FM_AdaGrad_cu2603.xml",
-        "HeptaTrade/FM_AdaGrad_cu2605.xml",
-        "HeptaTrade/HeptaDemoStrategyTrader.cpp",
-        "HeptaTrade/HeptaTraderConfig.paper.xml",
-        "HeptaTrade/HeptaTraderConfig.xml.example",
-        "HeptaTrade/IBRisk.template.xml",
-        "HeptaTrade/Instrument.xml",
-        "HeptaTrade/ib_fx_multi_strategy.cpp",
-        "HeptaTrade/ib_fx_multi_strategy.h",
-        "HeptaTrade/openclaw_0dte_bridge.cpp",
-        "HeptaTrade/openclaw_0dte_bridge.h",
-        "HeptaTrade/order_watchdog.cpp",
-        "HeptaTrade/order_watchdog.h",
-        "HeptaTrade/reconcile",
         "cmake/HeptaLegacy.cmake"
       ],
       "tests": [
         "tests/python/test_legacy_runtime_boundary.py",
-        "tests/venue_capability_tests.cpp"
+        "tests/venue_capability_tests.cpp",
+        "tests/python/test_legacy_retirement.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
