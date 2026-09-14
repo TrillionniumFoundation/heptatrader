@@ -1,4 +1,5 @@
 #include "execution_coordinator.h"
+#include "new_entry_capacity.h"
 #include <cstring>
 #include <exception>
 #include <iomanip>
@@ -415,6 +416,31 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
         std::string leaseReason;
         if (!m_callbacks.validateDecisionLease(context, instrument, &leaseReason))
             return RejectLocked(context, "DECISION_LEASE_INVALID", leaseReason, -1, requestHash);
+    }
+    // Idempotent replay above must remain available even at capacity. Do not
+    // set the global mutation block here: cancel/authoritative flatten keep
+    // their existing guarded exit paths. A no-send capacity refusal is not
+    // inserted into the permanent command map or journal, so varying rejected
+    // IDs cannot consume the remaining recovery headroom.
+    const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+    const NewEntryCapacity capacity{health.capacityKnown, health.writePoisoned,
+        health.replayMaxBytes, health.replayMaxRecords, health.currentBytes,
+        health.currentRecords, health.pendingBytes, health.queueDepth,
+        health.bufferedDepth};
+    // Missing/poisoned writers retain the existing hard AppendOrBlock failure
+    // below; a capacity-only pause must not replace that durability incident.
+    const char* capacityReason = (!health.writePoisoned &&
+        !m_journal.GetPath().empty()) ? NewEntryCapacityReason(capacity) : nullptr;
+    if (capacityReason)
+    {
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Rejected;
+        result.commandId = context.toolCallId;
+        result.orderId = -1;
+        result.reasonCode = capacityReason;
+        result.detail = "new entry paused before intent/send; preserve history, "
+            "use guarded exits and measured recovery maintenance";
+        return result;
     }
     const double eventPrice = command.order.lmtPrice > 0.0 ? command.order.lmtPrice : command.referencePrice;
     const std::string venueCorrelationId = VenueCorrelationId(context, requestHash);
