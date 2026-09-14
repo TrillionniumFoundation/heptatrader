@@ -3,3 +3,4 @@ self-hosted-runner:
   labels:
     - heptatrader-ib-builder
     - heptatrader-ib-paper
+    - x230-ib-paper
