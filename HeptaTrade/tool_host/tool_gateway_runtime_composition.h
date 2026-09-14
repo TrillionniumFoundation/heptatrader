@@ -46,6 +46,7 @@ public:
     bool Start(std::string& reason);
     void Stop();
     bool IsRunning() const;
+    std::string Observation(std::uint64_t wallMs, std::uint64_t steadyMs) const;
     bool ReapExpired(std::uint64_t nowMs,
                      std::size_t& reaped,
                      std::string& reason);

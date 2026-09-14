@@ -5,16 +5,20 @@ Applies to: repository HEAD
 Owner: HeptaTrader maintainers
 Verification: `python3 scripts/check_documentation.py` and `python3 scripts/check_component_coverage.py`
 
-This index is the canonical entry point for current development documentation. A document is operational only when its status is `CURRENT` and its implementation and test paths are present in `docs/module-catalog.json`. Component ownership is independently derived from the Git index by `scripts/check_component_coverage.py`; ownership and structural lint are not proof of complete technical design or behavior.
+This is the canonical development entry point. The module catalog maps maintained
+implementation and test paths; Git/CMake checks detect missing ownership and
+structural drift. Neither a CURRENT label nor a green source check proves design
+completeness, host readiness or permission to trade. Technical contracts below
+state their implemented behavior, evidence and remaining limits separately.
 
 ## Status vocabulary
 
-- **CURRENT** — implemented in the canonical runtime and maintained.
-- **QUALIFICATION_REQUIRED** — implemented, but real broker mutation remains fail-closed until external qualification succeeds.
-- **EXPERIMENTAL** — source exists for research or interface stabilization; it must not advertise real venue authority.
-- **LEGACY** — retained only for compatibility or migration and excluded from the default build.
-- **PROPOSAL** — design material that must not be represented as installed or operational.
-- **UNAVAILABLE** — intentionally absent; no caller may infer authority.
+- **CURRENT** — maintained implementation or current contract; its stated scope still applies.
+- **QUALIFICATION_REQUIRED** — implemented candidate; real Broker mutation remains disabled until external qualification.
+- **EXPERIMENTAL** — research or interface scaffold, not real venue authority.
+- **LEGACY** — compatibility/provenance only, not a supported alternate trading runtime.
+- **PROPOSAL** — design not represented as installed or operational.
+- **UNAVAILABLE** — intentionally absent; authority cannot be inferred.
 
 ## Canonical module documents
 
@@ -39,107 +43,70 @@ This index is the canonical entry point for current development documentation. A
 | `legacy-runtime` | LEGACY | [modules/legacy-runtime.md](modules/legacy-runtime.md) |
 <!-- module-catalog:end -->
 
-## Development references
+## Runtime and protocol references
 
-- [`DEVELOPMENT-DOCUMENTATION-INDEX.md`](DEVELOPMENT-DOCUMENTATION-INDEX.md)
-- [`technical/runtime-engineering-map.md`](technical/runtime-engineering-map.md)
-- [`technical/agent-tool-protocol.md`](technical/agent-tool-protocol.md)
-- [`technical/session-lease-format.md`](technical/session-lease-format.md)
-- [`technical/shadow-pipeline-contract.md`](technical/shadow-pipeline-contract.md)
-- [`technical/legacy-retirement.md`](technical/legacy-retirement.md)
-- [`technical/execution-events.md`](technical/execution-events.md)
-- [`technical/reconciliation-engine.md`](technical/reconciliation-engine.md)
-- [`technical/service-lifecycle.md`](technical/service-lifecycle.md)
-- [`technical/build-supply-chain.md`](technical/build-supply-chain.md)
-- [`technical/component-coverage.md`](technical/component-coverage.md)
-- [`technical/release-simulator-smoke.md`](technical/release-simulator-smoke.md)
-- [`technical/ib-paper-harness-contract.md`](technical/ib-paper-harness-contract.md)
-- [`technical/risk-legacy-compatibility.md`](technical/risk-legacy-compatibility.md)
-- [`technical/capability-advertising.md`](technical/capability-advertising.md)
+| Area | Development references |
+|---|---|
+| Architecture and change impact | [runtime map](technical/runtime-engineering-map.md), [architecture](AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md), [historical entry redirect](DEVELOPMENT-DOCUMENTATION-INDEX.md) |
+| Agent and native wire | [Agent tools](technical/agent-tool-protocol.md), [operation contracts](technical/wire-operation-contracts.md), [generated field reference](technical/wire-field-reference.md), [capability advertising](technical/capability-advertising.md) |
+| Execution and risk | [venue placement](technical/venue-placement-contract.md), [execution events](technical/execution-events.md), [reconciliation](technical/reconciliation-engine.md), [retired risk compatibility](technical/risk-legacy-compatibility.md) |
+| Durable recovery | [OMS event schema](OMS-EVENT-SCHEMA.md), [lease format](technical/session-lease-format.md), [recovery capacity](technical/oms-recovery-capacity.md), [coordinator recovery memory](technical/coordinator-recovery-memory.md), [persistence support](technical/persistence-support-window.md), [lossless archive](technical/oms-archive-lifecycle.md) |
+| Lifecycle and development venue | [service lifecycle](technical/service-lifecycle.md), [simulator walkthrough](technical/simulator-operator-walkthrough.md), [systemd acceptance](technical/systemd-simulator-acceptance.md) |
+| Runtime observations | [metric inventory](OBSERVABILITY-METRICS.md), [cost boundaries](technical/runtime-cost-observations.md), [live OMS capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md), [OMS report](technical/oms-operational-report.md), [Gateway metrics](technical/gateway-runtime-observability.md), [collection](technical/telemetry-collection.md) |
+| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md) |
 
-- [`technical/systemd-simulator-acceptance.md`](technical/systemd-simulator-acceptance.md)
-- [`technical/simulator-operator-walkthrough.md`](technical/simulator-operator-walkthrough.md)
+## Operations and release
 
-## Operations
+| Area | References |
+|---|---|
+| Install and configure | [installation](operations/install.md), [configuration](operations/configure.md), [startup/shutdown](operations/startup-shutdown.md) |
+| Release and recovery | [release packaging](operations/release-package.md), [preflight](operations/preflight.md), [rollback/backup](operations/rollback-backup.md), [simulator smoke](technical/release-simulator-smoke.md), [core acceptance](technical/core-release-acceptance.md) |
+| Incident response | [operations incident](operations/incident.md), [incident runbook](RUNBOOK-INCIDENT.md), [kill switch](RUNBOOK-KILLSWITCH.md), [alert rules](ALERT-RULES-BASELINE.md) |
+| Supply chain and isolation | [build supply chain](technical/build-supply-chain.md), [publication security](RELEASE-PUBLICATION-SECURITY.md), [Broker network isolation](BROKER-NETWORK-ISOLATION.md), [tagged release workflow](../.github/workflows/release.yml) |
+| Optional IB qualification | [harness contract](technical/ib-paper-harness-contract.md), [scenario inventory](ib-paper-qualification-scenarios-v1.json) |
 
-- [`operations/install.md`](operations/install.md)
-- [`operations/release-package.md`](operations/release-package.md)
-- [`operations/preflight.md`](operations/preflight.md)
-- [`operations/configure.md`](operations/configure.md)
-- [`operations/startup-shutdown.md`](operations/startup-shutdown.md)
-- [`operations/incident.md`](operations/incident.md)
-- [`operations/rollback-backup.md`](operations/rollback-backup.md)
+## Source ownership and decisions
 
-## Cross-cutting contracts
+[Documentation policy](DOCUMENTATION-POLICY.md), [component coverage](technical/component-coverage.md),
+[gap-register guide](GAP-REGISTER.md), [iteration status](ITERATION.md) and
+[owner Ruleset transition](technical/owner-ruleset-transition.md) describe separate
+source/development concerns. They do not change hosted permissions or authorize
+Broker actions.
 
-- [`AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md`](AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md)
-- [`OMS-EVENT-SCHEMA.md`](OMS-EVENT-SCHEMA.md)
-- [`RUNBOOK-KILLSWITCH.md`](RUNBOOK-KILLSWITCH.md)
-- [`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md)
-- [`DOCUMENTATION-POLICY.md`](DOCUMENTATION-POLICY.md)
-- [`GAP-REGISTER.md`](GAP-REGISTER.md)
-- [`RELEASE-PUBLICATION-SECURITY.md`](RELEASE-PUBLICATION-SECURITY.md)
-- Tagged release workflow: [`.github/workflows/release.yml`](../.github/workflows/release.yml)
-- [`adr/0001-release-publication-atomicity.md`](adr/0001-release-publication-atomicity.md)
-- [`adr/0002-owner-operated-repository.md`](adr/0002-owner-operated-repository.md)
-- [`adr/0003-immutable-artifact-paper-qualification.md`](adr/0003-immutable-artifact-paper-qualification.md)
-- [`ib-paper-qualification-scenarios-v1.json`](ib-paper-qualification-scenarios-v1.json)
-- [`preflight-policy-v1.json`](preflight-policy-v1.json)
-- [`gap-register.json`](gap-register.json)
-- [`capabilities.json`](capabilities.json)
-- [`module-catalog.json`](module-catalog.json)
-- [`build-targets.json`](build-targets.json)
+The machine-readable sources are [module catalog](module-catalog.json),
+[capabilities](capabilities.json), [build targets](build-targets.json),
+[gap register](gap-register.json) and [preflight policy](preflight-policy-v1.json).
+The decisions are [publication atomicity](adr/0001-release-publication-atomicity.md),
+[owner operation](adr/0002-owner-operated-repository.md) and
+[immutable artifact qualification](adr/0003-immutable-artifact-paper-qualification.md).
 
-## Supporting and historical references
+## Supporting research and historical references
 
-These documents are intentionally outside the module catalog because they are
-cross-cutting runbooks, research notes, or compatibility material. Their
-status line is authoritative: `CURRENT` documents describe maintained
-contracts, while `EXPERIMENTAL`, `PROPOSAL`, and `LEGACY` documents cannot
-authorize a venue or deployment path.
+Experimental/proposal material remains explicitly scoped:
+[EUR/USD SHADOW v2](EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md),
+[IB latency research](IB-SYSTEM-LOW-LATENCY.md), [QMT SDK review](QMT-SDK-REVIEW.md),
+[strategy validation](STRATEGY-VALIDATION-PLAN.md), [XT mapping](XT-HEPTA-MAPPING.md)
+and [XT venue plan](XTQMT-VENUE-PLAN.md).
 
-### Current cross-cutting contracts
+Legacy notes preserve context, not active runtime specifications:
+[profile lock](CONFIG-PROFILE-LOCK.md), [QMT bridge](QMT-BRIDGE-MVP.md),
+[CSV reconciliation](RECONCILE-RULES.md), [old market-data format](SIM-MD-FORMAT.md)
+and [old strategy persistence](strategy-state-persist-min.md).
+The 2023 [system introduction PDF](../doc/HeptaTrader系统介绍.pdf) and root
+`SECURITY-HARDENING.md` are historical material, not current build, release or
+trading-authority evidence.
 
-- [`ALERT-RULES-BASELINE.md`](ALERT-RULES-BASELINE.md)
-- [`ITERATION.md`](ITERATION.md)
-- [`OBSERVABILITY-METRICS.md`](OBSERVABILITY-METRICS.md)
-- [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md)
+## Retired source and open scope
 
-### Experimental and proposal material
+The historical monolith, HeptaStrategy, Pegasus, dedicated CSV reporter, bridges
+and old XML build graph were retired. Root `Interface/` and `Tools/`, including
+the old vendor/header copy and dated samples, and the personal-path
+`validate_sim_data.py` helper are also removed from the active source/package.
+The maintained `HeptaTrade/tools/` code and all supported journal/lease readers
+are unchanged. [Retirement](technical/legacy-retirement.md) records consumers,
+provenance and limits. Legacy CMake ON requests fail explicitly; OFF is accepted.
 
-- [`EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md`](EURUSD-CONFIRMED-MOMENTUM-SHADOW-V2.md)
-- [`IB-SYSTEM-LOW-LATENCY.md`](IB-SYSTEM-LOW-LATENCY.md)
-- [`QMT-SDK-REVIEW.md`](QMT-SDK-REVIEW.md)
-- [`STRATEGY-VALIDATION-PLAN.md`](STRATEGY-VALIDATION-PLAN.md)
-- [`XT-HEPTA-MAPPING.md`](XT-HEPTA-MAPPING.md)
-- [`XTQMT-VENUE-PLAN.md`](XTQMT-VENUE-PLAN.md)
-
-### Legacy compatibility notes
-
-- [`CONFIG-PROFILE-LOCK.md`](CONFIG-PROFILE-LOCK.md)
-- [`QMT-BRIDGE-MVP.md`](QMT-BRIDGE-MVP.md)
-- [`RECONCILE-RULES.md`](RECONCILE-RULES.md)
-- [`SIM-MD-FORMAT.md`](SIM-MD-FORMAT.md)
-- [`strategy-state-persist-min.md`](strategy-state-persist-min.md)
-
-The 2023 [`doc/HeptaTrader系统介绍.pdf`](../doc/HeptaTrader系统介绍.pdf) is
-archived historical material (its title and Windows monolith architecture do
-not describe the current Agent-native Linux runtime). It is retained for
-provenance only and is excluded from build, release, and authorization
-evidence. `SECURITY-HARDENING.md` at the repository root is likewise a legacy
-security note; current security contracts live in
-[`BROKER-NETWORK-ISOLATION.md`](BROKER-NETWORK-ISOLATION.md) and the deployment
-module document.
-
-## Non-canonical material
-
-The historical `HeptaStrategy/`, `HeptaSimulator/`, legacy CSV reconciliation reporter, large data files and deprecated bridges remain explicitly owned by the LEGACY module. Eight unused Visual Studio assets were retired; shared `Interface/` and `Tools/` headers remain where required. See [`technical/legacy-retirement.md`](technical/legacy-retirement.md). Legacy presence does not authorize deployment or provide an alternate order path.
-
-Open work and release-profile blockers are recorded in `gap-register.json`. A green source check validates structure and ownership, not universal project completeness. Optional IB PAPER activation remains separately qualification-gated and disabled by default; LIVE remains unavailable.
-
-## Detailed wire and recovery references
-
-- [`technical/wire-operation-contracts.md`](technical/wire-operation-contracts.md)
-- [`technical/wire-field-reference.md`](technical/wire-field-reference.md)
-- [`technical/oms-recovery-capacity.md`](technical/oms-recovery-capacity.md)
-- [`technical/persistence-support-window.md`](technical/persistence-support-window.md)
+Open work is recorded without forcing artificial closure. Permanent-history
+capacity, target-host multi-day acceptance and hosted Ruleset changes remain
+separate from repository tests. IB PAPER is qualification-gated and disabled by
+default; LIVE remains unavailable.

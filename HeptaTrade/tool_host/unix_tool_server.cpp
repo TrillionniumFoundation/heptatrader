@@ -235,6 +235,17 @@ UnixToolServerHealth UnixToolServer::GetHealth() const
         health.readyOwners = m_readyOwners.size();
     }
     health.activeRequests = m_activeRequests.load();
+    health.maxPendingConnections = m_maxPendingConnections;
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        health.responsesDelivered = m_metrics.responsesDelivered;
+        health.responseWriteFailures = m_metrics.responseWriteFailures;
+        health.results = m_metrics.results;
+        health.metricsSaturated = m_metrics.metricsSaturated;
+        health.queueWaitLatency = m_metrics.queueWaitLatency;
+        health.executionLatency = m_metrics.executionLatency;
+        health.responseWriteLatency = m_metrics.responseWriteLatency;
+    }
     health.queueBackpressureRejections = m_queueBackpressureRejections.load();
     health.ownerBackpressureRejections = m_ownerBackpressureRejections.load();
     health.deadlineRejections = m_deadlineRejections.load();
@@ -584,6 +595,7 @@ void UnixToolServer::DecodeAndQueue(int clientFd)
         return;
     }
 
+    pending.queuedAt = std::chrono::steady_clock::now();
     QueueRequest(pending, hasBinding, peerMatches);
 }
 
@@ -654,6 +666,13 @@ void UnixToolServer::QueueRequest(
 
 void UnixToolServer::Execute(PendingRequest pending)
 {
+    const auto started = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        const auto wait = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            started - pending.queuedAt).count();
+        m_metrics.queueWaitLatency.Observe(wait > 0 ? static_cast<std::uint64_t>(wait) : 0);
+    }
     ++m_activeRequests;
     const std::uint64_t nowMs = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -668,6 +687,12 @@ void UnixToolServer::Execute(PendingRequest pending)
     }
     else result = m_host.Invoke(pending.peerUid, pending.request);
     --m_activeRequests;
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        m_metrics.executionLatency.Observe(elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0);
+    }
     m_decisionAudit.AppendOutcome(true, pending.peerUid, &pending.request,
         &pending.binding, pending.mutation, result);
     ReplyAndClose(pending.clientFd, result);
@@ -683,9 +708,23 @@ void UnixToolServer::Execute(PendingRequest pending)
 
 void UnixToolServer::ReplyAndClose(int clientFd, const TradingToolResult& result)
 {
+    const auto started = std::chrono::steady_clock::now();
     std::string reason;
-    TypedToolProtocol::WriteFrame(clientFd,
+    const bool delivered = TypedToolProtocol::WriteFrame(clientFd,
         TypedToolProtocol::EncodeResultJson(result), m_ioTimeoutMs, reason);
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        const auto increment = [this](std::uint64_t& value) {
+            if (value == std::numeric_limits<std::uint64_t>::max()) m_metrics.metricsSaturated = true;
+            else ++value;
+        };
+        const auto status = static_cast<unsigned int>(result.status);
+        increment(m_metrics.results[status < m_metrics.results.size() ? status : 6]);
+        increment(delivered ? m_metrics.responsesDelivered : m_metrics.responseWriteFailures);
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        m_metrics.responseWriteLatency.Observe(elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0);
+    }
     ::shutdown(clientFd, SHUT_RDWR);
     ::close(clientFd);
 }

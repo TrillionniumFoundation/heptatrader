@@ -91,6 +91,27 @@ bool HeptaIBGatewayAdapter::PlaceOrderCorrelated(
     if (outOrderId) *outOrderId = orderId;
     return true;
 }
+VenuePlaceResult HeptaIBGatewayAdapter::PlaceOrderWithResult(
+    const IBContractLite& contract, const IBOrderLite& order,
+    const std::string& correlation, const IBFinalOrderSendContext* context)
+{
+    // Capture send result and reason before any concurrent callback/cancel can
+    // replace m_lastRejectReason. Legacy bool methods remain adapter-only APIs.
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    long orderId = -1;
+    try
+    {
+        if (PlaceOrderCorrelated(contract, order, correlation, &orderId, context))
+            return VenuePlaceResult::Submitted(orderId);
+        return m_lastRejectReason.empty()
+            ? VenuePlaceResult::Uncertain("adapter returned no rejection evidence", orderId)
+            : VenuePlaceResult::Rejected(m_lastRejectReason, orderId);
+    }
+    catch (const std::exception& error)
+    { return VenuePlaceResult::Uncertain(error.what(), orderId); }
+    catch (...)
+    { return VenuePlaceResult::Uncertain("unknown adapter send exception", orderId); }
+}
 bool HeptaIBGatewayAdapter::RejectOrder(
     const IBContractLite& contract,
     const std::chrono::steady_clock::time_point& startedAt,

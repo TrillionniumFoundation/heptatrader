@@ -376,6 +376,59 @@
         "ib-paper"
       ],
       "disposition": "Closed against commit 89faa3a88e841ac1cca4cd14f0312904916a2a63, tree a5de9ebce0b04ad7cfd1c7f1f6d42d820b64f4e1, preserving PR73 and PR76. Exact-head attempt-1 GitHub runs passed: Core 34741212566, Documentation 34741212568, Qualification Source Audit 34741212565, and both full GCC/Clang sanitizer jobs in 34741212577. Core/source/install/process Python partitions executed 296+65+4+6=371 cases without skips; native CTest passed 25/25. Downloaded process and real PID1 systemd receipts bind candidate package SHA-256 5dcb0411d68760fac7608eff542c5b0cb0d314c4d6574a16cf5ed885f0b44913; distinct-source shared-state rollback, offline checkpoint recovery and the 1208-sample SHADOW pipeline passed. This closes integrated source validation only, not HOST-ROLLBACK-001, arbitrary schema compatibility, production SLOs or external IB qualification. PAPER/LIVE authorization remains false."
+    },
+    {
+      "id": "AUDIT-INTEGRATION-002",
+      "domain": "REPOSITORY",
+      "state": "CLOSED",
+      "summary": "Integrated callback/index/report/archive source has exact-source native, installed-process, PID1 and dual-sanitizer evidence.",
+      "evidence": [
+        "docs/technical/venue-placement-contract.md",
+        "docs/technical/oms-operational-report.md",
+        "tests/venue_placement_cases.h",
+        "tests/python/test_oms_operational_report.py"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Closed for verified commit 9fd5d643f921ba3d7861506074cd4ca51124fd51 (tree 29c851d9876b7e30c392d1194a8feb08e782a6b5): Core run 34812153306, Documentation/monitoring 34812153302 and actual GCC/Clang sanitizer run 34812153329 succeeded. Core artifact 10335530234 ZIP SHA-256 4a9a7132ab614470d883bc25f3013e4ed210a8b235e62695c9b07a95b3d0007e binds candidate package c9898c5131e91db8cb414f0ccb8f970cff0041f4a9c87f30c9eb1c2e57a6e617. This corrects a stale integration record; it does not borrow that result for later source. Subsequent changes remain subject to their own ordinary required CI, not a perpetually reopened exact-HEAD paperwork gap. Target-host, lifetime-history and server administration gaps stay open; PAPER/LIVE remain false."
+    },
+    {
+      "id": "OMS-LIFECYCLE-002",
+      "domain": "REPOSITORY",
+      "state": "OPEN",
+      "summary": "Long-term journal/checkpoint lifecycle beyond bounded recovery budgets and complete non-OMS runtime metrics remain unimplemented.",
+      "evidence": [
+        "docs/technical/oms-operational-report.md",
+        "docs/OBSERVABILITY-METRICS.md",
+        "docs/technical/persistence-support-window.md",
+        "docs/technical/gateway-runtime-observability.md",
+        "docs/technical/oms-pending-queue.md",
+        "tests/oms_queue_budget_cases.h",
+        "tests/python/test_gateway_observability.py",
+        "docs/technical/oms-archive-lifecycle.md",
+        "HeptaTrade/oms_archive_codec.h",
+        "scripts/hepta_oms_archive.py",
+        "tests/oms_archive_cases.h",
+        "tests/python/test_oms_archive.py",
+        "tests/pre_intent_refusal_cases.h",
+        "HeptaTrade/execution/execution_runtime_observation.h"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Gateway result/write/queue latency observations and bounded combined OMS pending bytes/records are now implemented with executable tests. Disk rotation/compaction, complete non-OMS metrics and target-host collection/notification remain unfinished; the original gap is not closed by this partial implementation. Optional stopped-state lossless gzip repack/expand and full-history native replay are now implemented with crash, lock, corruption and exact-artifact downgrade tests. This does not eliminate decoded-history/materialization growth, certify indefinite retention, complete all metric interfaces, or prove production collection/alert delivery. Remains OPEN. Pre-intent place/cancel refusals no longer accumulate non-durable command records, while every durable accepted/rejected/uncertain identity is retained. Actual coordinator result/replay-projection latency and constant-cost state-size metrics now use the installed observation/report path. Neither improvement implements checkpoints, incremental replay or a disk-backed identity index; complete per-reason/risk/snapshot/connection telemetry and actual host notifications remain unfinished. OPEN is retained rather than reclassified to achieve an all-closed claim."
+    },
+    {
+      "id": "OWNER-RULESET-002",
+      "domain": "EXTERNAL",
+      "state": "OPEN",
+      "summary": "Ruleset 22597364 still enforces two approvals, code-owner review and merge queue despite owner-operated intent.",
+      "evidence": [
+        "docs/technical/owner-ruleset-transition.md",
+        "docs/adr/0002-owner-operated-repository.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "Server read on 2026-09-13 confirmed active rules; no administrative write or bypass performed."
     }
   ]
 }

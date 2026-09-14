@@ -306,15 +306,21 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlatten(
     const FlattenPositionCommand& command,
     const AuthoritativeFlattenPlan& plan)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    return ObserveCommand(2U, [&]() { return ExecuteAuthoritativeFlattenLocked(command, plan); });
+}
+
+ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
+    const FlattenPositionCommand& command,
+    const AuthoritativeFlattenPlan& plan)
+{
     const AgentExecutionContext& context = command.context;
     if (context.toolCallId.empty() || context.agentId.empty() ||
         context.sessionId.empty())
-        return RejectLocked(context, "INVALID_AGENT_CONTEXT",
+        return RefuseBeforeIntent(context, "INVALID_AGENT_CONTEXT",
             "agent_id, session_id and tool_call_id are required");
     const std::string requestHash = FlattenHash(command);
     if (requestHash.empty())
-        return RejectLocked(context, "REQUEST_HASH_FAILED",
+        return RefuseBeforeIntent(context, "REQUEST_HASH_FAILED",
             "canonical flatten request hashing failed");
     const std::string requestKey = RequestKey(
         context.agentId, context.sessionId, context.toolCallId);

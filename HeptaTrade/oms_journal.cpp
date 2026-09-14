@@ -1,4 +1,6 @@
-﻿#include "oms_journal.h"
+#include "oms_journal.h"
+#include "oms_archive_codec.h"
+#include <sys/file.h>
 
 #include <chrono>
 #include <algorithm>
@@ -51,8 +53,9 @@ static std::string JsonNumber(double v)
     return oss.str();
 }
 
-static bool SyncFileData(int fd)
+static bool SyncFileData(int fd, OmsLatencySummary& observation)
 {
+    OmsScopedLatencySample timing(observation);
     int result;
     do
     {
@@ -534,7 +537,13 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
     }
     if (!ValidatePinnedPathLocked()) return false;
 
-    const std::string record = line + "\n";
+    const std::string plain = line + "\n";
+    std::string record;
+    if (m_gzipStorage)
+    {
+        if (!m_capacityKnown || !hepta_oms_archive::EncodeMember(plain, record)) return false;
+    }
+    else record = plain;
     std::size_t offset = 0;
     while (offset < record.size())
     {
@@ -562,7 +571,7 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
 
     if (durable)
     {
-        if (!SyncFileData(m_fd))
+        if (!SyncFileData(m_fd, m_dataSyncLatency))
         {
             m_writePoisoned = true;
             ++m_writeFailTotal;
@@ -570,6 +579,19 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
             return false;
         }
         ++m_durableSyncWrites;
+    }
+    if (m_capacityKnown)
+    {
+        if (plain.size() > std::numeric_limits<std::uint64_t>::max() - m_capacityBytes ||
+            record.size() > std::numeric_limits<std::uint64_t>::max() - m_storageBytes ||
+            m_capacityRecords == std::numeric_limits<std::uint64_t>::max())
+            m_capacityKnown = false;
+        else
+        {
+            m_capacityBytes += plain.size();
+            m_storageBytes += record.size();
+            ++m_capacityRecords;
+        }
     }
     ++m_flushedTotal;
     m_lastFlushMs = NowEpochMs();
@@ -608,6 +630,9 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
         return false;
     }
 
+    // Shared lifetime lock excludes the offline exclusive rewriter. It is NOT
+    // writer serialization: existing single-service ownership still applies.
+    if (::flock(fd, LOCK_SH | LOCK_NB) != 0) { ::close(fd); return false; }
     struct stat metadata;
     struct stat pathMetadata;
     char tail = '\0';
@@ -617,7 +642,7 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
         HasPrivateRegularFileMetadata(pathMetadata) &&
         metadata.st_dev == pathMetadata.st_dev &&
         metadata.st_ino == pathMetadata.st_ino &&
-        (metadata.st_size == 0 ||
+        (metadata.st_size == 0 || hepta_oms_archive::IsGzip(fd, metadata.st_size) ||
          (ReadAt(fd, &tail, 1, metadata.st_size - 1) == 1 && tail == '\n'));
     if (!safe)
     {
@@ -626,7 +651,7 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
     }
     // Persist the file inode before the directory entry.  This is required for
     // a newly created empty journal and harmless for an existing journal.
-    if (!SyncFileData(fd))
+    if (!SyncFileData(fd, m_dataSyncLatency))
     {
         ::close(fd);
         return false;
@@ -651,6 +676,12 @@ bool OmsJournal::OpenPinnedFileLocked(const std::string& path)
         return false;
     }
     m_fd = fd;
+    m_gzipStorage = hepta_oms_archive::IsGzip(fd, metadata.st_size);
+    m_storageBytes = static_cast<std::uint64_t>(metadata.st_size);
+    // Existing bytes need a complete successful replay before counts are known.
+    m_capacityKnown = metadata.st_size == 0;
+    m_capacityBytes = 0;
+    m_capacityRecords = 0;
     return true;
 }
 
@@ -658,7 +689,7 @@ bool OmsJournal::ClosePinnedFileLocked()
 {
     if (m_fd < 0) return true;
     bool ok = true;
-    if (!m_writePoisoned && !SyncFileData(m_fd))
+    if (!m_writePoisoned && !SyncFileData(m_fd, m_dataSyncLatency))
     {
         m_writePoisoned = true;
         ++m_writeFailTotal;
@@ -689,6 +720,7 @@ bool OmsJournal::FlushBufferedLocked()
                     m_bufferedLines.begin() + static_cast<std::ptrdiff_t>(written));
             return false;
         }
+        m_pendingBytes -= m_bufferedLines[written].size() + 1U;
         ++written;
     }
     m_bufferedLines.clear();
@@ -783,6 +815,16 @@ bool OmsJournal::Init(const std::string& path)
         m_replayReasonCode = "OMS_REPLAY_INVALID_BUDGET";
         return false;
     }
+    if (!ReadRecoveryBudget("HEPTA_OMS_QUEUE_MAX_BYTES", 8U * 1024U * 1024U,
+                            1024U * 1024U * 1024U, m_maxPendingBytes) ||
+        !ReadRecoveryBudget("HEPTA_OMS_QUEUE_MAX_RECORDS", 8192U,
+                            1000000U, m_maxPendingRecords))
+    {
+        m_replayReasonCode = "OMS_QUEUE_INVALID_BUDGET";
+        return false;
+    }
+    m_pendingBytes = 0;
+    m_queueCapacityRejections = 0;
     m_writePoisoned = false;
     m_bufferedLines.clear();
     m_asyncQueue.clear();
@@ -821,7 +863,7 @@ bool OmsJournal::Init(const std::string& path)
     try
     {
         if (m_bufferedLines.capacity() < m_batchSize)
-            m_bufferedLines.reserve(m_batchSize);
+            m_bufferedLines.reserve(std::min(m_batchSize, m_maxPendingRecords));
         if (!OpenPinnedFileLocked(path)) return false;
         m_path = path;
         if (m_asyncEnabled)
@@ -838,9 +880,32 @@ bool OmsJournal::Init(const std::string& path)
     return true;
 }
 
+bool OmsJournal::QueueLineLocked(std::string line, bool asynchronous)
+{
+    const std::size_t pending = m_asyncQueue.size() + m_bufferedLines.size();
+    // Include the eventual newline. Do not evict or claim successful admission
+    // for the new record if bounded buffering cannot retain it.
+    if (pending >= m_maxPendingRecords || m_pendingBytes > m_maxPendingBytes ||
+        line.size() >= m_maxPendingBytes - m_pendingBytes)
+    {
+        if (m_queueCapacityRejections != std::numeric_limits<std::uint64_t>::max())
+            ++m_queueCapacityRejections;
+        return false;
+    }
+    const std::size_t bytes = line.size() + 1U;
+    if (asynchronous) m_asyncQueue.emplace_back(std::move(line));
+    else m_bufferedLines.emplace_back(std::move(line));
+    m_pendingBytes += bytes;
+    ++m_enqueuedTotal;
+    m_maxQueueDepth = std::max(m_maxQueueDepth, static_cast<long long>(pending + 1U));
+    return true;
+}
+
 bool OmsJournal::Append(const OmsJournalEvent& evt)
 {
+    const auto started = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(m_mtx);
+    OmsScopedLatencySample timing(m_appendLatency, started);
     if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
         evt.eventType.empty() || !std::isfinite(evt.qty) ||
         !std::isfinite(evt.price) ||
@@ -863,14 +928,11 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
             ++m_criticalAsyncWrites;
             if (m_asyncEnabled)
             {
-                m_asyncQueue.emplace_back(std::move(line));
-                ++m_enqueuedTotal;
-                m_maxQueueDepth = std::max(m_maxQueueDepth, (long long)m_asyncQueue.size());
+                if (!QueueLineLocked(std::move(line), true)) return false;
                 m_cv.notify_one();
                 return true;
             }
-            m_bufferedLines.emplace_back(std::move(line));
-            ++m_enqueuedTotal;
+            if (!QueueLineLocked(std::move(line), false)) return false;
             return FlushBufferedLocked();
         }
         ++m_criticalSyncWrites;
@@ -889,9 +951,7 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
 
     if (m_asyncEnabled)
     {
-        m_asyncQueue.emplace_back(std::move(line));
-        ++m_enqueuedTotal;
-        m_maxQueueDepth = std::max(m_maxQueueDepth, (long long)m_asyncQueue.size());
+        if (!QueueLineLocked(std::move(line), true)) return false;
         if (m_asyncQueue.size() >= m_batchSize)
         {
             m_cv.notify_one();
@@ -899,8 +959,7 @@ bool OmsJournal::Append(const OmsJournalEvent& evt)
         return true;
     }
 
-    m_bufferedLines.emplace_back(std::move(line));
-    ++m_enqueuedTotal;
+    if (!QueueLineLocked(std::move(line), false)) return false;
     const long long nowMs = NowEpochMs();
     const bool shouldFlushBySize = (m_batchSize <= 1 || m_bufferedLines.size() >= m_batchSize);
     const bool shouldFlushByTime = (m_flushIntervalMs == 0 || (nowMs - m_lastFlushMs) >= m_flushIntervalMs);
@@ -919,6 +978,10 @@ OmsJournalHealthSnapshot OmsJournal::GetHealthSnapshot() const
     out.syncCritical = m_syncCritical;
     out.queueDepth = m_asyncQueue.size();
     out.bufferedDepth = m_bufferedLines.size();
+    out.pendingBytes = m_pendingBytes;
+    out.maxPendingBytes = m_maxPendingBytes;
+    out.maxPendingRecords = m_maxPendingRecords;
+    out.queueCapacityRejections = m_queueCapacityRejections;
     out.enqueuedTotal = m_enqueuedTotal;
     out.flushedTotal = m_flushedTotal;
     out.writeFailTotal = m_writeFailTotal;
@@ -935,6 +998,24 @@ OmsJournalHealthSnapshot OmsJournal::GetHealthSnapshot() const
     out.replayObservedBytes = m_replayObservedBytes;
     out.replayValidatedRecords = m_replayValidatedRecords;
     out.replayReasonCode = m_replayReasonCode;
+    out.gzipStorage = m_gzipStorage;
+    out.appendLatency = m_appendLatency;
+    out.dataSyncLatency = m_dataSyncLatency;
+    out.replayValidationLatency = m_replayValidationLatency;
+    struct stat pinned, named;
+    out.capacityKnown = m_capacityKnown && !m_writePoisoned && m_fd >= 0 &&
+        StatFileDescriptor(m_fd, pinned) &&
+        StatPathWithoutFollowingLinks(m_path, named) &&
+        HasPrivateRegularFileMetadata(pinned) && HasPrivateRegularFileMetadata(named) &&
+        pinned.st_dev == named.st_dev && pinned.st_ino == named.st_ino &&
+        pinned.st_size >= 0 && named.st_size == pinned.st_size &&
+        static_cast<std::uint64_t>(pinned.st_size) == m_storageBytes;
+    if (out.capacityKnown)
+    {
+        out.currentBytes = m_capacityBytes;
+        out.currentRecords = m_capacityRecords;
+        out.storageBytes = m_storageBytes;
+    }
     return out;
 }
 
@@ -946,15 +1027,18 @@ std::string OmsJournal::GetPath() const
 
 int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEvent) const
 {
+    const auto started = std::chrono::steady_clock::now();
     std::unique_lock<std::mutex> lk(m_mtx);
     OmsJournal* const self = const_cast<OmsJournal*>(this);
+    OmsScopedLatencySample timing(self->m_replayValidationLatency, started);
+    self->m_capacityKnown = false;
     self->m_replayObservedBytes = 0;
     self->m_replayValidatedRecords = 0;
     self->m_replayReasonCode = "OMS_REPLAY_IO_OR_IDENTITY_FAILURE";
     if (!self->FlushQueuedNoLock() || !self->FlushBufferedLocked() ||
         m_path.empty() || m_fd < 0 || m_writePoisoned ||
         !self->ValidatePinnedPathLocked()) return -1;
-    if (!SyncFileData(m_fd))
+    if (!SyncFileData(m_fd, self->m_dataSyncLatency))
     {
         self->m_writePoisoned = true;
         ++self->m_writeFailTotal;
@@ -965,27 +1049,12 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
     struct stat metadata;
     if (!StatFileDescriptor(m_fd, metadata) || !S_ISREG(metadata.st_mode) ||
         metadata.st_size < 0) return -1;
-    self->m_replayObservedBytes = static_cast<std::size_t>(metadata.st_size);
-    if (static_cast<std::uint64_t>(metadata.st_size) > m_replayMaxBytes)
-    {
-        self->m_replayReasonCode = "OMS_REPLAY_BYTE_LIMIT";
-        return -1;
-    }
     std::vector<OmsJournalEvent> events;
     try
     {
         std::string pending;
         pending.reserve(std::min<std::size_t>(8192, m_replayMaxRecordBytes));
-        char buffer[8192];
-        off_t offset = 0;
-        while (offset < metadata.st_size)
-        {
-            const off_t remaining = metadata.st_size - offset;
-            const std::size_t wanted = remaining > static_cast<off_t>(sizeof(buffer)) ?
-                sizeof(buffer) : static_cast<std::size_t>(remaining);
-            const ssize_t count = ReadAt(m_fd, buffer, wanted, offset);
-            if (count <= 0) return -1;
-            offset += count;
+        const auto collect = [&](const char* buffer, std::size_t count) {
             // Bound pending BEFORE allocation, including a record split across
             // blocks or an unterminated final record. Never accumulate a giant
             // hostile line and only then discover that it exceeds the limit.
@@ -997,19 +1066,19 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
                 if (length > m_replayMaxRecordBytes - pending.size())
                 {
                     self->m_replayReasonCode = "OMS_REPLAY_RECORD_BYTE_LIMIT";
-                    return -1;
+                    return false;
                 }
                 pending.append(buffer + begin, length);
                 if (events.size() == m_replayMaxRecords)
                 {
                     self->m_replayReasonCode = "OMS_REPLAY_RECORD_COUNT_LIMIT";
-                    return -1;
+                    return false;
                 }
                 OmsJournalEvent event;
                 if (pending.empty() || !ParseJsonLine(pending, event))
                 {
                     self->m_replayReasonCode = "OMS_REPLAY_INVALID_RECORD";
-                    return -1;
+                    return false;
                 }
                 // Explicit bounded growth avoids vector's implementation-defined
                 // overshoot. File/record/count caps jointly bound materialization;
@@ -1026,10 +1095,14 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
             if (trailing > m_replayMaxRecordBytes - pending.size())
             {
                 self->m_replayReasonCode = "OMS_REPLAY_RECORD_BYTE_LIMIT";
-                return -1;
+                return false;
             }
             pending.append(buffer + begin, trailing);
-        }
+            return true;
+        };
+        if (!hepta_oms_archive::ReadSnapshot(m_fd, metadata.st_size, m_gzipStorage,
+            m_replayMaxBytes, collect, self->m_replayObservedBytes, self->m_replayReasonCode))
+            return -1;
         if (!pending.empty())
         {
             self->m_replayReasonCode = "OMS_REPLAY_TORN_RECORD";
@@ -1060,6 +1133,11 @@ int OmsJournal::Replay(const std::function<void(const OmsJournalEvent&)>& onEven
     // No callback has run on ANY input/budget/allocation failure above. Keep
     // callbacks outside the journal mutex so existing reentrant readers work.
     self->m_replayReasonCode = "OMS_REPLAY_VALIDATED";
+    self->m_capacityBytes = self->m_replayObservedBytes;
+    self->m_storageBytes = static_cast<std::uint64_t>(metadata.st_size);
+    self->m_capacityRecords = static_cast<std::uint64_t>(events.size());
+    self->m_capacityKnown = true;
+    timing.Finish(); // publish validation latency before reentrant callbacks
     lk.unlock();
     if (onEvent)
         for (std::vector<OmsJournalEvent>::const_iterator it = events.begin();

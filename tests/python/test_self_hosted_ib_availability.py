@@ -1,162 +1,128 @@
+"""Execute the checkout-free probe with inert commands; never contact a Broker."""
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
-import re
-import unittest
 from pathlib import Path
+import shutil
+import sys
+import tempfile
+import unittest
 
-
-ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / ".github" / "workflows" / "self-hosted-ib-availability.yml"
-IDENTITIES = ROOT / "systemd" / "hepta-service-identities-v1.json"
-HOST_MAP = ROOT / "systemd" / "hepta-x230-paper-host-identity-map-v1.json"
-REASON_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,80}\Z")
+from workflow_test_support import ROOT, shell, step, workflow
 
 
 class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.workflow = WORKFLOW.read_text(encoding="utf-8")
-        cls.identities = json.loads(IDENTITIES.read_text(encoding="utf-8"))
-        cls.host_map_raw = HOST_MAP.read_bytes()
-        cls.host_map = json.loads(cls.host_map_raw)
+    def setUp(self):
+        self.workflow = workflow("self-hosted-ib-availability.yml")
+        self.job = self.workflow["jobs"]["ib-runner-probe"]
 
-    @staticmethod
-    def _mapping_is_bound(mapping: dict, identities: dict) -> bool:
-        try:
-            logical = mapping["logical_execution_identity"]
-            canonical = identities["identities"][logical["name"]]
-            runtime = mapping["runtime_execution_identity"]
-            runner = mapping["runtime_runner_identity"]
-            return (
-                mapping["schema"] == "hepta.x230-paper-host-identity-map.v1"
-                and mapping["version"] == 1
-                and mapping["host_boundary"] == "x230-ib-paper"
-                and mapping["scope"] == "ib-paper-qualification-only"
-                and mapping["live_authorized"] is False
-                and logical == {
-                    "name": "hepta-ib-exec",
-                    "uid": canonical["uid"],
-                    "gid": canonical["gid"],
-                }
-                and canonical["role"] == "ib-paper-execution-authority"
-                and runtime == {
-                    "name": "hepta-codex-ib",
-                    "uid": 995,
-                    "gid": 993,
-                }
-                and runner == {
-                    "name": "hepta-actions-paper",
-                    "uid": 994,
-                    "gid": 992,
-                }
-                and len({logical["uid"], runtime["uid"], runner["uid"]}) == 3
-            )
-        except (KeyError, TypeError):
-            return False
+    def test_dispatch_only_and_checkout_free_custody(self):
+        self.assertEqual(set(self.workflow["on"]), {"workflow_dispatch"})
+        self.assertEqual(self.workflow["permissions"], {})
+        self.assertEqual(self.job["permissions"], {})
+        self.assertEqual(self.job["runs-on"]["group"], "trillionnium-ib-paper")
+        self.assertEqual(set(self.job["runs-on"]["labels"]),
+                         {"self-hosted", "linux", "x64", "x230-ib-paper"})
+        self.assertFalse(any("uses" in item for item in self.job["steps"]))
+        self.assertEqual({term.strip() for term in self.job["if"].split("&&")},
+                         {"github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'"})
+        dispatch = step(self.job, "check-dispatch")
+        self.assertEqual(dispatch["env"]["PROBE_REASON"], "${{ inputs.reason }}")
+        self.assertNotIn("${{", dispatch["run"])  # user text must not become shell source
+        isolation = step(self.job, "check-isolation")
+        self.assertEqual(isolation["env"]["HOST_PROBE_SHA256"], "${{ vars.HEPTA_IB_PAPER_HOST_PROBE_SHA256 }}")
 
-    def test_workflow_is_dispatch_only(self) -> None:
-        self.assertIn("on:\n  workflow_dispatch:", self.workflow)
-        self.assertNotIn("pull_request", self.workflow)
-        self.assertNotIn("pull_request_target", self.workflow)
-        self.assertNotIn("repository_dispatch", self.workflow)
-        self.assertNotIn("schedule:", self.workflow)
-        self.assertNotIn("push:", self.workflow)
+    def dispatch(self, **overrides):
+        env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
+               "RUNNER_NAME": "x230-ib-paper", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64",
+               "PROBE_REASON": "operator-check", **overrides}
+        with tempfile.TemporaryDirectory() as directory:
+            return shell(step(self.job, "check-dispatch")["run"], Path(directory), env)
 
-    def test_dispatch_input_is_only_transferred_through_environment(self) -> None:
-        expression = "${{ inputs.reason }}"
-        self.assertEqual(self.workflow.count(expression), 1)
-        self.assertIn(f"PROBE_REASON: {expression}", self.workflow)
-        self.assertNotIn(f"'{expression}'", self.workflow)
-        self.assertNotIn(f'"{expression}"', self.workflow)
+    def test_dispatch_authority_and_reason_are_executed(self):
+        self.assertEqual(self.dispatch().returncode, 0)
+        for field, value in (("GITHUB_EVENT_NAME", "push"), ("GITHUB_REF", "refs/heads/other"),
+                             ("RUNNER_NAME", "other"), ("RUNNER_OS", "Windows"),
+                             ("RUNNER_ARCH", "ARM64"), ("PROBE_REASON", "$(touch injected)"),
+                             ("PROBE_REASON", ""), ("PROBE_REASON", "a" * 81)):
+            with self.subTest(field=field, value=value):
+                self.assertNotEqual(self.dispatch(**{field: value}).returncode, 0)
 
-    def test_broker_host_job_is_group_bound_tokenless_and_checkout_free(self) -> None:
-        section = self.workflow.split("  ib-runner-probe:\n", 1)[1]
-        self.assertIn("if: github.event_name == 'workflow_dispatch'", section)
-        selector = (
-            "runs-on:\n"
-            "      group: trillionnium-ib-paper\n"
-            "      labels: [self-hosted, linux, x64, x230-ib-paper]"
-        )
-        self.assertEqual(section.count(selector), 1)
-        self.assertEqual(section.count("x230-ib-paper"), 2)
-        self.assertNotIn("heptatrader-ib-builder", section)
-        self.assertNotIn("heptatrader-ib-paper", section)
-        self.assertIn("permissions: {}", section)
-        self.assertIn('test "$GITHUB_REF" = refs/heads/main', section)
-        self.assertIn('test "$RUNNER_NAME" = x230-ib-paper', section)
-        self.assertIn("! nc -z -w 3 127.0.0.1 4002", section)
-        self.assertIn("/usr/libexec/hepta-ib-paper-host-probe", section)
-        self.assertIn('test "$RUNNER_OS" = Linux', section)
-        self.assertIn('test "$RUNNER_ARCH" = X64', section)
-        self.assertNotIn("actions/checkout", section)
-        self.assertNotIn("uses:", section)
-        self.assertNotIn("secrets.", section)
-        self.assertNotIn("GITHUB_TOKEN", section)
+    def probe(self, body=None, *, use_nc=True, reachable=False, helper_exit=0,
+              digest_override=None, metadata="root:root:555:1"):
+        """Only fixed fixture path/metadata and external command results are seams."""
+        body = body or step(self.job, "check-isolation")["run"]
+        fixed = "probe=/usr/libexec/hepta-ib-paper-host-probe"
+        self.assertEqual(body.count(fixed), 1, "keep production helper path fixed")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            commands = root / "bin"
+            commands.mkdir()
+            trace = root / "trace"
+            helper = root / "probe"
+            helper.write_text(f"#!{sys.executable}\nimport json, os, sys\n"
+                              "with open(os.environ['TRACE'], 'a') as f: f.write(json.dumps(sys.argv[1:])+'\\n')\n"
+                              f"raise SystemExit({helper_exit})\n")
+            helper.chmod(0o555)
+            for name in ("sha256sum", "awk"):
+                (commands / name).symlink_to(shutil.which(name))
+            for name, output, code in (("stat", metadata, 0), ("id", "994", 0),
+                                       ("nc" if use_nc else "timeout", "", 0 if reachable else 1)):
+                target = commands / name
+                target.write_text(f"#!{sys.executable}\nimport os\n"
+                                  f"with open(os.environ['TRACE'], 'a') as f: f.write('{name}\\n')\n"
+                                  f"print({output!r})\nraise SystemExit({code})\n")
+                target.chmod(0o755)
+            # Real shell flow; only the immutable host path is relocated to a
+            # private unprivileged fixture. timeout/nc cannot open a socket.
+            executable = body.replace(fixed, 'probe="$TEST_PROBE"')
+            digest = hashlib.sha256(helper.read_bytes()).hexdigest()
+            result = shell(executable, root, {"PATH": str(commands), "TEST_PROBE": str(helper),
+                                              "TRACE": str(trace), "HOST_PROBE_SHA256":
+                                              digest if digest_override is None else digest_override})
+            observations = trace.read_text().splitlines() if trace.exists() else []
+            return result, observations
 
-    def test_reason_is_quoted_and_allowlisted_before_output(self) -> None:
-        self.assertIn(
-            '[[ "$PROBE_REASON" =~ ^[A-Za-z0-9._:-]{1,80}$ ]]',
-            self.workflow,
-        )
-        self.assertIn('"$PROBE_REASON"', self.workflow)
+    def assert_isolation(self, body):
+        for use_nc in (True, False):
+            result, trace = self.probe(body, use_nc=use_nc, reachable=True)
+            self.assertNotEqual(result.returncode, 0, (use_nc, result.stdout, trace))
+            self.assertFalse(any(line.startswith("[") for line in trace), trace)
 
-        for value in (
-            "operator-check",
-            "current-readiness-20260906",
-            "ops.probe:v1_2",
-        ):
-            with self.subTest(value=value):
-                self.assertIsNotNone(REASON_PATTERN.fullmatch(value))
+    def test_both_reachable_paths_stop_before_root_helper(self):
+        self.assert_isolation(step(self.job, "check-isolation")["run"])
 
-        for value in (
-            "",
-            "contains space",
-            "ok'; id; #",
-            "line1\nline2",
-            "$(id)",
-            "`id`",
-            "a" * 81,
-        ):
-            with self.subTest(value=value):
-                self.assertIsNone(REASON_PATTERN.fullmatch(value))
+    def test_unreachable_paths_delegate_exact_identity_and_propagate_failure(self):
+        mapping = (ROOT / "systemd/hepta-x230-paper-host-identity-map-v1.json").read_bytes()
+        digest = hashlib.sha256(mapping).hexdigest()
+        for use_nc in (True, False):
+            result, trace = self.probe(use_nc=use_nc)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            argv = json.loads(next(line for line in trace if line.startswith("[")))
+            self.assertEqual(argv, ["--paper-port", "4002", "--logical-execution-uid", "2003",
+                                    "--execution-uid", "995", "--identity-map-sha256", digest,
+                                    "--runner-uid", "994"])
+            self.assertNotEqual(self.probe(use_nc=use_nc, helper_exit=23)[0].returncode, 0)
 
-    def test_probe_is_read_only_and_local(self) -> None:
-        self.assertGreaterEqual(self.workflow.count("permissions: {}"), 2)
-        self.assertIn("127.0.0.1 4002", self.workflow)
-        self.assertNotIn("placeOrder", self.workflow)
-        self.assertNotIn("cancelOrder", self.workflow)
-        self.assertNotIn("HEPTA_QUALIFICATION_MUTATIONS", self.workflow)
+    def test_unsafe_helper_is_rejected_before_probe(self):
+        for kwargs in ({"digest_override": "0" * 64}, {"digest_override": "malformed"},
+                       {"metadata": "agent:agent:555:1"}, {"metadata": "root:root:777:1"},
+                       {"metadata": "root:root:555:2"}):
+            result, trace = self.probe(**kwargs)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(any(x in trace for x in ("nc", "timeout")), trace)
+            self.assertFalse(any(x.startswith("[") for x in trace), trace)
 
-    def test_probe_binds_reviewed_logical_and_host_execution_identities(self) -> None:
-        digest = hashlib.sha256(self.host_map_raw).hexdigest()
-        self.assertTrue(self._mapping_is_bound(self.host_map, self.identities))
-        self.assertIn("--logical-execution-uid 2003", self.workflow)
-        self.assertIn("--execution-uid 995", self.workflow)
-        self.assertEqual(self.workflow.count(digest), 1)
-        self.assertIn("--identity-map-sha256 " + digest, self.workflow)
-
-    def test_host_identity_mapping_fails_closed_on_hostile_mismatch(self) -> None:
-        mutations = []
-        for path, value in (
-            (("logical_execution_identity", "uid"), 995),
-            (("logical_execution_identity", "gid"), 993),
-            (("runtime_execution_identity", "uid"), 2003),
-            (("runtime_runner_identity", "uid"), 995),
-            (("live_authorized",), True),
-            (("scope",), "all-broker-operations"),
-        ):
-            hostile = copy.deepcopy(self.host_map)
-            target = hostile
-            for component in path[:-1]:
-                target = target[component]
-            target[path[-1]] = value
-            mutations.append(hostile)
-        for hostile in mutations:
-            with self.subTest(hostile=hostile):
-                self.assertFalse(self._mapping_is_bound(hostile, self.identities))
+    def test_behavior_harness_kills_noop_and_negated_errexit_mutants(self):
+        body = step(self.job, "check-isolation")["run"]
+        # Losing explicit exit must be detectable even if all original safety
+        # words survive in the shell block. `!` alone is exempt from errexit.
+        mutants = [body.replace("exit 1", ": # disabled exit 1"),
+                   body.replace("if nc -z -w 3 127.0.0.1 4002; then", "if ! nc -z -w 3 127.0.0.1 4002; then")]
+        for mutant in mutants:
+            with self.subTest(mutant=mutants.index(mutant)), self.assertRaises(AssertionError):
+                self.assert_isolation(mutant)
 
 
 if __name__ == "__main__":

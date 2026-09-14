@@ -30,9 +30,9 @@ not merely a metadata row. One catalog generates module navigation in
 `docs/index.md`; the historical development index is a redirect, not a duplicate
 list that requires separate maintenance.
 
-The legacy CSV reporter now belongs to `legacy-runtime`; the maintained
-recovery coordinator is under `HeptaTrade/execution/`. Do not infer current
-behavior from a similarly named directory.
+The legacy CSV reporter is retired; the maintained recovery coordinator is
+under `HeptaTrade/execution/`. Historical directory names are not evidence of
+current runtime ownership.
 
 Fixture tests introduce an unowned runtime path, an unowned script and an
 unknown top-level runtime directory, and exercise conflicting/mismatched owners.

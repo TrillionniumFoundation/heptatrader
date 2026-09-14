@@ -36,3 +36,10 @@ A binary rollback is allowed only when the older binary can read the current jou
 ## Restore failure
 
 A missing, corrupt, incompatible, or partially restored journal/lease store is a fail-closed condition. Never synthesize an empty state to make startup pass when a broker account may still contain positions or orders.
+
+## Compressed OMS downgrade
+
+See [lossless stopped-state maintenance](../technical/oms-archive-lifecycle.md) for optional gzip storage,
+writer exclusion, decoded recovery budgets, crash handling and explicit
+expansion before downgrade. It preserves all event bytes and command identities;
+it is not online truncation or a general N-1 compatibility claim.

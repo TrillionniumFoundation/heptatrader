@@ -14,11 +14,10 @@ Applies to: canonical Execution coordinator, IB terminal snapshots and simulator
 | `HeptaTrade/state/snapshot_refresh_coordinator.*` | non-overlapping refresh generations | `tests/snapshot_refresh_coordinator_tests.cpp` |
 | `HeptaTrade/agent/decision_lease_manager.*` | bounded decision ownership, distinct from order idempotency | `tests/decision_lease_manager_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp` |
 
-**`HeptaTrade/reconcile/reconcile_engine.cpp` is not this engine.** It is the
-legacy monolith's CSV reconciliation reporter, called by
-`HeptaDemoStrategyTrader.cpp`, and is absent from the canonical core and IB
-translation-unit inventory. Its CSV matching and numeric parsing are not
-canonical recovery authority. It is owned by `legacy-runtime`.
+The former `HeptaTrade/reconcile/reconcile_engine.cpp` CSV reporter and its
+monolith caller have been [retired](legacy-retirement.md). Neither is a current
+recovery component. Historical source remains in Git; the maintained authority
+and persistence readers above are unchanged.
 
 ## Identities and boundaries
 

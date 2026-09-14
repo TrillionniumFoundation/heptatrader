@@ -15,6 +15,7 @@
 
 #include "ib_api_wrapper.h"
 #include "ib_order_lifecycle.h"
+#include "../execution/venue_place_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
 struct HeptaIBRiskConfig {
@@ -218,6 +219,8 @@ public:
     bool GetBrokerConnectionIdentity(
         IBBrokerConnectionIdentity& identity, std::string& reason) const;
     bool PlaceOrder(const IBContractLite& c, const IBOrderLite& o, long* outOrderId = nullptr);
+    VenuePlaceResult PlaceOrderWithResult(const IBContractLite& c, const IBOrderLite& o,
+        const std::string& correlation, const IBFinalOrderSendContext* context = nullptr);
     bool PlaceOrderCorrelated(const IBContractLite& c, const IBOrderLite& o,
                               const std::string& venueCorrelationId,
                               long* outOrderId = nullptr,

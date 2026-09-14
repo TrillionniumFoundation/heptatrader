@@ -1,4 +1,5 @@
 #include "execution_coordinator.h"
+#include "new_entry_capacity.h"
 #include <cstring>
 #include <exception>
 #include <iomanip>
@@ -133,6 +134,8 @@ ExecutionCoordinator::ExecutionCoordinator(OmsJournal& journal,
                                            const ExecutionCoordinatorCallbacks& callbacks)
     : m_journal(journal), m_callbacks(callbacks)
 {
+    if (callbacks.placement.RequiresActivation() && !callbacks.onIbOrderPlaced)
+        throw std::invalid_argument("reserving venue requires owner projection");
 }
 
 const char* ExecutionCoordinator::StatusName(ExecutionCommandStatus status)
@@ -328,11 +331,11 @@ ExecutionCommandResult ExecutionCoordinator::IdempotencyConflictLocked(
     return result;
 }
 
-ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionContext& context,
-                                                          const std::string& reasonCode,
-                                                          const std::string& detail,
-                                                          long orderId,
-                                                          const std::string& requestHash)
+ExecutionCommandResult ExecutionCoordinator::RefuseBeforeIntent(
+    const AgentExecutionContext& context,
+    const std::string& reasonCode,
+    const std::string& detail,
+    long orderId)
 {
     ExecutionCommandResult result;
     result.status = ExecutionCommandStatus::Rejected;
@@ -340,6 +343,17 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
     result.orderId = orderId;
     result.reasonCode = reasonCode;
     result.detail = detail;
+    return result;
+}
+
+ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionContext& context,
+                                                          const std::string& reasonCode,
+                                                          const std::string& detail,
+                                                          long orderId,
+                                                          const std::string& requestHash)
+{
+    ExecutionCommandResult result = RefuseBeforeIntent(
+        context, reasonCode, detail, orderId);
     if (!context.toolCallId.empty())
     {
         const std::string key = RequestKey(
@@ -364,14 +378,18 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
 
 ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    return ObserveCommand(0U, [&]() { return PlaceOrderLocked(command); });
+}
+
+ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCommand& command)
+{
     const AgentExecutionContext& context = command.context;
 
     if (context.toolCallId.empty() || context.agentId.empty() || context.sessionId.empty())
-        return RejectLocked(context, "INVALID_AGENT_CONTEXT", "agent_id, session_id and tool_call_id are required");
+        return RefuseBeforeIntent(context, "INVALID_AGENT_CONTEXT", "agent_id, session_id and tool_call_id are required");
     const std::string requestHash = PlaceRequestHash(command);
     if (requestHash.empty())
-        return RejectLocked(context, "REQUEST_HASH_FAILED", "canonical request hashing failed");
+        return RefuseBeforeIntent(context, "REQUEST_HASH_FAILED", "canonical request hashing failed");
     const std::string requestKey = RequestKey(context.agentId, context.sessionId, context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
         m_requests.find(requestKey);
@@ -383,36 +401,61 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand&
     }
     if (m_fencedSessionOwners.find(OwnerKey(context.agentId, context.sessionId)) !=
         m_fencedSessionOwners.end())
-        return RejectLocked(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "SESSION_OWNER_FENCED", "revoked or expired session owner cannot mutate",
+                            -1);
     if (m_recoveryOnlySessionOwners.find(
             OwnerKey(context.agentId, context.sessionId)) !=
         m_recoveryOnlySessionOwners.end())
-        return RejectLocked(context, "SESSION_RECOVERY_ONLY",
+        return RefuseBeforeIntent(context, "SESSION_RECOVERY_ONLY",
             "root custodian disabled new entry for this session owner",
-            -1, requestHash);
+            -1);
     if (m_mutationBlocked)
-        return RejectLocked(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1, requestHash);
-    if (!m_callbacks.placeIbOrder && !m_callbacks.placeIbOrderCorrelated && !m_callbacks.placeIbOrderCommandCorrelated)
-        return RejectLocked(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1);
+    if (!m_callbacks.placement.Configured())
+        return RefuseBeforeIntent(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
+                            -1);
     if (command.expiresAtMs > 0 && OmsJournal::NowEpochMs() > command.expiresAtMs)
-        return RejectLocked(context, "TOOL_CALL_EXPIRED", "order command expired before execution",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "TOOL_CALL_EXPIRED", "order command expired before execution",
+                            -1);
     if (command.contract.symbol.empty() || command.order.totalQuantity <= 0.0 || !IsBuyOrSell(command.order.action))
-        return RejectLocked(context, "INVALID_ORDER", "symbol, BUY/SELL action and positive quantity are required",
-                            -1, requestHash);
+        return RefuseBeforeIntent(context, "INVALID_ORDER", "symbol, BUY/SELL action and positive quantity are required",
+                            -1);
 
     const std::string instrument = command.instrument.empty() ? command.contract.symbol : command.instrument;
     if (!context.executionDomain.empty())
     {
         if (context.decisionLeaseFencingToken == 0 || context.decisionLeaseGeneration == 0 ||
             !m_callbacks.validateDecisionLease)
-            return RejectLocked(context, "DECISION_LEASE_REQUIRED", "Agent mutation lacks a server-validated lease",
-                                -1, requestHash);
+            return RefuseBeforeIntent(context, "DECISION_LEASE_REQUIRED", "Agent mutation lacks a server-validated lease",
+                                -1);
         std::string leaseReason;
         if (!m_callbacks.validateDecisionLease(context, instrument, &leaseReason))
-            return RejectLocked(context, "DECISION_LEASE_INVALID", leaseReason, -1, requestHash);
+            return RefuseBeforeIntent(context, "DECISION_LEASE_INVALID", leaseReason, -1);
+    }
+    // Idempotent replay above must remain available even at capacity. Do not
+    // set the global mutation block here: cancel/authoritative flatten keep
+    // their existing guarded exit paths. A no-send capacity refusal is not
+    // inserted into the permanent command map or journal, so varying rejected
+    // IDs cannot consume the remaining recovery headroom.
+    const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+    const NewEntryCapacity capacity{health.capacityKnown, health.writePoisoned,
+        health.replayMaxBytes, health.replayMaxRecords, health.currentBytes,
+        health.currentRecords, health.pendingBytes, health.queueDepth,
+        health.bufferedDepth};
+    // Missing/poisoned writers retain the existing hard AppendOrBlock failure
+    // below; a capacity-only pause must not replace that durability incident.
+    const char* capacityReason = (!health.writePoisoned &&
+        !m_journal.GetPath().empty()) ? NewEntryCapacityReason(capacity) : nullptr;
+    if (capacityReason)
+    {
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Rejected;
+        result.commandId = context.toolCallId;
+        result.orderId = -1;
+        result.reasonCode = capacityReason;
+        result.detail = "new entry paused before intent/send; preserve history, "
+            "use guarded exits and measured recovery maintenance";
+        return result;
     }
     const double eventPrice = command.order.lmtPrice > 0.0 ? command.order.lmtPrice : command.referencePrice;
     const std::string venueCorrelationId = VenueCorrelationId(context, requestHash);
@@ -484,14 +527,7 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
     std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    out.clear();
-    for (std::vector<PlaceSendAttempt>::const_iterator it =
-             m_placeSendAttempts.begin(); it != m_placeSendAttempts.end(); ++it)
-    {
-        if (it->account == account && it->executionDomain == executionDomain &&
-            it->tsMs > cutoffMs)
-            out.push_back(it->tsMs);
-    }
+    m_placeSendAttempts.ReadTimes(account, executionDomain, cutoffMs, out);
 }
 
 void ExecutionCoordinator::ResetRecoveryProjectionLocked()
@@ -764,26 +800,57 @@ bool ExecutionCoordinator::ValidateRecoveredProjectionLocked(
     return true;
 }
 
+ExecutionRuntimeObservation ExecutionCoordinator::RuntimeObservation() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto result = m_observation;
+    result.present = true;
+    result.retainedCommands = m_requests.size();
+    result.orderOwners = m_orderOwners.size();
+    result.fencedOwners = m_fencedSessionOwners.size();
+    result.recoveryOnlyOwners = m_recoveryOnlySessionOwners.size();
+    result.retainedSendAttempts = m_placeSendAttempts.size();
+    result.mutationBlocked = m_mutationBlocked;
+    return result;
+}
+
 bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    OmsScopedLatencySample recoveryTimer(m_observation.recoveryLatency);
     ResetRecoveryProjectionLocked();
 
-    std::vector<OmsJournalEvent> events;
-    const int replayed = m_journal.Replay(
-        [&events](const OmsJournalEvent& event) {
-            events.push_back(event);
-        });
-    if (replayed < 0)
+    try
     {
-        reason = "OMS_REPLAY_FAILED";
-        BlockMutationsLocked(reason);
+        // Replay validates and materializes the COMPLETE pinned journal before
+        // its first callback. Consume that frozen sequence directly instead of
+        // allocating a second vector of every event and all its strings.
+        // Only in-memory projections are touched here, never venue callbacks.
+        const int replayed = m_journal.Replay(
+            [this](const OmsJournalEvent& event) {
+                ApplyRecoveredEventLocked(event);
+            });
+        if (replayed < 0)
+        {
+            ResetRecoveryProjectionLocked();
+            reason = "OMS_REPLAY_FAILED";
+            BlockMutationsLocked(reason);
+            return false;
+        }
+        return ValidateRecoveredProjectionLocked(reason);
+    }
+    catch (...)
+    {
+        // An allocation/projection exception must not expose a valid prefix
+        // through public reads or leave the coordinator open for mutations.
+        // Set the boolean fence before allocating diagnostic strings; sustained
+        // OOM may still propagate but can never leave an unfenced coordinator.
+        ResetRecoveryProjectionLocked();
+        m_mutationBlocked = true;
+        m_mutationBlockReason = "OMS_RECOVERY_PROJECTION_FAILED";
+        reason = m_mutationBlockReason;
         return false;
     }
-    for (std::vector<OmsJournalEvent>::const_iterator it = events.begin();
-         it != events.end(); ++it)
-        ApplyRecoveredEventLocked(*it);
-    return ValidateRecoveredProjectionLocked(reason);
 }
 
 bool ExecutionCoordinator::ResolveUncertainPlaceCommands(

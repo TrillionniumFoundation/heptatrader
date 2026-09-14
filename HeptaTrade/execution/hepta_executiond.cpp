@@ -1,7 +1,9 @@
+#include "execution_runtime_observation.h"
 #include "execution_service_runtime_composition.h"
 #include "execution_service_runtime_config.h"
 
 #include <csignal>
+#include <cerrno>
 #include <cstdint>
 #include <iostream>
 #include <pthread.h>
@@ -54,11 +56,22 @@ int main(int argc, char**)
                   << ExecutionServiceRuntimeConfig::ModeName(config.mode) << std::endl;
 
     int receivedSignal = 0;
-    if (::sigwait(&terminationSignals, &receivedSignal) != 0)
+    OmsCapacityCadence capacityCadence;
+    for (;;)
     {
-        std::cerr << "execution runtime signal wait failed" << std::endl;
-        runtime.Stop();
-        return 7;
+        if (capacityCadence.Due(std::chrono::steady_clock::now()))
+            std::cerr << ExecutionCapacityObservation(runtime.JournalHealth(), runtime.CoordinatorObservation(), OmsJournal::NowEpochMs(),
+                runtime.ServiceEpoch(), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count())) << '\n';
+        const struct timespec timeout = {1, 0};
+        const int signal = ::sigtimedwait(&terminationSignals, nullptr, &timeout);
+        if (signal == SIGTERM || signal == SIGINT) { receivedSignal = signal; break; }
+        if (signal < 0 && errno != EAGAIN && errno != EINTR)
+        {
+            std::cerr << "execution runtime signal wait failed" << std::endl;
+            runtime.Stop();
+            return 7;
+        }
     }
     runtime.Stop();
     return receivedSignal == SIGTERM || receivedSignal == SIGINT ? 0 : 8;

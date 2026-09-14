@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic read-only HeptaTrader telemetry collection (%i)
+
+[Timer]
+OnBootSec=10s
+OnUnitInactiveSec=5s
+AccuracySec=1s
+Unit=hepta-telemetry@%i.service
+
+[Install]
+WantedBy=timers.target

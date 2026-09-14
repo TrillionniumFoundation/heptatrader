@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../execution/trading_contract.h"
+#include "../execution/venue_place_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
 #include <functional>
@@ -56,6 +57,8 @@ public:
     bool PlaceOrderCorrelated(const InstrumentRef& contract, const OrderIntent& order,
                               const std::string& correlationId, long* orderId,
                               bool activate = true);
+    VenuePlaceResult PlaceOrderWithResult(const InstrumentRef& contract, const OrderIntent& order,
+        const std::string& correlationId, bool activate);
     bool ActivateOrder(long orderId, std::string* reason = nullptr);
     bool CanCancelOrder(long orderId, std::string* reason) const;
     bool CancelOrder(long orderId);

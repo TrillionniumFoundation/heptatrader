@@ -9,7 +9,10 @@ Tests: `tests/agent_simulator_e2e_tests.cpp`, `tests/simulator_risk_runtime_test
 
 The deterministic simulator is the canonical local development venue. It exercises the same Agent, Gateway, Execution, risk, journal, event, snapshot, and command-id paths without a broker credential or network connection.
 
-It is distinct from the legacy Pegasus simulator under top-level `HeptaSimulator/`, which is excluded from the default build.
+It is distinct from the retired top-level Pegasus simulator. That old product,
+its root Tools data and personal-path CSV validator are no longer shipped;
+see [retirement](../technical/legacy-retirement.md). They are not alternate
+inputs to this execution venue.
 
 ## Venue contract
 

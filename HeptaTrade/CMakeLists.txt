@@ -1,17 +1,18 @@
 cmake_minimum_required(VERSION 3.16)
 project(HeptaTrade LANGUAGES CXX)
 
+# Historical targets are retired, not silently mapped to the canonical service.
+# Explicit OFF remains accepted for existing core build invocations.
+if(HEPTA_BUILD_LEGACY_MONOLITH OR HEPTA_BUILD_LEGACY_SIMULATOR OR HEPTA_ENABLE_LEGACY_0DTE_BRIDGE)
+    message(FATAL_ERROR "HEPTA_LEGACY_RUNTIME_RETIRED: use the canonical Agent/Execution service; see docs/technical/legacy-retirement.md")
+endif()
+
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(Threads REQUIRED)
 include(GNUInstallDirs)
 
 option(HEPTA_ENABLE_IBAPI "Enable Interactive Brokers API integration" OFF)
-option(HEPTA_ENABLE_LEGACY_0DTE_BRIDGE
-       "Allow the deprecated JSONL OpenClaw 0DTE bridge runtime path"
-       OFF)
-option(HEPTA_BUILD_LEGACY_MONOLITH
-       "Build the deprecated multi-venue HeptaTrader composition binary"
-       OFF)
 set(IBAPI_ROOT "" CACHE PATH
     "Path to IB C++ API root (e.g. E:/trading/TWS API/source/cppclient)")
 set(IBAPI_BIN "" CACHE PATH
@@ -31,41 +32,6 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_DEBUG
     "${CMAKE_BINARY_DIR}/bin/Debug")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_RELEASE
     "${CMAKE_BINARY_DIR}/bin/Release")
-
-# Legacy-only global include/link layout. Canonical targets below declare their
-# own usage requirements and do not inherit the nonredistributable overlays.
-if(HEPTA_BUILD_LEGACY_MONOLITH)
-    include_directories(
-        "../HeptaStrategy/"
-        "../Interface/include/"
-        "../Interface/")
-    execute_process(
-        COMMAND lsb_release -is
-        OUTPUT_VARIABLE LINUX_DISTRO
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
-    if(LINUX_DISTRO STREQUAL "Ubuntu")
-        set(IS_UBUNTU TRUE)
-    else()
-        set(IS_UBUNTU FALSE)
-    endif()
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        if(IS_UBUNTU)
-            link_directories("${PROJECT_SOURCE_DIR}/../Interface/lib/Ubuntu/Debug/")
-        else()
-            link_directories("${PROJECT_SOURCE_DIR}/../Interface/lib/Linux/Debug/")
-        endif()
-        link_directories("${PROJECT_SOURCE_DIR}/../bin/Debug/")
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-        if(IS_UBUNTU)
-            link_directories("${PROJECT_SOURCE_DIR}/../Interface/lib/Ubuntu/Release/")
-        else()
-            link_directories("${PROJECT_SOURCE_DIR}/../Interface/lib/Linux/Release/")
-        endif()
-        link_directories("${PROJECT_SOURCE_DIR}/../bin/Release/")
-    endif()
-endif()
 
 if(HEPTA_ENABLE_IBAPI)
     if(IBAPI_ROOT STREQUAL "")
@@ -246,7 +212,7 @@ target_link_libraries(hepta_execution_core PUBLIC
     hepta_execution_client
     hepta_agent_execution_support
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto ZLIB::ZLIB)
 
 add_library(hepta_trading_tool_core STATIC
     state/ib_contract_identity.cpp
@@ -301,7 +267,7 @@ target_link_libraries(hepta_agent_os_core PUBLIC
     hepta_execution_client
     hepta_agent_execution_support
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto ZLIB::ZLIB)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_options(hepta_agent_os_core PRIVATE
@@ -345,10 +311,6 @@ target_link_libraries(hepta_native_tool_client
 set_target_properties(hepta_native_tool_client PROPERTIES
     EXPORT_NAME NativeToolClient)
 
-if(HEPTA_BUILD_LEGACY_MONOLITH)
-    include("${CMAKE_CURRENT_LIST_DIR}/../cmake/HeptaLegacy.cmake")
-endif()
-
 add_executable(heptactl
     cli/heptactl.cpp
     cli/heptactl_command.cpp
@@ -370,7 +332,7 @@ target_include_directories(hepta_sessionctl PRIVATE
 target_link_libraries(hepta_sessionctl PRIVATE
     hepta_session_supervisor_core
     Threads::Threads
-    OpenSSL::Crypto)
+    OpenSSL::Crypto ZLIB::ZLIB)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(hepta_paper_terminal_latch_committer
@@ -383,7 +345,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_compile_features(hepta_paper_terminal_latch_committer PRIVATE
         cxx_std_11)
     target_link_libraries(hepta_paper_terminal_latch_committer PRIVATE
-        OpenSSL::Crypto)
+        OpenSSL::Crypto ZLIB::ZLIB)
 endif()
 
 add_executable(hepta_tool_gatewayd
@@ -488,40 +450,10 @@ endif()
 # Distribution, install-tree, source-bundle and certification declarations
 # are intentionally external to the runtime target graph.
 
-if(HEPTA_ENABLE_LEGACY_0DTE_BRIDGE AND NOT HEPTA_BUILD_LEGACY_MONOLITH)
-    message(FATAL_ERROR
-        "HEPTA_ENABLE_LEGACY_0DTE_BRIDGE requires "
-        "HEPTA_BUILD_LEGACY_MONOLITH=ON")
-endif()
-
-if(HEPTA_BUILD_LEGACY_MONOLITH)
-    if(HEPTA_ENABLE_LEGACY_0DTE_BRIDGE)
-        target_compile_definitions(
-            HeptaTrader PRIVATE HEPTA_ENABLE_LEGACY_0DTE_BRIDGE=1)
-        message(WARNING
-            "Deprecated OpenClaw 0DTE JSONL bridge runtime path is enabled")
-    endif()
-    target_link_libraries(HeptaTrader PRIVATE
-        Threads::Threads
-        OpenSSL::Crypto
-        HeptaStrategy
-        libheptaHeptaDLL_Linux.a
-        libTinyXml_Linux.a
-        CTPTradeLIB
-        CTPMdLIB)
-    if(HEPTA_ENABLE_IBAPI)
-        target_compile_definitions(HeptaTrader PRIVATE HEPTA_ENABLE_IBAPI)
-        target_link_libraries(HeptaTrader PRIVATE hepta_ibapi_client)
-    endif()
-endif()
-
 if(HEPTA_ENABLE_IBAPI AND WIN32)
     file(GLOB IBAPI_DLLS "${IBAPI_BIN}/*.dll")
     if(IBAPI_DLLS)
         set(IBAPI_RUNTIME_TARGETS hepta_ib_executiond)
-        if(HEPTA_BUILD_LEGACY_MONOLITH)
-            list(APPEND IBAPI_RUNTIME_TARGETS HeptaTrader)
-        endif()
         foreach(IBAPI_RUNTIME_TARGET IN LISTS IBAPI_RUNTIME_TARGETS)
             add_custom_command(TARGET ${IBAPI_RUNTIME_TARGET} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E echo

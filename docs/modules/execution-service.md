@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/execution/`, `HeptaTrade/agent/decision_lease_manager.cpp`, `HeptaTrade/events/execution_event_hub.cpp`, `HeptaTrade/events/owner_scoped_health_publisher.cpp`
-Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`
+Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`
 
 ## Responsibilities
 
@@ -49,6 +49,12 @@ Protocol fields and reason codes are versioned. Unknown fields, unsupported vers
 
 The OMS journal is the durable mutation ledger. Startup replays it before accepting mutations. The service reconstructs command identities, send attempts, owner fences, and terminal states, then reconciles with the selected venue. State that cannot be proven from journal plus authoritative venue data remains blocked.
 
+The coordinator consumes the journal's fully validated event sequence without
+copying it into another full-history vector. Allocation/projection exceptions
+clear partial projections and fence mutations; valid uncertain commands remain
+available for reconciliation. See [recovery memory and exception semantics](../technical/coordinator-recovery-memory.md).
+This does not implement checkpoints or bounded permanent identity storage.
+
 Journal failure before send rejects the mutation. Journal failure after a possible send blocks further risk and requires command-status/reconciliation recovery.
 
 The simulator uses two-phase placement: reserve an inert order, establish its owner and projection, durably append `place_sent` with status `activation_pending`, then activate it and durably append `place_activated`. Reserved orders count toward pending risk but cannot submit or fill. A crash without the final activation receipt replays as uncertain. Activation failure or exception appends a later critical `place_outcome_uncertain`, fences mutations, and survives replay; the pending receipt cannot overwrite that uncertainty. Immediate broker adapters leave the optional activation callback unset.
@@ -70,11 +76,33 @@ The coordinator serializes command identity and durable state transitions. Venue
 
 ## Observability
 
-Required records include command ID, owner/session, execution domain, normalized instrument, lifecycle state, journal sequence, send-attempt state, venue order correlation, reason code, and timing. Metrics must separate accepted, rejected, duplicate, uncertain, journal failure, send failure, reconciliation, and recovery duration.
+Required records include command ID, owner/session, execution domain, normalized instrument, lifecycle state, journal sequence, send-attempt state, venue order correlation, reason code, and timing. The actual coordinator now exposes fixed place/cancel/authoritative-flatten
+result bins, operation latency, full coordinator replay/projection latency and
+O(1) container-size gauges through the existing daemon observation/report path.
+See [runtime cost observations](../technical/runtime-cost-observations.md).
+Detailed per-reason lifecycle, end-to-end Broker reconciliation and other missing
+metrics remain in the [implementation inventory](../OBSERVABILITY-METRICS.md).
 
 ## Test expectations
 
 Tests cover idempotency, journal-before-send, conflicting command IDs, send exceptions, cancel, reconnect, recovery, owner fencing, event ordering, transport failure, simulator end-to-end behavior, and terminal paths. Every new mutation state needs restart tests at each durable boundary.
+
+### Pre-intent refusals versus retained command identity
+
+Place/cancel context, ownership, expiry, missing-capability and blocked-entry
+refusals before any journal intent return a typed rejection without inserting a
+new command into the permanent projection. Invalid-context/hash flatten refusals
+also have no retained identity. Status lookup is absent for such never-admitted
+IDs. The same normalized intent can be evaluated again after the actual required
+authority changes; the client still must not replace a possibly-sent command ID.
+
+Durably rejected, accepted and uncertain commands are not evicted. Flatten
+rejections using the dedicated durable `flatten_reject` path are retained too;
+they must not be confused with no-record refusals. `RejectLocked` remains the
+post-intent/persistent rejection helper. Executable regressions flood pre-intent
+refusals and preserve accepted/conflicting/uncertain/post-intent-rejected
+identities and no-resend behavior across replay. This bounds neither permanent
+historical identities nor full-history replay: those remain lifecycle work.
 
 ## Known limitations
 
@@ -87,8 +115,8 @@ maps entry points and tests, explains exact correlation resolution and guarded
 absence handling, distinguishes cancel resolution from economic fills, and
 specifies refresh coalescing, owner terminalization and decision lease roles.
 [`Execution events`](../technical/execution-events.md) owns the stream cursor and
-backpressure contract. The legacy CSV reporter under `HeptaTrade/reconcile/`
-is not a canonical recovery entry point.
+backpressure contract. The old monolith's CSV reporter has been
+[retired](../technical/legacy-retirement.md); maintained recovery is unchanged.
 
 ## Wire fields and versioned examples
 
@@ -96,3 +124,17 @@ is not a canonical recovery entry point.
 specifies HEX1 v10's exact per-operation field sets, value representations,
 identity requirements and failure actions. Its in-memory golden vectors use
 real C++ codecs, not a documentation keyword check.
+
+## Send-attempt query cost
+
+The in-memory [send-attempt index](../technical/runtime-cost-observations.md)
+avoids a full-history scan for account/domain time-window queries while
+preserving insertion order, clock-regression behavior, all retained history
+and the coordinator's existing synchronization and recovery boundaries.
+
+## Typed venue binding
+
+[Venue placement contract](../technical/venue-placement-contract.md) specifies
+the single Immediate/Reserving dependency, typed outcomes, constructor rejection,
+lock-bound IB result capture, migrated callers and uncertainty/replay tests.
+Existing durable and wire contracts are unchanged.

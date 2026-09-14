@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev g++
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev g++
       - name: Configure sanitizer build
         run: |
           cmake -S . -B build/reliability-gcc -G Ninja \
@@ -78,7 +78,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev clang
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev clang
       - name: Configure sanitizer build
         run: |
           cmake -S . -B build/reliability-clang -G Ninja \

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "execution_runtime_observation.h"
+
 #include "execution_authority.h"
 #include "execution_service_runtime_config.h"
 #include "../events/execution_event_hub.h"
@@ -30,6 +32,10 @@ public:
     bool IsRunning() const;
     bool IsMutationBlocked(std::string* reason = nullptr) const;
     const std::string& RecoveryReason() const;
+    // Local process observability only; not an Agent command or admission gate.
+    const std::string& ServiceEpoch() const { return m_serviceIdentity.serviceEpoch; }
+    OmsJournalHealthSnapshot JournalHealth() const { return m_journal.GetHealthSnapshot(); }
+    ExecutionRuntimeObservation CoordinatorObservation() const;
 
     ExecutionCoordinator& Coordinator();
     DeterministicExecutionVenue& Venue();

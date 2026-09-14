@@ -85,8 +85,20 @@ int main(int argc, char**)
               << '\n';
 
     int received = 0;
+    auto nextObservation = std::chrono::steady_clock::now();
     for (;;)
     {
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= nextObservation)
+        {
+            const auto wall = std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count();
+            const auto monotonic = std::chrono::duration_cast<std::chrono::milliseconds>(
+                now.time_since_epoch()).count();
+            const std::string observation = runtime.Observation(wall, monotonic);
+            if (!observation.empty()) std::cerr << observation << '\n';
+            nextObservation = now + std::chrono::seconds(5);
+        }
         struct timespec timeout;
         timeout.tv_sec = 1;
         timeout.tv_nsec = 0;

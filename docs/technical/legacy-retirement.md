@@ -1,79 +1,70 @@
 # Retired assets and retained compatibility boundaries
 
 Status: CURRENT
-Applies to: source cleanup; no trading authorization or persistent-schema change
+Applies to: source retirement; no deployed-state or persistent-schema migration
+Implementation: `CMakeLists.txt`, `HeptaTrade/CMakeLists.txt`, `cmake/HeptaLegacy.cmake`
+Tests: `tests/python/test_legacy_retirement.py`, `tests/python/test_legacy_runtime_boundary.py`, `tests/python/test_cmake_install_integration.py`
 
-## Removed from the active tree
+## Retired products and consumers
 
-The following eight IDE assets were not inputs to the canonical CMake core/IB
-build or install inventory and have been retired together:
+The historical multi-venue monolith, HeptaStrategy composition, Pegasus
+simulator, JSONL 0DTE bridge, strategy orchestration, order watchdog and CSV
+reconciliation reporter have been removed with their exclusive build graph.
+The remaining root `Interface/` and `Tools/` collections are now removed too.
 
-```text
-HeptaTrader.sln
-HeptaTrader_Linux.sln
-HeptaTrade/HeptaTrader.vcxproj
-HeptaTrade/HeptaTrader_Linux.vcxproj
-HeptaStrategy/HeptaStrategy.vcxproj
-HeptaStrategy/HeptaStrategy.vcxproj.filters
-HeptaSimulator/HeptaSimulator.vcxproj
-HeptaSimulator/HeptaSimulator.vcxproj.filters
+| Retired asset | Known consumer / decision |
+|---|---|
+| `Interface/include/hepta*.h` | Old monolith, HeptaStrategy, Pegasus and watchdog; these applications were already retired. Canonical execution uses its own contract/state/risk types. |
+| `Interface/include/tinyxml.h`, `tinystr.h` | Old XML composition in the retired monolith; not canonical service configuration. |
+| `Interface/oneapi/` | Old vendored concurrency headers in the retired overlay; no canonical target includes or links this collection. |
+| `Interface/CTPTradeApi32`, `CTPTradeApi64`, `CTPTradeApiLinux` | Identical legacy SDK placeholders, not functioning Broker transports. Current CTP capability stubs remain separate. |
+| `Tools/` configuration, instrument XML and dated market samples | Retired simulator/monolith configuration and example data; not installed canonical input or authoritative live history. |
+| `scripts/validate_sim_data.py` | Personal Windows-path XML/CSV sample-row checker; wrongly carried in the runtime helper list. Removed with its catalog and install entries, not replaced by a success-shaped validator. |
+
+The complete last pre-removal asset tree is recoverable from source
+`6cdae64e04a92d234852aa14670a54538e9e5f9c`. For example:
+
+```sh
+git show 6cdae64e04a92d234852aa14670a54538e9e5f9c:Interface/include/heptaBasicStrategy.h
 ```
 
-Their provenance remains in commit
-`d003f54c7c6c2bd19002627f2bcd9081228b01cd`. To inspect rather than reintroduce an
-old build authority, use for example:
+Do not copy the retired data/SDK overlay into new packages. Embedded upstream
+notices remain with their historical source; retirement does not assert new
+redistribution rights, erase existing legal obligations or certify all external
+consumers. No data, header archive or dummy replacement folder is added.
+`HeptaTrade/tools/` is maintained Gateway code, not the removed root `Tools/`.
 
-```bash
-git show d003f54c7c6c2bd19002627f2bcd9081228b01cd:HeptaTrader.sln
-```
+## Explicit old-build failure
 
-No duplicate archive of these files is shipped in release packages. The default
-off CMake legacy profiles are unchanged, and deleting IDE files does not imply
-that all optional legacy sources are supported or modernized.
+Root and standalone HeptaTrade entry points reject enabled
+`HEPTA_BUILD_LEGACY_MONOLITH`, `HEPTA_BUILD_LEGACY_SIMULATOR` and
+`HEPTA_ENABLE_LEGACY_0DTE_BRIDGE` with `HEPTA_LEGACY_RUNTIME_RETIRED`.
+Explicit OFF flags remain accepted for existing canonical automation.
+`cmake/HeptaLegacy.cmake` remains only as an executable failure diagnostic for
+old include callers. No success-shaped stub target or SDK fallback recreates
+the retired trading products.
 
-## Retained intentionally
+## Previously completed cleanup
 
-`Interface/` and `Tools/` contain compatibility/shared headers used by remaining
-source and must not be deleted by directory label alone. The optional legacy
-`HeptaStrategy/` and `HeptaSimulator/` CMake sources, old XML/data and bridge
-sources remain until their consumers have been migrated or retired. The
-historical PDF remains provenance material, not current runtime design.
-
-`HeptaTrade/reconcile/` is the old monolith's CSV reconciliation reporter. Its
-catalog ownership is now explicitly LEGACY; canonical reconciliation is
-documented in [`reconciliation-engine.md`](reconciliation-engine.md). This
-corrects an ownership claim rather than replacing the reporter with a new
-execution path.
-
-## Retired migration and validation machinery
-
-The twelve assignment-only risk sink members and `PreTradeRiskLegacyWriteOnly`
-were removed after finding no production writers. Readable authoritative risk
-snapshot/evidence structures remain unchanged. Compiler tests now require the
-retired API to be unavailable and the supported API to compile; see
-[`risk-legacy-compatibility.md`](risk-legacy-compatibility.md).
-
-The redundant documentation wrapper/core split, source-token gap-closure
-verifier and its token-presence meta-tests were retired. Their absence does not
-retire journal, venue, risk, installation or sanitizer behavioral tests. The
-gap register is an issue inventory with profile-scoped release blockers, not a
-fixed list that must always say READY.
+Eight unused Visual Studio assets were retired previously; their provenance
+remains at `d003f54c7c6c2bd19002627f2bcd9081228b01cd`. The twelve assignment-only
+risk sinks and `PreTradeRiskLegacyWriteOnly` were removed with compiler tests
+for the supported API. Documentation wrapper duplication, source-token closure
+checks and spelling-only meta-tests were also retired. These are not newly
+claimed deletions in the remaining-assets change.
 
 ## Acceptance and limits
 
-Validate with the canonical CMake build/CTest, full Python discovery, fresh
-install inventory, generated documentation index and Git/CMake ownership
-checks. A new proposed deletion must be checked against includes, CMake sources,
-installation rules and test fixtures, not only directory ownership. This
-cleanup does not change on-disk journal/lease formats, Broker profiles,
-credentials, network permissions or authorization defaults.
+The existing CMake behavior tests reject the old flags/include and inspect
+fresh codemodel targets and include paths. The full canonical compile and tests,
+GCC/Clang sanitizer lanes, Git/CMake ownership, fresh installation and installed
+process/PID1 acceptance must pass on the exact resulting revision. Removing
+files first and then weakening a failing build/test is not accepted cleanup.
+The separately supplied IB SDK remains pinned outside the repository; core CI
+is not a claim that the SDK-enabled Broker campaign ran.
 
-## Additional cleanup and retained consumers
-
-The redundant second `HEPTA_BUILD_LEGACY_MONOLITH` branch inside
-`cmake/HeptaLegacy.cmake` is unnecessary because inclusion already requires that
-option and the file rejects disabled use at entry. It is removed without
-changing any target, source or overlay requirement. Existing optional runtime
-sources and shared `Interface/`/`Tools/` consumers are retained. No historical
-lease reader is removed without a deployment-state inventory; see
-[`persistence-support-window.md`](persistence-support-window.md).
+OMS schema readers, encrypted HSL historical layouts, durable command identity,
+owner fences, terminal witnesses and authoritative reconciliation remain
+maintained behavior. Source age is not evidence that persisted state is unused.
+See [persistence support](persistence-support-window.md). Deleting old source
+never migrates a host, revokes an old artifact or authorizes trading.

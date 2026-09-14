@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TESTS = frozenset({
     "test_documentation_control_plane.py",
     "test_documentation_structure.py",
+    "test_source_workflow_commands.py",
     "test_component_coverage.py",
     "test_systemd_units.py",
     "test_build_ownership.py",
@@ -48,8 +49,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--lane", choices=("core", "source", "install", "process", "all"), required=True)
     parser.add_argument("--list", action="store_true", help="list selected test files without importing them")
     args = parser.parse_args(argv)
-    if args.lane == "process" and not args.list and os.environ.get("HEPTA_ISOLATED_PROCESS_TESTS") != "1":
-        parser.error("process lane requires HEPTA_ISOLATED_PROCESS_TESTS=1 on a disposable Linux host")
+    if not args.list:
+        if args.lane in ("process", "all"):
+            if os.environ.get("HEPTA_ISOLATED_PROCESS_TESTS") != "1":
+                parser.error("process/all requires HEPTA_ISOLATED_PROCESS_TESTS=1 on a disposable Linux host")
+            if not sys.platform.startswith("linux") or getattr(os, "geteuid", lambda: -1)() != 0:
+                parser.error("process/all requires the isolated Linux root fixture; never a trading host")
+        if args.lane in ("install", "all") and not os.environ.get("HEPTA_RELEASE_INTEGRATION_BUILD_DIR"):
+            parser.error("install/all requires HEPTA_RELEASE_INTEGRATION_BUILD_DIR")
     try:
         groups = partitions()
     except ValueError as error:
@@ -66,7 +73,10 @@ def main(argv: list[str] | None = None) -> int:
             print(error, file=sys.stderr)
         return 1
     print(f"Python lane={args.lane}: {len(selected)} files, {suite.countTestCases()} cases", flush=True)
-    return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if result.skipped:
+        print("Selected tests were skipped; this is not complete partition acceptance.", file=sys.stderr)
+    return 0 if result.wasSuccessful() and not result.skipped else 1
 
 
 if __name__ == "__main__":

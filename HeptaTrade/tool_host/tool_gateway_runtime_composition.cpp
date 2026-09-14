@@ -1,3 +1,4 @@
+#include "gateway_observation.h"
 #include "tool_gateway_runtime_composition.h"
 
 #include <cerrno>
@@ -690,4 +691,11 @@ bool ToolGatewayRuntimeComposition::FenceRevokedOwner(
     }
     failureReason.clear();
     return true;
+}
+
+std::string ToolGatewayRuntimeComposition::Observation(
+    std::uint64_t wallMs, std::uint64_t steadyMs) const
+{
+    if (!m_agentOs || !m_agentOs->ToolServer().IsRunning()) return std::string();
+    return GatewayObservation(m_agentOs->ToolServer().GetHealth(), m_gatewayEpoch, wallMs, steadyMs);
 }

@@ -39,11 +39,15 @@ jobs:
       - name: Install build-model validation dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev python3-yaml
+          sudo apt-get install --yes --no-install-recommends cmake make g++ libssl-dev zlib1g-dev python3-yaml
 
       - name: Validate documentation and source truth contracts
         run: |
           set -euo pipefail
+          git diff --check
+          python3 scripts/verify_exact_git_index.py --root .
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 scripts/check_documentation.py
           python3 scripts/check_qualification_trust_boundary.py
           python3 scripts/check_component_coverage.py
@@ -52,6 +56,42 @@ jobs:
           python3 scripts/check_gap_register.py
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 scripts/run_python_tests.py --lane source
+
+      - name: Extract monitoring test tools without enabling host services
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/hepta-monitoring-tools"
+          mkdir -p "$tools/debs"
+          (cd "$tools/debs" && apt-get download prometheus prometheus-alertmanager prometheus-node-exporter)
+          for package in "$tools"/debs/*.deb; do
+            dpkg-deb --extract "$package" "$tools"
+          done
+          # Ubuntu's patched Alertmanager reads packaged templates at a fixed
+          # /usr/share path; this version has no --template.default override.
+          # Stage data only on this disposable runner, never install/start the
+          # monitoring services or overwrite a preexisting template directory.
+          template_dir=/usr/share/prometheus/alertmanager
+          test ! -e "$template_dir"
+          sudo install -d -m 0755 "$template_dir"
+          for template in "$tools"/usr/share/prometheus/alertmanager/*.tmpl; do
+            test -f "$template"
+            sudo install -m 0644 "$template" "$template_dir/"
+          done
+
+      - name: Exercise real textfile scrape and alert delivery
+        run: |
+          set -euo pipefail
+          python3 tests/monitoring/process_smoke.py \
+            --tools-root "$RUNNER_TEMP/hepta-monitoring-tools" \
+            --output "$RUNNER_TEMP/hepta-monitoring-chain.json"
+
+      - name: Retain scoped monitoring acceptance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: monitoring-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hepta-monitoring-chain.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Reassert clean exact source
         if: always()
@@ -63,3 +103,4 @@ jobs:
           git diff --check
           git diff --exit-code -- .
           git diff --cached --exit-code -- .
+          python3 scripts/verify_exact_git_index.py --root .
