@@ -1,0 +1,107 @@
+# No rule performs trading actions. Timestamps detect retained stale .prom files.
+groups:
+- name: heptatrader
+  rules:
+  - alert: HeptaMonitoringTargetMissing
+    expr: absent(up{job="heptatrader"}) or (up{job="heptatrader"} == 0)
+    labels:
+      severity: warning
+    annotations:
+      summary: HeptaTrader monitoring target is missing or unreachable
+  - alert: HeptaCollectorFailed
+    expr: (hepta_oms_collector_success{job="heptatrader"} == 0) or ((up{job="heptatrader"} == 1) unless on(job, instance)
+      hepta_oms_collector_success{job="heptatrader"})
+    labels:
+      severity: warning
+      component: oms
+    annotations:
+      summary: Telemetry collection failed or its success signal is missing
+  - alert: HeptaCollectorStale
+    expr: (time() - hepta_oms_collector_timestamp_seconds{job="heptatrader"} > 30) or (hepta_oms_collector_timestamp_seconds{job="heptatrader"}
+      > time() + 1) or ((up{job="heptatrader"} == 1) unless on(job, instance) hepta_oms_collector_timestamp_seconds{job="heptatrader"})
+    labels:
+      severity: warning
+      component: oms
+    annotations:
+      summary: Collector stopped, its clock is invalid, or its timestamp is missing
+  - alert: HeptaObservationStale
+    expr: (hepta_oms_telemetry_fresh{job="heptatrader"} == 0) or (time() - hepta_oms_sample_timestamp_seconds{job="heptatrader"}
+      > 15) or (hepta_oms_sample_timestamp_seconds{job="heptatrader"} > time() + 1) or ((hepta_oms_collector_success{job="heptatrader"}
+      == 1) unless on(job, instance) hepta_oms_sample_timestamp_seconds{job="heptatrader"})
+    labels:
+      severity: warning
+      component: oms
+    annotations:
+      summary: Daemon observation is stale, missing or future-dated
+  - alert: HeptaCollectorFailed
+    expr: (hepta_gateway_collector_success{job="heptatrader"} == 0) or ((up{job="heptatrader"} == 1) unless on(job, instance)
+      hepta_gateway_collector_success{job="heptatrader"})
+    labels:
+      severity: warning
+      component: gateway
+    annotations:
+      summary: Telemetry collection failed or its success signal is missing
+  - alert: HeptaCollectorStale
+    expr: (time() - hepta_gateway_collector_timestamp_seconds{job="heptatrader"} > 30) or (hepta_gateway_collector_timestamp_seconds{job="heptatrader"}
+      > time() + 1) or ((up{job="heptatrader"} == 1) unless on(job, instance) hepta_gateway_collector_timestamp_seconds{job="heptatrader"})
+    labels:
+      severity: warning
+      component: gateway
+    annotations:
+      summary: Collector stopped, its clock is invalid, or its timestamp is missing
+  - alert: HeptaObservationStale
+    expr: (hepta_gateway_telemetry_fresh{job="heptatrader"} == 0) or (time() - hepta_gateway_sample_timestamp_seconds{job="heptatrader"}
+      > 15) or (hepta_gateway_sample_timestamp_seconds{job="heptatrader"} > time() + 1) or ((hepta_gateway_collector_success{job="heptatrader"}
+      == 1) unless on(job, instance) hepta_gateway_sample_timestamp_seconds{job="heptatrader"})
+    labels:
+      severity: warning
+      component: gateway
+    annotations:
+      summary: Daemon observation is stale, missing or future-dated
+  - alert: HeptaOmsWriterPoisoned
+    expr: hepta_oms_writer_poisoned{job="heptatrader"} == 1
+    labels:
+      severity: critical
+      component: oms
+    annotations:
+      summary: OMS durability failed; preserve evidence and use fenced recovery
+  - alert: HeptaOmsCapacityUnknown
+    expr: hepta_oms_capacity_known{job="heptatrader"} == 0
+    labels:
+      severity: warning
+      component: oms
+    annotations:
+      summary: OMS recovery capacity is unknown; never substitute healthy zero
+  - alert: HeptaOmsHeadroomLow
+    expr: (hepta_oms_bytes{job="heptatrader"} / hepta_oms_max_bytes{job="heptatrader"} >= 0.8) or ((hepta_oms_records{job="heptatrader"}
+      + hepta_oms_pending_records{job="heptatrader"}) / hepta_oms_max_records{job="heptatrader"} >= 0.8)
+    labels:
+      severity: warning
+      component: oms
+    annotations:
+      summary: OMS history reached entry pause range; plan recovery capacity, do not truncate
+  - alert: HeptaOmsQueuePressure
+    expr: (hepta_oms_pending_records{job="heptatrader"} >= hepta_oms_max_pending_records{job="heptatrader"}) or (hepta_oms_pending_bytes{job="heptatrader"}
+      >= hepta_oms_max_pending_bytes{job="heptatrader"}) or (increase(hepta_oms_queue_capacity_rejections{job="heptatrader"}[5m])
+      > 0)
+    labels:
+      severity: warning
+      component: oms
+    annotations:
+      summary: OMS pending queue is full or rejecting records
+  - alert: HeptaGatewayDeliveryOrBackpressure
+    expr: (increase(hepta_gateway_response_write_failures_total{job="heptatrader"}[5m]) > 0) or (increase(hepta_gateway_queue_backpressure_rejections_total{job="heptatrader"}[5m])
+      > 0) or (increase(hepta_gateway_owner_backpressure_rejections_total{job="heptatrader"}[5m]) > 0) or (hepta_gateway_pending_connections{job="heptatrader"}
+      >= hepta_gateway_max_pending_connections{job="heptatrader"})
+    labels:
+      severity: warning
+      component: gateway
+    annotations:
+      summary: Gateway delivery or admission is failing; reconcile uncertain commands before retry
+  - alert: HeptaGatewayMetricSaturated
+    expr: hepta_gateway_metrics_saturated{job="heptatrader"} == 1
+    labels:
+      severity: warning
+      component: gateway
+    annotations:
+      summary: Gateway counters are saturated and cannot support rates

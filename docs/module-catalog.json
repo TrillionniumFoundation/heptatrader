@@ -303,7 +303,8 @@
         "systemd",
         "tmpfiles.d",
         "scripts/resolve_hepta_config.py",
-        "scripts/check_systemd_units.py"
+        "scripts/check_systemd_units.py",
+        "scripts/hepta_telemetry_collect.py"
       ],
       "tests": [
         "tests/python/test_documentation_control_plane.py",
@@ -314,7 +315,9 @@
         "tests/python/test_release_simulator_smoke.py",
         "tests/python/test_installed_runtime_processes.py",
         "tests/systemd_simulator_smoke.py",
-        "tests/python/test_systemd_smoke_admission.py"
+        "tests/python/test_systemd_smoke_admission.py",
+        "tests/python/test_telemetry_collection.py",
+        "tests/monitoring/process_smoke.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

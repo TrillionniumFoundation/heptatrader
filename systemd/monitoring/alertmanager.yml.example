@@ -1,0 +1,14 @@
+# Inert example: replace the local test receiver with the operator's approved
+# receiver configuration. This file contains no credentials or live destination.
+# Bind Alertmanager to loopback, or deploy approved TLS/auth controls separately.
+route:
+  receiver: operator-approved-webhook
+  group_by: ['alertname', 'job', 'instance', 'component']
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 1h
+receivers:
+  - name: operator-approved-webhook
+    webhook_configs:
+      - url: 'http://127.0.0.1:19094/hepta-alerts'
+        send_resolved: true

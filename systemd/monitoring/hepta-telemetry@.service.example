@@ -1,0 +1,33 @@
+[Unit]
+Description=Read-only HeptaTrader telemetry collection (%i)
+After=systemd-journald.service
+
+[Service]
+Type=oneshot
+# Separate trusted observer, not an Agent or Execution identity. journal access
+# can read more than these two units; provision this identity accordingly.
+User=hepta-observer
+Group=hepta-observer
+SupplementaryGroups=systemd-journal
+StateDirectory=hepta-telemetry-%i
+StateDirectoryMode=0755
+ExecStart=/usr/bin/python3 /usr/libexec/heptatrader/hepta_telemetry_collect.py --profile %i --output-dir /var/lib/hepta-telemetry-%i
+SuccessExitStatus=1
+TimeoutStartSec=15s
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+MemoryMax=128M
+TasksMax=16

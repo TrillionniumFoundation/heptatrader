@@ -57,6 +57,31 @@ jobs:
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 scripts/run_python_tests.py --lane source
 
+      - name: Extract monitoring test tools without enabling host services
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/hepta-monitoring-tools"
+          mkdir -p "$tools/debs"
+          (cd "$tools/debs" && apt-get download prometheus prometheus-alertmanager prometheus-node-exporter)
+          for package in "$tools"/debs/*.deb; do
+            dpkg-deb --extract "$package" "$tools"
+          done
+
+      - name: Exercise real textfile scrape and alert delivery
+        run: |
+          set -euo pipefail
+          python3 tests/monitoring/process_smoke.py \
+            --tools-root "$RUNNER_TEMP/hepta-monitoring-tools" \
+            --output "$RUNNER_TEMP/hepta-monitoring-chain.json"
+
+      - name: Retain scoped monitoring acceptance
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: monitoring-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hepta-monitoring-chain.json
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Reassert clean exact source
         if: always()
         env:
