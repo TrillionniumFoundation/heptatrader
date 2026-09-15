@@ -1,0 +1,30 @@
+name: Pinned development tool transfer
+on:
+  push:
+    branches: [work/checkpoint-transfer-20260915]
+    paths: [.github/workflows/checkpoint-tool-transfer.yml]
+permissions:
+  contents: read
+jobs:
+  retrieve:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Retrieve pinned formatting-only tool without executing it
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, pathlib, urllib.request
+          url = 'https://files.pythonhosted.org/packages/e5/88/b82c066fa807da4ca2518fecf79071361f6324b77375e5e92c059c0697fd/clang_format-22.1.8-py2.py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl'
+          with urllib.request.urlopen(url, timeout=30) as response:
+              data = response.read(4000001)
+          if len(data) > 4000000 or hashlib.sha256(data).hexdigest() != 'b00cff6bfd1f1686f073a4fdf1cb937dbd58bf7510c659477805c03afdea0816':
+              raise RuntimeError('pinned tool digest or size mismatch')
+          pathlib.Path('clang-format.whl').write_bytes(data)
+          PY
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pinned-clang-format-22.1.8
+          path: clang-format.whl
+          retention-days: 1
+          if-no-files-found: error
