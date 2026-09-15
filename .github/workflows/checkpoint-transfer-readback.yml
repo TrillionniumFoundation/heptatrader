@@ -1,0 +1,28 @@
+name: Checkpoint source transport readback
+on:
+  push:
+    branches: [work/checkpoint-transfer-20260915]
+    paths: [.github/workflows/checkpoint-transfer-readback.yml]
+permissions:
+  contents: read
+jobs:
+  readback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Preserve transported public source bytes without executing them
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/source-readback"
+          cp .checkpoint-transfer/part-*.bin "$RUNNER_TEMP/source-readback/"
+          cd "$RUNNER_TEMP/source-readback"
+          sha256sum part-*.bin > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: checkpoint-source-transport-readback
+          path: ${{ runner.temp }}/source-readback/
+          retention-days: 1
+          if-no-files-found: error
