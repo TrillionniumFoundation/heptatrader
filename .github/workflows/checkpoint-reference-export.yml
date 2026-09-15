@@ -1,0 +1,34 @@
+name: Pinned checkpoint rollback reference export
+on:
+  push:
+    branches: [work/checkpoint-transfer-20260915]
+    paths: [.github/workflows/checkpoint-reference-export.yml]
+permissions:
+  contents: read
+jobs:
+  export:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Export exact tracked reference without executing its code
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = d003f54c7c6c2bd19002627f2bcd9081228b01cd
+          test "$(git rev-parse HEAD^{tree})" = 22845276c508e5a6709a36876ebd6286d2911592
+          mkdir "$RUNNER_TEMP/reference"
+          git archive HEAD | gzip -n > "$RUNNER_TEMP/reference/source.tar.gz"
+          git cat-file commit HEAD > "$RUNNER_TEMP/reference/commit.raw"
+          git ls-tree -rz HEAD > "$RUNNER_TEMP/reference/tree.z"
+          cd "$RUNNER_TEMP/reference"
+          sha256sum source.tar.gz commit.raw tree.z > SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: pinned-checkpoint-reference-d003f54
+          path: ${{ runner.temp }}/reference/
+          retention-days: 1
+          if-no-files-found: error
