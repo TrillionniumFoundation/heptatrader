@@ -74,6 +74,7 @@ set(_hepta_runtime_helpers
     scripts/oms_archive_codec.py
     scripts/hepta_oms_archive.py
     scripts/hepta_oms_checkpoint.py
+    scripts/hepta_oms_lifecycle.py
     scripts/verify_oms_journal_replay.py
     adapters/mcp/hepta_mcp_server.py)
 foreach(_hepta_helper IN LISTS _hepta_runtime_helpers)
