@@ -45,7 +45,7 @@ jobs:
           python3 scripts/check_documentation.py
           python3 scripts/check_component_coverage.py
           python3 scripts/check_gap_register.py
-          python3 scripts/verify_build_ownership.py --build-dir build/core
+          python3 scripts/verify_build_ownership.py
           python3 scripts/run_python_tests.py --lane core
           python3 scripts/run_python_tests.py --lane source
 
