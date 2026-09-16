@@ -146,7 +146,8 @@ set(HEPTA_EXECUTION_COORDINATOR_SOURCES
     execution/execution_coordinator_cancel.cpp
     execution/execution_coordinator_recovery.cpp
     execution/execution_coordinator_reconnect.cpp
-    execution/execution_coordinator_terminal.cpp)
+    execution/execution_coordinator_terminal.cpp
+    execution/execution_generation_support.cpp)
 
 set(HEPTA_TOOL_HOST_CORE_SOURCES
     tool_host/trading_tool_host.cpp
