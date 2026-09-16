@@ -205,8 +205,8 @@ if ! timeout --signal=TERM --kill-after=30s 45m \
   cmake -S /src -B /build/work -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF \
-    -DHEPTA_ENABLE_IBAPI=ON \
     -DHEPTA_DOCUMENTATION_SOURCE_SHA="$EXPECTED_SHA" \
+    -DHEPTA_ENABLE_IBAPI=ON \
     -DIBAPI_ROOT=/sdk \
     -DIBAPI_DECIMAL_LIBRARY=/sdk/libbid.a \
     >>"$BUILD_LOG" 2>&1; then

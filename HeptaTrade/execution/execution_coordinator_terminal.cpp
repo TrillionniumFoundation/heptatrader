@@ -19,5 +19,13 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
     universe = PaperTerminalMutationUniverse();
     if (!ValidPaperTerminalFenceBinding(binding, reason)) return false;
     std::lock_guard<std::mutex> lock(m_mutex);
-    return EnterPaperTerminalFenceAndProjectLocked(binding, universe, reason);
+    return EnterPaperTerminalFenceAndProjectGenerationAwareLocked(
+        binding, universe, reason);
 }
+
+// Generation/index implementation is intentionally compiled in this already
+// owned Execution translation unit. The .inc files are not second targets or
+// hidden executable paths; they extend the same hepta_execution_core binary and
+// therefore remain covered by the existing CMake ownership inventory.
+#include "execution_generation_support.inc"
+#include "execution_generation_capacity_support.inc"

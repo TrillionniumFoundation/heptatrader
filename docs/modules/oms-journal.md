@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`, `scripts/verify_oms_journal_replay.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`, `scripts/hepta_oms_report.py`, `HeptaTrade/oms_archive_codec.h`, `scripts/oms_archive_codec.py`, `scripts/hepta_oms_archive.py`
-Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_oms_capacity.py`, `tests/oms_live_capacity_cases.h`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_oms_operational_report.py`, `tests/oms_queue_budget_cases.h`, `tests/oms_archive_cases.h`, `tests/python/test_oms_archive.py`, `tests/compat/oms_recover.cpp`, `tests/compat/oms_recover.h`
+Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`, `HeptaTrade/oms_generation_store.h`, `scripts/verify_oms_journal_replay.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`, `scripts/hepta_oms_report.py`, `HeptaTrade/oms_archive_codec.h`, `scripts/oms_archive_codec.py`, `scripts/hepta_oms_archive.py`, `scripts/hepta_oms_checkpoint.py`
+Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_oms_capacity.py`, `tests/oms_live_capacity_cases.h`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_oms_operational_report.py`, `tests/oms_queue_budget_cases.h`, `tests/oms_archive_cases.h`, `tests/python/test_oms_archive.py`, `tests/python/test_oms_checkpoint.py`, `tests/compat/oms_recover.cpp`, `tests/compat/oms_recover.h`
 
 ## Responsibilities
 
@@ -50,6 +50,36 @@ deduplication behavior is retained unchanged. Production schema 1–4 reading
 remains in `OmsJournal`; moving this test helper does not retire a persisted
 format or introduce another PAPER recovery authority.
 
+### Generation-backed incremental recovery
+
+Stopped-state generation maintenance now writes one immutable verified journal
+prefix, a full-key permanent command index, a durable send-attempt index, a
+bounded hot replay containing original OMS events needed for unresolved/current
+state, and a digest-bound runtime manifest. `OmsGenerationStore` is a native
+read-only consumer of those files. When `<journal>.generations` exists, the
+coordinator requires a valid `CURRENT`/`CURRENT.runtime` binding, verifies the
+selected generation and active-journal lineage, replays the hot event set and
+only the active tail, and services historical command-ID lookups from the pinned
+full-key disk index. Corrupt or substituted current generation state blocks
+startup; it never silently falls back to a parent generation or treats a missing
+index row after an integrity failure as a new command.
+
+The permanent index compares the complete `(agent, session, command)` key and
+canonical request hash. Historical lookups are materialized into only a bounded
+cache; they are not repopulated wholesale into the coordinator. Rolling PAPER
+send-rate recovery combines the generation send-attempt index with current-tail
+attempts, so a generation cut cannot reset the mutation budget. Terminal mutation
+universe construction likewise includes historical durable mutations from the
+disk index before sealing a PAPER terminal witness.
+
+Generation creation currently requires an expanded plain JSONL journal. A gzip
+journal must first use the existing lossless stopped-state expansion; the runtime
+never guesses a byte cut inside compressed storage. Generation creation does not
+expire any command identity or delete source history. Active-tail rotation and
+long-horizon capacity reclamation remain a separate acceptance item until the
+writer can atomically adopt a new tail without weakening rollback or callback
+recovery.
+
 ## Failure semantics
 
 - Append/open/fsync failure before external send: reject and close mutation admission if durability is no longer trustworthy.
@@ -57,6 +87,7 @@ format or introduce another PAPER recovery authority.
 - Truncated or malformed journal content: follow the strict replay rule; never skip corruption in the middle and continue as healthy.
 - Duplicate event: count and skip only under the exact deduplication rule.
 - Unknown semantics: retain evidence but do not manufacture an authoritative state transition.
+- A present generation store with unsafe metadata, digest drift, index corruption, prefix mismatch, malformed hot replay or pointer disagreement is a recovery failure; it is never ignored as if no checkpoint existed.
 
 ## Observability
 
@@ -67,6 +98,8 @@ A complete interface for deduplication/corruption/unresolved-command counters, d
 ## Test expectations
 
 Tests inject path replacement and I/O failure, verify synchronous critical durability, callback-atomic replay, same-command replay, conflicting-command rejection, malformed records, restart recovery, and complete v4 broker-field round trips. New schema fields require both old-fixture and current-writer tests.
+
+Generation tests cover source-prefix identity, current-pointer interruption, sidecar digest drift, canonical and historical Agent source namespaces, full-key duplicate/conflict lookup, hot unresolved state, parent retention and explicit gzip rejection. Native coordinator tests remain responsible for proving that a generated cut preserves actual command idempotency, owner/fence recovery and rate budgets through restart; the Python producer alone is not runtime acceptance.
 
 ## Recovery resource contract
 

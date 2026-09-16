@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bounded, read-only journald collection into the existing atomic text publisher.
+"""Bounded, read-only journald collection into atomic text publishers.
 
 No Broker socket, credentials, execution request, listener or notification I/O.
 The optional timer must be enabled by the host operator, never by packaging.
@@ -23,10 +23,12 @@ import time
 from typing import Callable
 
 import hepta_oms_report as metrics
+import hepta_ib_runtime_report as ib_metrics
 
 PROFILES = {
     "simulator": {"oms": "hepta-execution-simulator.service", "gateway": "hepta-tool-gateway.service"},
-    "ib-paper": {"oms": "hepta-execution-ib-paper.service", "gateway": "hepta-tool-gateway.service"},
+    "ib-paper": {"oms": "hepta-execution-ib-paper.service", "ib": "hepta-execution-ib-paper.service",
+                 "gateway": "hepta-tool-gateway.service"},
 }
 MAX_BYTES = 8 << 20
 MAX_ROWS = 4096
@@ -37,12 +39,6 @@ IDENTITY = re.compile(r"[0-9a-f]{32}\Z")
 
 def bounded_command(argv: list[str], *, timeout: float = TIMEOUT_SECONDS,
                     max_bytes: int = MAX_BYTES) -> bytes:
-    """Read without communicate()'s unbounded capture; kill/reap on every failure.
-
-    argv injection exists only as this internal test seam. The CLI has no
-    executable, shell, environment or timeout override. Production uses the
-    fixed journalctl command below with a minimal environment.
-    """
     if not argv or not Path(argv[0]).is_absolute() or not 0 < timeout <= TIMEOUT_SECONDS:
         raise ValueError("invalid collection command")
     if type(max_bytes) is not int or not 0 < max_bytes <= MAX_BYTES:
@@ -80,8 +76,6 @@ def bounded_command(argv: list[str], *, timeout: float = TIMEOUT_SECONDS,
             raise ValueError("collection command failed")
         return bytes(data)
     finally:
-        # Even a successfully exited leader may leave a child holding stdout.
-        # Kill only the process group created for this exact subprocess.
         if not reaped:
             try:
                 os.killpg(child.pid, signal.SIGKILL)
@@ -101,13 +95,22 @@ def read_journal(unit: str) -> bytes:
     ])
 
 
+def _kind_contract(kind: str):
+    if kind == "oms":
+        return metrics.SCHEMA, metrics.validate
+    if kind == "gateway":
+        return metrics.GATEWAY_SCHEMA, metrics.validate_gateway
+    if kind == "ib":
+        return ib_metrics.SCHEMA, ib_metrics.validate
+    raise ValueError("invalid telemetry kind")
+
+
 def journal_samples(data: bytes, unit: str, kind: str) -> list[dict]:
-    if kind not in {"oms", "gateway"} or not isinstance(data, bytes) or len(data) > MAX_BYTES:
+    if not isinstance(data, bytes) or len(data) > MAX_BYTES:
         raise ValueError("invalid journal snapshot")
     if data and not data.endswith(b"\n"):
         raise ValueError("incomplete journal snapshot")
-    schema = metrics.SCHEMA if kind == "oms" else metrics.GATEWAY_SCHEMA
-    validator = metrics.validate if kind == "oms" else metrics.validate_gateway
+    schema, validator = _kind_contract(kind)
     recent: deque[dict] = deque(maxlen=120)
     incarnation = None
     epoch = None
@@ -124,8 +127,6 @@ def journal_samples(data: bytes, unit: str, kind: str) -> list[dict]:
                               parse_constant=metrics.reject_constant, parse_float=metrics.finite_float)
         if not isinstance(envelope, dict):
             raise ValueError("invalid journal envelope")
-        # --unit also returns system-manager messages. Only a trusted journald
-        # _SYSTEMD_UNIT producer match can contribute daemon telemetry.
         if envelope.get("_SYSTEMD_UNIT") != unit:
             continue
         boot, invocation = envelope.get("_BOOT_ID"), envelope.get("_SYSTEMD_INVOCATION_ID")
@@ -159,7 +160,6 @@ def journal_samples(data: bytes, unit: str, kind: str) -> list[dict]:
 
 @contextmanager
 def collection_lock(directory: Path):
-    """Serialize observation AND publication, not merely the final rename."""
     directory_fd = metrics._open_metrics_directory(directory)
     fd = None
     try:
@@ -194,19 +194,31 @@ def collect_kind(directory: Path, kind: str, unit: str,
         raise ValueError("invalid kind/unit pair")
     try:
         samples = journal_samples(reader(unit), unit, kind)
-        # Measure now AFTER potentially slow collection. Starting-time freshness
-        # can hide a delayed collector; there is no user-provided clock override.
         now_ms = time.time_ns() // 1000000
-        summary = (metrics.report if kind == "oms" else metrics.gateway_report)(samples, now_ms)
-        text = (metrics.prometheus if kind == "oms" else metrics.gateway_prometheus)(samples[-1], summary)
-        text += metrics.collection_metrics(kind, now_ms, samples[-1])
+        if kind == "oms":
+            summary = metrics.report(samples, now_ms)
+            text = metrics.prometheus(samples[-1], summary)
+            text += metrics.collection_metrics(kind, now_ms, samples[-1])
+        elif kind == "gateway":
+            summary = metrics.gateway_report(samples, now_ms)
+            text = metrics.gateway_prometheus(samples[-1], summary)
+            text += metrics.collection_metrics(kind, now_ms, samples[-1])
+        else:
+            summary = ib_metrics.report(samples, now_ms)
+            text = ib_metrics.prometheus(samples[-1], summary)
+            text += ib_metrics.collection_metrics(now_ms, samples[-1])
         result = int(bool(summary["alerts"]))
     except (OSError, ValueError, TypeError, OverflowError, RecursionError, subprocess.TimeoutExpired):
-        text = metrics.collection_metrics(kind, time.time_ns() // 1000000)
+        now_ms = time.time_ns() // 1000000
+        text = (ib_metrics.collection_metrics(now_ms) if kind == "ib" else
+                metrics.collection_metrics(kind, now_ms))
         result = 2
     if guard is not None:
         guard()
-    metrics.publish_metrics(directory, kind, text)
+    if kind == "ib":
+        ib_metrics.publish_metrics(directory, text)
+    else:
+        metrics.publish_metrics(directory, kind, text)
     return result
 
 
@@ -222,7 +234,6 @@ def collect_profile(directory: Path, profile: str,
                 status = collect_kind(directory, kind, unit, reader, guard)
             except (OSError, ValueError):
                 status = 2
-            # Never print raw journald output, messages, paths or exception text.
             print(f"HEPTA_COLLECTION_{kind.upper()}_{('OK', 'ALERT', 'FAILED')[status]}")
             result = max(result, status)
     return result

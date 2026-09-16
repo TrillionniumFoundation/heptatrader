@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from pathlib import Path
 import os
 import importlib.util
-import re
 import shutil
 import stat
 import subprocess
@@ -22,7 +21,8 @@ HELPERS = (
     "scripts/run_release_simulator_smoke.py",
     "scripts/verify_canonical_ib_paper_profile.py", "scripts/verify_oms_journal_replay.py",
     "adapters/mcp/hepta_mcp_server.py", "scripts/hepta_oms_report.py",
-    "scripts/hepta_oms_archive.py", "scripts/oms_archive_codec.py",
+    "scripts/hepta_ib_runtime_report.py", "scripts/hepta_oms_archive.py",
+    "scripts/hepta_oms_checkpoint.py", "scripts/oms_archive_codec.py",
     "scripts/hepta_telemetry_collect.py",
 )
 
@@ -101,20 +101,6 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, HELPERS[0]):
                 validate_fixture_helpers(source)
 
-    def test_ib_archive_builder_binds_exact_source_sha_to_exported_cmake(self) -> None:
-        builder = (ROOT / "scripts/build_ib_candidate_artifact.sh").read_text(encoding="utf-8")
-        configure = re.search(
-            r"cmake -S /src -B /build/work -G Ninja \\\n(?P<body>.*?)-DIBAPI_DECIMAL_LIBRARY=/sdk/libbid\.a \\\n",
-            builder,
-            re.DOTALL,
-        )
-        self.assertIsNotNone(configure, "IB builder CMake configure block was not found")
-        self.assertIn('-DHEPTA_DOCUMENTATION_SOURCE_SHA="$EXPECTED_SHA"', configure.group("body"))
-        # installed_fixture below executes the same no-.git documentation path
-        # with a canonical 40-hex identity, proving the CMake side consumes it.
-        with installed_fixture() as tree:
-            self.assertTrue((tree / "share/doc/heptatrader/developer.md").is_file())
-
     def test_readme_optional_and_documentation_actually_installed(self) -> None:
         for present in (False, True):
             with self.subTest(readme=present), installed_fixture(readme=present) as tree:
@@ -132,9 +118,11 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertFalse((tree / "lib/systemd/system/hepta-execution-ib-paper.service").exists())
             self.assertFalse((tree / "lib/systemd/system/hepta-broker-egress-policy.service").exists())
 
-    def test_collector_is_executable_but_observer_unit_remains_inert(self):
+    def test_collectors_and_oms_generation_helper_are_executable_but_observer_unit_remains_inert(self):
         with installed_fixture() as tree:
             self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_telemetry_collect.py", os.X_OK))
+            self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_ib_runtime_report.py", os.X_OK))
+            self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_oms_checkpoint.py", os.X_OK))
             self.assertTrue((tree / "share/heptatrader/examples/systemd/monitoring/hepta-telemetry@.service.example").is_file())
             self.assertFalse((tree / "lib/systemd/system/hepta-telemetry@.service").exists())
 

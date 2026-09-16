@@ -42,6 +42,8 @@ add_executable(hepta_execution_coordinator_tests
     compat/oms_recover.cpp)
 target_link_libraries(hepta_execution_coordinator_tests
     hepta_execution_core)
+target_compile_definitions(hepta_execution_coordinator_tests PRIVATE
+    HEPTA_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
 hepta_register_core_test(hepta_execution_coordinator_tests)
 
 add_executable(hepta_oms_journal_durability_tests
