@@ -23,6 +23,7 @@ jobs:
         run: |
           python3 scripts/_convergence_materialize.py
           python3 scripts/_convergence_fixture_fix.py
+          python3 scripts/_convergence_diag_stage.py
 
       - name: Diagnose native HPM2 convergence
         run: |
@@ -37,7 +38,7 @@ jobs:
       - name: Commit validated materialized tree
         if: ${{ false }}
         run: |
-          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py
+          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py scripts/_convergence_diag_stage.py
           git config user.name "HeptaTrader convergence materializer"
           git config user.email "noreply@github.com"
           git add -A
