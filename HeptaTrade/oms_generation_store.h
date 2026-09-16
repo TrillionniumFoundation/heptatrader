@@ -104,6 +104,8 @@ public:
         std::string& reason) const;
 
     bool EnumerateMutationRecords(
+        const std::string& agentId,
+        const std::string& sessionId,
         const std::string& account,
         const std::string& executionDomain,
         std::vector<OmsGenerationMutationRecord>& records,
@@ -145,8 +147,8 @@ private:
     std::uint64_t m_sendAttemptRecords = 0;
     std::uint64_t m_hotReplayRecords = 0;
     // The cumulative send-attempt index is immutable for one selected
-    // generation.  Cache only the already-filtered suffix for one account/domain
-    // and monotonically increasing cutoff.  A backwards clock or subject change
+    // generation. Cache only the already-filtered suffix for one account/domain
+    // and monotonically increasing cutoff. A backwards clock or subject change
     // deliberately falls back to a complete index scan, preserving the exact
     // historical semantics without charging every ordinary admission O(history).
     mutable bool m_sendQueryCacheValid = false;
