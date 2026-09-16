@@ -1,0 +1,103 @@
+name: Temporary final contract cleanup
+
+on:
+  push:
+    branches: [remediation/full-priority-cleanup-20260916]
+
+permissions:
+  contents: write
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  cleanup:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact branch head
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Install source-check dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
+
+      - name: Remove stale source and XT topology wording
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text(encoding='utf-8')
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f'{path}: expected one match, found {count}')
+              p.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          replace_once(
+              'HeptaTrade/execution/execution_generation_support.cpp',
+              '// Internal implementation extension compiled exactly once from\n'
+              '// execution_coordinator_terminal.cpp. Keeping generation support in the\n'
+              '// existing Execution translation unit avoids inventing a shadow CMake target;\n'
+              '// component/build ownership remains truthful while the persistent interface is\n'
+              '// still isolated behind oms_generation_store.h.\n\n',
+              '// Generation persistence remains part of the existing Execution runtime target.\n'
+              '// It is isolated behind oms_generation_store.h without a shadow service, product,\n'
+              '// or textual include boundary.\n\n')
+
+          replace_once(
+              'docs/technical/xtqmt-adapter-contract.md',
+              '- local IPC endpoint, OS identities and ACLs;',
+              '- HXQ1 mTLS endpoint, certificate/public-key identities, host/service identities and firewall policy;')
+          replace_once(
+              'docs/technical/xtqmt-adapter-contract.md',
+              '## Local IPC protocol',
+              '## HXQ1 transport protocol')
+          replace_once(
+              'docs/technical/xtqmt-adapter-contract.md',
+              '| malformed/oversized IPC | close request, no mutation |',
+              '| malformed/oversized HXQ1 frame | close request, no mutation |')
+          replace_once(
+              'docs/technical/xtqmt-adapter-contract.md',
+              'callback receive-to-normalization latency, IPC request latency/result bins,',
+              'callback receive-to-normalization latency, HXQ1 request latency/result bins,')
+          replace_once(
+              'docs/technical/xtqmt-adapter-contract.md',
+              '2. Implement the HXQ1 codec and local peer/ACL enforcement with hostile framing\n   tests before importing vendor APIs.',
+              '2. Implement HXQ1 framing, mTLS peer identity and endpoint/firewall enforcement\n   with hostile framing tests before importing vendor APIs.')
+          PY
+
+      - name: Remove this temporary workflow and commit exact final tree locally
+        run: |
+          set -euo pipefail
+          rm -f .github/workflows/final-contract-cleanup.yml
+          git diff --check
+          git add -A
+          git diff --cached --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "docs: finish runtime contract cleanup"
+          test -z "$(git status --porcelain)"
+
+      - name: Validate exact final source tree
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_exact_git_index.py --root .
+          python3 scripts/check_documentation.py
+          python3 scripts/check_component_coverage.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/run_python_tests.py --lane source
+          git clean -fdX
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          python3 scripts/verify_exact_git_index.py --root .
+
+      - name: Push only the verified cleanup commit
+        run: git push origin HEAD:remediation/full-priority-cleanup-20260916
