@@ -19,13 +19,18 @@ jobs:
           ref: remediation/full-convergence-20260916
           fetch-depth: 1
 
-      - name: Apply semantic convergence
+      - name: Materialize final source tree and remove helpers
         run: |
           python3 scripts/_convergence_materialize.py
           python3 scripts/_convergence_fixture_fix.py
           python3 scripts/_convergence_index_fix.py
+          rm .github/workflows/convergence-materialize.yml \
+             scripts/_convergence_materialize.py \
+             scripts/_convergence_fixture_fix.py \
+             scripts/_convergence_index_fix.py \
+             scripts/_convergence_diag_stage.py
 
-      - name: Validate complete source convergence
+      - name: Validate complete final source tree
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
@@ -42,13 +47,8 @@ jobs:
           python3 scripts/run_python_tests.py --lane core
           python3 scripts/run_python_tests.py --lane source
 
-      - name: Commit validated materialized tree
+      - name: Commit validated final tree
         run: |
-          rm .github/workflows/convergence-materialize.yml \
-             scripts/_convergence_materialize.py \
-             scripts/_convergence_fixture_fix.py \
-             scripts/_convergence_index_fix.py \
-             scripts/_convergence_diag_stage.py
           git config user.name "HeptaTrader convergence materializer"
           git config user.email "noreply@github.com"
           git add -A
