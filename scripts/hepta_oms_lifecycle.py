@@ -37,7 +37,6 @@ from verify_oms_journal_replay import (
 SCHEMA = "heptatrader.oms-generation.v2"
 RUNTIME_MANIFEST_HEADER = "HEPTA_OMS_RUNTIME_GENERATION_V2"
 TAIL_HEADER = "HEPTA_OMS_ACTIVE_TAIL_V1"
-MAX_CHAIN = 1024
 MAX_METADATA = 16 * 1024 * 1024
 
 
@@ -750,15 +749,29 @@ def verify_generation(store: Path, generation: str | None = None,
 
 
 def _generation_chain(store: Path, current_generation: str) -> list[tuple[str, dict[str, Any]]]:
+    """Return the active lineage from the newest complete base to current.
+
+    V1 generations contain a complete immutable journal snapshot, so parents
+    older than the newest V1 base are archival history rather than dependencies
+    of the current recovery/export working set. V2 generations are deltas and
+    therefore walk parents until a V1 base or an explicit root is reached.
+    There is deliberately no generation-count ceiling; corruption is bounded by
+    cycle detection and by the private, one-manifest-at-a-time traversal.
+    """
     chain: list[tuple[str, dict[str, Any]]] = []
     seen: set[str] = set()
     generation = current_generation
     while generation:
-        if generation in seen or len(chain) >= MAX_CHAIN:
+        if generation in seen:
             raise v1.GenerationError("OMS_GENERATION_PARENT_CHAIN_INVALID")
         seen.add(generation)
         manifest = _manifest_for(store, generation)
+        schema = manifest.get("schema")
+        if schema not in {SCHEMA, v1.SCHEMA}:
+            raise v1.GenerationError("OMS_GENERATION_PARENT_SCHEMA_UNSUPPORTED")
         chain.append((generation, manifest))
+        if schema == v1.SCHEMA:
+            break
         parent = manifest.get("parent_generation") or ""
         if not isinstance(parent, str):
             raise v1.GenerationError("OMS_GENERATION_PARENT_INVALID")
@@ -774,11 +787,6 @@ def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
     generation = current["generation"]
     verify_generation(store, generation, journal if _manifest_for(store, generation).get("schema") == SCHEMA else None)
     chain = _generation_chain(store, generation)
-    base_index = 0
-    for i, (_, manifest) in enumerate(chain):
-        if manifest.get("schema") == v1.SCHEMA:
-            base_index = i
-    selected = chain[base_index:]
     output_parent = output.parent.resolve()
     output_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not v1._private_directory(os.stat(output_parent, follow_symlinks=False)):
@@ -787,7 +795,7 @@ def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
     records = 0
     total = 0
     try:
-        for gen, manifest in selected:
+        for gen, manifest in chain:
             verify_generation(store, gen)
             segment = store / gen / "segment-000001.jsonl"
             source = os.open(segment, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
