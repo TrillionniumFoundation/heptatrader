@@ -11,7 +11,7 @@ jobs:
   materialize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - name: Checkout remediation head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -28,14 +28,18 @@ jobs:
       - name: Apply batch 3
         run: python3 scripts/apply_priority_remediation_batch3_fix.py
 
-      - name: Remove remediation-only scaffolding
+      - name: Remove remediation-only scaffolding and stage the exact final tree
         run: |
+          set -euo pipefail
           rm -f .github/workflows/remediation-materialize.yml
           rm -f scripts/apply_priority_remediation_batch1.py
           rm -f scripts/apply_priority_remediation_batch1_fix.py
           rm -f scripts/apply_priority_remediation_batch2.py
           rm -f scripts/apply_priority_remediation_batch3.py
           rm -f scripts/apply_priority_remediation_batch3_fix.py
+          git diff --check
+          git add -A
+          git diff --cached --check
 
       - name: Build and run canonical native core tests
         env:
@@ -43,30 +47,28 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
-      - name: Validate source and documentation contracts
+      - name: Validate staged source and documentation contracts
         run: |
+          set -euo pipefail
+          python3 scripts/verify_exact_git_index.py --root .
+          bash -n scripts/build_ib_candidate_artifact.sh
+          bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 scripts/check_documentation.py
+          python3 scripts/check_qualification_trust_boundary.py
           python3 scripts/check_component_coverage.py
+          python3 scripts/check_systemd_units.py
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_canonical_ib_paper_profile.py
           python3 scripts/run_python_tests.py --lane source
 
       - name: Commit verified cleanup
         run: |
           set -euo pipefail
           git diff --check
-          test -n "$(git status --porcelain)"
+          git diff --cached --check
+          test -n "$(git diff --cached --name-only)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add HeptaTrade/CMakeLists.txt \
-            HeptaTrade/execution/execution_coordinator_terminal.cpp \
-            HeptaTrade/execution/execution_generation_support.cpp \
-            docs/build-targets.json docs/gap-register.json \
-            docs/modules/execution-service.md docs/modules/oms-journal.md \
-            docs/modules/xt-adapter.md \
-            docs/technical/oms-recovery-capacity.md \
-            docs/technical/runtime-cost-observations.md \
-            docs/technical/xtqmt-adapter-contract.md \
-            docs/technical/reconciliation-engine.md \
-            tests/python/test_recovery_projection.py
-          git add -u HeptaTrade/execution .github/workflows scripts
           git commit -m "refactor: remove source formalism and synchronize contracts"
           git push origin HEAD:remediation/full-priority-cleanup-20260916
