@@ -81,6 +81,17 @@ main_start = main_inc.index(enter)
 support = support[:start] + main_inc[main_start:] + support[end:]
 support_path.write_text(support)
 
+# Keep the reviewed machine-readable build inventory synchronized with the
+# normal translation unit introduced above. This is source ownership metadata,
+# not an extra acceptance gate.
+build_targets_path = ROOT / "docs/build-targets.json"
+build_targets = build_targets_path.read_text()
+terminal_entry = '''            {\n              "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",\n              "kind": "implementation",\n              "owner": "execution-service",\n              "language": "CXX",\n              "standard": "11"\n            },\n            {\n              "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",'''
+generation_entry = '''            {\n              "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",\n              "kind": "implementation",\n              "owner": "execution-service",\n              "language": "CXX",\n              "standard": "11"\n            },\n            {\n              "path": "HeptaTrade/execution/execution_generation_support.cpp",\n              "kind": "implementation",\n              "owner": "execution-service",\n              "language": "CXX",\n              "standard": "11"\n            },\n            {\n              "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",'''
+build_targets = replace_once(
+    build_targets, terminal_entry, generation_entry, "build inventory generation source")
+build_targets_path.write_text(build_targets)
+
 # The migration removes the textual V2 implementation file, so the closed gap
 # must cite the normal translation unit that now carries the same native V2
 # recovery/capacity dispatch.
