@@ -107,6 +107,10 @@ public:
     OmsJournalHealthSnapshot GetHealthSnapshot() const;
 
     static long long NowEpochMs();
+    // Shared strict line parser for native checkpoint/tail recovery. This does
+    // not introduce another schema or a permissive reader: generation recovery
+    // deliberately reuses the exact production journal parser.
+    static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
 
 private:
     static bool IsCriticalEventType(const std::string& eventType);
@@ -123,7 +127,6 @@ private:
 private:
     static std::string EscapeJson(const std::string& s);
     static std::string BuildJsonLine(const OmsJournalEvent& evt);
-    static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
 
 private:
     std::string m_path;
@@ -144,7 +147,6 @@ private:
     std::uint64_t m_capacityRecords = 0;
     std::uint64_t m_storageBytes = 0;
     bool m_gzipStorage = false;
-
 
     std::size_t m_pendingBytes = 0;
     std::size_t m_maxPendingBytes = 8U * 1024U * 1024U;
