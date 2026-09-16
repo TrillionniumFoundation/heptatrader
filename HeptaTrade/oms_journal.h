@@ -112,6 +112,15 @@ public:
     // deliberately reuses the exact production journal parser.
     static bool ParseJsonLine(const std::string& line, OmsJournalEvent& out);
 
+    // Called only after OmsGenerationStore has verified a selected generation,
+    // its hot replay and the exact active tail. The bytes/records are the next
+    // restart working set, not total immutable historical storage. This lets
+    // existing new-entry headroom apply to generation-backed incremental
+    // recovery instead of treating every pre-cut byte as still hot.
+    void AdoptValidatedIncrementalRecoveryCapacity(
+        std::uint64_t decodedBytes,
+        std::uint64_t records);
+
 private:
     static bool IsCriticalEventType(const std::string& eventType);
     bool FlushBufferedLocked();
