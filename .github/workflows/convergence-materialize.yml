@@ -19,7 +19,7 @@ jobs:
           ref: remediation/full-convergence-20260916
           fetch-depth: 1
 
-      - name: Materialize final source tree and remove helpers
+      - name: Materialize and stage the final source tree
         run: |
           python3 scripts/_convergence_materialize.py
           python3 scripts/_convergence_fixture_fix.py
@@ -29,8 +29,10 @@ jobs:
              scripts/_convergence_fixture_fix.py \
              scripts/_convergence_index_fix.py \
              scripts/_convergence_diag_stage.py
+          git add -A
+          git diff --cached --check
 
-      - name: Validate complete final source tree
+      - name: Validate complete staged final source tree
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
@@ -51,7 +53,6 @@ jobs:
         run: |
           git config user.name "HeptaTrader convergence materializer"
           git config user.email "noreply@github.com"
-          git add -A
           git diff --cached --check
           git commit -m "fix: converge owner-scoped HPM2 and streaming generation verification"
           git push origin HEAD:remediation/full-convergence-20260916
