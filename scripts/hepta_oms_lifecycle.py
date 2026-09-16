@@ -1,393 +1,330 @@
 #!/usr/bin/env python3
-"""Seal OMS history into lineage generations and rotate a fail-closed active tail.
+"""Canonical OMS lifecycle facade.
 
-This is the stopped-state long-horizon companion to hepta_oms_checkpoint.py.
-It never expires command identity and never grants PAPER/LIVE authority.
+The reviewed V2 implementation lives in ``hepta_oms_lifecycle_core``.  This
+facade keeps that implementation stable while adding two narrow behaviours:
 
-A v2 generation stores only the newly sealed JSONL segment, but publishes a
-cumulative full-key command index, cumulative send-attempt index, and bounded
-hot replay.  The active journal is then replaced by a lineage sentinel followed
-only by new JSONL events.  Legacy full-journal replay rejects that sentinel,
-while generation-aware native recovery verifies it and replays bytes after it.
-`export` reconstructs an ordinary complete JSONL journal for explicit downgrade.
+* verification of cumulative runtime/send indexes is streaming rather than
+  materializing the whole historical index; and
+* every newly sealed V2 generation carries a digest-bound simulator recovery
+  projection in ``checkpoint.json`` before the lineage pointer is published.
+
+The projection is deliberately bounded by open simulator orders and non-zero
+positions.  Historical command identity remains in the normal generation
+indexes; this file does not create a second command ledger or grant PAPER/LIVE
+authority.
 """
 from __future__ import annotations
 
-import argparse
-import fcntl
 import hashlib
-import json
+import math
 import os
 from pathlib import Path
-import stat
-import sys
-import time
-import uuid
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterator
 
-import hepta_oms_checkpoint as v1
-from verify_oms_journal_replay import (
-    JournalError,
-    reject_constant,
-    unique_object,
-    validate_event,
-    validated_raw_records,
-)
+import hepta_oms_lifecycle_core as _core
 
-SCHEMA = "heptatrader.oms-generation.v2"
-RUNTIME_MANIFEST_HEADER = "HEPTA_OMS_RUNTIME_GENERATION_V2"
-TAIL_HEADER = "HEPTA_OMS_ACTIVE_TAIL_V1"
-MAX_CHAIN = 1024
-MAX_METADATA = 16 * 1024 * 1024
+# Re-export the reviewed implementation, including private helpers used by the
+# repository's focused tests.  Only the functions replaced below diverge.
+for _name in dir(_core):
+    if _name not in {"verify_generation", "seal_generation", "main"}:
+        globals()[_name] = getattr(_core, _name)
+
+_core_verify_generation = _core.verify_generation
+_core_seal_generation = _core.seal_generation
+
+_SIM_HEADER = "HEPTA_SIMULATOR_RECOVERY_V1"
+_SIM_FIELD = "simulator_recovery_hex"
+_SIM_SCHEMA_FIELD = "simulator_recovery_schema"
+_SIM_MAX_PAYLOAD = 8 * 1024 * 1024
 
 
-def _tail_header(generation: str) -> bytes:
-    if not generation or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for c in generation):
-        raise v1.GenerationError("OMS_GENERATION_NAME_INVALID")
-    return f"{TAIL_HEADER}\t{generation}\n".encode("ascii")
+def _new_simulator_state() -> dict[str, Any]:
+    return {
+        "admitted_order_count": 0,
+        "next_order_id": 1_000_000,
+        "positions": {},
+        "active_orders": {},
+    }
 
 
-def _parse_tail_header(fd: int, size: int) -> tuple[str, int] | None:
-    maximum = 512
-    raw = os.pread(fd, min(size, maximum), 0)
-    newline = raw.find(b"\n")
-    if newline < 0:
-        if size >= maximum:
-            raise v1.GenerationError("OMS_ACTIVE_TAIL_HEADER_LIMIT")
-        return None
-    line = raw[:newline]
-    prefix = (TAIL_HEADER + "\t").encode("ascii")
-    if not line.startswith(prefix):
-        return None
-    try:
-        generation = line[len(prefix):].decode("ascii")
-    except UnicodeError as error:
-        raise v1.GenerationError("OMS_ACTIVE_TAIL_HEADER_INVALID") from error
-    expected = _tail_header(generation)
-    if raw[:len(expected)] != expected:
-        raise v1.GenerationError("OMS_ACTIVE_TAIL_HEADER_INVALID")
-    return generation, len(expected)
+def _finite_positive(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and \
+        math.isfinite(float(value)) and float(value) > 0.0
 
 
-def _strict_records(fd: int, start: int, end: int, *, max_bytes: int,
-                    max_records: int, max_record_bytes: int) -> tuple[list[bytes], list[dict[str, Any]]]:
-    if start < 0 or end < start or end - start > max_bytes:
-        raise v1.GenerationError("OMS_REPLAY_BYTE_LIMIT")
-    raw_records: list[bytes] = []
-    events: list[dict[str, Any]] = []
-    pending = bytearray()
-    offset = start
-    while offset < end:
-        chunk = os.pread(fd, min(1024 * 1024, end - offset), offset)
-        if not chunk:
-            raise v1.GenerationError("OMS_REPLAY_IO_FAILURE")
-        offset += len(chunk)
-        cursor = 0
-        while cursor < len(chunk):
-            newline = chunk.find(b"\n", cursor)
-            fragment = chunk[cursor:newline if newline >= 0 else len(chunk)]
-            if len(fragment) > max_record_bytes - len(pending):
-                raise v1.GenerationError("OMS_REPLAY_RECORD_BYTE_LIMIT")
-            pending.extend(fragment)
-            if newline < 0:
-                break
-            if not pending:
-                raise v1.GenerationError("OMS_REPLAY_EMPTY_RECORD")
-            if len(events) >= max_records:
-                raise v1.GenerationError("OMS_REPLAY_RECORD_COUNT_LIMIT")
-            raw = bytes(pending)
-            try:
-                value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object,
-                                   parse_constant=reject_constant)
-                value = validate_event(value, len(events) + 1)
-            except (JournalError, json.JSONDecodeError, UnicodeError, RecursionError) as error:
-                raise v1.GenerationError("OMS_REPLAY_INVALID_RECORD") from error
-            value.pop("_line", None)
-            raw_records.append(raw + b"\n")
-            events.append(value)
-            pending.clear()
-            cursor = newline + 1
-    if pending:
-        raise v1.GenerationError("OMS_REPLAY_TORN_RECORD")
-    return raw_records, events
+def _apply_simulator_event(state: dict[str, Any], event: dict[str, Any]) -> None:
+    order_id = event.get("order_id", -1)
+    if not isinstance(order_id, int) or isinstance(order_id, bool):
+        order_id = -1
+    prior_watermark = int(state["next_order_id"]) - 1
+    kind = event.get("event", "")
+    fill = kind == "status" and event.get("status", "") == "Filled"
+    terminal = kind == "status" and event.get("status", "") in {
+        "Cancelled", "ApiCancelled", "Inactive", "Rejected"
+    }
+
+    if kind == "place_sent" or fill:
+        instrument = event.get("instrument", "")
+        side = event.get("side", "")
+        qty = event.get("qty", 0.0)
+        if (order_id < 0 or event.get("venue", "") != "SIMULATOR" or
+                event.get("account", "") != "SIM" or not isinstance(instrument, str) or
+                not instrument or side not in {"BUY", "SELL"} or not _finite_positive(qty)):
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_EVENT_INVALID")
+        qty = float(qty)
+        active: dict[int, dict[str, Any]] = state["active_orders"]
+        if kind == "place_sent":
+            observed = {
+                "instrument": instrument,
+                "side": side,
+                "qty": qty,
+                "req_id": event.get("req_id", "") if isinstance(event.get("req_id", ""), str) else "",
+                "request_hash": event.get("request_hash", "") if isinstance(event.get("request_hash", ""), str) else "",
+            }
+            prior = active.get(order_id)
+            if prior is not None:
+                if prior != observed:
+                    raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_ADMISSION_CONFLICT")
+            else:
+                # Simulator order ids are monotonically allocated.  Reusing an
+                # id at or below the sealed watermark means a terminal order was
+                # replayed or identity was lost; fail closed rather than count it
+                # twice.
+                if order_id <= prior_watermark:
+                    raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_ORDER_ID_REUSE")
+                active[order_id] = observed
+                state["admitted_order_count"] = int(state["admitted_order_count"]) + 1
+        else:
+            owner = active.get(order_id)
+            price = event.get("price", 0.0)
+            if (owner is None or owner["instrument"] != instrument or
+                    owner["side"] != side or float(owner["qty"]) != qty or
+                    not _finite_positive(price)):
+                raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_FILL_CONFLICT")
+            positions: dict[str, float] = state["positions"]
+            value = float(positions.get(instrument, 0.0)) + (qty if side == "BUY" else -qty)
+            if not math.isfinite(value):
+                raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_POSITION_OVERFLOW")
+            if value == 0.0:
+                positions.pop(instrument, None)
+            else:
+                positions[instrument] = value
+            del active[order_id]
+    elif terminal and order_id >= 0:
+        state["active_orders"].pop(order_id, None)
+
+    if order_id >= 0:
+        if order_id >= (1 << 63) - 1:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_ORDER_ID_EXHAUSTED")
+        state["next_order_id"] = max(int(state["next_order_id"]), order_id + 1)
 
 
-def _read_hot(generation_dir: Path, maximum_bytes: int, maximum_records: int,
-              maximum_record_bytes: int) -> list[dict[str, Any]]:
-    path = generation_dir / "hot-replay.jsonl"
+def _iter_segment_events(path: Path, expected_records: int) -> Iterator[dict[str, Any]]:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         info = os.fstat(fd)
         if not v1._private_regular(info):
-            raise v1.GenerationError("OMS_GENERATION_UNSAFE_HOT_REPLAY")
-        _, events = _strict_records(fd, 0, info.st_size, max_bytes=maximum_bytes,
-                                    max_records=maximum_records,
-                                    max_record_bytes=maximum_record_bytes)
-        return events
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_SEGMENT_UNSAFE")
+        observed = 0
+        for _raw, event in validated_raw_records(
+                fd, info.st_size, max_bytes=max(info.st_size, 1),
+                max_records=max(expected_records, 1), max_record_bytes=1024 * 1024):
+            observed += 1
+            yield event
+        if observed != expected_records:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_SEGMENT_COUNT_MISMATCH")
     finally:
         os.close(fd)
 
 
-def _runtime_row(line: bytes) -> tuple[tuple[str, str, str], dict[str, Any], list[str]]:
-    if len(line) > v1.MAX_INDEX_LINE:
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_LINE_LIMIT")
-    try:
-        fields = line.rstrip(b"\n").decode("ascii").split("\t")
-    except UnicodeError as error:
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID") from error
-    if len(fields) != 13 or fields[12] not in {"0", "1"}:
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID")
-    try:
-        record = {
-            "agent_id": v1._unhex(fields[0]), "session_id": v1._unhex(fields[1]),
-            "command_id": v1._unhex(fields[2]), "request_hash": v1._unhex(fields[3]),
-            "operation": fields[4], "status": fields[5], "order_id": int(fields[6]),
-            "reason": v1._unhex(fields[7]), "venue_correlation_id": v1._unhex(fields[8]),
-            "last_sequence": int(fields[9]), "account": v1._unhex(fields[10]),
-            "execution_domain": v1._unhex(fields[11]),
-            "durable_mutation_intent": fields[12] == "1",
-        }
-    except (ValueError, OverflowError) as error:
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID") from error
-    if record["operation"] not in {"place", "cancel", "flatten"} or record["status"] not in {"accepted", "rejected", "uncertain"}:
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID")
-    return (fields[0], fields[1], fields[2]), record, fields
-
-
-def _iter_private_lines(path: Path) -> Iterator[bytes]:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        before = os.fstat(fd)
-        if not v1._private_regular(before):
-            raise v1.GenerationError("OMS_GENERATION_UNSAFE_INDEX")
-        pending = bytearray()
-        while True:
-            block = os.read(fd, 1024 * 1024)
-            if not block:
-                break
-            pending.extend(block)
-            while True:
-                newline = pending.find(b"\n")
-                if newline < 0:
-                    break
-                yield bytes(pending[:newline + 1])
-                del pending[:newline + 1]
-        if pending:
-            raise v1.GenerationError("OMS_GENERATION_INDEX_TORN_RECORD")
-        after = os.fstat(fd)
-        named = os.stat(path, follow_symlinks=False)
-        if v1._identity(before) != v1._identity(after) or v1._identity(after) != v1._identity(named):
-            raise v1.GenerationError("OMS_GENERATION_INDEX_CHANGED")
-    finally:
-        os.close(fd)
-
-
-def _manifest_for(store: Path, generation: str) -> dict[str, Any]:
-    root = store / generation
-    manifest = v1._load_json_private(root / "manifest.json")
-    if not isinstance(manifest, dict) or manifest.get("generation") != generation:
-        raise v1.GenerationError("OMS_GENERATION_MANIFEST_INVALID")
-    return manifest
-
-
-def _parent_state(store: Path, current: dict[str, Any] | None, journal_fd: int,
-                  journal_size: int, max_bytes: int, max_records: int,
-                  max_record_bytes: int) -> tuple[str, int, int, list[dict[str, Any]], Path | None, int]:
-    if current is None:
-        return "", 0, 0, [], None, 0
-    generation = current["generation"]
-    manifest = _manifest_for(store, generation)
-    root = store / generation
-    schema = manifest.get("schema")
-    if schema == v1.SCHEMA:
-        v1.verify_generation(store, generation)
-        prefix = manifest.get("journal_prefix_bytes")
-        history_records = manifest.get("journal_records")
-        if type(prefix) is not int or type(history_records) is not int or not 0 <= prefix <= journal_size:
-            raise v1.GenerationError("OMS_GENERATION_PARENT_RANGE_INVALID")
-        digest = hashlib.sha256()
-        offset = 0
-        while offset < prefix:
-            block = os.pread(journal_fd, min(1024 * 1024, prefix - offset), offset)
-            if not block:
-                raise v1.GenerationError("OMS_GENERATION_PARENT_PREFIX_IO_FAILURE")
-            digest.update(block)
-            offset += len(block)
-        if digest.hexdigest() != manifest.get("journal_logical_sha256"):
-            raise v1.GenerationError("OMS_GENERATION_PARENT_PREFIX_MISMATCH")
-        hot = _read_hot(root, max_bytes, max_records, max_record_bytes)
-        return generation, prefix, history_records, hot, root, 0
-    if schema != SCHEMA:
-        raise v1.GenerationError("OMS_GENERATION_PARENT_SCHEMA_UNSUPPORTED")
-    verified = verify_generation(store, generation=generation)
-    history_records = verified["history_records"]
-    parsed = _parse_tail_header(journal_fd, journal_size)
-    if parsed is None or parsed[0] != generation:
-        raise v1.GenerationError("OMS_ACTIVE_TAIL_LINEAGE_MISMATCH")
-    hot = _read_hot(root, max_bytes, max_records, max_record_bytes)
-    return generation, parsed[1], history_records, hot, root, parsed[1]
-
-
-def _merge_command_record(parent: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
-    merged = dict(parent)
-    for key in ("request_hash", "operation", "reason", "venue_correlation_id",
-                "account", "execution_domain"):
-        if update.get(key):
-            merged[key] = update[key]
-    if update.get("status") and update.get("status") != "unknown":
-        merged["status"] = update["status"]
-    if int(update.get("order_id", -1)) >= 0:
-        merged["order_id"] = int(update["order_id"])
-    merged["last_sequence"] = max(int(parent.get("last_sequence", 0)),
-                                  int(update.get("last_sequence", 0)))
-    merged["durable_mutation_intent"] = bool(
-        parent.get("durable_mutation_intent") or update.get("durable_mutation_intent"))
-    return merged
-
-
-def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
-                          updates: dict[tuple[str, str, str], dict[str, Any]],
-                          tail_attempts: list[dict[str, Any]], history_base: int) -> tuple[int, int]:
-    update_rows = {tuple(v1._hex(x) for x in key): record for key, record in updates.items()}
-    ordered_updates = sorted(update_rows.items())
-    runtime_path = generation_dir / "runtime-command-index.tsv"
-    legacy_path = generation_dir / "command-index.tsv"
-    runtime_fd = os.open(runtime_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    legacy_fd = os.open(legacy_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    count = 0
-    try:
-        parent_iter: Iterable[bytes] = () if parent_dir is None else _iter_private_lines(parent_dir / "runtime-command-index.tsv")
-        updates_index = 0
-        previous: tuple[str, str, str] | None = None
-        for line in parent_iter:
-            key, parent_record, fields = _runtime_row(line)
-            if previous is not None and key <= previous:
-                raise v1.GenerationError("OMS_GENERATION_PARENT_INDEX_ORDER_INVALID")
-            previous = key
-            while updates_index < len(ordered_updates) and ordered_updates[updates_index][0] < key:
-                _, record = ordered_updates[updates_index]
-                encoded = v1._runtime_index_line(record)
-                v1._write_all(runtime_fd, encoded)
-                v1._write_all(legacy_fd, b"\t".join(encoded.rstrip(b"\n").split(b"\t")[:10]) + b"\n")
-                count += 1
-                updates_index += 1
-            if updates_index < len(ordered_updates) and ordered_updates[updates_index][0] == key:
-                record = _merge_command_record(parent_record, ordered_updates[updates_index][1])
-                encoded = v1._runtime_index_line(record)
-                updates_index += 1
-            else:
-                encoded = line
-            v1._write_all(runtime_fd, encoded)
-            v1._write_all(legacy_fd, b"\t".join(encoded.rstrip(b"\n").split(b"\t")[:10]) + b"\n")
-            count += 1
-        while updates_index < len(ordered_updates):
-            _, record = ordered_updates[updates_index]
-            encoded = v1._runtime_index_line(record)
-            v1._write_all(runtime_fd, encoded)
-            v1._write_all(legacy_fd, b"\t".join(encoded.rstrip(b"\n").split(b"\t")[:10]) + b"\n")
-            count += 1
-            updates_index += 1
-        v1._fsync(runtime_fd)
-        v1._fsync(legacy_fd)
-    finally:
-        os.close(runtime_fd)
-        os.close(legacy_fd)
-
-    def send_key(line: bytes) -> tuple[str, str, int, int, str, str, str]:
-        if len(line) > v1.MAX_INDEX_LINE:
-            raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID")
-        fields = line.rstrip(b"\n").decode("ascii").split("\t")
-        if len(fields) != 7:
-            raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID")
-        try:
-            timestamp = int(fields[2])
-            sequence = int(fields[6])
-            v1._unhex(fields[0]); v1._unhex(fields[1])
-            v1._unhex(fields[3]); v1._unhex(fields[4]); v1._unhex(fields[5])
-        except (ValueError, v1.GenerationError) as error:
-            raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID") from error
-        return (fields[0], fields[1], timestamp, sequence,
-                fields[3], fields[4], fields[5])
-
-    tail_lines: list[tuple[tuple[str, str, int, int, str, str, str], bytes]] = []
-    for attempt in tail_attempts:
-        copied = dict(attempt)
-        copied["sequence"] = history_base + int(copied["sequence"])
-        line = v1._send_attempt_line(copied)
-        tail_lines.append((send_key(line), line))
-    tail_lines.sort(key=lambda item: item[0])
-
-    send_path = generation_dir / "send-attempt-index.tsv"
-    send_fd = os.open(send_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    send_count = 0
-    try:
-        parent_iter = iter(()) if parent_dir is None else iter(
-            _iter_private_lines(parent_dir / "send-attempt-index.tsv"))
-        try:
-            parent_line = next(parent_iter)
-        except StopIteration:
-            parent_line = None
-        parent_key = send_key(parent_line) if parent_line is not None else None
-        previous_parent = None
-        tail_index = 0
-        while parent_line is not None or tail_index < len(tail_lines):
-            if parent_key is not None and previous_parent is not None and parent_key <= previous_parent:
-                raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_ORDER_INVALID")
-            take_parent = parent_line is not None and (
-                tail_index >= len(tail_lines) or parent_key < tail_lines[tail_index][0])
-            if take_parent:
-                v1._write_all(send_fd, parent_line)
-                send_count += 1
-                previous_parent = parent_key
-                try:
-                    parent_line = next(parent_iter)
-                    parent_key = send_key(parent_line)
-                except StopIteration:
-                    parent_line = None
-                    parent_key = None
-            else:
-                if (parent_key is not None and tail_index < len(tail_lines) and
-                        parent_key == tail_lines[tail_index][0]):
-                    raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_DUPLICATE")
-                v1._write_all(send_fd, tail_lines[tail_index][1])
-                send_count += 1
-                tail_index += 1
-        v1._fsync(send_fd)
-    finally:
-        os.close(send_fd)
-    return count, send_count
-
-
-def _runtime_manifest_bytes(*, generation: str, parent_generation: str,
-                            parent_manifest_sha256: str,
-                            history_records: int, segment_records: int,
-                            command_records: int, send_attempt_records: int,
-                            hot_replay_records: int, marker: bytes,
-                            digests: dict[str, str]) -> bytes:
+def _encode_simulator_state(state: dict[str, Any]) -> bytes:
+    positions = state["positions"]
+    active = state["active_orders"]
     lines = [
-        RUNTIME_MANIFEST_HEADER,
-        f"generation={generation}",
-        f"parent_generation={parent_generation or '-'}",
-        f"parent_manifest_sha256={parent_manifest_sha256 if parent_generation else '-'}",
-        f"history_records={history_records}",
-        f"segment_records={segment_records}",
-        f"command_records={command_records}",
-        f"send_attempt_records={send_attempt_records}",
-        f"hot_replay_records={hot_replay_records}",
-        f"segment_sha256={digests['segment-000001.jsonl']}",
-        f"checkpoint_sha256={digests['checkpoint.json']}",
-        f"command_index_sha256={digests['command-index.tsv']}",
-        f"runtime_command_index_sha256={digests['runtime-command-index.tsv']}",
-        f"send_attempt_index_sha256={digests['send-attempt-index.tsv']}",
-        "send_attempt_index_order=account-domain-time-v1",
-        f"hot_replay_sha256={digests['hot-replay.jsonl']}",
-        f"active_tail_header_bytes={len(marker)}",
-        f"active_tail_header_sha256={hashlib.sha256(marker).hexdigest()}",
-        "authorization_effect=NONE",
-        "paper_authorized=0",
-        "live_authorized=0",
+        _SIM_HEADER,
+        f"admitted_order_count={int(state['admitted_order_count'])}",
+        f"next_order_id={int(state['next_order_id'])}",
+        f"position_count={len(positions)}",
+        f"active_order_count={len(active)}",
     ]
-    return ("\n".join(lines) + "\n").encode("ascii")
+    for instrument, quantity in sorted(positions.items()):
+        if not isinstance(instrument, str) or not instrument or not math.isfinite(float(quantity)):
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        lines.append(f"P\t{v1._hex(instrument)}\t{float(quantity).hex()}")
+    for order_id, order in sorted(active.items()):
+        quantity = float(order["qty"])
+        if (not isinstance(order_id, int) or order_id < 0 or
+                order["side"] not in {"BUY", "SELL"} or not _finite_positive(quantity)):
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        lines.append("\t".join([
+            "A", str(order_id), v1._hex(order["instrument"]), order["side"],
+            quantity.hex(), v1._hex(order.get("req_id", "")),
+            v1._hex(order.get("request_hash", "")),
+        ]))
+    payload = ("\n".join(lines) + "\n").encode("ascii")
+    if len(payload) > _SIM_MAX_PAYLOAD:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_LIMIT")
+    return payload
+
+
+def _decode_simulator_state(payload: bytes) -> dict[str, Any]:
+    if len(payload) > _SIM_MAX_PAYLOAD:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_LIMIT")
+    try:
+        lines = payload.decode("ascii").splitlines()
+    except UnicodeError as error:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID") from error
+    if len(lines) < 5 or lines[0] != _SIM_HEADER:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+    fields: dict[str, str] = {}
+    for line in lines[1:5]:
+        key, separator, value = line.partition("=")
+        if not separator or not key or key in fields:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        fields[key] = value
+    if set(fields) != {"admitted_order_count", "next_order_id", "position_count", "active_order_count"}:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+    try:
+        admitted = int(fields["admitted_order_count"])
+        next_order = int(fields["next_order_id"])
+        position_count = int(fields["position_count"])
+        active_count = int(fields["active_order_count"])
+    except ValueError as error:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID") from error
+    if admitted < 0 or next_order < 1 or position_count < 0 or active_count < 0:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+    state = _new_simulator_state()
+    state["admitted_order_count"] = admitted
+    state["next_order_id"] = next_order
+    cursor = 5
+    positions: dict[str, float] = {}
+    for _ in range(position_count):
+        if cursor >= len(lines):
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        parts = lines[cursor].split("\t")
+        cursor += 1
+        if len(parts) != 3 or parts[0] != "P":
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        try:
+            instrument = v1._unhex(parts[1])
+            quantity = float.fromhex(parts[2])
+        except (ValueError, v1.GenerationError) as error:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID") from error
+        if not instrument or not math.isfinite(quantity) or instrument in positions:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        positions[instrument] = quantity
+    active: dict[int, dict[str, Any]] = {}
+    for _ in range(active_count):
+        if cursor >= len(lines):
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        parts = lines[cursor].split("\t")
+        cursor += 1
+        if len(parts) != 7 or parts[0] != "A":
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        try:
+            order_id = int(parts[1])
+            instrument = v1._unhex(parts[2])
+            quantity = float.fromhex(parts[4])
+            req_id = v1._unhex(parts[5])
+            request_hash = v1._unhex(parts[6])
+        except (ValueError, v1.GenerationError) as error:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID") from error
+        if (order_id < 0 or order_id in active or not instrument or
+                parts[3] not in {"BUY", "SELL"} or not _finite_positive(quantity)):
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+        active[order_id] = {"instrument": instrument, "side": parts[3], "qty": quantity,
+                            "req_id": req_id, "request_hash": request_hash}
+    if cursor != len(lines) or admitted < len(active):
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_STATE_INVALID")
+    state["positions"] = positions
+    state["active_orders"] = active
+    return state
+
+
+def _checkpoint_simulator_state(root: Path) -> dict[str, Any] | None:
+    checkpoint = v1._load_json_private(root / "checkpoint.json")
+    encoded = checkpoint.get(_SIM_FIELD) if isinstance(checkpoint, dict) else None
+    schema = checkpoint.get(_SIM_SCHEMA_FIELD) if isinstance(checkpoint, dict) else None
+    if encoded is None and schema is None:
+        return None
+    if schema != _SIM_HEADER or not isinstance(encoded, str) or len(encoded) % 2:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_CHECKPOINT_INVALID")
+    try:
+        payload = bytes.fromhex(encoded)
+    except ValueError as error:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_CHECKPOINT_INVALID") from error
+    return _decode_simulator_state(payload)
+
+
+def _rebuild_parent_simulator_state(store: Path, generation: str) -> dict[str, Any]:
+    state = _new_simulator_state()
+    chain = _core._generation_chain(store, generation)
+    base_index = 0
+    for index, (_name, manifest) in enumerate(chain):
+        if manifest.get("schema") == v1.SCHEMA:
+            base_index = index
+    for name, manifest in chain[base_index:]:
+        if manifest.get("schema") == v1.SCHEMA:
+            expected = int(manifest.get("journal_records", 0))
+        elif manifest.get("schema") == _core.SCHEMA:
+            expected = int(manifest.get("segment_records", 0))
+        else:
+            raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_PARENT_SCHEMA_UNSUPPORTED")
+        for event in _iter_segment_events(store / name / "segment-000001.jsonl", expected):
+            _apply_simulator_event(state, event)
+    return state
+
+
+def _augment_generation_simulator_recovery(store: Path, root: Path) -> None:
+    manifest = v1._load_json_private(root / "manifest.json")
+    if not isinstance(manifest, dict) or manifest.get("schema") != _core.SCHEMA:
+        raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_GENERATION_INVALID")
+    parent = manifest.get("parent_generation") or ""
+    state = None
+    if parent:
+        state = _checkpoint_simulator_state(store / parent)
+        if state is None:
+            state = _rebuild_parent_simulator_state(store, parent)
+    if state is None:
+        state = _new_simulator_state()
+    expected = int(manifest.get("segment_records", 0))
+    for event in _iter_segment_events(root / "segment-000001.jsonl", expected):
+        _apply_simulator_event(state, event)
+
+    payload = _encode_simulator_state(state)
+    checkpoint = v1._load_json_private(root / "checkpoint.json")
+    if not isinstance(checkpoint, dict):
+        raise v1.GenerationError("OMS_GENERATION_CHECKPOINT_MISMATCH")
+    checkpoint[_SIM_SCHEMA_FIELD] = _SIM_HEADER
+    checkpoint[_SIM_FIELD] = payload.hex()
+    v1._atomic_json(root / "checkpoint.json", checkpoint)
+    checkpoint_size, checkpoint_digest = v1._sha256_file(root / "checkpoint.json")
+
+    runtime_raw = v1._read_private_bytes(root / "runtime-manifest.txt")
+    try:
+        runtime_lines = runtime_raw.decode("ascii").splitlines()
+    except UnicodeError as error:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_METADATA_INVALID") from error
+    replaced = 0
+    for index, line in enumerate(runtime_lines):
+        if line.startswith("checkpoint_sha256="):
+            runtime_lines[index] = f"checkpoint_sha256={checkpoint_digest}"
+            replaced += 1
+    if replaced != 1:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_INVALID")
+    v1._atomic_bytes(root / "runtime-manifest.txt",
+                     ("\n".join(runtime_lines) + "\n").encode("ascii"))
+    runtime_size, runtime_digest = v1._sha256_file(root / "runtime-manifest.txt")
+
+    files = manifest.get("files")
+    if not isinstance(files, dict) or "checkpoint.json" not in files or "runtime-manifest.txt" not in files:
+        raise v1.GenerationError("OMS_GENERATION_FILE_INVENTORY_INVALID")
+    files["checkpoint.json"] = {"bytes": checkpoint_size, "sha256": checkpoint_digest}
+    files["runtime-manifest.txt"] = {"bytes": runtime_size, "sha256": runtime_digest}
+    manifest["runtime_manifest_sha256"] = runtime_digest
+    v1._atomic_json(root / "manifest.json", manifest)
+    v1._durable_directory(root)
 
 
 def seal_generation(journal: Path, store: Path, *, stopped: bool,
@@ -395,188 +332,58 @@ def seal_generation(journal: Path, store: Path, *, stopped: bool,
                     max_records: int = 65536,
                     max_record_bytes: int = 262144,
                     phase_hook: Callable[[str], None] | None = None) -> dict[str, Any]:
-    if not stopped:
-        raise v1.GenerationError("OMS_GENERATION_STOP_ALL_WRITERS_REQUIRED")
-    phase_hook = phase_hook or (lambda _: None)
-    if not journal.is_absolute():
-        journal = journal.resolve()
-    if not store.is_absolute():
-        store = store.resolve()
-    if store != Path(str(journal) + ".generations"):
-        raise v1.GenerationError("OMS_GENERATION_STORE_PATH_MISMATCH")
-    store.mkdir(mode=0o700, parents=False, exist_ok=True)
-    if not v1._private_directory(os.stat(store, follow_symlinks=False)):
-        raise v1.GenerationError("OMS_GENERATION_PRIVATE_STORE_REQUIRED")
-    current = v1._read_current(store)
-    generation = f"g-{time.time_ns():020d}-{uuid.uuid4().hex[:12]}"
-    generation_dir = store / generation
-    generation_dir.mkdir(mode=0o700)
-    journal_fd = os.open(journal, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
-    tail_temp: Path | None = None
-    try:
-        before = os.fstat(journal_fd)
-        if not v1._private_regular(before):
-            raise v1.GenerationError("OMS_GENERATION_UNSAFE_JOURNAL")
-        fcntl.flock(journal_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        parent_generation, start, history_base, parent_hot, parent_dir, _ = _parent_state(
-            store, current, journal_fd, before.st_size, max_bytes, max_records,
-            max_record_bytes)
-        raw_tail, tail_events = _strict_records(
-            journal_fd, start, before.st_size, max_bytes=max_bytes,
-            max_records=max_records, max_record_bytes=max_record_bytes)
-        after = os.fstat(journal_fd)
-        named = os.stat(journal, follow_symlinks=False)
-        if v1._identity(before) != v1._identity(after) or v1._identity(after) != v1._identity(named):
-            raise v1.GenerationError("OMS_GENERATION_JOURNAL_CHANGED")
+    existing = {entry.name for entry in store.iterdir() if entry.is_dir()} if store.exists() else set()
+    user_hook = phase_hook or (lambda _phase: None)
 
-        segment = generation_dir / "segment-000001.jsonl"
-        segment_fd = os.open(segment, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    def hook(phase: str) -> None:
+        if phase == "generation-durable":
+            created = [entry for entry in store.iterdir()
+                       if entry.is_dir() and entry.name not in existing and
+                       (entry / "manifest.json").exists()]
+            if len(created) != 1:
+                raise v1.GenerationError("OMS_SIMULATOR_RECOVERY_GENERATION_AMBIGUOUS")
+            _augment_generation_simulator_recovery(store, created[0])
+        user_hook(phase)
+
+    return _core_seal_generation(
+        journal, store, stopped=stopped, max_bytes=max_bytes,
+        max_records=max_records, max_record_bytes=max_record_bytes,
+        phase_hook=hook)
+
+
+def _stream_runtime_index(path: Path, expected: int) -> None:
+    count = 0
+    previous = None
+    for line in _core._iter_private_lines(path):
+        key, _record, _fields = _core._runtime_row(line)
+        if previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
+        previous = key
+        count += 1
+    if count != expected:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+
+
+def _stream_send_index(path: Path, expected: int, sorted_send_index: bool) -> None:
+    count = 0
+    previous = None
+    for line in _core._iter_private_lines(path):
+        count += 1
+        if not sorted_send_index:
+            continue
         try:
-            for raw in raw_tail:
-                v1._write_all(segment_fd, raw)
-            v1._fsync(segment_fd)
-        finally:
-            os.close(segment_fd)
-
-        combined = parent_hot + tail_events
-        checkpoint, _, hot_replay, _ = v1._project_hot(combined)
-        _, tail_commands, _, tail_attempts = v1._project_hot(tail_events)
-        for record in tail_commands.values():
-            record["last_sequence"] = history_base + int(record["last_sequence"])
-        command_records, send_attempt_records = _write_merged_indexes(
-            generation_dir, parent_dir, tail_commands, tail_attempts, history_base)
-        history_records = history_base + len(tail_events)
-        checkpoint.update({
-            "schema": v1.CHECKPOINT_SCHEMA,
-            "last_sequence": history_records,
-            "history_records": history_records,
-            "parent_generation": parent_generation,
-            "segment_records": len(tail_events),
-            "hot_replay_records": len(hot_replay),
-            "send_attempt_records": send_attempt_records,
-            "paper_authorized": False,
-            "live_authorized": False,
-        })
-        v1._atomic_json(generation_dir / "checkpoint.json", checkpoint)
-        v1._atomic_json(generation_dir / "command-index.json", {
-            "schema": v1.INDEX_SCHEMA, "records": command_records,
-            "key": ["agent_id", "session_id", "command_id"],
-            "full_request_hash_compared": True,
-        })
-        hot_path = generation_dir / "hot-replay.jsonl"
-        hot_fd = os.open(hot_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-        try:
-            for value in hot_replay:
-                encoded = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
-                if len(encoded) > max_record_bytes:
-                    raise v1.GenerationError("OMS_GENERATION_HOT_RECORD_LIMIT")
-                v1._write_all(hot_fd, encoded)
-            v1._fsync(hot_fd)
-        finally:
-            os.close(hot_fd)
-
-        marker = _tail_header(generation)
-        parent_manifest_sha256 = (
-            v1._sha256_file(store / parent_generation / "manifest.json")[1]
-            if parent_generation else ""
-        )
-        preliminary = (
-            "segment-000001.jsonl", "checkpoint.json", "command-index.tsv",
-            "command-index.json", "runtime-command-index.tsv",
-            "send-attempt-index.tsv", "hot-replay.jsonl",
-        )
-        files: dict[str, dict[str, Any]] = {}
-        digests: dict[str, str] = {}
-        for name in preliminary:
-            size, digest = v1._sha256_file(generation_dir / name)
-            files[name] = {"bytes": size, "sha256": digest}
-            digests[name] = digest
-        runtime_manifest = _runtime_manifest_bytes(
-            generation=generation, parent_generation=parent_generation,
-            parent_manifest_sha256=parent_manifest_sha256,
-            history_records=history_records, segment_records=len(tail_events),
-            command_records=command_records, send_attempt_records=send_attempt_records,
-            hot_replay_records=len(hot_replay), marker=marker, digests=digests)
-        v1._atomic_bytes(generation_dir / "runtime-manifest.txt", runtime_manifest)
-        runtime_size, runtime_digest = v1._sha256_file(generation_dir / "runtime-manifest.txt")
-        files["runtime-manifest.txt"] = {"bytes": runtime_size, "sha256": runtime_digest}
-        manifest = {
-            "schema": SCHEMA, "generation": generation,
-            "parent_generation": parent_generation,
-            "parent_manifest_sha256": parent_manifest_sha256,
-            "history_records": history_records, "segment_records": len(tail_events),
-            "command_records": command_records,
-            "send_attempt_records": send_attempt_records,
-            "hot_replay_records": len(hot_replay),
-            "active_tail_header_bytes": len(marker),
-            "active_tail_header_sha256": hashlib.sha256(marker).hexdigest(),
-            "runtime_manifest_sha256": runtime_digest, "files": files,
-            "authorization_effect": "NONE", "paper_authorized": False,
-            "live_authorized": False,
-        }
-        v1._atomic_json(generation_dir / "manifest.json", manifest)
-        v1._durable_directory(generation_dir)
-        phase_hook("generation-durable")
-
-        manifest_digest = v1._sha256_file(generation_dir / "manifest.json")[1]
-        tail_temp = journal.with_name(f".{journal.name}.{uuid.uuid4().hex}.tail.tmp")
-        tail_fd = os.open(tail_temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-        try:
-            v1._write_all(tail_fd, marker)
-            v1._fsync(tail_fd)
-        finally:
-            os.close(tail_fd)
-        v1._durable_directory(journal.parent)
-        phase_hook("tail-ready")
-        os.replace(tail_temp, journal)
-        tail_temp = None
-        v1._durable_directory(journal.parent)
-        phase_hook("tail-published")
-
-        pointer = {
-            "schema": v1.CURRENT_SCHEMA, "generation": generation,
-            "manifest_sha256": manifest_digest,
-            "runtime_manifest_sha256": runtime_digest,
-        }
-        v1._atomic_json(store / "CURRENT", pointer)
-        v1._durable_directory(store)
-        phase_hook("current-json-durable")
-        current_raw = v1._read_private_bytes(store / "CURRENT")
-        runtime_current = v1._runtime_current_bytes(
-            generation=generation, current_sha256=v1._sha256_bytes(current_raw),
-            manifest_sha256=manifest_digest, runtime_manifest_sha256=runtime_digest)
-        v1._atomic_bytes(store / "CURRENT.runtime", runtime_current)
-        v1._durable_directory(store)
-        phase_hook("current-durable")
-        return manifest
-    finally:
-        if tail_temp is not None:
-            try:
-                tail_temp.unlink()
-            except FileNotFoundError:
-                pass
-        os.close(journal_fd)
-
-
-def _verify_runtime_current(store: Path, generation: str, manifest_digest: str,
-                            runtime_digest: str) -> None:
-    current_raw = v1._read_private_bytes(store / "CURRENT")
-    current = v1._load_json_private(store / "CURRENT")
-    if current != {
-        "schema": v1.CURRENT_SCHEMA, "generation": generation,
-        "manifest_sha256": manifest_digest,
-        "runtime_manifest_sha256": runtime_digest,
-    }:
-        raise v1.GenerationError("OMS_GENERATION_CURRENT_DIGEST_MISMATCH")
-    runtime_current = v1._parse_line_manifest(
-        v1._read_private_bytes(store / "CURRENT.runtime"), v1.RUNTIME_CURRENT_HEADER)
-    if runtime_current != {
-        "generation": generation,
-        "current_sha256": hashlib.sha256(current_raw).hexdigest(),
-        "manifest_sha256": manifest_digest,
-        "runtime_manifest_sha256": runtime_digest,
-    }:
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_CURRENT_MISMATCH")
+            fields = line.rstrip(b"\n").decode("ascii").split("\t")
+            if len(fields) != 7:
+                raise ValueError("wrong field count")
+            key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
+                   fields[3], fields[4], fields[5])
+        except (UnicodeError, ValueError) as error:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+        if previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+        previous = key
+    if count != expected:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
 
 
 def verify_generation(store: Path, generation: str | None = None,
@@ -588,11 +395,12 @@ def verify_generation(store: Path, generation: str | None = None,
         if current is None:
             raise v1.GenerationError("OMS_GENERATION_CURRENT_MISSING")
         generation = current["generation"]
-    manifest = _manifest_for(store, generation)
+    manifest = _core._manifest_for(store, generation)
     if manifest.get("schema") == v1.SCHEMA:
         result = v1.verify_generation(store, generation)
-        return {**result, "schema": v1.SCHEMA, "history_records": manifest["journal_records"]}
-    if manifest.get("schema") != SCHEMA:
+        return {**result, "schema": v1.SCHEMA,
+                "history_records": manifest["journal_records"]}
+    if manifest.get("schema") != _core.SCHEMA:
         raise v1.GenerationError("OMS_GENERATION_MANIFEST_INVALID")
     root = store / generation
     if not v1._private_directory(os.stat(root, follow_symlinks=False)):
@@ -600,21 +408,22 @@ def verify_generation(store: Path, generation: str | None = None,
     files = manifest.get("files")
     if not isinstance(files, dict) or not files:
         raise v1.GenerationError("OMS_GENERATION_FILE_INVENTORY_INVALID")
-    for name, expected in files.items():
-        if not isinstance(name, str) or "/" in name or not isinstance(expected, dict):
+    for name, expected_file in files.items():
+        if not isinstance(name, str) or "/" in name or not isinstance(expected_file, dict):
             raise v1.GenerationError("OMS_GENERATION_FILE_INVENTORY_INVALID")
         size, digest = v1._sha256_file(root / name)
-        if size != expected.get("bytes") or digest != expected.get("sha256"):
+        if size != expected_file.get("bytes") or digest != expected_file.get("sha256"):
             raise v1.GenerationError("OMS_GENERATION_DIGEST_MISMATCH")
+
     runtime_raw = v1._read_private_bytes(root / "runtime-manifest.txt")
-    runtime = v1._parse_line_manifest(runtime_raw, RUNTIME_MANIFEST_HEADER)
+    runtime = v1._parse_line_manifest(runtime_raw, _core.RUNTIME_MANIFEST_HEADER)
     required_legacy = {
-        "generation", "parent_generation", "parent_manifest_sha256", "history_records", "segment_records",
-        "command_records", "send_attempt_records", "hot_replay_records",
+        "generation", "parent_generation", "parent_manifest_sha256", "history_records",
+        "segment_records", "command_records", "send_attempt_records", "hot_replay_records",
         "segment_sha256", "checkpoint_sha256", "command_index_sha256",
-        "runtime_command_index_sha256", "send_attempt_index_sha256",
-        "hot_replay_sha256", "active_tail_header_bytes", "active_tail_header_sha256",
-        "authorization_effect", "paper_authorized", "live_authorized",
+        "runtime_command_index_sha256", "send_attempt_index_sha256", "hot_replay_sha256",
+        "active_tail_header_bytes", "active_tail_header_sha256", "authorization_effect",
+        "paper_authorized", "live_authorized",
     }
     required_sorted = set(required_legacy)
     required_sorted.add("send_attempt_index_order")
@@ -624,15 +433,15 @@ def verify_generation(store: Path, generation: str | None = None,
             runtime["generation"] != generation or runtime["authorization_effect"] != "NONE" or
             runtime["paper_authorized"] != "0" or runtime["live_authorized"] != "0"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_INVALID")
-    marker = _tail_header(generation)
-    expected = {
+    marker = _core._tail_header(generation)
+    expected_counts = {
         "history_records": manifest.get("history_records"),
         "segment_records": manifest.get("segment_records"),
         "command_records": manifest.get("command_records"),
         "send_attempt_records": manifest.get("send_attempt_records"),
         "hot_replay_records": manifest.get("hot_replay_records"),
     }
-    for name, value in expected.items():
+    for name, value in expected_counts.items():
         if type(value) is not int or runtime[name] != str(value):
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     parent_generation = manifest.get("parent_generation") or ""
@@ -643,8 +452,7 @@ def verify_generation(store: Path, generation: str | None = None,
             runtime["active_tail_header_sha256"] != hashlib.sha256(marker).hexdigest()):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     digest_fields = {
-        "segment_sha256": "segment-000001.jsonl",
-        "checkpoint_sha256": "checkpoint.json",
+        "segment_sha256": "segment-000001.jsonl", "checkpoint_sha256": "checkpoint.json",
         "command_index_sha256": "command-index.tsv",
         "runtime_command_index_sha256": "runtime-command-index.tsv",
         "send_attempt_index_sha256": "send-attempt-index.tsv",
@@ -655,195 +463,60 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     if hashlib.sha256(runtime_raw).hexdigest() != manifest.get("runtime_manifest_sha256"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
-    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
-    if len(runtime_lines) != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
-    previous = None
-    for line in runtime_lines:
-        key, _, _ = _runtime_row(line)
-        if previous is not None and key <= previous:
-            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
-        previous = key
-    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
-    if len(send_lines) != manifest.get("send_attempt_records"):
-        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
-    if sorted_send_index:
-        previous_send = None
-        for line in send_lines:
-            fields = line.rstrip(b"\n").decode("ascii").split("\t")
-            if len(fields) != 7:
-                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
-            try:
-                key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
-                       fields[3], fields[4], fields[5])
-            except ValueError as error:
-                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
-            if previous_send is not None and key <= previous_send:
-                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
-            previous_send = key
+
+    # These were the two O(history) list materializations in the reviewed V2
+    # verifier.  Validate count/order in one pass and retain only one prior key.
+    _stream_runtime_index(root / "runtime-command-index.tsv", manifest["command_records"])
+    _stream_send_index(root / "send-attempt-index.tsv",
+                       manifest["send_attempt_records"], sorted_send_index)
+
+    simulator_state = _checkpoint_simulator_state(root)
+    if simulator_state is not None:
+        # Re-encoding catches non-canonical or internally inconsistent payloads
+        # while keeping verification memory proportional to active simulator
+        # state, not command history.
+        _encode_simulator_state(simulator_state)
+
     if current and current["generation"] == generation:
         manifest_digest = v1._sha256_file(root / "manifest.json")[1]
-        _verify_runtime_current(store, generation, manifest_digest,
-                                manifest["runtime_manifest_sha256"])
+        _core._verify_runtime_current(store, generation, manifest_digest,
+                                      manifest["runtime_manifest_sha256"])
         if journal is not None:
             fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
             try:
                 info = os.fstat(fd)
-                parsed = _parse_tail_header(fd, info.st_size)
+                parsed = _core._parse_tail_header(fd, info.st_size)
                 if parsed is None or parsed[0] != generation or parsed[1] != len(marker):
                     raise v1.GenerationError("OMS_ACTIVE_TAIL_LINEAGE_MISMATCH")
             finally:
                 os.close(fd)
     parent = manifest.get("parent_generation") or ""
     if parent:
-        parent_manifest = _manifest_for(store, parent)
+        parent_manifest = _core._manifest_for(store, parent)
         if (parent_manifest.get("generation") != parent or
                 v1._sha256_file(store / parent / "manifest.json")[1] != parent_manifest_sha256):
             raise v1.GenerationError("OMS_GENERATION_PARENT_INVALID")
     return {
-        "schema": SCHEMA, "result": "PASS", "generation": generation,
+        "schema": _core.SCHEMA, "result": "PASS", "generation": generation,
         "history_records": manifest["history_records"],
         "segment_records": manifest["segment_records"],
         "command_records": manifest["command_records"],
         "send_attempt_records": manifest["send_attempt_records"],
         "hot_replay_records": manifest["hot_replay_records"],
+        "simulator_recovery": simulator_state is not None,
         "authorization_effect": "NONE",
     }
 
 
-def _generation_chain(store: Path, current_generation: str) -> list[tuple[str, dict[str, Any]]]:
-    chain: list[tuple[str, dict[str, Any]]] = []
-    seen: set[str] = set()
-    generation = current_generation
-    while generation:
-        if generation in seen or len(chain) >= MAX_CHAIN:
-            raise v1.GenerationError("OMS_GENERATION_PARENT_CHAIN_INVALID")
-        seen.add(generation)
-        manifest = _manifest_for(store, generation)
-        chain.append((generation, manifest))
-        parent = manifest.get("parent_generation") or ""
-        if not isinstance(parent, str):
-            raise v1.GenerationError("OMS_GENERATION_PARENT_INVALID")
-        generation = parent
-    chain.reverse()
-    return chain
-
-
-def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
-    current = v1._read_current(store)
-    if current is None:
-        raise v1.GenerationError("OMS_GENERATION_CURRENT_MISSING")
-    generation = current["generation"]
-    verify_generation(store, generation, journal if _manifest_for(store, generation).get("schema") == SCHEMA else None)
-    chain = _generation_chain(store, generation)
-    base_index = 0
-    for i, (_, manifest) in enumerate(chain):
-        if manifest.get("schema") == v1.SCHEMA:
-            base_index = i
-    selected = chain[base_index:]
-    output_parent = output.parent.resolve()
-    output_parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if not v1._private_directory(os.stat(output_parent, follow_symlinks=False)):
-        raise v1.GenerationError("OMS_GENERATION_EXPORT_PRIVATE_DIRECTORY_REQUIRED")
-    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    records = 0
-    total = 0
-    try:
-        for gen, manifest in selected:
-            verify_generation(store, gen)
-            segment = store / gen / "segment-000001.jsonl"
-            source = os.open(segment, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-            try:
-                info = os.fstat(source)
-                offset = 0
-                while offset < info.st_size:
-                    block = os.pread(source, min(1024 * 1024, info.st_size - offset), offset)
-                    if not block:
-                        raise v1.GenerationError("OMS_GENERATION_EXPORT_IO_FAILURE")
-                    v1._write_all(fd, block)
-                    records += block.count(b"\n")
-                    total += len(block)
-                    offset += len(block)
-            finally:
-                os.close(source)
-        active = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
-            info = os.fstat(active)
-            current_manifest = chain[-1][1]
-            if current_manifest.get("schema") == SCHEMA:
-                parsed = _parse_tail_header(active, info.st_size)
-                if parsed is None or parsed[0] != generation:
-                    raise v1.GenerationError("OMS_ACTIVE_TAIL_LINEAGE_MISMATCH")
-                offset = parsed[1]
-            else:
-                offset = int(current_manifest["journal_prefix_bytes"])
-            while offset < info.st_size:
-                block = os.pread(active, min(1024 * 1024, info.st_size - offset), offset)
-                if not block:
-                    raise v1.GenerationError("OMS_GENERATION_EXPORT_IO_FAILURE")
-                v1._write_all(fd, block)
-                records += block.count(b"\n")
-                total += len(block)
-                offset += len(block)
-        finally:
-            os.close(active)
-        v1._fsync(fd)
-    except BaseException:
-        os.close(fd)
-        try:
-            output.unlink()
-        except FileNotFoundError:
-            pass
-        raise
-    os.close(fd)
-    v1._durable_directory(output_parent)
-    check = os.open(output, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
-    try:
-        info = os.fstat(check)
-        observed = 0
-        for _raw, _event in validated_raw_records(
-                check, info.st_size, max_bytes=max(total, 1),
-                max_records=max(records, 1), max_record_bytes=1024 * 1024):
-            observed += 1
-        if observed != records:
-            raise v1.GenerationError("OMS_GENERATION_EXPORT_RECORD_MISMATCH")
-    finally:
-        os.close(check)
-    return {"schema": "heptatrader.oms-downgrade-export.v1", "result": "PASS",
-            "generation": generation, "records": records, "bytes": total,
-            "authorization_effect": "NONE"}
+# Internal core paths (parent verification and CLI dispatch) resolve these names
+# dynamically.  Patch only the two reviewed extension points, not the rest of
+# the implementation.
+_core.verify_generation = verify_generation
+_core.seal_generation = seal_generation
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
-    seal = sub.add_parser("seal")
-    seal.add_argument("--journal", type=Path, required=True)
-    seal.add_argument("--store", type=Path, required=True)
-    seal.add_argument("--stopped-state", action="store_true")
-    verify = sub.add_parser("verify")
-    verify.add_argument("--journal", type=Path)
-    verify.add_argument("--store", type=Path, required=True)
-    verify.add_argument("--generation")
-    export = sub.add_parser("export")
-    export.add_argument("--journal", type=Path, required=True)
-    export.add_argument("--store", type=Path, required=True)
-    export.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args(argv)
-    try:
-        if args.command == "seal":
-            result = seal_generation(args.journal, args.store, stopped=args.stopped_state)
-        elif args.command == "verify":
-            result = verify_generation(args.store, args.generation, args.journal)
-        else:
-            result = export_legacy(args.journal, args.store, args.output)
-    except (OSError, ValueError, OverflowError) as error:
-        code = str(error) if isinstance(error, (v1.GenerationError, JournalError)) else type(error).__name__
-        print(json.dumps({"result": "FAIL", "reason": code,
-                          "authorization_effect": "NONE"}), file=sys.stderr)
-        return 1
-    print(json.dumps(result, sort_keys=True))
-    return 0
+    return _core.main(argv)
 
 
 if __name__ == "__main__":
