@@ -9,9 +9,39 @@ needle = '''    auto oldCommand = MakePlace("generation-old-command");
 replacement = '''    auto oldCommand = MakePlace("generation-old-command");
     oldCommand.expiresAtMs = expiry;
     oldCommand.context.executionDomain = "SIM";
+    oldCommand.context.decisionLeaseFencingToken = 1;
+    oldCommand.context.decisionLeaseGeneration = 1;
 '''
 if s.count(needle) != 1:
     raise SystemExit(f"old-command subject anchor count={s.count(needle)}")
+s = s.replace(needle, replacement, 1)
+
+needle = '''    auto callbacks = CancelFixtureCallbacks();
+    callbacks.placement = VenuePlacement::Immediate(
+'''
+replacement = '''    auto callbacks = CancelFixtureCallbacks();
+    callbacks.validateDecisionLease =
+        [](const AgentExecutionContext&, const std::string&, std::string*) {
+            return true;
+        };
+    callbacks.placement = VenuePlacement::Immediate(
+'''
+if s.count(needle) != 1:
+    raise SystemExit(f"decision lease fixture anchor count={s.count(needle)}")
+s = s.replace(needle, replacement, 1)
+
+needle = '''        foreignCommand.context.sessionId = "foreign-session";
+        const auto foreign = coordinator.PlaceOrder(foreignCommand);
+'''
+replacement = '''        foreignCommand.context.sessionId = "foreign-session";
+        foreignCommand.context.decisionLeaseFencingToken =
+            oldCommand.context.decisionLeaseFencingToken;
+        foreignCommand.context.decisionLeaseGeneration =
+            oldCommand.context.decisionLeaseGeneration;
+        const auto foreign = coordinator.PlaceOrder(foreignCommand);
+'''
+if s.count(needle) != 1:
+    raise SystemExit(f"foreign lease anchor count={s.count(needle)}")
 s = s.replace(needle, replacement, 1)
 
 old = '''        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
@@ -54,6 +84,10 @@ new = '''        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENC
 
         auto newCommand = MakePlace("generation-new-command");
         newCommand.context.executionDomain = oldCommand.context.executionDomain;
+        newCommand.context.decisionLeaseFencingToken =
+            oldCommand.context.decisionLeaseFencingToken;
+        newCommand.context.decisionLeaseGeneration =
+            oldCommand.context.decisionLeaseGeneration;
 '''
 if s.count(old) != 1:
     raise SystemExit(f"second-reader test block count={s.count(old)}")
