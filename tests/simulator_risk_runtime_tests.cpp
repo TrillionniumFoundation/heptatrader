@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iostream>
@@ -16,6 +17,10 @@
 #include <sys/un.h>
 #include <thread>
 #include <unistd.h>
+
+#ifndef HEPTA_SOURCE_ROOT
+#error HEPTA_SOURCE_ROOT is required for lifecycle integration acceptance
+#endif
 
 namespace {
 InstrumentRef Contract()
@@ -81,7 +86,6 @@ void TestDeterministicRiskReservationAndActivation()
     assert(pendingRisk.reasonCode == "RISK_WORST_CASE_GROSS_LIMIT");
     std::vector<std::string> statuses;
     venue.SetEventSink([&](const SimulatedOrderEvent& event) {
-        // Re-entrant reads prove callbacks run outside the venue mutex.
         assert(venue.Position(event.instrument) == 100.0);
         statuses.push_back(event.status);
     });
@@ -173,13 +177,13 @@ void TestFlattenCapacityReservations()
             const char* side = sign > 0 ? "SELL" : "BUY";
             const long four = f.Admit(side, 4.0);
             const long six = f.Admit(side, 6.0);
-            f.Block(side, 0.01); // Inactive reservations share the same quantity.
+            f.Block(side, 0.01);
             f.venue.Process();
             assert(f.venue.Position("EUR.USD") == sign * 10.0);
             assert(f.venue.ActivateOrder(four));
             f.venue.Process();
             assert(f.venue.Position("EUR.USD") == sign * 6.0);
-            f.Block(side, 0.01); // The remaining reservation still consumes six.
+            f.Block(side, 0.01);
             assert(f.venue.ActivateOrder(six));
             f.venue.Process();
             assert(f.venue.Position("EUR.USD") == 0.0);
@@ -228,7 +232,7 @@ void TestFlattenCancellationAndStrictRemainder()
     FlattenFixture f(10.0);
     const long held = f.Admit("SELL", 10.0);
     assert(f.venue.CancelOrder(held).disposition == VenueCancelDisposition::Submitted);
-    f.venue.Process(); // Unactivated cancel request is still unresolved.
+    f.venue.Process();
     f.Block("SELL", 1.0);
     assert(f.venue.TerminalOrderStatuses().empty());
     std::string reason;
@@ -243,8 +247,6 @@ void TestFlattenCancellationAndStrictRemainder()
     assert(f.venue.Position("EUR.USD") == 0.0);
     assert(f.venue.ExecutionOrderIds() == std::set<long>({replacement}));
 
-    // No tolerance grants 0.2 against the binary remainder of 0.3 - 0.1.
-    // Admit the actual representable remainder; never normalize cash to zero.
     FlattenFixture fractional(0.3);
     const long first = fractional.Admit("SELL", 0.1);
     fractional.Block("SELL", 0.2);
@@ -265,7 +267,7 @@ void TestFlattenPolicyTransitionsAndFillBoundary()
         f.venue.SetRiskConfig(ordinary);
         const long existing = f.Admit("SELL", 6.0);
         f.venue.SetRiskConfig(f.risk);
-        f.Block("SELL", 5.0); // Pre-policy ordinary orders consume capacity too.
+        f.Block("SELL", 5.0);
         const long remaining = f.Admit("SELL", 4.0);
         f.venue.SetRiskConfig(ordinary);
         f.venue.SetRiskConfig(f.risk);
@@ -286,7 +288,7 @@ void TestFlattenPolicyTransitionsAndFillBoundary()
         assert(f.venue.Position("EUR.USD") == 0.0);
         std::vector<SimulatedOrderEvent> events;
         f.venue.SetEventSink([&](const SimulatedOrderEvent& event) {
-            assert(f.venue.Position("EUR.USD") == 0.0); // Sink remains reentrant.
+            assert(f.venue.Position("EUR.USD") == 0.0);
             events.push_back(event);
         });
         const auto before = f.venue.RecoveryAuditSnapshot().generation;
@@ -300,7 +302,7 @@ void TestFlattenPolicyTransitionsAndFillBoundary()
         assert(audit.terminalStatuses.at(reserved) == "Rejected");
         assert(audit.executionOrderIds == std::set<long>({consumed}));
         f.venue.Process();
-        assert(events.size() == 2); // No duplicate terminal event or economic fill.
+        assert(events.size() == 2);
     }
     {
         FlattenFixture f(10.0);
@@ -325,7 +327,7 @@ void TestFlattenPolicyTransitionsAndFillBoundary()
         auto ordinary = f.risk;
         ordinary.flattenOnly = false;
         f.venue.SetRiskConfig(ordinary);
-        f.Admit("SELL", 10.0); // An unfilled short increase grants no exit capacity.
+        f.Admit("SELL", 10.0);
         f.venue.SetRiskConfig(f.risk);
         f.Block("BUY", 11.0);
         f.Admit("BUY", 10.0);
@@ -365,7 +367,6 @@ void TestPreviewAndFinalAdmissionRejectSameRisk()
     venue.SetQuote("EUR.JPY", 160.0, 160.1);
     assert(!venue.PreviewRisk(unsupported, Order()).allow);
 
-    // A previously allowed preview conveys no mutable admission authority.
     assert(venue.PreviewRisk(Contract(), Order()).allow);
     auto killed = Risk();
     killed.globalKillSwitch = true;
@@ -407,7 +408,8 @@ std::string JsonString(const std::string& json, const std::string& key)
 }
 
 ExecutionCommandResult PreviewAndPlace(UnixExecutionServiceClient& client,
-                                       PlaceOrderCommand command)
+                                       PlaceOrderCommand command,
+                                       PlaceOrderCommand* sentCommand = nullptr)
 {
     const auto preview = client.PreviewOrder(command);
     if (preview.status != ExecutionCommandStatus::Accepted)
@@ -415,6 +417,7 @@ ExecutionCommandResult PreviewAndPlace(UnixExecutionServiceClient& client,
     assert(preview.status == ExecutionCommandStatus::Accepted);
     command.previewPermit = JsonString(preview.detail, "preview_permit");
     command.context.toolCallId = JsonString(preview.detail, "command_id");
+    if (sentCommand != nullptr) *sentCommand = command;
     const auto placed = client.PlaceOrder(command);
     if (placed.status != ExecutionCommandStatus::Accepted)
         std::cerr << "place rejected " << placed.reasonCode << " " << placed.detail << '\n';
@@ -438,8 +441,31 @@ void AwaitStatus(ExecutionServiceRuntimeComposition& runtime,
     assert(false && "production simulator pump did not deliver status");
 }
 
-// Expiry is measured in the injected venue clock, independently of whether
-// an instrumented CI worker happens to be scheduled within 100 ms.
+std::string ShellQuote(const std::string& value)
+{
+    std::string result("'");
+    for (std::string::const_iterator it = value.begin(); it != value.end(); ++it)
+    {
+        if (*it == '\'') result += "'\\''";
+        else result.push_back(*it);
+    }
+    result += "'";
+    return result;
+}
+
+void RunOmsLifecycle(const std::string& action,
+                     const std::string& journal,
+                     const std::string& store)
+{
+    const std::string script = std::string(HEPTA_SOURCE_ROOT) +
+        "/scripts/hepta_oms_lifecycle.py";
+    std::string command = "PYTHONDONTWRITEBYTECODE=1 python3 " +
+        ShellQuote(script) + " " + action + " --journal " +
+        ShellQuote(journal) + " --store " + ShellQuote(store);
+    if (action == "seal") command += " --stopped-state";
+    assert(std::system(command.c_str()) == 0);
+}
+
 void TestExactQuoteExpiryWithoutSchedulerAssumptions()
 {
     std::uint64_t now = 10000;
@@ -451,7 +477,7 @@ void TestExactQuoteExpiryWithoutSchedulerAssumptions()
     const auto contract = Contract();
     const auto order = Order();
     assert(venue.PreviewRisk(contract, order).allow);
-    now = 10100; // Inclusive freshness boundary.
+    now = 10100;
     assert(venue.GetQuoteSnapshot("EUR.USD", now).IsFresh(now));
     assert(venue.PreviewRisk(contract, order).allow);
     now = 10101;
@@ -464,8 +490,6 @@ void TestExactQuoteExpiryWithoutSchedulerAssumptions()
     assert(rejectedId == -1 && venue.ActiveOrderIds().empty());
     assert(venue.Position("EUR.USD") == 0.0);
 
-    // A past preview cannot authorize a later send. No clock manipulation
-    // reaches the production daemon or configuration.
     venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
     assert(venue.PreviewRisk(contract, order).allow);
     now += 101;
@@ -475,7 +499,7 @@ void TestExactQuoteExpiryWithoutSchedulerAssumptions()
     long id = -1;
     assert(venue.PlaceOrder(contract, order, &id));
     now += 101;
-    venue.Process(); // Expired quotes cannot economically fill an order.
+    venue.Process();
     assert(venue.Position("EUR.USD") == 0.0);
     assert(venue.ExecutionOrderIds().empty());
     venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
@@ -500,8 +524,6 @@ void AwaitNewQuoteObservation(ExecutionServiceRuntimeComposition& runtime,
 
 void TestProductionRuntimePumpsAndJournalsEvents()
 {
-    // The production server deliberately rejects a root Gateway identity.
-    // Root-only containers still execute all deterministic venue tests above.
     if (::geteuid() == 0) return;
     char directoryTemplate[] = "/tmp/hepta-simulator-runtime-XXXXXX";
     char* directory = ::mkdtemp(directoryTemplate);
@@ -527,11 +549,11 @@ void TestProductionRuntimePumpsAndJournalsEvents()
     config.stateDirectory = path;
     config.journalPath = path + "/oms-journal.jsonl";
     config.fenceCredentialPath = credential;
-    // Keep the unchanged production TTL. The injected-clock test above owns
-    // expiry; this IPC test owns real pumping, journal/replay and refresh.
     config.simulatorQuoteRefreshIntervalMs = 20;
+    const std::string generationStore = config.journalPath + ".generations";
     long filledId = -1;
     long cancelledId = -1;
+    PlaceOrderCommand durableFillCommand;
     {
         ExecutionServiceRuntimeComposition runtime(config);
         std::string reason;
@@ -550,12 +572,10 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         command.instrument = "EUR.USD";
         command.timeInForce = "DAY";
         command.expiresAtMs = OmsJournal::NowEpochMs() + 10000;
-        filledId = PreviewAndPlace(client, command).orderId;
+        filledId = PreviewAndPlace(client, command, &durableFillCommand).orderId;
         std::uint64_t cursor = 0;
         AwaitStatus(runtime, cursor, filledId, "Filled");
         assert(runtime.Venue().Position("EUR.USD") == 100.0);
-        // Observe two actual refreshes rather than assuming a sleep scheduled
-        // the publisher. These bounded waits repeat reads only, not mutations.
         const auto observation = runtime.Venue().GetQuoteSnapshot("EUR.USD",
             static_cast<std::uint64_t>(OmsJournal::NowEpochMs())).observedAtMs;
         AwaitNewQuoteObservation(runtime, observation);
@@ -600,10 +620,23 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         ExecutionOrderOwner owner;
         assert(!recovered.GetOrderOwner(filledId, owner));
         assert(!recovered.GetOrderOwner(cancelledId, owner));
-        assert(journal.Append(filledRecord)); // Exact duplicate must not double the restored position.
+        assert(journal.Append(filledRecord));
     }
     assert(terminalOwners == std::set<long>({filledId, cancelledId}));
     assert(terminalStatuses == terminalOwners);
+
+    // Exercise the real stopped-state maintenance tool.  The active path is
+    // now a non-JSON lineage sentinel plus tail, so any successful restart
+    // below proves the service no longer relies on legacy full-file Replay().
+    RunOmsLifecycle("seal", config.journalPath, generationStore);
+    RunOmsLifecycle("verify", config.journalPath, generationStore);
+    {
+        std::ifstream input(config.journalPath);
+        std::string firstLine;
+        assert(std::getline(input, firstLine));
+        assert(firstLine.find("HEPTA_OMS_ACTIVE_TAIL_V1\t") == 0);
+    }
+
     ::unlink(mutationSocket.c_str());
     ::unlink(eventSocket.c_str());
     config.listenFd = Listener(mutationSocket);
@@ -611,7 +644,8 @@ void TestProductionRuntimePumpsAndJournalsEvents()
     {
         ExecutionServiceRuntimeComposition restarted(config);
         std::string reason;
-        assert(restarted.Start(reason));
+        if (!restarted.Start(reason)) std::cerr << reason << '\n';
+        assert(restarted.IsRunning());
         assert(restarted.Venue().Position("EUR.USD") == 100.0);
         assert(restarted.Venue().ActiveOrderIds().empty());
         auto risk = Risk();
@@ -620,6 +654,16 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         restarted.Venue().SetRiskConfig(risk);
         assert(restarted.Venue().PreviewRisk(Contract(), Order(10.0)).reasonCode ==
             "RISK_DAILY_ORDER_LIMIT");
+
+        // Durable command identity must survive the seal and remain an exact
+        // idempotent replay even though the original preview permit is old.
+        UnixExecutionServiceClient client(mutationSocket);
+        const ExecutionCommandResult replay = client.PlaceOrder(durableFillCommand);
+        assert(replay.status == ExecutionCommandStatus::Accepted);
+        assert(replay.orderId == filledId);
+        assert(restarted.Venue().Position("EUR.USD") == 100.0);
+        assert(restarted.Venue().ActiveOrderIds().empty());
+
         risk.maxDailyOrders = 100;
         risk.maxWorstCaseGrossNotional = 115.0;
         restarted.Venue().SetRiskConfig(risk);
@@ -628,6 +672,30 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         long unexpected = -1;
         assert(!restarted.Venue().PlaceOrder(Contract(), Order(10.0), &unexpected));
         assert(restarted.Venue().ActiveOrderIds().empty());
+
+        // The first post-generation admission must continue above every
+        // historical order id rather than reusing an id from the sealed era.
+        risk.maxWorstCaseGrossNotional = 1000.0;
+        restarted.Venue().SetRiskConfig(risk);
+        PlaceOrderCommand next = durableFillCommand;
+        next.context.toolCallId = "post-seal-preview";
+        next.previewPermit.clear();
+        next.order = Order(1.0);
+        next.order.orderType = "LMT";
+        next.order.lmtPrice = 1.0;
+        next.expiresAtMs = OmsJournal::NowEpochMs() + 10000;
+        const ExecutionCommandResult postSeal = PreviewAndPlace(client, next);
+        assert(postSeal.orderId > std::max(filledId, cancelledId));
+        std::uint64_t cursor = 0;
+        AwaitStatus(restarted, cursor, postSeal.orderId, "Submitted");
+        CancelOrderCommand cancel;
+        cancel.context = next.context;
+        cancel.context.toolCallId = "post-seal-cancel";
+        cancel.orderId = postSeal.orderId;
+        cancel.instrument = next.instrument;
+        cancel.side = "BUY";
+        assert(client.CancelOrder(cancel).status == ExecutionCommandStatus::Accepted);
+        AwaitStatus(restarted, cursor, postSeal.orderId, "Cancelled");
         restarted.Stop();
     }
     {
@@ -646,10 +714,8 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         assert(!conflicted.Start(reason));
         assert(reason == "EXECUTION_SIMULATOR_RISK_REPLAY_CONFLICT");
     }
-    for (const auto& name : {"mutation.sock", "event.sock", "hepta-execution-fence",
-                             "execution-runtime.lock", "oms-journal.jsonl"})
-        ::unlink((path + "/" + name).c_str());
-    assert(::rmdir(path.c_str()) == 0);
+    const std::string cleanup = "rm -rf -- " + ShellQuote(path);
+    assert(std::system(cleanup.c_str()) == 0);
 }
 } // namespace
 
