@@ -9,8 +9,9 @@ Applies to: Execution coordinator, deterministic simulator and IB PAPER candidat
 `ExecutionCoordinatorCallbacks::cancelOrder` dependency. It is not a new wire
 version or OMS schema. The simulator and IB adapter return the same result type.
 The old Boolean coordinator callback is removed; there is no implicit Boolean
-conversion or second last-error lookup. `lastIbRejectReason` remains only for
-the separately guarded flatten path, not for cancellation.
+conversion or second last-error lookup. Authoritative flatten is likewise a
+separate typed `flattenOrder` result; neither operation samples the retired
+`lastIbRejectReason` coordinator callback after venue I/O.
 
 | Disposition | Meaning | Coordinator outcome |
 |---|---|---|
