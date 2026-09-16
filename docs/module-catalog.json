@@ -94,6 +94,7 @@
       "implementation": [
         "HeptaTrade/oms_journal.cpp",
         "HeptaTrade/oms_journal.h",
+        "HeptaTrade/oms_generation_store.h",
         "scripts/verify_oms_journal_replay.py",
         "HeptaTrade/oms_capacity_observation.h",
         "HeptaTrade/oms_latency_observation.h",
