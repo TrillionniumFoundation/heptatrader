@@ -65,9 +65,11 @@ Optional gzip archive maintenance remains a distinct lossless stopped-state oper
 
 ## Terminal mutation universe boundary
 
-Generation-backed recovery and historical command lookup are long-horizon mechanisms. The IB PAPER terminal mutation manifest is a separate qualification/finalization artifact: it enumerates the mutation/correlation universe required by the bounded PAPER campaign and intentionally has its own finite manifest limits. Those limits must not be described as the storage capacity of the OMS ledger or as proof of unlimited unattended production history.
+Generation-backed recovery and historical command lookup are long-horizon mechanisms. The IB PAPER terminal mutation manifest is a separate qualification/finalization artifact. Its source universe is now scoped to the exact fenced owner `(agent_id, session_id, account, execution_domain)`: generation-backed enumeration and hot coordinator records both apply that same four-part subject before a command enters HPM1. Historical commands from older or foreign sessions on the same account/domain remain durably queryable in OMS, but they no longer accumulate into the current owner's terminal campaign manifest.
 
-Before widening PAPER qualification into long-running production-like operation, terminalization must either consume a campaign/session-scoped mutation universe or adopt a streaming/digest-bound representation that does not require materializing arbitrary permanent history. Until that separate contract changes, the finite terminal manifest remains an explicit qualification boundary rather than an OMS data-loss mechanism.
+HPM1 intentionally keeps a finite command/correlation limit for one bounded PAPER owner session. Exceeding that campaign-local limit fails terminalization rather than deleting identity or omitting evidence. The limit therefore is not the storage capacity of the OMS ledger, does not expire permanent command IDs, and must not be presented as proof of unlimited unattended production history.
+
+Before widening PAPER qualification into long-running production-like operation within one persistent owner session, the terminal witness would need a streaming/digest-bound representation or another explicitly reviewed campaign rollover contract. Until then the finite owner-session manifest is a deliberate qualification boundary.
 
 ## Diagnostics and reasons
 
