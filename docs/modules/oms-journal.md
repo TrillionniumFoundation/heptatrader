@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`, `scripts/verify_oms_journal_replay.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`, `scripts/hepta_oms_report.py`, `HeptaTrade/oms_archive_codec.h`, `scripts/oms_archive_codec.py`, `scripts/hepta_oms_archive.py`
-Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_oms_capacity.py`, `tests/oms_live_capacity_cases.h`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_oms_operational_report.py`, `tests/oms_queue_budget_cases.h`, `tests/oms_archive_cases.h`, `tests/python/test_oms_archive.py`, `tests/compat/oms_recover.cpp`, `tests/compat/oms_recover.h`
+Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`, `scripts/verify_oms_journal_replay.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`, `scripts/hepta_oms_report.py`, `HeptaTrade/oms_archive_codec.h`, `scripts/oms_archive_codec.py`, `scripts/hepta_oms_archive.py`, `scripts/hepta_oms_checkpoint.py`
+Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_oms_capacity.py`, `tests/oms_live_capacity_cases.h`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_oms_operational_report.py`, `tests/oms_queue_budget_cases.h`, `tests/oms_archive_cases.h`, `tests/python/test_oms_archive.py`, `tests/python/test_oms_checkpoint.py`, `tests/compat/oms_recover.cpp`, `tests/compat/oms_recover.h`
 
 ## Responsibilities
 
@@ -102,3 +102,26 @@ See [lossless stopped-state maintenance](../technical/oms-archive-lifecycle.md) 
 writer exclusion, decoded recovery budgets, crash handling and explicit
 expansion before downgrade. It preserves all event bytes and command identities;
 it is not online truncation or a general N-1 compatibility claim.
+
+## Durable generation groundwork
+
+The installed `hepta_oms_checkpoint.py` now implements the stopped-state producer
+and verifier for the long-term generation format described by
+[persistence-support-window.md](../technical/persistence-support-window.md).
+A generation retains byte-identical decoded journal history, a sorted disk-backed
+command index keyed by the complete `(agent_id, session_id, command_id)` tuple
+plus request hash, an explicit hot checkpoint for unresolved commands and owner
+fences, a digest-bound manifest, parent-generation lineage and an atomically
+published `CURRENT` pointer. File and directory synchronization precede pointer
+publication. A corrupt selected generation fails closed; verification never
+silently falls back to an older fence or identity set. Old command IDs therefore
+remain exact duplicate/conflict evidence in the generated index rather than being
+expired merely because an order is terminal.
+
+This is deliberately **not yet the runtime recovery authority**. Current C++
+startup still consumes the complete schema-1-through-4 journal and retains its
+historical command projection in memory. The generation tool does not truncate,
+rotate or replace the active journal and cannot authorize PAPER/LIVE. The runtime
+switch to checkpoint + active-tail replay remains part of `OMS-LIFECYCLE-002`
+and must preserve all existing uncertain-send, cancellation, owner-fence and
+rollback behavior before that gap can close.
