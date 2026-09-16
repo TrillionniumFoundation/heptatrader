@@ -69,6 +69,7 @@ set(_hepta_runtime_helpers
     scripts/run_release_simulator_smoke.py
     scripts/verify_canonical_ib_paper_profile.py
     scripts/hepta_oms_report.py
+    scripts/hepta_ib_runtime_report.py
     scripts/hepta_telemetry_collect.py
     scripts/oms_archive_codec.py
     scripts/hepta_oms_archive.py
