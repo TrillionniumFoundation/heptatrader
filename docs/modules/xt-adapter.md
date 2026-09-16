@@ -13,7 +13,7 @@ The earlier API mapping was based on a developer-local Python `xtquant` installa
 
 ## Selected next-venue implementation
 
-XT/QMT is now the selected next venue after the simulator and the bounded IB PAPER path. The implementation order and exact trust/protocol/state requirements are defined by the [XT/QMT execution-adapter contract](../technical/xtqmt-adapter-contract.md). The intended first integration uses a dedicated local Python/QMT sidecar so the vendor runtime does not enter Agent, Gateway or shared coordinator processes. Execution remains the sole durable order authority.
+XT/QMT is now the selected next venue after the simulator and the bounded IB PAPER path. The implementation order and exact trust/protocol/state requirements are defined by the [XT/QMT execution-adapter contract](../technical/xtqmt-adapter-contract.md). The selected first topology keeps the canonical Execution authority on Linux and reaches a dedicated Windows Python/QMT sidecar through one pinned mutually authenticated HXQ1/TLS trust domain; Agent and Gateway cannot reach that listener. Execution remains the sole durable order authority.
 
 Selection does not change capability truth. No pinned QMT installer, Python/xtquant package digest, account runtime or qualification fixture exists in this repository today, so enabling a transport before those inputs are supplied would be fabricated functionality. The current negative-capability source therefore remains the correct executable behavior until the contract's first SDK-custody stage can be implemented and tested.
 

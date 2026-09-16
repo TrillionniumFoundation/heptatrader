@@ -23,31 +23,42 @@ mutation fails closed.
 ## Process and trust boundary
 
 The vendor package MUST NOT be imported or linked by Agent, Tool Gateway or the
-shared Execution coordinator. The initial supported composition is:
+shared Linux Execution coordinator. The selected first topology is fixed rather
+than left ambiguous:
 
 ```text
-Agent -> Tool Gateway -> Execution Service
+Agent -> Tool Gateway -> Linux Execution Service
                            |
-                           | authenticated local IPC
+                           | dedicated HXQ1 v1 over mutually authenticated TLS
+                           | exact Windows host/service identity + pinned certs
                            v
-                    XT/QMT sidecar
+                    Windows XT/QMT sidecar
                            |
-                           | pinned xtquant/QMT API
+                           | loopback/local pinned xtquant/QMT API
                            v
                         QMT client
 ```
 
-The sidecar runs under a dedicated OS identity. It receives no Agent session token
-and cannot mint command IDs, decision leases or Execution owner generations. It
-may receive only an Execution-issued venue command whose durable intent and send
-attempt already exist. Its local credential/configuration directory is unreadable
-by Agent/Gateway identities. The sidecar may reach only the reviewed local QMT
-endpoint; it is not a generic Python plugin host.
+Execution remains the sole durable order authority. The cross-host HXQ1 channel is
+a new, narrow trust domain owned only by the Execution identity; it is not exposed
+to Agent/Gateway processes and is not a generic TCP bridge. Both ends pin protocol,
+peer certificate/public-key identity, allowed host, account/profile digest and
+message bounds. The Windows firewall accepts the HXQ1 listener only from the exact
+Execution host; the sidecar's QMT/API access remains local to Windows. A connection
+without mutual identity/profile agreement is `DISABLED`, not degraded authority.
 
-The first implementation is Windows-only because QMT/xtquant runtime custody is a
-Windows deployment concern. A remote TCP bridge is explicitly out of scope. If the
-Execution process is not colocated on Windows, transport topology must be reviewed
-as a new trust domain instead of silently exposing this local protocol over a LAN.
+The sidecar runs under a dedicated Windows service identity. It receives no Agent
+session token and cannot mint command IDs, decision leases or Execution owner
+generations. It may receive only an Execution-issued venue command whose durable
+intent and send attempt already exist. Its QMT credential/configuration directory
+is unreadable by Agent/Gateway identities and by the Linux host. The sidecar is not
+a generic Python plugin host.
+
+This topology deliberately avoids porting the existing Linux/systemd/Unix-socket
+Execution authority to Windows merely to obtain process-local IPC. Any future
+colocated-Windows Execution design or additional network hop is a separate trust-
+domain change and is outside HXQ1 v1. Until the pinned QMT runtime, certificates,
+firewall policy and qualification fixture exist, the adapter remains fail-closed.
 
 ## Pinned external inputs
 
@@ -69,10 +80,12 @@ adapter in negative-capability mode.
 
 ## Local IPC protocol
 
-The sidecar protocol is length-prefixed, local-only and versioned independently of
-Agent `HTT1`, Execution `HEX1` and supervisor `HSS1`. The initial protocol name is
-`HXQ1`, version 1. Frames are bounded to 256 KiB and contain one canonical UTF-8
-JSON object with duplicate keys and non-finite numbers rejected. Unknown fields are
+The sidecar protocol is length-prefixed and versioned independently of Agent
+`HTT1`, Execution `HEX1` and supervisor `HSS1`. `HXQ1` version 1 runs only on the
+pinned Linux-Execution↔Windows-sidecar mTLS connection above. TLS peer identity is
+part of transport admission, not a substitute for message-level service/connection
+epoch checks. Frames are bounded to 256 KiB and contain one canonical UTF-8 JSON
+object with duplicate keys and non-finite numbers rejected. Unknown fields are
 rejected for mutation messages.
 
 Every request carries:

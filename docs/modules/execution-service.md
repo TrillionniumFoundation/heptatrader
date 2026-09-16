@@ -53,7 +53,12 @@ The coordinator consumes the journal's fully validated event sequence without
 copying it into another full-history vector. Allocation/projection exceptions
 clear partial projections and fence mutations; valid uncertain commands remain
 available for reconciliation. See [recovery memory and exception semantics](../technical/coordinator-recovery-memory.md).
-This does not implement checkpoints or bounded permanent identity storage.
+When a verified generation store is selected, startup restores only the bounded hot
+replay plus the lineage-bound active tail. Permanent command identity and request
+hashes remain in pinned disk indexes and are loaded on demand through a bounded
+historical cache. V1 remains readable; V2 seals delta history and has an explicit
+legacy JSONL export for downgrade. A missing/corrupt selected generation fails
+closed rather than falling back to an older or empty history.
 
 Journal failure before send rejects the mutation. Journal failure after a possible send blocks further risk and requires command-status/reconciliation recovery.
 
@@ -101,8 +106,9 @@ rejections using the dedicated durable `flatten_reject` path are retained too;
 they must not be confused with no-record refusals. `RejectLocked` remains the
 post-intent/persistent rejection helper. Executable regressions flood pre-intent
 refusals and preserve accepted/conflicting/uncertain/post-intent-rejected
-identities and no-resend behavior across replay. This bounds neither permanent
-historical identities nor full-history replay: those remain lifecycle work.
+identities and no-resend behavior across replay. This pre-intent rule is independent of the generation lifecycle: sealed
+terminal identities remain durable on disk, while hot coordinator state and active-tail
+replay stay bounded by the generation/replay contracts.
 
 ## Known limitations
 
