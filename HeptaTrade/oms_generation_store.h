@@ -81,6 +81,14 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
+    // Recomputes the bounded restart working set after Recover has validated
+    // the selected generation and active tail. Bytes include the immutable hot
+    // replay sidecar plus bytes after the generation cut; records include both
+    // event sets. This is recovery capacity, not physical history size.
+    bool RecoveryCapacity(std::uint64_t& bytes,
+                          std::uint64_t& records,
+                          std::string& reason) const;
+
     OmsGenerationLookupStatus LookupCommand(
         const std::string& agentId,
         const std::string& sessionId,
