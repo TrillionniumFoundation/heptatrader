@@ -30,11 +30,11 @@ jobs:
           python3 scripts/.full_gap_patch_fix.py > materializer.log 2>&1
           code=$?
           if [ "$code" -eq 0 ]; then
-            python3 scripts/.full_gap_native_testfix.py >> materializer.log 2>&1
+            python3 scripts/.full_gap_patch.py >> materializer.log 2>&1
             code=$?
           fi
           if [ "$code" -eq 0 ]; then
-            python3 scripts/.full_gap_patch.py >> materializer.log 2>&1
+            python3 scripts/.full_gap_native_testfix.py >> materializer.log 2>&1
             code=$?
           fi
           cat materializer.log
