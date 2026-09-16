@@ -11,7 +11,7 @@ permissions:
 jobs:
   materialize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 55
     steps:
       - name: Checkout convergence branch
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -25,20 +25,30 @@ jobs:
           python3 scripts/_convergence_fixture_fix.py
           python3 scripts/_convergence_index_fix.py
 
-      - name: Validate OMS convergence
+      - name: Validate complete source convergence
+        env:
+          HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
+          HEPTA_JOBS: "2"
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
           python3 -m py_compile scripts/hepta_oms_checkpoint.py scripts/hepta_oms_lifecycle.py tests/python/test_oms_checkpoint.py tests/python/test_oms_lifecycle_rotation.py
           python3 -m unittest tests.python.test_oms_checkpoint tests.python.test_oms_lifecycle_rotation
-          cmake -S . -B build/diag -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF -DHEPTA_BUILD_LEGACY_MONOLITH=OFF -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
-          cmake --build build/diag --target hepta_execution_coordinator_tests --parallel 2
-          ctest --test-dir build/diag --output-on-failure -R '^hepta_execution_coordinator_tests$'
+          ./scripts/dev_core.sh
+          python3 scripts/check_documentation.py
+          python3 scripts/check_component_coverage.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/verify_build_ownership.py --build-dir build/core
+          python3 scripts/run_python_tests.py --lane core
+          python3 scripts/run_python_tests.py --lane source
 
       - name: Commit validated materialized tree
-        if: ${{ false }}
         run: |
-          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py scripts/_convergence_index_fix.py scripts/_convergence_diag_stage.py
+          rm .github/workflows/convergence-materialize.yml \
+             scripts/_convergence_materialize.py \
+             scripts/_convergence_fixture_fix.py \
+             scripts/_convergence_index_fix.py \
+             scripts/_convergence_diag_stage.py
           git config user.name "HeptaTrader convergence materializer"
           git config user.email "noreply@github.com"
           git add -A
