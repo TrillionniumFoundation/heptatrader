@@ -176,3 +176,11 @@ expansion before downgrade. It preserves all event bytes and command identities;
 it is not online truncation or a general N-1 compatibility claim. Generation v2
 is a separate stopped-state history-sealing mechanism with an explicit downgrade
 export path; neither mechanism runs concurrently with a writer.
+## Streaming maintenance verification
+
+Generation verification scans cumulative command and send-attempt indexes in a
+single pass rather than materializing either file as a Python list. Downgrade
+export follows the digest-bound parent lineage with cycle detection and no fixed
+generation-count cliff. Per-segment byte, record and record-size bounds remain
+enforced. Complete-history replay is an explicit economic-baseline consumer API;
+ordinary coordinator recovery continues to use hot replay plus the active tail.

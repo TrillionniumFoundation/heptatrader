@@ -129,6 +129,8 @@ set_tests_properties(hepta_agent_simulator_e2e_tests PROPERTIES
 
 add_executable(hepta_simulator_risk_runtime_tests simulator_risk_runtime_tests.cpp)
 target_link_libraries(hepta_simulator_risk_runtime_tests hepta_execution_service_runtime)
+target_compile_definitions(hepta_simulator_risk_runtime_tests PRIVATE
+    HEPTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 hepta_register_core_test(hepta_simulator_risk_runtime_tests)
 set_tests_properties(hepta_simulator_risk_runtime_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 30)

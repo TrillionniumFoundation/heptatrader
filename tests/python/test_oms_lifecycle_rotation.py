@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -230,6 +231,40 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         runtime = (self.store / generation / "runtime-manifest.txt").read_text()
         self.assertIn("send_attempt_index_order=account-domain-time-v1\n", runtime)
         lifecycle.verify_generation(self.store, journal=self.journal)
+
+    def test_verify_streams_cumulative_indexes(self) -> None:
+        lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        original = lifecycle._iter_private_lines
+
+        class NoLengthHint:
+            def __init__(self, iterator):
+                self.iterator = iter(iterator)
+            def __iter__(self):
+                return self
+            def __next__(self):
+                return next(self.iterator)
+            def __length_hint__(self):
+                raise AssertionError("verification attempted to materialize an index")
+
+        def wrapped(path: Path):
+            return NoLengthHint(original(path))
+
+        with mock.patch.object(lifecycle, "_iter_private_lines", side_effect=wrapped):
+            self.assertEqual(
+                lifecycle.verify_generation(self.store, journal=self.journal)["result"],
+                "PASS")
+
+    def test_generation_chain_has_no_arbitrary_count_cliff(self) -> None:
+        total = 1100
+        def manifest(_store: Path, generation: str) -> dict:
+            index = int(generation[1:])
+            return {"generation": generation,
+                    "parent_generation": "" if index == 0 else f"g{index - 1}"}
+        with mock.patch.object(lifecycle, "_manifest_for", side_effect=manifest):
+            chain = lifecycle._generation_chain(self.store, f"g{total - 1}")
+        self.assertEqual(len(chain), total)
+        self.assertEqual(chain[0][0], "g0")
+        self.assertEqual(chain[-1][0], f"g{total - 1}")
 
 
 

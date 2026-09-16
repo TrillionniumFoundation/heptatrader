@@ -81,3 +81,12 @@ The current simulator is an execution venue simulator, not a full exchange micro
 The venue returns the shared [typed cancellation result](../technical/venue-cancellation-contract.md)
 under the venue mutex; coordinator callers do not sample a separate mutable
 last-error string after a cancellation.
+## Generation-backed restart
+
+A V2 lineage sentinel is never parsed as a legacy JSON event. When a generation
+store exists, the Execution runtime asks `OmsGenerationStore` to validate and
+stream immutable generation segments plus the active tail, then reconstructs
+unique simulator admissions, fills, positions and the next order ID before
+accepting traffic. Coordinator recovery remains on bounded hot replay. The
+native simulator runtime test executes fill, stop, seal and restart against the
+real service path and retains duplicate/conflict checks across that boundary.

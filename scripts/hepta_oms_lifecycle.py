@@ -37,7 +37,6 @@ from verify_oms_journal_replay import (
 SCHEMA = "heptatrader.oms-generation.v2"
 RUNTIME_MANIFEST_HEADER = "HEPTA_OMS_RUNTIME_GENERATION_V2"
 TAIL_HEADER = "HEPTA_OMS_ACTIVE_TAIL_V1"
-MAX_CHAIN = 1024
 MAX_METADATA = 16 * 1024 * 1024
 
 
@@ -655,21 +654,20 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     if hashlib.sha256(runtime_raw).hexdigest() != manifest.get("runtime_manifest_sha256"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
-    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
-    if len(runtime_lines) != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+    runtime_count = 0
     previous = None
-    for line in runtime_lines:
+    for line in _iter_private_lines(root / "runtime-command-index.tsv"):
         key, _, _ = _runtime_row(line)
         if previous is not None and key <= previous:
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
         previous = key
-    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
-    if len(send_lines) != manifest.get("send_attempt_records"):
-        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
-    if sorted_send_index:
-        previous_send = None
-        for line in send_lines:
+        runtime_count += 1
+    if runtime_count != manifest.get("command_records"):
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+    send_count = 0
+    previous_send = None
+    for line in _iter_private_lines(root / "send-attempt-index.tsv"):
+        if sorted_send_index:
             fields = line.rstrip(b"\n").decode("ascii").split("\t")
             if len(fields) != 7:
                 raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
@@ -681,6 +679,9 @@ def verify_generation(store: Path, generation: str | None = None,
             if previous_send is not None and key <= previous_send:
                 raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
             previous_send = key
+        send_count += 1
+    if send_count != manifest.get("send_attempt_records"):
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
     if current and current["generation"] == generation:
         manifest_digest = v1._sha256_file(root / "manifest.json")[1]
         _verify_runtime_current(store, generation, manifest_digest,
@@ -716,7 +717,7 @@ def _generation_chain(store: Path, current_generation: str) -> list[tuple[str, d
     seen: set[str] = set()
     generation = current_generation
     while generation:
-        if generation in seen or len(chain) >= MAX_CHAIN:
+        if generation in seen:
             raise v1.GenerationError("OMS_GENERATION_PARENT_CHAIN_INVALID")
         seen.add(generation)
         manifest = _manifest_for(store, generation)

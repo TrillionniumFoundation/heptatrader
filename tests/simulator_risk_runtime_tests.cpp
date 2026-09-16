@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <set>
@@ -602,6 +603,11 @@ void TestProductionRuntimePumpsAndJournalsEvents()
         assert(!recovered.GetOrderOwner(cancelledId, owner));
         assert(journal.Append(filledRecord)); // Exact duplicate must not double the restored position.
     }
+    const std::string generationStore = config.journalPath + ".generations";
+    const std::string sealCommand = std::string("python3 '") + HEPTA_SOURCE_DIR +
+        "/scripts/hepta_oms_lifecycle.py' seal --journal '" + config.journalPath +
+        "' --store '" + generationStore + "' --stopped-state";
+    assert(std::system(sealCommand.c_str()) == 0);
     assert(terminalOwners == std::set<long>({filledId, cancelledId}));
     assert(terminalStatuses == terminalOwners);
     ::unlink(mutationSocket.c_str());
@@ -649,6 +655,8 @@ void TestProductionRuntimePumpsAndJournalsEvents()
     for (const auto& name : {"mutation.sock", "event.sock", "hepta-execution-fence",
                              "execution-runtime.lock", "oms-journal.jsonl"})
         ::unlink((path + "/" + name).c_str());
+    const std::string cleanupCommand = "rm -rf -- '" + generationStore + "'";
+    assert(std::system(cleanupCommand.c_str()) == 0);
     assert(::rmdir(path.c_str()) == 0);
 }
 } // namespace

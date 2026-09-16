@@ -101,6 +101,17 @@ public:
                           std::uint64_t& records,
                           std::string& reason) const;
 
+    // Complete immutable-history replay is a separate consumer path from
+    // the coordinator's bounded hot recovery. The generation store owns
+    // lineage, digest and file-identity validation for both.
+    bool ReplayCompleteHistory(
+        std::size_t maxSegmentBytes,
+        std::size_t maxSegmentRecords,
+        std::size_t maxRecordBytes,
+        const std::function<void(const OmsJournalEvent&)>& onEvent,
+        std::uint64_t& records,
+        std::string& reason);
+
     OmsGenerationLookupStatus LookupCommand(
         const std::string& agentId,
         const std::string& sessionId,

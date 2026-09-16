@@ -2,6 +2,7 @@
 #include "execution_coordinator.h"
 #include "execution_decision_lease_authority.h"
 #include "execution_event_feed_server.h"
+#include "../oms_generation_store.h"
 #include "unix_execution_service_server.h"
 #include <algorithm>
 #include <cerrno>
@@ -603,7 +604,7 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
     std::map<long, OmsJournalEvent> admitted;
     std::map<long, OmsJournalEvent> fills;
     bool valid = true;
-    const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
+    const auto consume = [&](const OmsJournalEvent& event) {
         if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
         const bool fill = event.eventType == "status" && event.status == "Filled";
         if (event.eventType != "place_sent" && !fill) return;
@@ -636,10 +637,23 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
              prior->second.qty != event.qty || prior->second.price != event.price))
             valid = false;
         fills[event.orderId] = event;
-    });
-    if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
+    };
+    bool replayOk = true;
+    OmsGenerationStore generationStore(m_config.journalPath);
+    if (generationStore.HasStore())
     {
-        reason = replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
+        const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+        std::uint64_t replayed = 0;
+        std::string generationReason;
+        replayOk = generationStore.ReplayCompleteHistory(
+            health.replayMaxBytes, health.replayMaxRecords,
+            health.replayMaxRecordBytes, consume, replayed, generationReason);
+    }
+    else
+        replayOk = m_journal.Replay(consume) >= 0;
+    if (!replayOk || maximumOrderId == std::numeric_limits<long>::max())
+    {
+        reason = !replayOk ? "EXECUTION_OMS_REPLAY_FAILED" :
             "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
         return false;
     }
