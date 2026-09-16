@@ -100,6 +100,50 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertLess(self.journal.stat().st_size, 256)
         lifecycle.verify_generation(self.store, journal=self.journal)
 
+    def test_many_generations_keep_active_tail_bounded_and_old_identity_indexed(self) -> None:
+        generations = 12
+        manifests = []
+        for index in range(generations):
+            if index:
+                self.append(command_events(f"g{index}", 1000 + index * 100, 100 + index))
+            manifest = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+            manifests.append(manifest)
+            self.assertEqual(manifest["segment_records"], 4)
+            self.assertEqual(manifest["history_records"], 4 * (index + 1))
+            self.assertEqual(manifest["command_records"], 2 * (index + 1))
+            self.assertLess(self.journal.stat().st_size, 256)
+            lifecycle.verify_generation(self.store, journal=self.journal)
+        commands = set(self.current_index_commands())
+        self.assertIn("old", commands)
+        self.assertIn("terminal-old", commands)
+        self.assertIn(f"g{generations - 1}", commands)
+        self.assertIn(f"terminal-g{generations - 1}", commands)
+        for manifest in manifests:
+            segment = self.store / manifest["generation"] / "segment-000001.jsonl"
+            self.assertLess(segment.stat().st_size, 16 * 1024)
+        output = self.root / "many-generations.jsonl"
+        exported = lifecycle.export_legacy(self.journal, self.store, output)
+        self.assertEqual(exported["records"], 4 * generations)
+        self.assertEqual(len(list(read_records(output, max_records=128))), 4 * generations)
+
+    def test_v1_generation_upgrades_to_v2_delta_and_exports_back_to_legacy(self) -> None:
+        first = checkpoint.build_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(first["schema"], checkpoint.SCHEMA)
+        first_generation = first["generation"]
+        self.append(command_events("after-v1", 2000, 202))
+        second = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(second["schema"], lifecycle.SCHEMA)
+        self.assertEqual(second["parent_generation"], first_generation)
+        self.assertEqual(second["segment_records"], 4)
+        self.assertEqual(second["history_records"], 8)
+        lifecycle.verify_generation(self.store, journal=self.journal)
+        output = self.root / "v1-v2-downgrade.jsonl"
+        exported = lifecycle.export_legacy(self.journal, self.store, output)
+        self.assertEqual(exported["records"], 8)
+        records = list(read_records(output, max_records=32))
+        self.assertEqual([records[0]["req_id"], records[4]["req_id"]],
+                         ["old", "after-v1"])
+
     def test_export_reconstructs_strict_legacy_jsonl_across_generations(self) -> None:
         lifecycle.seal_generation(self.journal, self.store, stopped=True)
         self.append(command_events("new", 2000, 202))
@@ -121,6 +165,17 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         parent_manifest = self.store / first["generation"] / "manifest.json"
         with parent_manifest.open("ab") as stream:
             stream.write(b" ")
+        with self.assertRaises(checkpoint.GenerationError):
+            lifecycle.verify_generation(self.store, journal=self.journal)
+
+    def test_active_tail_lineage_corruption_is_rejected(self) -> None:
+        lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        raw = bytearray(self.journal.read_bytes())
+        marker = (lifecycle.TAIL_HEADER + "\t").encode()
+        self.assertTrue(raw.startswith(marker))
+        raw[len(marker)] = ord("x") if raw[len(marker)] != ord("x") else ord("y")
+        self.journal.write_bytes(raw)
+        os.chmod(self.journal, 0o600)
         with self.assertRaises(checkpoint.GenerationError):
             lifecycle.verify_generation(self.store, journal=self.journal)
 
