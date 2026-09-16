@@ -150,7 +150,7 @@ endif()
 file(GLOB_RECURSE _hepta_doc_inputs CONFIGURE_DEPENDS
     "${PROJECT_SOURCE_DIR}/docs/*.md" "${PROJECT_SOURCE_DIR}/docs/*.json")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
-    ${_hepta_doc_inputs} "${PROJECT_SOURCE_DIR}/README.md"
+    ${_hepta_doc_inputs}
     "${PROJECT_SOURCE_DIR}/cmake/render_installed_documentation.py")
 execute_process(COMMAND "${Python3_EXECUTABLE}"
     "${PROJECT_SOURCE_DIR}/cmake/render_installed_documentation.py"

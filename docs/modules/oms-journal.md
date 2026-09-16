@@ -90,17 +90,9 @@ durable mutations from the disk index.
 
 The v2 producer stream-merges parent command and send-attempt indexes with the
 new tail instead of materializing the complete historical event stream in RAM.
-The cumulative send-attempt index is globally ordered for account/domain/time-window
-lower-bound lookup, so PAPER rate checks do not rescan all sealed sends on each
-preview/place call. Older V2 generations without the order declaration retain a
-fail-safe compatibility scan until the next seal.
-
 Command identity is never expired by generation maintenance. Immutable parent
 segments remain available until an explicit external retention policy exists;
 the active writer path itself no longer grows with sealed terminal history.
-Terminal shutdown likewise streams sealed mutation history into HPM2 digest/count
-bindings and adds only the active tail; it does not rebuild a lifetime command
-vector or emit one manifest row per command. HPM1 remains readable compatibility.
 
 Generation creation requires expanded plain JSONL input for the initial v1-to-v2
 migration. A gzip journal must first use the existing lossless stopped-state

@@ -23,13 +23,13 @@
       "id": "OMS-LIFECYCLE-002",
       "domain": "REPOSITORY",
       "state": "CLOSED",
-      "summary": "Generation-backed recovery, bounded historical lookup, sorted send-window indexing and compact terminal-history binding are implemented.",
+      "summary": "Native generation checkpoint/tail recovery and disk-backed permanent command lookup are implemented with lineage-sealed active tails and explicit downgrade export.",
       "evidence": [
         "docs/modules/oms-journal.md",
         "docs/technical/oms-recovery-capacity.md",
         "docs/technical/persistence-support-window.md",
         "HeptaTrade/oms_generation_store.h",
-        "HeptaTrade/execution/execution_generation_support.cpp",
+        "HeptaTrade/execution/execution_generation_v2_support.inc",
         "scripts/hepta_oms_checkpoint.py",
         "scripts/hepta_oms_lifecycle.py",
         "tests/oms_recovery_growth_probe.h",
@@ -38,7 +38,7 @@
       ],
       "issue": 89,
       "blocking_releases": [],
-      "disposition": "CLOSED. V2 startup verifies lineage and replays bounded hot state/tail while permanent command identities remain in pinned disk indexes. New V2 send indexes preserve global account/domain/time ordering for lower-bound rolling-window queries; legacy V2 indexes remain readable through the conservative compatibility scan. Terminalization streams sealed mutation history into fixed-size HPM2 digest/count bindings and includes only unsealed active-tail commands, removing the prior 4096-command/correlation manifest ceiling while retaining HPM1 read compatibility. No command identity is expired and PAPER/LIVE authorization remains false. Target-host multiday operations remain the separate HOST-OPERATIONS-003 external evidence scope."
+      "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup; send-attempt history is merged across the cut and index corruption fails closed. V2 stopped-state maintenance fsyncs immutable delta generations, atomically rotates the active path to a non-JSON lineage sentinel, binds parent manifests and current pointers by SHA-256, and preserves V1 reading for upgrade. Tests cover repeated generations, bounded active-tail growth, publication crash boundaries, ancient same-ID duplicate/conflict, native restart without a second venue send, send-attempt continuity, current/parent/sentinel corruption rejection, V1-to-V2 upgrade and create-only strict legacy JSONL export for downgrade. No command identity is expired, no journal history is deleted, and PAPER/LIVE authorization remains false."
     },
     {
       "id": "OWNER-RULESET-002",
