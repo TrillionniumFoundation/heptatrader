@@ -40,9 +40,8 @@ def command_events(command: str, base: int, order_id: int) -> list[dict]:
         event("place_send_attempt", command, request_hash, ts_ms=base + 1),
         event("place_sent", command, request_hash, status="submitted",
               order_id=order_id, ts_ms=base + 2),
-        event("order_owner_reconciled_terminal", f"terminal-{command}",
-              f"terminal-hash-{command}", status="terminal",
-              order_id=order_id, ts_ms=base + 3),
+        event("order_owner_reconciled_terminal", command, request_hash,
+              status="terminal", order_id=order_id, ts_ms=base + 3),
     ]
 
 
@@ -94,9 +93,8 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertEqual(second["parent_generation"], first_generation)
         self.assertEqual(second["segment_records"], 4)
         self.assertEqual(second["history_records"], 8)
-        self.assertEqual(second["command_records"], first["command_records"] + 2)
-        self.assertEqual(set(self.current_index_commands()),
-                         {"old", "terminal-old", "new", "terminal-new"})
+        self.assertEqual(second["command_records"], first["command_records"] + 1)
+        self.assertEqual(set(self.current_index_commands()), {"old", "new"})
         self.assertLess(self.journal.stat().st_size, 256)
         lifecycle.verify_generation(self.store, journal=self.journal)
 
@@ -110,14 +108,12 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             manifests.append(manifest)
             self.assertEqual(manifest["segment_records"], 4)
             self.assertEqual(manifest["history_records"], 4 * (index + 1))
-            self.assertEqual(manifest["command_records"], 2 * (index + 1))
+            self.assertEqual(manifest["command_records"], index + 1)
             self.assertLess(self.journal.stat().st_size, 256)
             lifecycle.verify_generation(self.store, journal=self.journal)
         commands = set(self.current_index_commands())
         self.assertIn("old", commands)
-        self.assertIn("terminal-old", commands)
         self.assertIn(f"g{generations - 1}", commands)
-        self.assertIn(f"terminal-g{generations - 1}", commands)
         for manifest in manifests:
             segment = self.store / manifest["generation"] / "segment-000001.jsonl"
             self.assertLess(segment.stat().st_size, 16 * 1024)
