@@ -36,6 +36,9 @@ struct PaperTerminalMutationUniverse
     std::vector<std::string> correlations;
     std::string commandSetSha256;
     std::string correlationSetSha256;
+    std::uint64_t commandCount = 0;
+    std::uint64_t correlationCount = 0;
+    bool compactSummary = false;
 };
 
 struct PaperTerminalMutationManifest
@@ -61,6 +64,17 @@ bool DecodePaperTerminalFenceBinding(
 bool BuildPaperTerminalMutationUniverse(
     const std::vector<PaperTerminalMutationRecord>& records,
     PaperTerminalMutationUniverse& universe, std::string& reason);
+// HPM2 combines a fixed-size sealed-history summary with the bounded active
+// tail.  The resulting hashes bind both partitions without copying permanent
+// history into the coordinator or terminal manifest.
+bool BuildPaperTerminalPartitionedUniverse(
+    std::uint64_t sealedCommandCount,
+    const std::string& sealedCommandBindingSha256,
+    std::uint64_t sealedCorrelationReferenceCount,
+    const std::string& sealedCorrelationBindingSha256,
+    const std::vector<PaperTerminalMutationRecord>& activeTail,
+    PaperTerminalMutationUniverse& universe,
+    std::string& reason);
 bool BuildPaperTerminalMutationManifest(
     const PaperTerminalFenceBinding& binding,
     const PaperTerminalMutationUniverse& universe,

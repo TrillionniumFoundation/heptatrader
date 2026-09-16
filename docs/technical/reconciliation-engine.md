@@ -9,7 +9,7 @@ Applies to: canonical Execution coordinator, IB terminal snapshots and simulator
 |---|---|---|
 | `HeptaTrade/execution/execution_coordinator.cpp` | `RecoverFromJournal`, `ResolveUncertainPlaceCommands`, `ResolveUncertainCancelCommands`, `ReconcileOrderOwners` | `tests/execution_coordinator_tests.cpp` |
 | `HeptaTrade/execution/execution_coordinator_reconnect.cpp` | reconnect fences, `ProjectOwnedActiveOrders`, `AuditRecoveryOwner` | coordinator and gateway-composition tests |
-| `HeptaTrade/execution/execution_coordinator_terminal.cpp` | terminal recovery owner boundary | coordinator and session-supervisor tests |
+| `HeptaTrade/execution/execution_coordinator_terminal.cpp`, `execution_generation_support.cpp` | terminal recovery owner boundary and generation-backed historical projection | coordinator and session-supervisor tests |
 | `HeptaTrade/adapter_ib/` | validate callback identities and supply complete active/terminal/execution evidence | `tests/ib_live_terminal_reconciliation_tests.cpp` |
 | `HeptaTrade/state/snapshot_refresh_coordinator.*` | non-overlapping refresh generations | `tests/snapshot_refresh_coordinator_tests.cpp` |
 | `HeptaTrade/agent/decision_lease_manager.*` | bounded decision ownership, distinct from order idempotency | `tests/decision_lease_manager_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp` |

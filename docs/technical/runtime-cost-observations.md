@@ -26,12 +26,19 @@ for equal or backwards wall-clock timestamps. Empty legacy scopes, arbitrary
 historical cutoffs and future timestamps retain their previous semantics.
 There is no subtraction from an untrusted timestamp and no expiration watermark.
 
-For S scopes, N records in a scope and K matches, lookup costs approximately
-O(log S + log N + K log K), with O(K) temporary pairs. Insertion allocates a
-logarithmic index entry. Retained index memory is still O(all sends): removing
-unused record copies reduces duplication, not asymptotic growth. Query scratch
-now carries timestamps as well as ordinals; large windows still require memory
-and sorting. This is not a bounded cache, checkpoint or measured production SLO.
+For the active-tail in-memory index, with S scopes, N records in a scope and K
+matches, lookup costs approximately O(log S + log N + K log K), with O(K)
+temporary pairs. New V2 sealed-history indexes preserve a global
+`account/domain/timestamp/sequence/request` order; the generation reader uses a
+file lower bound and scans only the requested account/domain suffix, then combines
+those rows with the active-tail index. Thus the normal rolling-window query no
+longer scans all sealed sends. Pre-remediation V2 generations without the ordering
+marker remain readable through a conservative full-scan compatibility path until
+the next stopped-state seal rewrites current indexes.
+
+Active-tail memory is O(active-tail sends), while sealed history remains on disk.
+A deliberately huge cutoff window can still return O(K) timestamps and incur the
+existing result sort. These bounds are implementation costs, not target-host SLOs.
 
 `clear()` resets the map and ordinal counter during the existing recovery reset;
 replayed pushes rebuild the same projection. Failed insertion removes only a

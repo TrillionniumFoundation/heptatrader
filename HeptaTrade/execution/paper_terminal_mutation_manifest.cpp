@@ -18,8 +18,6 @@ namespace
 {
 const char* const kManifestFile =
     "ib-paper-terminal-mutation-manifest.v1";
-const std::size_t kMaximumCommands = 4096;
-const std::size_t kMaximumCorrelations = 4096;
 const std::size_t kMaximumManifestBytes = 1024 * 1024;
 // Keep this literal synchronized with the runtime's internal latch filename.
 // It is local here deliberately: the manifest/core archive must not acquire
@@ -275,10 +273,117 @@ bool Split(const std::string& value, char separator,
     }
 }
 
+bool ParseManifestV2(const std::string& contents,
+    const PaperTerminalFenceBinding& expected,
+    PaperTerminalMutationManifest& manifest, std::string& reason)
+{
+    if (contents.size() > kMaximumManifestBytes ||
+        contents.compare(0, 5, "HPM2\n") != 0)
+    {
+        reason = "IB_PAPER_TERMINAL_MANIFEST_INVALID";
+        return false;
+    }
+    std::istringstream input(contents.substr(5));
+    std::map<std::string, std::string> scalars;
+    std::string line;
+    while (std::getline(input, line))
+    {
+        if (line.empty()) continue;
+        const std::size_t separator = line.find('=');
+        if (separator == std::string::npos || separator == 0 ||
+            separator + 1 >= line.size() ||
+            !scalars.insert(std::make_pair(line.substr(0, separator),
+                line.substr(separator + 1))).second)
+        {
+            reason = "IB_PAPER_TERMINAL_MANIFEST_INVALID";
+            return false;
+        }
+    }
+    static const char* const names[] = {
+        "schema", "version", "finalization_id",
+        "preliminary_finalization_receipt_sha256", "owner_agent_id_hex",
+        "owner_session_id_hex", "owner_account_hex",
+        "owner_execution_domain_hex", "recovery_ingress_fence",
+        "terminalization_service_epoch_hex",
+        "terminalization_service_fencing_generation", "service_process_id",
+        "service_process_start_ticks", "broker_connection_epoch",
+        "broker_socket_identity_sha256", "command_count",
+        "correlation_count", "known_mutation_command_binding_sha256",
+        "known_correlation_binding_sha256"
+    };
+    if (scalars.size() != sizeof(names) / sizeof(names[0]))
+    {
+        reason = "IB_PAPER_TERMINAL_MANIFEST_INVALID";
+        return false;
+    }
+    for (std::size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+        if (scalars.find(names[i]) == scalars.end())
+        {
+            reason = "IB_PAPER_TERMINAL_MANIFEST_INVALID";
+            return false;
+        }
+    PaperTerminalFenceBinding observed;
+    observed.finalizationId = scalars["finalization_id"];
+    observed.preliminaryReceiptSha256 =
+        scalars["preliminary_finalization_receipt_sha256"];
+    if (!DecodeHex(scalars["owner_agent_id_hex"], observed.owner.agentId) ||
+        !DecodeHex(scalars["owner_session_id_hex"], observed.owner.sessionId) ||
+        !DecodeHex(scalars["owner_account_hex"], observed.owner.account) ||
+        !DecodeHex(scalars["owner_execution_domain_hex"],
+            observed.owner.executionDomain) ||
+        !DecodeHex(scalars["terminalization_service_epoch_hex"],
+            observed.serviceEpoch) ||
+        !ParseUnsigned(scalars["recovery_ingress_fence"],
+            observed.recoveryIngressFence) ||
+        !ParseUnsigned(scalars["terminalization_service_fencing_generation"],
+            observed.serviceFencingGeneration) ||
+        !ParseUnsigned(scalars["service_process_id"],
+            observed.serviceProcessId) ||
+        !ParseUnsigned(scalars["service_process_start_ticks"],
+            observed.serviceProcessStartTicks) ||
+        !ParseUnsigned(scalars["broker_connection_epoch"],
+            observed.brokerConnectionEpoch))
+    {
+        reason = "IB_PAPER_TERMINAL_MANIFEST_INVALID";
+        return false;
+    }
+    observed.brokerSocketIdentitySha256 =
+        scalars["broker_socket_identity_sha256"];
+    std::uint64_t commandCount = 0;
+    std::uint64_t correlationCount = 0;
+    if (scalars["schema"] !=
+            "hepta.ib-paper-terminal-mutation-manifest.v2" ||
+        scalars["version"] != "2" ||
+        !SamePaperTerminalFenceBinding(observed, expected) ||
+        !ParseUnsigned(scalars["command_count"], commandCount) ||
+        !ParseUnsigned(scalars["correlation_count"], correlationCount) ||
+        !Sha256Value(scalars["known_mutation_command_binding_sha256"]) ||
+        !Sha256Value(scalars["known_correlation_binding_sha256"]))
+    {
+        reason = "IB_PAPER_TERMINAL_MANIFEST_INVALID";
+        return false;
+    }
+    manifest = PaperTerminalMutationManifest();
+    manifest.contents = contents;
+    manifest.fileSha256 = Sha256(contents);
+    manifest.bodySha256 = Sha256(contents.substr(5));
+    manifest.universe.commandSetSha256 =
+        scalars["known_mutation_command_binding_sha256"];
+    manifest.universe.correlationSetSha256 =
+        scalars["known_correlation_binding_sha256"];
+    manifest.universe.commandCount = commandCount;
+    manifest.universe.correlationCount = correlationCount;
+    manifest.universe.compactSummary = true;
+    reason.clear();
+    return !manifest.fileSha256.empty() && !manifest.bodySha256.empty();
+}
+
 bool ParseManifest(const std::string& contents,
     const PaperTerminalFenceBinding& expected,
     PaperTerminalMutationManifest& manifest, std::string& reason)
 {
+    if (contents.compare(0, 5, "HPM2\n") == 0)
+        return ParseManifestV2(contents, expected, manifest, reason);
     if (contents.size() > kMaximumManifestBytes ||
         contents.compare(0, 5, "HPM1\n") != 0)
     {
@@ -415,6 +520,9 @@ bool ParseManifest(const std::string& contents,
     manifest.contents = contents;
     manifest.fileSha256 = Sha256(contents);
     manifest.bodySha256 = Sha256(contents.substr(5));
+    rebuilt.commandCount = commandCount;
+    rebuilt.correlationCount = correlationCount;
+    rebuilt.compactSummary = false;
     manifest.universe = rebuilt;
     reason.clear();
     return !manifest.fileSha256.empty() && !manifest.bodySha256.empty();
@@ -574,11 +682,6 @@ bool BuildPaperTerminalMutationUniverse(
     PaperTerminalMutationUniverse& universe, std::string& reason)
 {
     universe = PaperTerminalMutationUniverse();
-    if (records.size() > kMaximumCommands)
-    {
-        reason = "IB_PAPER_TERMINAL_MUTATION_UNIVERSE_TOO_LARGE";
-        return false;
-    }
     universe.commands = records;
     for (std::size_t i = 0; i < universe.commands.size(); ++i)
     {
@@ -615,21 +718,74 @@ bool BuildPaperTerminalMutationUniverse(
         if (!universe.commands[i].venueCorrelationId.empty())
             correlations.insert(universe.commands[i].venueCorrelationId);
     }
-    if (correlations.size() > kMaximumCorrelations)
-    {
-        reason = "IB_PAPER_TERMINAL_CORRELATION_UNIVERSE_TOO_LARGE";
-        return false;
-    }
     universe.correlations.assign(correlations.begin(), correlations.end());
     std::string correlationCanonical;
     for (std::size_t i = 0; i < universe.correlations.size(); ++i)
         correlationCanonical.append(CorrelationLine(universe.correlations[i]));
     universe.commandSetSha256 = Sha256(commandCanonical);
     universe.correlationSetSha256 = Sha256(correlationCanonical);
+    universe.commandCount = static_cast<std::uint64_t>(universe.commands.size());
+    universe.correlationCount = static_cast<std::uint64_t>(universe.correlations.size());
+    universe.compactSummary = false;
     if (universe.commandSetSha256.empty() ||
         universe.correlationSetSha256.empty())
     {
         reason = "IB_PAPER_TERMINAL_MUTATION_UNIVERSE_HASH_FAILED";
+        return false;
+    }
+    reason.clear();
+    return true;
+}
+
+bool BuildPaperTerminalPartitionedUniverse(
+    std::uint64_t sealedCommandCount,
+    const std::string& sealedCommandBindingSha256,
+    std::uint64_t sealedCorrelationReferenceCount,
+    const std::string& sealedCorrelationBindingSha256,
+    const std::vector<PaperTerminalMutationRecord>& activeTail,
+    PaperTerminalMutationUniverse& universe,
+    std::string& reason)
+{
+    if (!Sha256Value(sealedCommandBindingSha256) ||
+        !Sha256Value(sealedCorrelationBindingSha256))
+    {
+        reason = "IB_PAPER_TERMINAL_PARTITION_DIGEST_INVALID";
+        return false;
+    }
+    PaperTerminalMutationUniverse tail;
+    if (!BuildPaperTerminalMutationUniverse(activeTail, tail, reason))
+        return false;
+    if (sealedCommandCount > std::numeric_limits<std::uint64_t>::max() -
+            tail.commandCount ||
+        sealedCorrelationReferenceCount >
+            std::numeric_limits<std::uint64_t>::max() - tail.correlationCount)
+    {
+        reason = "IB_PAPER_TERMINAL_PARTITION_COUNT_OVERFLOW";
+        return false;
+    }
+    std::ostringstream commandBinding;
+    commandBinding << "HPM2-COMMAND-PARTITIONS\n"
+        << "sealed_count=" << sealedCommandCount << '\n'
+        << "sealed_binding_sha256=" << sealedCommandBindingSha256 << '\n'
+        << "active_tail_count=" << tail.commandCount << '\n'
+        << "active_tail_binding_sha256=" << tail.commandSetSha256 << '\n';
+    std::ostringstream correlationBinding;
+    correlationBinding << "HPM2-CORRELATION-PARTITIONS\n"
+        << "sealed_reference_count=" << sealedCorrelationReferenceCount << '\n'
+        << "sealed_binding_sha256=" << sealedCorrelationBindingSha256 << '\n'
+        << "active_tail_unique_count=" << tail.correlationCount << '\n'
+        << "active_tail_binding_sha256=" << tail.correlationSetSha256 << '\n';
+    universe = PaperTerminalMutationUniverse();
+    universe.commandCount = sealedCommandCount + tail.commandCount;
+    universe.correlationCount =
+        sealedCorrelationReferenceCount + tail.correlationCount;
+    universe.commandSetSha256 = Sha256(commandBinding.str());
+    universe.correlationSetSha256 = Sha256(correlationBinding.str());
+    universe.compactSummary = true;
+    if (universe.commandSetSha256.empty() ||
+        universe.correlationSetSha256.empty())
+    {
+        reason = "IB_PAPER_TERMINAL_PARTITION_HASH_FAILED";
         return false;
     }
     reason.clear();
@@ -641,51 +797,61 @@ bool BuildPaperTerminalMutationManifest(
     const PaperTerminalMutationUniverse& universe,
     PaperTerminalMutationManifest& manifest, std::string& reason)
 {
+    if (!ValidPaperTerminalFenceBinding(binding, reason)) return false;
     PaperTerminalMutationUniverse verified;
-    if (!ValidPaperTerminalFenceBinding(binding, reason) ||
-        !BuildPaperTerminalMutationUniverse(
-            universe.commands, verified, reason) ||
-        verified.commandSetSha256 != universe.commandSetSha256 ||
-        verified.correlationSetSha256 != universe.correlationSetSha256 ||
-        verified.correlations != universe.correlations)
+    if (universe.compactSummary)
     {
-        if (reason.empty()) reason = "IB_PAPER_TERMINAL_UNIVERSE_MISMATCH";
-        return false;
+        if (!Sha256Value(universe.commandSetSha256) ||
+            !Sha256Value(universe.correlationSetSha256))
+        {
+            reason = "IB_PAPER_TERMINAL_UNIVERSE_MISMATCH";
+            return false;
+        }
+        verified = universe;
+        verified.commands.clear();
+        verified.correlations.clear();
+    }
+    else
+    {
+        if (!BuildPaperTerminalMutationUniverse(
+                universe.commands, verified, reason) ||
+            verified.commandSetSha256 != universe.commandSetSha256 ||
+            verified.correlationSetSha256 != universe.correlationSetSha256 ||
+            verified.correlations != universe.correlations)
+        {
+            if (reason.empty()) reason = "IB_PAPER_TERMINAL_UNIVERSE_MISMATCH";
+            return false;
+        }
+        verified.commands.clear();
+        verified.correlations.clear();
+        verified.compactSummary = true;
     }
     std::ostringstream body;
-    body << "schema=hepta.ib-paper-terminal-mutation-manifest.v1\n"
-        << "version=1\n"
+    body << "schema=hepta.ib-paper-terminal-mutation-manifest.v2\n"
+        << "version=2\n"
         << "finalization_id=" << binding.finalizationId << '\n'
         << "preliminary_finalization_receipt_sha256="
         << binding.preliminaryReceiptSha256 << '\n'
         << "owner_agent_id_hex=" << Hex(binding.owner.agentId) << '\n'
         << "owner_session_id_hex=" << Hex(binding.owner.sessionId) << '\n'
         << "owner_account_hex=" << Hex(binding.owner.account) << '\n'
-        << "owner_execution_domain_hex="
-        << Hex(binding.owner.executionDomain) << '\n'
+        << "owner_execution_domain_hex=" << Hex(binding.owner.executionDomain) << '\n'
         << "recovery_ingress_fence=" << binding.recoveryIngressFence << '\n'
-        << "terminalization_service_epoch_hex="
-        << Hex(binding.serviceEpoch) << '\n'
+        << "terminalization_service_epoch_hex=" << Hex(binding.serviceEpoch) << '\n'
         << "terminalization_service_fencing_generation="
         << binding.serviceFencingGeneration << '\n'
         << "service_process_id=" << binding.serviceProcessId << '\n'
-        << "service_process_start_ticks="
-        << binding.serviceProcessStartTicks << '\n'
+        << "service_process_start_ticks=" << binding.serviceProcessStartTicks << '\n'
         << "broker_connection_epoch=" << binding.brokerConnectionEpoch << '\n'
-        << "broker_socket_identity_sha256="
-        << binding.brokerSocketIdentitySha256 << '\n'
-        << "command_count=" << verified.commands.size() << '\n'
-        << "correlation_count=" << verified.correlations.size() << '\n'
-        << "known_mutation_command_set_sha256="
+        << "broker_socket_identity_sha256=" << binding.brokerSocketIdentitySha256 << '\n'
+        << "command_count=" << verified.commandCount << '\n'
+        << "correlation_count=" << verified.correlationCount << '\n'
+        << "known_mutation_command_binding_sha256="
         << verified.commandSetSha256 << '\n'
-        << "known_correlation_set_sha256="
+        << "known_correlation_binding_sha256="
         << verified.correlationSetSha256 << '\n';
-    for (std::size_t i = 0; i < verified.commands.size(); ++i)
-        body << CommandLine(verified.commands[i]);
-    for (std::size_t i = 0; i < verified.correlations.size(); ++i)
-        body << CorrelationLine(verified.correlations[i]);
     manifest = PaperTerminalMutationManifest();
-    manifest.contents = std::string("HPM1\n") + body.str();
+    manifest.contents = std::string("HPM2\n") + body.str();
     if (manifest.contents.size() > kMaximumManifestBytes)
     {
         reason = "IB_PAPER_TERMINAL_MANIFEST_TOO_LARGE";
@@ -928,11 +1094,11 @@ std::string TerminalLatchPrefix(
             << "known_mutation_command_set_sha256="
             << manifest->universe.commandSetSha256 << '\n'
             << "known_mutation_command_count="
-            << manifest->universe.commands.size() << '\n'
+            << manifest->universe.commandCount << '\n'
             << "known_correlation_set_sha256="
             << manifest->universe.correlationSetSha256 << '\n'
             << "known_correlation_count="
-            << manifest->universe.correlations.size() << '\n';
+            << manifest->universe.correlationCount << '\n';
     }
     return out.str();
 }
@@ -1307,8 +1473,8 @@ bool DecodePaperTerminalLatchContents(
             LatchField(fields, "known_mutation_command_set_sha256") ||
          manifest.universe.correlationSetSha256 !=
             LatchField(fields, "known_correlation_set_sha256") ||
-         manifest.universe.commands.size() != commandCount ||
-         manifest.universe.correlations.size() != correlationCount))
+         manifest.universe.commandCount != commandCount ||
+         manifest.universe.correlationCount != correlationCount))
     {
         reason = "IB_PAPER_TERMINAL_MANIFEST_BINDING_MISMATCH";
         return false;
@@ -1346,11 +1512,11 @@ bool DecodePaperTerminalLatchContents(
         terminal.terminalKnownMutationCommandSetSha256 =
             manifest.universe.commandSetSha256;
         terminal.terminalKnownMutationCommandCount =
-            manifest.universe.commands.size();
+            manifest.universe.commandCount;
         terminal.terminalKnownCorrelationSetSha256 =
             manifest.universe.correlationSetSha256;
         terminal.terminalKnownCorrelationCount =
-            manifest.universe.correlations.size();
+            manifest.universe.correlationCount;
     }
     if (halted && !ValidateHaltedLatchAudit(
             fields, terminal.terminalLatchSha256, terminal, reason))
