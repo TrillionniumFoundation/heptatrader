@@ -26,8 +26,24 @@ jobs:
 
       - name: Apply deterministic closure patch
         run: |
-          python3 scripts/.full_gap_patch_fix.py
-          python3 scripts/.full_gap_patch.py
+          set +e
+          python3 scripts/.full_gap_patch_fix.py > materializer.log 2>&1
+          code=$?
+          if [ "$code" -eq 0 ]; then
+            python3 scripts/.full_gap_patch.py >> materializer.log 2>&1
+            code=$?
+          fi
+          cat materializer.log
+          exit "$code"
+
+      - name: Retain patch diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-gap-materializer-${{ github.run_id }}
+          path: materializer.log
+          if-no-files-found: error
+          retention-days: 2
 
       - name: Validate OMS lifecycle regressions
         run: python3 -m unittest tests.python.test_oms_lifecycle_rotation
