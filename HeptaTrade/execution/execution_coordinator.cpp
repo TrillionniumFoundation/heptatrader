@@ -853,6 +853,18 @@ bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
                 BlockMutationsLocked(reason);
                 return false;
             }
+            std::uint64_t recoveryBytes = 0;
+            std::uint64_t recoveryRecords = 0;
+            if (!m_generationStore.RecoveryCapacity(
+                    recoveryBytes, recoveryRecords, reason))
+            {
+                ResetRecoveryProjectionLocked();
+                if (reason.empty()) reason = "OMS_GENERATION_CAPACITY_FAILED";
+                BlockMutationsLocked(reason);
+                return false;
+            }
+            m_journal.AdoptValidatedIncrementalRecoveryCapacity(
+                recoveryBytes, recoveryRecords);
             return ValidateRecoveredProjectionLocked(reason);
         }
 
