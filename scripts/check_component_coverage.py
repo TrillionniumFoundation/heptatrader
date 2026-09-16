@@ -24,7 +24,7 @@ SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".c++"}
 # is a component unless explicitly designated as repository prose/metadata.
 # Explicit catalog entries below override this exclusion (for policy JSON etc.).
 SUPPORT_PREFIXES = ("docs/", "doc/", "tests/", "pic/")
-SUPPORT_EXACT = {".gitignore", "SECURITY-HARDENING.md",
+SUPPORT_EXACT = {".gitignore", "README.md", "SECURITY-HARDENING.md",
                  "LICENSE", "LICENSE.md", "NOTICE", "NOTICE.md"}
 
 

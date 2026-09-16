@@ -211,5 +211,27 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                             lifecycle.verify_generation(store, journal=journal)
 
 
+    def test_send_attempt_index_remains_window_sorted_across_generations(self) -> None:
+        first = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(first["send_attempt_records"], 1)
+        values = command_events("second", 900, 202)
+        for item in values:
+            item["account"] = "AAA"
+            item["execution_domain"] = "PAPER"
+        self.append(values)
+        second = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        generation = second["generation"]
+        rows = []
+        for line in (self.store / generation / "send-attempt-index.tsv").read_text().splitlines():
+            fields = line.split("\t")
+            rows.append((fields[0], fields[1], int(fields[2]), int(fields[6]),
+                         fields[3], fields[4], fields[5]))
+        self.assertEqual(rows, sorted(rows))
+        runtime = (self.store / generation / "runtime-manifest.txt").read_text()
+        self.assertIn("send_attempt_index_order=account-domain-time-v1\n", runtime)
+        lifecycle.verify_generation(self.store, journal=self.journal)
+
+
+
 if __name__ == "__main__":
     unittest.main()

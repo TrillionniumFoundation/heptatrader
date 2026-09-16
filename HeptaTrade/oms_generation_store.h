@@ -35,6 +35,19 @@ struct OmsGenerationMutationRecord
     std::string venueCorrelationId;
 };
 
+// Fixed-size digest/count summary of sealed durable mutation history.  The
+// command binding hashes canonical command rows in permanent-index order.  The
+// correlation binding hashes the correlation reference attached to each sealed
+// mutation in that same order; HPM2 binds this versioned projection without
+// loading the historical command universe into memory.
+struct OmsGenerationMutationSummary
+{
+    std::uint64_t commandCount = 0;
+    std::uint64_t correlationReferenceCount = 0;
+    std::string commandBindingSha256;
+    std::string correlationBindingSha256;
+};
+
 struct OmsGenerationSendAttempt
 {
     std::string requestKey;
@@ -104,11 +117,15 @@ public:
         std::string& reason) const;
 
     bool EnumerateMutationRecords(
-        const std::string& agentId,
-        const std::string& sessionId,
         const std::string& account,
         const std::string& executionDomain,
         std::vector<OmsGenerationMutationRecord>& records,
+        std::string& reason) const;
+
+    bool SummarizeMutationRecords(
+        const std::string& account,
+        const std::string& executionDomain,
+        OmsGenerationMutationSummary& summary,
         std::string& reason) const;
 
 private:
@@ -137,6 +154,7 @@ private:
     std::string m_generation;
     bool m_active = false;
     bool m_segmentedTail = false;
+    bool m_sendIndexWindowSorted = false;
     int m_storeFd = -1;
     int m_generationFd = -1;
     int m_commandIndexFd = -1;
@@ -146,16 +164,6 @@ private:
     std::uint64_t m_commandRecords = 0;
     std::uint64_t m_sendAttemptRecords = 0;
     std::uint64_t m_hotReplayRecords = 0;
-    // The cumulative send-attempt index is immutable for one selected
-    // generation. Cache only the already-filtered suffix for one account/domain
-    // and monotonically increasing cutoff. A backwards clock or subject change
-    // deliberately falls back to a complete index scan, preserving the exact
-    // historical semantics without charging every ordinary admission O(history).
-    mutable bool m_sendQueryCacheValid = false;
-    mutable std::string m_sendQueryAccount;
-    mutable std::string m_sendQueryDomain;
-    mutable std::int64_t m_sendQueryCutoffMs = 0;
-    mutable std::vector<OmsGenerationSendAttempt> m_sendQueryAttempts;
     // V1: immutable full-journal prefix. V2: lineage sentinel prefix.
     std::uint64_t m_journalPrefixBytes = 0;
     std::string m_journalPrefixSha256;

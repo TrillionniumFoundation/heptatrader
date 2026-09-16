@@ -361,11 +361,11 @@ bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalHaltedLatch(
     terminal.terminalKnownMutationCommandSetSha256 =
         m_terminalMutationManifest.universe.commandSetSha256;
     terminal.terminalKnownMutationCommandCount =
-        m_terminalMutationManifest.universe.commands.size();
+        m_terminalMutationManifest.universe.commandCount;
     terminal.terminalKnownCorrelationSetSha256 =
         m_terminalMutationManifest.universe.correlationSetSha256;
     terminal.terminalKnownCorrelationCount =
-        m_terminalMutationManifest.universe.correlations.size();
+        m_terminalMutationManifest.universe.correlationCount;
     terminal.terminalMutationGateClosed = true;
     terminal.terminalBrokerTransportConnected = false;
     terminal.terminalBrokerEventIngressHalted = true;

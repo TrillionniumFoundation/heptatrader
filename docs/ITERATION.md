@@ -17,6 +17,10 @@ complete acceptance. `--list` remains read-only and needs no fixture opt-in.
 facts, not prose depth. Structural checks do not prove implementation correctness;
 small executable regressions should falsify the changed behavior.
 
+Pull-request admission evidence is exact-head scoped. A green predecessor or a
+source-materialization helper does not satisfy required contexts for a later head;
+the required pull-request checks must execute against the current commit itself.
+
 Main and tagged release share `scripts/accept_core_release.py` for package and
 installed acceptance. Its privileged process/systemd fixtures require a disposable
 CI VM, never a trading host. See [the acceptance contract](technical/core-release-acceptance.md).
