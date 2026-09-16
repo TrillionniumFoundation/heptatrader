@@ -64,14 +64,21 @@ support = replace_once(
     "terminal mutation bound")
 main_inc = git_text(MAIN, "HeptaTrade/execution/execution_generation_support.inc")
 
+# Replace only the mutation enumerator with main's owner-session implementation.
+# Keep PR95's sorted-index helpers and all public V2 wrappers intact.
 start = support.index("bool OmsGenerationStore::EnumerateMutationRecords(")
 end = support.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore(", start)
 main_start = main_inc.index("bool OmsGenerationStore::EnumerateMutationRecords(")
 main_end = main_inc.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore(", main_start)
 support = support[:start] + main_inc[main_start:main_end] + support[end:]
 
+# Replace only the HPM2 terminal-fence projection function. The V2 generation
+# dispatch/capacity section follows it in PR95 and must remain in the normal
+# translation unit; an earlier patch accidentally truncated that suffix.
 enter = "bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocked("
 start = support.index(enter)
+v2_suffix = "\nnamespace\n{\nconst char* const kRuntimeManifestHeaderV2 = \"HEPTA_OMS_RUNTIME_GENERATION_V2\";"
+end = support.index(v2_suffix, start)
 main_start = main_inc.index(enter)
-support = support[:start] + main_inc[main_start:]
+support = support[:start] + main_inc[main_start:] + support[end:]
 support_path.write_text(support)
