@@ -453,6 +453,11 @@ void OmsGenerationStore::Close() noexcept
     m_commandRecords = 0;
     m_sendAttemptRecords = 0;
     m_hotReplayRecords = 0;
+    m_sendQueryCacheValid = false;
+    m_sendQueryAccount.clear();
+    m_sendQueryDomain.clear();
+    m_sendQueryCutoffMs = 0;
+    m_sendQueryAttempts.clear();
     m_journalPrefixBytes = 0;
     m_journalPrefixSha256.clear();
 }
@@ -824,6 +829,31 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         reason = "OMS_GENERATION_SEND_INDEX_CHANGED";
         return false;
     }
+
+    const auto publish = [&](const std::vector<OmsGenerationSendAttempt>& source) {
+        attempts.reserve(source.size());
+        for (std::size_t i = 0; i < source.size(); ++i)
+            if (excludedRequestKeys.find(source[i].requestKey) ==
+                excludedRequestKeys.end())
+                attempts.push_back(source[i]);
+    };
+
+    if (m_sendQueryCacheValid && m_sendQueryAccount == account &&
+        m_sendQueryDomain == executionDomain && cutoffMs >= m_sendQueryCutoffMs)
+    {
+        m_sendQueryAttempts.erase(
+            std::remove_if(m_sendQueryAttempts.begin(), m_sendQueryAttempts.end(),
+                [cutoffMs](const OmsGenerationSendAttempt& attempt) {
+                    return attempt.tsMs <= cutoffMs;
+                }),
+            m_sendQueryAttempts.end());
+        m_sendQueryCutoffMs = cutoffMs;
+        publish(m_sendQueryAttempts);
+        reason.clear();
+        return true;
+    }
+
+    std::vector<OmsGenerationSendAttempt> scanned;
     off_t offset = 0;
     while (offset < m_sendIndexIdentity.st_size)
     {
@@ -854,23 +884,25 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         }
         if (rowAccount == account && rowDomain == executionDomain && ts > cutoffMs)
         {
-            const std::string requestKey = GenerationRequestKey(agent, session, command);
-            if (excludedRequestKeys.find(requestKey) == excludedRequestKeys.end())
-            {
-                OmsGenerationSendAttempt attempt;
-                attempt.requestKey = requestKey;
-                attempt.tsMs = ts;
-                attempt.sequence = sequence;
-                attempts.push_back(attempt);
-            }
+            OmsGenerationSendAttempt attempt;
+            attempt.requestKey = GenerationRequestKey(agent, session, command);
+            attempt.tsMs = ts;
+            attempt.sequence = sequence;
+            scanned.push_back(attempt);
         }
         offset = end;
     }
-    std::sort(attempts.begin(), attempts.end(),
+    std::sort(scanned.begin(), scanned.end(),
         [](const OmsGenerationSendAttempt& left,
            const OmsGenerationSendAttempt& right) {
             return left.sequence < right.sequence;
         });
+    m_sendQueryCacheValid = true;
+    m_sendQueryAccount = account;
+    m_sendQueryDomain = executionDomain;
+    m_sendQueryCutoffMs = cutoffMs;
+    m_sendQueryAttempts.swap(scanned);
+    publish(m_sendQueryAttempts);
     reason.clear();
     return true;
 }
