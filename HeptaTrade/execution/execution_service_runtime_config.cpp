@@ -1,4 +1,8 @@
 #include "execution_service_runtime_config.h"
+#include "execution_service_runtime_composition.h"
+#include "execution_coordinator.h"
+#include "execution_event_feed_server.h"
+#include "unix_execution_service_server.h"
 
 #include <cerrno>
 #include <cctype>
@@ -306,4 +310,46 @@ bool ExecutionServiceRuntimeConfig::FromValues(
         config.ioTimeoutMs = static_cast<int>(parsed);
     }
     return config.Validate(reason);
+}
+
+bool ExecutionServiceRuntimeComposition::IsRunning() const
+{
+    return m_started && m_server && m_server->IsRunning() &&
+        m_eventServer && m_eventServer->IsRunning() &&
+        m_quoteFeedRunning.load();
+}
+
+bool ExecutionServiceRuntimeComposition::IsMutationBlocked(std::string* reason) const
+{
+    if (!m_coordinator)
+    {
+        if (reason != nullptr) *reason = "EXECUTION_RUNTIME_NOT_STARTED";
+        return true;
+    }
+    return m_coordinator->IsMutationBlocked(reason);
+}
+
+const std::string& ExecutionServiceRuntimeComposition::RecoveryReason() const
+{
+    return m_recoveryReason;
+}
+
+ExecutionCoordinator& ExecutionServiceRuntimeComposition::Coordinator()
+{
+    return *m_coordinator;
+}
+
+DeterministicExecutionVenue& ExecutionServiceRuntimeComposition::Venue()
+{
+    return m_venue;
+}
+
+ExecutionEventHub& ExecutionServiceRuntimeComposition::EventHub()
+{
+    return *m_eventHub;
+}
+
+ExecutionRuntimeObservation ExecutionServiceRuntimeComposition::CoordinatorObservation() const
+{
+    return m_coordinator ? m_coordinator->RuntimeObservation() : ExecutionRuntimeObservation();
 }
