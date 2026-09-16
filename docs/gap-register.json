@@ -15,7 +15,7 @@
         "docs/technical/release-simulator-smoke.md",
         "docs/technical/installed-process-acceptance.md"
       ],
-      "issue": null,
+      "issue": 74,
       "blocking_releases": [],
       "disposition": "Source-level installed-process and distinct-source-artifact rollback is covered by the current installed-process contract and the historical RELEASE-PAIR-001 closure in the fixed pre-cleanup register linked by docs/GAP-REGISTER.md. Actual target-host systemd, identities, network policy and deployment-specific prior-schema approval remain external evidence; no live deployment was attempted."
     },
@@ -32,7 +32,7 @@
         "tests/python/test_oms_checkpoint.py",
         "HeptaTrade/execution/new_entry_capacity.h"
       ],
-      "issue": null,
+      "issue": 89,
       "blocking_releases": [],
       "disposition": "OPEN. The stopped-state generation producer now writes byte-identical decoded history, a complete full-key/request-hash command index, an unresolved/hot checkpoint, parent lineage, digest manifest and atomically durable CURRENT pointer. Tests cover ancient-ID duplicate/conflict lookup, crash before pointer publication, corrupt-current fail-closed behavior and source hash conflicts. This is format and maintenance groundwork only: current C++ startup still replays the bounded complete journal and retains the historical command projection in memory. Lossless gzip and the 80-percent admission pause also do not bound lifetime history or reserve all future exit/callback evidence. Runtime checkpoint+tail consumption, disk lookup on command-status/admission, crash points across that runtime switch and explicit downgrade/export remain required before closure."
     },
@@ -45,7 +45,7 @@
         "docs/technical/owner-ruleset-transition.md",
         "docs/adr/0002-owner-operated-repository.md"
       ],
-      "issue": null,
+      "issue": 90,
       "blocking_releases": [],
       "disposition": "OPEN. The read-only transition planner preserves the actual required checks, deletion and force-push protection. The available GitHub integration exposes Ruleset readback but no administrative Ruleset write action; no alternate administration plugin is connected. Server administration and post-change readback therefore remain a real owner action and are not represented as a source-code closure."
     },
@@ -65,7 +65,7 @@
         "tests/python/test_ib_runtime_observation.py",
         "tests/python/test_ib_telemetry_collection.py"
       ],
-      "issue": null,
+      "issue": 91,
       "blocking_releases": [],
       "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER additionally emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter validates fixed-cardinality gauges without account/order/command labels. The `ib-paper` telemetry profile now independently parses and atomically publishes OMS, IB and Gateway textfiles; invalid IB input replaces only IB health with explicit collector failure while valid OMS/Gateway publication continues. Callback lag, callback conflict, quote/snapshot age, Broker reconciliation duration and network-policy producers remain absent with explicit presence=false rather than synthetic zero. No target-host SLO or real notification is proven."
     },
@@ -79,7 +79,7 @@
         "docs/operations/rollback-backup.md",
         "docs/OBSERVABILITY-METRICS.md"
       ],
-      "issue": null,
+      "issue": 91,
       "blocking_releases": [],
       "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. The source-side IB state stream now has bounded collection and atomic publication, but the actual target host still has to run it, retain failure evidence and deliver an alert through an approved operator receiver. No host, credential, network policy or trading authority was changed."
     }
