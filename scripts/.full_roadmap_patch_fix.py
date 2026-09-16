@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from pathlib import Path
+import json
 import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,16 +82,35 @@ main_start = main_inc.index(enter)
 support = support[:start] + main_inc[main_start:] + support[end:]
 support_path.write_text(support)
 
-# Keep the reviewed machine-readable build inventory synchronized with the
-# normal translation unit introduced above. This is source ownership metadata,
-# not an extra acceptance gate.
+# Synchronize the reviewed CMake file-api inventory in every profile that owns
+# hepta_execution_core. This metadata records the normal translation unit; it
+# is not a second behavioral acceptance gate.
 build_targets_path = ROOT / "docs/build-targets.json"
-build_targets = build_targets_path.read_text()
-terminal_entry = '''            {\n              "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",\n              "kind": "implementation",\n              "owner": "execution-service",\n              "language": "CXX",\n              "standard": "11"\n            },\n            {\n              "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",'''
-generation_entry = '''            {\n              "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",\n              "kind": "implementation",\n              "owner": "execution-service",\n              "language": "CXX",\n              "standard": "11"\n            },\n            {\n              "path": "HeptaTrade/execution/execution_generation_support.cpp",\n              "kind": "implementation",\n              "owner": "execution-service",\n              "language": "CXX",\n              "standard": "11"\n            },\n            {\n              "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",'''
-build_targets = replace_once(
-    build_targets, terminal_entry, generation_entry, "build inventory generation source")
-build_targets_path.write_text(build_targets)
+build_targets = json.loads(build_targets_path.read_text())
+entry = {
+    "path": "HeptaTrade/execution/execution_generation_support.cpp",
+    "kind": "implementation",
+    "owner": "execution-service",
+    "language": "CXX",
+    "standard": "11",
+}
+updated_profiles = 0
+for profile in build_targets.get("profiles", {}).values():
+    for target in profile.get("targets", []):
+        if target.get("name") != "hepta_execution_core":
+            continue
+        units = target.get("translation_units", [])
+        paths = [unit.get("path") for unit in units]
+        if entry["path"] not in paths:
+            try:
+                insert_at = paths.index("HeptaTrade/execution/execution_place_order_dispatch.cpp")
+            except ValueError as error:
+                raise SystemExit("build inventory missing execution placement anchor") from error
+            units.insert(insert_at, dict(entry))
+        updated_profiles += 1
+if updated_profiles == 0:
+    raise SystemExit("build inventory missing hepta_execution_core")
+build_targets_path.write_text(json.dumps(build_targets, indent=2) + "\n")
 
 # The migration removes the textual V2 implementation file, so the closed gap
 # must cite the normal translation unit that now carries the same native V2
