@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Validate and report identifier-free IB authoritative-state observations.
-
-This reader is intentionally read-only.  It accepts only the fixed observation
-schema emitted by hepta-ib-executiond, exports fixed-cardinality Prometheus text,
-and never treats missing metric families as zero or as trading authority.
-"""
+"""Validate, report and atomically publish identifier-free IB runtime state."""
 from __future__ import annotations
 
 import argparse
 from collections import deque
+import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import re
+import secrets
 import stat
 import sys
 import time
 from typing import Any
+
+import hepta_oms_report as base_metrics
 
 SCHEMA = "heptatrader.ib-runtime-observation.v1"
 REPORT_SCHEMA = "heptatrader.ib-runtime-report.v1"
@@ -105,8 +105,6 @@ def validate(sample: Any) -> dict[str, Any]:
                                     "positions_complete", "fx_cash_complete")):
         raise ValueError("coherent risk cannot outlive incomplete legs")
     if sample["active_correlations"] > sample["active_orders"]:
-        # Every mapped correlation denotes one active order ID. Multiple
-        # correlations for one numeric order ID would be a provenance conflict.
         raise ValueError("active correlation count exceeds active orders")
     if sample["terminal_transport_drain_verified"] and not sample["terminal_transport_halted"]:
         raise ValueError("terminal drain cannot be verified before halt")
@@ -114,16 +112,16 @@ def validate(sample: Any) -> dict[str, Any]:
 
 
 def read_samples(path: Path) -> list[dict[str, Any]]:
-    flags = __import__("os").O_RDONLY | getattr(__import__("os"), "O_NOFOLLOW", 0) | getattr(__import__("os"), "O_NONBLOCK", 0)
-    fd = __import__("os").open(path, flags)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    fd = os.open(path, flags)
     try:
-        before = __import__("os").fstat(fd)
+        before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or
                 before.st_size > MAX_BYTES):
             raise ValueError("requires bounded regular single-link input")
         recent: deque[dict[str, Any]] = deque(maxlen=120)
         total = 0
-        with __import__("os").fdopen(fd, "rb", closefd=False) as stream:
+        with os.fdopen(fd, "rb", closefd=False) as stream:
             for number in range(MAX_LINES + 1):
                 line = stream.readline(MAX_LINE + 1)
                 if not line:
@@ -140,7 +138,7 @@ def read_samples(path: Path) -> list[dict[str, Any]]:
                                    parse_float=finite_float)
                 if isinstance(value, dict) and value.get("schema") == SCHEMA:
                     recent.append(validate(value))
-        after = __import__("os").fstat(fd)
+        after = os.fstat(fd)
         named = path.stat(follow_symlinks=False)
         identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
                                  info.st_mtime_ns, info.st_ctime_ns,
@@ -148,7 +146,7 @@ def read_samples(path: Path) -> list[dict[str, Any]]:
         if identity(before) != identity(after) or identity(after) != identity(named):
             raise ValueError("IB telemetry input changed while reading")
     finally:
-        __import__("os").close(fd)
+        os.close(fd)
     if not recent:
         raise ValueError("no supported IB runtime observations")
     return list(recent)
@@ -183,12 +181,9 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
     if latest["terminal_callbacks_in_flight"] and latest["terminal_transport_halted"]:
         alert("IB_TERMINAL_CALLBACK_DRAIN_PENDING", "P1")
     return {
-        "schema": REPORT_SCHEMA,
-        "fresh": fresh,
-        "sample_age_ms": age,
+        "schema": REPORT_SCHEMA, "fresh": fresh, "sample_age_ms": age,
         "service_epoch": latest["service_epoch"],
-        "connection_epoch": latest["connection_epoch"],
-        "alerts": alerts,
+        "connection_epoch": latest["connection_epoch"], "alerts": alerts,
         "callback_lag_metrics_present": latest["callback_lag_metrics_present"],
         "callback_conflict_metrics_present": latest["callback_conflict_metrics_present"],
         "network_policy_metrics_present": latest["network_policy_metrics_present"],
@@ -239,25 +234,112 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
     return "\n".join(f"{name} {value}" for name, value in values.items()) + "\n"
 
 
+def collection_metrics(now_ms: int, latest: dict[str, Any] | None = None) -> str:
+    uint(now_ms)
+    lines = ["# TYPE hepta_ib_collector_success gauge",
+             f"hepta_ib_collector_success {int(latest is not None)}",
+             "# TYPE hepta_ib_collector_timestamp_seconds gauge",
+             f"hepta_ib_collector_timestamp_seconds {now_ms // 1000}.{now_ms % 1000:03d}"]
+    if latest is None:
+        lines.append("hepta_ib_runtime_telemetry_fresh 0")
+    else:
+        observed = uint(latest["observed_at_ms"])
+        lines += ["# TYPE hepta_ib_sample_timestamp_seconds gauge",
+                  f"hepta_ib_sample_timestamp_seconds {observed // 1000}.{observed % 1000:03d}"]
+    return "\n".join(lines) + "\n"
+
+
+def publish_metrics(directory: Path, text: str) -> None:
+    data = text.encode("utf-8")
+    if not data or len(data) > 1 << 20 or not data.endswith(b"\n"):
+        raise ValueError("invalid IB metrics output bound")
+    directory_fd = base_metrics._open_metrics_directory(directory)
+    lock_fd = temporary_fd = None
+    temporary = None
+    try:
+        name, lock_name = "hepta_ib.prom", ".hepta_ib.lock"
+        lock_fd = os.open(lock_name, os.O_RDWR | os.O_CREAT | os.O_NONBLOCK |
+                          os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+        locked = base_metrics._metric_leaf(directory_fd, lock_name, 0o600)
+        if locked != base_metrics._metric_file_identity(os.fstat(lock_fd)):
+            raise ValueError("IB metrics lock identity changed")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        previous = base_metrics._metric_leaf(directory_fd, name, 0o644)
+        temporary = f".hepta_ib.{secrets.token_hex(16)}.tmp"
+        temporary_fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                               os.O_NOFOLLOW | os.O_CLOEXEC, 0o600, dir_fd=directory_fd)
+        os.fchmod(temporary_fd, 0o644)
+        offset = 0
+        while offset < len(data):
+            written = os.write(temporary_fd, data[offset:])
+            if written <= 0:
+                raise OSError("short IB metrics write")
+            offset += written
+        os.fsync(temporary_fd)
+        if base_metrics._metric_leaf(directory_fd, temporary, 0o644) != base_metrics._metric_file_identity(os.fstat(temporary_fd)):
+            raise ValueError("IB metrics temporary identity changed")
+        check_fd = base_metrics._open_metrics_directory(directory)
+        try:
+            old, current = os.fstat(directory_fd), os.fstat(check_fd)
+            if (old.st_dev, old.st_ino) != (current.st_dev, current.st_ino):
+                raise ValueError("IB metrics namespace changed")
+        finally:
+            os.close(check_fd)
+        if (base_metrics._metric_leaf(directory_fd, name, 0o644) != previous or
+                base_metrics._metric_leaf(directory_fd, lock_name, 0o600) != locked):
+            raise ValueError("IB metrics output or lock changed")
+        os.replace(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+        temporary = None
+        os.fsync(directory_fd)
+    finally:
+        if temporary is not None and temporary_fd is not None:
+            try:
+                named = os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False)
+                pinned = os.fstat(temporary_fd)
+                if (named.st_dev, named.st_ino) == (pinned.st_dev, pinned.st_ino):
+                    os.unlink(temporary, dir_fd=directory_fd)
+            except OSError:
+                pass
+        if temporary_fd is not None:
+            os.close(temporary_fd)
+        if lock_fd is not None:
+            os.close(lock_fd)
+        os.close(directory_fd)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--now-ms", type=int)
     parser.add_argument("--max-age-ms", type=int, default=15000)
     parser.add_argument("--format", choices=("json", "prometheus"), default="json")
+    parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args(argv)
+    if args.output_dir is not None and (args.format != "prometheus" or args.now_ms is not None):
+        parser.error("publication requires --format prometheus and the real wall clock")
+    now = time.time_ns() // 1000000 if args.now_ms is None else args.now_ms
     try:
         samples = read_samples(args.input)
-        now = time.time_ns() // 1000000 if args.now_ms is None else args.now_ms
         summary = report(samples, now, args.max_age_ms)
-        if args.format == "prometheus":
-            print(prometheus(samples[-1], summary), end="")
-        else:
-            print(json.dumps(summary, sort_keys=True, allow_nan=False))
-        return 1 if summary["alerts"] else 0
+        output = prometheus(samples[-1], summary) if args.format == "prometheus" else json.dumps(summary, sort_keys=True, allow_nan=False)
+        result = 1 if summary["alerts"] else 0
+        if args.output_dir is not None:
+            output += collection_metrics(now, samples[-1])
     except (OSError, ValueError, TypeError, OverflowError, RecursionError):
         print("IB_RUNTIME_TELEMETRY_INPUT_INVALID", file=sys.stderr)
-        return 2
+        if args.output_dir is None:
+            return 2
+        result = 2
+        output = collection_metrics(now)
+    if args.output_dir is not None:
+        try:
+            publish_metrics(args.output_dir, output)
+        except (OSError, ValueError):
+            print("IB_METRICS_PUBLICATION_FAILED", file=sys.stderr)
+            return 2
+    if result != 2:
+        print(output, end="\n" if args.format == "json" else "")
+    return result
 
 
 if __name__ == "__main__":
