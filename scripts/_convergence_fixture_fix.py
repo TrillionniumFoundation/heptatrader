@@ -11,7 +11,6 @@ def replace_one(text: str, old: str, new: str, label: str) -> str:
 
 path = Path("tests/oms_recovery_growth_probe.h")
 text = path.read_text()
-text = replace_one(text, "#include <cerrno>\n", "#include <cerrno>\n#include <cstdio>\n", "stdio diagnostic include")
 text = replace_one(text,
 '''    const auto expiry = OmsJournal::NowEpochMs() + 86400000;
     auto oldCommand = MakePlace("generation-old-command");
@@ -61,15 +60,4 @@ text = replace_one(text,
 '''        auto newCommand = MakePlace("generation-new-command");
         bindPaperContext(newCommand);
 ''', "new paper context")
-text = replace_one(text,
-'''        assert(recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason));
-        assert(universe.commandCount == 2);
-''',
-'''        const bool terminalProjected =
-            recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason);
-        if (!terminalProjected)
-            std::fprintf(stderr, "terminal projection rejected: %s\\n", reason.c_str());
-        assert(terminalProjected);
-        assert(universe.commandCount == 2);
-''', "terminal projection diagnostic")
 path.write_text(text)
