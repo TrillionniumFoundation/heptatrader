@@ -79,6 +79,31 @@ if old not in s:
     raise SystemExit("materializer verifier source block missing")
 s = s.replace(old, new, 1)
 
+# HPM2's summary scans the complete permanent command index. Non-mutation
+# records (for example durable owner terminalization witnesses) are valid rows
+# and must be ignored, not rejected. Only rows declaring durable mutation intent
+# must carry a place/cancel/flatten operation.
+needle = '''sum_block = sum_block.replace(old_decode, new_decode, 1)
+require(sum_block.count(old_filter) == 1, "summary filter mismatch")
+'''
+replacement = '''sum_block = sum_block.replace(old_decode, new_decode, 1)
+summary_operation_guard = ''' + "'''" + '''            (fields[12] != "0" && fields[12] != "1") ||
+            (fields[4] != "place" && fields[4] != "cancel" &&
+             fields[4] != "flatten"))
+''' + "'''" + '''
+summary_operation_guard_fixed = ''' + "'''" + '''            (fields[12] != "0" && fields[12] != "1") ||
+            (fields[12] == "1" && fields[4] != "place" &&
+             fields[4] != "cancel" && fields[4] != "flatten"))
+''' + "'''" + '''
+require(sum_block.count(summary_operation_guard) == 1, "summary operation guard mismatch")
+sum_block = sum_block.replace(
+    summary_operation_guard, summary_operation_guard_fixed, 1)
+require(sum_block.count(old_filter) == 1, "summary filter mismatch")
+'''
+if needle not in s:
+    raise SystemExit("materializer summary guard insertion point missing")
+s = s.replace(needle, replacement, 1)
+
 # Match the actual explanatory suffix on the native fixture comment in PR #95.
 needle = "    // Exercise the exact v2 stopped-state producer\n"
 if s.count(needle) != 2:
