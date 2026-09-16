@@ -24,19 +24,18 @@ jobs:
           python3 scripts/_convergence_materialize.py
           python3 scripts/_convergence_fixture_fix.py
 
-      - name: Validate convergence tree
+      - name: Diagnose native HPM2 convergence
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
           python3 -m py_compile scripts/hepta_oms_lifecycle.py tests/python/test_oms_lifecycle_rotation.py
           python3 -m unittest tests.python.test_oms_lifecycle_rotation
-          ./scripts/dev_core.sh
-          python3 scripts/check_documentation.py
-          python3 scripts/check_component_coverage.py
-          python3 scripts/check_gap_register.py
-          python3 scripts/run_python_tests.py --lane source
+          cmake -S . -B build/diag -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF -DHEPTA_BUILD_LEGACY_MONOLITH=OFF -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
+          cmake --build build/diag --target hepta_execution_coordinator_tests --parallel 2
+          ctest --test-dir build/diag --output-on-failure -R '^hepta_execution_coordinator_tests$'
 
       - name: Commit validated materialized tree
+        if: ${{ false }}
         run: |
           rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py
           git config user.name "HeptaTrader convergence materializer"
