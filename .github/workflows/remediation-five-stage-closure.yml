@@ -1,0 +1,643 @@
+name: Five-stage remediation materializer
+
+on:
+  push:
+    branches:
+      - remediation/full-five-stage-closure-20260916
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout integration branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: remediation/full-five-stage-closure-20260916
+          fetch-depth: 0
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev zlib1g-dev python3-yaml
+
+      - name: Apply runtime, lifecycle, tests and documentation remediation
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              if old not in text:
+                  raise SystemExit(f"patch anchor missing: {path}: {old[:80]!r}")
+              if text.count(old) != 1:
+                  raise SystemExit(f"patch anchor not unique: {path}: {text.count(old)}")
+              p.write_text(text.replace(old, new, 1))
+
+          # 1. Generation store: expose one validated complete-history replay path.
+          replace_once(
+              "HeptaTrade/oms_generation_store.h",
+              "    bool RecoveryCapacity(std::uint64_t& bytes,\n                          std::uint64_t& records,\n                          std::string& reason) const;\n",
+              "    bool RecoveryCapacity(std::uint64_t& bytes,\n                          std::uint64_t& records,\n                          std::string& reason) const;\n\n"
+              "    // Replay the complete durable ledger represented by a generation chain.\n"
+              "    // This is intentionally separate from Recover(), whose bounded hot replay is\n"
+              "    // used by the coordinator. Consumers that need economic baselines (currently\n"
+              "    // the deterministic simulator) can stream immutable segments plus the active\n"
+              "    // tail without teaching themselves the generation format. Each segment is\n"
+              "    // digest/identity checked before callbacks run for that segment.\n"
+              "    bool ReplayCompleteHistory(\n"
+              "        std::size_t maxSegmentBytes,\n"
+              "        std::size_t maxSegmentRecords,\n"
+              "        std::size_t maxRecordBytes,\n"
+              "        const std::function<void(const OmsJournalEvent&)>& onEvent,\n"
+              "        std::uint64_t& records,\n"
+              "        std::string& reason);\n")
+
+          support = Path("HeptaTrade/execution/execution_generation_support.cpp")
+          text = support.read_text()
+          text = text.replace("#include <sstream>\n#include <sys/stat.h>",
+                              "#include <sstream>\n#include <set>\n#include <sys/stat.h>", 1)
+          helper_anchor = '''namespace
+          {
+          const char* const kRuntimeManifestHeaderV2 = "HEPTA_OMS_RUNTIME_GENERATION_V2";
+          const std::uint64_t kMaximumActiveTailHeaderBytes = 512U;
+          }
+          '''
+          helper = r'''namespace
+          {
+          const char* const kRuntimeManifestHeaderV2 = "HEPTA_OMS_RUNTIME_GENERATION_V2";
+          const std::uint64_t kMaximumActiveTailHeaderBytes = 512U;
+
+          struct GenerationReplayNode
+          {
+              std::string generation;
+              std::string parentGeneration;
+              std::string parentManifestSha256;
+              std::string segmentSha256;
+              std::uint64_t segmentRecords = 0;
+          };
+
+          bool GenerationCanonicalJsonString(const std::string& json,
+                                             const std::string& key,
+                                             std::string& value)
+          {
+              const std::string needle = "\\\"" + key + "\\\":\\\"";
+              const std::size_t found = json.find(needle);
+              if (found == std::string::npos ||
+                  json.find(needle, found + needle.size()) != std::string::npos)
+                  return false;
+              const std::size_t begin = found + needle.size();
+              const std::size_t end = json.find('"', begin);
+              if (end == std::string::npos || end == begin) return false;
+              value.assign(json, begin, end - begin);
+              return value.find('\\\\') == std::string::npos &&
+                  value.find_first_of("\\r\\n") == std::string::npos;
+          }
+
+          bool GenerationLoadReplayNode(int storeFd,
+                                        const std::string& generation,
+                                        const std::string& expectedManifestSha256,
+                                        GenerationReplayNode& node,
+                                        std::string& reason)
+          {
+              if (!GenerationSafeName(generation) ||
+                  !GenerationHexDigest(expectedManifestSha256))
+              {
+                  reason = "OMS_GENERATION_HISTORY_BINDING_INVALID";
+                  return false;
+              }
+              const int generationFd = ::openat(storeFd, generation.c_str(),
+                  O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+              struct stat directoryMetadata;
+              if (generationFd < 0 || ::fstat(generationFd, &directoryMetadata) != 0 ||
+                  !GenerationPrivateDirectory(directoryMetadata))
+              {
+                  if (generationFd >= 0) ::close(generationFd);
+                  reason = "OMS_GENERATION_HISTORY_DIRECTORY_UNSAFE";
+                  return false;
+              }
+
+              std::string manifestJson;
+              std::string runtimeManifest;
+              std::string runtimeManifestSha256;
+              bool ok = GenerationVerifyHashedFileAt(generationFd, "manifest.json",
+                            expectedManifestSha256) &&
+                  GenerationReadPrivateFileAt(generationFd, "manifest.json",
+                      kMaximumGenerationMetadataBytes, manifestJson) &&
+                  GenerationCanonicalJsonString(manifestJson,
+                      "runtime_manifest_sha256", runtimeManifestSha256) &&
+                  GenerationHexDigest(runtimeManifestSha256) &&
+                  GenerationReadPrivateFileAt(generationFd, "runtime-manifest.txt",
+                      kMaximumGenerationMetadataBytes, runtimeManifest) &&
+                  GenerationSha256(runtimeManifest.data(), runtimeManifest.size()) ==
+                      runtimeManifestSha256;
+              if (!ok)
+              {
+                  ::close(generationFd);
+                  reason = "OMS_GENERATION_HISTORY_MANIFEST_INVALID";
+                  return false;
+              }
+
+              GenerationFields fields;
+              bool v2 = GenerationParseFields(
+                  runtimeManifest, kRuntimeManifestHeaderV2, fields);
+              bool v1 = false;
+              if (!v2)
+                  v1 = GenerationParseFields(runtimeManifest, kRuntimeManifestHeader, fields);
+              if ((!v1 && !v2) || fields["generation"] != generation ||
+                  !GenerationHexDigest(fields["segment_sha256"]))
+              {
+                  ::close(generationFd);
+                  reason = "OMS_GENERATION_HISTORY_RUNTIME_MANIFEST_INVALID";
+                  return false;
+              }
+
+              std::uint64_t segmentRecords = 0;
+              if (!GenerationParseUnsigned(
+                      fields[v2 ? "segment_records" : "journal_records"],
+                      segmentRecords) ||
+                  !GenerationVerifyHashedFileAt(generationFd,
+                      "segment-000001.jsonl", fields["segment_sha256"]))
+              {
+                  ::close(generationFd);
+                  reason = "OMS_GENERATION_HISTORY_SEGMENT_INVALID";
+                  return false;
+              }
+
+              node = GenerationReplayNode();
+              node.generation = generation;
+              node.segmentSha256 = fields["segment_sha256"];
+              node.segmentRecords = segmentRecords;
+              if (v2 && fields["parent_generation"] != "-")
+              {
+                  if (!GenerationSafeName(fields["parent_generation"]) ||
+                      !GenerationHexDigest(fields["parent_manifest_sha256"]))
+                  {
+                      ::close(generationFd);
+                      reason = "OMS_GENERATION_HISTORY_PARENT_INVALID";
+                      return false;
+                  }
+                  node.parentGeneration = fields["parent_generation"];
+                  node.parentManifestSha256 = fields["parent_manifest_sha256"];
+              }
+              const bool closed = ::close(generationFd) == 0;
+              if (!closed)
+              {
+                  reason = "OMS_GENERATION_HISTORY_DIRECTORY_CLOSE_FAILED";
+                  return false;
+              }
+              reason.clear();
+              return true;
+          }
+          }
+          '''
+          if helper_anchor not in text:
+              raise SystemExit("generation helper anchor missing")
+          text = text.replace(helper_anchor, helper, 1)
+
+          method_anchor = '''bool OmsGenerationStore::RecoveryCapacity(
+              std::uint64_t& bytes,
+              std::uint64_t& records,
+              std::string& reason) const
+          {
+          '''
+          method = r'''bool OmsGenerationStore::ReplayCompleteHistory(
+              std::size_t maxSegmentBytes,
+              std::size_t maxSegmentRecords,
+              std::size_t maxRecordBytes,
+              const std::function<void(const OmsJournalEvent&)>& onEvent,
+              std::uint64_t& records,
+              std::string& reason)
+          {
+              records = 0;
+              if (!HasStore())
+              {
+                  reason = "OMS_GENERATION_STORE_ABSENT";
+                  return false;
+              }
+              if (!onEvent || maxSegmentBytes == 0 || maxSegmentRecords == 0 ||
+                  maxRecordBytes == 0)
+              {
+                  reason = "OMS_GENERATION_HISTORY_ARGUMENT_INVALID";
+                  return false;
+              }
+
+              // First execute the ordinary recovery path with a no-op projection.
+              // That validates CURRENT, the current generation, hot replay and the
+              // exact active prefix/sentinel+tail before any economic callback below.
+              if (!Recover(maxSegmentBytes, maxSegmentRecords, maxRecordBytes,
+                      [](const OmsJournalEvent&) {}, reason))
+                  return false;
+
+              std::string runtimeCurrent;
+              GenerationFields selected;
+              static const char* const currentNames[] = {
+                  "generation", "current_sha256", "manifest_sha256",
+                  "runtime_manifest_sha256"
+              };
+              if (!GenerationReadPrivateFileAt(m_storeFd, "CURRENT.runtime",
+                      kMaximumGenerationMetadataBytes, runtimeCurrent) ||
+                  !GenerationParseFields(runtimeCurrent, kRuntimeCurrentHeader, selected) ||
+                  !GenerationExactFieldNames(selected, currentNames,
+                      sizeof(currentNames) / sizeof(currentNames[0])) ||
+                  selected["generation"] != m_generation ||
+                  !GenerationHexDigest(selected["manifest_sha256"]))
+              {
+                  reason = "OMS_GENERATION_HISTORY_CURRENT_INVALID";
+                  return false;
+              }
+
+              std::vector<GenerationReplayNode> reverseChain;
+              std::set<std::string> seen;
+              std::string generation = m_generation;
+              std::string manifestSha256 = selected["manifest_sha256"];
+              for (;;)
+              {
+                  if (!seen.insert(generation).second)
+                  {
+                      reason = "OMS_GENERATION_HISTORY_CYCLE";
+                      return false;
+                  }
+                  GenerationReplayNode node;
+                  if (!GenerationLoadReplayNode(m_storeFd, generation,
+                          manifestSha256, node, reason))
+                      return false;
+                  reverseChain.push_back(node);
+                  if (node.parentGeneration.empty()) break;
+                  generation = node.parentGeneration;
+                  manifestSha256 = node.parentManifestSha256;
+              }
+              std::reverse(reverseChain.begin(), reverseChain.end());
+
+              for (std::vector<GenerationReplayNode>::const_iterator it =
+                       reverseChain.begin(); it != reverseChain.end(); ++it)
+              {
+                  const int generationFd = ::openat(m_storeFd, it->generation.c_str(),
+                      O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+                  struct stat directoryMetadata;
+                  if (generationFd < 0 || ::fstat(generationFd, &directoryMetadata) != 0 ||
+                      !GenerationPrivateDirectory(directoryMetadata))
+                  {
+                      if (generationFd >= 0) ::close(generationFd);
+                      reason = "OMS_GENERATION_HISTORY_DIRECTORY_CHANGED";
+                      return false;
+                  }
+                  int segmentFd = -1;
+                  struct stat segmentIdentity;
+                  if (!GenerationOpenHashedFileAt(generationFd,
+                          "segment-000001.jsonl", it->segmentSha256,
+                          segmentFd, segmentIdentity))
+                  {
+                      ::close(generationFd);
+                      reason = "OMS_GENERATION_HISTORY_SEGMENT_CHANGED";
+                      return false;
+                  }
+                  std::size_t segmentRecords = 0;
+                  const bool replayed = GenerationReplayRange(segmentFd, 0,
+                      segmentIdentity.st_size, maxSegmentBytes,
+                      maxSegmentRecords, maxRecordBytes, onEvent, segmentRecords) &&
+                      segmentRecords == it->segmentRecords;
+                  const bool closedSegment = ::close(segmentFd) == 0;
+                  const bool closedDirectory = ::close(generationFd) == 0;
+                  if (!replayed || !closedSegment || !closedDirectory)
+                  {
+                      reason = "OMS_GENERATION_HISTORY_SEGMENT_REPLAY_FAILED";
+                      return false;
+                  }
+                  if (records > std::numeric_limits<std::uint64_t>::max() - segmentRecords)
+                  {
+                      reason = "OMS_GENERATION_HISTORY_RECORD_OVERFLOW";
+                      return false;
+                  }
+                  records += segmentRecords;
+              }
+
+              const int journalFd = ::open(m_journalPath.c_str(),
+                  O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+              struct stat before, named;
+              if (journalFd < 0 || ::fstat(journalFd, &before) != 0 ||
+                  !GenerationPrivateFile(before) || before.st_size < 0 ||
+                  static_cast<std::uint64_t>(before.st_size) < m_journalPrefixBytes ||
+                  ::lstat(m_journalPath.c_str(), &named) != 0 ||
+                  !GenerationSameIdentity(before, named))
+              {
+                  if (journalFd >= 0) ::close(journalFd);
+                  reason = "OMS_GENERATION_HISTORY_ACTIVE_JOURNAL_CHANGED";
+                  return false;
+              }
+              std::string prefixDigest;
+              if (!GenerationHashFd(journalFd,
+                      static_cast<off_t>(m_journalPrefixBytes), prefixDigest) ||
+                  prefixDigest != m_journalPrefixSha256)
+              {
+                  ::close(journalFd);
+                  reason = "OMS_GENERATION_HISTORY_ACTIVE_PREFIX_MISMATCH";
+                  return false;
+              }
+              std::size_t tailRecords = 0;
+              bool replayedTail = GenerationReplayRange(journalFd,
+                  static_cast<off_t>(m_journalPrefixBytes), before.st_size,
+                  maxSegmentBytes, maxSegmentRecords, maxRecordBytes,
+                  onEvent, tailRecords);
+              struct stat after, namedAfter;
+              replayedTail = replayedTail && ::fstat(journalFd, &after) == 0 &&
+                  ::lstat(m_journalPath.c_str(), &namedAfter) == 0 &&
+                  GenerationSameIdentity(before, after) &&
+                  GenerationSameIdentity(after, namedAfter);
+              if (::close(journalFd) != 0) replayedTail = false;
+              if (!replayedTail)
+              {
+                  reason = "OMS_GENERATION_HISTORY_ACTIVE_TAIL_REPLAY_FAILED";
+                  return false;
+              }
+              if (records > std::numeric_limits<std::uint64_t>::max() - tailRecords)
+              {
+                  reason = "OMS_GENERATION_HISTORY_RECORD_OVERFLOW";
+                  return false;
+              }
+              records += tailRecords;
+              reason.clear();
+              return true;
+          }
+
+          bool OmsGenerationStore::RecoveryCapacity(
+              std::uint64_t& bytes,
+              std::uint64_t& records,
+              std::string& reason) const
+          {
+          '''
+          if method_anchor not in text:
+              raise SystemExit("generation method anchor missing")
+          text = text.replace(method_anchor, method, 1)
+          support.write_text(text)
+
+          # 1. Simulator runtime consumes the store API, not raw V2 sentinel JSON.
+          runtime = Path("HeptaTrade/execution/execution_service_runtime_composition.cpp")
+          text = runtime.read_text()
+          text = text.replace('#include "execution_event_feed_server.h"\n',
+                              '#include "execution_event_feed_server.h"\n#include "../oms_generation_store.h"\n', 1)
+          old = '''    bool valid = true;
+              const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
+          '''
+          new = '''    bool valid = true;
+              const auto consume = [&](const OmsJournalEvent& event) {
+          '''
+          if old not in text:
+              raise SystemExit("simulator replay lambda anchor missing")
+          text = text.replace(old, new, 1)
+          old = '''        fills[event.orderId] = event;
+              });
+              if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
+              {
+                  reason = replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
+                      "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+                  return false;
+              }
+          '''
+          new = '''        fills[event.orderId] = event;
+              };
+              bool replayOk = true;
+              OmsGenerationStore generationStore(m_config.journalPath);
+              if (generationStore.HasStore())
+              {
+                  const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+                  std::uint64_t replayed = 0;
+                  std::string generationReason;
+                  replayOk = generationStore.ReplayCompleteHistory(
+                      health.replayMaxBytes, health.replayMaxRecords,
+                      health.replayMaxRecordBytes, consume, replayed, generationReason);
+              }
+              else
+              {
+                  replayOk = m_journal.Replay(consume) >= 0;
+              }
+              if (!replayOk || maximumOrderId == std::numeric_limits<long>::max())
+              {
+                  reason = !replayOk ? "EXECUTION_OMS_REPLAY_FAILED" :
+                      "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+                  return false;
+              }
+          '''
+          if old not in text:
+              raise SystemExit("simulator replay completion anchor missing")
+          text = text.replace(old, new, 1)
+          runtime.write_text(text)
+
+          # 2. Lifecycle verification: count/order indexes in one pass; generation
+          # export has cycle protection but no arbitrary 1024-generation cliff.
+          life = Path("scripts/hepta_oms_lifecycle.py")
+          text = life.read_text()
+          text = text.replace("MAX_CHAIN = 1024\n", "", 1)
+          old = '''    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
+              if len(runtime_lines) != manifest.get("command_records"):
+                  raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+              previous = None
+              for line in runtime_lines:
+                  key, _, _ = _runtime_row(line)
+                  if previous is not None and key <= previous:
+                      raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
+                  previous = key
+              send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
+              if len(send_lines) != manifest.get("send_attempt_records"):
+                  raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
+              if sorted_send_index:
+                  previous_send = None
+                  for line in send_lines:
+                      fields = line.rstrip(b"\\n").decode("ascii").split("\\t")
+                      if len(fields) != 7:
+                          raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+                      try:
+                          key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
+                                 fields[3], fields[4], fields[5])
+                      except ValueError as error:
+                          raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+                      if previous_send is not None and key <= previous_send:
+                          raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+                      previous_send = key
+          '''
+          new = '''    runtime_count = 0
+              previous = None
+              for line in _iter_private_lines(root / "runtime-command-index.tsv"):
+                  key, _, _ = _runtime_row(line)
+                  if previous is not None and key <= previous:
+                      raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
+                  previous = key
+                  runtime_count += 1
+              if runtime_count != manifest.get("command_records"):
+                  raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+              send_count = 0
+              previous_send = None
+              for line in _iter_private_lines(root / "send-attempt-index.tsv"):
+                  if sorted_send_index:
+                      fields = line.rstrip(b"\\n").decode("ascii").split("\\t")
+                      if len(fields) != 7:
+                          raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+                      try:
+                          key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
+                                 fields[3], fields[4], fields[5])
+                      except ValueError as error:
+                          raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+                      if previous_send is not None and key <= previous_send:
+                          raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+                      previous_send = key
+                  send_count += 1
+              if send_count != manifest.get("send_attempt_records"):
+                  raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
+          '''
+          if old not in text:
+              raise SystemExit("streaming verification anchor missing")
+          text = text.replace(old, new, 1)
+          text = text.replace(
+              '''        if generation in seen or len(chain) >= MAX_CHAIN:
+                      raise v1.GenerationError("OMS_GENERATION_PARENT_CHAIN_INVALID")
+          ''',
+              '''        if generation in seen:
+                      raise v1.GenerationError("OMS_GENERATION_PARENT_CHAIN_INVALID")
+          ''', 1)
+          life.write_text(text)
+
+          # 1. Native regression: rotate the real simulator journal before restart.
+          test = Path("tests/simulator_risk_runtime_tests.cpp")
+          text = test.read_text()
+          if "#include <cstdlib>\n" not in text:
+              text = text.replace("#include <cstring>\n", "#include <cstring>\n#include <cstdlib>\n", 1)
+          seal_anchor = '''        assert(journal.Append(filledRecord)); // Exact duplicate must not double the restored position.
+              }
+              assert(terminalOwners == std::set<long>({filledId, cancelledId}));
+          '''
+          seal_insert = '''        assert(journal.Append(filledRecord)); // Exact duplicate must not double the restored position.
+              }
+              const std::string generationStore = config.journalPath + ".generations";
+              const std::string sealCommand = std::string("python3 \\") + HEPTA_SOURCE_DIR +
+                  "/scripts/hepta_oms_lifecycle.py\\" seal --journal \\\"" + config.journalPath +
+                  "\\\" --store \\\"" + generationStore + "\\\" --stopped-state";
+              assert(std::system(sealCommand.c_str()) == 0);
+              assert(terminalOwners == std::set<long>({filledId, cancelledId}));
+          '''
+          if seal_anchor not in text:
+              raise SystemExit("simulator seal test anchor missing")
+          text = text.replace(seal_anchor, seal_insert, 1)
+          cleanup_anchor = '''    for (const auto& name : {"mutation.sock", "event.sock", "hepta-execution-fence",
+                                   "execution-runtime.lock", "oms-journal.jsonl"})
+                  ::unlink((path + "/" + name).c_str());
+              assert(::rmdir(path.c_str()) == 0);
+          '''
+          cleanup = '''    for (const auto& name : {"mutation.sock", "event.sock", "hepta-execution-fence",
+                                   "execution-runtime.lock", "oms-journal.jsonl"})
+                  ::unlink((path + "/" + name).c_str());
+              const std::string cleanupCommand = "rm -rf -- \\\"" + generationStore + "\\\"";
+              assert(std::system(cleanupCommand.c_str()) == 0);
+              assert(::rmdir(path.c_str()) == 0);
+          '''
+          if cleanup_anchor not in text:
+              raise SystemExit("simulator cleanup anchor missing")
+          text = text.replace(cleanup_anchor, cleanup, 1)
+          test.write_text(text)
+
+          cmake = Path("tests/CMakeLists.txt")
+          text = cmake.read_text()
+          cmake_anchor = '''add_executable(hepta_simulator_risk_runtime_tests simulator_risk_runtime_tests.cpp)
+          target_link_libraries(hepta_simulator_risk_runtime_tests hepta_execution_service_runtime)
+          '''
+          cmake_new = '''add_executable(hepta_simulator_risk_runtime_tests simulator_risk_runtime_tests.cpp)
+          target_link_libraries(hepta_simulator_risk_runtime_tests hepta_execution_service_runtime)
+          target_compile_definitions(hepta_simulator_risk_runtime_tests PRIVATE
+              HEPTA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+          '''
+          if cmake_anchor not in text:
+              raise SystemExit("simulator CMake anchor missing")
+          cmake.write_text(text.replace(cmake_anchor, cmake_new, 1))
+
+          # 2. Python regressions prove verify no longer materializes indexes and
+          # downgrade chain traversal is cycle-bounded rather than count-bounded.
+          pytest = Path("tests/python/test_oms_lifecycle_rotation.py")
+          text = pytest.read_text()
+          text = text.replace("import unittest\n", "import unittest\nfrom unittest import mock\n", 1)
+          py_anchor = '''\n\n\nif __name__ == "__main__":
+              unittest.main()
+          '''
+          py_methods = r'''
+              def test_verify_streams_cumulative_indexes(self) -> None:
+                  lifecycle.seal_generation(self.journal, self.store, stopped=True)
+                  original = lifecycle._iter_private_lines
+
+                  class NoLengthHint:
+                      def __init__(self, iterator):
+                          self.iterator = iter(iterator)
+                      def __iter__(self):
+                          return self
+                      def __next__(self):
+                          return next(self.iterator)
+                      def __length_hint__(self):
+                          raise AssertionError("verification attempted to materialize an index")
+
+                  def wrapped(path: Path):
+                      return NoLengthHint(original(path))
+
+                  with mock.patch.object(lifecycle, "_iter_private_lines", side_effect=wrapped):
+                      self.assertEqual(
+                          lifecycle.verify_generation(self.store, journal=self.journal)["result"],
+                          "PASS")
+
+              def test_generation_chain_has_no_arbitrary_count_cliff(self) -> None:
+                  total = 1100
+                  def manifest(_store: Path, generation: str) -> dict:
+                      index = int(generation[1:])
+                      return {"generation": generation,
+                              "parent_generation": "" if index == 0 else f"g{index - 1}"}
+                  with mock.patch.object(lifecycle, "_manifest_for", side_effect=manifest):
+                      chain = lifecycle._generation_chain(self.store, f"g{total - 1}")
+                  self.assertEqual(len(chain), total)
+                  self.assertEqual(chain[0][0], "g0")
+                  self.assertEqual(chain[-1][0], f"g{total - 1}")
+
+
+          if py_anchor not in text:
+              raise SystemExit("python lifecycle test insertion anchor missing")
+          pytest.write_text(text.replace(py_anchor, "\n" + py_methods + py_anchor, 1))
+
+          # Synchronize technical docs with the executable boundary.
+          simulator_doc = Path("docs/modules/simulator.md")
+          text = simulator_doc.read_text()
+          if "## Generation-backed restart" not in text:
+              text += '''\n\n## Generation-backed restart\n\nWhen the OMS active ledger has been rotated to the V2 lineage format, the simulator\ndoes not feed the lineage sentinel into the legacy JSONL reader. The Execution\nruntime delegates complete-history validation and streaming to `OmsGenerationStore`,\nthen reconstructs unique admitted orders, terminal fills, positions and the next order\nID before accepting traffic. Coordinator recovery remains on the bounded hot-replay\npath. `tests/simulator_risk_runtime_tests.cpp` executes the real\nfill/stop/seal/restart path and retains the duplicate-fill conflict check across the\nrotation boundary.\n'''
+          simulator_doc.write_text(text)
+
+          oms_doc = Path("docs/modules/oms-journal.md")
+          text = oms_doc.read_text()
+          if "## Streaming maintenance verification" not in text:
+              text += '''\n\n## Streaming maintenance verification\n\nGeneration verification scans cumulative command and send-attempt indexes in one\npass; it does not materialize either index as a Python list. Downgrade export walks\nthe digest-bound parent chain with cycle detection and has no fixed generation-count\ncutoff. Per-generation segment and active-tail limits remain enforced by their\nexisting byte/record bounds. Complete-history replay is an explicit consumer API;\nordinary coordinator recovery continues to use hot replay plus the active tail.\n'''
+          oms_doc.write_text(text)
+          PY
+
+          # The materializer must not become part of the accepted product tree.
+          rm -f .github/workflows/remediation-five-stage-closure.yml
+          git diff --check
+
+      - name: Configure and build targeted native runtime
+        run: |
+          cmake -S . -B build/remediation -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/remediation --target hepta_simulator_risk_runtime_tests -j2
+          ctest --test-dir build/remediation --output-on-failure -R '^hepta_simulator_risk_runtime_tests$'
+
+      - name: Run lifecycle and repository checks
+        run: |
+          python3 -m unittest tests.python.test_oms_lifecycle_rotation
+          python3 scripts/check_documentation.py
+          python3 scripts/run_python_tests.py --lane core
+          python3 scripts/run_python_tests.py --lane source
+
+      - name: Commit validated remediation
+        run: |
+          git config user.name "OpenAI"
+          git config user.email "noreply@openai.com"
+          git add -A
+          test ! -e .github/workflows/remediation-five-stage-closure.yml
+          git diff --cached --check
+          git commit -m "fix: close simulator generation restart and lifecycle growth gaps"
+          git push origin HEAD:refs/heads/remediation/full-five-stage-closure-20260916
