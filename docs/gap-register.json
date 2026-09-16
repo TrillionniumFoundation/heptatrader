@@ -23,16 +23,18 @@
       "id": "OMS-LIFECYCLE-002",
       "domain": "REPOSITORY",
       "state": "OPEN",
-      "summary": "Long-term checkpoint, incremental recovery and disk-backed permanent command identity remain unimplemented beyond the bounded decoded-history budget.",
+      "summary": "Runtime activation of checkpoint/tail recovery and disk-backed permanent command lookup remains unfinished beyond the bounded decoded-history startup path.",
       "evidence": [
         "docs/technical/oms-recovery-capacity.md",
         "docs/technical/persistence-support-window.md",
         "docs/technical/oms-archive-lifecycle.md",
+        "scripts/hepta_oms_checkpoint.py",
+        "tests/python/test_oms_checkpoint.py",
         "HeptaTrade/execution/new_entry_capacity.h"
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "OPEN. Lossless gzip, pre-intent refusal cleanup and the 80-percent admission pause do not bound lifetime history or reserve all future exit/callback evidence. Supported indefinite unattended operation is not claimed. The staged checkpoint/index design and required crash/rollback evidence live in the persistence support contract; no new persistent format is activated."
+      "disposition": "OPEN. The stopped-state generation producer now writes byte-identical decoded history, a complete full-key/request-hash command index, an unresolved/hot checkpoint, parent lineage, digest manifest and atomically durable CURRENT pointer. Tests cover ancient-ID duplicate/conflict lookup, crash before pointer publication, corrupt-current fail-closed behavior and source hash conflicts. This is format and maintenance groundwork only: current C++ startup still replays the bounded complete journal and retains the historical command projection in memory. Lossless gzip and the 80-percent admission pause also do not bound lifetime history or reserve all future exit/callback evidence. Runtime checkpoint+tail consumption, disk lookup on command-status/admission, crash points across that runtime switch and explicit downgrade/export remain required before closure."
     },
     {
       "id": "OWNER-RULESET-002",
@@ -45,22 +47,25 @@
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "OPEN. The read-only transition planner preserves the actual required checks, deletion and force-push protection. Server administration and readback are separate actions; source cleanup does not assert that the active server rule changed."
+      "disposition": "OPEN. The read-only transition planner preserves the actual required checks, deletion and force-push protection. The available GitHub integration exposes Ruleset readback but no administrative Ruleset write action; no alternate administration plugin is connected. Server administration and post-change readback therefore remain a real owner action and are not represented as a source-code closure."
     },
     {
       "id": "RUNTIME-TELEMETRY-003",
       "domain": "REPOSITORY",
       "state": "OPEN",
-      "summary": "Complete per-reason execution, risk, snapshot, callback and Broker reconciliation telemetry is not yet delivered.",
+      "summary": "Complete per-reason execution, callback/quote age, network-policy and Broker reconciliation telemetry is not yet delivered or target-host collected.",
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/technical/runtime-cost-observations.md",
+        "HeptaTrade/execution/ib_runtime_observation.h",
+        "scripts/hepta_ib_runtime_report.py",
         "tests/python/test_execution_latency_boundaries.py",
-        "tests/python/test_execution_reason_metrics.py"
+        "tests/python/test_execution_reason_metrics.py",
+        "tests/python/test_ib_runtime_observation.py"
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "Split from the observability portion of OMS-LIFECYCLE-002 without closing or waiving it. Coordinator lock wait and entry-to-exit latency are now additive measured scopes, not full Broker or wire latency. The missing metric families still require bounded identifiers, presence/freshness and behavior tests. Coordinator local outcomes now have 41 fixed reason bins with unknown-to-OTHER mapping, explicit producer presence, saturation and cross-language accounting checks. This is not complete profile/preview risk, snapshot, callback or Broker reconciliation telemetry."
+      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER now additionally emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state; the installed reporter validates and exports fixed-cardinality gauges without account/order/command labels. Callback lag, callback conflict, quote/snapshot age, Broker reconciliation duration and network-policy producers remain absent and have explicit presence=false rather than synthetic zero. The IB stream is not yet wired through the atomic journald collector/textfile publisher, and no target-host SLO or notification is proven."
     },
     {
       "id": "HOST-OPERATIONS-003",
@@ -74,7 +79,7 @@
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. No host, credential, network policy or trading authority was changed."
+      "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. New IB state observations remain source-side until a target host collects and delivers them through an approved receiver. No host, credential, network policy or trading authority was changed."
     }
   ]
 }
