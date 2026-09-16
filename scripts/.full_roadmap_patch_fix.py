@@ -80,3 +80,15 @@ end = support.index(capacity_suffix, start)
 main_start = main_inc.index(enter)
 support = support[:start] + main_inc[main_start:] + support[end:]
 support_path.write_text(support)
+
+# The migration removes the textual V2 implementation file, so the closed gap
+# must cite the normal translation unit that now carries the same native V2
+# recovery/capacity dispatch.
+gap_path = ROOT / "docs/gap-register.json"
+gap = gap_path.read_text()
+gap = replace_once(
+    gap,
+    '"HeptaTrade/execution/execution_generation_v2_support.inc"',
+    '"HeptaTrade/execution/execution_generation_support.cpp"',
+    "OMS gap evidence path")
+gap_path.write_text(gap)
