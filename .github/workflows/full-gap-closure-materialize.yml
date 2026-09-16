@@ -1,0 +1,253 @@
+name: Full Gap Closure Materializer
+
+on:
+  push:
+    branches: [remediation/full-gap-closure-20260916-v2]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact remediation branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: remediation/full-gap-closure-20260916-v2
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Install validation dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
+
+      - name: Apply behavior-first closure patches
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one replacement, found {count}: {old[:80]!r}")
+              p.write_text(text.replace(old, new, 1))
+
+          # 1) OMS generation verification: validate cumulative indexes as streams,
+          # never materialize lifetime indexes in Python memory.
+          lifecycle = Path("scripts/hepta_oms_lifecycle.py")
+          text = lifecycle.read_text()
+          text = text.replace("MAX_CHAIN = 1024\n", "")
+          marker = "\n\ndef _iter_private_lines(path: Path) -> Iterator[bytes]:\n"
+          if marker not in text:
+              raise SystemExit("lifecycle insertion marker missing")
+          validators = r'''
+
+
+def _validate_runtime_index_stream(path: Path, expected_records: int) -> None:
+    count = 0
+    previous: tuple[str, str, str] | None = None
+    for line in _iter_private_lines(path):
+        key, _, _ = _runtime_row(line)
+        if previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
+        previous = key
+        count += 1
+    if count != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+
+
+def _validate_send_index_stream(path: Path, expected_records: int, *, ordered: bool) -> None:
+    count = 0
+    previous: tuple[str, str, int, int, str, str, str] | None = None
+    for line in _iter_private_lines(path):
+        count += 1
+        if not ordered:
+            continue
+        if len(line) > v1.MAX_INDEX_LINE:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_RECORD_INVALID")
+        try:
+            fields = line.rstrip(b"\n").decode("ascii").split("\t")
+            if len(fields) != 7:
+                raise ValueError("field count")
+            v1._unhex(fields[0]); v1._unhex(fields[1])
+            v1._unhex(fields[3]); v1._unhex(fields[4]); v1._unhex(fields[5])
+            key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
+                   fields[3], fields[4], fields[5])
+        except (UnicodeError, ValueError, OverflowError, v1.GenerationError) as error:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_RECORD_INVALID") from error
+        if previous is not None and key < previous:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+        previous = key
+    if count != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
+'''
+          text = text.replace(marker, validators + marker, 1)
+          text = text.replace(
+              "        if len(chain) >= MAX_CHAIN:\n            raise v1.GenerationError(\"OMS_GENERATION_CHAIN_LIMIT\")\n",
+              "",
+          )
+          start = text.find('    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))')
+          end = text.find("\n    if journal is not None:", start)
+          if start < 0 or end < 0:
+              raise SystemExit("verify_generation cumulative-index block not found")
+          replacement = '''    _validate_runtime_index_stream(\n        root / "runtime-command-index.tsv", command_records)\n    _validate_send_index_stream(\n        root / "send-attempt-index.tsv", send_attempt_records,\n        ordered=send_index_order == SEND_INDEX_ORDER)\n'''
+          text = text[:start] + replacement + text[end:]
+          lifecycle.write_text(text)
+
+          # 2) HPM2 sealed-history summaries must be scoped to the exact fenced
+          # owner, not every historical session on the same account/domain.
+          replace_once(
+              "HeptaTrade/oms_generation_store.h",
+              '''    bool EnumerateMutationRecords(\n        const std::string& account,\n        const std::string& executionDomain,\n        std::vector<OmsGenerationMutationRecord>& records,\n        std::string& reason) const;\n\n    bool SummarizeMutationRecords(\n        const std::string& account,\n        const std::string& executionDomain,\n        OmsGenerationMutationSummary& summary,\n        std::string& reason) const;''',
+              '''    bool EnumerateMutationRecords(\n        const std::string& agentId,\n        const std::string& sessionId,\n        const std::string& account,\n        const std::string& executionDomain,\n        std::vector<OmsGenerationMutationRecord>& records,\n        std::string& reason) const;\n\n    bool SummarizeMutationRecords(\n        const std::string& agentId,\n        const std::string& sessionId,\n        const std::string& account,\n        const std::string& executionDomain,\n        OmsGenerationMutationSummary& summary,\n        std::string& reason) const;''')
+
+          cpp = Path("HeptaTrade/execution/execution_generation_support.cpp")
+          c = cpp.read_text()
+          c = c.replace(
+              '''bool OmsGenerationStore::EnumerateMutationRecords(\n    const std::string& account,\n    const std::string& executionDomain,''',
+              '''bool OmsGenerationStore::EnumerateMutationRecords(\n    const std::string& agentId,\n    const std::string& sessionId,\n    const std::string& account,\n    const std::string& executionDomain,''', 1)
+          enum_start = c.index("bool OmsGenerationStore::EnumerateMutationRecords(")
+          enum_end = c.index("bool OmsGenerationStore::SummarizeMutationRecords(", enum_start)
+          enum_block = c[enum_start:enum_end]
+          enum_block = enum_block.replace(
+              "        std::string rowAccount, rowDomain;",
+              "        std::string rowAgent, rowSession, rowAccount, rowDomain;", 1)
+          enum_block = enum_block.replace(
+              '''        if (!GenerationDecodeHex(fields[10], rowAccount) ||\n            !GenerationDecodeHex(fields[11], rowDomain) ||''',
+              '''        if (!GenerationDecodeHex(fields[0], rowAgent) ||\n            !GenerationDecodeHex(fields[1], rowSession) ||\n            !GenerationDecodeHex(fields[10], rowAccount) ||\n            !GenerationDecodeHex(fields[11], rowDomain) ||''', 1)
+          enum_block = enum_block.replace(
+              '''        if (fields[12] == "1" && rowAccount == account &&\n            rowDomain == executionDomain)''',
+              '''        if (fields[12] == "1" && rowAgent == agentId &&\n            rowSession == sessionId && rowAccount == account &&\n            rowDomain == executionDomain)''', 1)
+          c = c[:enum_start] + enum_block + c[enum_end:]
+
+          c = c.replace(
+              '''bool OmsGenerationStore::SummarizeMutationRecords(\n    const std::string& account,\n    const std::string& executionDomain,''',
+              '''bool OmsGenerationStore::SummarizeMutationRecords(\n    const std::string& agentId,\n    const std::string& sessionId,\n    const std::string& account,\n    const std::string& executionDomain,''', 1)
+          sum_start = c.index("bool OmsGenerationStore::SummarizeMutationRecords(")
+          sum_end = c.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore", sum_start)
+          sum_block = c[sum_start:sum_end]
+          sum_block = sum_block.replace(
+              "        std::string rowAccount, rowDomain;",
+              "        std::string rowAgent, rowSession, rowAccount, rowDomain;", 1)
+          sum_block = sum_block.replace(
+              '''        if (!GenerationDecodeHex(fields[10], rowAccount) ||\n            !GenerationDecodeHex(fields[11], rowDomain) ||''',
+              '''        if (!GenerationDecodeHex(fields[0], rowAgent) ||\n            !GenerationDecodeHex(fields[1], rowSession) ||\n            !GenerationDecodeHex(fields[10], rowAccount) ||\n            !GenerationDecodeHex(fields[11], rowDomain) ||''', 1)
+          sum_block = sum_block.replace(
+              '''        if (fields[12] == "1" && rowAccount == account &&\n            rowDomain == executionDomain)''',
+              '''        if (fields[12] == "1" && rowAgent == agentId &&\n            rowSession == sessionId && rowAccount == account &&\n            rowDomain == executionDomain)''', 1)
+          c = c[:sum_start] + sum_block + c[sum_end:]
+          c = c.replace(
+              '''    if (!m_generationStore.SummarizeMutationRecords(\n            binding.owner.account, binding.owner.executionDomain,\n            sealed, reason))''',
+              '''    if (!m_generationStore.SummarizeMutationRecords(\n            binding.owner.agentId, binding.owner.sessionId,\n            binding.owner.account, binding.owner.executionDomain,\n            sealed, reason))''', 1)
+          c = c.replace(
+              '''        if (!request.durableMutationIntent ||\n            request.context.account != binding.owner.account ||\n            request.context.executionDomain != binding.owner.executionDomain)''',
+              '''        if (!request.durableMutationIntent ||\n            request.context.agentId != binding.owner.agentId ||\n            request.context.sessionId != binding.owner.sessionId ||\n            request.context.account != binding.owner.account ||\n            request.context.executionDomain != binding.owner.executionDomain)''', 1)
+          cpp.write_text(c)
+
+          # 3) Native regression: same account/domain foreign session remains
+          # permanently queryable but is excluded from exact-owner HPM2 summary.
+          testp = Path("tests/oms_recovery_growth_probe.h")
+          t = testp.read_text()
+          t = t.replace(
+              '''        assert(coordinator.RuntimeObservation().orderOwners == 0);\n        assert(sends == 1);\n    }\n\n    // Exercise the exact v2 stopped-state producer''',
+              '''        assert(coordinator.RuntimeObservation().orderOwners == 0);\n        auto foreignCommand = MakePlace("generation-foreign-session-command");\n        foreignCommand.expiresAtMs = expiry;\n        foreignCommand.context.account = oldCommand.context.account;\n        foreignCommand.context.executionDomain = oldCommand.context.executionDomain;\n        foreignCommand.context.sessionId = "foreign-session";\n        const auto foreign = coordinator.PlaceOrder(foreignCommand);\n        assert(foreign.status == ExecutionCommandStatus::Accepted);\n        assert(coordinator.RecordOrderTerminalDurably(foreign.orderId, &reason));\n        assert(sends == 2);\n    }\n\n    // Exercise the exact v2 stopped-state producer''', 1)
+          t = t.replace(
+              '''        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");\n        assert(sends == 1); // disk lookup never calls the venue\n\n        auto newCommand = MakePlace("generation-new-command");''',
+              '''        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");\n        ExecutionCommandResult foreignStatus;\n        assert(recovered.GetCommandStatus(\n            oldCommand.context.agentId, "foreign-session",\n            "generation-foreign-session-command", foreignStatus));\n        assert(foreignStatus.status == ExecutionCommandStatus::Accepted);\n\n        OmsGenerationStore generationStore(path);\n        std::string generationReason;\n        assert(generationStore.Recover(64U * 1024U * 1024U, 65536U, 262144U,\n            [](const OmsJournalEvent&) {}, generationReason));\n        OmsGenerationMutationSummary ownerSummary;\n        assert(generationStore.SummarizeMutationRecords(\n            oldCommand.context.agentId, oldCommand.context.sessionId,\n            oldCommand.context.account, oldCommand.context.executionDomain,\n            ownerSummary, generationReason));\n        assert(ownerSummary.commandCount == 1);\n        OmsGenerationMutationSummary foreignSummary;\n        assert(generationStore.SummarizeMutationRecords(\n            oldCommand.context.agentId, "foreign-session",\n            oldCommand.context.account, oldCommand.context.executionDomain,\n            foreignSummary, generationReason));\n        assert(foreignSummary.commandCount == 1);\n        assert(ownerSummary.commandBindingSha256 != foreignSummary.commandBindingSha256);\n        assert(sends == 2); // disk lookup and history summary never call the venue\n\n        auto newCommand = MakePlace("generation-new-command");''', 1)
+          t = t.replace("        assert(sends == 2); // capacity was adopted, so new entry is not UNKNOWN",
+                        "        assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN", 1)
+          testp.write_text(t)
+
+          # 4) Python regressions for constant-workset validation and chain depth.
+          pytests = Path("tests/python/test_oms_lifecycle_rotation.py")
+          p = pytests.read_text()
+          p = p.replace("import tempfile\nimport unittest\n", "import tempfile\nimport tracemalloc\nimport unittest\nfrom unittest import mock\n", 1)
+          method_marker = "\n\n    def test_send_attempt_index_remains_window_sorted_across_generations(self) -> None:\n"
+          methods = r'''
+
+    def test_cumulative_runtime_index_validation_uses_bounded_memory(self) -> None:
+        path = self.root / "large-runtime-command-index.tsv"
+        rows = 50000
+        with path.open("wb") as stream:
+            for index in range(rows):
+                fields = [
+                    lifecycle.v1._hex("agent-a"), lifecycle.v1._hex("session-a"),
+                    lifecycle.v1._hex(f"cmd-{index:08d}"), lifecycle.v1._hex(f"hash-{index}"),
+                    "place", "accepted", str(1000 + index), lifecycle.v1._hex(""),
+                    lifecycle.v1._hex(f"corr-{index}"), str(index + 1),
+                    lifecycle.v1._hex("SIM-1"), lifecycle.v1._hex("SIM"), "1",
+                ]
+                stream.write(("\t".join(fields) + "\n").encode("ascii"))
+        os.chmod(path, 0o600)
+        tracemalloc.start()
+        lifecycle._validate_runtime_index_stream(path, rows)
+        _, peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        self.assertLess(peak, 8 * 1024 * 1024)
+
+    def test_generation_chain_has_no_artificial_1024_generation_ceiling(self) -> None:
+        depth = 1100
+        manifests = {}
+        for index in range(depth):
+            name = f"g{index}"
+            parent = "" if index == 0 else f"g{index - 1}"
+            manifests[name] = {
+                "schema": lifecycle.SCHEMA,
+                "generation": name,
+                "parent_generation": parent,
+                "parent_manifest_sha256": "a" * 64 if parent else "",
+            }
+        with mock.patch.object(lifecycle, "_manifest_for", side_effect=lambda store, name: manifests[name]), \
+             mock.patch.object(lifecycle.v1, "_hash_file", return_value="a" * 64):
+            chain = lifecycle._generation_chain(self.store, f"g{depth - 1}")
+        self.assertEqual(len(chain), depth)
+        self.assertEqual(chain[0][0], "g0")
+        self.assertEqual(chain[-1][0], f"g{depth - 1}")
+'''
+          if method_marker not in p:
+              raise SystemExit("OMS lifecycle test insertion marker missing")
+          p = p.replace(method_marker, methods + method_marker, 1)
+          pytests.write_text(p)
+
+          # 5) One canonical Python development entrypoint.
+          replace_once(
+              "docs/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md",
+              '''./scripts/dev_core.sh\npython3 scripts/check_documentation.py\npython3 -m unittest discover -s tests/python -p 'test_*.py' ''',
+              '''./scripts/dev_core.sh\npython3 scripts/check_documentation.py\npython3 scripts/run_python_tests.py --lane core\npython3 scripts/run_python_tests.py --lane source''')
+          PY
+
+      - name: Validate patched OMS lifecycle regressions
+        run: |
+          python3 -m unittest tests.python.test_oms_lifecycle_rotation
+
+      - name: Build and run canonical core tests
+        env:
+          HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
+          HEPTA_JOBS: "2"
+        run: ./scripts/dev_core.sh
+
+      - name: Run source and core Python ownership lanes
+        run: |
+          python3 scripts/check_documentation.py
+          python3 scripts/check_component_coverage.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/run_python_tests.py --lane source
+          python3 scripts/run_python_tests.py --lane core
+
+      - name: Remove materializer and commit exact result
+        env:
+          BRANCH: remediation/full-gap-closure-20260916-v2
+        run: |
+          set -euo pipefail
+          rm .github/workflows/full-gap-closure-materialize.yml
+          git diff --check
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git commit -m 'fix: bound OMS maintenance and terminal owner scope'
+          git push origin "HEAD:$BRANCH"
