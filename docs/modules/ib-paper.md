@@ -3,7 +3,7 @@
 Status: QUALIFICATION_REQUIRED  
 Applies to: repository HEAD  
 Implementation: `HeptaTrade/adapter_ib`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/check_qualification_trust_boundary.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-broker-network-policy-v1.json`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `scripts/verify_canonical_ib_paper_profile.py`, `scripts/run_ib_paper_campaign.py`
-Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`
+Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`, `tests/python/test_exported_source_configure.py`
 
 ## Scope
 
@@ -131,6 +131,14 @@ publication contract are specified in
 The stable shell entry delegates to `scripts/run_ib_paper_campaign.py`;
 publication remains part of the existing result verifier. Source-only
 subprocess regressions do not make an IB account qualified or authorized.
+
+The no-secret builder exports the already-verified candidate commit with
+`git archive`. Because that immutable source tree intentionally contains no
+`.git` metadata, the builder passes the exact admitted SHA as
+`HEPTA_DOCUMENTATION_SOURCE_SHA` during CMake configuration. The broker-disabled
+`test_exported_source_configure.py` exercises the same top-level configure from
+a real Git archive and proves installed documentation generation does not depend
+on an accidental repository worktree.
 
 ## Cancellation result boundary
 
