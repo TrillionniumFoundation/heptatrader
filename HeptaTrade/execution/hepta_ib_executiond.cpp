@@ -1,4 +1,5 @@
 #include "execution_runtime_observation.h"
+#include "ib_runtime_observation.h"
 #include "ib_paper_execution_runtime_composition.h"
 #include "ib_paper_execution_runtime_config.h"
 
@@ -61,9 +62,18 @@ int main(int argc, char**)
     for (;;)
     {
         if (capacityCadence.Due(std::chrono::steady_clock::now()))
-            std::cerr << ExecutionCapacityObservation(runtime.JournalHealth(), runtime.CoordinatorObservation(), OmsJournal::NowEpochMs(),
-                runtime.ServiceEpoch(), static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch()).count())) << '\n';
+        {
+            const std::uint64_t observedAtMs = OmsJournal::NowEpochMs();
+            const std::uint64_t monotonicMs = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch()).count());
+            std::cerr << ExecutionCapacityObservation(
+                runtime.JournalHealth(), runtime.CoordinatorObservation(),
+                observedAtMs, runtime.ServiceEpoch(), monotonicMs) << '\n';
+            std::cerr << IbRuntimeObservation(
+                runtime.Adapter(), observedAtMs, monotonicMs,
+                runtime.ServiceEpoch()) << '\n';
+        }
         struct timespec timeout;
         timeout.tv_sec = 1;
         timeout.tv_nsec = 0;
