@@ -78,4 +78,12 @@ text = text[:start] + replacement + text[end:]
 if old not in s:
     raise SystemExit("materializer verifier source block missing")
 s = s.replace(old, new, 1)
+
+# Match the actual explanatory suffix on the native fixture comment in PR #95.
+needle = "    // Exercise the exact v2 stopped-state producer\n"
+if s.count(needle) != 2:
+    raise SystemExit(f"materializer native comment count={s.count(needle)}")
+s = s.replace(
+    needle,
+    "    // Exercise the exact v2 stopped-state producer after the real writer has\n")
 p.write_text(s)
