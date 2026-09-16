@@ -21,7 +21,8 @@ HELPERS = (
     "scripts/run_release_simulator_smoke.py",
     "scripts/verify_canonical_ib_paper_profile.py", "scripts/verify_oms_journal_replay.py",
     "adapters/mcp/hepta_mcp_server.py", "scripts/hepta_oms_report.py",
-    "scripts/hepta_oms_archive.py", "scripts/hepta_oms_checkpoint.py", "scripts/oms_archive_codec.py",
+    "scripts/hepta_ib_runtime_report.py", "scripts/hepta_oms_archive.py",
+    "scripts/hepta_oms_checkpoint.py", "scripts/oms_archive_codec.py",
     "scripts/hepta_telemetry_collect.py",
 )
 
@@ -117,9 +118,10 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertFalse((tree / "lib/systemd/system/hepta-execution-ib-paper.service").exists())
             self.assertFalse((tree / "lib/systemd/system/hepta-broker-egress-policy.service").exists())
 
-    def test_collector_and_oms_generation_helper_are_executable_but_observer_unit_remains_inert(self):
+    def test_collectors_and_oms_generation_helper_are_executable_but_observer_unit_remains_inert(self):
         with installed_fixture() as tree:
             self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_telemetry_collect.py", os.X_OK))
+            self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_ib_runtime_report.py", os.X_OK))
             self.assertTrue(os.access(tree / "libexec/heptatrader/hepta_oms_checkpoint.py", os.X_OK))
             self.assertTrue((tree / "share/heptatrader/examples/systemd/monitoring/hepta-telemetry@.service.example").is_file())
             self.assertFalse((tree / "lib/systemd/system/hepta-telemetry@.service").exists())
