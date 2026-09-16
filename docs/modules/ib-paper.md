@@ -2,8 +2,8 @@
 
 Status: QUALIFICATION_REQUIRED  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ib`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/check_qualification_trust_boundary.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-broker-network-policy-v1.json`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `scripts/verify_canonical_ib_paper_profile.py`, `scripts/run_ib_paper_campaign.py`
-Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`, `tests/python/test_exported_source_configure.py`
+Implementation: `HeptaTrade/adapter_ib`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/check_qualification_trust_boundary.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-broker-network-policy-v1.json`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `scripts/verify_canonical_ib_paper_profile.py`, `scripts/run_ib_paper_campaign.py`, `scripts/hepta_ib_runtime_report.py`
+Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`, `tests/python/test_exported_source_configure.py`, `tests/python/test_ib_runtime_observation.py`
 
 ## Scope
 
@@ -98,7 +98,9 @@ Missing SDK, invalid or conflicting profile mode, unsafe credential, changed con
 
 ## Observability
 
-Track connection epoch, next-valid-order-ID state, subscription IDs, exact contract identity, quote age, callback lag, active/terminal correlations, execution IDs, account/position refresh completeness, risk reason codes, send attempts, uncertain commands, reconnect duration, kill-switch state, logical/runtime/runner identity, effective profile digest, credential version, active-order limit, and quote-contract count.
+The IB daemon now emits `heptatrader.ib-runtime-observation.v1` beside the existing OMS observation on the same bounded cadence. `ib_runtime_observation.h` captures one adapter-lock recovery-audit view instead of joining independently sampled state: connection/event-stream state; active and terminal snapshot generations/completeness/counts; account, position, FX and aggregate risk generations/completeness; gross absolute position; exposure-generation absorption; post-fill reconciliation; recovery barrier state; terminal transport/drain state; and callback-in-flight count. The observation carries no account, order, instrument or command identifiers and has `authorization_effect=NONE`, `paper_authorized=false`, and `live_authorized=false`.
+
+The installed `hepta_ib_runtime_report.py` validates the fixed schema and exports fixed-cardinality Prometheus gauges without reason strings as labels. It explicitly exports the presence of callback-lag, callback-conflict and network-policy metric families. Those three producers are still absent and therefore appear as presence `0`, not fabricated numerical zero. Actual target-host collection/notification is also separate external evidence. `RUNTIME-TELEMETRY-003` remains open until those missing families and Broker reconciliation duration are implemented and collected on the target host.
 
 No metric, receipt, issue label, or CI status may represent source-only success as PAPER authorization.
 
@@ -125,32 +127,14 @@ IB PAPER is optional and disabled by default. Its real Broker campaign is an act
 
 ## Campaign evidence implementation
 
-The attempt controller, separated private HOME, failure retention and verified
-publication contract are specified in
-[`ib-paper-harness-contract.md`](../technical/ib-paper-harness-contract.md).
-The stable shell entry delegates to `scripts/run_ib_paper_campaign.py`;
-publication remains part of the existing result verifier. Source-only
-subprocess regressions do not make an IB account qualified or authorized.
+The attempt controller, separated private HOME, failure retention and verified publication contract are specified in [`ib-paper-harness-contract.md`](../technical/ib-paper-harness-contract.md). The stable shell entry delegates to `scripts/run_ib_paper_campaign.py`; publication remains part of the existing result verifier. Source-only subprocess regressions do not make an IB account qualified or authorized.
 
-The no-secret builder exports the already-verified candidate commit with
-`git archive`. Because that immutable source tree intentionally contains no
-`.git` metadata, the builder passes the exact admitted SHA as
-`HEPTA_DOCUMENTATION_SOURCE_SHA` during CMake configuration. The broker-disabled
-`test_exported_source_configure.py` exercises the same top-level configure from
-a real Git archive and proves installed documentation generation does not depend
-on an accidental repository worktree.
+The no-secret builder exports the already-verified candidate commit with `git archive`. Because that immutable source tree intentionally contains no `.git` metadata, the builder passes the exact admitted SHA as `HEPTA_DOCUMENTATION_SOURCE_SHA` during CMake configuration. The broker-disabled `test_exported_source_configure.py` exercises the same top-level configure from a real Git archive and proves installed documentation generation does not depend on an accidental repository worktree.
 
 ## Cancellation result boundary
 
-The adapter returns [typed cancellation results](../technical/venue-cancellation-contract.md)
-under its API mutex. Post-send exceptions remain uncertain. A deferred attempt
-is removed before external invocation so repeated acknowledgements cannot resend
-an exception-interrupted cancellation. This source change does not grant PAPER authority.
+The adapter returns [typed cancellation results](../technical/venue-cancellation-contract.md) under its API mutex. Post-send exceptions remain uncertain. A deferred attempt is removed before external invocation so repeated acknowledgements cannot resend an exception-interrupted cancellation. This source change does not grant PAPER authority.
 
 ## Authoritative-flatten result boundary
 
-[Typed flatten results](../technical/venue-flatten-contract.md) retain the
-existing position/quote/kill-switch checks while removing the unlocked mutable
-error read. SDK-entry false returns and exceptions remain uncertain; allocation
-failure in post-send duplicate-signature construction no longer silently reports
-success. Synthetic adapter regressions are not real SDK/Broker qualification.
+[Typed flatten results](../technical/venue-flatten-contract.md) retain the existing position/quote/kill-switch checks while removing the unlocked mutable error read. SDK-entry false returns and exceptions remain uncertain; allocation failure in post-send duplicate-signature construction no longer silently reports success. Synthetic adapter regressions are not real SDK/Broker qualification.
