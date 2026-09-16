@@ -24,10 +24,6 @@ class DocumentationControlPlaneTests(unittest.TestCase):
         (root / "impl").mkdir()
         (root / "tests").mkdir()
         (root / ".github/workflows").mkdir(parents=True)
-        (root / "README.md").write_text(
-            "# Fixture\n\n" + "documented repository " * 30,
-            encoding="utf-8",
-        )
         (root / "impl/component.txt").write_text("implementation\n", encoding="utf-8")
         (root / "tests/component.txt").write_text("test\n", encoding="utf-8")
         for workflow in documentation.REQUIRED_WORKFLOWS:
@@ -98,6 +94,16 @@ class DocumentationControlPlaneTests(unittest.TestCase):
                 {item["id"]: item for item in catalog["modules"]}) + "\n",
             encoding="utf-8")
         return root
+
+    def test_root_readme_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            (root / "README.md").write_text("# Reintroduced homepage\n", encoding="utf-8")
+            errors = documentation.validate(root)
+            self.assertTrue(
+                any("homepage entry point must remain absent" in item for item in errors),
+                errors,
+            )
 
     def test_missing_implementation_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
