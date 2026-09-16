@@ -30,6 +30,10 @@ jobs:
           python3 scripts/.full_gap_patch_fix.py > materializer.log 2>&1
           code=$?
           if [ "$code" -eq 0 ]; then
+            python3 scripts/.full_gap_native_testfix.py >> materializer.log 2>&1
+            code=$?
+          fi
+          if [ "$code" -eq 0 ]; then
             python3 scripts/.full_gap_patch.py >> materializer.log 2>&1
             code=$?
           fi
@@ -83,7 +87,7 @@ jobs:
         run: |
           set -euo pipefail
           rm .github/workflows/full-gap-closure-materialize.yml
-          rm scripts/.full_gap_patch.py scripts/.full_gap_patch_fix.py
+          rm scripts/.full_gap_patch.py scripts/.full_gap_patch_fix.py scripts/.full_gap_native_testfix.py
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
