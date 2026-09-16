@@ -22,19 +22,23 @@
     {
       "id": "OMS-LIFECYCLE-002",
       "domain": "REPOSITORY",
-      "state": "OPEN",
-      "summary": "Runtime activation of checkpoint/tail recovery and disk-backed permanent command lookup remains unfinished beyond the bounded decoded-history startup path.",
+      "state": "CLOSED",
+      "summary": "Native generation checkpoint/tail recovery and disk-backed permanent command lookup are implemented with lineage-sealed active tails and explicit downgrade export.",
       "evidence": [
+        "docs/modules/oms-journal.md",
         "docs/technical/oms-recovery-capacity.md",
         "docs/technical/persistence-support-window.md",
-        "docs/technical/oms-archive-lifecycle.md",
+        "HeptaTrade/oms_generation_store.h",
+        "HeptaTrade/execution/execution_generation_v2_support.inc",
         "scripts/hepta_oms_checkpoint.py",
+        "scripts/hepta_oms_lifecycle.py",
+        "tests/oms_recovery_growth_probe.h",
         "tests/python/test_oms_checkpoint.py",
-        "HeptaTrade/execution/new_entry_capacity.h"
+        "tests/python/test_oms_lifecycle_rotation.py"
       ],
       "issue": 89,
       "blocking_releases": [],
-      "disposition": "OPEN. The stopped-state generation producer now writes byte-identical decoded history, a complete full-key/request-hash command index, an unresolved/hot checkpoint, parent lineage, digest manifest and atomically durable CURRENT pointer. Tests cover ancient-ID duplicate/conflict lookup, crash before pointer publication, corrupt-current fail-closed behavior and source hash conflicts. This is format and maintenance groundwork only: current C++ startup still replays the bounded complete journal and retains the historical command projection in memory. Lossless gzip and the 80-percent admission pause also do not bound lifetime history or reserve all future exit/callback evidence. Runtime checkpoint+tail consumption, disk lookup on command-status/admission, crash points across that runtime switch and explicit downgrade/export remain required before closure."
+      "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup; send-attempt history is merged across the cut and index corruption fails closed. V2 stopped-state maintenance fsyncs immutable delta generations, atomically rotates the active path to a non-JSON lineage sentinel, binds parent manifests and current pointers by SHA-256, and preserves V1 reading for upgrade. Tests cover repeated generations, bounded active-tail growth, publication crash boundaries, ancient same-ID duplicate/conflict, native restart without a second venue send, send-attempt continuity, current/parent/sentinel corruption rejection, V1-to-V2 upgrade and create-only strict legacy JSONL export for downgrade. No command identity is expired, no journal history is deleted, and PAPER/LIVE authorization remains false."
     },
     {
       "id": "OWNER-RULESET-002",
