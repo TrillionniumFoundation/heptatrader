@@ -118,6 +118,22 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
             oldCommand.context.account, oldCommand.context.executionDomain,
             0, attempts);
         assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
+
+        // A monotonically increasing cutoff may prune the immutable-generation
+        // suffix cache, but a later backwards cutoff must rescan and recover the
+        // exact older sealed attempt instead of silently resetting the rate
+        // budget. This is the correctness boundary that permits the normal
+        // forward-moving path to avoid an O(permanent-history) scan per call.
+        const std::int64_t futureCutoff =
+            static_cast<std::int64_t>(OmsJournal::NowEpochMs() + 60000);
+        recovered.GetPlaceSendAttemptTimes(
+            oldCommand.context.account, oldCommand.context.executionDomain,
+            futureCutoff, attempts);
+        assert(attempts.empty());
+        recovered.GetPlaceSendAttemptTimes(
+            oldCommand.context.account, oldCommand.context.executionDomain,
+            0, attempts);
+        assert(attempts.size() >= 2);
     }
     assert(std::remove(path.c_str()) == 0);
     RemoveGenerationFixture(store);
