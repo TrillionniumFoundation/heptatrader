@@ -54,28 +54,34 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
     const std::string lifecycle =
         std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_lifecycle.py";
     const auto expiry = OmsJournal::NowEpochMs() + 86400000;
+    const auto bindPaperContext = [expiry](IbPlaceOrderCommand& command) {
+        command.context.executionDomain = "IB-PAPER:EUR.USD";
+        command.context.decisionLeaseFencingToken = 7;
+        command.context.decisionLeaseGeneration = 3;
+        command.expiresAtMs = expiry;
+    };
     auto oldCommand = MakePlace("generation-old-command");
-    oldCommand.context.executionDomain = "paper-generation-domain";
-    oldCommand.expiresAtMs = expiry;
+    bindPaperContext(oldCommand);
     auto foreignCommand = MakePlace("generation-foreign-session");
     foreignCommand.context.sessionId += "-foreign";
-    foreignCommand.context.executionDomain = oldCommand.context.executionDomain;
-    foreignCommand.expiresAtMs = expiry;
+    bindPaperContext(foreignCommand);
     int sends = 0;
     auto callbacks = CancelFixtureCallbacks();
     callbacks.placement = VenuePlacement::Immediate(
         [&](const PlaceOrderCommand&, const std::string&) {
             return VenuePlaceResult::Submitted(7100 + ++sends);
         });
+    callbacks.validateDecisionLease = [](const AgentExecutionContext&,
+        const std::string&, std::string*) { return true; };
     {
         OmsJournal journal;
         assert(journal.Init(path));
         ExecutionCoordinator coordinator(journal, callbacks);
-        const auto result = coordinator.PlaceOrder(oldCommand);
+        const auto result = coordinator.PlaceIbOrder(oldCommand);
         assert(result.status == ExecutionCommandStatus::Accepted);
         std::string reason;
         assert(coordinator.RecordOrderTerminalDurably(result.orderId, &reason));
-        const auto foreign = coordinator.PlaceOrder(foreignCommand);
+        const auto foreign = coordinator.PlaceIbOrder(foreignCommand);
         assert(foreign.status == ExecutionCommandStatus::Accepted);
         assert(coordinator.RecordOrderTerminalDurably(foreign.orderId, &reason));
         assert(coordinator.RuntimeObservation().orderOwners == 0);
@@ -109,16 +115,15 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
             oldCommand.context.agentId, oldCommand.context.sessionId,
             oldCommand.context.toolCallId, status));
         assert(status.status == ExecutionCommandStatus::Accepted);
-        assert(recovered.PlaceOrder(oldCommand).status == ExecutionCommandStatus::Duplicate);
+        assert(recovered.PlaceIbOrder(oldCommand).status == ExecutionCommandStatus::Duplicate);
         auto conflict = oldCommand;
         conflict.order.totalQuantity += 1.0;
-        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
+        assert(recovered.PlaceIbOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
         assert(sends == 2); // disk lookup never calls the venue
 
         auto newCommand = MakePlace("generation-new-command");
-        newCommand.context.executionDomain = oldCommand.context.executionDomain;
-        newCommand.expiresAtMs = expiry;
-        const auto next = recovered.PlaceOrder(newCommand);
+        bindPaperContext(newCommand);
+        const auto next = recovered.PlaceIbOrder(newCommand);
         assert(next.status == ExecutionCommandStatus::Accepted);
         assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN
         assert(recovered.RecordOrderTerminalDurably(next.orderId, &reason));
