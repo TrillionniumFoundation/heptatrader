@@ -45,27 +45,6 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
-      # Temporary isolation for PR #88. Remove these individual executions once
-      # the failing acceptance regression is identified; the canonical Python
-      # ownership remains scripts/run_python_tests.py and acceptance still reruns it.
-      - name: Diagnose exported-source configure regression
-        run: python3 tests/python/test_exported_source_configure.py
-
-      - name: Diagnose OMS generation regression
-        run: python3 tests/python/test_oms_checkpoint.py
-
-      - name: Diagnose IB runtime observation regression
-        run: python3 tests/python/test_ib_runtime_observation.py
-
-      - name: Diagnose IB telemetry collection regression
-        run: python3 tests/python/test_ib_telemetry_collection.py
-
-      - name: Diagnose existing telemetry collection regression
-        run: python3 tests/python/test_telemetry_collection.py
-
-      - name: Diagnose install behavior regression
-        run: python3 tests/python/test_cmake_install_behavior.py
-
       - name: Accept the exact core artifact through installed processes and systemd
         id: accept-core-artifact
         env:
