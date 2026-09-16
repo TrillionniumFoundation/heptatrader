@@ -15,7 +15,7 @@
         "docs/technical/release-simulator-smoke.md",
         "docs/technical/installed-process-acceptance.md"
       ],
-      "issue": null,
+      "issue": 74,
       "blocking_releases": [],
       "disposition": "Source-level installed-process and distinct-source-artifact rollback is covered by the current installed-process contract and the historical RELEASE-PAIR-001 closure in the fixed pre-cleanup register linked by docs/GAP-REGISTER.md. Actual target-host systemd, identities, network policy and deployment-specific prior-schema approval remain external evidence; no live deployment was attempted."
     },
@@ -30,7 +30,7 @@
         "docs/technical/oms-archive-lifecycle.md",
         "HeptaTrade/execution/new_entry_capacity.h"
       ],
-      "issue": null,
+      "issue": 89,
       "blocking_releases": [],
       "disposition": "OPEN. Lossless gzip, pre-intent refusal cleanup and the 80-percent admission pause do not bound lifetime history or reserve all future exit/callback evidence. Supported indefinite unattended operation is not claimed. The staged checkpoint/index design and required crash/rollback evidence live in the persistence support contract; no new persistent format is activated."
     },
@@ -43,7 +43,7 @@
         "docs/technical/owner-ruleset-transition.md",
         "docs/adr/0002-owner-operated-repository.md"
       ],
-      "issue": null,
+      "issue": 90,
       "blocking_releases": [],
       "disposition": "OPEN. The read-only transition planner preserves the actual required checks, deletion and force-push protection. Server administration and readback are separate actions; source cleanup does not assert that the active server rule changed."
     },
@@ -58,7 +58,7 @@
         "tests/python/test_execution_latency_boundaries.py",
         "tests/python/test_execution_reason_metrics.py"
       ],
-      "issue": null,
+      "issue": 91,
       "blocking_releases": [],
       "disposition": "Split from the observability portion of OMS-LIFECYCLE-002 without closing or waiving it. Coordinator lock wait and entry-to-exit latency are now additive measured scopes, not full Broker or wire latency. The missing metric families still require bounded identifiers, presence/freshness and behavior tests. Coordinator local outcomes now have 41 fixed reason bins with unknown-to-OTHER mapping, explicit producer presence, saturation and cross-language accounting checks. This is not complete profile/preview risk, snapshot, callback or Broker reconciliation telemetry."
     },
@@ -72,7 +72,7 @@
         "docs/operations/rollback-backup.md",
         "docs/OBSERVABILITY-METRICS.md"
       ],
-      "issue": null,
+      "issue": 91,
       "blocking_releases": [],
       "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. No host, credential, network policy or trading authority was changed."
     }
