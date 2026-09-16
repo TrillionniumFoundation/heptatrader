@@ -63,10 +63,14 @@ def gateway_sample(now: int) -> dict:
     value = {
         "schema": metrics.GATEWAY_SCHEMA, "authorization_effect": "NONE",
         "service_epoch": "gateway-fixture", "observed_at_ms": now,
-        "monotonic_ms": 1000, "max_pending_connections": 128,
+        "monotonic_ms": 1000,
         "metrics_saturated": False, "results": [0] * 7,
     }
     value.update({key: 0 for key in metrics.GATEWAY_COUNTERS + metrics.GATEWAY_GAUGES})
+    # The queue bound is a required non-zero gauge. Set it after populating the
+    # generic zero-valued fixture fields so the GATEWAY_GAUGES inventory cannot
+    # accidentally overwrite the deliberate bound.
+    value["max_pending_connections"] = 128
     for name in metrics.GATEWAY_LATENCIES:
         value[name] = {"samples": 0, "total_ns": 0, "max_ns": 0,
                        "last_ns": 0, "saturated": False}
