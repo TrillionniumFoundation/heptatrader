@@ -49,16 +49,19 @@ enum class OmsGenerationLookupStatus
     Error
 };
 
-// Read-only, fail-closed consumer of a stopped-state generation produced by
-// scripts/hepta_oms_checkpoint.py.  The active JSONL journal remains the writer
-// authority.  A selected generation is accepted only when CURRENT.runtime
-// binds the exact CURRENT bytes, every native sidecar digest is correct, and
-// the immutable segment is an exact byte prefix of the active journal.
+// Read-only, fail-closed consumer of stopped-state OMS generations.
 //
-// Historical command identity stays on disk.  Only hot recovery events and the
-// active journal suffix are projected into the coordinator.  Index files stay
-// descriptor-pinned after startup; replacement, metadata drift or malformed
-// records are errors, never "not found".
+// V1 generations bind an immutable full-journal prefix and replay its suffix.
+// V2 generations keep immutable history in a parent-linked segment chain and
+// bind the active journal to a non-JSON lineage sentinel. An older full-ledger
+// reader therefore rejects a rotated tail instead of mistaking it for a clean
+// complete ledger. scripts/hepta_oms_lifecycle.py export reconstructs an
+// ordinary complete JSONL ledger for explicit downgrade.
+//
+// Historical command identity stays on disk. Only hot recovery events and the
+// active tail are projected into the coordinator. Index files stay descriptor-
+// pinned after startup; replacement, metadata drift or malformed records are
+// errors, never "not found".
 class OmsGenerationStore
 {
 public:
@@ -81,10 +84,6 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
-    // Recomputes the bounded restart working set after Recover has validated
-    // the selected generation and active tail. Bytes include the immutable hot
-    // replay sidecar plus bytes after the generation cut; records include both
-    // event sets. This is recovery capacity, not physical history size.
     bool RecoveryCapacity(std::uint64_t& bytes,
                           std::uint64_t& records,
                           std::string& reason) const;
@@ -116,11 +115,26 @@ private:
     bool ValidatePinnedIndex(int fd, const std::string& name,
                              const struct stat& expected) const;
 
+    // Existing V1 implementation is retained under private names by the
+    // translation-unit compatibility shim. V2 wrappers call it unchanged for
+    // old generations, so the persistent V1 reader is not forked or weakened.
+    bool PrepareGenerationV1(std::string& reason);
+    bool RecoverGenerationV1(
+        std::size_t maxTailBytes,
+        std::size_t maxTailRecords,
+        std::size_t maxRecordBytes,
+        const std::function<void(const OmsJournalEvent&)>& onEvent,
+        std::string& reason);
+    bool RecoveryCapacityGenerationV1(std::uint64_t& bytes,
+                                      std::uint64_t& records,
+                                      std::string& reason) const;
+
 private:
     std::string m_journalPath;
     std::string m_storePath;
     std::string m_generation;
     bool m_active = false;
+    bool m_segmentedTail = false;
     int m_storeFd = -1;
     int m_generationFd = -1;
     int m_commandIndexFd = -1;
@@ -130,6 +144,7 @@ private:
     std::uint64_t m_commandRecords = 0;
     std::uint64_t m_sendAttemptRecords = 0;
     std::uint64_t m_hotReplayRecords = 0;
+    // V1: immutable full-journal prefix. V2: lineage sentinel prefix.
     std::uint64_t m_journalPrefixBytes = 0;
     std::string m_journalPrefixSha256;
 };
