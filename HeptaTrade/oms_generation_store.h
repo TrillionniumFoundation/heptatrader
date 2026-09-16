@@ -144,6 +144,16 @@ private:
     std::uint64_t m_commandRecords = 0;
     std::uint64_t m_sendAttemptRecords = 0;
     std::uint64_t m_hotReplayRecords = 0;
+    // The cumulative send-attempt index is immutable for one selected
+    // generation.  Cache only the already-filtered suffix for one account/domain
+    // and monotonically increasing cutoff.  A backwards clock or subject change
+    // deliberately falls back to a complete index scan, preserving the exact
+    // historical semantics without charging every ordinary admission O(history).
+    mutable bool m_sendQueryCacheValid = false;
+    mutable std::string m_sendQueryAccount;
+    mutable std::string m_sendQueryDomain;
+    mutable std::int64_t m_sendQueryCutoffMs = 0;
+    mutable std::vector<OmsGenerationSendAttempt> m_sendQueryAttempts;
     // V1: immutable full-journal prefix. V2: lineage sentinel prefix.
     std::uint64_t m_journalPrefixBytes = 0;
     std::string m_journalPrefixSha256;
