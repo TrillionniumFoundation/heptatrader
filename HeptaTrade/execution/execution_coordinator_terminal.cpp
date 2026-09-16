@@ -24,7 +24,8 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
 }
 
 // Generation/index implementation is intentionally compiled in this already
-// owned Execution translation unit. The .inc file is not a second target or a
-// hidden executable path; it extends the same hepta_execution_core binary and
-// therefore remains covered by the existing CMake ownership inventory.
+// owned Execution translation unit. The .inc files are not second targets or
+// hidden executable paths; they extend the same hepta_execution_core binary and
+// therefore remain covered by the existing CMake ownership inventory.
 #include "execution_generation_support.inc"
+#include "execution_generation_capacity_support.inc"
