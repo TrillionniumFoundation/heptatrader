@@ -11,7 +11,7 @@ jobs:
   materialize:
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - name: Checkout remediation head
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -24,8 +24,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
 
-      - name: Apply batch 2
-        run: python3 scripts/apply_priority_remediation_batch2.py
+      - name: Apply batch 3
+        run: python3 scripts/apply_priority_remediation_batch3.py
 
       - name: Build and run canonical native core tests
         env:
@@ -33,19 +33,30 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
-      - name: Commit verified materialization
+      - name: Validate source and documentation contracts
+        run: |
+          python3 scripts/check_documentation.py
+          python3 scripts/check_component_coverage.py
+          python3 scripts/run_python_tests.py --lane source
+
+      - name: Commit verified cleanup
         run: |
           set -euo pipefail
           git diff --check
           test -n "$(git status --porcelain)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add HeptaTrade/oms_generation_store.h \
-            HeptaTrade/execution/execution_generation_support.inc \
-            HeptaTrade/execution/paper_terminal_mutation_manifest.h \
-            HeptaTrade/execution/paper_terminal_mutation_manifest.cpp \
-            HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp \
-            tests/execution_coordinator_tests.cpp \
-            tests/terminal_manifest_capacity_cases.h
-          git commit -m "refactor: compact permanent terminal history"
+          git add HeptaTrade/CMakeLists.txt \
+            HeptaTrade/execution/execution_coordinator_terminal.cpp \
+            HeptaTrade/execution/execution_generation_support.cpp \
+            docs/build-targets.json docs/gap-register.json \
+            docs/modules/execution-service.md docs/modules/oms-journal.md \
+            docs/modules/xt-adapter.md \
+            docs/technical/oms-recovery-capacity.md \
+            docs/technical/runtime-cost-observations.md \
+            docs/technical/xtqmt-adapter-contract.md \
+            docs/technical/reconciliation-engine.md \
+            tests/python/test_recovery_projection.py
+          git add -u HeptaTrade/execution
+          git commit -m "refactor: remove source formalism and synchronize contracts"
           git push origin HEAD:remediation/full-priority-cleanup-20260916
