@@ -114,20 +114,33 @@ if s.count(needle) != 1:
     raise SystemExit(f"tail terminalization anchor count={s.count(needle)}")
 s = s.replace(needle, replacement, 1)
 
-needle = '''        PaperTerminalMutationUniverse universe;
-        assert(recovered.EnterPaperTerminalFenceAndProject(
-            binding, universe, reason));
-        assert(universe.compactSummary);
+needle = '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
 '''
-replacement = '''        PaperTerminalMutationUniverse universe;
+replacement = '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
+
+        PaperTerminalFenceBinding binding;
+        binding.owner = oldCommand.context;
+        binding.finalizationId = "generation-owner-scope-finalization";
+        binding.preliminaryReceiptSha256 =
+            "sha256:" + std::string(64, '1');
+        binding.recoveryIngressFence = 1;
+        binding.serviceEpoch = "generation-owner-scope-epoch";
+        binding.serviceFencingGeneration = 1;
+        binding.serviceProcessId = 1;
+        binding.serviceProcessStartTicks = 1;
+        binding.brokerConnectionEpoch = 1;
+        binding.brokerSocketIdentitySha256 =
+            "sha256:" + std::string(64, '2');
+        PaperTerminalMutationUniverse universe;
         const bool terminalProjected = recovered.EnterPaperTerminalFenceAndProject(
             binding, universe, reason);
         if (!terminalProjected)
             std::cerr << "generation terminal owner scope failed: " << reason << std::endl;
         assert(terminalProjected);
         assert(universe.compactSummary);
+        assert(universe.commandCount == 2); // sealed owner + current owner tail only
 '''
 if s.count(needle) != 1:
-    raise SystemExit(f"terminal projection assertion count={s.count(needle)}")
+    raise SystemExit(f"terminal projection insertion count={s.count(needle)}")
 s = s.replace(needle, replacement, 1)
 p.write_text(s)
