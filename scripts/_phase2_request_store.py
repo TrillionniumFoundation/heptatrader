@@ -87,35 +87,34 @@ start = text.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore
 end = text.index("bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocked(", start)
 segment = text[start:end]
 segment = segment.replace("Base::erase(oldest)", "m_records.erase(oldest)")
-segment = segment.replace("RequestRecordStore::Base::iterator\nExecutionCoordinator::RequestRecordStore::LoadHistorical",
-                          "RequestRecordStore::iterator\nExecutionCoordinator::RequestRecordStore::LoadHistorical")
+segment = segment.replace("RequestRecordStore::Base::iterator\nExecutionCoordinator::RequestRecordStore::LoadHistorical".replace("\\n", "\n"),
+                          "RequestRecordStore::iterator\nExecutionCoordinator::RequestRecordStore::LoadHistorical".replace("\\n", "\n"))
 segment = segment.replace("Base::iterator existing = Base::find(key);", "iterator existing = m_records.find(key);")
 segment = segment.replace("if (existing != Base::end()) return existing;", "if (existing != m_records.end()) return existing;")
 segment = segment.replace("return Base::end();", "return m_records.end();")
-segment = segment.replace("const std::pair<Base::iterator, bool> inserted =\n        Base::insert(std::make_pair(key, record));",
-                          "const std::pair<iterator, bool> inserted =\n        m_records.insert(std::make_pair(key, record));")
-segment = segment.replace("RequestRecordStore::Base::iterator\nExecutionCoordinator::RequestRecordStore::find",
-                          "RequestRecordStore::iterator\nExecutionCoordinator::RequestRecordStore::Find")
-segment = segment.replace("RequestRecordStore::Base::const_iterator\nExecutionCoordinator::RequestRecordStore::find",
-                          "RequestRecordStore::const_iterator\nExecutionCoordinator::RequestRecordStore::Find")
+segment = segment.replace("const std::pair<Base::iterator, bool> inserted =\n        Base::insert(std::make_pair(key, record));".replace("\\n", "\n"),
+                          "const std::pair<iterator, bool> inserted =\n        m_records.insert(std::make_pair(key, record));".replace("\\n", "\n"))
+segment = segment.replace("RequestRecordStore::Base::iterator\nExecutionCoordinator::RequestRecordStore::find".replace("\\n", "\n"),
+                          "RequestRecordStore::iterator\nExecutionCoordinator::RequestRecordStore::Find".replace("\\n", "\n"))
+segment = segment.replace("RequestRecordStore::Base::const_iterator\nExecutionCoordinator::RequestRecordStore::find".replace("\\n", "\n"),
+                          "RequestRecordStore::const_iterator\nExecutionCoordinator::RequestRecordStore::Find".replace("\\n", "\n"))
 segment = segment.replace("Base::const_iterator existing = Base::find(key);", "const_iterator existing = m_records.find(key);")
-segment = segment.replace("RequestRecordStore* self = const_cast<RequestRecordStore*>(this);\n    const Base::iterator loaded = self->LoadHistorical(key);\n    return loaded == self->Base::end() ? Base::end() : loaded;",
-                          "RequestRecordStore* self = const_cast<RequestRecordStore*>(this);\n    const iterator loaded = self->LoadHistorical(key);\n    return loaded == self->m_records.end() ? m_records.end() : loaded;")
+segment = segment.replace("RequestRecordStore* self = const_cast<RequestRecordStore*>(this);\n    const Base::iterator loaded = self->LoadHistorical(key);\n    return loaded == self->Base::end() ? Base::end() : loaded;".replace("\\n", "\n"),
+                          "RequestRecordStore* self = const_cast<RequestRecordStore*>(this);\n    const iterator loaded = self->LoadHistorical(key);\n    return loaded == self->m_records.end() ? m_records.end() : loaded;".replace("\\n", "\n"))
 segment = segment.replace("ExecutionCoordinator::RequestRecordStore::operator[]", "ExecutionCoordinator::RequestRecordStore::GetMutable")
 segment = segment.replace("Base::iterator existing = find(key);", "iterator existing = Find(key);")
 segment = segment.replace("if (existing != Base::end())", "if (existing != m_records.end())")
 segment = segment.replace("return Base::operator[](key);", "return m_records[key];")
 segment = segment.replace("ExecutionCoordinator::RequestRecordStore::clear()", "ExecutionCoordinator::RequestRecordStore::Clear()")
 segment = segment.replace("Base::clear();", "m_records.clear();")
-segment = segment.replace("return Base::size() >= m_historicalKeys.size() ?\n        Base::size() - m_historicalKeys.size() : 0U;",
-                          "return m_records.size() >= m_historicalKeys.size() ?\n        m_records.size() - m_historicalKeys.size() : 0U;")
-if "Base::" in segment or "::find(" in segment or "operator[]" in segment:
-    raise SystemExit("request store implementation still exposes inherited-map behavior")
+segment = segment.replace("return Base::size() >= m_historicalKeys.size() ?\n        Base::size() - m_historicalKeys.size() : 0U;".replace("\\n", "\n"),
+                          "return m_records.size() >= m_historicalKeys.size() ?\n        m_records.size() - m_historicalKeys.size() : 0U;".replace("\\n", "\n"))
+for forbidden in ("Base::find", "Base::end", "Base::insert", "Base::erase", "Base::operator[]", "Base::clear", "Base::size", "RequestRecordStore::find", "RequestRecordStore::operator[]"):
+    if forbidden in segment:
+        raise SystemExit(f"request store implementation still exposes inherited-map behavior: {forbidden}")
 text = text[:start] + segment + text[end:]
 impl.write_text(text)
 
-# Callers now state whether they are performing a potentially disk-backed
-# identity lookup, mutating a record, or iterating the hot working set.
 paths = sorted(Path("HeptaTrade/execution").glob("*.cpp"))
 for path in paths:
     text = path.read_text()
@@ -136,7 +135,6 @@ for path in paths:
 if bad:
     raise SystemExit("implicit request-store use remains: " + ", ".join(bad))
 
-# Keep the developer contract explicit without creating another gate.
 doc = Path("docs/modules/execution-service.md")
 text = doc.read_text()
 needle = "Historical command lookup uses a binary search over the sorted command index."
