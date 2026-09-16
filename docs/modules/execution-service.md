@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/execution`, `HeptaTrade/agent`, `HeptaTrade/events`
-Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`
+Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/send_attempt_time_index_cases.h`, `tests/python/test_send_attempt_time_index.py`, `tests/venue_placement_cases.h`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`, `tests/pre_intent_refusal_cases.h`, `tests/python/test_execution_latency_boundaries.py`, `tests/cancel_uncertainty_cases.h`, `tests/oms_recovery_growth_probe.h`, `tests/python/test_venue_place_rejection.py`, `tests/flatten_result_cases.h`, `tests/python/test_execution_reason_metrics.py`
 
 ## Responsibilities
 

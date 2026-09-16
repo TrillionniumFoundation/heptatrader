@@ -72,7 +72,14 @@ producer and collection status.
 
 ## Test expectations
 
-Tests cover coherent publication, stale/invalid views, generation rollover, reconnect, out-of-order callbacks, duplicate/colliding correlations, refresh timeout, quote freshness, post-fill refresh, terminal freeze, and concurrent readers.
+The direct state tests cover coherent publication, stale and invalid views,
+generation rollover, time regression, atomic batches, known-empty results,
+duplicate position keys, quote completeness invalidation, refresh request
+coalescing, stale completion rejection, abort/deadline handling, and
+concurrent readers.  Reconnect admission, broker-order correlation conflicts,
+post-fill refresh, and terminal recovery freeze are integration responsibilities
+of the execution and IB PAPER tests; this module page does not claim that the
+two direct state test binaries prove those paths.
 
 ## Assembly and recovery reference
 

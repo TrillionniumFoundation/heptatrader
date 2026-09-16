@@ -3,7 +3,7 @@
 Status: CURRENT  
 Applies to: repository HEAD  
 Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`, `scripts/verify_oms_journal_replay.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`, `scripts/hepta_oms_report.py`, `HeptaTrade/oms_archive_codec.h`, `scripts/oms_archive_codec.py`, `scripts/hepta_oms_archive.py`
-Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`
+Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_oms_capacity.py`, `tests/oms_live_capacity_cases.h`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_oms_operational_report.py`, `tests/oms_queue_budget_cases.h`, `tests/oms_archive_cases.h`, `tests/python/test_oms_archive.py`, `tests/compat/oms_recover.cpp`, `tests/compat/oms_recover.h`
 
 ## Responsibilities
 

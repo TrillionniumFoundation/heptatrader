@@ -34,7 +34,7 @@ supplied rules independently evaluate collection and source timestamps.
 ## Requirements not yet delivered as a complete interface
 
 Complete per-reason execution lifecycle beyond coordinator call outcomes, full Broker reconciliation duration/SLOs, callback
-lag, all snapshot ages/generations, portfolio notional/PnL/drawdown, connection/
+ lag, callback conflict count, all snapshot ages/generations, portfolio notional/PnL/drawdown, connection/
 refresh duration and network-policy state still need individually specified
 names, types, units, cardinality bounds, collection points and behavior tests.
 Existing C++ fields do not automatically constitute exported metrics.

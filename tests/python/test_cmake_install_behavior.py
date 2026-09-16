@@ -25,8 +25,17 @@ HELPERS = (
     "scripts/hepta_telemetry_collect.py",
 )
 
+
+def validate_fixture_helpers(source_root: Path) -> None:
+    helpers = (*HELPERS, "scripts/hepta_preflight.py", "scripts/hepta_preflight_core.py")
+    missing = [helper for helper in helpers if not (source_root / helper).is_file()]
+    if missing:
+        raise AssertionError("Install fixture references missing production helpers: " + ", ".join(missing))
+
+
 @contextmanager
 def installed_fixture(*, readme: bool = False):
+    validate_fixture_helpers(ROOT)
     with tempfile.TemporaryDirectory(prefix="hepta-cmake-install-") as folder:
         root = Path(folder)
         source, build, stage = root / "source", root / "build", root / "stage"
@@ -74,6 +83,23 @@ include(cmake/HeptaInstall.cmake)
         yield stage / "usr"
 
 class CMakeInstallBehaviorTests(unittest.TestCase):
+    def test_fixture_helpers_are_existing_production_sources(self) -> None:
+        validate_fixture_helpers(ROOT)
+
+    def test_fixture_rejects_missing_production_helper(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder)
+            helpers = (*HELPERS, "scripts/hepta_preflight.py", "scripts/hepta_preflight_core.py")
+            for helper in helpers:
+                path = source / helper
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.touch()
+            validate_fixture_helpers(source)
+            missing = source / HELPERS[0]
+            missing.unlink()
+            with self.assertRaisesRegex(AssertionError, HELPERS[0]):
+                validate_fixture_helpers(source)
+
     def test_readme_optional_and_documentation_actually_installed(self) -> None:
         for present in (False, True):
             with self.subTest(readme=present), installed_fixture(readme=present) as tree:

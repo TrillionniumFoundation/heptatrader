@@ -3,7 +3,7 @@
 Status: LEGACY
 Applies to: explicit rejection of the old CMake include; no buildable runtime
 Implementation: `cmake/HeptaLegacy.cmake`
-Tests: `tests/python/test_legacy_runtime_boundary.py`, `tests/python/test_legacy_retirement.py`, `tests/venue_capability_tests.cpp`
+Tests: `tests/python/test_legacy_runtime_boundary.py`, `tests/venue_capability_tests.cpp`, `tests/python/test_legacy_retirement.py`
 
 ## Retired execution paths and assets
 
