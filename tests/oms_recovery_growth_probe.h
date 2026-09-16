@@ -55,9 +55,11 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_lifecycle.py";
     const auto expiry = OmsJournal::NowEpochMs() + 86400000;
     auto oldCommand = MakePlace("generation-old-command");
+    oldCommand.context.executionDomain = "paper-generation-domain";
     oldCommand.expiresAtMs = expiry;
     auto foreignCommand = MakePlace("generation-foreign-session");
     foreignCommand.context.sessionId += "-foreign";
+    foreignCommand.context.executionDomain = oldCommand.context.executionDomain;
     foreignCommand.expiresAtMs = expiry;
     int sends = 0;
     auto callbacks = CancelFixtureCallbacks();
@@ -114,6 +116,7 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         assert(sends == 2); // disk lookup never calls the venue
 
         auto newCommand = MakePlace("generation-new-command");
+        newCommand.context.executionDomain = oldCommand.context.executionDomain;
         newCommand.expiresAtMs = expiry;
         const auto next = recovered.PlaceOrder(newCommand);
         assert(next.status == ExecutionCommandStatus::Accepted);
