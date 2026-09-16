@@ -24,11 +24,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
 
-      - name: Apply batch 1
-        run: python3 scripts/apply_priority_remediation_batch1_fix.py
-
-      - name: Exercise lifecycle regression
-        run: python3 tests/python/test_oms_lifecycle_rotation.py
+      - name: Apply batch 2
+        run: python3 scripts/apply_priority_remediation_batch2.py
 
       - name: Build and run canonical native core tests
         env:
@@ -43,9 +40,12 @@ jobs:
           test -n "$(git status --porcelain)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .github/workflows/core-ci.yml HeptaTrade/oms_generation_store.h \
+          git add HeptaTrade/oms_generation_store.h \
             HeptaTrade/execution/execution_generation_support.inc \
-            HeptaTrade/execution/execution_generation_v2_support.inc \
-            scripts/hepta_oms_lifecycle.py tests/python/test_oms_lifecycle_rotation.py
-          git commit -m "perf: bound generation send-window lookups"
+            HeptaTrade/execution/paper_terminal_mutation_manifest.h \
+            HeptaTrade/execution/paper_terminal_mutation_manifest.cpp \
+            HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp \
+            tests/execution_coordinator_tests.cpp \
+            tests/terminal_manifest_capacity_cases.h
+          git commit -m "refactor: compact permanent terminal history"
           git push origin HEAD:remediation/full-priority-cleanup-20260916
