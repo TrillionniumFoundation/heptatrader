@@ -16,18 +16,26 @@ if s.count(needle) != 1:
     raise SystemExit(f"old-command subject anchor count={s.count(needle)}")
 s = s.replace(needle, replacement, 1)
 
-needle = '''    auto callbacks = CancelFixtureCallbacks();
+needle = '''    int sends = 0;
+    auto callbacks = CancelFixtureCallbacks();
     callbacks.placement = VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&, const std::string&) {
+            return VenuePlaceResult::Submitted(7100 + ++sends);
+        });
 '''
-replacement = '''    auto callbacks = CancelFixtureCallbacks();
+replacement = '''    int sends = 0;
+    auto callbacks = CancelFixtureCallbacks();
     callbacks.validateDecisionLease =
         [](const AgentExecutionContext&, const std::string&, std::string*) {
             return true;
         };
     callbacks.placement = VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&, const std::string&) {
+            return VenuePlaceResult::Submitted(7100 + ++sends);
+        });
 '''
 if s.count(needle) != 1:
-    raise SystemExit(f"decision lease fixture anchor count={s.count(needle)}")
+    raise SystemExit(f"decision lease generation fixture anchor count={s.count(needle)}")
 s = s.replace(needle, replacement, 1)
 
 needle = '''        foreignCommand.context.sessionId = "foreign-session";
