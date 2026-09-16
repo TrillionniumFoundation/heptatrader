@@ -908,6 +908,8 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
 }
 
 bool OmsGenerationStore::EnumerateMutationRecords(
+    const std::string& agentId,
+    const std::string& sessionId,
     const std::string& account,
     const std::string& executionDomain,
     std::vector<OmsGenerationMutationRecord>& records,
@@ -935,15 +937,18 @@ bool OmsGenerationStore::EnumerateMutationRecords(
             reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
             return false;
         }
-        std::string rowAccount, rowDomain;
-        if (!GenerationDecodeHex(fields[10], rowAccount) ||
+        std::string rowAgent, rowSession, rowAccount, rowDomain;
+        if (!GenerationDecodeHex(fields[0], rowAgent) ||
+            !GenerationDecodeHex(fields[1], rowSession) ||
+            !GenerationDecodeHex(fields[10], rowAccount) ||
             !GenerationDecodeHex(fields[11], rowDomain) ||
             (fields[12] != "0" && fields[12] != "1"))
         {
             reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
             return false;
         }
-        if (fields[12] == "1" && rowAccount == account &&
+        if (fields[12] == "1" && rowAgent == agentId &&
+            rowSession == sessionId && rowAccount == account &&
             rowDomain == executionDomain)
         {
             if (records.size() >= kMaximumTerminalMutationRecords)
@@ -952,9 +957,9 @@ bool OmsGenerationStore::EnumerateMutationRecords(
                 return false;
             }
             OmsGenerationMutationRecord record;
-            if (!GenerationDecodeHex(fields[0], record.agentId) ||
-                !GenerationDecodeHex(fields[1], record.sessionId) ||
-                !GenerationDecodeHex(fields[2], record.commandId) ||
+            record.agentId = rowAgent;
+            record.sessionId = rowSession;
+            if (!GenerationDecodeHex(fields[2], record.commandId) ||
                 !GenerationDecodeHex(fields[8], record.venueCorrelationId) ||
                 (fields[4] != "place" && fields[4] != "cancel" &&
                  fields[4] != "flatten"))
@@ -1175,6 +1180,7 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
     {
         std::vector<OmsGenerationMutationRecord> historical;
         if (!m_generationStore.EnumerateMutationRecords(
+                binding.owner.agentId, binding.owner.sessionId,
                 binding.owner.account, binding.owner.executionDomain,
                 historical, reason))
             return false;
@@ -1200,6 +1206,8 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
     {
         const RequestRecord& request = it->second;
         if (!request.durableMutationIntent ||
+            request.context.agentId != binding.owner.agentId ||
+            request.context.sessionId != binding.owner.sessionId ||
             request.context.account != binding.owner.account ||
             request.context.executionDomain != binding.owner.executionDomain)
             continue;
