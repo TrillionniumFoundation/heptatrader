@@ -25,7 +25,9 @@ jobs:
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
 
       - name: Apply deterministic closure patch
-        run: python3 scripts/.full_gap_patch.py
+        run: |
+          python3 scripts/.full_gap_patch_fix.py
+          python3 scripts/.full_gap_patch.py
 
       - name: Validate OMS lifecycle regressions
         run: python3 -m unittest tests.python.test_oms_lifecycle_rotation
@@ -50,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           rm .github/workflows/full-gap-closure-materialize.yml
-          rm scripts/.full_gap_patch.py
+          rm scripts/.full_gap_patch.py scripts/.full_gap_patch_fix.py
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
