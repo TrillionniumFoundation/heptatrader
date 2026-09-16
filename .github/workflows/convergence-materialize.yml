@@ -23,14 +23,14 @@ jobs:
         run: |
           python3 scripts/_convergence_materialize.py
           python3 scripts/_convergence_fixture_fix.py
-          python3 scripts/_convergence_diag_stage.py
+          python3 scripts/_convergence_index_fix.py
 
-      - name: Diagnose native HPM2 convergence
+      - name: Validate OMS convergence
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
-          python3 -m py_compile scripts/hepta_oms_lifecycle.py tests/python/test_oms_lifecycle_rotation.py
-          python3 -m unittest tests.python.test_oms_lifecycle_rotation
+          python3 -m py_compile scripts/hepta_oms_checkpoint.py scripts/hepta_oms_lifecycle.py tests/python/test_oms_checkpoint.py tests/python/test_oms_lifecycle_rotation.py
+          python3 -m unittest tests.python.test_oms_checkpoint tests.python.test_oms_lifecycle_rotation
           cmake -S . -B build/diag -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF -DHEPTA_BUILD_LEGACY_MONOLITH=OFF -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
           cmake --build build/diag --target hepta_execution_coordinator_tests --parallel 2
           ctest --test-dir build/diag --output-on-failure -R '^hepta_execution_coordinator_tests$'
@@ -38,7 +38,7 @@ jobs:
       - name: Commit validated materialized tree
         if: ${{ false }}
         run: |
-          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py scripts/_convergence_diag_stage.py
+          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py scripts/_convergence_index_fix.py scripts/_convergence_diag_stage.py
           git config user.name "HeptaTrader convergence materializer"
           git config user.email "noreply@github.com"
           git add -A
