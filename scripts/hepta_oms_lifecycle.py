@@ -149,9 +149,63 @@ def _runtime_row(line: bytes) -> tuple[tuple[str, str, str], dict[str, Any], lis
         }
     except (ValueError, OverflowError) as error:
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID") from error
-    if record["operation"] not in {"place", "cancel", "flatten"} or record["status"] not in {"accepted", "rejected", "uncertain"}:
+    mutation_operation = record["operation"] in {"place", "cancel", "flatten"}
+    mutation_status = record["status"] in {"accepted", "rejected", "uncertain"}
+    if record["durable_mutation_intent"] and not (mutation_operation and mutation_status):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID")
+    if record["operation"] and not mutation_operation:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID")
+    if record["status"] not in {"unknown", "accepted", "rejected", "uncertain"}:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID")
+    record["mutation_record"] = mutation_operation and mutation_status
     return (fields[0], fields[1], fields[2]), record, fields
+
+
+def _send_index_key(line: bytes) -> tuple[str, str, int, int, str, str, str]:
+    if len(line) > v1.MAX_INDEX_LINE:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+    try:
+        fields = line.rstrip(b"\n").decode("ascii").split("\t")
+    except UnicodeError as error:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+    if len(fields) != 7:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+    try:
+        timestamp = int(fields[2])
+        sequence = int(fields[6])
+        for index in (0, 1, 3, 4, 5):
+            v1._unhex(fields[index])
+    except (ValueError, OverflowError, v1.GenerationError) as error:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+    return (fields[0], fields[1], timestamp, sequence,
+            fields[3], fields[4], fields[5])
+
+
+def _validate_runtime_index_lines(lines: Iterable[bytes], expected_records: int) -> None:
+    count = 0
+    previous: tuple[str, str, str] | None = None
+    for line in lines:
+        key, _, _ = _runtime_row(line)
+        if previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
+        previous = key
+        count += 1
+    if count != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+
+
+def _validate_send_index_lines(lines: Iterable[bytes], expected_records: int,
+                               sorted_index: bool) -> None:
+    count = 0
+    previous: tuple[str, str, int, int, str, str, str] | None = None
+    for line in lines:
+        key = _send_index_key(line)
+        if sorted_index and previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+        previous = key
+        count += 1
+    if count != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
 
 
 def _iter_private_lines(path: Path) -> Iterator[bytes]:
@@ -272,10 +326,14 @@ def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
                 count += 1
                 updates_index += 1
             if updates_index < len(ordered_updates) and ordered_updates[updates_index][0] == key:
-                record = _merge_command_record(parent_record, ordered_updates[updates_index][1])
+                update = ordered_updates[updates_index][1]
+                record = (_merge_command_record(parent_record, update)
+                          if parent_record.get("mutation_record") else update)
                 encoded = v1._runtime_index_line(record)
                 updates_index += 1
             else:
+                if not parent_record.get("mutation_record"):
+                    continue
                 encoded = line
             v1._write_all(runtime_fd, encoded)
             v1._write_all(legacy_fd, b"\t".join(encoded.rstrip(b"\n").split(b"\t")[:10]) + b"\n")
@@ -655,32 +713,12 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     if hashlib.sha256(runtime_raw).hexdigest() != manifest.get("runtime_manifest_sha256"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
-    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
-    if len(runtime_lines) != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
-    previous = None
-    for line in runtime_lines:
-        key, _, _ = _runtime_row(line)
-        if previous is not None and key <= previous:
-            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
-        previous = key
-    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
-    if len(send_lines) != manifest.get("send_attempt_records"):
-        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
-    if sorted_send_index:
-        previous_send = None
-        for line in send_lines:
-            fields = line.rstrip(b"\n").decode("ascii").split("\t")
-            if len(fields) != 7:
-                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
-            try:
-                key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
-                       fields[3], fields[4], fields[5])
-            except ValueError as error:
-                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
-            if previous_send is not None and key <= previous_send:
-                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
-            previous_send = key
+    _validate_runtime_index_lines(
+        _iter_private_lines(root / "runtime-command-index.tsv"),
+        manifest["command_records"])
+    _validate_send_index_lines(
+        _iter_private_lines(root / "send-attempt-index.tsv"),
+        manifest["send_attempt_records"], sorted_send_index)
     if current and current["generation"] == generation:
         manifest_digest = v1._sha256_file(root / "manifest.json")[1]
         _verify_runtime_current(store, generation, manifest_digest,

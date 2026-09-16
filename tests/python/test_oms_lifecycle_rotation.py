@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -48,6 +49,20 @@ def command_events(command: str, base: int, order_id: int) -> list[dict]:
 def encode(events: list[dict]) -> bytes:
     return b"".join((json.dumps(v, sort_keys=True, separators=(",", ":")) + "\n").encode()
                     for v in events)
+
+
+class StreamingOnlyIterator:
+    def __init__(self, values) -> None:
+        self._values = iter(values)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._values)
+
+    def __length_hint__(self):
+        raise AssertionError("generation index verification must stream, not list()")
 
 
 class OmsLifecycleRotationTests(unittest.TestCase):
@@ -209,6 +224,18 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                         self.assertFalse((store / "CURRENT.runtime").exists())
                         with self.assertRaises((OSError, checkpoint.GenerationError)):
                             lifecycle.verify_generation(store, journal=journal)
+
+
+    def test_generation_verification_streams_cumulative_indexes(self) -> None:
+        lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        original = lifecycle._iter_private_lines
+
+        def streaming(path: Path):
+            return StreamingOnlyIterator(original(path))
+
+        with mock.patch.object(lifecycle, "_iter_private_lines", side_effect=streaming):
+            verified = lifecycle.verify_generation(self.store, journal=self.journal)
+        self.assertEqual(verified["result"], "PASS")
 
 
     def test_send_attempt_index_remains_window_sorted_across_generations(self) -> None:

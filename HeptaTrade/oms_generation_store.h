@@ -116,8 +116,6 @@ public:
         std::string& reason) const;
 
     bool EnumerateMutationRecords(
-        const std::string& agentId,
-        const std::string& sessionId,
         const std::string& account,
         const std::string& executionDomain,
         std::vector<OmsGenerationMutationRecord>& records,

@@ -54,24 +54,38 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
     const std::string lifecycle =
         std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_lifecycle.py";
     const auto expiry = OmsJournal::NowEpochMs() + 86400000;
+    const auto bindPaperContext = [expiry](IbPlaceOrderCommand& command) {
+        command.context.executionDomain = "IB-PAPER:EUR.USD";
+        command.context.decisionLeaseFencingToken = 7;
+        command.context.decisionLeaseGeneration = 3;
+        command.expiresAtMs = expiry;
+    };
     auto oldCommand = MakePlace("generation-old-command");
-    oldCommand.expiresAtMs = expiry;
+    bindPaperContext(oldCommand);
+    auto foreignCommand = MakePlace("generation-foreign-session");
+    foreignCommand.context.sessionId += "-foreign";
+    bindPaperContext(foreignCommand);
     int sends = 0;
     auto callbacks = CancelFixtureCallbacks();
     callbacks.placement = VenuePlacement::Immediate(
         [&](const PlaceOrderCommand&, const std::string&) {
             return VenuePlaceResult::Submitted(7100 + ++sends);
         });
+    callbacks.validateDecisionLease = [](const AgentExecutionContext&,
+        const std::string&, std::string*) { return true; };
     {
         OmsJournal journal;
         assert(journal.Init(path));
         ExecutionCoordinator coordinator(journal, callbacks);
-        const auto result = coordinator.PlaceOrder(oldCommand);
+        const auto result = coordinator.PlaceIbOrder(oldCommand);
         assert(result.status == ExecutionCommandStatus::Accepted);
         std::string reason;
         assert(coordinator.RecordOrderTerminalDurably(result.orderId, &reason));
+        const auto foreign = coordinator.PlaceIbOrder(foreignCommand);
+        assert(foreign.status == ExecutionCommandStatus::Accepted);
+        assert(coordinator.RecordOrderTerminalDurably(foreign.orderId, &reason));
         assert(coordinator.RuntimeObservation().orderOwners == 0);
-        assert(sends == 1);
+        assert(sends == 2);
     }
 
     // Exercise the exact v2 stopped-state producer after the real writer has
@@ -101,23 +115,44 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
             oldCommand.context.agentId, oldCommand.context.sessionId,
             oldCommand.context.toolCallId, status));
         assert(status.status == ExecutionCommandStatus::Accepted);
-        assert(recovered.PlaceOrder(oldCommand).status == ExecutionCommandStatus::Duplicate);
+        assert(recovered.PlaceIbOrder(oldCommand).status == ExecutionCommandStatus::Duplicate);
         auto conflict = oldCommand;
         conflict.order.totalQuantity += 1.0;
-        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
-        assert(sends == 1); // disk lookup never calls the venue
+        assert(recovered.PlaceIbOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
+        assert(sends == 2); // disk lookup never calls the venue
 
         auto newCommand = MakePlace("generation-new-command");
-        newCommand.expiresAtMs = expiry;
-        const auto next = recovered.PlaceOrder(newCommand);
+        bindPaperContext(newCommand);
+        const auto next = recovered.PlaceIbOrder(newCommand);
         assert(next.status == ExecutionCommandStatus::Accepted);
-        assert(sends == 2); // capacity was adopted, so new entry is not UNKNOWN
+        assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN
+        assert(recovered.RecordOrderTerminalDurably(next.orderId, &reason));
 
         std::vector<std::int64_t> attempts;
         recovered.GetPlaceSendAttemptTimes(
             oldCommand.context.account, oldCommand.context.executionDomain,
             0, attempts);
-        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
+        assert(attempts.size() >= 3); // two sealed attempts + one hot tail
+
+        PaperTerminalFenceBinding binding;
+        binding.owner = oldCommand.context;
+        binding.finalizationId = "generation-terminal-fixture";
+        binding.preliminaryReceiptSha256 = "sha256:" + std::string(64, 'a');
+        binding.recoveryIngressFence = 1;
+        binding.serviceEpoch = "generation-test-epoch";
+        binding.serviceFencingGeneration = 1;
+        binding.serviceProcessId = 1;
+        binding.serviceProcessStartTicks = 1;
+        binding.brokerConnectionEpoch = 1;
+        binding.brokerSocketIdentitySha256 = "sha256:" + std::string(64, 'b');
+        PaperTerminalMutationUniverse universe;
+        assert(recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason));
+        assert(universe.commandCount == 2);
+        ExecutionCommandResult foreignStatus;
+        assert(recovered.GetCommandStatus(
+            foreignCommand.context.agentId, foreignCommand.context.sessionId,
+            foreignCommand.context.toolCallId, foreignStatus));
+        assert(foreignStatus.status == ExecutionCommandStatus::Accepted);
     }
     assert(std::remove(path.c_str()) == 0);
     RemoveGenerationFixture(store);

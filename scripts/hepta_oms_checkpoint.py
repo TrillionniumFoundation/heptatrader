@@ -175,6 +175,8 @@ def _update_command(commands: dict[tuple[str, str, str], dict[str, Any]],
     key = _key(event)
     if not all(key):
         return
+    if key not in commands and not _operation(event):
+        return
     record = commands.setdefault(key, {
         "agent_id": key[0], "session_id": key[1], "command_id": key[2],
         "request_hash": "", "operation": "", "status": "unknown", "order_id": -1,

@@ -60,7 +60,8 @@ Unknown identity, session generation, capability, protocol, configuration, quote
 ```bash
 ./scripts/dev_core.sh
 python3 scripts/check_documentation.py
-python3 -m unittest discover -s tests/python -p 'test_*.py'
+python3 scripts/run_python_tests.py --lane core
+python3 scripts/run_python_tests.py --lane source
 ```
 
 Module-level contracts are under [`modules/`](modules/). Operations are under [`operations/`](operations/). Repository source correctness, live GitHub governance, runner/environment trust, and broker qualification are separate claims.

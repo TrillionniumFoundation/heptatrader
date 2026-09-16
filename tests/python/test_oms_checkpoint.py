@@ -84,7 +84,7 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertEqual(manifest["journal_records"], 6)
         verified = lifecycle.verify_generation(self.store)
         self.assertEqual(verified["result"], "PASS")
-        self.assertEqual(verified["command_records"], 3)
+        self.assertEqual(verified["command_records"], 2)
         self.assertEqual(verified["send_attempt_records"], 2)
         duplicate = lifecycle.lookup_command(
             self.store, "agent-a", "session-a", "old-command", "hash-old")
@@ -92,10 +92,13 @@ class OmsCheckpointTests(unittest.TestCase):
             self.store, "agent-a", "session-a", "old-command", "different-hash")
         missing = lifecycle.lookup_command(
             self.store, "agent-a", "session-a", "never-seen", "hash")
+        auxiliary = lifecycle.lookup_command(
+            self.store, "agent-a", "session-a", "owner-terminal", "hash-owner")
         self.assertEqual(duplicate["status"], "duplicate")
         self.assertEqual(duplicate["order_id"], 101)
         self.assertEqual(conflict["status"], "conflict")
         self.assertEqual(missing["status"], "missing")
+        self.assertEqual(auxiliary["status"], "missing")
         current = json.loads((self.store / "CURRENT").read_text())
         generation = self.store / current["generation"]
         checkpoint = json.loads((generation / "checkpoint.json").read_text())
