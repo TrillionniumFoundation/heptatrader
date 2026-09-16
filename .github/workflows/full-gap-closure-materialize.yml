@@ -42,17 +42,32 @@ jobs:
         with:
           name: full-gap-materializer-${{ github.run_id }}
           path: materializer.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 2
 
       - name: Validate OMS lifecycle regressions
         run: python3 -m unittest tests.python.test_oms_lifecycle_rotation
 
       - name: Build and run canonical core tests
+        id: core
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
           HEPTA_JOBS: "2"
-        run: ./scripts/dev_core.sh
+        run: |
+          set +e
+          ./scripts/dev_core.sh > core.log 2>&1
+          code=$?
+          cat core.log
+          exit "$code"
+
+      - name: Retain native diagnostics on failure
+        if: failure() && steps.core.outcome == 'failure'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: full-gap-core-${{ github.run_id }}
+          path: core.log
+          if-no-files-found: error
+          retention-days: 2
 
       - name: Run canonical source and core Python lanes
         run: |
