@@ -25,7 +25,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
 
       - name: Apply batch 1
-        run: python3 scripts/apply_priority_remediation_batch1.py
+        run: python3 scripts/apply_priority_remediation_batch1_fix.py
 
       - name: Exercise lifecycle regression
         run: python3 tests/python/test_oms_lifecycle_rotation.py
