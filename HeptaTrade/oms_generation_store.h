@@ -71,6 +71,7 @@ public:
     bool HasStore() const;
     bool IsActive() const { return m_active; }
     std::uint64_t HistoricalCommandCount() const { return m_commandRecords; }
+    std::uint64_t HistoricalSendAttemptCount() const { return m_sendAttemptRecords; }
     const std::string& Generation() const { return m_generation; }
 
     bool Recover(
