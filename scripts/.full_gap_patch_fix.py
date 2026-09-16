@@ -50,4 +50,32 @@ text = text.replace(
 if old not in s:
     raise SystemExit("materializer chain-limit source block missing")
 s = s.replace(old, new, 1)
+
+# The verifier block is followed by current-generation checks, not a top-level
+# journal check, and reads counts directly from the manifest.
+old = '''start = text.find('    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))')
+end = text.find("\\n    if journal is not None:", start)
+require(start >= 0 and end > start, "verify_generation cumulative index block missing")
+replacement = ''' + "'''" + '''    _validate_runtime_index_stream(
+        root / "runtime-command-index.tsv", command_records)
+    _validate_send_index_stream(
+        root / "send-attempt-index.tsv", send_attempt_records,
+        ordered=send_index_order == SEND_INDEX_ORDER)
+''' + "'''" + '''
+text = text[:start] + replacement + text[end:]
+'''
+new = '''start = text.find('    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))')
+end = text.find('\\n    if current and current["generation"] == generation:', start)
+require(start >= 0 and end > start, "verify_generation cumulative index block missing")
+replacement = ''' + "'''" + '''    _validate_runtime_index_stream(
+        root / "runtime-command-index.tsv", manifest.get("command_records"))
+    _validate_send_index_stream(
+        root / "send-attempt-index.tsv", manifest.get("send_attempt_records"),
+        ordered=sorted_send_index)
+''' + "'''" + '''
+text = text[:start] + replacement + text[end:]
+'''
+if old not in s:
+    raise SystemExit("materializer verifier source block missing")
+s = s.replace(old, new, 1)
 p.write_text(s)
