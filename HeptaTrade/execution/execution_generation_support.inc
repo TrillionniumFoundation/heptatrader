@@ -449,6 +449,7 @@ void OmsGenerationStore::Close() noexcept
     m_generationFd = -1;
     m_storeFd = -1;
     m_active = false;
+    m_sendIndexWindowSorted = false;
     m_generation.clear();
     m_commandRecords = 0;
     m_sendAttemptRecords = 0;
@@ -824,7 +825,81 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         reason = "OMS_GENERATION_SEND_INDEX_CHANGED";
         return false;
     }
+
+    const std::string wantedAccount = GenerationHex(account);
+    const std::string wantedDomain = GenerationHex(executionDomain);
+    const auto parseRow = [](const std::vector<std::string>& fields,
+                             std::string& rowAccount,
+                             std::string& rowDomain,
+                             std::int64_t& ts,
+                             std::string& agent,
+                             std::string& session,
+                             std::string& command,
+                             std::uint64_t& sequence) {
+        return fields.size() == 7U &&
+            GenerationDecodeHex(fields[0], rowAccount) &&
+            GenerationDecodeHex(fields[1], rowDomain) &&
+            GenerationParseSigned64(fields[2], ts) &&
+            GenerationDecodeHex(fields[3], agent) &&
+            GenerationDecodeHex(fields[4], session) &&
+            GenerationDecodeHex(fields[5], command) &&
+            GenerationParseUnsigned(fields[6], sequence);
+    };
+
     off_t offset = 0;
+    if (m_sendIndexWindowSorted && m_sendIndexIdentity.st_size > 0)
+    {
+        // The index is ordered by encoded account, encoded execution domain,
+        // signed timestamp, durable sequence, then request identity. Locate the
+        // first row in the requested account/domain with timestamp > cutoff;
+        // normal rate checks therefore touch O(log history + window) rows.
+        off_t low = 0;
+        off_t high = m_sendIndexIdentity.st_size;
+        while (low < high)
+        {
+            const off_t midpoint = low + (high - low) / 2;
+            off_t start = 0, end = 0;
+            std::string line;
+            std::vector<std::string> fields;
+            std::string rowAccount, rowDomain, agent, session, command;
+            std::int64_t ts = 0;
+            std::uint64_t sequence = 0;
+            if (!GenerationReadLineContaining(m_sendIndexFd,
+                    m_sendIndexIdentity.st_size, midpoint, start, end, line) ||
+                !GenerationSplitTabs(line, fields) ||
+                !parseRow(fields, rowAccount, rowDomain, ts,
+                    agent, session, command, sequence))
+            {
+                reason = "OMS_GENERATION_SEND_INDEX_INVALID";
+                return false;
+            }
+            const bool beforeWindow =
+                fields[0] < wantedAccount ||
+                (fields[0] == wantedAccount && fields[1] < wantedDomain) ||
+                (fields[0] == wantedAccount && fields[1] == wantedDomain &&
+                 ts <= cutoffMs);
+            if (beforeWindow)
+            {
+                if (end <= low)
+                {
+                    reason = "OMS_GENERATION_SEND_INDEX_INVALID";
+                    return false;
+                }
+                low = end;
+            }
+            else
+            {
+                if (start >= high && high != 0)
+                {
+                    reason = "OMS_GENERATION_SEND_INDEX_INVALID";
+                    return false;
+                }
+                high = start;
+            }
+        }
+        offset = low;
+    }
+
     while (offset < m_sendIndexIdentity.st_size)
     {
         off_t start = 0, end = 0;
@@ -833,7 +908,7 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         if (!GenerationReadLineContaining(m_sendIndexFd,
                 m_sendIndexIdentity.st_size, offset, start, end, line) ||
             start != offset || end <= offset ||
-            !GenerationSplitTabs(line, fields) || fields.size() != 7U)
+            !GenerationSplitTabs(line, fields))
         {
             reason = "OMS_GENERATION_SEND_INDEX_INVALID";
             return false;
@@ -841,16 +916,21 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         std::string rowAccount, rowDomain, agent, session, command;
         std::int64_t ts = 0;
         std::uint64_t sequence = 0;
-        if (!GenerationDecodeHex(fields[0], rowAccount) ||
-            !GenerationDecodeHex(fields[1], rowDomain) ||
-            !GenerationParseSigned64(fields[2], ts) ||
-            !GenerationDecodeHex(fields[3], agent) ||
-            !GenerationDecodeHex(fields[4], session) ||
-            !GenerationDecodeHex(fields[5], command) ||
-            !GenerationParseUnsigned(fields[6], sequence))
+        if (!parseRow(fields, rowAccount, rowDomain, ts,
+                agent, session, command, sequence))
         {
             reason = "OMS_GENERATION_SEND_INDEX_INVALID";
             return false;
+        }
+        if (m_sendIndexWindowSorted)
+        {
+            if (fields[0] != wantedAccount || fields[1] != wantedDomain)
+                break;
+            if (ts <= cutoffMs)
+            {
+                reason = "OMS_GENERATION_SEND_INDEX_ORDER_INVALID";
+                return false;
+            }
         }
         if (rowAccount == account && rowDomain == executionDomain && ts > cutoffMs)
         {

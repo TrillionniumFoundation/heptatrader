@@ -135,6 +135,7 @@ private:
     std::string m_generation;
     bool m_active = false;
     bool m_segmentedTail = false;
+    bool m_sendIndexWindowSorted = false;
     int m_storeFd = -1;
     int m_generationFd = -1;
     int m_commandIndexFd = -1;

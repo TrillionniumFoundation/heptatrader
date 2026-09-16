@@ -18,6 +18,7 @@ bool OmsGenerationStore::Prepare(std::string& reason)
     std::string v1Reason;
     if (PrepareGenerationV1(v1Reason))
     {
+        m_sendIndexWindowSorted = true;
         reason.clear();
         return true;
     }
@@ -108,7 +109,7 @@ bool OmsGenerationStore::Prepare(std::string& reason)
     }
 
     GenerationFields manifest;
-    static const char* const manifestNames[] = {
+    static const char* const manifestNamesLegacy[] = {
         "generation", "parent_generation", "parent_manifest_sha256",
         "history_records", "segment_records", "command_records",
         "send_attempt_records", "hot_replay_records", "segment_sha256",
@@ -118,10 +119,32 @@ bool OmsGenerationStore::Prepare(std::string& reason)
         "active_tail_header_sha256", "authorization_effect",
         "paper_authorized", "live_authorized"
     };
+    static const char* const manifestNamesSorted[] = {
+        "generation", "parent_generation", "parent_manifest_sha256",
+        "history_records", "segment_records", "command_records",
+        "send_attempt_records", "hot_replay_records", "segment_sha256",
+        "checkpoint_sha256", "command_index_sha256",
+        "runtime_command_index_sha256", "send_attempt_index_sha256",
+        "send_attempt_index_order", "hot_replay_sha256",
+        "active_tail_header_bytes", "active_tail_header_sha256",
+        "authorization_effect", "paper_authorized", "live_authorized"
+    };
     std::uint64_t historyRecords = 0, segmentRecords = 0;
-    if (!GenerationParseFields(runtimeManifest, kRuntimeManifestHeaderV2, manifest) ||
-        !GenerationExactFieldNames(manifest, manifestNames,
-            sizeof(manifestNames) / sizeof(manifestNames[0])) ||
+    if (!GenerationParseFields(runtimeManifest, kRuntimeManifestHeaderV2, manifest))
+    {
+        reason = "OMS_GENERATION_RUNTIME_MANIFEST_V2_INVALID";
+        Close();
+        return false;
+    }
+    const bool sortedSendIndex = GenerationExactFieldNames(
+        manifest, manifestNamesSorted,
+        sizeof(manifestNamesSorted) / sizeof(manifestNamesSorted[0]));
+    const bool legacySendIndex = GenerationExactFieldNames(
+        manifest, manifestNamesLegacy,
+        sizeof(manifestNamesLegacy) / sizeof(manifestNamesLegacy[0]));
+    if ((!sortedSendIndex && !legacySendIndex) ||
+        (sortedSendIndex &&
+         manifest["send_attempt_index_order"] != "account-domain-time-v1") ||
         manifest["generation"] != m_generation ||
         (manifest["parent_generation"] != "-" &&
          !GenerationSafeName(manifest["parent_generation"])) ||
@@ -152,6 +175,7 @@ bool OmsGenerationStore::Prepare(std::string& reason)
         return false;
     }
     m_journalPrefixSha256 = manifest["active_tail_header_sha256"];
+    m_sendIndexWindowSorted = sortedSendIndex;
 
     if (!GenerationVerifyHashedFileAt(m_generationFd, "segment-000001.jsonl",
             manifest["segment_sha256"]) ||
