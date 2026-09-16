@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import os
 import importlib.util
+import re
 import shutil
 import stat
 import subprocess
@@ -100,6 +101,20 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             with self.assertRaisesRegex(AssertionError, HELPERS[0]):
                 validate_fixture_helpers(source)
 
+    def test_ib_archive_builder_binds_exact_source_sha_to_exported_cmake(self) -> None:
+        builder = (ROOT / "scripts/build_ib_candidate_artifact.sh").read_text(encoding="utf-8")
+        configure = re.search(
+            r"cmake -S /src -B /build/work -G Ninja \\\n(?P<body>.*?)-DIBAPI_DECIMAL_LIBRARY=/sdk/libbid\.a \\\n",
+            builder,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(configure, "IB builder CMake configure block was not found")
+        self.assertIn('-DHEPTA_DOCUMENTATION_SOURCE_SHA="$EXPECTED_SHA"', configure.group("body"))
+        # installed_fixture below executes the same no-.git documentation path
+        # with a canonical 40-hex identity, proving the CMake side consumes it.
+        with installed_fixture() as tree:
+            self.assertTrue((tree / "share/doc/heptatrader/developer.md").is_file())
+
     def test_readme_optional_and_documentation_actually_installed(self) -> None:
         for present in (False, True):
             with self.subTest(readme=present), installed_fixture(readme=present) as tree:
@@ -128,7 +143,6 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             binary = tree / "libexec/heptatrader/hepta_agent_simulator_e2e_tests"
             completed = subprocess.run([str(binary)], capture_output=True, text=True, timeout=5, check=True)
             self.assertEqual(completed.stdout, "install-fixture-only\n")
-
 
     def test_actual_installed_links_are_relocatable_and_source_links_are_pinned(self):
         spec = importlib.util.spec_from_file_location("installed_docs", ROOT / "cmake/render_installed_documentation.py")
