@@ -3,6 +3,16 @@ from pathlib import Path
 import subprocess
 
 root = Path(__file__).resolve().parents[1]
+
+
+def replace_once(path: str, old: str, new: str) -> None:
+    target = root / path
+    value = target.read_text()
+    if value.count(old) != 1:
+        raise SystemExit(f"{path}: expected one replacement, got {value.count(old)}")
+    target.write_text(value.replace(old, new, 1))
+
+
 path = root / "scripts/hepta_oms_lifecycle.py"
 value = path.read_text()
 needle = "import json\n"
@@ -45,3 +55,36 @@ for relative in (
 ):
     content = subprocess.check_output(["git", "show", f"{pr95}:{relative}"], cwd=root, text=True)
     (root / relative).write_text(content)
+
+# PR95's first HPM2 draft summarized every mutation on an account/domain. The
+# established terminal-fence authority is narrower: one owner agent/session.
+# Preserve that authority boundary while retaining the fixed-size sealed-history
+# digest. This is a semantic fix, not a test relaxation.
+replace_once(
+    "HeptaTrade/oms_generation_store.h",
+    '''    bool SummarizeMutationRecords(\n        const std::string& account,\n        const std::string& executionDomain,\n        OmsGenerationMutationSummary& summary,\n        std::string& reason) const;\n''',
+    '''    bool SummarizeMutationRecords(\n        const std::string& agentId,\n        const std::string& sessionId,\n        const std::string& account,\n        const std::string& executionDomain,\n        OmsGenerationMutationSummary& summary,\n        std::string& reason) const;\n''')
+replace_once(
+    "HeptaTrade/execution/execution_generation_support.cpp",
+    '''bool OmsGenerationStore::SummarizeMutationRecords(\n    const std::string& account,\n    const std::string& executionDomain,\n    OmsGenerationMutationSummary& summary,\n    std::string& reason) const\n''',
+    '''bool OmsGenerationStore::SummarizeMutationRecords(\n    const std::string& agentId,\n    const std::string& sessionId,\n    const std::string& account,\n    const std::string& executionDomain,\n    OmsGenerationMutationSummary& summary,\n    std::string& reason) const\n''')
+replace_once(
+    "HeptaTrade/execution/execution_generation_support.cpp",
+    '''        if (fields[12] == "1" && rowAccount == account &&\n            rowDomain == executionDomain)\n''',
+    '''        if (fields[12] == "1" && fields[0] == GenerationHex(agentId) &&\n            fields[1] == GenerationHex(sessionId) && rowAccount == account &&\n            rowDomain == executionDomain)\n''')
+replace_once(
+    "HeptaTrade/execution/execution_generation_support.cpp",
+    '''    if (!m_generationStore.SummarizeMutationRecords(\n            binding.owner.account, binding.owner.executionDomain,\n            sealed, reason))\n''',
+    '''    if (!m_generationStore.SummarizeMutationRecords(\n            binding.owner.agentId, binding.owner.sessionId,\n            binding.owner.account, binding.owner.executionDomain, sealed, reason))\n''')
+replace_once(
+    "HeptaTrade/execution/execution_generation_support.cpp",
+    '''        if (!request.durableMutationIntent ||\n            request.context.account != binding.owner.account ||\n            request.context.executionDomain != binding.owner.executionDomain)\n''',
+    '''        if (!request.durableMutationIntent ||\n            request.context.agentId != binding.owner.agentId ||\n            request.context.sessionId != binding.owner.sessionId ||\n            request.context.account != binding.owner.account ||\n            request.context.executionDomain != binding.owner.executionDomain)\n''')
+
+# HPM2 deliberately replaces the materialized HPM1 command vector with a
+# fixed-size digest/count. Update the regression to assert the new representation
+# while still proving the foreign session is excluded and remains queryable.
+replace_once(
+    "tests/oms_recovery_growth_probe.h",
+    '''        assert(recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason));\n        assert(universe.commands.size() == 2);\n        for (std::size_t i = 0; i < universe.commands.size(); ++i)\n        {\n            assert(universe.commands[i].agentId == oldCommand.context.agentId);\n            assert(universe.commands[i].sessionId == oldCommand.context.sessionId);\n            assert(universe.commands[i].toolCallId != foreignCommand.context.toolCallId);\n        }\n''',
+    '''        if (!recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason))\n        {\n            std::fprintf(stderr, "terminal HPM2 projection failed: %s\\n", reason.c_str());\n            assert(false);\n        }\n        assert(universe.compactSummary);\n        assert(universe.commands.empty());\n        assert(universe.correlations.empty());\n        assert(universe.commandCount == 2);\n        assert(!universe.commandSetSha256.empty());\n        assert(!universe.correlationSetSha256.empty());\n''')
