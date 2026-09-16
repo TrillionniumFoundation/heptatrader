@@ -13,8 +13,7 @@ class RecoveryProjectionTests(unittest.TestCase):
         units = [
             "execution_coordinator.cpp", "execution_coordinator_cancel.cpp",
             "execution_coordinator_recovery.cpp", "execution_coordinator_reconnect.cpp",
-            "execution_coordinator_terminal.cpp", "execution_generation_support.cpp",
-            "paper_terminal_mutation_manifest.cpp",
+            "execution_coordinator_terminal.cpp", "paper_terminal_mutation_manifest.cpp",
             "execution_place_order_dispatch.cpp", "execution_authoritative_flatten.cpp",
             "execution_authoritative_flatten_dispatch.cpp",
         ]

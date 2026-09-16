@@ -23,6 +23,16 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
         binding, universe, reason);
 }
 
-// Generation storage/recovery is compiled from execution_generation_support.cpp
-// in the same execution runtime target. This terminal unit owns only the public
-// terminal-fence dispatch boundary.
+// Preserve the already-accepted V1 implementation under private method names,
+// then layer V2 dispatch on top. This avoids a second persistence authority:
+// lookups, pinned indexes, terminal mutation enumeration and request caching are
+// still the same code for both formats.
+#define Prepare PrepareGenerationV1
+#define Recover RecoverGenerationV1
+#define RecoveryCapacity RecoveryCapacityGenerationV1
+#include "execution_generation_support.inc"
+#include "execution_generation_capacity_support.inc"
+#undef RecoveryCapacity
+#undef Recover
+#undef Prepare
+#include "execution_generation_v2_support.inc"
