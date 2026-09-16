@@ -17,6 +17,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "simulator_generation_recovery.h"
 namespace
 {
 std::string EscapeJson(const std::string& value)
@@ -599,69 +600,12 @@ bool ExecutionServiceRuntimeComposition::LoadFenceCredential(std::string& reason
 }
 bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reason)
 {
-    long maximumOrderId = 999999;
-    std::map<long, OmsJournalEvent> admitted;
-    std::map<long, OmsJournalEvent> fills;
-    bool valid = true;
-    const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
-        if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
-        const bool fill = event.eventType == "status" && event.status == "Filled";
-        if (event.eventType != "place_sent" && !fill) return;
-        if (event.orderId < 0 || event.venue != "SIMULATOR" || event.account != "SIM" ||
-            event.instrument.empty() || (event.side != "BUY" && event.side != "SELL") ||
-            !std::isfinite(event.qty) || event.qty <= 0.0)
-        {
-            valid = false;
-            return;
-        }
-        if (!fill)
-        {
-            const auto prior = admitted.find(event.orderId);
-            if (prior != admitted.end() &&
-                (prior->second.instrument != event.instrument || prior->second.side != event.side ||
-                 prior->second.qty != event.qty || prior->second.reqId != event.reqId ||
-                 prior->second.requestHash != event.requestHash))
-                valid = false;
-            admitted[event.orderId] = event;
-            return;
-        }
-        const auto owner = admitted.find(event.orderId);
-        if (!std::isfinite(event.price) || event.price <= 0.0 ||
-            owner == admitted.end() || owner->second.instrument != event.instrument ||
-            owner->second.side != event.side || owner->second.qty != event.qty)
-            valid = false;
-        const auto prior = fills.find(event.orderId);
-        if (prior != fills.end() &&
-            (prior->second.instrument != event.instrument || prior->second.side != event.side ||
-             prior->second.qty != event.qty || prior->second.price != event.price))
-            valid = false;
-        fills[event.orderId] = event;
-    });
-    if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
-    {
-        reason = replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
-            "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+    hepta_simulator_generation_recovery::State state;
+    if (!hepta_simulator_generation_recovery::Recover(m_journal, state, reason))
         return false;
-    }
-    if (!valid)
-    {
-        reason = "EXECUTION_SIMULATOR_RISK_REPLAY_CONFLICT";
+    if (!m_venue.RestoreRiskState(state.positions, state.admittedOrderCount, reason))
         return false;
-    }
-    std::map<std::string, double> positions;
-    for (const auto& fill : fills)
-    {
-        const auto& event = fill.second;
-        positions[event.instrument] += event.side == "BUY" ? event.qty : -event.qty;
-        if (!std::isfinite(positions[event.instrument]))
-        {
-            reason = "EXECUTION_SIMULATOR_POSITION_REPLAY_OVERFLOW";
-            return false;
-        }
-    }
-    if (!m_venue.RestoreRiskState(positions, static_cast<std::uint64_t>(admitted.size()), reason))
-        return false;
-    m_venue.RestoreNextOrderIdAtLeast(maximumOrderId + 1);
+    m_venue.RestoreNextOrderIdAtLeast(state.maximumOrderId + 1);
     reason.clear();
     return true;
 }
@@ -977,40 +921,4 @@ void ExecutionServiceRuntimeComposition::Stop()
         ::close(m_stateLockFd);
         m_stateLockFd = -1;
     }
-}
-bool ExecutionServiceRuntimeComposition::IsRunning() const
-{
-    return m_started && m_server && m_server->IsRunning() &&
-        m_eventServer && m_eventServer->IsRunning() &&
-        m_quoteFeedRunning.load();
-}
-bool ExecutionServiceRuntimeComposition::IsMutationBlocked(std::string* reason) const
-{
-    if (!m_coordinator)
-    {
-        if (reason != nullptr) *reason = "EXECUTION_RUNTIME_NOT_STARTED";
-        return true;
-    }
-    return m_coordinator->IsMutationBlocked(reason);
-}
-const std::string& ExecutionServiceRuntimeComposition::RecoveryReason() const
-{
-    return m_recoveryReason;
-}
-ExecutionCoordinator& ExecutionServiceRuntimeComposition::Coordinator()
-{
-    return *m_coordinator;
-}
-DeterministicExecutionVenue& ExecutionServiceRuntimeComposition::Venue()
-{
-    return m_venue;
-}
-ExecutionEventHub& ExecutionServiceRuntimeComposition::EventHub()
-{
-    return *m_eventHub;
-}
-
-ExecutionRuntimeObservation ExecutionServiceRuntimeComposition::CoordinatorObservation() const
-{
-    return m_coordinator ? m_coordinator->RuntimeObservation() : ExecutionRuntimeObservation();
 }
