@@ -31,6 +31,7 @@ jobs:
         run: |
           python3 scripts/.full_roadmap_patch.py
           python3 scripts/.full_roadmap_patch_fix.py
+          rm scripts/.full_roadmap_patch.py scripts/.full_roadmap_patch_fix.py
           git diff --check
 
       - name: Run focused OMS lifecycle regressions
@@ -71,7 +72,6 @@ jobs:
         run: |
           set -euo pipefail
           rm .github/workflows/full-roadmap-closure-materialize.yml
-          rm scripts/.full_roadmap_patch.py scripts/.full_roadmap_patch_fix.py
           git diff --check
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
