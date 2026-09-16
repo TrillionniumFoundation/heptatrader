@@ -1,7 +1,10 @@
 #pragma once
 
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
+#include <string>
+#include <vector>
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
