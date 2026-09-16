@@ -1,8 +1,11 @@
-// Internal implementation extension compiled exactly once from
-// execution_coordinator_terminal.cpp. Keeping generation support in the
-// existing Execution translation unit avoids inventing a shadow CMake target;
-// component/build ownership remains truthful while the persistent interface is
-// still isolated behind oms_generation_store.h.
+// Canonical generation-backed OMS implementation. Compiled exactly once
+// in the existing execution runtime target; no macro method renaming or
+// textual .inc inclusion is required.
+#include "execution_coordinator.h"
+
+// Generation persistence remains part of the existing Execution runtime target.
+// It is isolated behind oms_generation_store.h without a shadow service, product,
+// or textual include boundary.
 
 #include "../oms_generation_store.h"
 
@@ -449,15 +452,11 @@ void OmsGenerationStore::Close() noexcept
     m_generationFd = -1;
     m_storeFd = -1;
     m_active = false;
+    m_sendIndexWindowSorted = false;
     m_generation.clear();
     m_commandRecords = 0;
     m_sendAttemptRecords = 0;
     m_hotReplayRecords = 0;
-    m_sendQueryCacheValid = false;
-    m_sendQueryAccount.clear();
-    m_sendQueryDomain.clear();
-    m_sendQueryCutoffMs = 0;
-    m_sendQueryAttempts.clear();
     m_journalPrefixBytes = 0;
     m_journalPrefixSha256.clear();
 }
@@ -471,7 +470,7 @@ bool OmsGenerationStore::HasStore() const
     return true;
 }
 
-bool OmsGenerationStore::Prepare(std::string& reason)
+bool OmsGenerationStore::PrepareGenerationV1(std::string& reason)
 {
     Close();
     m_storeFd = ::open(m_storePath.c_str(),
@@ -638,14 +637,14 @@ bool OmsGenerationStore::ValidatePinnedIndex(
         GenerationSameIdentity(actual, named);
 }
 
-bool OmsGenerationStore::Recover(
+bool OmsGenerationStore::RecoverGenerationV1(
     std::size_t maxTailBytes,
     std::size_t maxTailRecords,
     std::size_t maxRecordBytes,
     const std::function<void(const OmsJournalEvent&)>& onEvent,
     std::string& reason)
 {
-    if (!Prepare(reason)) return false;
+    if (!PrepareGenerationV1(reason)) return false;
     const int hotFd = ::openat(m_generationFd, "hot-replay.jsonl",
         O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     struct stat hotIdentity;
@@ -830,31 +829,80 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         return false;
     }
 
-    const auto publish = [&](const std::vector<OmsGenerationSendAttempt>& source) {
-        attempts.reserve(source.size());
-        for (std::size_t i = 0; i < source.size(); ++i)
-            if (excludedRequestKeys.find(source[i].requestKey) ==
-                excludedRequestKeys.end())
-                attempts.push_back(source[i]);
+    const std::string wantedAccount = GenerationHex(account);
+    const std::string wantedDomain = GenerationHex(executionDomain);
+    const auto parseRow = [](const std::vector<std::string>& fields,
+                             std::string& rowAccount,
+                             std::string& rowDomain,
+                             std::int64_t& ts,
+                             std::string& agent,
+                             std::string& session,
+                             std::string& command,
+                             std::uint64_t& sequence) {
+        return fields.size() == 7U &&
+            GenerationDecodeHex(fields[0], rowAccount) &&
+            GenerationDecodeHex(fields[1], rowDomain) &&
+            GenerationParseSigned64(fields[2], ts) &&
+            GenerationDecodeHex(fields[3], agent) &&
+            GenerationDecodeHex(fields[4], session) &&
+            GenerationDecodeHex(fields[5], command) &&
+            GenerationParseUnsigned(fields[6], sequence);
     };
 
-    if (m_sendQueryCacheValid && m_sendQueryAccount == account &&
-        m_sendQueryDomain == executionDomain && cutoffMs >= m_sendQueryCutoffMs)
+    off_t offset = 0;
+    if (m_sendIndexWindowSorted && m_sendIndexIdentity.st_size > 0)
     {
-        m_sendQueryAttempts.erase(
-            std::remove_if(m_sendQueryAttempts.begin(), m_sendQueryAttempts.end(),
-                [cutoffMs](const OmsGenerationSendAttempt& attempt) {
-                    return attempt.tsMs <= cutoffMs;
-                }),
-            m_sendQueryAttempts.end());
-        m_sendQueryCutoffMs = cutoffMs;
-        publish(m_sendQueryAttempts);
-        reason.clear();
-        return true;
+        // The index is ordered by encoded account, encoded execution domain,
+        // signed timestamp, durable sequence, then request identity. Locate the
+        // first row in the requested account/domain with timestamp > cutoff;
+        // normal rate checks therefore touch O(log history + window) rows.
+        off_t low = 0;
+        off_t high = m_sendIndexIdentity.st_size;
+        while (low < high)
+        {
+            const off_t midpoint = low + (high - low) / 2;
+            off_t start = 0, end = 0;
+            std::string line;
+            std::vector<std::string> fields;
+            std::string rowAccount, rowDomain, agent, session, command;
+            std::int64_t ts = 0;
+            std::uint64_t sequence = 0;
+            if (!GenerationReadLineContaining(m_sendIndexFd,
+                    m_sendIndexIdentity.st_size, midpoint, start, end, line) ||
+                !GenerationSplitTabs(line, fields) ||
+                !parseRow(fields, rowAccount, rowDomain, ts,
+                    agent, session, command, sequence))
+            {
+                reason = "OMS_GENERATION_SEND_INDEX_INVALID";
+                return false;
+            }
+            const bool beforeWindow =
+                fields[0] < wantedAccount ||
+                (fields[0] == wantedAccount && fields[1] < wantedDomain) ||
+                (fields[0] == wantedAccount && fields[1] == wantedDomain &&
+                 ts <= cutoffMs);
+            if (beforeWindow)
+            {
+                if (end <= low)
+                {
+                    reason = "OMS_GENERATION_SEND_INDEX_INVALID";
+                    return false;
+                }
+                low = end;
+            }
+            else
+            {
+                if (start >= high && high != 0)
+                {
+                    reason = "OMS_GENERATION_SEND_INDEX_INVALID";
+                    return false;
+                }
+                high = start;
+            }
+        }
+        offset = low;
     }
 
-    std::vector<OmsGenerationSendAttempt> scanned;
-    off_t offset = 0;
     while (offset < m_sendIndexIdentity.st_size)
     {
         off_t start = 0, end = 0;
@@ -863,7 +911,7 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         if (!GenerationReadLineContaining(m_sendIndexFd,
                 m_sendIndexIdentity.st_size, offset, start, end, line) ||
             start != offset || end <= offset ||
-            !GenerationSplitTabs(line, fields) || fields.size() != 7U)
+            !GenerationSplitTabs(line, fields))
         {
             reason = "OMS_GENERATION_SEND_INDEX_INVALID";
             return false;
@@ -871,38 +919,41 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         std::string rowAccount, rowDomain, agent, session, command;
         std::int64_t ts = 0;
         std::uint64_t sequence = 0;
-        if (!GenerationDecodeHex(fields[0], rowAccount) ||
-            !GenerationDecodeHex(fields[1], rowDomain) ||
-            !GenerationParseSigned64(fields[2], ts) ||
-            !GenerationDecodeHex(fields[3], agent) ||
-            !GenerationDecodeHex(fields[4], session) ||
-            !GenerationDecodeHex(fields[5], command) ||
-            !GenerationParseUnsigned(fields[6], sequence))
+        if (!parseRow(fields, rowAccount, rowDomain, ts,
+                agent, session, command, sequence))
         {
             reason = "OMS_GENERATION_SEND_INDEX_INVALID";
             return false;
         }
+        if (m_sendIndexWindowSorted)
+        {
+            if (fields[0] != wantedAccount || fields[1] != wantedDomain)
+                break;
+            if (ts <= cutoffMs)
+            {
+                reason = "OMS_GENERATION_SEND_INDEX_ORDER_INVALID";
+                return false;
+            }
+        }
         if (rowAccount == account && rowDomain == executionDomain && ts > cutoffMs)
         {
-            OmsGenerationSendAttempt attempt;
-            attempt.requestKey = GenerationRequestKey(agent, session, command);
-            attempt.tsMs = ts;
-            attempt.sequence = sequence;
-            scanned.push_back(attempt);
+            const std::string requestKey = GenerationRequestKey(agent, session, command);
+            if (excludedRequestKeys.find(requestKey) == excludedRequestKeys.end())
+            {
+                OmsGenerationSendAttempt attempt;
+                attempt.requestKey = requestKey;
+                attempt.tsMs = ts;
+                attempt.sequence = sequence;
+                attempts.push_back(attempt);
+            }
         }
         offset = end;
     }
-    std::sort(scanned.begin(), scanned.end(),
+    std::sort(attempts.begin(), attempts.end(),
         [](const OmsGenerationSendAttempt& left,
            const OmsGenerationSendAttempt& right) {
             return left.sequence < right.sequence;
         });
-    m_sendQueryCacheValid = true;
-    m_sendQueryAccount = account;
-    m_sendQueryDomain = executionDomain;
-    m_sendQueryCutoffMs = cutoffMs;
-    m_sendQueryAttempts.swap(scanned);
-    publish(m_sendQueryAttempts);
     reason.clear();
     return true;
 }
@@ -1226,4 +1277,444 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
         records.push_back(record);
     }
     return BuildPaperTerminalMutationUniverse(records, universe, reason);
+}
+
+// Capacity bridge compiled after execution_generation_support.inc so it can
+// reuse the same private generation identity helpers. This is not another
+// translation unit or authority path.
+
+bool OmsGenerationStore::RecoveryCapacityGenerationV1(
+    std::uint64_t& bytes,
+    std::uint64_t& records,
+    std::string& reason) const
+{
+    bytes = 0;
+    records = 0;
+    if (!m_active || m_generationFd < 0)
+    {
+        reason = "OMS_GENERATION_NOT_ACTIVE";
+        return false;
+    }
+
+    struct stat hot;
+    if (::fstatat(m_generationFd, "hot-replay.jsonl", &hot,
+            AT_SYMLINK_NOFOLLOW) != 0 || !GenerationPrivateFile(hot) ||
+        hot.st_size < 0)
+    {
+        reason = "OMS_GENERATION_HOT_REPLAY_CHANGED";
+        return false;
+    }
+
+    const int journalFd = ::open(m_journalPath.c_str(),
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat before, named;
+    if (journalFd < 0 || ::fstat(journalFd, &before) != 0 ||
+        !GenerationPrivateFile(before) || before.st_size < 0 ||
+        static_cast<std::uint64_t>(before.st_size) < m_journalPrefixBytes ||
+        ::lstat(m_journalPath.c_str(), &named) != 0 ||
+        !GenerationSameIdentity(before, named))
+    {
+        if (journalFd >= 0) ::close(journalFd);
+        reason = "OMS_GENERATION_ACTIVE_JOURNAL_CHANGED";
+        return false;
+    }
+
+    std::uint64_t tailRecords = 0;
+    off_t offset = static_cast<off_t>(m_journalPrefixBytes);
+    std::array<char, 64U * 1024U> buffer;
+    bool ok = true;
+    while (offset < before.st_size)
+    {
+        const std::size_t wanted = static_cast<std::size_t>(std::min<off_t>(
+            static_cast<off_t>(buffer.size()), before.st_size - offset));
+        ssize_t count;
+        do
+        {
+            count = ::pread(journalFd, buffer.data(), wanted, offset);
+        } while (count < 0 && errno == EINTR);
+        if (count <= 0) { ok = false; break; }
+        for (ssize_t i = 0; i < count; ++i)
+            if (buffer[static_cast<std::size_t>(i)] == '\n')
+            {
+                if (tailRecords == std::numeric_limits<std::uint64_t>::max())
+                { ok = false; break; }
+                ++tailRecords;
+            }
+        if (!ok) break;
+        offset += count;
+    }
+    struct stat after, namedAfter;
+    ok = ok && ::fstat(journalFd, &after) == 0 &&
+        ::lstat(m_journalPath.c_str(), &namedAfter) == 0 &&
+        GenerationSameIdentity(before, after) && GenerationSameIdentity(after, namedAfter);
+    if (::close(journalFd) != 0) ok = false;
+    if (!ok)
+    {
+        reason = "OMS_GENERATION_CAPACITY_SCAN_FAILED";
+        return false;
+    }
+
+    const std::uint64_t hotBytes = static_cast<std::uint64_t>(hot.st_size);
+    const std::uint64_t tailBytes = static_cast<std::uint64_t>(before.st_size) -
+        m_journalPrefixBytes;
+    if (hotBytes > std::numeric_limits<std::uint64_t>::max() - tailBytes ||
+        m_hotReplayRecords > std::numeric_limits<std::uint64_t>::max() - tailRecords)
+    {
+        reason = "OMS_GENERATION_CAPACITY_OVERFLOW";
+        return false;
+    }
+    bytes = hotBytes + tailBytes;
+    records = m_hotReplayRecords + tailRecords;
+    reason.clear();
+    return true;
+}
+
+void OmsJournal::AdoptValidatedIncrementalRecoveryCapacity(
+    std::uint64_t decodedBytes,
+    std::uint64_t records)
+{
+    std::lock_guard<std::mutex> lock(m_mtx);
+    m_capacityKnown = true;
+    m_capacityBytes = decodedBytes;
+    m_capacityRecords = records;
+    m_replayObservedBytes = decodedBytes > std::numeric_limits<std::size_t>::max() ?
+        std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(decodedBytes);
+    m_replayValidatedRecords = records > std::numeric_limits<std::size_t>::max() ?
+        std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(records);
+    m_replayReasonCode = "OMS_GENERATION_INCREMENTAL_RECOVERY";
+}
+
+// V2 compatibility layer for lineage-sealed OMS generations.
+//
+// execution_generation_support.inc remains the exact V1 implementation. The
+// owning translation unit compiles it under private *GenerationV1 method names,
+// then this file provides the public Prepare/Recover/RecoveryCapacity dispatch.
+// All lookup/index methods stay shared because V1 and V2 intentionally use the
+// same cumulative full-key runtime index formats.
+
+namespace
+{
+const char* const kRuntimeManifestHeaderV2 = "HEPTA_OMS_RUNTIME_GENERATION_V2";
+const std::uint64_t kMaximumActiveTailHeaderBytes = 512U;
+}
+
+bool OmsGenerationStore::Prepare(std::string& reason)
+{
+    m_segmentedTail = false;
+    std::string v1Reason;
+    if (PrepareGenerationV1(v1Reason))
+    {
+        m_sendIndexWindowSorted = true;
+        reason.clear();
+        return true;
+    }
+
+    // A V1 failure is never treated as absence. Try V2 only against the exact
+    // same CURRENT selection; any malformed/corrupt state still fails closed.
+    Close();
+    m_segmentedTail = false;
+    m_storeFd = ::open(m_storePath.c_str(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat storeMetadata;
+    if (m_storeFd < 0 || ::fstat(m_storeFd, &storeMetadata) != 0 ||
+        !GenerationPrivateDirectory(storeMetadata))
+    {
+        reason = "OMS_GENERATION_STORE_UNSAFE";
+        Close();
+        return false;
+    }
+
+    std::string runtimeCurrent, current;
+    if (!GenerationReadPrivateFileAt(m_storeFd, "CURRENT.runtime",
+            kMaximumGenerationMetadataBytes, runtimeCurrent) ||
+        !GenerationReadPrivateFileAt(m_storeFd, "CURRENT",
+            kMaximumGenerationMetadataBytes, current))
+    {
+        reason = "OMS_GENERATION_CURRENT_UNSAFE";
+        Close();
+        return false;
+    }
+    GenerationFields selected;
+    static const char* const currentNames[] = {
+        "generation", "current_sha256", "manifest_sha256",
+        "runtime_manifest_sha256"
+    };
+    if (!GenerationParseFields(runtimeCurrent, kRuntimeCurrentHeader, selected) ||
+        !GenerationExactFieldNames(selected, currentNames,
+            sizeof(currentNames) / sizeof(currentNames[0])) ||
+        !GenerationSafeName(selected["generation"]) ||
+        !GenerationHexDigest(selected["current_sha256"]) ||
+        !GenerationHexDigest(selected["manifest_sha256"]) ||
+        !GenerationHexDigest(selected["runtime_manifest_sha256"]) ||
+        GenerationSha256(current.data(), current.size()) != selected["current_sha256"])
+    {
+        reason = "OMS_GENERATION_RUNTIME_CURRENT_INVALID";
+        Close();
+        return false;
+    }
+    const std::string expectedCurrent =
+        std::string("{\"generation\":\"") + selected["generation"] +
+        "\",\"manifest_sha256\":\"" + selected["manifest_sha256"] +
+        "\",\"runtime_manifest_sha256\":\"" + selected["runtime_manifest_sha256"] +
+        "\",\"schema\":\"heptatrader.oms-current.v1\"}\n";
+    if (current != expectedCurrent)
+    {
+        reason = "OMS_GENERATION_CURRENT_BINDING_INVALID";
+        Close();
+        return false;
+    }
+
+    m_generation = selected["generation"];
+    m_generationFd = ::openat(m_storeFd, m_generation.c_str(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat generationMetadata;
+    if (m_generationFd < 0 || ::fstat(m_generationFd, &generationMetadata) != 0 ||
+        !GenerationPrivateDirectory(generationMetadata))
+    {
+        reason = "OMS_GENERATION_DIRECTORY_UNSAFE";
+        Close();
+        return false;
+    }
+    if (!GenerationVerifyHashedFileAt(m_generationFd, "manifest.json",
+            selected["manifest_sha256"]))
+    {
+        reason = "OMS_GENERATION_MANIFEST_DIGEST_MISMATCH";
+        Close();
+        return false;
+    }
+
+    std::string runtimeManifest;
+    if (!GenerationReadPrivateFileAt(m_generationFd, "runtime-manifest.txt",
+            kMaximumGenerationMetadataBytes, runtimeManifest) ||
+        GenerationSha256(runtimeManifest.data(), runtimeManifest.size()) !=
+            selected["runtime_manifest_sha256"])
+    {
+        reason = "OMS_GENERATION_RUNTIME_MANIFEST_DIGEST_MISMATCH";
+        Close();
+        return false;
+    }
+
+    GenerationFields manifest;
+    static const char* const manifestNamesLegacy[] = {
+        "generation", "parent_generation", "parent_manifest_sha256",
+        "history_records", "segment_records", "command_records",
+        "send_attempt_records", "hot_replay_records", "segment_sha256",
+        "checkpoint_sha256", "command_index_sha256",
+        "runtime_command_index_sha256", "send_attempt_index_sha256",
+        "hot_replay_sha256", "active_tail_header_bytes",
+        "active_tail_header_sha256", "authorization_effect",
+        "paper_authorized", "live_authorized"
+    };
+    static const char* const manifestNamesSorted[] = {
+        "generation", "parent_generation", "parent_manifest_sha256",
+        "history_records", "segment_records", "command_records",
+        "send_attempt_records", "hot_replay_records", "segment_sha256",
+        "checkpoint_sha256", "command_index_sha256",
+        "runtime_command_index_sha256", "send_attempt_index_sha256",
+        "send_attempt_index_order", "hot_replay_sha256",
+        "active_tail_header_bytes", "active_tail_header_sha256",
+        "authorization_effect", "paper_authorized", "live_authorized"
+    };
+    std::uint64_t historyRecords = 0, segmentRecords = 0;
+    if (!GenerationParseFields(runtimeManifest, kRuntimeManifestHeaderV2, manifest))
+    {
+        reason = "OMS_GENERATION_RUNTIME_MANIFEST_V2_INVALID";
+        Close();
+        return false;
+    }
+    const bool sortedSendIndex = GenerationExactFieldNames(
+        manifest, manifestNamesSorted,
+        sizeof(manifestNamesSorted) / sizeof(manifestNamesSorted[0]));
+    const bool legacySendIndex = GenerationExactFieldNames(
+        manifest, manifestNamesLegacy,
+        sizeof(manifestNamesLegacy) / sizeof(manifestNamesLegacy[0]));
+    if ((!sortedSendIndex && !legacySendIndex) ||
+        (sortedSendIndex &&
+         manifest["send_attempt_index_order"] != "account-domain-time-v1") ||
+        manifest["generation"] != m_generation ||
+        (manifest["parent_generation"] != "-" &&
+         !GenerationSafeName(manifest["parent_generation"])) ||
+        ((manifest["parent_generation"] == "-") !=
+         (manifest["parent_manifest_sha256"] == "-")) ||
+        (manifest["parent_generation"] != "-" &&
+         !GenerationHexDigest(manifest["parent_manifest_sha256"])) ||
+        !GenerationParseUnsigned(manifest["history_records"], historyRecords) ||
+        !GenerationParseUnsigned(manifest["segment_records"], segmentRecords) ||
+        segmentRecords > historyRecords ||
+        !GenerationParseUnsigned(manifest["command_records"], m_commandRecords) ||
+        !GenerationParseUnsigned(manifest["send_attempt_records"], m_sendAttemptRecords) ||
+        !GenerationParseUnsigned(manifest["hot_replay_records"], m_hotReplayRecords) ||
+        !GenerationParseUnsigned(manifest["active_tail_header_bytes"], m_journalPrefixBytes) ||
+        m_journalPrefixBytes == 0 || m_journalPrefixBytes > kMaximumActiveTailHeaderBytes ||
+        !GenerationHexDigest(manifest["active_tail_header_sha256"]) ||
+        !GenerationHexDigest(manifest["segment_sha256"]) ||
+        !GenerationHexDigest(manifest["checkpoint_sha256"]) ||
+        !GenerationHexDigest(manifest["command_index_sha256"]) ||
+        !GenerationHexDigest(manifest["runtime_command_index_sha256"]) ||
+        !GenerationHexDigest(manifest["send_attempt_index_sha256"]) ||
+        !GenerationHexDigest(manifest["hot_replay_sha256"]) ||
+        manifest["authorization_effect"] != "NONE" ||
+        manifest["paper_authorized"] != "0" || manifest["live_authorized"] != "0")
+    {
+        reason = "OMS_GENERATION_RUNTIME_MANIFEST_V2_INVALID";
+        Close();
+        return false;
+    }
+    m_journalPrefixSha256 = manifest["active_tail_header_sha256"];
+    m_sendIndexWindowSorted = sortedSendIndex;
+
+    if (!GenerationVerifyHashedFileAt(m_generationFd, "segment-000001.jsonl",
+            manifest["segment_sha256"]) ||
+        !GenerationVerifyHashedFileAt(m_generationFd, "checkpoint.json",
+            manifest["checkpoint_sha256"]) ||
+        !GenerationVerifyHashedFileAt(m_generationFd, "command-index.tsv",
+            manifest["command_index_sha256"]))
+    {
+        reason = "OMS_GENERATION_RUNTIME_FILE_DIGEST_MISMATCH";
+        Close();
+        return false;
+    }
+    if (!GenerationOpenHashedFileAt(m_generationFd, "runtime-command-index.tsv",
+            manifest["runtime_command_index_sha256"],
+            m_commandIndexFd, m_commandIndexIdentity) ||
+        !GenerationOpenHashedFileAt(m_generationFd, "send-attempt-index.tsv",
+            manifest["send_attempt_index_sha256"],
+            m_sendIndexFd, m_sendIndexIdentity) ||
+        !GenerationVerifyHashedFileAt(m_generationFd, "hot-replay.jsonl",
+            manifest["hot_replay_sha256"]))
+    {
+        reason = "OMS_GENERATION_RUNTIME_INDEX_DIGEST_MISMATCH";
+        Close();
+        return false;
+    }
+
+    if (manifest["parent_generation"] != "-")
+    {
+        const int parentFd = ::openat(m_storeFd, manifest["parent_generation"].c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        struct stat parentMetadata;
+        const bool parentOk = parentFd >= 0 &&
+            ::fstat(parentFd, &parentMetadata) == 0 &&
+            GenerationPrivateDirectory(parentMetadata) &&
+            GenerationVerifyHashedFileAt(parentFd, "manifest.json",
+                manifest["parent_manifest_sha256"]);
+        if (parentFd >= 0) ::close(parentFd);
+        if (!parentOk)
+        {
+            reason = "OMS_GENERATION_PARENT_BINDING_INVALID";
+            Close();
+            return false;
+        }
+    }
+
+    m_segmentedTail = true;
+    reason.clear();
+    return true;
+}
+
+bool OmsGenerationStore::Recover(
+    std::size_t maxTailBytes,
+    std::size_t maxTailRecords,
+    std::size_t maxRecordBytes,
+    const std::function<void(const OmsJournalEvent&)>& onEvent,
+    std::string& reason)
+{
+    if (!Prepare(reason)) return false;
+    if (!m_segmentedTail)
+    {
+        // Re-run the unchanged V1 path so all of its prefix/alignment/identity
+        // checks remain exactly authoritative.
+        Close();
+        m_segmentedTail = false;
+        return RecoverGenerationV1(
+            maxTailBytes, maxTailRecords, maxRecordBytes, onEvent, reason);
+    }
+
+    const int hotFd = ::openat(m_generationFd, "hot-replay.jsonl",
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat hotIdentity;
+    bool ok = hotFd >= 0 && ::fstat(hotFd, &hotIdentity) == 0 &&
+        GenerationPrivateFile(hotIdentity) && hotIdentity.st_size >= 0 &&
+        static_cast<std::uint64_t>(hotIdentity.st_size) <= maxTailBytes;
+    std::size_t hotRecords = 0;
+    if (ok)
+        ok = GenerationReplayRange(hotFd, 0, hotIdentity.st_size,
+            maxTailBytes, maxTailRecords, maxRecordBytes, onEvent, hotRecords) &&
+            hotRecords == m_hotReplayRecords;
+    if (hotFd >= 0) ::close(hotFd);
+    if (!ok)
+    {
+        reason = "OMS_GENERATION_HOT_REPLAY_FAILED";
+        Close();
+        return false;
+    }
+
+    const int journalFd = ::open(m_journalPath.c_str(),
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat before, named;
+    if (journalFd < 0 || ::fstat(journalFd, &before) != 0 ||
+        !GenerationPrivateFile(before) || before.st_size < 0 ||
+        static_cast<std::uint64_t>(before.st_size) < m_journalPrefixBytes ||
+        ::lstat(m_journalPath.c_str(), &named) != 0 ||
+        !GenerationSameIdentity(before, named))
+    {
+        if (journalFd >= 0) ::close(journalFd);
+        reason = "OMS_GENERATION_ACTIVE_TAIL_UNSAFE";
+        Close();
+        return false;
+    }
+    std::string headerDigest;
+    if (!GenerationHashFd(journalFd, static_cast<off_t>(m_journalPrefixBytes),
+            headerDigest) || headerDigest != m_journalPrefixSha256)
+    {
+        ::close(journalFd);
+        reason = "OMS_GENERATION_ACTIVE_TAIL_LINEAGE_MISMATCH";
+        Close();
+        return false;
+    }
+    char newline = 0;
+    ssize_t count;
+    do
+    {
+        count = ::pread(journalFd, &newline, 1,
+            static_cast<off_t>(m_journalPrefixBytes - 1U));
+    } while (count < 0 && errno == EINTR);
+    if (count != 1 || newline != '\n')
+    {
+        ::close(journalFd);
+        reason = "OMS_GENERATION_ACTIVE_TAIL_HEADER_INVALID";
+        Close();
+        return false;
+    }
+
+    std::size_t tailRecords = 0;
+    ok = GenerationReplayRange(journalFd,
+        static_cast<off_t>(m_journalPrefixBytes), before.st_size,
+        maxTailBytes, maxTailRecords, maxRecordBytes, onEvent, tailRecords);
+    struct stat after, namedAfter;
+    ok = ok && ::fstat(journalFd, &after) == 0 &&
+        ::lstat(m_journalPath.c_str(), &namedAfter) == 0 &&
+        GenerationSameIdentity(before, after) && GenerationSameIdentity(after, namedAfter);
+    if (::close(journalFd) != 0) ok = false;
+    if (!ok)
+    {
+        reason = "OMS_GENERATION_TAIL_REPLAY_FAILED";
+        Close();
+        return false;
+    }
+    m_active = true;
+    reason.clear();
+    return true;
+}
+
+bool OmsGenerationStore::RecoveryCapacity(
+    std::uint64_t& bytes,
+    std::uint64_t& records,
+    std::string& reason) const
+{
+    // Both formats represent their replay start in m_journalPrefixBytes:
+    // full immutable prefix for V1; lineage sentinel for V2. The retained V1
+    // scanner therefore measures the correct bounded hot+tail working set for
+    // either format after Recover has already verified the prefix/sentinel.
+    return RecoveryCapacityGenerationV1(bytes, records, reason);
 }

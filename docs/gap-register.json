@@ -29,7 +29,7 @@
         "docs/technical/oms-recovery-capacity.md",
         "docs/technical/persistence-support-window.md",
         "HeptaTrade/oms_generation_store.h",
-        "HeptaTrade/execution/execution_generation_v2_support.inc",
+        "HeptaTrade/execution/execution_generation_support.cpp",
         "scripts/hepta_oms_checkpoint.py",
         "scripts/hepta_oms_lifecycle.py",
         "tests/oms_recovery_growth_probe.h",

@@ -448,6 +448,42 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
                             ["previous:100", "candidate:100-to-75", "previous:75-to-flat", "candidate:flat"])
 
 
+
+    def test_installed_simulator_generation_seal_restart_preserves_state(self):
+        runtime = self.fixture("generation-seal-restart")
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.provision()
+        command, fields, order = runtime.place("BUY", 25, "1.1002")
+        runtime.wait_position(25)
+        runtime.wait_no_orders()
+        sends = runtime.send_count()
+        runtime.stop()
+
+        journal = runtime.root / "es/oms-journal.jsonl"
+        store = Path(str(journal) + ".generations")
+        helper = self.slots["CANDIDATE"] / "libexec/heptatrader/hepta_oms_lifecycle.py"
+        sealed = subprocess.run([
+            sys.executable, "-S", str(helper), "seal", "--journal", str(journal),
+            "--store", str(store), "--stopped-state"], env=CLEAN_ENV,
+            user=EXECUTION_UID, group=TEST_GID, extra_groups=[], capture_output=True,
+            text=True, timeout=20)
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        self.assertEqual(json.loads(sealed.stdout)["authorization_effect"], "NONE")
+
+        runtime.start(self.slots["CANDIDATE"])
+        runtime.wait_position(25)
+        status = runtime.call("execution.get_command_status", [f"command_id={command}"])["payload"]
+        self.assertEqual(status["order_id"], order)
+        runtime.call("trade.place_order", fields, call_id=command, duplicate=True)
+        self.assertEqual(runtime.send_count(), sends)
+        _, _, next_order = runtime.place("SELL", 25, "1.1000")
+        self.assertGreater(next_order, order)
+        runtime.wait_position(0)
+        runtime.wait_no_orders()
+        self.record_success("simulator-generation-seal-restart", runtime,
+            ["fill-before-seal", "stopped-state-v2-seal", "restart-position-restored",
+             "command-identity-preserved", "order-watermark-advanced", "final-flat"])
+
     def test_installed_archive_replay_and_explicit_downgrade_restore(self):
         runtime = self.fixture("archive-downgrade")
         runtime.start(self.slots["CANDIDATE"])

@@ -168,3 +168,7 @@ expansion before downgrade. It preserves all event bytes and command identities;
 it is not online truncation or a general N-1 compatibility claim. Generation v2
 is a separate stopped-state history-sealing mechanism with an explicit downgrade
 export path; neither mechanism runs concurrently with a writer.
+
+### Long-history maintenance
+
+V2 verification streams cumulative command and send-attempt indexes instead of materializing them as Python lists. New send-attempt indexes are ordered by `account-domain-time-v1`, enabling native lower-bound window scans. Downgrade lineage traversal is cycle-bounded by the actual parent graph rather than an arbitrary generation-count ceiling; cumulative index storage is still retained deliberately for permanent command identity and must be measured as history grows.

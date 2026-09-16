@@ -455,6 +455,13 @@
               "standard": "11"
             },
             {
+              "path": "HeptaTrade/execution/execution_generation_support.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
               "path": "HeptaTrade/execution/execution_place_order_dispatch.cpp",
               "kind": "implementation",
               "owner": "execution-service",
@@ -2174,6 +2181,13 @@
             },
             {
               "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_generation_support.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",

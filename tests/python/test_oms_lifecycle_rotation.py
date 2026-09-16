@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -121,6 +122,52 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         exported = lifecycle.export_legacy(self.journal, self.store, output)
         self.assertEqual(exported["records"], 4 * generations)
         self.assertEqual(len(list(read_records(output, max_records=128))), 4 * generations)
+
+
+    def test_simulator_checkpoint_carries_position_count_and_watermark_across_seals(self) -> None:
+        def sim(kind: str, order_id: int, side: str, qty: float, *, status: str = "", price: float = 1.1, ts: int = 1000) -> dict:
+            value = event(kind, f"sim-{order_id}", f"hash-{order_id}", status=status,
+                          order_id=order_id, ts_ms=ts)
+            value.update(venue="SIMULATOR", account="SIM", execution_domain="SIM:fixture",
+                         side=side, qty=qty, price=price, instrument="EUR.USD")
+            return value
+
+        self.journal.write_bytes(encode([
+            sim("place_sent", 1000000, "BUY", 10.0, status="submitted", ts=1000),
+            sim("status", 1000000, "BUY", 10.0, status="Filled", ts=1001),
+        ]))
+        os.chmod(self.journal, 0o600)
+        first = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        first_hot = lifecycle._read_hot(self.store / first["generation"], 1024 * 1024, 1024, 262144)
+        state = lifecycle._simulator_checkpoint_from_hot(first_hot)
+        self.assertEqual(state["max_order_id"], 1000000)
+        self.assertEqual(state["admitted_orders"], 1)
+        self.assertEqual(state["positions"], {"EUR.USD": 10.0})
+
+        self.append([
+            sim("place_sent", 1000001, "SELL", 4.0, status="submitted", ts=2000),
+            sim("status", 1000001, "SELL", 4.0, status="Filled", ts=2001),
+        ])
+        second = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        second_hot = lifecycle._read_hot(self.store / second["generation"], 1024 * 1024, 1024, 262144)
+        state = lifecycle._simulator_checkpoint_from_hot(second_hot)
+        self.assertEqual(state["max_order_id"], 1000001)
+        self.assertEqual(state["admitted_orders"], 2)
+        self.assertEqual(state["positions"], {"EUR.USD": 6.0})
+        lifecycle.verify_generation(self.store, journal=self.journal)
+
+    def test_generation_chain_has_no_arbitrary_count_ceiling(self) -> None:
+        manifests = {
+            f"g{index}": {"generation": f"g{index}",
+                           "parent_generation": f"g{index - 1}" if index else ""}
+            for index in range(1500)
+        }
+        with mock.patch.object(lifecycle, "_manifest_for",
+                               side_effect=lambda _store, generation: manifests[generation]):
+            chain = lifecycle._generation_chain(Path("/unused"), "g1499")
+        self.assertEqual(len(chain), 1500)
+        self.assertEqual(chain[0][0], "g0")
+        self.assertEqual(chain[-1][0], "g1499")
 
     def test_v1_generation_upgrades_to_v2_delta_and_exports_back_to_legacy(self) -> None:
         first = checkpoint.build_generation(self.journal, self.store, stopped=True)

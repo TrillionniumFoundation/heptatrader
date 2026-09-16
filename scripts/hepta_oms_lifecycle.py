@@ -17,6 +17,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -37,7 +38,6 @@ from verify_oms_journal_replay import (
 SCHEMA = "heptatrader.oms-generation.v2"
 RUNTIME_MANIFEST_HEADER = "HEPTA_OMS_RUNTIME_GENERATION_V2"
 TAIL_HEADER = "HEPTA_OMS_ACTIVE_TAIL_V1"
-MAX_CHAIN = 1024
 MAX_METADATA = 16 * 1024 * 1024
 
 
@@ -293,25 +293,254 @@ def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
         os.close(runtime_fd)
         os.close(legacy_fd)
 
+    def send_key(line: bytes) -> tuple[str, str, int, int, str, str, str]:
+        if len(line) > v1.MAX_INDEX_LINE:
+            raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID")
+        fields = line.rstrip(b"\n").decode("ascii").split("\t")
+        if len(fields) != 7:
+            raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID")
+        try:
+            timestamp = int(fields[2])
+            sequence = int(fields[6])
+            v1._unhex(fields[0]); v1._unhex(fields[1])
+            v1._unhex(fields[3]); v1._unhex(fields[4]); v1._unhex(fields[5])
+        except (ValueError, v1.GenerationError) as error:
+            raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID") from error
+        return (fields[0], fields[1], timestamp, sequence,
+                fields[3], fields[4], fields[5])
+
+    tail_lines: list[tuple[tuple[str, str, int, int, str, str, str], bytes]] = []
+    for attempt in tail_attempts:
+        copied = dict(attempt)
+        copied["sequence"] = history_base + int(copied["sequence"])
+        line = v1._send_attempt_line(copied)
+        tail_lines.append((send_key(line), line))
+    tail_lines.sort(key=lambda item: item[0])
+
     send_path = generation_dir / "send-attempt-index.tsv"
     send_fd = os.open(send_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
     send_count = 0
     try:
-        if parent_dir is not None:
-            for line in _iter_private_lines(parent_dir / "send-attempt-index.tsv"):
-                if len(line) > v1.MAX_INDEX_LINE or len(line.rstrip(b"\n").split(b"\t")) != 7:
-                    raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID")
-                v1._write_all(send_fd, line)
+        parent_iter = iter(()) if parent_dir is None else iter(
+            _iter_private_lines(parent_dir / "send-attempt-index.tsv"))
+        try:
+            parent_line = next(parent_iter)
+        except StopIteration:
+            parent_line = None
+        parent_key = send_key(parent_line) if parent_line is not None else None
+        previous_parent = None
+        tail_index = 0
+        while parent_line is not None or tail_index < len(tail_lines):
+            if parent_key is not None and previous_parent is not None and parent_key <= previous_parent:
+                raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_ORDER_INVALID")
+            take_parent = parent_line is not None and (
+                tail_index >= len(tail_lines) or parent_key < tail_lines[tail_index][0])
+            if take_parent:
+                v1._write_all(send_fd, parent_line)
                 send_count += 1
-        for attempt in tail_attempts:
-            copied = dict(attempt)
-            copied["sequence"] = history_base + int(copied["sequence"])
-            v1._write_all(send_fd, v1._send_attempt_line(copied))
-            send_count += 1
+                previous_parent = parent_key
+                try:
+                    parent_line = next(parent_iter)
+                    parent_key = send_key(parent_line)
+                except StopIteration:
+                    parent_line = None
+                    parent_key = None
+            else:
+                if (parent_key is not None and tail_index < len(tail_lines) and
+                        parent_key == tail_lines[tail_index][0]):
+                    raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_DUPLICATE")
+                v1._write_all(send_fd, tail_lines[tail_index][1])
+                send_count += 1
+                tail_index += 1
         v1._fsync(send_fd)
     finally:
         os.close(send_fd)
     return count, send_count
+
+
+
+SIMULATOR_STATE_META = "simulator_state_checkpoint"
+SIMULATOR_STATE_POSITION = "simulator_position_checkpoint"
+SIMULATOR_STATE_READY = "simulator_state_checkpoint_ready"
+
+
+def _empty_simulator_state() -> dict[str, Any]:
+    return {"present": False, "max_order_id": 999999, "admitted_orders": 0, "positions": {}}
+
+
+def _simulator_checkpoint_from_hot(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    state: dict[str, Any] | None = None
+    positions: dict[str, float] = {}
+    ready = False
+    for event in events:
+        kind = event.get("event", "")
+        if kind == SIMULATOR_STATE_META:
+            if state is not None or ready or event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            maximum = event.get("order_id", -1)
+            admitted = event.get("broker_request_id", -1)
+            if (type(maximum) is not int or maximum < 999999 or type(admitted) is not int or admitted < 0):
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            state = {"present": True, "max_order_id": maximum, "admitted_orders": admitted, "positions": positions}
+            continue
+        if kind == SIMULATOR_STATE_POSITION:
+            if state is None or ready or event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            instrument = event.get("instrument", "")
+            side = event.get("side", "")
+            quantity = event.get("qty", 0.0)
+            if (not instrument or instrument in positions or side not in {"BUY", "SELL"} or
+                    isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or
+                    not math.isfinite(float(quantity)) or float(quantity) <= 0.0):
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            positions[instrument] = float(quantity) if side == "BUY" else -float(quantity)
+            continue
+        if kind == SIMULATOR_STATE_READY:
+            if state is None or ready or event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            if (event.get("order_id") != state["max_order_id"] or
+                    event.get("broker_request_id") != state["admitted_orders"]):
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            ready = True
+    return state if ready else None
+
+
+def _apply_simulator_events(state: dict[str, Any], events: list[dict[str, Any]], *,
+                            require_new_order_ids: bool) -> dict[str, Any]:
+    present = bool(state.get("present", False))
+    maximum = int(state["max_order_id"])
+    base_maximum = maximum
+    admitted = int(state["admitted_orders"])
+    positions = dict(state["positions"])
+    places: dict[int, dict[str, Any]] = {}
+    fills: dict[int, dict[str, Any]] = {}
+    for event in events:
+        if event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+            continue
+        is_fill = event.get("event") == "status" and event.get("status") == "Filled"
+        if event.get("event") != "place_sent" and not is_fill:
+            continue
+        present = True
+        order_id = event.get("order_id", -1)
+        if type(order_id) is int and order_id > maximum:
+            maximum = order_id
+        quantity = event.get("qty", 0.0)
+        if (type(order_id) is not int or order_id < 0 or not event.get("instrument") or
+                event.get("side") not in {"BUY", "SELL"} or isinstance(quantity, bool) or
+                not isinstance(quantity, (int, float)) or not math.isfinite(float(quantity)) or
+                float(quantity) <= 0.0):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_EVENT_INVALID")
+        if event.get("event") == "place_sent":
+            prior = places.get(order_id)
+            identity = (event.get("instrument"), event.get("side"), float(quantity),
+                        event.get("req_id"), event.get("request_hash"))
+            if prior is not None:
+                prior_identity = (prior.get("instrument"), prior.get("side"), float(prior.get("qty", 0.0)),
+                                  prior.get("req_id"), prior.get("request_hash"))
+                if identity != prior_identity:
+                    raise v1.GenerationError("OMS_SIMULATOR_STATE_PLACE_CONFLICT")
+                continue
+            if require_new_order_ids and order_id <= base_maximum:
+                raise v1.GenerationError("OMS_SIMULATOR_STATE_ORDER_ID_REGRESSION")
+            places[order_id] = event
+            admitted += 1
+            continue
+        owner = places.get(order_id)
+        price = event.get("price", 0.0)
+        if (owner is None or isinstance(price, bool) or not isinstance(price, (int, float)) or
+                not math.isfinite(float(price)) or float(price) <= 0.0 or
+                owner.get("instrument") != event.get("instrument") or
+                owner.get("side") != event.get("side") or float(owner.get("qty", 0.0)) != float(quantity)):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_FILL_CONFLICT")
+        prior = fills.get(order_id)
+        if prior is not None:
+            if (prior.get("instrument"), prior.get("side"), float(prior.get("qty", 0.0)), float(prior.get("price", 0.0))) != (
+                    event.get("instrument"), event.get("side"), float(quantity), float(price)):
+                raise v1.GenerationError("OMS_SIMULATOR_STATE_FILL_CONFLICT")
+            continue
+        fills[order_id] = event
+        instrument = event["instrument"]
+        positions[instrument] = positions.get(instrument, 0.0) + (
+            float(quantity) if event["side"] == "BUY" else -float(quantity))
+        if not math.isfinite(positions[instrument]):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_POSITION_OVERFLOW")
+    return {"present": present, "max_order_id": maximum, "admitted_orders": admitted, "positions": positions}
+
+
+def _simulator_state_projection(state: dict[str, Any]) -> list[dict[str, Any]]:
+    if not state.get("present", False):
+        return []
+    def base(kind: str) -> dict[str, Any]:
+        return {
+            "schema_version": 4, "event": kind, "ts_ms": 0, "order_id": -1,
+            "req_id": "", "client_req_id": "", "trace_id": "",
+            "event_id": f"{kind}:v1", "risk_code": "", "venue": "SIMULATOR",
+            "strategy": "", "account": "SIM", "execution_domain": "SIM:checkpoint",
+            "request_hash": "", "venue_correlation_id": "", "broker_callback_type": "",
+            "broker_service_epoch": "", "broker_connection_epoch": 0,
+            "broker_request_id": 0, "broker_error_code": 0, "broker_message": "",
+            "broker_advanced_order_reject_json": "", "broker_why_held": "",
+            "broker_execution_id": "", "broker_remaining_quantity": 0.0,
+            "broker_market_cap_price": 0.0, "instrument": "", "side": "",
+            "qty": 0.0, "price": 0.0, "status": "", "reason": "", "source": "",
+        }
+    result: list[dict[str, Any]] = []
+    meta = base(SIMULATOR_STATE_META)
+    meta["order_id"] = int(state["max_order_id"])
+    meta["broker_request_id"] = int(state["admitted_orders"])
+    meta["status"] = "complete"
+    result.append(meta)
+    for instrument, signed in sorted(state["positions"].items()):
+        if not math.isfinite(float(signed)):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_POSITION_OVERFLOW")
+        if float(signed) == 0.0:
+            continue
+        row = base(SIMULATOR_STATE_POSITION)
+        row["event_id"] = f"{SIMULATOR_STATE_POSITION}:{instrument}"
+        row["instrument"] = instrument
+        row["side"] = "BUY" if float(signed) > 0.0 else "SELL"
+        row["qty"] = abs(float(signed))
+        row["status"] = "complete"
+        result.append(row)
+    ready = base(SIMULATOR_STATE_READY)
+    ready["order_id"] = int(state["max_order_id"])
+    ready["broker_request_id"] = int(state["admitted_orders"])
+    ready["status"] = "complete"
+    result.append(ready)
+    return result
+
+
+def _read_generation_segment(root: Path, max_bytes: int, max_records: int,
+                             max_record_bytes: int) -> list[dict[str, Any]]:
+    path = root / "segment-000001.jsonl"
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not v1._private_regular(info):
+            raise v1.GenerationError("OMS_GENERATION_UNSAFE_SEGMENT")
+        _, events = _strict_records(fd, 0, info.st_size, max_bytes=max_bytes,
+                                    max_records=max_records,
+                                    max_record_bytes=max_record_bytes)
+        return events
+    finally:
+        os.close(fd)
+
+
+def _reconstruct_simulator_state(store: Path, generation: str, *, max_bytes: int,
+                                 max_records: int, max_record_bytes: int) -> dict[str, Any]:
+    chain = _generation_chain(store, generation)
+    base_index = 0
+    for index, (_, manifest) in enumerate(chain):
+        if manifest.get("schema") == v1.SCHEMA:
+            base_index = index
+    state = _empty_simulator_state()
+    applied = False
+    for item_generation, _ in chain[base_index:]:
+        events = _read_generation_segment(store / item_generation, max_bytes,
+                                          max_records, max_record_bytes)
+        state = _apply_simulator_events(state, events, require_new_order_ids=applied)
+        applied = True
+    return state
 
 
 def _runtime_manifest_bytes(*, generation: str, parent_generation: str,
@@ -335,6 +564,7 @@ def _runtime_manifest_bytes(*, generation: str, parent_generation: str,
         f"command_index_sha256={digests['command-index.tsv']}",
         f"runtime_command_index_sha256={digests['runtime-command-index.tsv']}",
         f"send_attempt_index_sha256={digests['send-attempt-index.tsv']}",
+        "send_attempt_index_order=account-domain-time-v1",
         f"hot_replay_sha256={digests['hot-replay.jsonl']}",
         f"active_tail_header_bytes={len(marker)}",
         f"active_tail_header_sha256={hashlib.sha256(marker).hexdigest()}",
@@ -395,6 +625,15 @@ def seal_generation(journal: Path, store: Path, *, stopped: bool,
 
         combined = parent_hot + tail_events
         checkpoint, _, hot_replay, _ = v1._project_hot(combined)
+        simulator_state = _simulator_checkpoint_from_hot(parent_hot)
+        if simulator_state is None:
+            simulator_state = (_reconstruct_simulator_state(
+                store, parent_generation, max_bytes=max_bytes, max_records=max_records,
+                max_record_bytes=max_record_bytes) if parent_generation else
+                _empty_simulator_state())
+        simulator_state = _apply_simulator_events(
+            simulator_state, tail_events, require_new_order_ids=bool(parent_generation))
+        hot_replay.extend(_simulator_state_projection(simulator_state))
         _, tail_commands, _, tail_attempts = v1._project_hot(tail_events)
         for record in tail_commands.values():
             record["last_sequence"] = history_base + int(record["last_sequence"])
@@ -563,7 +802,7 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_DIGEST_MISMATCH")
     runtime_raw = v1._read_private_bytes(root / "runtime-manifest.txt")
     runtime = v1._parse_line_manifest(runtime_raw, RUNTIME_MANIFEST_HEADER)
-    required = {
+    required_legacy = {
         "generation", "parent_generation", "parent_manifest_sha256", "history_records", "segment_records",
         "command_records", "send_attempt_records", "hot_replay_records",
         "segment_sha256", "checkpoint_sha256", "command_index_sha256",
@@ -571,7 +810,13 @@ def verify_generation(store: Path, generation: str | None = None,
         "hot_replay_sha256", "active_tail_header_bytes", "active_tail_header_sha256",
         "authorization_effect", "paper_authorized", "live_authorized",
     }
-    if set(runtime) != required or runtime["generation"] != generation or runtime["authorization_effect"] != "NONE" or runtime["paper_authorized"] != "0" or runtime["live_authorized"] != "0":
+    required_sorted = set(required_legacy)
+    required_sorted.add("send_attempt_index_order")
+    sorted_send_index = set(runtime) == required_sorted
+    if (set(runtime) not in {frozenset(required_legacy), frozenset(required_sorted)} or
+            (sorted_send_index and runtime["send_attempt_index_order"] != "account-domain-time-v1") or
+            runtime["generation"] != generation or runtime["authorization_effect"] != "NONE" or
+            runtime["paper_authorized"] != "0" or runtime["live_authorized"] != "0"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_INVALID")
     marker = _tail_header(generation)
     expected = {
@@ -604,17 +849,38 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     if hashlib.sha256(runtime_raw).hexdigest() != manifest.get("runtime_manifest_sha256"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
-    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
-    if len(runtime_lines) != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+    runtime_count = 0
     previous = None
-    for line in runtime_lines:
+    for line in _iter_private_lines(root / "runtime-command-index.tsv"):
         key, _, _ = _runtime_row(line)
         if previous is not None and key <= previous:
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
         previous = key
-    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
-    if len(send_lines) != manifest.get("send_attempt_records"):
+        runtime_count += 1
+    if runtime_count != manifest.get("command_records"):
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+
+    send_count = 0
+    previous_send = None
+    for line in _iter_private_lines(root / "send-attempt-index.tsv"):
+        send_count += 1
+        if not sorted_send_index:
+            continue
+        try:
+            fields = line.rstrip(b"\n").decode("ascii").split("\t")
+        except UnicodeError as error:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+        if len(fields) != 7:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+        try:
+            key = (fields[0], fields[1], int(fields[2]), int(fields[6]),
+                   fields[3], fields[4], fields[5])
+        except ValueError as error:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+        if previous_send is not None and key <= previous_send:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+        previous_send = key
+    if send_count != manifest.get("send_attempt_records"):
         raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
     if current and current["generation"] == generation:
         manifest_digest = v1._sha256_file(root / "manifest.json")[1]
@@ -651,7 +917,7 @@ def _generation_chain(store: Path, current_generation: str) -> list[tuple[str, d
     seen: set[str] = set()
     generation = current_generation
     while generation:
-        if generation in seen or len(chain) >= MAX_CHAIN:
+        if generation in seen:
             raise v1.GenerationError("OMS_GENERATION_PARENT_CHAIN_INVALID")
         seen.add(generation)
         manifest = _manifest_for(store, generation)
