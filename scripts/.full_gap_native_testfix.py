@@ -101,6 +101,19 @@ if s.count(old) != 1:
     raise SystemExit(f"second-reader test block count={s.count(old)}")
 s = s.replace(old, new, 1)
 
+needle = '''        const auto next = recovered.PlaceOrder(newCommand);
+        assert(next.status == ExecutionCommandStatus::Accepted);
+        assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN
+'''
+replacement = '''        const auto next = recovered.PlaceOrder(newCommand);
+        assert(next.status == ExecutionCommandStatus::Accepted);
+        assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN
+        assert(recovered.RecordOrderTerminalDurably(next.orderId, &reason));
+'''
+if s.count(needle) != 1:
+    raise SystemExit(f"tail terminalization anchor count={s.count(needle)}")
+s = s.replace(needle, replacement, 1)
+
 needle = '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
 '''
 replacement = '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
