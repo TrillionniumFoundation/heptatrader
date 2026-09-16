@@ -7,6 +7,9 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
 jobs:
   materialize:
     if: github.actor != 'github-actions[bot]'
@@ -42,7 +45,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "refactor: remove source formalism and synchronize contracts"
-          git status --porcelain | test ! -s /dev/stdin
+          test -z "$(git status --porcelain)"
+
+      - name: Verify the exact final Git tree before build artifacts exist
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_exact_git_index.py --root .
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
 
       - name: Build and run canonical native core tests
         env:
@@ -50,13 +61,9 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
-      - name: Validate exact committed source and documentation contracts
+      - name: Validate source and documentation contracts
         run: |
           set -euo pipefail
-          git diff --check
-          git diff --exit-code -- .
-          git diff --cached --exit-code -- .
-          python3 scripts/verify_exact_git_index.py --root .
           bash -n scripts/build_ib_candidate_artifact.sh
           bash -n scripts/run_ib_paper_artifact_qualification.sh
           python3 scripts/check_documentation.py
@@ -68,9 +75,16 @@ jobs:
           python3 scripts/verify_canonical_ib_paper_profile.py
           python3 scripts/run_python_tests.py --lane source
 
+      - name: Remove disposable ignored artifacts and reassert exact Git tree
+        run: |
+          set -euo pipefail
+          git clean -fdX
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
+          python3 scripts/verify_exact_git_index.py --root .
+
       - name: Push only the fully verified commit
         run: |
           set -euo pipefail
-          git diff --exit-code -- .
-          git diff --cached --exit-code -- .
           git push origin HEAD:remediation/full-priority-cleanup-20260916
