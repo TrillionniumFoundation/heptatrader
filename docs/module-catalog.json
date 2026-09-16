@@ -102,7 +102,8 @@
         "HeptaTrade/oms_archive_codec.h",
         "scripts/oms_archive_codec.py",
         "scripts/hepta_oms_archive.py",
-        "scripts/hepta_oms_checkpoint.py"
+        "scripts/hepta_oms_checkpoint.py",
+        "scripts/hepta_oms_lifecycle.py"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
@@ -117,6 +118,7 @@
         "tests/oms_archive_cases.h",
         "tests/python/test_oms_archive.py",
         "tests/python/test_oms_checkpoint.py",
+        "tests/python/test_oms_lifecycle_rotation.py",
         "tests/compat/oms_recover.cpp",
         "tests/compat/oms_recover.h"
       ],

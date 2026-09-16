@@ -51,8 +51,8 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
 #endif
     const std::string path = TempJournalPath();
     const std::string store = path + ".generations";
-    const std::string checkpoint =
-        std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_checkpoint.py";
+    const std::string lifecycle =
+        std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_lifecycle.py";
     const auto expiry = OmsJournal::NowEpochMs() + 86400000;
     auto oldCommand = MakePlace("generation-old-command");
     oldCommand.expiresAtMs = expiry;
@@ -74,11 +74,12 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         assert(sends == 1);
     }
 
-    // Exercise the exact repository producer after the real writer has released
-    // its shared flock. The producer must acquire the exclusive stopped-state
-    // lock and publish CURRENT/CURRENT.runtime before native restart consumes it.
+    // Exercise the exact v2 stopped-state producer after the real writer has
+    // released its shared flock. It seals immutable history, atomically rotates
+    // the active path to a lineage-bound tail, then publishes CURRENT and
+    // CURRENT.runtime. Native restart must consume that exact format.
     const std::vector<std::string> build = {
-        "python3", checkpoint, "build", "--journal", path,
+        "python3", lifecycle, "seal", "--journal", path,
         "--store", store, "--stopped-state"};
     assert(RunPython(build) == 0);
 
@@ -116,7 +117,7 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         recovered.GetPlaceSendAttemptTimes(
             oldCommand.context.account, oldCommand.context.executionDomain,
             0, attempts);
-        assert(attempts.size() >= 2); // one disk-backed prefix + one hot tail
+        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
     }
     assert(std::remove(path.c_str()) == 0);
     RemoveGenerationFixture(store);
