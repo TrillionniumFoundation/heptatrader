@@ -18,14 +18,9 @@ def replace_once(value: str, old: str, new: str, label: str) -> str:
     return value.replace(old, new, 1)
 
 
-# Lifecycle additions use math for finite state validation.
 lifecycle_path = ROOT / "scripts/hepta_oms_lifecycle.py"
 lifecycle = lifecycle_path.read_text()
 lifecycle = replace_once(lifecycle, "import json\n", "import json\nimport math\n", "lifecycle import")
-
-# A compact simulator projection belongs only to ledgers that actually carry
-# simulator economic history. Pure IB generations must retain their previous
-# zero-hot-state capacity semantics.
 lifecycle = replace_once(
     lifecycle,
     'def _empty_simulator_state() -> dict[str, Any]:\n    return {"max_order_id": 999999, "admitted_orders": 0, "positions": {}}\n',
@@ -48,10 +43,9 @@ lifecycle = replace_once(
     "simulator state projection")
 lifecycle_path.write_text(lifecycle)
 
-# Keep the current main owner-session terminal-fence contract. PR95's first
-# compact HPM2 draft broadened sealed history to account/domain scope and is not
-# safe to absorb wholesale. We still take its normal translation unit and sorted
-# send-index reader, then restore the exact owner-session mutation projection.
+# Keep current main's owner-session HPM1 terminal-fence semantics. Only absorb
+# PR95 changes that preserve that authority boundary: the ordinary .cpp build
+# unit and sorted send-attempt index/window reader.
 header_path = ROOT / "HeptaTrade/oms_generation_store.h"
 header = git_text(MAIN, "HeptaTrade/oms_generation_store.h")
 header = replace_once(
@@ -63,19 +57,19 @@ header_path.write_text(header)
 
 support_path = ROOT / "HeptaTrade/execution/execution_generation_support.cpp"
 support = support_path.read_text()
+support = replace_once(
+    support,
+    "const std::size_t kMaximumGenerationIndexLineBytes = 64U * 1024U;\n",
+    "const std::size_t kMaximumGenerationIndexLineBytes = 64U * 1024U;\nconst std::size_t kMaximumTerminalMutationRecords = 4097U;\n",
+    "terminal mutation bound")
 main_inc = git_text(MAIN, "HeptaTrade/execution/execution_generation_support.inc")
 
-# Replace PR95's broadened Enumerate + HPM2 summary block with main's scoped
-# enumerator. The sorted send-window implementation before this block remains.
 start = support.index("bool OmsGenerationStore::EnumerateMutationRecords(")
 end = support.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore(", start)
 main_start = main_inc.index("bool OmsGenerationStore::EnumerateMutationRecords(")
 main_end = main_inc.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore(", main_start)
 support = support[:start] + main_inc[main_start:main_end] + support[end:]
 
-# Restore the established HPM1 owner-session projection at the terminal fence;
-# this preserves current evidence semantics and avoids materializing unrelated
-# sessions while still benefiting from the rest of PR95's generation runtime.
 enter = "bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocked("
 start = support.index(enter)
 main_start = main_inc.index(enter)
