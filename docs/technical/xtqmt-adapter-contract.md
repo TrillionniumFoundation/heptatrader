@@ -72,13 +72,13 @@ Before transport code is enabled, one qualification profile must bind all of:
 - sidecar executable/source digest;
 - allowed exchange/security/order-price-type matrix;
 - exact instrument identity mapping and lot/tick rules;
-- local IPC endpoint, OS identities and ACLs;
+- HXQ1 mTLS endpoint, certificate/public-key identities, host/service identities and firewall policy;
 - qualification fixture/harness digest.
 
 A developer-local import is not a supported SDK. Missing or changed inputs keep the
 adapter in negative-capability mode.
 
-## Local IPC protocol
+## HXQ1 transport protocol
 
 The sidecar protocol is length-prefixed and versioned independently of Agent
 `HTT1`, Execution `HEX1` and supervisor `HSS1`. `HXQ1` version 1 runs only on the
@@ -245,7 +245,7 @@ explicit risk/unit contract rather than reusing quantity as comparable exposure.
 | Failure | Required behavior |
 |---|---|
 | sidecar unavailable before send | reject/unavailable, no external effect |
-| malformed/oversized IPC | close request, no mutation |
+| malformed/oversized HXQ1 frame | close request, no mutation |
 | stale service or connection epoch | reject before vendor call |
 | request timeout after vendor entry | uncertain; same command only |
 | Python/vendor exception after entry | uncertain |
@@ -263,7 +263,7 @@ explicit risk/unit contract rather than reusing quantity as comparable exposure.
 Fixed-cardinality runtime output must include sidecar instance presence,
 connection epoch, connection state, account/position/order/trade refresh generation
 and completeness, quote generation/age, callback queue depth/overflow count,
-callback receive-to-normalization latency, IPC request latency/result bins,
+callback receive-to-normalization latency, HXQ1 request latency/result bins,
 reconnect count/duration, unresolved command count and last bounded reason code.
 Account IDs, order IDs, instrument symbols and command IDs are not metric labels.
 
@@ -271,8 +271,8 @@ Account IDs, order IDs, instrument symbols and command IDs are not metric labels
 
 1. Acquire and hash the actual QMT/xtquant runtime; freeze the qualification
    profile and supported instrument/order subset.
-2. Implement the HXQ1 codec and local peer/ACL enforcement with hostile framing
-   tests before importing vendor APIs.
+2. Implement HXQ1 framing, mTLS peer identity and endpoint/firewall enforcement
+   with hostile framing tests before importing vendor APIs.
 3. Implement identity/health and read-only account/position/order/trade barriers;
    prove reconnect invalidation and known-empty semantics.
 4. Implement quote subscription and freshness with deterministic callback fixtures.

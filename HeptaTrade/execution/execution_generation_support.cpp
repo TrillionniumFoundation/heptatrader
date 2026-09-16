@@ -3,11 +3,9 @@
 // textual .inc inclusion is required.
 #include "execution_coordinator.h"
 
-// Internal implementation extension compiled exactly once from
-// execution_coordinator_terminal.cpp. Keeping generation support in the
-// existing Execution translation unit avoids inventing a shadow CMake target;
-// component/build ownership remains truthful while the persistent interface is
-// still isolated behind oms_generation_store.h.
+// Generation persistence remains part of the existing Execution runtime target.
+// It is isolated behind oms_generation_store.h without a shadow service, product,
+// or textual include boundary.
 
 #include "../oms_generation_store.h"
 
