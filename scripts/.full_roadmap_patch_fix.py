@@ -112,6 +112,17 @@ if updated_profiles == 0:
     raise SystemExit("build inventory missing hepta_execution_core")
 build_targets_path.write_text(json.dumps(build_targets, indent=2) + "\n")
 
+# Hand-built recovery fault binaries must track the same production translation
+# unit split as CMake; otherwise the test validates an obsolete source layout.
+recovery_test_path = ROOT / "tests/python/test_recovery_projection.py"
+recovery_test = recovery_test_path.read_text()
+recovery_test = replace_once(
+    recovery_test,
+    '            "execution_coordinator_terminal.cpp", "paper_terminal_mutation_manifest.cpp",\n            "execution_place_order_dispatch.cpp", "execution_authoritative_flatten.cpp",\n',
+    '            "execution_coordinator_terminal.cpp", "paper_terminal_mutation_manifest.cpp",\n            "execution_generation_support.cpp",\n            "execution_place_order_dispatch.cpp", "execution_authoritative_flatten.cpp",\n',
+    "recovery projection production unit list")
+recovery_test_path.write_text(recovery_test)
+
 # The migration removes the textual V2 implementation file, so the closed gap
 # must cite the normal translation unit that now carries the same native V2
 # recovery/capacity dispatch.
