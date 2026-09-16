@@ -20,7 +20,9 @@ jobs:
           fetch-depth: 1
 
       - name: Apply semantic convergence
-        run: python3 scripts/_convergence_materialize.py
+        run: |
+          python3 scripts/_convergence_materialize.py
+          python3 scripts/_convergence_fixture_fix.py
 
       - name: Validate convergence tree
         run: |
@@ -36,7 +38,7 @@ jobs:
 
       - name: Commit validated materialized tree
         run: |
-          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py
+          rm .github/workflows/convergence-materialize.yml scripts/_convergence_materialize.py scripts/_convergence_fixture_fix.py
           git config user.name "HeptaTrader convergence materializer"
           git config user.email "noreply@github.com"
           git add -A
