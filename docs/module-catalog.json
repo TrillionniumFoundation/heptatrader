@@ -100,7 +100,8 @@
         "scripts/hepta_oms_report.py",
         "HeptaTrade/oms_archive_codec.h",
         "scripts/oms_archive_codec.py",
-        "scripts/hepta_oms_archive.py"
+        "scripts/hepta_oms_archive.py",
+        "scripts/hepta_oms_checkpoint.py"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
@@ -114,6 +115,7 @@
         "tests/oms_queue_budget_cases.h",
         "tests/oms_archive_cases.h",
         "tests/python/test_oms_archive.py",
+        "tests/python/test_oms_checkpoint.py",
         "tests/compat/oms_recover.cpp",
         "tests/compat/oms_recover.h"
       ],
@@ -210,7 +212,8 @@
         "tests/python/test_hepta_broker_egress_policy_atomic.py",
         "tests/python/test_paper_campaign_evidence.py",
         "tests/python/test_paper_evidence_publication.py",
-        "tests/python/test_campaign_provenance.py"
+        "tests/python/test_campaign_provenance.py",
+        "tests/python/test_exported_source_configure.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
