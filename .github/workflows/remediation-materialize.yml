@@ -27,6 +27,15 @@ jobs:
       - name: Apply batch 3
         run: python3 scripts/apply_priority_remediation_batch3_fix.py
 
+      - name: Remove remediation-only scaffolding
+        run: |
+          rm -f .github/workflows/remediation-materialize.yml
+          rm -f scripts/apply_priority_remediation_batch1.py
+          rm -f scripts/apply_priority_remediation_batch1_fix.py
+          rm -f scripts/apply_priority_remediation_batch2.py
+          rm -f scripts/apply_priority_remediation_batch3.py
+          rm -f scripts/apply_priority_remediation_batch3_fix.py
+
       - name: Build and run canonical native core tests
         env:
           HEPTA_BUILD_DIR: ${{ github.workspace }}/build/core
@@ -57,6 +66,6 @@ jobs:
             docs/technical/xtqmt-adapter-contract.md \
             docs/technical/reconciliation-engine.md \
             tests/python/test_recovery_projection.py
-          git add -u HeptaTrade/execution
+          git add -u HeptaTrade/execution .github/workflows scripts
           git commit -m "refactor: remove source formalism and synchronize contracts"
           git push origin HEAD:remediation/full-priority-cleanup-20260916
