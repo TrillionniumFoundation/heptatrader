@@ -1,0 +1,237 @@
+name: One-shot convergence materialization
+
+on:
+  push:
+    branches: [remediation/full-convergence-20260916]
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout convergence branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: remediation/full-convergence-20260916
+          fetch-depth: 1
+
+      - name: Apply semantic convergence
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_one(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, got {count}")
+              return text.replace(old, new, 1)
+
+          # Keep HPM2's compact summary, but scope the sealed summary to the exact
+          # fenced owner session. EnumerateMutationRecords remains the existing
+          # account/domain diagnostic API; only the terminal summary is narrowed.
+          path = Path("HeptaTrade/oms_generation_store.h")
+          text = path.read_text()
+          text = replace_one(text,
+              '''    bool EnumerateMutationRecords(\n        const std::string& agentId,\n        const std::string& sessionId,\n        const std::string& account,\n        const std::string& executionDomain,\n''',
+              '''    bool EnumerateMutationRecords(\n        const std::string& account,\n        const std::string& executionDomain,\n''',
+              "header enumerate signature")
+          path.write_text(text)
+
+          path = Path("HeptaTrade/execution/execution_generation_support.cpp")
+          text = path.read_text()
+          start = text.index("bool OmsGenerationStore::SummarizeMutationRecords(")
+          end = text.index("ExecutionCoordinator::RequestRecordStore::RequestRecordStore(", start)
+          segment = text[start:end]
+          segment = replace_one(segment,
+              '''bool OmsGenerationStore::SummarizeMutationRecords(\n    const std::string& account,\n    const std::string& executionDomain,\n''',
+              '''bool OmsGenerationStore::SummarizeMutationRecords(\n    const std::string& agentId,\n    const std::string& sessionId,\n    const std::string& account,\n    const std::string& executionDomain,\n''',
+              "summary signature")
+          segment = replace_one(segment,
+              '''        std::string rowAccount, rowDomain;\n        if (!GenerationDecodeHex(fields[10], rowAccount) ||\n            !GenerationDecodeHex(fields[11], rowDomain) ||\n''',
+              '''        std::string rowAgent, rowSession, rowAccount, rowDomain;\n        if (!GenerationDecodeHex(fields[0], rowAgent) ||\n            !GenerationDecodeHex(fields[1], rowSession) ||\n            !GenerationDecodeHex(fields[10], rowAccount) ||\n            !GenerationDecodeHex(fields[11], rowDomain) ||\n''',
+              "summary owner decode")
+          segment = replace_one(segment,
+              '''        if (fields[12] == "1" && rowAccount == account &&\n            rowDomain == executionDomain)\n''',
+              '''        if (fields[12] == "1" && rowAgent == agentId &&\n            rowSession == sessionId && rowAccount == account &&\n            rowDomain == executionDomain)\n''',
+              "summary owner filter")
+          text = text[:start] + segment + text[end:]
+          text = replace_one(text,
+              '''    if (!m_generationStore.SummarizeMutationRecords(\n            binding.owner.account, binding.owner.executionDomain,\n            sealed, reason))\n''',
+              '''    if (!m_generationStore.SummarizeMutationRecords(\n            binding.owner.agentId, binding.owner.sessionId,\n            binding.owner.account, binding.owner.executionDomain,\n            sealed, reason))\n''',
+              "terminal summary call")
+          text = replace_one(text,
+              '''        if (!request.durableMutationIntent ||\n            request.context.account != binding.owner.account ||\n            request.context.executionDomain != binding.owner.executionDomain)\n''',
+              '''        if (!request.durableMutationIntent ||\n            request.context.agentId != binding.owner.agentId ||\n            request.context.sessionId != binding.owner.sessionId ||\n            request.context.account != binding.owner.account ||\n            request.context.executionDomain != binding.owner.executionDomain)\n''',
+              "terminal active-tail owner filter")
+          text = text.replace(
+              "// Capacity bridge compiled after execution_generation_support.inc so it can\n// reuse the same private generation identity helpers. This is not another\n// translation unit or authority path.\n",
+              "// Capacity support stays in this canonical generation translation unit and\n// reuses the same private identity helpers; there is no textual include or\n// second persistence authority.\n")
+          path.write_text(text)
+
+          # Verify cumulative generation indexes in one pass. The verifier may do
+          # O(history) I/O for integrity, but it must not materialize O(history)
+          # Python objects in memory.
+          path = Path("scripts/hepta_oms_lifecycle.py")
+          text = path.read_text()
+          marker = "\n\ndef _iter_private_lines(path: Path) -> Iterator[bytes]:\n"
+          if marker not in text or "def _validate_runtime_index_lines" in text:
+              raise SystemExit("lifecycle helper insertion point invalid")
+          helpers = r'''
+
+def _send_index_key(line: bytes) -> tuple[str, str, int, int, str, str, str]:
+    if len(line) > v1.MAX_INDEX_LINE:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+    try:
+        fields = line.rstrip(b"\n").decode("ascii").split("\t")
+    except UnicodeError as error:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+    if len(fields) != 7:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+    try:
+        timestamp = int(fields[2])
+        sequence = int(fields[6])
+        for index in (0, 1, 3, 4, 5):
+            v1._unhex(fields[index])
+    except (ValueError, OverflowError, v1.GenerationError) as error:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+    return (fields[0], fields[1], timestamp, sequence,
+            fields[3], fields[4], fields[5])
+
+
+def _validate_runtime_index_lines(lines: Iterable[bytes], expected_records: int) -> None:
+    count = 0
+    previous: tuple[str, str, str] | None = None
+    for line in lines:
+        key, _, _ = _runtime_row(line)
+        if previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
+        previous = key
+        count += 1
+    if count != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+
+
+def _validate_send_index_lines(lines: Iterable[bytes], expected_records: int,
+                               sorted_index: bool) -> None:
+    count = 0
+    previous: tuple[str, str, int, int, str, str, str] | None = None
+    for line in lines:
+        key = _send_index_key(line)
+        if sorted_index and previous is not None and key <= previous:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+        previous = key
+        count += 1
+    if count != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
+'''
+          text = text.replace(marker, helpers + marker, 1)
+          old = '''    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))\n    if len(runtime_lines) != manifest.get("command_records"):\n        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")\n    previous = None\n    for line in runtime_lines:\n        key, _, _ = _runtime_row(line)\n        if previous is not None and key <= previous:\n            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")\n        previous = key\n    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))\n    if len(send_lines) != manifest.get("send_attempt_records"):\n        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")\n    if sorted_send_index:\n        previous_send = None\n        for line in send_lines:\n            fields = line.rstrip(b"\\n").decode("ascii").split("\\t")\n            if len(fields) != 7:\n                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")\n            try:\n                key = (fields[0], fields[1], int(fields[2]), int(fields[6]),\n                       fields[3], fields[4], fields[5])\n            except ValueError as error:\n                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error\n            if previous_send is not None and key <= previous_send:\n                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")\n            previous_send = key\n'''
+          new = '''    _validate_runtime_index_lines(\n        _iter_private_lines(root / "runtime-command-index.tsv"),\n        manifest["command_records"])\n    _validate_send_index_lines(\n        _iter_private_lines(root / "send-attempt-index.tsv"),\n        manifest["send_attempt_records"], sorted_send_index)\n'''
+          text = replace_one(text, old, new, "streaming generation verification")
+          path.write_text(text)
+
+          # Behavioral regression: verify_generation must be able to consume an
+          # iterator which explicitly rejects list() length-hint materialization.
+          path = Path("tests/python/test_oms_lifecycle_rotation.py")
+          text = path.read_text()
+          text = replace_one(text, "import unittest\n", "import unittest\nfrom unittest import mock\n",
+                             "mock import")
+          marker = '''\n\nclass OmsLifecycleRotationTests(unittest.TestCase):\n'''
+          probe = r'''
+
+class StreamingOnlyIterator:
+    def __init__(self, values) -> None:
+        self._values = iter(values)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._values)
+
+    def __length_hint__(self):
+        raise AssertionError("generation index verification must stream, not list()")
+'''
+          if marker not in text:
+              raise SystemExit("test class insertion point invalid")
+          text = text.replace(marker, probe + marker, 1)
+          method_marker = '''    def test_send_attempt_index_remains_window_sorted_across_generations(self) -> None:\n'''
+          method = r'''    def test_generation_verification_streams_cumulative_indexes(self) -> None:
+        lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        original = lifecycle._iter_private_lines
+
+        def streaming(path: Path):
+            return StreamingOnlyIterator(original(path))
+
+        with mock.patch.object(lifecycle, "_iter_private_lines", side_effect=streaming):
+            verified = lifecycle.verify_generation(self.store, journal=self.journal)
+        self.assertEqual(verified["result"], "PASS")
+
+
+'''
+          if method_marker not in text:
+              raise SystemExit("streaming test insertion point invalid")
+          text = text.replace(method_marker, method + method_marker, 1)
+          path.write_text(text)
+
+          # Native HPM2 regression: a same-account/domain foreign session remains
+          # permanently queryable but is excluded from the fenced owner's compact
+          # terminal count.
+          path = Path("tests/oms_recovery_growth_probe.h")
+          text = path.read_text()
+          text = replace_one(text,
+              '''    auto oldCommand = MakePlace("generation-old-command");\n    oldCommand.expiresAtMs = expiry;\n''',
+              '''    auto oldCommand = MakePlace("generation-old-command");\n    oldCommand.expiresAtMs = expiry;\n    auto foreignCommand = MakePlace("generation-foreign-session");\n    foreignCommand.context.sessionId += "-foreign";\n    foreignCommand.expiresAtMs = expiry;\n''',
+              "foreign command fixture")
+          text = replace_one(text,
+              '''        const auto result = coordinator.PlaceOrder(oldCommand);\n        assert(result.status == ExecutionCommandStatus::Accepted);\n        std::string reason;\n        assert(coordinator.RecordOrderTerminalDurably(result.orderId, &reason));\n        assert(coordinator.RuntimeObservation().orderOwners == 0);\n        assert(sends == 1);\n''',
+              '''        const auto result = coordinator.PlaceOrder(oldCommand);\n        assert(result.status == ExecutionCommandStatus::Accepted);\n        std::string reason;\n        assert(coordinator.RecordOrderTerminalDurably(result.orderId, &reason));\n        const auto foreign = coordinator.PlaceOrder(foreignCommand);\n        assert(foreign.status == ExecutionCommandStatus::Accepted);\n        assert(coordinator.RecordOrderTerminalDurably(foreign.orderId, &reason));\n        assert(coordinator.RuntimeObservation().orderOwners == 0);\n        assert(sends == 2);\n''',
+              "foreign command seal")
+          text = replace_one(text, "        assert(sends == 1); // disk lookup never calls the venue\n",
+                             "        assert(sends == 2); // disk lookup never calls the venue\n",
+                             "sealed send count")
+          text = replace_one(text,
+              '''        const auto next = recovered.PlaceOrder(newCommand);\n        assert(next.status == ExecutionCommandStatus::Accepted);\n        assert(sends == 2); // capacity was adopted, so new entry is not UNKNOWN\n\n        std::vector<std::int64_t> attempts;\n''',
+              '''        const auto next = recovered.PlaceOrder(newCommand);\n        assert(next.status == ExecutionCommandStatus::Accepted);\n        assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN\n        assert(recovered.RecordOrderTerminalDurably(next.orderId, &reason));\n\n        std::vector<std::int64_t> attempts;\n''',
+              "new command terminalization")
+          text = replace_one(text,
+              '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail\n''',
+              '''        assert(attempts.size() >= 3); // two sealed attempts + one hot tail\n\n        PaperTerminalFenceBinding binding;\n        binding.owner = oldCommand.context;\n        binding.finalizationId = "generation-terminal-fixture";\n        binding.preliminaryReceiptSha256 = "sha256:" + std::string(64, 'a');\n        binding.recoveryIngressFence = 1;\n        binding.serviceEpoch = "generation-test-epoch";\n        binding.serviceFencingGeneration = 1;\n        binding.serviceProcessId = 1;\n        binding.serviceProcessStartTicks = 1;\n        binding.brokerConnectionEpoch = 1;\n        binding.brokerSocketIdentitySha256 = "sha256:" + std::string(64, 'b');\n        PaperTerminalMutationUniverse universe;\n        assert(recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason));\n        assert(universe.commandCount == 2);\n        ExecutionCommandResult foreignStatus;\n        assert(recovered.GetCommandStatus(\n            foreignCommand.context.agentId, foreignCommand.context.sessionId,\n            foreignCommand.context.toolCallId, foreignStatus));\n        assert(foreignStatus.status == ExecutionCommandStatus::Accepted);\n''',
+              "owner-scoped HPM2 terminal assertion")
+          path.write_text(text)
+
+          # One canonical local development entry point; do not maintain an
+          # independent unittest-discovery command in the architecture page.
+          path = Path("docs/AGENT-NATIVE-TRADING-OS-ARCHITECTURE.md")
+          text = path.read_text()
+          text = replace_one(text,
+              '''./scripts/dev_core.sh\npython3 scripts/check_documentation.py\npython3 -m unittest discover -s tests/python -p 'test_*.py'\n''',
+              '''./scripts/dev_core.sh\npython3 scripts/check_documentation.py\npython3 scripts/run_python_tests.py --lane core\npython3 scripts/run_python_tests.py --lane source\n''',
+              "canonical development commands")
+          path.write_text(text)
+          PY
+
+      - name: Validate convergence tree
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
+          python3 -m py_compile scripts/hepta_oms_lifecycle.py tests/python/test_oms_lifecycle_rotation.py
+          python3 -m unittest tests.python.test_oms_lifecycle_rotation
+          ./scripts/dev_core.sh
+          python3 scripts/check_documentation.py
+          python3 scripts/check_component_coverage.py
+          python3 scripts/check_gap_register.py
+          python3 scripts/run_python_tests.py --lane source
+
+      - name: Commit validated materialized tree
+        run: |
+          rm .github/workflows/convergence-materialize.yml
+          git config user.name "HeptaTrader convergence materializer"
+          git config user.email "noreply@github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "fix: converge owner-scoped HPM2 and streaming generation verification"
+          git push origin HEAD:remediation/full-convergence-20260916
