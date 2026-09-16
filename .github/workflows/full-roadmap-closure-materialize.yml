@@ -78,3 +78,5 @@ jobs:
           git add -A
           git commit -m 'fix: close OMS rotation restart and history maintenance gaps'
           git push origin "HEAD:$BRANCH"
+
+# retrigger exact-head materialization after review
