@@ -13,7 +13,8 @@ import hepta_oms_checkpoint as lifecycle
 
 
 def event(kind: str, command: str, request_hash: str, *, status: str = "",
-          order_id: int = -1, risk_code: str = "", correlation: str = "") -> dict:
+          order_id: int = -1, risk_code: str = "", correlation: str = "",
+          source: str = "agent.tool:agent-a") -> dict:
     return {
         "schema_version": 4,
         "event": kind,
@@ -47,7 +48,7 @@ def event(kind: str, command: str, request_hash: str, *, status: str = "",
         "price": 1.1,
         "status": status,
         "reason": risk_code,
-        "source": "agent:agent-a",
+        "source": source,
     }
 
 
@@ -83,6 +84,8 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertEqual(manifest["journal_records"], 6)
         verified = lifecycle.verify_generation(self.store)
         self.assertEqual(verified["result"], "PASS")
+        self.assertEqual(verified["command_records"], 3)
+        self.assertEqual(verified["send_attempt_records"], 2)
         duplicate = lifecycle.lookup_command(
             self.store, "agent-a", "session-a", "old-command", "hash-old")
         conflict = lifecycle.lookup_command(
@@ -94,11 +97,37 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertEqual(conflict["status"], "conflict")
         self.assertEqual(missing["status"], "missing")
         current = json.loads((self.store / "CURRENT").read_text())
-        checkpoint = json.loads((self.store / current["generation"] / "checkpoint.json").read_text())
+        generation = self.store / current["generation"]
+        checkpoint = json.loads((generation / "checkpoint.json").read_text())
         self.assertEqual([item["command_id"] for item in checkpoint["hot_commands"]],
                          ["uncertain-command"])
         self.assertFalse(checkpoint["paper_authorized"])
         self.assertFalse(checkpoint["live_authorized"])
+        self.assertTrue((generation / "runtime-manifest.txt").is_file())
+        self.assertTrue((generation / "runtime-command-index.tsv").is_file())
+        self.assertTrue((generation / "send-attempt-index.tsv").is_file())
+        self.assertTrue((generation / "hot-replay.jsonl").is_file())
+        runtime_current = (self.store / "CURRENT.runtime").read_text()
+        self.assertIn("HEPTA_OMS_RUNTIME_CURRENT_V1\n", runtime_current)
+        self.assertIn(f"generation={current['generation']}\n", runtime_current)
+        hot = [json.loads(line) for line in (generation / "hot-replay.jsonl").read_text().splitlines()]
+        self.assertTrue(hot)
+        self.assertTrue(all(value["req_id"] == "uncertain-command" for value in hot))
+
+    def test_current_and_historical_agent_source_namespaces_are_indexed(self) -> None:
+        values = [
+            event("order_intent", "current", "hash-current"),
+            event("reject", "current", "hash-current", status="rejected", risk_code="RISK"),
+            event("order_intent", "legacy", "hash-legacy", source="agent:legacy-agent"),
+            event("reject", "legacy", "hash-legacy", status="rejected", risk_code="RISK",
+                  source="agent:legacy-agent"),
+        ]
+        self.write_events(values)
+        lifecycle.build_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(lifecycle.lookup_command(
+            self.store, "agent-a", "session-a", "current", "hash-current")["status"], "duplicate")
+        self.assertEqual(lifecycle.lookup_command(
+            self.store, "legacy-agent", "session-a", "legacy", "hash-legacy")["status"], "duplicate")
 
     def test_generation_parent_chain_advances_without_deleting_old_identity(self) -> None:
         self.write_events(self.baseline())
@@ -135,12 +164,24 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertEqual(lifecycle.lookup_command(
             self.store, "agent-a", "session-a", "later", "hash-later")["status"], "missing")
 
+    def test_crash_after_json_current_before_runtime_pointer_fails_closed(self) -> None:
+        self.write_events(self.baseline())
+        lifecycle.build_generation(self.journal, self.store, stopped=True)
+        self.write_events(self.baseline() + [event("order_intent", "later", "hash-later")])
+        def fail(phase: str) -> None:
+            if phase == "current-json-durable":
+                raise RuntimeError("fixture crash between pointers")
+        with self.assertRaisesRegex(RuntimeError, "fixture crash"):
+            lifecycle.build_generation(self.journal, self.store, stopped=True, phase_hook=fail)
+        with self.assertRaisesRegex(lifecycle.GenerationError, "RUNTIME_CURRENT_MISMATCH"):
+            lifecycle.verify_generation(self.store)
+
     def test_corrupt_current_generation_fails_closed_without_parent_fallback(self) -> None:
         self.write_events(self.baseline())
         first = lifecycle.build_generation(self.journal, self.store, stopped=True)
         self.write_events(self.baseline() + [event("order_intent", "later", "hash-later")])
         second = lifecycle.build_generation(self.journal, self.store, stopped=True)
-        index = self.store / second["generation"] / "command-index.tsv"
+        index = self.store / second["generation"] / "runtime-command-index.tsv"
         with index.open("ab") as stream:
             stream.write(b"corrupt\n")
         with self.assertRaisesRegex(lifecycle.GenerationError, "DIGEST_MISMATCH"):
@@ -163,6 +204,15 @@ class OmsCheckpointTests(unittest.TestCase):
         self.write_events(self.baseline())
         with self.assertRaisesRegex(lifecycle.GenerationError, "STOP_ALL_WRITERS_REQUIRED"):
             lifecycle.build_generation(self.journal, self.store, stopped=False)
+
+    def test_runtime_generation_rejects_gzip_source_until_expanded(self) -> None:
+        import gzip
+        raw = "".join(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
+                      for value in self.baseline()).encode()
+        self.journal.write_bytes(gzip.compress(raw, mtime=0))
+        os.chmod(self.journal, 0o600)
+        with self.assertRaisesRegex(lifecycle.GenerationError, "REQUIRES_EXPANDED_JOURNAL"):
+            lifecycle.build_generation(self.journal, self.store, stopped=True)
 
 
 if __name__ == "__main__":
