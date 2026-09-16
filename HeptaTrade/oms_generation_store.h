@@ -35,6 +35,19 @@ struct OmsGenerationMutationRecord
     std::string venueCorrelationId;
 };
 
+// Fixed-size digest/count summary of sealed durable mutation history.  The
+// command binding hashes canonical command rows in permanent-index order.  The
+// correlation binding hashes the correlation reference attached to each sealed
+// mutation in that same order; HPM2 binds this versioned projection without
+// loading the historical command universe into memory.
+struct OmsGenerationMutationSummary
+{
+    std::uint64_t commandCount = 0;
+    std::uint64_t correlationReferenceCount = 0;
+    std::string commandBindingSha256;
+    std::string correlationBindingSha256;
+};
+
 struct OmsGenerationSendAttempt
 {
     std::string requestKey;
@@ -107,6 +120,12 @@ public:
         const std::string& account,
         const std::string& executionDomain,
         std::vector<OmsGenerationMutationRecord>& records,
+        std::string& reason) const;
+
+    bool SummarizeMutationRecords(
+        const std::string& account,
+        const std::string& executionDomain,
+        OmsGenerationMutationSummary& summary,
         std::string& reason) const;
 
 private:

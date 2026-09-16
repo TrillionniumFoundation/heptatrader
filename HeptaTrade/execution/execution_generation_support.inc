@@ -25,7 +25,6 @@ namespace
 {
 const std::size_t kMaximumGenerationMetadataBytes = 1024U * 1024U;
 const std::size_t kMaximumGenerationIndexLineBytes = 64U * 1024U;
-const std::size_t kMaximumTerminalMutationRecords = 4097U;
 const std::size_t kHistoricalCommandCache = 256U;
 const char* const kRuntimeCurrentHeader = "HEPTA_OMS_RUNTIME_CURRENT_V1";
 const char* const kRuntimeManifestHeader = "HEPTA_OMS_RUNTIME_GENERATION_V1";
@@ -994,11 +993,6 @@ bool OmsGenerationStore::EnumerateMutationRecords(
         if (fields[12] == "1" && rowAccount == account &&
             rowDomain == executionDomain)
         {
-            if (records.size() >= kMaximumTerminalMutationRecords)
-            {
-                reason = "OMS_GENERATION_TERMINAL_MUTATION_UNIVERSE_TOO_LARGE";
-                return false;
-            }
             OmsGenerationMutationRecord record;
             if (!GenerationDecodeHex(fields[0], record.agentId) ||
                 !GenerationDecodeHex(fields[1], record.sessionId) ||
@@ -1014,6 +1008,142 @@ bool OmsGenerationStore::EnumerateMutationRecords(
             records.push_back(record);
         }
         offset = end;
+    }
+    reason.clear();
+    return true;
+}
+
+bool OmsGenerationStore::SummarizeMutationRecords(
+    const std::string& account,
+    const std::string& executionDomain,
+    OmsGenerationMutationSummary& summary,
+    std::string& reason) const
+{
+    summary = OmsGenerationMutationSummary();
+    if (!m_active)
+    {
+        summary.commandBindingSha256 =
+            "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        summary.correlationBindingSha256 = summary.commandBindingSha256;
+        reason.clear();
+        return true;
+    }
+    if (!ValidatePinnedIndex(m_commandIndexFd, "runtime-command-index.tsv",
+            m_commandIndexIdentity))
+    {
+        reason = "OMS_GENERATION_COMMAND_INDEX_CHANGED";
+        return false;
+    }
+
+    EVP_MD_CTX* commandDigest = EVP_MD_CTX_new();
+    EVP_MD_CTX* correlationDigest = EVP_MD_CTX_new();
+    if (commandDigest == nullptr || correlationDigest == nullptr ||
+        EVP_DigestInit_ex(commandDigest, EVP_sha256(), nullptr) != 1 ||
+        EVP_DigestInit_ex(correlationDigest, EVP_sha256(), nullptr) != 1)
+    {
+        if (commandDigest != nullptr) EVP_MD_CTX_free(commandDigest);
+        if (correlationDigest != nullptr) EVP_MD_CTX_free(correlationDigest);
+        reason = "OMS_GENERATION_TERMINAL_DIGEST_FAILED";
+        return false;
+    }
+
+    bool ok = true;
+    off_t offset = 0;
+    while (ok && offset < m_commandIndexIdentity.st_size)
+    {
+        off_t start = 0, end = 0;
+        std::string line;
+        std::vector<std::string> fields;
+        if (!GenerationReadLineContaining(m_commandIndexFd,
+                m_commandIndexIdentity.st_size, offset, start, end, line) ||
+            start != offset || end <= offset ||
+            !GenerationSplitTabs(line, fields) || fields.size() != 13U)
+        {
+            reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
+            ok = false;
+            break;
+        }
+        std::string rowAccount, rowDomain;
+        if (!GenerationDecodeHex(fields[10], rowAccount) ||
+            !GenerationDecodeHex(fields[11], rowDomain) ||
+            (fields[12] != "0" && fields[12] != "1") ||
+            (fields[4] != "place" && fields[4] != "cancel" &&
+             fields[4] != "flatten"))
+        {
+            reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
+            ok = false;
+            break;
+        }
+        if (fields[12] == "1" && rowAccount == account &&
+            rowDomain == executionDomain)
+        {
+            const std::string commandLine = std::string("command=") +
+                fields[0] + "|" + fields[1] + "|" + fields[2] + "|" +
+                fields[4] + "|" + fields[8] + "\n";
+            ok = EVP_DigestUpdate(commandDigest, commandLine.data(),
+                    commandLine.size()) == 1;
+            if (!ok)
+            {
+                reason = "OMS_GENERATION_TERMINAL_DIGEST_FAILED";
+                break;
+            }
+            if (summary.commandCount ==
+                std::numeric_limits<std::uint64_t>::max())
+            {
+                reason = "OMS_GENERATION_TERMINAL_COUNT_OVERFLOW";
+                ok = false;
+                break;
+            }
+            ++summary.commandCount;
+            if (!fields[8].empty())
+            {
+                const std::string correlationLine =
+                    std::string("correlation-ref=") + fields[8] + "\n";
+                ok = EVP_DigestUpdate(correlationDigest,
+                        correlationLine.data(), correlationLine.size()) == 1;
+                if (!ok)
+                {
+                    reason = "OMS_GENERATION_TERMINAL_DIGEST_FAILED";
+                    break;
+                }
+                if (summary.correlationReferenceCount ==
+                    std::numeric_limits<std::uint64_t>::max())
+                {
+                    reason = "OMS_GENERATION_TERMINAL_COUNT_OVERFLOW";
+                    ok = false;
+                    break;
+                }
+                ++summary.correlationReferenceCount;
+            }
+        }
+        offset = end;
+    }
+
+    auto finish = [](EVP_MD_CTX* context, std::string& output) {
+        unsigned char digest[EVP_MAX_MD_SIZE];
+        unsigned int length = 0;
+        if (EVP_DigestFinal_ex(context, digest, &length) != 1 || length != 32)
+            return false;
+        static const char digits[] = "0123456789abcdef";
+        output = "sha256:";
+        output.reserve(71);
+        for (unsigned int i = 0; i < length; ++i)
+        {
+            output.push_back(digits[digest[i] >> 4]);
+            output.push_back(digits[digest[i] & 15U]);
+        }
+        return true;
+    };
+    if (ok)
+        ok = finish(commandDigest, summary.commandBindingSha256) &&
+            finish(correlationDigest, summary.correlationBindingSha256);
+    EVP_MD_CTX_free(commandDigest);
+    EVP_MD_CTX_free(correlationDigest);
+    if (!ok)
+    {
+        if (reason.empty()) reason = "OMS_GENERATION_TERMINAL_DIGEST_FAILED";
+        summary = OmsGenerationMutationSummary();
+        return false;
     }
     reason.clear();
     return true;
@@ -1216,33 +1346,13 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
         m_paperTerminalFenceBinding = binding;
     }
 
-    std::vector<PaperTerminalMutationRecord> records;
-    std::set<std::tuple<std::string, std::string, std::string,
-                        std::string, std::string>> seen;
-    if (m_generationStore.IsActive())
-    {
-        std::vector<OmsGenerationMutationRecord> historical;
-        if (!m_generationStore.EnumerateMutationRecords(
-                binding.owner.account, binding.owner.executionDomain,
-                historical, reason))
-            return false;
-        for (std::size_t i = 0; i < historical.size(); ++i)
-        {
-            const OmsGenerationMutationRecord& source = historical[i];
-            const std::tuple<std::string, std::string, std::string,
-                             std::string, std::string> key(
-                source.agentId, source.sessionId, source.commandId,
-                source.operation, source.venueCorrelationId);
-            if (!seen.insert(key).second) continue;
-            PaperTerminalMutationRecord record;
-            record.agentId = source.agentId;
-            record.sessionId = source.sessionId;
-            record.toolCallId = source.commandId;
-            record.operation = source.operation;
-            record.venueCorrelationId = source.venueCorrelationId;
-            records.push_back(record);
-        }
-    }
+    OmsGenerationMutationSummary sealed;
+    if (!m_generationStore.SummarizeMutationRecords(
+            binding.owner.account, binding.owner.executionDomain,
+            sealed, reason))
+        return false;
+
+    std::vector<PaperTerminalMutationRecord> activeTail;
     for (RequestRecordStore::Base::const_iterator it = m_requests.begin();
          it != m_requests.end(); ++it)
     {
@@ -1251,19 +1361,29 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
             request.context.account != binding.owner.account ||
             request.context.executionDomain != binding.owner.executionDomain)
             continue;
-        const std::tuple<std::string, std::string, std::string,
-                         std::string, std::string> key(
+        OmsGenerationCommandRecord historical;
+        std::string lookupReason;
+        const OmsGenerationLookupStatus lookup = m_generationStore.LookupCommand(
             request.context.agentId, request.context.sessionId,
-            request.context.toolCallId, request.operation,
-            request.venueCorrelationId);
-        if (!seen.insert(key).second) continue;
+            request.context.toolCallId, historical, lookupReason);
+        if (lookup == OmsGenerationLookupStatus::Error)
+        {
+            reason = lookupReason.empty() ?
+                "OMS_GENERATION_COMMAND_INDEX_FAILED" : lookupReason;
+            return false;
+        }
+        if (lookup == OmsGenerationLookupStatus::Found)
+            continue; // already sealed into the fixed-size history binding
         PaperTerminalMutationRecord record;
         record.agentId = request.context.agentId;
         record.sessionId = request.context.sessionId;
         record.toolCallId = request.context.toolCallId;
         record.operation = request.operation;
         record.venueCorrelationId = request.venueCorrelationId;
-        records.push_back(record);
+        activeTail.push_back(record);
     }
-    return BuildPaperTerminalMutationUniverse(records, universe, reason);
+    return BuildPaperTerminalPartitionedUniverse(
+        sealed.commandCount, sealed.commandBindingSha256,
+        sealed.correlationReferenceCount, sealed.correlationBindingSha256,
+        activeTail, universe, reason);
 }

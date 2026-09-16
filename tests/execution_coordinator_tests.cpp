@@ -1970,6 +1970,7 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
 #include "cancel_uncertainty_cases.h"
 #include "flatten_result_cases.h"
 #include "oms_recovery_growth_probe.h"
+#include "terminal_manifest_capacity_cases.h"
 
 int main(int argc, char** argv)
 {
@@ -1986,6 +1987,7 @@ int main(int argc, char** argv)
         return RunRecoveryGrowthProbe(count);
     }
     RunRecoveryGrowthProbe(16); // exercise the same producer in normal CTest
+    TestTerminalManifestHasNo4096HistoryCeiling();
 
     TestCancelUncertaintySurvivesReplayAndRequiresTerminalProof();
     TestCancelPreSendRefusalIsDistinctFromDeferred();
