@@ -17,7 +17,7 @@ SHA = "a" * 40
 
 
 class CoreReleaseAcceptanceTests(unittest.TestCase):
-    def fixture(self, root: Path, fail=None, tamper=False):
+    def fixture(self, root: Path, fail=None, tamper=False, untracked=False):
         calls = []
         candidate = None
 
@@ -28,6 +28,8 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             stdout = ""
             if "rev-parse" in argv:
                 stdout = (acceptance.REFERENCE_SHA if "-C" in argv else SHA) + "\n"
+            elif argv[:2] == ["git", "status"] and untracked:
+                stdout = "?? injected-untracked-file\n"
             elif "show" in argv:
                 stdout = "1789279500\n"
             elif argv[:2] == ["git", "init"]:
@@ -93,6 +95,9 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             self.assertTrue(process[3].startswith("--chdir="))
             self.assertEqual(receipt["package_sha256"], sha)
             self.assertFalse(receipt["paper_authorized"])
+            status_calls = [c for c in calls if c[:2] == ["git", "status"]]
+            self.assertEqual(len(status_calls), 2)
+            self.assertIn(":(exclude,top)dist", status_calls[-1])
             with self.assertRaises(ValueError):
                 acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
 
@@ -109,6 +114,16 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     self.assertTrue(any(c[:3] == ["sudo", "rm", "-rf"] for c in calls))
                 if phase == "process":
                     self.assertFalse(any("tests/systemd_simulator_smoke.py" in c for c in calls))
+
+    def test_untracked_checkout_content_prevents_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "VERSION").write_text("0.3.0\n")
+            run, calls = self.fixture(root, untracked=True)
+            with self.assertRaisesRegex(ValueError, "untracked files"):
+                acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
+            self.assertTrue(any(c[:2] == ["git", "status"] for c in calls))
+            self.assertFalse((root / "dist/core-acceptance.json").exists())
 
 
 class ReferenceInstallTargetsTests(unittest.TestCase):

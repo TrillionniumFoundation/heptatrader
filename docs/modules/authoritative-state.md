@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `HeptaTrade/state/`
+Implementation: `HeptaTrade/state/authoritative_trading_snapshot_store.cpp`, `HeptaTrade/state/authoritative_trading_snapshot_store.h`, `HeptaTrade/state/snapshot_refresh_coordinator.cpp`, `HeptaTrade/state/snapshot_refresh_coordinator.h`, `HeptaTrade/state/ib_authoritative_quote_subscription_set.cpp`, `HeptaTrade/state/ib_authoritative_quote_subscription_set.h`, `HeptaTrade/state/ib_contract_identity.cpp`, `HeptaTrade/state/ib_contract_identity.h`
 Tests: `tests/authoritative_trading_snapshot_store_tests.cpp`, `tests/snapshot_refresh_coordinator_tests.cpp`
 
 ## Responsibilities
@@ -60,11 +60,26 @@ Timeout, callback conflict, duplicate correlation, missing barrier, invalid cont
 
 ## Observability
 
-Expose current epoch/generation, completeness, snapshot age, refresh duration, callback lag, invalidation reason, conflict count, number of active/terminal orders, unresolved correlations, and post-fill refresh state.
+The state API and its owning runtime retain current epoch/generation,
+completeness, snapshot age, refresh duration, invalidation reason, active and
+terminal order counts, unresolved correlations, and post-fill refresh state.
+The canonical exported metric inventory is narrower: callback lag, conflict
+count, and every snapshot age/generation are still requirements rather than a
+delivered metric interface.  They must not be treated as observable merely
+because a state object or this document names the corresponding diagnostic.
+See the [observability inventory](../OBSERVABILITY-METRICS.md) for the current
+producer and collection status.
 
 ## Test expectations
 
-Tests cover coherent publication, stale/invalid views, generation rollover, reconnect, out-of-order callbacks, duplicate/colliding correlations, refresh timeout, quote freshness, post-fill refresh, terminal freeze, and concurrent readers.
+The direct state tests cover coherent publication, stale and invalid views,
+generation rollover, time regression, atomic batches, known-empty results,
+duplicate position keys, quote completeness invalidation, refresh request
+coalescing, stale completion rejection, abort/deadline handling, and
+concurrent readers.  Reconnect admission, broker-order correlation conflicts,
+post-fill refresh, and terminal recovery freeze are integration responsibilities
+of the execution and IB PAPER tests; this module page does not claim that the
+two direct state test binaries prove those paths.
 
 ## Assembly and recovery reference
 
@@ -75,3 +90,20 @@ requests without overlapping ambiguous generations. Completion is an explicit
 barrier result, not the receipt of one callback. The similarly named historical
 CSV reporter has been [retired](../technical/legacy-retirement.md) and is not
 part of the maintained snapshot construction.
+
+## Retired parallel IB projection
+
+The repository previously carried six unconnected IB callback and recovery
+implementations under `HeptaTrade/state/`: the account-position consumer,
+open-order consumer, order projector, recovery coordinator, recovery-event
+consumer, and connection-lifecycle state machine (each with a private header
+and source file). They had no active include or runtime consumer, were absent
+from every CMake target and test, and therefore could not be the source of
+authoritative state. They were retired on 2026-09-16 instead of being wired in
+as a second state authority.
+
+The maintained authority remains the snapshot store and refresh coordinator,
+with contract identity and quote-subscription normalization used by the IB
+runtime. The retired source is recoverable from the original repository
+snapshot at commit `4fe281d8e29efcf7f75cb8ad4a718b2210a58bfb`; no persisted
+state or wire schema depended on these private, unbuilt types.

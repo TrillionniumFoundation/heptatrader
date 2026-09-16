@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `HeptaTrade/risk/`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`
-Tests: `tests/pre_trade_risk_engine_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`
+Implementation: `HeptaTrade/risk`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`
+Tests: `tests/pre_trade_risk_engine_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`
 
 ## Responsibilities
 

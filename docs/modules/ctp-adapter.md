@@ -2,8 +2,8 @@
 
 Status: EXPERIMENTAL  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ctp/`  
-Tests: `tests/venue_capability_tests.cpp`
+Implementation: `HeptaTrade/adapter_ctp`, `third_party/ctp`
+Tests: `tests/venue_capability_tests.cpp`, `tests/python/test_legacy_runtime_boundary.py`
 
 ## Current capability
 

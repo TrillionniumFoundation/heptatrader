@@ -76,7 +76,13 @@
         "tests/venue_placement_cases.h",
         "tests/recovery_projection_faults.cpp",
         "tests/python/test_recovery_projection.py",
-        "tests/pre_intent_refusal_cases.h"
+        "tests/pre_intent_refusal_cases.h",
+        "tests/python/test_execution_latency_boundaries.py",
+        "tests/cancel_uncertainty_cases.h",
+        "tests/oms_recovery_growth_probe.h",
+        "tests/python/test_venue_place_rejection.py",
+        "tests/flatten_result_cases.h",
+        "tests/python/test_execution_reason_metrics.py"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false
@@ -88,15 +94,16 @@
       "implementation": [
         "HeptaTrade/oms_journal.cpp",
         "HeptaTrade/oms_journal.h",
-        "HeptaTrade/oms_recover.cpp",
-        "HeptaTrade/oms_recover.h",
+        "HeptaTrade/oms_generation_store.h",
         "scripts/verify_oms_journal_replay.py",
         "HeptaTrade/oms_capacity_observation.h",
         "HeptaTrade/oms_latency_observation.h",
         "scripts/hepta_oms_report.py",
         "HeptaTrade/oms_archive_codec.h",
         "scripts/oms_archive_codec.py",
-        "scripts/hepta_oms_archive.py"
+        "scripts/hepta_oms_archive.py",
+        "scripts/hepta_oms_checkpoint.py",
+        "scripts/hepta_oms_lifecycle.py"
       ],
       "tests": [
         "tests/oms_journal_durability_tests.cpp",
@@ -109,7 +116,11 @@
         "tests/python/test_oms_operational_report.py",
         "tests/oms_queue_budget_cases.h",
         "tests/oms_archive_cases.h",
-        "tests/python/test_oms_archive.py"
+        "tests/python/test_oms_archive.py",
+        "tests/python/test_oms_checkpoint.py",
+        "tests/python/test_oms_lifecycle_rotation.py",
+        "tests/compat/oms_recover.cpp",
+        "tests/compat/oms_recover.h"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false
@@ -135,7 +146,14 @@
       "status": "CURRENT",
       "document": "docs/modules/authoritative-state.md",
       "implementation": [
-        "HeptaTrade/state"
+        "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+        "HeptaTrade/state/authoritative_trading_snapshot_store.h",
+        "HeptaTrade/state/snapshot_refresh_coordinator.cpp",
+        "HeptaTrade/state/snapshot_refresh_coordinator.h",
+        "HeptaTrade/state/ib_authoritative_quote_subscription_set.cpp",
+        "HeptaTrade/state/ib_authoritative_quote_subscription_set.h",
+        "HeptaTrade/state/ib_contract_identity.cpp",
+        "HeptaTrade/state/ib_contract_identity.h"
       ],
       "tests": [
         "tests/authoritative_trading_snapshot_store_tests.cpp",
@@ -180,8 +198,8 @@
         "systemd/hepta-x230-paper-host-identity-map-v1.json",
         "docs/ib-paper-profile-policy-v1.json",
         "scripts/verify_canonical_ib_paper_profile.py",
-        "scripts/ib_obs_latency_stats.py",
-        "scripts/run_ib_paper_campaign.py"
+        "scripts/run_ib_paper_campaign.py",
+        "scripts/hepta_ib_runtime_report.py"
       ],
       "tests": [
         "tests/ib_order_lifecycle_tests.cpp",
@@ -198,7 +216,9 @@
         "tests/python/test_hepta_broker_egress_policy_atomic.py",
         "tests/python/test_paper_campaign_evidence.py",
         "tests/python/test_paper_evidence_publication.py",
-        "tests/python/test_campaign_provenance.py"
+        "tests/python/test_campaign_provenance.py",
+        "tests/python/test_exported_source_configure.py",
+        "tests/python/test_ib_runtime_observation.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
@@ -340,7 +360,8 @@
         "scripts/verify_exact_git_index.py",
         "scripts/run_python_tests.py",
         "scripts/render_protocol_reference.py",
-        "scripts/plan_owner_ruleset.py"
+        "scripts/plan_owner_ruleset.py",
+        "scripts/source_json.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",
@@ -352,7 +373,8 @@
         "tests/python/test_ib_workflow_interfaces.py",
         "tests/python/test_protocol_reference.py",
         "tests/python/test_owner_ruleset_plan.py",
-        "tests/python/test_source_workflow_commands.py"
+        "tests/python/test_source_workflow_commands.py",
+        "tests/python/test_source_json.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

@@ -411,19 +411,19 @@ bool DeterministicExecutionVenue::CanCancelOrder(long orderId, std::string* reas
     return true;
 }
 
-bool DeterministicExecutionVenue::CancelOrder(long orderId)
+VenueCancelResult DeterministicExecutionVenue::CancelOrder(long orderId)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     std::map<long, Order>::iterator found = m_orders.find(orderId);
     if (found == m_orders.end() || found->second.terminal)
     {
         m_lastRejectReason = "SIM_CANCEL_REJECTED";
-        return false;
+        return VenueCancelResult::RejectedBeforeSend(m_lastRejectReason);
     }
     found->second.cancelRequested = true;
     ++m_generation;
     m_lastRejectReason.clear();
-    return true;
+    return VenueCancelResult::Submitted();
 }
 
 std::string DeterministicExecutionVenue::LastRejectReason() const

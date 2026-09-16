@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/simulator/`, `HeptaTrade/execution/hepta_executiond.cpp`  
-Tests: `tests/agent_simulator_e2e_tests.cpp`, `tests/simulator_risk_runtime_tests.cpp`
+Implementation: `HeptaTrade/simulator`, `HeptaTrade/execution/hepta_executiond.cpp`
+Tests: `tests/agent_simulator_e2e_tests.cpp`, `tests/simulator_risk_runtime_tests.cpp`, `tests/python/test_release_simulator_smoke.py`
 
 ## Responsibilities
 
@@ -75,3 +75,9 @@ The exact quote-expiry boundary is tested with an injected venue clock, not a 10
 ## Known limitations
 
 The current simulator is an execution venue simulator, not a full exchange microstructure or historical market replay engine. Latency, queue position, market impact, borrow availability, exchange halts, and fee schedules require explicit models before strategy performance claims can rely on them.
+
+## Cancellation result
+
+The venue returns the shared [typed cancellation result](../technical/venue-cancellation-contract.md)
+under the venue mutex; coordinator callers do not sample a separate mutable
+last-error string after a cancellation.

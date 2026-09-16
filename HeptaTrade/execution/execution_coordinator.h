@@ -2,11 +2,15 @@
 
 #include "execution_authority.h"
 #include "venue_placement.h"
+#include "venue_cancel_result.h"
+#include "venue_flatten_result.h"
 #include "send_attempt_time_index.h"
 #include "paper_terminal_mutation_manifest.h"
 #include "../oms_journal.h"
+#include "../oms_generation_store.h"
 #include "execution_runtime_observation.h"
 
+#include <deque>
 #include <functional>
 #include <cstdint>
 #include <mutex>
@@ -66,12 +70,11 @@ struct ExecutionCoordinatorCallbacks
         const AuthoritativeFlattenPlan&,
         const std::function<bool()>&,
         bool*, std::string*)> proveAndCommitIbFlatNoop;
-    std::function<bool(long)> cancelIbOrder;
-    std::function<bool(const AuthoritativeFlattenPlan&, const std::string&,
-                       long*)> placeIbReduceOnlyOrderCorrelated;
+    // One lock-bound result; never sample a mutable last-error after sending.
+    std::function<VenueCancelResult(long)> cancelOrder;
+    std::function<VenueFlattenResult(const AuthoritativeFlattenPlan&,
+                                     const std::string&)> flattenOrder;
     std::function<bool(long, std::string*)> canCancelIbOrder;
-    std::function<std::string()> lastIbRejectReason;
-    std::function<void(const std::string&, long, const std::string&, const std::string&, const std::string&, const std::string&)> trackOrder;
     std::function<bool(const AgentExecutionContext&, const std::string&, std::string*)> validateDecisionLease;
     std::function<bool(const IbPlaceOrderCommand&, long, std::string*)> onIbOrderPlaced;
     std::function<bool(const IbCancelOrderCommand&, std::string*)> onIbCancelSent;
@@ -113,9 +116,9 @@ public:
                                   std::int64_t cutoffMs,
                                   std::vector<std::int64_t>& out) const;
 
-    // Rebuild idempotency and ownership projections from durable OMS events.
-    // An intent without a terminal/send receipt is UNCERTAIN and blocks new
-    // mutations until the caller completes broker reconciliation.
+    // Rebuild hot idempotency and ownership projections from a verified
+    // generation plus active tail when present; otherwise replay the complete
+    // legacy journal. Historical command identity stays disk-backed.
     bool RecoverFromJournal(std::string& reason);
     ExecutionRuntimeObservation RuntimeObservation() const;
 
@@ -129,7 +132,8 @@ public:
     // Atomically persists and verifies the irreversible v2 terminal fence,
     // closes every mutation path, and projects the complete durable mutation
     // universe for one account/domain while holding the same coordinator
-    // mutex.  The caller persists that immutable projection as HPM1.
+    // mutex.  Disk-backed historical commands are included without loading
+    // them into the ordinary hot idempotency map.
     bool EnterPaperTerminalFenceAndProject(
         const PaperTerminalFenceBinding& binding,
         PaperTerminalMutationUniverse& universe,
@@ -216,6 +220,36 @@ private:
         double quantity = 0.0;
         double price = 0.0;
         bool durableMutationIntent = false;
+    };
+
+    // Hot records remain ordinary unordered-map entries. A miss consults the
+    // immutable full-key generation index and materializes at most a small LRU
+    // cache of terminal historical records. operator[] promotes a cached record
+    // before it can be changed by an active-tail event.
+    class RequestRecordStore : public std::unordered_map<std::string, RequestRecord>
+    {
+    public:
+        typedef std::unordered_map<std::string, RequestRecord> Base;
+        explicit RequestRecordStore(OmsGenerationStore* generationStore = nullptr);
+        Base::iterator find(const std::string& key);
+        Base::const_iterator find(const std::string& key) const;
+        RequestRecord& operator[](const std::string& key);
+        void clear();
+        std::size_t HotSize() const;
+
+    private:
+        Base::iterator LoadHistorical(const std::string& key);
+        static bool DecodeRequestKey(const std::string& key,
+                                     std::string& agentId,
+                                     std::string& sessionId,
+                                     std::string& commandId);
+        void RememberHistorical(const std::string& key);
+        void Promote(const std::string& key);
+
+    private:
+        OmsGenerationStore* m_generationStore = nullptr;
+        std::deque<std::string> m_historicalOrder;
+        std::unordered_set<std::string> m_historicalKeys;
     };
 
     struct PlaceSendAttempt
@@ -310,7 +344,11 @@ private:
         const std::string& requestHash,
         const std::string& requestKey,
         RequestRecord& pending);
-    bool TryCancelAtVenueLocked(long orderId, std::string& rejectReason);
+    VenueCancelResult TryCancelAtVenueLocked(long orderId);
+    ExecutionCommandResult UncertainCancelOutcomeLocked(
+        const CancelOrderCommand& command, const std::string& instrument,
+        const std::string& side, const std::string& requestHash,
+        const std::string& requestKey, const std::string& detail);
     ExecutionCommandResult CompleteAuthoritativeFlattenNoopLocked(
         const FlattenPositionCommand& command,
         const AuthoritativeFlattenPlan& plan,
@@ -348,6 +386,10 @@ private:
         const PaperTerminalFenceBinding& binding,
         PaperTerminalMutationUniverse& universe,
         std::string& reason);
+    bool EnterPaperTerminalFenceAndProjectGenerationAwareLocked(
+        const PaperTerminalFenceBinding& binding,
+        PaperTerminalMutationUniverse& universe,
+        std::string& reason);
     void TrackRecoveredSendAttemptLocked(
         const OmsJournalEvent& event,
         const std::string& requestKey);
@@ -379,13 +421,15 @@ private:
     template <typename Action>
     ExecutionCommandResult ObserveCommand(std::size_t operation, Action action)
     {
+        const auto entered = OmsScopedLatencySample::Clock::now();
         std::lock_guard<std::mutex> lock(m_mutex);
+        const auto acquired = OmsScopedLatencySample::Clock::now();
         auto& observation = m_observation.operations[operation];
-        OmsScopedLatencySample timer(observation.latency);
+        ExecutionOperationTiming timer(observation, entered, acquired);
         try
         {
             auto result = action();
-            observation.Observe(result.status);
+            observation.Observe(result);
             return result;
         }
         catch (...)
@@ -398,7 +442,8 @@ private:
     OmsJournal& m_journal;
     ExecutionCoordinatorCallbacks m_callbacks;
     mutable std::mutex m_mutex;
-    std::unordered_map<std::string, RequestRecord> m_requests;
+    OmsGenerationStore m_generationStore;
+    RequestRecordStore m_requests;
     std::unordered_map<long, ExecutionOrderOwner> m_orderOwners;
     std::unordered_set<std::string> m_fencedSessionOwners;
     std::unordered_map<std::string, std::uint64_t>

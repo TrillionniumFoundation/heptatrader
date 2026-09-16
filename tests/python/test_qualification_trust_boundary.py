@@ -166,5 +166,30 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
             phase["with"][key] = "other"
             self.assertTrue(boundary.validate_workflow(workflow))
 
+    def test_runner_paths_cannot_return_to_job_environment(self):
+        for job_name in ("build-candidate", "qualify"):
+            with self.subTest(job=job_name):
+                workflow = boundary.load_workflow(ROOT / boundary.WORKFLOW)
+                workflow["jobs"][job_name]["env"]["CANDIDATE_ARCHIVE"] = "${{ runner.temp }}/candidate.tar"
+                self.assertTrue(boundary.validate_workflow(workflow))
+
+    def test_each_path_consuming_step_requires_exact_run_attempt_binding(self):
+        workflow = boundary.load_workflow(ROOT / boundary.WORKFLOW)
+        for job_name, job in workflow["jobs"].items():
+            for index, step in enumerate(job["steps"]):
+                for key in ("CANDIDATE_ARCHIVE", "ARTIFACT_DIR", "EVIDENCE_DIR"):
+                    if key not in step.get("env", {}):
+                        continue
+                    for change in (None, "/tmp/unbound-candidate", "${{ runner.temp }}/another-attempt"):
+                        with self.subTest(job=job_name, step=step["id"], key=key, change=change):
+                            mutant = copy.deepcopy(workflow)
+                            env = mutant["jobs"][job_name]["steps"][index]["env"]
+                            if change is None:
+                                del env[key]
+                            else:
+                                env[key] = change
+                            self.assertTrue(boundary.validate_workflow(mutant))
+
+
 if __name__ == "__main__":
     unittest.main()

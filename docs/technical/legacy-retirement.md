@@ -68,3 +68,14 @@ owner fences, terminal witnesses and authoritative reconciliation remain
 maintained behavior. Source age is not evidence that persisted state is unused.
 See [persistence support](persistence-support-window.md). Deleting old source
 never migrates a host, revokes an old artifact or authorizes trading.
+
+## Final watchdog callback residue
+
+The optional `ExecutionCoordinatorCallbacks::trackOrder` declaration and the
+place/authoritative-flatten dispatch calls have no maintained binding after the
+watchdog retirement and are removed together. The maintained producer/consumer
+search, canonical compilation and existing dispatch/recovery tests are the
+acceptance boundary; no source-token ban is introduced. Order owner creation,
+`onIbOrderPlaced`, all persisted events and their readers remain in service.
+External code using the retired private composition hook must migrate; no
+replacement empty callback or secondary order path is provided.

@@ -1,8 +1,10 @@
 // ib-connection-probe.cpp
 // Minimal IB API connectivity probe for TWS / IB Gateway.
 // Build notes:
-//   1) Put IB C++ API headers/libs into Interface/IBApi (or adjust include/lib paths)
-//   2) Link IB API client library as required by your API package.
+//   1) Supply a separately controlled IB C++ API source tree and point the
+//      docs/ib_probe CMake configure step at it with -DIBAPI_ROOT=<path>.
+//      The retired root Interface/ tree is not an SDK location.
+//   2) Link the IB API client library as required by that pinned API package.
 
 #include <iostream>
 #include <thread>

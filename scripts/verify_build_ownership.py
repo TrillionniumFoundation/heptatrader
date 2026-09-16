@@ -18,6 +18,8 @@ import sys
 import tempfile
 from typing import Any
 
+from source_json import SourceJsonError, load_source_json
+
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = "heptatrader.build-targets.v1"
 OPTIONS = {
@@ -40,23 +42,10 @@ class OwnershipError(ValueError):
     pass
 
 
-def unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise OwnershipError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
 def load_json(path: Path) -> Any:
     try:
-        if path.is_symlink() or not path.is_file():
-            raise OwnershipError(f"expected regular JSON file: {path}")
-        return json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=unique_object,
-                          parse_constant=lambda value: (_ for _ in ()).throw(
-                              OwnershipError(f"non-finite JSON: {value}")))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return load_source_json(path)
+    except SourceJsonError as error:
         raise OwnershipError(f"cannot read {path}: {error}") from error
 
 

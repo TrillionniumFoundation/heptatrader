@@ -6,6 +6,7 @@ Status: CURRENT
 
 - `dev_core.sh` configures, builds, and runs the canonical core CTest label.
 - `check_documentation.py` validates module/capability truth and documentation links.
+- `source_json.py` is the shared bounded JSON reader for documentation, component/build ownership, gap and owner-Ruleset planning tools. It is development-only, not an installed privileged reader.
 - `check_component_coverage.py` derives the production file set from the exact Git index, assigns each path to the most-specific module implementation boundary, and compares repository CMake translation-unit owners with `docs/build-targets.json`.
 - `verify_build_ownership.py` compares fresh CMake File API target and translation-unit models with `docs/build-targets.json`; additions fail closed until they have an explicit canonical owner.
 - `check_gap_register.py` validates an extensible issue inventory; open work is allowed. `--release-profile core` or `ib-paper` additionally rejects explicitly scoped unresolved release blockers. It never grants Broker authority.

@@ -31,7 +31,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
                             command.orderId);
     if (m_mutationBlocked)
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, command.orderId);
-    if (command.orderId < 0 || !m_callbacks.cancelIbOrder)
+    if (command.orderId < 0 || !m_callbacks.cancelOrder)
         return RefuseBeforeIntent(context, "INVALID_CANCEL", "valid order_id and cancel callback are required",
                             command.orderId);
 
@@ -90,23 +90,23 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
         return RejectLocked(context, "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED",
                             "cancel was not sent", command.orderId, requestHash);
 
-    std::string rejectReason;
-    const bool cancelled = TryCancelAtVenueLocked(
-        command.orderId, rejectReason);
-
-    if (cancelled && rejectReason == "IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK")
+    const VenueCancelResult outcome = TryCancelAtVenueLocked(command.orderId);
+    if (outcome.disposition == VenueCancelDisposition::Deferred)
         return HandleDeferredCancelLocked(command, context, instrument, side,
                                           requestHash, requestKey, pending);
 
-    if (!cancelled)
+    if (outcome.disposition == VenueCancelDisposition::RejectedBeforeSend &&
+        !outcome.detail.empty())
     {
-        if (rejectReason.empty()) rejectReason = "IB adapter rejected cancel";
         const OmsJournalEvent reject = BuildEvent(context, "reject", command.orderId, instrument,
-                                                  side, 0.0, 0.0, "rejected", rejectReason,
-                                                  "IB_CANCEL_REJECT", requestHash);
+            side, 0.0, 0.0, "rejected", outcome.detail, "IB_CANCEL_REJECT", requestHash);
         AppendOrBlockLocked(reject, "OMS_CANCEL_REJECT_WRITE_FAILED");
-        return RejectLocked(context, "IB_CANCEL_REJECT", rejectReason, command.orderId, requestHash);
+        return RejectLocked(context, "IB_CANCEL_REJECT", outcome.detail,
+                            command.orderId, requestHash);
     }
+    if (outcome.disposition != VenueCancelDisposition::Submitted)
+        return UncertainCancelOutcomeLocked(command, instrument, side,
+            requestHash, requestKey, outcome.detail);
 
     const OmsJournalEvent sent = BuildEvent(context, "cancel", command.orderId, instrument,
                                             side, 0.0, 0.0, "cancel_sent", "", "", requestHash);
@@ -173,5 +173,34 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
     result.status = ExecutionCommandStatus::Accepted;
     result.commandId = context.toolCallId;
     result.orderId = command.orderId;
+    return result;
+}
+
+ExecutionCommandResult ExecutionCoordinator::UncertainCancelOutcomeLocked(
+    const CancelOrderCommand& command, const std::string& instrument,
+    const std::string& side, const std::string& requestHash,
+    const std::string& requestKey, const std::string& detail)
+{
+    // Close admission before any diagnostic allocation. The existing durable
+    // send-attempt plus pending identity survive even a later receipt failure.
+    BlockMutationsLocked("RECOVERY_RECONCILE_REQUIRED");
+    RequestRecord& record = m_requests.at(requestKey);
+    record.status = ExecutionCommandStatus::Uncertain;
+    record.reasonCode = "RECOVERY_RECONCILE_REQUIRED";
+    record.detail = detail.empty() ? "cancel may have reached venue; reconciliation required" :
+        detail.substr(0, 1024);
+    // Reuse a supported critical record. Old readers already treat
+    // cancel_pending/RECOVERY_RECONCILE_REQUIRED as unresolved, never rejected.
+    const OmsJournalEvent uncertain = BuildEvent(command.context, "cancel", command.orderId,
+        instrument, side, 0.0, 0.0, "cancel_pending", record.detail,
+        "RECOVERY_RECONCILE_REQUIRED", requestHash);
+    if (!AppendOrBlockLocked(uncertain, "OMS_CANCEL_UNCERTAIN_WRITE_FAILED"))
+        record.reasonCode = "OMS_CANCEL_UNCERTAIN_WRITE_FAILED";
+    ExecutionCommandResult result;
+    result.status = ExecutionCommandStatus::Uncertain;
+    result.commandId = command.context.toolCallId;
+    result.orderId = command.orderId;
+    result.reasonCode = record.reasonCode;
+    result.detail = record.detail;
     return result;
 }

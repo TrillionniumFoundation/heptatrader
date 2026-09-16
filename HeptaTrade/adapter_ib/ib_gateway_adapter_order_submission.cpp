@@ -324,14 +324,17 @@ bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
     long orderId, const IBContractLite& contract, const IBOrderLite& order,
     std::time_t nowTs, const IBOrderRiskBaseline* baseline,
     long* outOrderId,
-    const std::chrono::steady_clock::time_point& startedAt) {
+    const std::chrono::steady_clock::time_point& startedAt, bool* sendAttempted) {
     if (!BeginBrokerMutation("IB_RECOVERY_AUDIT_PLACE_MUTATION"))
         return false;
+    if (sendAttempted) *sendAttempted = true;
     const bool accepted = m_api->PlaceOrder(orderId, contract, order);
     if (accepted) {
+        // Preserve a known assigned ID even if later bookkeeping allocates or
+        // throws. The typed caller still reports an uncertain overall outcome.
+        if (outOrderId) *outOrderId = orderId;
         ++m_todayOrderCount;
         RememberLastOrder(contract, order, nowTs);
-        if (outOrderId) *outOrderId = orderId;
         m_orderSubmitTs[orderId] = std::chrono::steady_clock::now();
         m_orderLifecycle.BeginLocalOrderGeneration(orderId);
         // The broker must echo this service-owned H1 identity on a live
@@ -369,7 +372,9 @@ bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
 
 bool HeptaIBGatewayAdapter::PlaceOrderInternal(
     const IBContractLite& contract, const IBOrderLite& order,
-    long* outOrderId, const IBFinalOrderSendContext* context) {
+    long* outOrderId, const IBFinalOrderSendContext* context,
+    bool* sendAttempted) {
+    if (sendAttempted) *sendAttempted = false;
     const std::chrono::steady_clock::time_point startedAt =
         std::chrono::steady_clock::now();
     std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
@@ -431,5 +436,5 @@ bool HeptaIBGatewayAdapter::PlaceOrderInternal(
             "broker send\"");
     return SubmitValidatedOrder(
         orderId, contract, order, nowTs,
-        hasBaseline ? &baseline : nullptr, outOrderId, startedAt);
+        hasBaseline ? &baseline : nullptr, outOrderId, startedAt, sendAttempted);
 }

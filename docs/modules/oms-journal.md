@@ -2,8 +2,8 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_recover.cpp`  
-Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`
+Implementation: `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_journal.h`, `HeptaTrade/oms_generation_store.h`, `scripts/verify_oms_journal_replay.py`, `HeptaTrade/oms_capacity_observation.h`, `HeptaTrade/oms_latency_observation.h`, `scripts/hepta_oms_report.py`, `HeptaTrade/oms_archive_codec.h`, `scripts/oms_archive_codec.py`, `scripts/hepta_oms_archive.py`, `scripts/hepta_oms_checkpoint.py`, `scripts/hepta_oms_lifecycle.py`
+Tests: `tests/oms_journal_durability_tests.cpp`, `tests/oms_journal_schema_v4_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_oms_capacity.py`, `tests/oms_live_capacity_cases.h`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_oms_operational_report.py`, `tests/oms_queue_budget_cases.h`, `tests/oms_archive_cases.h`, `tests/python/test_oms_archive.py`, `tests/python/test_oms_checkpoint.py`, `tests/python/test_oms_lifecycle_rotation.py`, `tests/compat/oms_recover.cpp`, `tests/compat/oms_recover.h`
 
 ## Responsibilities
 
@@ -43,7 +43,72 @@ Startup replay reconstructs command state and fences before mutation admission o
 
 Broker `Filled` text alone is not economic fill proof when the venue contract requires an execution ID and positive execution evidence. Terminal and active correlations remain separate until reconciliation proves their relationship.
 
-`OmsRecover` remains a lightweight compatibility projection used by selected tests. Its old CSV-reporter consumer has been retired; the reader itself is preserved. It is not the complete canonical PAPER recovery authority.
+`OmsRecover` is a test-only lightweight compatibility projection in
+`tests/compat/oms_recover.h/.cpp`. The coordinator regression target compiles it
+explicitly; installed runtime targets do not. Its historical event and
+deduplication behavior is retained unchanged. Production schema 1–4 reading
+remains in `OmsJournal`; moving this test helper does not retire a persisted
+format or introduce another PAPER recovery authority.
+
+### Generation-backed incremental recovery
+
+Two stopped-state generation formats are supported by one native
+`OmsGenerationStore` authority.
+
+Generation v1 preserves an immutable verified full-journal prefix, a full-key
+permanent command index, a durable send-attempt index, a bounded hot replay and
+a digest-bound runtime manifest. It remains readable for compatibility.
+
+Generation v2 is the long-horizon format. Each generation seals only the JSONL
+records added since its parent, binds the parent generation by the exact parent
+`manifest.json` SHA-256, carries cumulative full-key command and send-attempt
+indexes, and writes a bounded hot replay for unresolved/current state. After all
+generation files and their directory are durable, stopped-state maintenance
+atomically replaces the active journal with a non-JSON lineage sentinel followed
+only by future JSONL events. The sentinel is bound by length and SHA-256 in the
+selected v2 runtime manifest. Consequently an older full-ledger reader rejects a
+rotated tail rather than mistaking it for an empty or complete ledger.
+
+`CURRENT` and `CURRENT.runtime` remain the selected-generation authority.
+Publication order is generation durability, prepared tail durability, atomic tail
+path replacement plus parent-directory sync, `CURRENT`, then digest-bound
+`CURRENT.runtime`. A crash before tail publication leaves the previous complete
+journal. A crash after tail publication but before both pointers agree leaves a
+state that fails closed. Native startup never silently selects a parent or treats
+an integrity failure as a missing command.
+
+When a generation store is present, the coordinator verifies the selected
+manifest, lineage, pinned indexes and active-tail sentinel, replays only bounded
+hot events plus bytes after the sentinel, and services historical command-ID
+lookups from the cumulative pinned disk index. The permanent index compares the
+complete `(agent, session, command)` key and canonical request hash. Historical
+lookups enter only a bounded cache; they are not repopulated wholesale into the
+coordinator. Rolling send-rate recovery combines the cumulative generation
+send-attempt index with current-tail attempts, so a cut cannot reset the mutation
+budget. Terminal mutation-universe construction likewise includes historical
+durable mutations from the disk index.
+
+The v2 producer stream-merges parent command and send-attempt indexes with the
+new tail instead of materializing the complete historical event stream in RAM.
+Command identity is never expired by generation maintenance. Immutable parent
+segments remain available until an explicit external retention policy exists;
+the active writer path itself no longer grows with sealed terminal history.
+
+Generation creation requires expanded plain JSONL input for the initial v1-to-v2
+migration. A gzip journal must first use the existing lossless stopped-state
+expansion; maintenance never guesses a cut inside compressed storage.
+
+### Explicit downgrade export
+
+`scripts/hepta_oms_lifecycle.py export` walks the digest-bound generation chain,
+concatenates the newest applicable v1 base, all subsequent v2 delta segments,
+and the current active JSONL tail after its lineage sentinel into a new private
+complete JSONL file. The output is create-only, fsync'd, and passed through the
+strict legacy record validator before success. Export has
+`authorization_effect=NONE`; it does not replace the active journal automatically
+or grant PAPER/LIVE admission. Downgrade is therefore an explicit stopped-state
+operator action rather than silent fallback from a format an older runtime does
+not understand.
 
 ## Failure semantics
 
@@ -52,6 +117,7 @@ Broker `Filled` text alone is not economic fill proof when the venue contract re
 - Truncated or malformed journal content: follow the strict replay rule; never skip corruption in the middle and continue as healthy.
 - Duplicate event: count and skip only under the exact deduplication rule.
 - Unknown semantics: retain evidence but do not manufacture an authoritative state transition.
+- A present generation store with unsafe metadata, digest drift, parent-binding drift, index corruption, lineage-sentinel mismatch, malformed hot replay or pointer disagreement is a recovery failure; it is never ignored as if no checkpoint existed.
 
 ## Observability
 
@@ -62,6 +128,8 @@ A complete interface for deduplication/corruption/unresolved-command counters, d
 ## Test expectations
 
 Tests inject path replacement and I/O failure, verify synchronous critical durability, callback-atomic replay, same-command replay, conflicting-command rejection, malformed records, restart recovery, and complete v4 broker-field round trips. New schema fields require both old-fixture and current-writer tests.
+
+Generation tests cover v1 source-prefix identity, v2 lineage-bound active-tail rotation, current-pointer interruption, crash points before and after tail publication, sidecar and parent digest drift, repeated generations, cumulative full-key duplicate/conflict lookup, hot unresolved state, send-attempt continuity, and explicit downgrade export. Native coordinator acceptance uses the v2 stopped-state producer and proves that an ancient disk-backed command is returned as duplicate for an identical payload, rejected as `IDEMPOTENCY_KEY_CONFLICT` for changed content, does not call the venue, and coexists with new active-tail mutation admission.
 
 ## Recovery resource contract
 
@@ -76,7 +144,8 @@ Both Execution daemons emit identifier-free structured capacity observations.
 The [online capacity contract](../technical/oms-live-capacity.md) defines written
 bytes/records, pending records, unknown values, thresholds, sampling and safe
 restart/checkpoint actions. No capacity threshold truncates history or blocks
-exit evidence. The current persisted schema and recovery authority are unchanged.
+exit evidence. Generation v2 changes the stopped-state storage lifecycle but does
+not weaken writer durability or command identity.
 
 ## Operational reporting
 
@@ -96,4 +165,6 @@ and the additive online occupancy fields. This is not disk compaction.
 See [lossless stopped-state maintenance](../technical/oms-archive-lifecycle.md) for optional gzip storage,
 writer exclusion, decoded recovery budgets, crash handling and explicit
 expansion before downgrade. It preserves all event bytes and command identities;
-it is not online truncation or a general N-1 compatibility claim.
+it is not online truncation or a general N-1 compatibility claim. Generation v2
+is a separate stopped-state history-sealing mechanism with an explicit downgrade
+export path; neither mechanism runs concurrently with a writer.

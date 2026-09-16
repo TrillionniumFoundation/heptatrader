@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`, `docs/preflight-policy-v1.json`
-Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_special_files.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`
+Implementation: `CMakeLists.txt`, `VERSION`, `HeptaTrade/CMakeLists.txt`, `cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`, `scripts/run_release_simulator_smoke.py`, `docs/preflight-policy-v1.json`, `scripts/accept_core_release.py`
+Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_special_files.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`, `tests/python/test_release_simulator_smoke.py`, `tests/agent_simulator_e2e_tests.cpp`, `tests/python/test_installed_runtime_processes.py`, `tests/python/test_gateway_symbol_boundary.py`, `tests/python/test_preflight_single_pass.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_release_workflow.py`, `tests/python/test_core_release_acceptance.py`, `tests/python/test_cmake_install_behavior.py`
 
 ## Responsibilities
 
@@ -109,3 +109,21 @@ PID 1 systemd tests. The tag manifest is written only after successful acceptanc
 and rehashing those same package bytes. See
 [core release acceptance](../technical/core-release-acceptance.md). This is not
 a Broker qualification or a production-host installer.
+
+## Relocatable installed documentation
+
+`cmake/render_installed_documentation.py` prepares documentation in the build
+tree before installation. It preserves the established flat installed layout,
+rewrites local document links to that layout, and pins source-only references
+(such as workflow files and the historical PDF) to the exact source SHA on GitHub.
+It does not rewrite source Markdown, fetch remote links, install old source
+assets or certify prose/fragment semantics. Missing source file destinations and
+broken generated local destinations fail the build rather than silently shipping
+unusable navigation. The real CMake install fixture inspects the installed tree.
+
+CMake requires a Python 3 interpreter for this build-time transformation. Git
+checkouts use `git rev-parse HEAD`; a source archive without Git metadata must
+supply `-DHEPTA_DOCUMENTATION_SOURCE_SHA=<exact-40-hex-source-sha>`. This value
+binds documentation references only, not the package manifest or trading authority.
+An override is not evidence that an unverified archive has that source identity.
+The usual release artifact/source checks still own that proof.

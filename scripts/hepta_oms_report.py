@@ -32,9 +32,55 @@ BOUNDS_NS = (1000, 10000, 100000, 1000000, 5000000, 10000000,
 LATENCIES = ("append_latency", "data_sync_latency", "replay_validation_latency")
 EXECUTION_OPERATIONS = ("place", "cancel", "flatten")
 EXECUTION_RESULTS = ("accepted", "rejected", "duplicate", "uncertain", "exception")
+# Schema 1 positions match the native producer; cross-language tests execute both.
+EXECUTION_REASONS = (
+    "NONE",
+    "EXCEPTION",
+    "OTHER",
+    "DUPLICATE_TOOL_CALL",
+    "IDEMPOTENCY_KEY_CONFLICT",
+    "INVALID_AGENT_CONTEXT",
+    "INVALID_ORDER",
+    "REQUEST_HASH_FAILED",
+    "SESSION_OWNER_FENCED",
+    "SESSION_RECOVERY_ONLY",
+    "TOOL_CALL_EXPIRED",
+    "DECISION_LEASE_REQUIRED",
+    "DECISION_LEASE_INVALID",
+    "MUTATION_BLOCKED",
+    "OMS_NEW_ENTRY_CAPACITY_EXHAUSTED",
+    "OMS_NEW_ENTRY_CAPACITY_UNKNOWN",
+    "OMS_INTENT_WRITE_FAILED",
+    "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED",
+    "OMS_PLACE_RECEIPT_WRITE_FAILED",
+    "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED",
+    "OMS_CANCEL_PENDING_RECEIPT_WRITE_FAILED",
+    "OMS_FLATTEN_SEND_ATTEMPT_WRITE_FAILED",
+    "OMS_FLATTEN_RECEIPT_WRITE_FAILED",
+    "IB_PLACE_REJECT",
+    "IB_PLACE_OUTCOME_UNCERTAIN",
+    "IB_CANCEL_REJECT",
+    "IB_CANCEL_OUTCOME_UNCERTAIN",
+    "IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK",
+    "IB_FLATTEN_REJECT",
+    "IB_FLATTEN_OUTCOME_UNCERTAIN",
+    "AUTHORITATIVE_FLATTEN_PLAN_INVALID",
+    "POSITION_ALREADY_FLAT",
+    "IB_PAPER_KILL_SWITCH_ENGAGED",
+    "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN",
+    "IB_POST_FILL_RISK_REFRESH_PENDING",
+    "IB_PAPER_PLACE_QUOTE_CHANGED_BEFORE_SEND",
+    "IB_PAPER_FLATTEN_QUOTE_CHANGED_BEFORE_SEND",
+    "RECOVERY_RECONCILE_REQUIRED",
+    "AUTHORITATIVE_ORDER_PROJECTION_FAILED",
+    "AUTHORITATIVE_CANCEL_PROJECTION_FAILED",
+    "AUTHORITATIVE_FLATTEN_PROJECTION_FAILED",
+)
 EXECUTION_GAUGES = ("retained_commands", "order_owners", "fenced_owners",
                     "recovery_only_owners", "retained_send_attempts")
 EXECUTION_LATENCIES = ("place_latency", "cancel_latency", "flatten_latency", "recovery_latency")
+EXECUTION_TIMING_EXTENSION = tuple(name + suffix for name in EXECUTION_LATENCIES[:3]
+                                   for suffix in ("_lock_wait", "_total"))
 UINT64_MAX = (1 << 64) - 1
 MAX_BYTES, MAX_LINE, MAX_LINES = 64 << 20, 65536, 100000
 
@@ -107,7 +153,34 @@ def validate_execution(value):
         validate_latency(latency)
         if not value["metrics_saturated"] and not latency["saturated"] and sum(row) != latency["samples"]:
             raise ValueError("execution result/latency accounting mismatch")
+    if "reason_counts" in value or "reason_schema_version" in value:
+        if type(value.get("reason_schema_version")) is not int or value["reason_schema_version"] != 1:
+            raise ValueError("unsupported execution reason schema")
+        reasons = value.get("reason_counts")
+        if not isinstance(reasons, list) or len(reasons) != len(EXECUTION_OPERATIONS):
+            raise ValueError("invalid execution reason operation inventory")
+        for row, outcomes in zip(reasons, results):
+            if not isinstance(row, list) or len(row) != len(EXECUTION_REASONS):
+                raise ValueError("invalid execution reason inventory")
+            for count in row:
+                uint(count)
+            if not value["metrics_saturated"] and sum(row) != sum(outcomes):
+                raise ValueError("execution reason/result accounting mismatch")
     validate_latency(value.get("recovery_latency"))
+    for name in EXECUTION_LATENCIES[:3]:
+        pair = (name + "_lock_wait", name + "_total")
+        if not any(key in value for key in pair):
+            continue  # Old/idle producer: absence is not a measured zero.
+        for key in pair:
+            validate_latency(value.get(key))
+        held, wait, total = value[name], value[pair[0]], value[pair[1]]
+        if not any(metric["saturated"] for metric in (held, wait, total)):
+            if held["samples"] != wait["samples"] or held["samples"] != total["samples"]:
+                raise ValueError("execution timing sample accounting mismatch")
+            if total["total_ns"] != held["total_ns"] + wait["total_ns"]:
+                raise ValueError("execution timing scope accounting mismatch")
+            if total["last_ns"] != held["last_ns"] + wait["last_ns"]:
+                raise ValueError("execution timing last-sample accounting mismatch")
     return value
 
 
@@ -277,7 +350,7 @@ def report(samples, now_ms, max_age_ms=15000, planning_seconds=0):
     if execution is not None:
         # A deliberate terminal/maintenance fence is not necessarily an incident.
         # Export the block gauge; existing writer/recovery evidence owns severity.
-        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES):
+        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION if k in execution):
             alert("EXECUTION_METRIC_SATURATED", "P2")
     return {"schema": "heptatrader.oms-operational-report.v1", "fresh": fresh, "sample_age_ms": age,
             "capacity_status": latest["status"], "known": latest["known"], "service_epoch": latest.get("service_epoch"),
@@ -321,7 +394,18 @@ def prometheus(latest, summary):
             for op, row in zip(EXECUTION_OPERATIONS, execution["results"]):
                 for result, count in zip(EXECUTION_RESULTS, row):
                     lines.append(f'hepta_execution_commands_total{{operation="{op}",result="{result}"}} {count}')
-        for name in EXECUTION_LATENCIES:
+        reasons_present = "reason_counts" in execution
+        lines.append(f"hepta_execution_reason_metrics_present {int(reasons_present)}")
+        if reasons_present and not execution["metrics_saturated"]:
+            lines.append("# TYPE hepta_execution_command_reasons_total counter")
+            for op, row in zip(EXECUTION_OPERATIONS, execution["reason_counts"]):
+                for reason, count in zip(EXECUTION_REASONS, row):
+                    lines.append(f'hepta_execution_command_reasons_total{{operation="{op}",reason="{reason}"}} {count}')
+        for operation, name in zip(EXECUTION_OPERATIONS, EXECUTION_LATENCIES):
+            lines.append(f'hepta_execution_operation_timing_present{{operation="{operation}"}} {int(name + "_total" in execution)}')
+        for name in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION:
+            if name not in execution:
+                continue  # An older producer did not observe this scope.
             value = execution[name]
             if value["saturated"] or "bucket_counts" not in value:
                 continue

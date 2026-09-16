@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `HeptaTrade/tool_host/`, `HeptaTrade/tools/`
-Tests: `tests/trading_tool_host_tests.cpp`, `tests/trading_tool_registry_tests.cpp`, `tests/unix_tool_server_tests.cpp`
+Implementation: `HeptaTrade/tool_host`, `HeptaTrade/tools`
+Tests: `tests/trading_tool_host_tests.cpp`, `tests/trading_tool_registry_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_gateway_observability.py`, `tests/python/test_installed_runtime_processes.py`
 
 ## Responsibilities
 

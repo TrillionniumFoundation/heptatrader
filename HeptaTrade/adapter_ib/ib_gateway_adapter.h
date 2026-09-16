@@ -16,6 +16,8 @@
 #include "ib_api_wrapper.h"
 #include "ib_order_lifecycle.h"
 #include "../execution/venue_place_result.h"
+#include "../execution/venue_flatten_result.h"
+#include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
 struct HeptaIBRiskConfig {
@@ -225,7 +227,7 @@ public:
                               const std::string& venueCorrelationId,
                               long* outOrderId = nullptr,
                               const IBFinalOrderSendContext* context = nullptr);
-    bool PlaceReduceOnlyOrderCorrelated(
+    VenueFlattenResult PlaceReduceOnlyOrderCorrelated(
         const IBContractLite& contract,
         const IBOrderLite& order,
         const std::string& instrument,
@@ -236,7 +238,6 @@ public:
         std::uint64_t expectedQuoteObservedAtMs,
         std::uint64_t expectedQuoteStaleAfterMs,
         const std::string& venueCorrelationId,
-        long* outOrderId = nullptr,
         double expectedQuoteBid = 0.0,
         double expectedQuoteAsk = 0.0);
     bool ProveAndCommitFlatNoop(
@@ -246,7 +247,7 @@ public:
         const std::function<bool()>& durableCommit,
         bool* commitAttempted,
         std::string* reason = nullptr);
-    bool CancelOrder(long orderId);
+    VenueCancelResult CancelOrder(long orderId);
     bool CanCancelOrder(long orderId, std::string* suppressReason = nullptr) const;
     const char* GetStatusString() const;
     std::string GetPositionSummary() const;
@@ -313,7 +314,8 @@ private:
     bool IsAccountWhitelisted(const std::string& account) const;
     bool PlaceOrderInternal(const IBContractLite& c, const IBOrderLite& o,
                             long* outOrderId,
-                            const IBFinalOrderSendContext* context = nullptr);
+                            const IBFinalOrderSendContext* context = nullptr,
+                            bool* sendAttempted = nullptr);
     bool RejectOrder(
         const IBContractLite& contract,
         const std::chrono::steady_clock::time_point& startedAt,
@@ -342,7 +344,7 @@ private:
         long orderId, const IBContractLite& contract,
         const IBOrderLite& order, std::time_t nowTs,
         const IBOrderRiskBaseline* baseline, long* outOrderId,
-        const std::chrono::steady_clock::time_point& startedAt);
+        const std::chrono::steady_clock::time_point& startedAt, bool* sendAttempted);
     bool BeginOpenOrderRefresh(bool accountWide);
     bool EncodeVenueOrderRef(
         const std::string& correlationId, std::string& orderRef,

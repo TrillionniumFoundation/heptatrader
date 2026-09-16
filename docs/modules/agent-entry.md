@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli/`, `HeptaTrade/client/`
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`
+Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`
 
 ## Responsibilities
 

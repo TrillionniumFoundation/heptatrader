@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import re
 import stat
 import sys
 from typing import Any
+
+from source_json import SourceJsonError, load_source_json
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED_STATUSES = {
@@ -73,35 +74,10 @@ USER_ABSOLUTE_RE = re.compile(
 )
 
 
-class DuplicateKeyError(ValueError):
-    pass
-
-
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise DuplicateKeyError(f"duplicate JSON key: {key}")
-        result[key] = value
-    return result
-
-
-def _reject_constant(value: str) -> None:
-    raise ValueError(f"non-finite JSON number: {value}")
-
-
 def _load_json(path: Path, errors: list[str]) -> Any:
     try:
-        info = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            errors.append(f"{path}: must be a regular single-link file")
-            return None
-        return json.loads(
-            path.read_text(encoding="utf-8"),
-            object_pairs_hook=_unique_object,
-            parse_constant=_reject_constant,
-        )
-    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
+        return load_source_json(path)
+    except SourceJsonError as error:
         errors.append(f"{path}: invalid JSON: {error}")
         return None
 
@@ -153,6 +129,8 @@ def _validate_doc_metadata(
     relative: Path,
     module: dict[str, Any],
     errors: list[str],
+    *,
+    check_lists: bool = True,
 ) -> None:
     text = _read_text(root / relative, relative.as_posix(), errors)
     if not text:
@@ -172,9 +150,30 @@ def _validate_doc_metadata(
         errors.append(f"{relative}: module document requires technical sections")
     if USER_ABSOLUTE_RE.search(text):
         errors.append(f"{relative}: developer-specific absolute path is forbidden")
+    if check_lists:
+        header = re.split(r"(?m)^## ", text, maxsplit=1)[0]
+        for field in ("implementation", "tests"):
+            paths = module.get(field)
+            # The catalog validator reports malformed path lists separately.
+            if not isinstance(paths, list) or any(not isinstance(p, str) for p in paths):
+                continue
+            label = field.capitalize()
+            rows = re.findall(rf"(?m)^{label}:[^\r\n]*", header)
+            if len(rows) != 1 or rows[0].rstrip() != render_path_metadata(field, paths):
+                errors.append(
+                    f"{relative}: {label} metadata differs from module catalog; "
+                    "run check_documentation.py --write-module-metadata"
+                )
 
 
-def _validate_catalog(root: Path, errors: list[str]) -> dict[str, dict[str, Any]]:
+def render_path_metadata(field: str, paths: list[str]) -> str:
+    """Render catalog-owned path lists; technical prose remains hand-written."""
+    return field.capitalize() + ": " + (", ".join(f"`{path}`" for path in paths) or "None")
+
+
+def _validate_catalog(
+    root: Path, errors: list[str], *, check_metadata_lists: bool = True,
+) -> dict[str, dict[str, Any]]:
     path = root / "docs/module-catalog.json"
     value = _load_json(path, errors)
     if not isinstance(value, dict) or value.get("schema") != "heptatrader.module-catalog.v1":
@@ -220,7 +219,8 @@ def _validate_catalog(root: Path, errors: list[str]) -> dict[str, dict[str, Any]
                 errors.append(f"{label}.document: must be docs/modules/<name>.md")
             elif _existing_path(root, document.as_posix(), f"{label}.document", errors):
                 documented_paths.add(document)
-                _validate_doc_metadata(root, document, module, errors)
+                _validate_doc_metadata(root, document, module, errors,
+                                       check_lists=check_metadata_lists)
 
         implementations = module["implementation"]
         if not isinstance(implementations, list) or not implementations:
@@ -423,6 +423,29 @@ def write_index(root: Path) -> None:
     path.write_text(text[:start] + render_module_table(modules) + text[end:], encoding="utf-8")
 
 
+def write_module_metadata(root: Path) -> None:
+    errors: list[str] = []
+    modules = _validate_catalog(root, errors, check_metadata_lists=False)
+    if errors:
+        raise ValueError("; ".join(errors))
+    updates: dict[Path, str] = {}
+    for module in modules.values():
+        path = root / module["document"]
+        text = path.read_text(encoding="utf-8")
+        section = re.search(r"(?m)^## ", text)
+        boundary = section.start() if section else len(text)
+        header = text[:boundary]
+        for field in ("implementation", "tests"):
+            pattern = rf"(?m)^{field.capitalize()}:[^\r\n]*"
+            if len(re.findall(pattern, header)) != 1:
+                raise ValueError(f"{module['document']}: expected one {field} header row")
+            header = re.sub(pattern, lambda _: render_path_metadata(field, module[field]), header)
+        updates[path] = header + text[boundary:]
+    for path, text in updates.items():
+        if path.read_text(encoding="utf-8") != text:
+            path.write_text(text, encoding="utf-8")
+
+
 def validate(root: Path | str = ROOT) -> list[str]:
     root = Path(root).resolve()
     errors: list[str] = []
@@ -443,10 +466,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--write-index", action="store_true",
                         help="regenerate only the catalog-owned navigation table")
+    parser.add_argument("--write-module-metadata", action="store_true",
+                        help="regenerate module Implementation/Tests headers from the catalog")
     args = parser.parse_args(argv)
-    if args.write_index:
+    if args.write_index or args.write_module_metadata:
         try:
-            write_index(args.root.resolve())
+            if args.write_module_metadata:
+                write_module_metadata(args.root.resolve())
+            if args.write_index:
+                write_index(args.root.resolve())
         except (OSError, ValueError) as error:
             parser.error(str(error))
     errors = validate(args.root)

@@ -1,6 +1,5 @@
 #include "execution_coordinator.h"
 #include <exception>
-#include <set>
 ExecutionCommandResult
 ExecutionCoordinator::UncertainPlaceOutcomeLocked(
     const IbPlaceOrderCommand& command,
@@ -49,11 +48,6 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
     owner.instrument = dispatch.instrument;
     owner.side = command.order.action;
     m_orderOwners[orderId] = owner;
-    // Track before receipt IO so watchdog coverage survives a write failure.
-    if (m_callbacks.trackOrder)
-        m_callbacks.trackOrder(
-            context.venue.empty() ? "IB" : context.venue, orderId, "",
-            dispatch.instrument, command.order.action, context.strategy);
     bool projectionOk = true;
     std::string projectionReason;
     if (m_callbacks.onIbOrderPlaced)
@@ -253,13 +247,10 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
     if (outcome.disposition == VenuePlaceDisposition::Rejected)
     {
         const std::string& rejectReason = outcome.detail;
-        static const std::set<std::string> exactRejectCodes = {
-            "IB_PAPER_KILL_SWITCH_ENGAGED", "IB_POST_FILL_RISK_REFRESH_PENDING",
-            "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN",
-            "IB_PAPER_PLACE_QUOTE_BINDING_REQUIRED", "IB_PAPER_PLACE_CONTRACT_MISMATCH",
-            "IB_PAPER_PLACE_QUOTE_CHANGED_BEFORE_SEND"};
-        const std::string rejectCode = exactRejectCodes.count(rejectReason) ?
-            rejectReason : "IB_PLACE_REJECT";
+        const char* const rejectCode = VenuePlaceRejectionCode(outcome.rejection);
+        if (!rejectCode)
+            return UncertainPlaceOutcomeLocked(command, dispatch, orderId,
+                "adapter returned an invalid rejection classification");
         const OmsJournalEvent reject = BuildEvent(
             context, "reject", orderId, dispatch.instrument,
             command.order.action, command.order.totalQuantity,

@@ -2,8 +2,8 @@
 
 Status: EXPERIMENTAL
 Applies to: repository HEAD
-Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`, `scripts/hepta_shadow_finalize.py`
-Tests: `tests/python/test_research_contract_smoke.py`, `tests/python/test_strategy_contracts.py`, `tests/python/test_research_behavior.py`, `tests/python/test_shadow_pipeline_integration.py`, `tests/python/test_official_source_formats.py`
+Implementation: `scripts/hepta_market_context_builder.py`, `scripts/hepta_market_evidence_normalizer.py`, `scripts/hepta_shadow_market_history.py`, `scripts/hepta_strategy_shadow_runner.py`, `scripts/hepta_strategy_replay_evaluator.py`, `strategies`, `scripts/hepta_eurusd_confirmed_momentum_strategy.py`, `scripts/hepta_market_official_source_extractor.py`, `scripts/hepta_official_source_capture.py`, `scripts/hepta_strategy_contracts.py`, `scripts/validate_hepta_strategy_decision_receipt.py`, `scripts/hepta_shadow_finalize.py`
+Tests: `tests/python/test_research_contract_smoke.py`, `tests/python/test_strategy_contracts.py`, `tests/python/test_research_behavior.py`, `tests/python/test_shadow_data_behavior.py`, `tests/python/test_shadow_pipeline_integration.py`, `tests/python/test_official_source_formats.py`
 
 ## Scope
 

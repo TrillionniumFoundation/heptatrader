@@ -54,12 +54,14 @@ Example of a newly discovered core release blocker:
 
 ## External and experimental work
 
-The register separates completed synthetic SHADOW source integration and a
-verified fixed prior-source artifact pair from still-open target-host rollback,
-long-term journal lifecycle and actual server-side governance changes. A completed
-fixture is not real provider availability, multi-day operation or arbitrary
-historical schema compatibility. Refer to the machine register for current
-states rather than maintaining a second handwritten all-closed checklist.
+The register separates completed repository capabilities from still-open
+external target-host rollback, actual server-side governance and target-host
+operations. `OMS-LIFECYCLE-002` is closed only for its repository scope: native
+generation recovery, lineage-sealed active-tail handling, permanent disk-backed
+command identity and explicit downgrade export. That closure is not evidence of
+a real host deployment, provider availability, multi-day operation or arbitrary
+future-schema compatibility. Refer to the machine register for current states
+rather than maintaining a second handwritten all-closed checklist.
 
 Optional IB PAPER activation still requires the independently controlled SDK,
 harness, account, host isolation and an actual campaign bound to the exact
@@ -67,3 +69,16 @@ immutable artifact. `--release-profile ib-paper` cannot replace or grant that
 qualification. Advancing `main` does not mutate an already admitted artifact;
 changing any bound campaign input does. See [the IB module](modules/ib-paper.md)
 and [the harness contract](technical/ib-paper-harness-contract.md).
+
+## Historical closure records
+
+The current machine register lists actionable work plus bounded repository
+closures that still matter to current implementation navigation. The 18 older
+CLOSED records are retained in the [exact pre-cleanup register](https://github.com/TrillionniumFoundation/heptatrader/blob/5409e0911afa405f2413d69e33d0c0df3cf1fcad/docs/gap-register.json),
+not copied into another archive or revalidated as permanent HEAD certification.
+No implementation, regression test or persistent-format reader is removed by
+this inventory cleanup. Runtime telemetry and actual-host operations remain
+separate open scopes; closing the repository OMS lifecycle work does not close
+either of them. Future regression reports receive their own issue and behavior
+test; successful CI remains evidence for its own source/artifact rather than a
+recurring paperwork gap. There is no requirement for every issue to be CLOSED.

@@ -28,7 +28,7 @@ bool IsSuccessfulCancelTerminalStatus(const std::string& status)
 // A pre-ACK cancel is durably recorded with its more specific adapter reason.
 // It is still an unresolved mutation after restart and may only be resolved
 // from the same positive terminal/execution evidence as the generic recovery
-// reason.  Keep this allow-list explicit; arbitrary risk codes must not gain
+// reason. Keep this allow-list explicit; arbitrary risk codes must not gain
 // reconciliation authority merely because they belong to a cancel record.
 bool IsRecoverableCancelReason(const std::string& reason)
 {
@@ -132,7 +132,8 @@ std::string CancelRequestHash(const IbCancelOrderCommand& command)
 
 ExecutionCoordinator::ExecutionCoordinator(OmsJournal& journal,
                                            const ExecutionCoordinatorCallbacks& callbacks)
-    : m_journal(journal), m_callbacks(callbacks)
+    : m_journal(journal), m_callbacks(callbacks),
+      m_generationStore(journal.GetPath()), m_requests(&m_generationStore)
 {
     if (callbacks.placement.RequiresActivation() && !callbacks.onIbOrderPlaced)
         throw std::invalid_argument("reserving venue requires owner projection");
@@ -260,25 +261,18 @@ ExecutionCommandResult ExecutionCoordinator::HandleDeferredCancelLocked(
     return result;
 }
 
-bool ExecutionCoordinator::TryCancelAtVenueLocked(
-    long orderId, std::string& rejectReason)
+VenueCancelResult ExecutionCoordinator::TryCancelAtVenueLocked(long orderId)
 {
     try
     {
-        const bool cancelled = m_callbacks.cancelIbOrder(orderId);
-        if (m_callbacks.lastIbRejectReason)
-            rejectReason = m_callbacks.lastIbRejectReason();
-        return cancelled;
-    }
-    catch (const std::exception& ex)
-    {
-        rejectReason = ex.what();
+        return m_callbacks.cancelOrder(orderId);
     }
     catch (...)
     {
-        rejectReason = "unknown IB cancel exception";
+        // Also covers allocation failures after an effect. The empty default
+        // result does not allocate while translating an arbitrary exception.
+        return VenueCancelResult();
     }
-    return false;
 }
 
 std::string ExecutionCoordinator::RequestKey(const std::string& agentId,
@@ -527,7 +521,29 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
     std::int64_t cutoffMs, std::vector<std::int64_t>& out) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    m_placeSendAttempts.ReadTimes(account, executionDomain, cutoffMs, out);
+    out.clear();
+    if (m_generationStore.IsActive())
+    {
+        std::set<std::string> excluded(
+            m_placeSendAttemptKeys.begin(), m_placeSendAttemptKeys.end());
+        std::vector<OmsGenerationSendAttempt> historical;
+        std::string reason;
+        if (!m_generationStore.ReadPlaceSendAttemptTimes(
+                account, executionDomain, cutoffMs, excluded,
+                historical, reason))
+        {
+            // Every supported IB PAPER profile allows fewer than 64 sends per
+            // minute. Index uncertainty must therefore fail closed at the
+            // existing rate guard rather than reset the budget after restart.
+            out.assign(64U, OmsJournal::NowEpochMs());
+            return;
+        }
+        for (std::size_t i = 0; i < historical.size(); ++i)
+            out.push_back(historical[i].tsMs);
+    }
+    std::vector<std::int64_t> hot;
+    m_placeSendAttempts.ReadTimes(account, executionDomain, cutoffMs, hot);
+    out.insert(out.end(), hot.begin(), hot.end());
 }
 
 void ExecutionCoordinator::ResetRecoveryProjectionLocked()
@@ -805,7 +821,7 @@ ExecutionRuntimeObservation ExecutionCoordinator::RuntimeObservation() const
     std::lock_guard<std::mutex> lock(m_mutex);
     auto result = m_observation;
     result.present = true;
-    result.retainedCommands = m_requests.size();
+    result.retainedCommands = m_requests.HotSize();
     result.orderOwners = m_orderOwners.size();
     result.fencedOwners = m_fencedSessionOwners.size();
     result.recoveryOnlyOwners = m_recoveryOnlySessionOwners.size();
@@ -822,10 +838,40 @@ bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
 
     try
     {
-        // Replay validates and materializes the COMPLETE pinned journal before
-        // its first callback. Consume that frozen sequence directly instead of
-        // allocating a second vector of every event and all its strings.
-        // Only in-memory projections are touched here, never venue callbacks.
+        if (m_generationStore.HasStore())
+        {
+            const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+            if (!m_generationStore.Recover(
+                    health.replayMaxBytes, health.replayMaxRecords,
+                    health.replayMaxRecordBytes,
+                    [this](const OmsJournalEvent& event) {
+                        ApplyRecoveredEventLocked(event);
+                    }, reason))
+            {
+                ResetRecoveryProjectionLocked();
+                if (reason.empty()) reason = "OMS_GENERATION_RECOVERY_FAILED";
+                BlockMutationsLocked(reason);
+                return false;
+            }
+            std::uint64_t recoveryBytes = 0;
+            std::uint64_t recoveryRecords = 0;
+            if (!m_generationStore.RecoveryCapacity(
+                    recoveryBytes, recoveryRecords, reason))
+            {
+                ResetRecoveryProjectionLocked();
+                if (reason.empty()) reason = "OMS_GENERATION_CAPACITY_FAILED";
+                BlockMutationsLocked(reason);
+                return false;
+            }
+            m_journal.AdoptValidatedIncrementalRecoveryCapacity(
+                recoveryBytes, recoveryRecords);
+            return ValidateRecoveredProjectionLocked(reason);
+        }
+
+        // Legacy/no-generation path retains the exact existing contract:
+        // Replay validates and materializes the complete pinned journal before
+        // its first callback. Generation adoption is explicit and never an
+        // excuse to reinterpret a missing or damaged CURRENT as empty history.
         const int replayed = m_journal.Replay(
             [this](const OmsJournalEvent& event) {
                 ApplyRecoveredEventLocked(event);
@@ -843,8 +889,6 @@ bool ExecutionCoordinator::RecoverFromJournal(std::string& reason)
     {
         // An allocation/projection exception must not expose a valid prefix
         // through public reads or leave the coordinator open for mutations.
-        // Set the boolean fence before allocating diagnostic strings; sustained
-        // OOM may still propagate but can never leave an unfenced coordinator.
         ResetRecoveryProjectionLocked();
         m_mutationBlocked = true;
         m_mutationBlockReason = "OMS_RECOVERY_PROJECTION_FAILED";
@@ -976,8 +1020,6 @@ bool ExecutionCoordinator::ResolveUncertainCancelCommands(
              authoritativeExecutionOrderIds.begin();
          execution != authoritativeExecutionOrderIds.end(); ++execution)
     {
-        // Partial fills may have executions while the active snapshot remains
-        // authoritative; only malformed execution IDs invalidate it.
         if (*execution < 0)
         {
             reason = "AUTHORITATIVE_CANCEL_ACTIVE_EXECUTION_CONFLICT";
@@ -997,10 +1039,6 @@ bool ExecutionCoordinator::ResolveUncertainCancelCommands(
         if (authoritativeActiveOrderIds.find(record.orderId) !=
             authoritativeActiveOrderIds.end())
             continue;
-
-        // IB order ID zero is not unique across all completed/manual
-        // evidence.  It cannot safely identify the target of a cancel, even
-        // if a terminal status or economic execution also reports zero.
         if (record.orderId == 0)
             continue;
 

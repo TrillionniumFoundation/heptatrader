@@ -12,7 +12,7 @@ void TestPreIntentRefusalsDoNotRetainCommandIdentities()
         [&](const PlaceOrderCommand&, const std::string&) {
             return VenuePlaceResult::Submitted(400 + ++sends);
         });
-    callbacks.cancelIbOrder = [](long) { return true; };
+    callbacks.cancelOrder = [](long) { return VenueCancelResult::Submitted(); };
     callbacks.validateDecisionLease = [&](const AgentExecutionContext&,
         const std::string&, std::string* reason) {
         if (reason) *reason = "fixture lease not granted";
@@ -103,7 +103,7 @@ void TestBlockedRefusalFloodDoesNotEraseUncertainIdentity()
             ++sends;
             return VenuePlaceResult::Uncertain("response lost after possible send");
         });
-    callbacks.cancelIbOrder = [](long) { return true; };
+    callbacks.cancelOrder = [](long) { return VenueCancelResult::Submitted(); };
     ExecutionCoordinator coordinator(journal, callbacks);
     const auto uncertain = MakePlace("retained-uncertain");
     assert(coordinator.PlaceOrder(uncertain).status == ExecutionCommandStatus::Uncertain);

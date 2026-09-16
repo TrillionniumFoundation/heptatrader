@@ -123,7 +123,7 @@ void TestServerBoundIdentityAndCapabilities()
         venueOrderId = 8801;
         return VenuePlaceResult::Submitted(venueOrderId);
     });
-    callbacks.cancelIbOrder = [](long) { return true; };
+    callbacks.cancelOrder = [](long) { return VenueCancelResult::Submitted(); };
     callbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
                                           const std::string& instrument,
                                           std::string* reason) {
@@ -1219,7 +1219,7 @@ void TestEntryCancelAndFlattenBudgetsAreIndependent()
 		venueOrderId = 9901;
 		return VenuePlaceResult::Submitted(venueOrderId);
 	});
-	callbacks.cancelIbOrder = [](long) { return true; };
+	callbacks.cancelOrder = [](long) { return VenueCancelResult::Submitted(); };
 	callbacks.validateDecisionLease = [&](const AgentExecutionContext& context,
 		const std::string& instrument, std::string* reason) {
 		DecisionLeaseKey key;

@@ -10,26 +10,6 @@ double FlattenAuditPrice(const AuthoritativeFlattenPlan& plan)
         plan.order.lmtPrice : plan.referencePrice;
 }
 
-bool IsCanonicalFlattenVenueRejectCode(const std::string& value)
-{
-    static const char* const codes[] = {
-        "IB_PAPER_FLATTEN_QUOTE_CHANGED_BEFORE_SEND",
-        "IB_FLATTEN_POSITION_SNAPSHOT_MISMATCH",
-        "IB_FLATTEN_POSITION_CHANGED_BEFORE_SEND",
-        "IB_FLATTEN_POSITION_CHANGED_BEFORE_NOOP",
-        "IB_FLATTEN_ACTIVE_ORDER_SNAPSHOT_UNSAFE",
-        "IB_FLATTEN_NOT_EXACT_REDUCE_ONLY",
-        "IB_PAPER_KILL_SWITCH_ENGAGED",
-        "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN",
-        "IB_PAPER_BROKER_CONNECTION_CLOSED",
-        "IB_PAPER_EVENT_STREAM_OVERFLOW",
-        "IB_PAPER_RUNTIME_FATAL",
-        "IB_PAPER_RUNTIME_NOT_READY",
-    };
-    for (const char* const code : codes)
-        if (value == code) return true;
-    return false;
-}
 }
 
 ExecutionCommandResult
@@ -117,10 +97,6 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
     owner.instrument = command.instrument;
     owner.side = plan.order.action;
     m_orderOwners[orderId] = owner;
-    if (m_callbacks.trackOrder)
-        m_callbacks.trackOrder(
-            context.venue.empty() ? "IB" : context.venue, orderId, "",
-            command.instrument, plan.order.action, context.strategy);
 
     bool projectionOk = true;
     std::string projectionReason;
@@ -222,7 +198,7 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
     if (plan.expectedPositionQuantity == 0.0)
         return CompleteAuthoritativeFlattenNoopLocked(
             command, plan, dispatch);
-    if (!m_callbacks.placeIbReduceOnlyOrderCorrelated)
+    if (!m_callbacks.flattenOrder)
         return RejectAuthoritativeFlattenLocked(
             command, plan, dispatch, "IB_FLATTEN_CALLBACK_MISSING",
             "authoritative reduce-only venue callback is not configured");
@@ -276,66 +252,37 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
         }
     }
 
-    long orderId = -1;
-    bool placed = false;
-    bool callbackThrew = false;
+    VenueFlattenResult outcome;
     try
     {
-        placed = m_callbacks.placeIbReduceOnlyOrderCorrelated(
-            plan, dispatch.venueCorrelationId, &orderId);
+        outcome = m_callbacks.flattenOrder(plan, dispatch.venueCorrelationId);
     }
     catch (const std::exception& error)
     {
-        callbackThrew = true;
-        venueReason = error.what();
+        return UncertainAuthoritativeFlattenLocked(
+            command, plan, dispatch, -1, error.what());
     }
     catch (...)
     {
-        callbackThrew = true;
-        venueReason = "unknown authoritative flatten exception";
-    }
-    if (callbackThrew)
         return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, orderId,
-            venueReason.empty() ?
-                "authoritative flatten callback threw after dispatch" :
-                venueReason);
-    if (!placed)
+            command, plan, dispatch, -1, "unknown authoritative flatten exception");
+    }
+    if (outcome.disposition == VenueFlattenDisposition::RejectedBeforeSend)
     {
-        bool reliableReject = false;
-        if (m_callbacks.lastIbRejectReason)
-        {
-            try
-            {
-                venueReason = m_callbacks.lastIbRejectReason();
-                reliableReject = !venueReason.empty();
-            }
-            catch (const std::exception& error)
-            {
-                venueReason = error.what();
-            }
-            catch (...)
-            {
-                venueReason =
-                    "authoritative flatten rejection reader threw";
-            }
-        }
-        if (reliableReject)
-            return RejectAuthoritativeFlattenLocked(
-                command, plan, dispatch,
-                IsCanonicalFlattenVenueRejectCode(venueReason) ?
-                    venueReason : "IB_FLATTEN_REJECT",
-                venueReason);
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, orderId,
-            venueReason.empty() ?
-                "adapter returned false without a reliable rejection reason" :
-                venueReason);
+        const char* const code = VenueFlattenRejectionCode(outcome.rejection);
+        if (!code || outcome.detail.empty() || outcome.orderId >= 0)
+            return UncertainAuthoritativeFlattenLocked(command, plan, dispatch,
+                outcome.orderId, "invalid pre-send flatten rejection evidence");
+        return RejectAuthoritativeFlattenLocked(
+            command, plan, dispatch, code, outcome.detail);
     }
-    if (orderId < 0)
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, orderId,
-            "adapter accepted authoritative flatten without an order id");
+    if (outcome.disposition != VenueFlattenDisposition::Submitted)
+        return UncertainAuthoritativeFlattenLocked(command, plan, dispatch,
+            outcome.orderId, outcome.detail.empty() ?
+                "missing or invalid authoritative flatten outcome" : outcome.detail);
+    if (outcome.orderId < 0)
+        return UncertainAuthoritativeFlattenLocked(command, plan, dispatch,
+            outcome.orderId, "adapter accepted authoritative flatten without an order id");
     return CompleteAuthoritativeFlattenLocked(
-        command, plan, dispatch, orderId);
+        command, plan, dispatch, outcome.orderId);
 }

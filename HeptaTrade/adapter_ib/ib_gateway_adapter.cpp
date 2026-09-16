@@ -76,6 +76,7 @@ std::string NormalizeIbOptionRight(std::string right) {
 
 std::string ContractDuplicateKey(const IBContractLite& c) {
     std::ostringstream oss;
+    oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << c.symbol << "|" << c.secType << "|" << c.exchange << "|" << c.primaryExchange << "|"
         << c.currency << "|" << c.lastTradeDateOrContractMonth << "|" << NormalizeIbOptionRight(c.right) << "|"
         << std::fixed << std::setprecision(8) << c.strike << "|"
@@ -1008,44 +1009,51 @@ bool HeptaIBGatewayAdapter::CanCancelOrder(long orderId, std::string* suppressRe
     return m_orderLifecycle.CanCancel(orderId, suppressReason);
 }
 
-bool HeptaIBGatewayAdapter::CancelOrder(long orderId) {
-    auto t0 = std::chrono::steady_clock::now();
-    std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
-    m_lastRejectReason.clear();
-    if (!m_api || !m_connected) {
-        EmitLatency("cancel", "api_cancel", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(), false,
-            "\"orderId\":" + std::to_string(orderId) + ",\"reason\":\"not_connected\"");
-        return false;
-    }
-    std::string suppress;
-    if (!CanCancelOrder(orderId, &suppress)) {
-        if (suppress == "NO_BROKER_ACK") {
-            // The local place was accepted but IB has not delivered
-            // Submitted/OpenOrder yet.  Queue one cancel intent and dispatch
-            // it from the first broker acknowledgement callback; sending
-            // CancelOrder now races the asynchronous submit and yields a
-            // misleading broker rejection.
-            m_pendingCancelOrderIds.insert(orderId);
-            m_lastRejectReason = "IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK";
-            EmitLatency("cancel", "deferred_until_broker_ack",
+VenueCancelResult HeptaIBGatewayAdapter::CancelOrder(long orderId) {
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    try {
+        const auto started = std::chrono::steady_clock::now();
+        m_lastRejectReason.clear();
+        const auto observe = [&](const char* stage, bool accepted,
+                                 const std::string& reason) {
+            std::string fields = "\"orderId\":" + std::to_string(orderId);
+            if (!reason.empty())
+                fields += ",\"reason\":\"" + EscapeJson(reason) + "\"";
+            EmitLatency("cancel", stage,
                 std::chrono::duration_cast<std::chrono::milliseconds>(
-                    std::chrono::steady_clock::now() - t0).count(), true,
-                "\"orderId\":" + std::to_string(orderId));
-            return true;
+                    std::chrono::steady_clock::now() - started).count(),
+                accepted, fields);
+        };
+        if (!m_api || !m_connected) {
+            observe("api_cancel", false, "not_connected");
+            return VenueCancelResult::RejectedBeforeSend("IB_CANCEL_NOT_CONNECTED");
         }
-        EmitLatency("cancel", "guard_block", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(), false,
-            "\"orderId\":" + std::to_string(orderId) + ",\"reason\":\"" + EscapeJson(suppress) + "\"");
-        return false;
-    }
-    if (!BeginBrokerMutation("IB_RECOVERY_AUDIT_CANCEL_MUTATION"))
-        return false;
-    bool ok = m_api->CancelOrder(orderId);
-    if (ok) {
+        std::string suppress;
+        if (!CanCancelOrder(orderId, &suppress)) {
+            if (suppress == "NO_BROKER_ACK") {
+                m_pendingCancelOrderIds.insert(orderId);
+                m_lastRejectReason = "IB_CANCEL_DEFERRED_UNTIL_BROKER_ACK";
+                observe("deferred_until_broker_ack", true, "");
+                return VenueCancelResult::Deferred();
+            }
+            observe("guard_block", false, suppress);
+            return VenueCancelResult::RejectedBeforeSend(suppress);
+        }
+        if (!BeginBrokerMutation("IB_RECOVERY_AUDIT_CANCEL_MUTATION"))
+            return VenueCancelResult::RejectedBeforeSend(m_lastRejectReason);
+        // A bool from the SDK wrapper is not proof of a no-send rejection.
+        // After invocation, false or any exception is conservatively unknown.
+        if (!m_api->CancelOrder(orderId)) {
+            observe("api_cancel", false, "IB_CANCEL_API_OUTCOME_UNCERTAIN");
+            return VenueCancelResult::Uncertain("IB_CANCEL_API_OUTCOME_UNCERTAIN");
+        }
         m_cancelSubmitTs[orderId] = std::chrono::steady_clock::now();
+        observe("api_cancel", true, "");
+        return VenueCancelResult::Submitted();
+    } catch (...) {
+        // Includes diagnostics/bookkeeping failure AFTER the SDK returned.
+        return VenueCancelResult();
     }
-    EmitLatency("cancel", "api_cancel", std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count(), ok,
-        "\"orderId\":" + std::to_string(orderId));
-    return ok;
 }
 
 void HeptaIBGatewayAdapter::DispatchPendingCancelIfAcknowledged(
@@ -1087,11 +1095,12 @@ void HeptaIBGatewayAdapter::DispatchPendingCancelIfAcknowledged(
         m_lastRejectReason = "IB_DEFERRED_CANCEL_MUTATION_BLOCKED";
         return;
     }
-    const bool sent = m_api->CancelOrder(orderId);
-    // The API call has now been attempted.  Whether it was accepted or
-    // rejected is durable coordinator/reconciliation state; do not replay the
-    // same request on a later status callback.
+    // Claim this deferred attempt before calling external code. A throw after
+    // a possible send must not leave a queue entry that the next ACK resends.
+    // A closed mutation fence above still preserves the unattempted intent.
+    // The coordinator's durable cancel_pending remains unresolved throughout.
     m_pendingCancelOrderIds.erase(orderId);
+    const bool sent = m_api->CancelOrder(orderId);
     if (sent) {
         m_cancelSubmitTs[orderId] = std::chrono::steady_clock::now();
         m_lastRejectReason.clear();
@@ -1310,6 +1319,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
     }
 
     std::ostringstream oss;
+    oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity;
@@ -1332,6 +1342,7 @@ bool HeptaIBGatewayAdapter::IsDuplicateOrder(const IBContractLite& c, const IBOr
 
 void HeptaIBGatewayAdapter::RememberLastOrder(const IBContractLite& c, const IBOrderLite& o, std::time_t nowTs) {
     std::ostringstream oss;
+    oss.exceptions(std::ios::badbit | std::ios::failbit);
     oss << ContractDuplicateKey(c) << "|"
         << o.action << "|" << o.orderType << "|" << std::fixed << std::setprecision(8)
         << o.totalQuantity << "|" << o.lmtPrice;

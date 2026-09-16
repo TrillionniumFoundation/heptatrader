@@ -808,11 +808,10 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
             return m_venue.ActivateOrder(orderId, &detail)
                 ? VenueActivationResult::Activated() : VenueActivationResult::Uncertain(detail);
         });
-    callbacks.cancelIbOrder = [this](long orderId) { return m_venue.CancelOrder(orderId); };
+    callbacks.cancelOrder = [this](long orderId) { return m_venue.CancelOrder(orderId); };
     callbacks.canCancelIbOrder = [this](long orderId, std::string* detail) {
         return m_venue.CanCancelOrder(orderId, detail);
     };
-    callbacks.lastIbRejectReason = [this]() { return m_venue.LastRejectReason(); };
     callbacks.onIbOrderPlaced = [this](const IbPlaceOrderCommand& command,
                                        long orderId, std::string*) {
         ExecutionEvent event;

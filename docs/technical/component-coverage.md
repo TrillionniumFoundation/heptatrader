@@ -38,3 +38,9 @@ Fixture tests introduce an unowned runtime path, an unowned script and an
 unknown top-level runtime directory, and exercise conflicting/mismatched owners.
 Support exclusions are intentional and should remain narrow. Stage new files
 before invoking the Git-index check; untracked edits are not repository content.
+
+The lightweight historical `OmsRecover` projection is compiled from
+`tests/compat/` by `hepta_execution_coordinator_tests`. It is a test translation
+unit owned by that target in both inventories, not a shipped implementation.
+The module catalog still lists its behavioral fixtures under OMS tests; the
+production journal parser and supported historical schemas are unchanged.
