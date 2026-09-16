@@ -6,6 +6,7 @@
 #include <functional>
 #include <set>
 #include <string>
+#include <sys/stat.h>
 #include <vector>
 
 struct OmsGenerationCommandRecord
