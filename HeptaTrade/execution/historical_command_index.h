@@ -6,6 +6,7 @@
 #include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
 #include <openssl/evp.h>
