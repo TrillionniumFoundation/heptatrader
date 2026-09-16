@@ -1,10 +1,8 @@
 from pathlib import Path
 
-p = Path("scripts/.full_gap_patch.py")
+p = Path("tests/oms_recovery_growth_probe.h")
 s = p.read_text()
 
-# Give the generation fixture a real execution-domain subject so it can be used
-# as a valid PaperTerminalFenceBinding owner.
 needle = '''    auto oldCommand = MakePlace("generation-old-command");
     oldCommand.expiresAtMs = expiry;
 '''
@@ -16,9 +14,6 @@ if s.count(needle) != 1:
     raise SystemExit(f"old-command subject anchor count={s.count(needle)}")
 s = s.replace(needle, replacement, 1)
 
-# Do not open a second generation reader merely for the test. The production
-# terminal projection already owns one pinned OmsGenerationStore and is the
-# behavior we need to prove.
 old = '''        assert(recovered.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
         ExecutionCommandResult foreignStatus;
         assert(recovered.GetCommandStatus(
@@ -64,9 +59,6 @@ if s.count(old) != 1:
     raise SystemExit(f"second-reader test block count={s.count(old)}")
 s = s.replace(old, new, 1)
 
-# Verify the real terminal projection. It should bind one sealed command from
-# the exact owner plus the current-tail command; the same-account/domain foreign
-# session stays queryable but is not in the terminal campaign universe.
 needle = '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
 '''
 replacement = '''        assert(attempts.size() >= 2); // one disk-backed sealed attempt + one hot tail
