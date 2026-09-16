@@ -27,8 +27,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake ninja-build libssl-dev zlib1g-dev python3-yaml
 
-      - name: Apply batch 3
-        run: python3 scripts/apply_priority_remediation_batch3_fix.py
+      - name: Apply batch 3 and synchronize evidence
+        run: python3 scripts/apply_priority_remediation_batch3_evidence_fix.py
 
       - name: Materialize and commit the exact final tree locally
         run: |
@@ -39,6 +39,7 @@ jobs:
           rm -f scripts/apply_priority_remediation_batch2.py
           rm -f scripts/apply_priority_remediation_batch3.py
           rm -f scripts/apply_priority_remediation_batch3_fix.py
+          rm -f scripts/apply_priority_remediation_batch3_evidence_fix.py
           git diff --check
           git add -A
           git diff --cached --check
