@@ -35,11 +35,10 @@ struct OmsGenerationMutationRecord
     std::string venueCorrelationId;
 };
 
-// Fixed-size digest/count summary of sealed durable mutation history.  The
-// command binding hashes canonical command rows in permanent-index order.  The
-// correlation binding hashes the correlation reference attached to each sealed
-// mutation in that same order; HPM2 binds this versioned projection without
-// loading the historical command universe into memory.
+// Fixed-size digest/count summary of sealed durable mutation history. The
+// binding is always scoped to one fenced owner session plus account/domain;
+// foreign sessions stay permanently queryable through the command index but
+// are never folded into another campaign's terminal witness.
 struct OmsGenerationMutationSummary
 {
     std::uint64_t commandCount = 0;
@@ -117,12 +116,16 @@ public:
         std::string& reason) const;
 
     bool EnumerateMutationRecords(
+        const std::string& agentId,
+        const std::string& sessionId,
         const std::string& account,
         const std::string& executionDomain,
         std::vector<OmsGenerationMutationRecord>& records,
         std::string& reason) const;
 
     bool SummarizeMutationRecords(
+        const std::string& agentId,
+        const std::string& sessionId,
         const std::string& account,
         const std::string& executionDomain,
         OmsGenerationMutationSummary& summary,
@@ -134,9 +137,6 @@ private:
     bool ValidatePinnedIndex(int fd, const std::string& name,
                              const struct stat& expected) const;
 
-    // Existing V1 implementation is retained under private names by the
-    // translation-unit compatibility shim. V2 wrappers call it unchanged for
-    // old generations, so the persistent V1 reader is not forked or weakened.
     bool PrepareGenerationV1(std::string& reason);
     bool RecoverGenerationV1(
         std::size_t maxTailBytes,
