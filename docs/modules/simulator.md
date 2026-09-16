@@ -2,7 +2,7 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/simulator/`, `HeptaTrade/execution/hepta_executiond.cpp`  
+Implementation: `HeptaTrade/simulator`, `HeptaTrade/execution/hepta_executiond.cpp`
 Tests: `tests/agent_simulator_e2e_tests.cpp`, `tests/simulator_risk_runtime_tests.cpp`
 
 ## Responsibilities

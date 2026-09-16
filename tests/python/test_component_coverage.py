@@ -152,6 +152,40 @@ class ComponentCoverageTests(unittest.TestCase):
             errors = coverage.validate(root)
             self.assertTrue(any("owner drift" in item for item in errors), errors)
 
+    def test_tracked_cpp_source_missing_from_build_inventory_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            path = root / "HeptaTrade/execution/orphan.cpp"
+            path.write_text("int orphan() { return 0; }\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "add", path.relative_to(root)], check=True
+            )
+            errors = coverage.validate(root)
+            self.assertTrue(
+                any("not reachable from the reviewed CMake build inventory" in item for item in errors),
+                errors,
+            )
+
+    def test_explicitly_unbuilt_cpp_source_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            path = root / "HeptaTrade/execution/unbuilt.cpp"
+            path.write_text("int retained_for_migration() { return 0; }\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "add", path.relative_to(root)], check=True
+            )
+            catalog_path = root / "docs/module-catalog.json"
+            catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+            execution = next(
+                module for module in catalog["modules"] if module["id"] == "execution-service"
+            )
+            execution["unbuilt"] = ["HeptaTrade/execution/unbuilt.cpp"]
+            catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(root), "add", catalog_path.relative_to(root)], check=True
+            )
+            self.assertEqual(coverage.validate(root), [])
+
     def test_new_top_level_runtime_directory_cannot_escape_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)

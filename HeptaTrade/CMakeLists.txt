@@ -123,11 +123,12 @@ if(HEPTA_ENABLE_IBAPI)
     endif()
 
     if(IBAPI_BIN STREQUAL "")
-        if(EXISTS "${PROJECT_SOURCE_DIR}/../Interface/IBApi/bin")
-            set(IBAPI_BIN "${PROJECT_SOURCE_DIR}/../Interface/IBApi/bin")
-        else()
-            set(IBAPI_BIN "${IBAPI_ROOT}")
-        endif()
+        # The SDK root is the only supported default.  The old repository
+        # level Interface/IBApi/bin tree was retired and must not be
+        # rediscovered implicitly during a build.
+        set(IBAPI_BIN "${IBAPI_ROOT}")
+    else()
+        get_filename_component(IBAPI_BIN "${IBAPI_BIN}" ABSOLUTE)
     endif()
     message(STATUS
         "HeptaTrade IB enabled. IBAPI_ROOT=${IBAPI_ROOT} IBAPI_BIN=${IBAPI_BIN}")

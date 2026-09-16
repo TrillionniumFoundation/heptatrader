@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `HeptaTrade/execution/`, `HeptaTrade/agent/decision_lease_manager.cpp`, `HeptaTrade/events/execution_event_hub.cpp`, `HeptaTrade/events/owner_scoped_health_publisher.cpp`
+Implementation: `HeptaTrade/execution`, `HeptaTrade/agent`, `HeptaTrade/events`
 Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`
 
 ## Responsibilities

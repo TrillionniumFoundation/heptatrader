@@ -91,10 +91,30 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
     def text(argv):
         return command(argv, capture_output=True, text=True).stdout.strip()
 
+    def checkout_status(*, allow_output: bool = False) -> str:
+        """Return porcelain status, excluding acceptance outputs after creation.
+
+        The checkout must be clean before acceptance starts.  The package and
+        evidence are intentionally written below ``output`` during acceptance,
+        so the final guard excludes only that exact repository-relative tree;
+        all other tracked or untracked paths remain fatal.
+        """
+        argv = ["git", "status", "--porcelain", "--untracked-files=all"]
+        if allow_output:
+            try:
+                relative_output = output.relative_to(root).as_posix()
+            except ValueError:
+                relative_output = ""
+            if relative_output and relative_output != ".":
+                argv += ["--", ".", f":(exclude,top){relative_output}"]
+        return text(argv)
+
     if text(["git", "rev-parse", "HEAD"]) != source:
         raise ValueError("checkout differs from candidate source")
     command(["git", "diff", "--exit-code"])
     command(["git", "diff", "--cached", "--exit-code"])
+    if checkout_status():
+        raise ValueError("checkout contains tracked changes or untracked files")
     version = (root / "VERSION").read_text().strip()
     if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", version) is None:
         raise ValueError("invalid release version")
@@ -179,6 +199,8 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
         raise ValueError("candidate changed during acceptance")
     command(["git", "diff", "--exit-code"])
     command(["git", "diff", "--cached", "--exit-code"])
+    if checkout_status(allow_output=True):
+        raise ValueError("checkout changed or contains untracked files during acceptance")
     receipt = {"schema": "heptatrader.core-artifact-acceptance.v1", "result": "PASS",
                "source_sha": source, "package_sha256": candidate_digest, "version": version,
                "profile": "core", "checks": list(CHECKS), "previous_source_sha": REFERENCE_SHA,

@@ -141,7 +141,14 @@
       "status": "CURRENT",
       "document": "docs/modules/authoritative-state.md",
       "implementation": [
-        "HeptaTrade/state"
+        "HeptaTrade/state/authoritative_trading_snapshot_store.cpp",
+        "HeptaTrade/state/authoritative_trading_snapshot_store.h",
+        "HeptaTrade/state/snapshot_refresh_coordinator.cpp",
+        "HeptaTrade/state/snapshot_refresh_coordinator.h",
+        "HeptaTrade/state/ib_authoritative_quote_subscription_set.cpp",
+        "HeptaTrade/state/ib_authoritative_quote_subscription_set.h",
+        "HeptaTrade/state/ib_contract_identity.cpp",
+        "HeptaTrade/state/ib_contract_identity.h"
       ],
       "tests": [
         "tests/authoritative_trading_snapshot_store_tests.cpp",
@@ -186,7 +193,6 @@
         "systemd/hepta-x230-paper-host-identity-map-v1.json",
         "docs/ib-paper-profile-policy-v1.json",
         "scripts/verify_canonical_ib_paper_profile.py",
-        "scripts/ib_obs_latency_stats.py",
         "scripts/run_ib_paper_campaign.py"
       ],
       "tests": [

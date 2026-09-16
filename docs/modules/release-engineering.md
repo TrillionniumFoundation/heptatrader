@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `CMakeLists.txt`, `cmake/HeptaInstall.cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`, `docs/preflight-policy-v1.json`
+Implementation: `CMakeLists.txt`, `VERSION`, `HeptaTrade/CMakeLists.txt`, `cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`, `scripts/run_release_simulator_smoke.py`, `docs/preflight-policy-v1.json`, `scripts/accept_core_release.py`
 Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_special_files.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`
 
 ## Responsibilities

@@ -2,7 +2,7 @@
 
 Status: EXPERIMENTAL  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_xt/`  
+Implementation: `HeptaTrade/adapter_xt`
 Tests: `tests/venue_capability_tests.cpp`
 
 ## Current capability

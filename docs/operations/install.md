@@ -105,11 +105,12 @@ downgrade. See [rollback](rollback-backup.md) and [support window](../technical/
 Never retire an old reader without a deployment-state inventory and migration.
 
 The old optional products and their exclusive source/configuration graph have
-been retired together; their exact historical source remains in Git. Shared
-`Interface/` and `Tools/` material remains pending separate consumer/licensing
-review. This source retirement is not a migration of a running old deployment.
-Do not restore synthetic CTP/XT success for compatibility; see
-[retirement](../technical/legacy-retirement.md).
+been retired together. The root `Interface/` and `Tools/` trees are removed
+from the active source and package; their exact historical source remains in
+Git for provenance. Any consumer or licensing review applies to that
+historical source, not to a supported active path. This source retirement is
+not a migration of a running old deployment. Do not restore synthetic CTP/XT
+success for compatibility; see [retirement](../technical/legacy-retirement.md).
 
 The [operator walkthrough](../technical/simulator-operator-walkthrough.md) and
 [real systemd acceptance](../technical/systemd-simulator-acceptance.md) describe

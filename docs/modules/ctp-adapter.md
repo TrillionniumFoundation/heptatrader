@@ -2,7 +2,7 @@
 
 Status: EXPERIMENTAL  
 Applies to: repository HEAD  
-Implementation: `HeptaTrade/adapter_ctp/`  
+Implementation: `HeptaTrade/adapter_ctp`, `third_party/ctp`
 Tests: `tests/venue_capability_tests.cpp`
 
 ## Current capability

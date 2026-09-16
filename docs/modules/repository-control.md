@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.github/`, `.agents/`, `scripts/`
+Implementation: `.github`, `.agents`, `scripts/README.md`, `scripts/check_component_coverage.py`, `scripts/check_documentation.py`, `scripts/check_gap_register.py`, `scripts/dev_core.sh`, `scripts/verify_build_ownership.py`, `scripts/verify_exact_git_index.py`, `scripts/run_python_tests.py`, `scripts/render_protocol_reference.py`, `scripts/plan_owner_ruleset.py`, `scripts/source_json.py`
 Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_gap_register.py`, `tests/python/test_qualification_trust_boundary.py`
 
 ## Responsibilities

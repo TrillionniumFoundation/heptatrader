@@ -2,7 +2,7 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `systemd/`, `tmpfiles.d/`, `scripts/check_systemd_units.py`
+Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`
 Tests: `tests/python/test_systemd_units.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`
 
 ## Scope
