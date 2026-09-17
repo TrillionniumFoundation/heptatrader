@@ -14,7 +14,7 @@ import secrets
 import stat
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 import hepta_oms_report as base_metrics
 
@@ -152,6 +152,35 @@ def read_samples(path: Path) -> list[dict[str, Any]]:
     return list(recent)
 
 
+def observed_condition_duration_ms(
+        samples: list[dict[str, Any]],
+        predicate: Callable[[dict[str, Any]], bool]) -> int:
+    """Return a conservative continuous-duration lower bound from recent samples.
+
+    A service or connection epoch boundary resets the interval. Monotonic clock
+    regression also resets it rather than manufacturing negative or cross-process
+    duration. The result is zero when the latest sample does not satisfy the
+    condition; it never claims time before the oldest retained matching sample.
+    """
+    if not samples or not predicate(samples[-1]):
+        return 0
+    latest = samples[-1]
+    latest_mono = uint(latest["monotonic_ms"])
+    earliest = latest_mono
+    previous = latest_mono
+    for sample in reversed(samples[:-1]):
+        if (sample["service_epoch"] != latest["service_epoch"] or
+                sample["connection_epoch"] != latest["connection_epoch"] or
+                not predicate(sample)):
+            break
+        current = uint(sample["monotonic_ms"])
+        if current > previous:
+            break
+        earliest = current
+        previous = current
+    return latest_mono - earliest
+
+
 def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) -> dict[str, Any]:
     uint(now_ms); uint(max_age_ms)
     if not max_age_ms or not samples:
@@ -160,6 +189,13 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
     latest = samples[-1]
     age = now_ms - latest["observed_at_ms"]
     fresh = 0 <= age <= max_age_ms
+    post_fill_pending_ms = observed_condition_duration_ms(
+        samples, lambda sample: sample["post_fill_risk_reconciliation_pending"])
+    snapshot_incomplete_ms = observed_condition_duration_ms(
+        samples, lambda sample: not sample["risk_complete"] or not sample["active_complete"])
+    terminal_drain_pending_ms = observed_condition_duration_ms(
+        samples, lambda sample: sample["terminal_transport_halted"] and
+        sample["terminal_callbacks_in_flight"] > 0)
     alerts: list[dict[str, str]] = []
     def alert(rule: str, severity: str = "P2") -> None:
         if not any(item["rule_id"] == rule for item in alerts):
@@ -184,6 +220,9 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         "schema": REPORT_SCHEMA, "fresh": fresh, "sample_age_ms": age,
         "service_epoch": latest["service_epoch"],
         "connection_epoch": latest["connection_epoch"], "alerts": alerts,
+        "post_fill_reconciliation_pending_observed_ms": post_fill_pending_ms,
+        "authoritative_snapshot_incomplete_observed_ms": snapshot_incomplete_ms,
+        "terminal_callback_drain_pending_observed_ms": terminal_drain_pending_ms,
         "callback_lag_metrics_present": latest["callback_lag_metrics_present"],
         "callback_conflict_metrics_present": latest["callback_conflict_metrics_present"],
         "network_policy_metrics_present": latest["network_policy_metrics_present"],
@@ -220,6 +259,9 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_gross_absolute_position": float(latest["gross_absolute_position"]),
         "hepta_ib_position_instruments": latest["positions"],
         "hepta_ib_post_fill_reconciliation_pending": int(latest["post_fill_risk_reconciliation_pending"]),
+        "hepta_ib_post_fill_reconciliation_pending_observed_ms": summary["post_fill_reconciliation_pending_observed_ms"],
+        "hepta_ib_authoritative_snapshot_incomplete_observed_ms": summary["authoritative_snapshot_incomplete_observed_ms"],
+        "hepta_ib_terminal_callback_drain_pending_observed_ms": summary["terminal_callback_drain_pending_observed_ms"],
         "hepta_ib_exposure_generation": latest["exposure_generation"],
         "hepta_ib_recovery_barrier_complete": int(latest["recovery_barrier_complete"]),
         "hepta_ib_new_connection_epoch_required": int(latest["new_connection_epoch_required"]),
