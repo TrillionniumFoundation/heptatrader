@@ -133,6 +133,16 @@ hepta_register_core_test(hepta_simulator_risk_runtime_tests)
 set_tests_properties(hepta_simulator_risk_runtime_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 30)
 
+add_executable(hepta_simulator_v2_risk_recovery_tests
+    simulator_v2_risk_recovery_tests.cpp)
+target_link_libraries(hepta_simulator_v2_risk_recovery_tests
+    hepta_execution_core hepta_simulator_runtime)
+target_compile_definitions(hepta_simulator_v2_risk_recovery_tests PRIVATE
+    HEPTA_SOURCE_ROOT="${CMAKE_SOURCE_DIR}")
+hepta_register_core_test(hepta_simulator_v2_risk_recovery_tests)
+set_tests_properties(hepta_simulator_v2_risk_recovery_tests PROPERTIES
+    RUN_SERIAL TRUE TIMEOUT 30)
+
 add_executable(hepta_decision_lease_manager_tests
     decision_lease_manager_tests.cpp
     ../HeptaTrade/agent/decision_lease_manager.cpp)
