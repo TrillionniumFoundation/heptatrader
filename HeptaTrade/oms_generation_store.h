@@ -84,6 +84,19 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
+    // Stream the complete economic event history represented by the selected
+    // generation plus its active tail. This is intentionally separate from
+    // Recover(): ordinary coordinator recovery remains bounded hot+tail. The
+    // complete path exists for projections (currently simulator risk state)
+    // whose correctness depends on fills older than the hot command set.
+    // Memory is bounded by one record and a <=1024 generation descriptor chain;
+    // elapsed startup work still grows with retained historical bytes.
+    bool ReplayCompleteHistory(
+        std::size_t maxRecordBytes,
+        const std::function<void(const OmsJournalEvent&)>& onEvent,
+        std::uint64_t& records,
+        std::string& reason);
+
     bool RecoveryCapacity(std::uint64_t& bytes,
                           std::uint64_t& records,
                           std::string& reason) const;
