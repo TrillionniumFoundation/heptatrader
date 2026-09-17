@@ -122,6 +122,63 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertEqual(exported["records"], 4 * generations)
         self.assertEqual(len(list(read_records(output, max_records=128))), 4 * generations)
 
+    def test_verifier_streams_cumulative_indexes_instead_of_materializing_them(self) -> None:
+        lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.append(command_events("new", 2000, 202))
+        lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        original = lifecycle._iter_private_lines
+
+        class NoMaterialize:
+            def __init__(self, source):
+                self.source = iter(source)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self.source)
+
+            def __length_hint__(self):
+                raise AssertionError("cumulative index was materialized")
+
+        lifecycle._iter_private_lines = lambda path: NoMaterialize(original(path))
+        try:
+            verified = lifecycle.verify_generation(self.store, journal=self.journal)
+            self.assertEqual(verified["result"], "PASS")
+        finally:
+            lifecycle._iter_private_lines = original
+
+    def test_generation_chain_has_no_fixed_1024_export_ceiling_and_cycles_fail_closed(self) -> None:
+        store = self.root / "long-chain"
+        store.mkdir(mode=0o700)
+        parent = ""
+        count = 1025
+        for index in range(count):
+            generation = f"g-{index:04d}"
+            directory = store / generation
+            directory.mkdir(mode=0o700)
+            manifest = directory / "manifest.json"
+            manifest.write_text(json.dumps({
+                "generation": generation,
+                "parent_generation": parent,
+            }, sort_keys=True, separators=(",", ":")) + "\n")
+            os.chmod(manifest, 0o600)
+            parent = generation
+        chain = lifecycle._generation_chain(store, parent)
+        self.assertEqual(len(chain), count)
+        self.assertEqual(chain[0][0], "g-0000")
+        self.assertEqual(chain[-1][0], parent)
+
+        first_manifest = store / "g-0000" / "manifest.json"
+        first_manifest.write_text(json.dumps({
+            "generation": "g-0000",
+            "parent_generation": parent,
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+        os.chmod(first_manifest, 0o600)
+        with self.assertRaisesRegex(checkpoint.GenerationError,
+                                    "OMS_GENERATION_PARENT_CHAIN_INVALID"):
+            lifecycle._generation_chain(store, parent)
+
     def test_v1_generation_upgrades_to_v2_delta_and_exports_back_to_legacy(self) -> None:
         first = checkpoint.build_generation(self.journal, self.store, stopped=True)
         self.assertEqual(first["schema"], checkpoint.SCHEMA)
