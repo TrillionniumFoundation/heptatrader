@@ -38,6 +38,20 @@ authorized.
 
 Repository credentials, review settings, CI status, host credentials, runner custody, and Broker evidence are separate trust domains. Source verification may prove repository properties only. It cannot synthesize independent review, Merge Queue admission, host identity, PAPER account mode, or a broker-observed campaign.
 
+## Owner-operated governance
+
+The repository is maintained as an owner-operated project. Under that operating model, source admission should spend human effort on executable evidence rather than manufactured approval counts. `scripts/plan_owner_ruleset.py` therefore defines a read-only transition plan with the following intended server-side result:
+
+- retain the four canonical exact-head status checks;
+- retain deletion and non-fast-forward protection;
+- remove required approval count, CODEOWNER approval, last-push approval and stale-review churn when there is no genuinely independent reviewer performing those roles;
+- remove Merge Queue when it adds no real concurrent-integration value for the current owner-operated flow;
+- keep squash-only integration and exact-head evidence semantics through the remaining checks.
+
+This is **not** implemented by inventing a source-side “approval” file, dummy reviewer, duplicate CI gate or token check. Those would recreate the same formalism in another layer without adding independent judgment.
+
+The live GitHub Ruleset is an external server fact. If it still contains the approval or Merge Queue requirements, `OWNER-RULESET-002` remains OPEN even when the source-side plan and tests are green. Applying the transition requires an authenticated GitHub administrative action followed by readback; the repository must not claim completion from a planner output alone.
+
 ## Observability
 
 Failures identify the exact path, target, module, document, invalid fact or release blocker. Successful output is intentionally small and is bound by the workflow to the exact checked-out SHA.
@@ -59,6 +73,8 @@ acceptance; Source and Monitoring CI executes source plus structural checks.
 Source and Monitoring CI also owns the shell-syntax and before/after
 exact-index observations; the standalone Qualification Source Audit is retired. GCC and Clang sanitizers remain independent
 native executions, not duplicate Python discovery.
+
+The canonical ordinary development entry is `./scripts/dev_core.sh` plus the explicit `core` and `source` Python lanes. Install/process acceptance keeps its stronger isolated-host and release-artifact prerequisites and is invoked by the release acceptance path. An unscoped `unittest discover` command is not the project-wide acceptance interface, and targeted debugging commands do not substitute for their owning lane.
 
 The optional PAPER workflow is parsed as YAML by
 `scripts/check_qualification_trust_boundary.py` (development dependency:
