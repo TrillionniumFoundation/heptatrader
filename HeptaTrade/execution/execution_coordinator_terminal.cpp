@@ -36,3 +36,4 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
 #undef Recover
 #undef Prepare
 #include "execution_generation_v2_support.inc"
+#include "execution_generation_complete_history.inc"
