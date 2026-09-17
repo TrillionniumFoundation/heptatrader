@@ -29,16 +29,18 @@
         "docs/technical/oms-recovery-capacity.md",
         "docs/technical/persistence-support-window.md",
         "HeptaTrade/oms_generation_store.h",
-        "HeptaTrade/execution/execution_generation_v2_support.inc",
+        "HeptaTrade/execution/execution_generation_support.cpp",
+        "HeptaTrade/execution/execution_service_runtime_composition.cpp",
         "scripts/hepta_oms_checkpoint.py",
         "scripts/hepta_oms_lifecycle.py",
         "tests/oms_recovery_growth_probe.h",
         "tests/python/test_oms_checkpoint.py",
-        "tests/python/test_oms_lifecycle_rotation.py"
+        "tests/python/test_oms_lifecycle_rotation.py",
+        "tests/python/test_oms_generation_process.py"
       ],
       "issue": 89,
       "blocking_releases": [],
-      "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup; send-attempt history is merged across the cut and index corruption fails closed. V2 stopped-state maintenance fsyncs immutable delta generations, atomically rotates the active path to a non-JSON lineage sentinel, binds parent manifests and current pointers by SHA-256, and preserves V1 reading for upgrade. Tests cover repeated generations, bounded active-tail growth, publication crash boundaries, ancient same-ID duplicate/conflict, native restart without a second venue send, send-attempt continuity, current/parent/sentinel corruption rejection, V1-to-V2 upgrade and create-only strict legacy JSONL export for downgrade. No command identity is expired, no journal history is deleted, and PAPER/LIVE authorization remains false."
+      "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. Simulator economic-state restoration separately replays the verified complete logical generation chain so terminal fills, admission count and order-id watermark are not lost at rotation; installed-process acceptance exercises fill, stop, V2 seal, restart, position, command identity, duplicate no-resend and newer order-id behavior. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup. Current V2 send-attempt indexes are globally ordered by account/domain/time and use stream merge; a legacy unsorted parent is migrated with bounded external-sort chunks rather than whole-file materialization. Verification streams cumulative indexes and parent-chain walking has no fixed 1024-generation ceiling while cycles still fail closed. V2 stopped-state maintenance fsyncs immutable delta generations, atomically rotates the active path to a non-JSON lineage sentinel, binds parent manifests and current pointers by SHA-256, and preserves V1 reading for upgrade. No command identity is expired, no journal history is deleted, and PAPER/LIVE authorization remains false."
     },
     {
       "id": "OWNER-RULESET-002",
@@ -71,7 +73,7 @@
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER additionally emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter validates fixed-cardinality gauges without account/order/command labels. The `ib-paper` telemetry profile now independently parses and atomically publishes OMS, IB and Gateway textfiles; invalid IB input replaces only IB health with explicit collector failure while valid OMS/Gateway publication continues. Callback lag, callback conflict, quote/snapshot age, Broker reconciliation duration and network-policy producers remain absent with explicit presence=false rather than synthetic zero. No target-host SLO or real notification is proven."
+      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER additionally emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter validates fixed-cardinality gauges without account/order/command labels. The `ib-paper` telemetry profile independently parses and atomically publishes OMS, IB and Gateway textfiles; invalid IB input replaces only IB health with explicit collector failure while valid OMS/Gateway publication continues. Callback lag, callback conflict, quote/snapshot age, Broker reconciliation duration and network-policy producers remain absent with explicit presence=false rather than synthetic zero. No target-host SLO or real notification is proven."
     },
     {
       "id": "HOST-OPERATIONS-003",
@@ -85,7 +87,7 @@
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. The source-side IB state stream now has bounded collection and atomic publication, but the actual target host still has to run it, retain failure evidence and deliver an alert through an approved operator receiver. No host, credential, network policy or trading authority was changed."
+      "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. The source-side IB state stream has bounded collection and atomic publication, but the actual target host still has to run it, retain failure evidence and deliver an alert through an approved operator receiver. No host, credential, network policy or trading authority was changed."
     }
   ]
 }
