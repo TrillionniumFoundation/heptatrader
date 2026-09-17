@@ -29,7 +29,11 @@ SOURCE_TESTS = frozenset({
     "test_python_test_partition.py",
 })
 INSTALL_TESTS = frozenset({"test_cmake_install_integration.py"})
-PROCESS_TESTS = frozenset({"test_installed_runtime_processes.py", "test_shadow_pipeline_integration.py"})
+PROCESS_TESTS = frozenset({
+    "test_installed_runtime_processes.py",
+    "test_oms_generation_process.py",
+    "test_shadow_pipeline_integration.py",
+})
 
 
 def partitions(root: Path = ROOT) -> dict[str, set[str]]:
