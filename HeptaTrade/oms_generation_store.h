@@ -35,6 +35,14 @@ struct OmsGenerationMutationRecord
     std::string venueCorrelationId;
 };
 
+struct OmsGenerationMutationSummary
+{
+    std::uint64_t commandCount = 0;
+    std::uint64_t correlationReferenceCount = 0;
+    std::string commandBindingSha256;
+    std::string correlationBindingSha256;
+};
+
 struct OmsGenerationSendAttempt
 {
     std::string requestKey;
@@ -49,19 +57,6 @@ enum class OmsGenerationLookupStatus
     Error
 };
 
-// Read-only, fail-closed consumer of stopped-state OMS generations.
-//
-// V1 generations bind an immutable full-journal prefix and replay its suffix.
-// V2 generations keep immutable history in a parent-linked segment chain and
-// bind the active journal to a non-JSON lineage sentinel. An older full-ledger
-// reader therefore rejects a rotated tail instead of mistaking it for a clean
-// complete ledger. scripts/hepta_oms_lifecycle.py export reconstructs an
-// ordinary complete JSONL ledger for explicit downgrade.
-//
-// Historical command identity stays on disk. Only hot recovery events and the
-// active tail are projected into the coordinator. Index files stay descriptor-
-// pinned after startup; replacement, metadata drift or malformed records are
-// errors, never "not found".
 class OmsGenerationStore
 {
 public:
@@ -84,14 +79,9 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
-    // Simulator state includes terminal fills and admission/order-id history
-    // that are intentionally absent from the bounded coordinator hot replay.
-    // For a V2 lineage this streams the verified logical ledger from the V1
-    // base (when present), every immutable V2 segment in lineage order, and
-    // the active tail after its lineage sentinel. It never rewrites state and
-    // never treats the sentinel as a JSON event. A V1-only store returns the
-    // explicit *_REQUIRES_V2 reason so callers can use the still-complete
-    // legacy journal without weakening old-reader fail-closed behavior.
+    // Complete logical replay is deliberately separate from bounded hot
+    // coordinator recovery. Simulator state needs terminal fills, admission
+    // count and order-id history across every sealed generation.
     bool ReplayCompleteHistory(
         std::size_t maxRecordBytes,
         const std::function<void(const OmsJournalEvent&)>& onEvent,
@@ -117,6 +107,15 @@ public:
         std::vector<OmsGenerationSendAttempt>& attempts,
         std::string& reason) const;
 
+    // HPM2 support retained for compatibility with the reviewed PR #95
+    // implementation. The live terminal path below remains owner-session
+    // scoped and therefore uses the explicit overload with agent/session.
+    bool EnumerateMutationRecords(
+        const std::string& account,
+        const std::string& executionDomain,
+        std::vector<OmsGenerationMutationRecord>& records,
+        std::string& reason) const;
+
     bool EnumerateMutationRecords(
         const std::string& agentId,
         const std::string& sessionId,
@@ -125,15 +124,18 @@ public:
         std::vector<OmsGenerationMutationRecord>& records,
         std::string& reason) const;
 
+    bool SummarizeMutationRecords(
+        const std::string& account,
+        const std::string& executionDomain,
+        OmsGenerationMutationSummary& summary,
+        std::string& reason) const;
+
 private:
     void Close() noexcept;
     bool Prepare(std::string& reason);
     bool ValidatePinnedIndex(int fd, const std::string& name,
                              const struct stat& expected) const;
 
-    // Existing V1 implementation is retained under private names by the
-    // translation-unit compatibility shim. V2 wrappers call it unchanged for
-    // old generations, so the persistent V1 reader is not forked or weakened.
     bool PrepareGenerationV1(std::string& reason);
     bool RecoverGenerationV1(
         std::size_t maxTailBytes,
@@ -151,6 +153,7 @@ private:
     std::string m_generation;
     bool m_active = false;
     bool m_segmentedTail = false;
+    bool m_sendIndexWindowSorted = false;
     int m_storeFd = -1;
     int m_generationFd = -1;
     int m_commandIndexFd = -1;
@@ -160,17 +163,6 @@ private:
     std::uint64_t m_commandRecords = 0;
     std::uint64_t m_sendAttemptRecords = 0;
     std::uint64_t m_hotReplayRecords = 0;
-    // The cumulative send-attempt index is immutable for one selected
-    // generation. Cache only the already-filtered suffix for one account/domain
-    // and monotonically increasing cutoff. A backwards clock or subject change
-    // deliberately falls back to a complete index scan, preserving the exact
-    // historical semantics without charging every ordinary admission O(history).
-    mutable bool m_sendQueryCacheValid = false;
-    mutable std::string m_sendQueryAccount;
-    mutable std::string m_sendQueryDomain;
-    mutable std::int64_t m_sendQueryCutoffMs = 0;
-    mutable std::vector<OmsGenerationSendAttempt> m_sendQueryAttempts;
-    // V1: immutable full-journal prefix. V2: lineage sentinel prefix.
     std::uint64_t m_journalPrefixBytes = 0;
     std::string m_journalPrefixSha256;
 };
