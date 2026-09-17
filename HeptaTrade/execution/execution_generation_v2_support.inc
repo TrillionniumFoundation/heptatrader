@@ -10,6 +10,28 @@ namespace
 {
 const char* const kRuntimeManifestHeaderV2 = "HEPTA_OMS_RUNTIME_GENERATION_V2";
 const std::uint64_t kMaximumActiveTailHeaderBytes = 512U;
+
+struct CompleteHistorySegment
+{
+    std::string generation;
+    std::string sha256;
+};
+
+bool GenerationExtractCanonicalJsonDigest(const std::string& json,
+                                          const char* field,
+                                          std::string& digest)
+{
+    const std::string marker = std::string("\"") + field + "\":\"";
+    const std::size_t start = json.find(marker);
+    if (start == std::string::npos || json.find(marker, start + marker.size()) != std::string::npos)
+        return false;
+    const std::size_t valueStart = start + marker.size();
+    const std::size_t valueEnd = json.find('"', valueStart);
+    if (valueEnd == std::string::npos || valueEnd - valueStart != 64U)
+        return false;
+    digest = json.substr(valueStart, valueEnd - valueStart);
+    return GenerationHexDigest(digest);
+}
 }
 
 bool OmsGenerationStore::Prepare(std::string& reason)
@@ -292,6 +314,211 @@ bool OmsGenerationStore::Recover(
         Close();
         return false;
     }
+    m_active = true;
+    reason.clear();
+    return true;
+}
+
+bool OmsGenerationStore::ReplayCompleteHistory(
+    std::size_t maxRecordBytes,
+    const std::function<void(const OmsJournalEvent&)>& onEvent,
+    std::uint64_t& records,
+    std::string& reason)
+{
+    records = 0;
+    if (!Prepare(reason)) return false;
+    if (!m_segmentedTail)
+    {
+        reason = "OMS_GENERATION_COMPLETE_REPLAY_REQUIRES_V2";
+        Close();
+        return false;
+    }
+
+    std::vector<CompleteHistorySegment> reverseSegments;
+    std::set<std::string> seen;
+    std::string generation = m_generation;
+    for (;;)
+    {
+        if (!seen.insert(generation).second)
+        {
+            reason = "OMS_GENERATION_PARENT_CHAIN_INVALID";
+            Close();
+            return false;
+        }
+        const int generationFd = ::openat(m_storeFd, generation.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        struct stat directoryIdentity;
+        if (generationFd < 0 || ::fstat(generationFd, &directoryIdentity) != 0 ||
+            !GenerationPrivateDirectory(directoryIdentity))
+        {
+            if (generationFd >= 0) ::close(generationFd);
+            reason = "OMS_GENERATION_DIRECTORY_UNSAFE";
+            Close();
+            return false;
+        }
+        std::string runtimeManifest;
+        if (!GenerationReadPrivateFileAt(generationFd, "runtime-manifest.txt",
+                kMaximumGenerationMetadataBytes, runtimeManifest))
+        {
+            ::close(generationFd);
+            reason = "OMS_GENERATION_RUNTIME_MANIFEST_DIGEST_MISMATCH";
+            Close();
+            return false;
+        }
+        GenerationFields fields;
+        const bool v2 = GenerationParseFields(
+            runtimeManifest, kRuntimeManifestHeaderV2, fields);
+        if (!v2)
+        {
+            fields.clear();
+            if (!GenerationParseFields(runtimeManifest, kRuntimeManifestHeader, fields) ||
+                fields["generation"] != generation ||
+                !GenerationHexDigest(fields["segment_sha256"]) ||
+                !GenerationVerifyHashedFileAt(generationFd, "segment-000001.jsonl",
+                    fields["segment_sha256"]))
+            {
+                ::close(generationFd);
+                reason = "OMS_GENERATION_COMPLETE_REPLAY_MANIFEST_INVALID";
+                Close();
+                return false;
+            }
+            reverseSegments.push_back({generation, fields["segment_sha256"]});
+            ::close(generationFd);
+            break;
+        }
+        if (fields["generation"] != generation ||
+            !GenerationHexDigest(fields["segment_sha256"]) ||
+            (fields["parent_generation"] != "-" &&
+             !GenerationSafeName(fields["parent_generation"])) ||
+            ((fields["parent_generation"] == "-") !=
+             (fields["parent_manifest_sha256"] == "-")) ||
+            (fields["parent_generation"] != "-" &&
+             !GenerationHexDigest(fields["parent_manifest_sha256"])) ||
+            !GenerationVerifyHashedFileAt(generationFd, "segment-000001.jsonl",
+                fields["segment_sha256"]))
+        {
+            ::close(generationFd);
+            reason = "OMS_GENERATION_COMPLETE_REPLAY_MANIFEST_INVALID";
+            Close();
+            return false;
+        }
+        reverseSegments.push_back({generation, fields["segment_sha256"]});
+        const std::string parent = fields["parent_generation"];
+        const std::string parentManifestDigest = fields["parent_manifest_sha256"];
+        ::close(generationFd);
+        if (parent == "-") break;
+
+        const int parentFd = ::openat(m_storeFd, parent.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        struct stat parentIdentity;
+        std::string parentManifestJson;
+        std::string parentRuntime;
+        std::string expectedRuntimeDigest;
+        const bool parentOk = parentFd >= 0 &&
+            ::fstat(parentFd, &parentIdentity) == 0 &&
+            GenerationPrivateDirectory(parentIdentity) &&
+            GenerationVerifyHashedFileAt(parentFd, "manifest.json", parentManifestDigest) &&
+            GenerationReadPrivateFileAt(parentFd, "manifest.json",
+                kMaximumGenerationMetadataBytes, parentManifestJson) &&
+            GenerationExtractCanonicalJsonDigest(parentManifestJson,
+                "runtime_manifest_sha256", expectedRuntimeDigest) &&
+            GenerationReadPrivateFileAt(parentFd, "runtime-manifest.txt",
+                kMaximumGenerationMetadataBytes, parentRuntime) &&
+            GenerationSha256(parentRuntime.data(), parentRuntime.size()) == expectedRuntimeDigest;
+        if (parentFd >= 0) ::close(parentFd);
+        if (!parentOk)
+        {
+            reason = "OMS_GENERATION_PARENT_BINDING_INVALID";
+            Close();
+            return false;
+        }
+        generation = parent;
+    }
+
+    for (std::vector<CompleteHistorySegment>::const_reverse_iterator item =
+             reverseSegments.rbegin(); item != reverseSegments.rend(); ++item)
+    {
+        const int generationFd = ::openat(m_storeFd, item->generation.c_str(),
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        int segmentFd = -1;
+        struct stat segmentIdentity;
+        if (generationFd < 0 ||
+            !GenerationOpenHashedFileAt(generationFd, "segment-000001.jsonl",
+                item->sha256, segmentFd, segmentIdentity) || segmentIdentity.st_size < 0 ||
+            static_cast<std::uint64_t>(segmentIdentity.st_size) >
+                static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+        {
+            if (segmentFd >= 0) ::close(segmentFd);
+            if (generationFd >= 0) ::close(generationFd);
+            reason = "OMS_GENERATION_COMPLETE_REPLAY_SEGMENT_INVALID";
+            Close();
+            return false;
+        }
+        std::size_t segmentRecords = 0;
+        const std::size_t segmentBytes = static_cast<std::size_t>(segmentIdentity.st_size);
+        const bool ok = GenerationReplayRange(segmentFd, 0, segmentIdentity.st_size,
+            segmentBytes, std::numeric_limits<std::size_t>::max(), maxRecordBytes,
+            onEvent, segmentRecords);
+        const bool closed = ::close(segmentFd) == 0 && ::close(generationFd) == 0;
+        if (!ok || !closed ||
+            records > std::numeric_limits<std::uint64_t>::max() - segmentRecords)
+        {
+            reason = "OMS_GENERATION_COMPLETE_REPLAY_SEGMENT_FAILED";
+            Close();
+            return false;
+        }
+        records += static_cast<std::uint64_t>(segmentRecords);
+    }
+
+    const int journalFd = ::open(m_journalPath.c_str(),
+        O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat before, named;
+    if (journalFd < 0 || ::fstat(journalFd, &before) != 0 ||
+        !GenerationPrivateFile(before) || before.st_size < 0 ||
+        static_cast<std::uint64_t>(before.st_size) < m_journalPrefixBytes ||
+        ::lstat(m_journalPath.c_str(), &named) != 0 ||
+        !GenerationSameIdentity(before, named))
+    {
+        if (journalFd >= 0) ::close(journalFd);
+        reason = "OMS_GENERATION_ACTIVE_TAIL_UNSAFE";
+        Close();
+        return false;
+    }
+    std::string headerDigest;
+    if (!GenerationHashFd(journalFd, static_cast<off_t>(m_journalPrefixBytes),
+            headerDigest) || headerDigest != m_journalPrefixSha256)
+    {
+        ::close(journalFd);
+        reason = "OMS_GENERATION_ACTIVE_TAIL_LINEAGE_MISMATCH";
+        Close();
+        return false;
+    }
+    const std::uint64_t tailBytes64 = static_cast<std::uint64_t>(before.st_size) -
+        m_journalPrefixBytes;
+    if (tailBytes64 > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
+    {
+        ::close(journalFd);
+        reason = "OMS_GENERATION_COMPLETE_REPLAY_TAIL_LIMIT";
+        Close();
+        return false;
+    }
+    std::size_t tailRecords = 0;
+    bool ok = GenerationReplayRange(journalFd,
+        static_cast<off_t>(m_journalPrefixBytes), before.st_size,
+        static_cast<std::size_t>(tailBytes64),
+        std::numeric_limits<std::size_t>::max(), maxRecordBytes, onEvent, tailRecords);
+    struct stat after, namedAfter;
+    ok = ok && ::fstat(journalFd, &after) == 0 &&
+        ::lstat(m_journalPath.c_str(), &namedAfter) == 0 &&
+        GenerationSameIdentity(before, after) && GenerationSameIdentity(after, namedAfter);
+    if (::close(journalFd) != 0) ok = false;
+    if (!ok || records > std::numeric_limits<std::uint64_t>::max() - tailRecords)
+    {
+        reason = "OMS_GENERATION_COMPLETE_REPLAY_TAIL_FAILED";
+        Close();
+        return false;
+    }
+    records += static_cast<std::uint64_t>(tailRecords);
     m_active = true;
     reason.clear();
     return true;
