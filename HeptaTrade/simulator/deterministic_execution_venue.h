@@ -5,6 +5,7 @@
 #include "../execution/venue_cancel_result.h"
 #include "../risk/pre_trade_risk_engine.h"
 
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -70,6 +71,13 @@ public:
     void Process();
     double Position(const std::string& instrument) const;
     std::map<std::string, double> Positions() const;
+    // Test/diagnostic observation of the conservative daily-admission state.
+    // It is read-only and is not an Agent configuration or admission bypass.
+    std::uint64_t AdmittedOrderCount() const
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        return m_admittedOrderCount;
+    }
     std::set<long> ActiveOrderIds() const;
     std::map<std::string, long> ActiveOrderCorrelations() const;
     std::map<std::string, long> TerminalOrderCorrelations() const;
