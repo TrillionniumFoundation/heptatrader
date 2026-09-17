@@ -7,44 +7,46 @@ Tests: `tests/venue_capability_tests.cpp`, `tests/python/test_legacy_runtime_bou
 
 ## Current capability
 
-The XT/QMT adapter is a minimal negative-capability boundary and still has no real XT transport. It must fail closed for connect, query, place, and cancel operations and must not emit synthetic accepted/submitted events that resemble broker evidence.
+The XT/QMT source now implements the exact **HXQ1 v1 read-only client boundary**, but not the production Windows/QMT transport. `HeptaXTGatewayAdapter` can frame and validate bounded HXQ1 messages, bind account/service epoch/connection epoch, perform an identity handshake, and issue `account_snapshot`, `position_snapshot`, and `quote_subscribe` requests through an explicitly injected **already-admitted read-only exchange**.
 
-The earlier API mapping was based on a developer-local Python `xtquant` installation. That mapping is research input, not a pinned redistributable SDK contract.
+That injected exchange is deliberately not a generic socket or Agent callback. Production wiring must supply a peer-pinned mTLS channel owned by the Execution identity. The repository does not claim that the QMT sidecar, certificates, Windows firewall policy, pinned `xtquant` runtime, or target account exists merely because the protocol client is executable.
+
+Mutation remains unavailable. `place` and `cancel` are not routed through the read-only exchange and always fail closed; an injected transport therefore cannot accidentally turn protocol development into trading authority.
 
 ## Selected next-venue implementation
 
-XT/QMT is now the selected next venue after the simulator and the bounded IB PAPER path. The implementation order and exact trust/protocol/state requirements are defined by the [XT/QMT execution-adapter contract](../technical/xtqmt-adapter-contract.md). The selected first topology keeps the canonical Execution authority on Linux and reaches a dedicated Windows Python/QMT sidecar through one pinned mutually authenticated HXQ1/TLS trust domain; Agent and Gateway cannot reach that listener. Execution remains the sole durable order authority.
+XT/QMT is the selected next venue after the simulator and the bounded IB PAPER path. The exact trust, protocol, state and qualification requirements are defined by the [XT/QMT execution-adapter contract](../technical/xtqmt-adapter-contract.md). The selected topology keeps canonical Execution authority on Linux and reaches a dedicated Windows Python/QMT sidecar through one pinned mutually authenticated HXQ1/TLS trust domain. Agent and Gateway cannot reach that listener. Execution remains the sole durable order authority.
 
-Selection does not change capability truth. No pinned QMT installer, Python/xtquant package digest, account runtime or qualification fixture exists in this repository today, so enabling a transport before those inputs are supplied would be fabricated functionality. The current negative-capability source therefore remains the correct executable behavior until the contract's first SDK-custody stage can be implemented and tested.
+Current source work is intentionally staged:
 
-## Intended responsibilities
+1. **Implemented now:** bounded HXQ1 v1 framing, exact response binding, account/service/connection-epoch identity, read-only handshake and read-only query dispatch, hostile/mismatched-response rejection, and hard mutation disablement.
+2. **Still external/unimplemented:** the real mTLS channel, Windows sidecar process, pinned QMT/Python/`xtquant` inputs, firewall/credential policy, callback normalization and target-host qualification.
+3. **Future mutation stage:** only after read-only qualification, add durable `venue_command_id` mutation correlation and uncertain-send recovery. No mutation method is enabled by the current work.
 
-The reviewed XT/QMT transport must provide:
+## Read-only protocol behavior
 
-- a pinned SDK/runtime boundary and supported platform matrix;
-- a local versioned IPC protocol with explicit peer/identity custody;
-- account subscription and connection lifecycle;
-- stable Execution-to-QMT order, cancel, trade and error correlations;
-- authoritative asset, position, order, trade and quote refresh barriers;
-- exchange-specific side, price-type, lot-size and market-state mapping;
-- journaled uncertain-result recovery across sidecar and Execution restart;
-- dedicated credentials, process identity and network policy;
-- deterministic callback fixtures plus actual pinned-QMT qualification.
+HXQ1 frames are a four-byte unsigned big-endian payload length followed by one canonical UTF-8 JSON object, with a maximum JSON payload of 256 KiB. The current client binds every request and response to `protocol=HXQ1`, `version=1`, request ID, Execution service epoch, XT/QMT connection epoch, operation and qualification account. A response with a changed request ID, epoch, operation, account, framing length, or extra/noncanonical content is rejected rather than interpreted loosely.
 
-A Python sidecar may never become a second order authority. Stable command identity, intent/send durability, risk, fencing and economic reconciliation remain Execution responsibilities.
+The current C++ adapter exposes only the read operations that already have a defined first-stage consumer surface: identity, account snapshot, position snapshot and quote subscription. `venue_command_id` is empty on these read operations; it remains reserved for future durable mutation correlation.
 
 ## Failure semantics
 
-Until a real transport is implemented and qualified, `Connect`, account/position/quote queries, order placement and cancellation return false. The reason is `XT_NOT_INITIALIZED` before valid initialization and `XT_TRANSPORT_NOT_IMPLEMENTED` afterwards. `Init` rejects a mode other than `XT` and resets initialized state. `IsConnected` is always false. Place clears an optional output order ID to zero and never manufactures acceptance.
+Before valid initialization, requests fail with `XT_NOT_INITIALIZED`. With no admitted read-only exchange, `Connect()` fails with `XT_TRANSPORT_NOT_IMPLEMENTED` and capability remains `EXPERIMENTAL_NO_TRANSPORT`. A fully bound read-only configuration reports `EXPERIMENTAL_READ_ONLY_HXQ1`; identity handshake failure, framing failure or response-binding mismatch remains fail closed. After a successful handshake, disconnect clears connected state and subsequent reads fail with `XT_READ_ONLY_NOT_CONNECTED`.
 
-Once transport work begins, any exception or ambiguous result after entering a vendor mutation API is `Uncertain`, not a definitive rejection. Reconnect changes the connection epoch and invalidates snapshot completeness. Order absence is not cancellation proof, and a Filled status without trade/economic evidence cannot by itself manufacture position truth. The technical contract owns the detailed failure matrix.
+`PlaceOrder` and `CancelOrder` never use HXQ1 in this stage. If the read-only transport is configured they fail with `XT_MUTATION_DISABLED`; without a transport they retain `XT_TRANSPORT_NOT_IMPLEMENTED`. No local order ID or accepted/submitted event is manufactured.
+
+## Security boundary
+
+The Windows sidecar remains a future dedicated service identity. It must receive no Agent session token and cannot mint command IDs, decision leases or Execution owner generations. The eventual mTLS wrapper must pin the allowed Linux host, peer certificate/public-key identity, qualification profile and message bounds before supplying the admitted exchange to this adapter.
+
+A Python sidecar may never become a second order authority. Stable command identity, intent/send durability, risk, fencing and economic reconciliation remain Execution responsibilities.
 
 ## Observability and tests
 
-The scaffold reports its capability status and last failure reason. The current test verifies that it remains disconnected and rejects mutation. Promotion requires real framing/peer tests, callback ordering, duplicate/conflicting event tests, partial fill, cancel race, reconnect, account mismatch, invalid price type, stale quote, uncertain send, sidecar restart, old-command duplicate/conflict and final reconciliation evidence as enumerated by the technical contract.
+`venue_capability_tests.cpp` covers both negative capability and the executable read-only boundary: exact length framing, identity/account/epoch binding, successful read-only query round trips, mismatched response rejection, disconnect behavior, and proof that read-only connectivity still cannot place or cancel an order.
 
-## Deliberately minimal source surface
+Promotion beyond `EXPERIMENTAL` still requires real mTLS peer tests, QMT callback ordering, duplicate/conflicting events, partial fills, cancel races, reconnect, account mismatch, invalid price type, stale quote, uncertain send, sidecar restart, old-command duplicate/conflict and final reconciliation evidence against the pinned runtime.
 
-The retired monolith was the old callback consumer. A whole-tree consumer search found only this scaffold and `venue_capability_tests.cpp` using its callback/event API. Empty economic callbacks, a diagnostic event queue and configuration pretending to supply account/session/risk policy have therefore been removed, rather than retained solely for tests of an unimplemented venue. There is no pinned SDK, deployed transport or persistent format behind them.
+## CTP priority
 
-The negative-capability methods remain to reject accidental venue selection. Tests execute repeated requests, unsupported numeric inputs and invalid-mode reinitialization; all remain disconnected with no order ID or send. New code should implement the reviewed sidecar/IPC contract against the actual pinned QMT runtime rather than revive speculative callbacks. External users of the former experimental C++ callback API must migrate explicitly; no universal source compatibility is claimed. CTP remains an unselected experimental scaffold and similarly must not manufacture transport state. No current OMS/HSL reader or authority guard is removed by this development choice.
+CTP is explicitly deferred while XT/QMT is the selected next venue. Its existing negative-capability scaffold remains only to reject accidental selection; no parallel speculative CTP transport layer should be expanded until the XT read-only and qualification path has converged.
