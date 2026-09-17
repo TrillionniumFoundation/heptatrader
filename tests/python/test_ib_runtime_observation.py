@@ -84,6 +84,7 @@ class IbRuntimeObservationTests(unittest.TestCase):
         self.assertIn("hepta_ib_active_snapshot_generation 11", text)
         self.assertIn("hepta_ib_gross_absolute_position 25.5", text)
         self.assertIn("hepta_ib_callback_lag_metrics_present 0", text)
+        self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 0", text)
         self.assertNotIn("fixture", text)
         self.assertNotIn("agent", text)
 
@@ -96,6 +97,36 @@ class IbRuntimeObservationTests(unittest.TestCase):
         self.assertNotIn("callback_lag_seconds", text)
         self.assertNotIn("callback_conflicts_total", text)
         self.assertNotIn("network_policy_state", text)
+
+    def test_continuous_stall_durations_are_bounded_by_retained_samples_and_epoch(self) -> None:
+        samples = []
+        for observed, monotonic in ((6000, 1000), (8000, 3000), (10000, 5000)):
+            sample = copy.deepcopy(self.sample)
+            sample["observed_at_ms"] = observed
+            sample["monotonic_ms"] = monotonic
+            sample["post_fill_risk_reconciliation_pending"] = True
+            sample["risk_complete"] = False
+            sample["coherent_risk_complete"] = False
+            sample["terminal_transport_halted"] = True
+            sample["terminal_callbacks_in_flight"] = 2
+            samples.append(sample)
+        summary = report.report(samples, 10000)
+        self.assertEqual(summary["post_fill_reconciliation_pending_observed_ms"], 4000)
+        self.assertEqual(summary["authoritative_snapshot_incomplete_observed_ms"], 4000)
+        self.assertEqual(summary["terminal_callback_drain_pending_observed_ms"], 4000)
+        text = report.prometheus(samples[-1], summary)
+        self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 4000", text)
+        self.assertIn("hepta_ib_authoritative_snapshot_incomplete_observed_ms 4000", text)
+        self.assertIn("hepta_ib_terminal_callback_drain_pending_observed_ms 4000", text)
+
+        changed = copy.deepcopy(samples[-1])
+        changed["connection_epoch"] = 8
+        changed["monotonic_ms"] = 6000
+        changed["observed_at_ms"] = 11000
+        reset = report.report(samples + [changed], 11000)
+        self.assertEqual(reset["post_fill_reconciliation_pending_observed_ms"], 0)
+        self.assertEqual(reset["authoritative_snapshot_incomplete_observed_ms"], 0)
+        self.assertEqual(reset["terminal_callback_drain_pending_observed_ms"], 0)
 
     def test_incomplete_or_inconsistent_samples_fail_closed(self) -> None:
         mutations = [
