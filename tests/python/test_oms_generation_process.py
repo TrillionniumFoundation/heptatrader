@@ -19,8 +19,6 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
     def setUpClass(cls):
         if sys.platform != "linux" or os.geteuid() != 0:
             raise RuntimeError("opted-in generation process test requires disposable root Linux")
-        # Use the same host interlock as the canonical installed-process suite;
-        # never adopt or remove a pre-existing host namespace.
         base.HOST_INTERLOCK.mkdir(mode=0o711)
         base.HOST_INTERLOCK.chmod(0o711)
         cls.lock = base.HOST_INTERLOCK / "session-lease-terminal-cleanup.lock"
@@ -58,6 +56,8 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         command, fields, first_order = runtime.place("BUY", 25, "1.1002")
         runtime.wait_position(25)
         runtime.wait_no_orders()
+        risk_before = runtime.call("risk.get_limits", [])["payload"]
+        self.assertEqual(risk_before["admitted_order_count"], 1)
         runtime.stop()
 
         journal = runtime.root / "es/oms-journal.jsonl"
@@ -82,6 +82,9 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
 
         runtime.start(self.slot)
         runtime.wait_position(25)
+        risk_after = runtime.call("risk.get_limits", [])["payload"]
+        self.assertEqual(risk_after["admitted_order_count"], 1,
+                         "daily admission state must survive generation rotation")
         status = runtime.call("execution.get_command_status",
                               [f"command_id={command}"])["payload"]
         self.assertEqual(status["command_status"], "accepted")
@@ -97,9 +100,13 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                            "order-id watermark must survive generation rotation")
         runtime.wait_position(20)
         runtime.wait_no_orders()
+        self.assertEqual(runtime.call("risk.get_limits", [])["payload"]
+                         ["admitted_order_count"], 2)
         runtime.place("SELL", 20, "1.1000")
         runtime.wait_position(0)
         runtime.wait_no_orders()
+        self.assertEqual(runtime.call("risk.get_limits", [])["payload"]
+                         ["admitted_order_count"], 3)
         runtime.stop()
 
         # A second restart proves the post-seal active tail composes with the
@@ -109,4 +116,6 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         status = runtime.call("execution.get_command_status",
                               [f"command_id={command}"])["payload"]
         self.assertEqual(status["order_id"], first_order)
+        self.assertEqual(runtime.call("risk.get_limits", [])["payload"]
+                         ["admitted_order_count"], 3)
         runtime.wait_no_orders()
