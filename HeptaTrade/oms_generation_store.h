@@ -84,6 +84,20 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
+    // Simulator state includes terminal fills and admission/order-id history
+    // that are intentionally absent from the bounded coordinator hot replay.
+    // For a V2 lineage this streams the verified logical ledger from the V1
+    // base (when present), every immutable V2 segment in lineage order, and
+    // the active tail after its lineage sentinel. It never rewrites state and
+    // never treats the sentinel as a JSON event. A V1-only store returns the
+    // explicit *_REQUIRES_V2 reason so callers can use the still-complete
+    // legacy journal without weakening old-reader fail-closed behavior.
+    bool ReplayCompleteHistory(
+        std::size_t maxRecordBytes,
+        const std::function<void(const OmsJournalEvent&)>& onEvent,
+        std::uint64_t& records,
+        std::string& reason);
+
     bool RecoveryCapacity(std::uint64_t& bytes,
                           std::uint64_t& records,
                           std::string& reason) const;
