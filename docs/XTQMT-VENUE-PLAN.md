@@ -3,17 +3,16 @@
 Status: EXPERIMENTAL  
 Applies to: `HeptaTrade/adapter_xt/`
 
-The current adapter is an event-shape scaffold with **no transport**. It fails connection, query, place, and cancel operations with `XT_TRANSPORT_NOT_IMPLEMENTED`; it must not emit synthetic broker acknowledgements or local submitted order IDs.
+The current adapter has an executable **HXQ1 v1 read-only client boundary**, not a qualified QMT transport. It can frame and validate bounded HXQ1 messages, bind account/service/connection epoch, perform an identity handshake, and issue account/position/quote read requests through an already-admitted Execution-owned exchange. The repository still has no production Windows/QMT mTLS channel, pinned QMT/Python/`xtquant` runtime, deployed sidecar, firewall policy or qualified account.
 
-Before status promotion, implement and review:
+Mutation remains unavailable. `place` and `cancel` never enter the read-only exchange and fail closed; no local order ID, accepted event or submitted event is manufactured. A source-level read-only protocol client is therefore not equivalent to `transport_implemented=true`, venue advertisement or trading authorization.
 
-- a pinned SDK or a versioned Python sidecar protocol;
-- process/credential/network isolation from Agent and Gateway;
-- connection and account-subscription state machine;
-- asset, position, order, trade, quote, order-error, and cancel-error barriers;
-- stable order/trade/cancel correlation and uncertain-send recovery;
-- exchange price type, lot size, market hours, short-sale, and account semantics;
-- journal, risk, authoritative snapshot, reconciliation, and fault-injection tests;
-- broker-observed PAPER qualification.
+The next stages are deliberately sequential:
 
-The common Execution Service remains the sole mutation authority. A sidecar may translate XT semantics but may not become a second order path. See [`modules/xt-adapter.md`](modules/xt-adapter.md).
+1. qualify the real peer-pinned mTLS channel and Windows sidecar against the exact HXQ1 v1 framing/identity contract;
+2. implement and qualify authoritative asset, position, order, trade and quote barriers with reconnect/epoch semantics;
+3. only after read-only qualification, add durable `venue_command_id` mutation correlation and uncertain-send recovery without creating a second order authority;
+4. cover exchange price type, lot size, market hours, short-sale/account semantics, journal/risk integration, reconciliation and fault injection;
+5. require broker-observed PAPER/simulation qualification before any capability promotion.
+
+Agent and Gateway must remain unable to reach the sidecar listener or read QMT credentials. The common Execution Service remains the sole durable mutation authority. A sidecar may translate XT semantics but may not mint command identity, bypass risk/fencing, or become a second order path. See [`modules/xt-adapter.md`](modules/xt-adapter.md) and [`technical/xtqmt-adapter-contract.md`](technical/xtqmt-adapter-contract.md).
