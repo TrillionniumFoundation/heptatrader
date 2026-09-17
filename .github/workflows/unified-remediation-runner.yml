@@ -2,10 +2,10 @@ name: Unified remediation runner
 
 on:
   push:
-    branches: [work/unified-remediation-runner-20260917]
+    branches: ["work/unified-remediation-runner-20260917"]
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   remediate:
@@ -15,6 +15,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 1
+          persist-credentials: false
       - name: Apply bounded lifecycle remediation
         run: |
           python3 - <<'PY'
@@ -69,8 +70,7 @@ jobs:
           method = '''\n    def test_generation_verification_streams_cumulative_indexes(self) -> None:\n        lifecycle.seal_generation(self.journal, self.store, stopped=True)\n        original = lifecycle._iter_private_lines\n\n        def streaming(path: Path):\n            return StreamingOnlyIterator(original(path))\n\n        with mock.patch.object(lifecycle, "_iter_private_lines", side_effect=streaming):\n            verified = lifecycle.verify_generation(self.store, journal=self.journal)\n        self.assertEqual(verified["result"], "PASS")\n\n    def test_generation_chain_limit_is_explicit_and_fail_closed(self) -> None:\n        def manifest_for(_store: Path, generation: str):\n            index = int(generation[1:])\n            return {"generation": generation, "parent_generation": f"g{index - 1}" if index else ""}\n\n        with mock.patch.object(lifecycle, "_manifest_for", side_effect=manifest_for):\n            with self.assertRaisesRegex(checkpoint.GenerationError, "OMS_GENERATION_PARENT_CHAIN_INVALID"):\n                lifecycle._generation_chain(self.store, f"g{lifecycle.MAX_CHAIN}")\n'''
           if end not in text:
               raise SystemExit('rotation test end marker drifted')
-          text = text.replace(end, '\n' + method + end, 1)
-          tests.write_text(text)
+          tests.write_text(text.replace(end, '\n' + method + end, 1))
 
           docs = Path('docs/technical/persistence-support-window.md')
           text = docs.read_text()
@@ -83,14 +83,16 @@ jobs:
           python3 -m unittest discover -s tests/python -p 'test_oms_lifecycle_rotation.py' -v
           python3 scripts/check_documentation.py
           git diff --check
-      - name: Publish tested source commit
-        env:
-          BRANCH: work/unified-remediation-runner-20260917
+      - name: Stage verified patch
         run: |
-          set -euo pipefail
-          rm .github/workflows/unified-remediation-runner.yml
-          git config user.name 'OpenAI'
-          git config user.email 'noreply@openai.com'
-          git add -A
-          git commit -m 'perf: stream OMS generation verification and bound downgrade chain'
-          git push origin HEAD:"$BRANCH"
+          mkdir -p remediation-out
+          git diff --binary -- scripts/hepta_oms_lifecycle.py tests/python/test_oms_lifecycle_rotation.py docs/technical/persistence-support-window.md > remediation-out/remediation.patch
+          cp scripts/hepta_oms_lifecycle.py remediation-out/hepta_oms_lifecycle.py
+          cp tests/python/test_oms_lifecycle_rotation.py remediation-out/test_oms_lifecycle_rotation.py
+          cp docs/technical/persistence-support-window.md remediation-out/persistence-support-window.md
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: unified-remediation-source
+          path: remediation-out/
+          if-no-files-found: error
+          retention-days: 1
