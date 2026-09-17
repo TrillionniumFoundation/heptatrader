@@ -3,6 +3,7 @@
 #include "execution_decision_lease_authority.h"
 #include "execution_event_feed_server.h"
 #include "unix_execution_service_server.h"
+#include "../oms_generation_store.h"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -430,8 +431,9 @@ public:
             output << "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
                    << "\"mutation_blocked\":" << (blocked ? "true" : "false")
                    << ",\"reason\":\"" << EscapeJson(blockReason) << "\","
-                   << "\"gross_absolute_position\":"
-                   << grossAbsolutePosition << "}";
+                   << "\"gross_absolute_position\":" << grossAbsolutePosition
+                   << ",\"admitted_order_count\":" << m_venue.AdmittedOrderCount()
+                   << "}";
         }
         else
         {
@@ -603,7 +605,8 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
     std::map<long, OmsJournalEvent> admitted;
     std::map<long, OmsJournalEvent> fills;
     bool valid = true;
-    const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
+    const std::function<void(const OmsJournalEvent&)> project =
+        [&](const OmsJournalEvent& event) {
         if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
         const bool fill = event.eventType == "status" && event.status == "Filled";
         if (event.eventType != "place_sent" && !fill) return;
@@ -636,10 +639,31 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
              prior->second.qty != event.qty || prior->second.price != event.price))
             valid = false;
         fills[event.orderId] = event;
-    });
-    if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
+    };
+
+    bool replayOk = false;
+    OmsGenerationStore generations(m_config.journalPath);
+    if (generations.HasStore())
     {
-        reason = replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
+        std::uint64_t records = 0;
+        std::string generationReason;
+        const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+        if (generations.ReplayCompleteHistory(
+                health.replayMaxRecordBytes, project, records, generationReason))
+            replayOk = true;
+        else if (generationReason != "OMS_GENERATION_COMPLETE_REPLAY_REQUIRES_V2")
+        {
+            reason = generationReason.empty() ?
+                "EXECUTION_OMS_GENERATION_REPLAY_FAILED" : generationReason;
+            return false;
+        }
+    }
+    if (!replayOk)
+        replayOk = m_journal.Replay(project) >= 0;
+
+    if (!replayOk || maximumOrderId == std::numeric_limits<long>::max())
+    {
+        reason = !replayOk ? "EXECUTION_OMS_REPLAY_FAILED" :
             "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
         return false;
     }
@@ -698,8 +722,6 @@ void ExecutionServiceRuntimeComposition::SimulatorQuoteFeedLoop()
             nextQuote = std::chrono::steady_clock::now() +
                 std::chrono::milliseconds(m_config.simulatorQuoteRefreshIntervalMs);
         }
-        // Process runs in production too. Reserved orders cannot emit events
-        // until their owner and place_sent marker have committed durably.
         if (m_lifecycleGate->ready.load()) m_venue.Process();
         lock.lock();
     }
@@ -772,8 +794,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     m_lifecycleGate.reset(new ExecutionServiceLifecycleGate());
     m_eventHub.reset(new ExecutionEventHub(1024, m_serviceIdentity.serviceEpoch));
     m_decisionLeases.reset(new ExecutionDecisionLeaseAuthority());
-    // A dedicated execution daemon must never inherit performance-oriented OMS
-    // buffering knobs from an interactive parent environment.
     ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
     ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
     ::setenv("HEPTA_OMS_BATCH_SIZE", "1", 1);
@@ -818,8 +838,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         event.executionDomain = command.context.executionDomain;
         event.agentId = command.context.agentId;
         event.sessionId = command.context.sessionId;
-        // The owner projection precedes its durable commit and activation.
-        // This observation is a reservation, never accepted/fill evidence.
         event.type = "order.reserved";
         event.venue = "SIMULATOR";
         event.orderId = orderId;
@@ -908,11 +926,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     std::string recoveryReason;
     if (!m_coordinator->RecoverFromJournal(recoveryReason)) m_recoveryReason = recoveryReason;
     else m_recoveryReason.clear();
-    // The Simulator venue is process-local and deliberately restores no live
-    // orders. Its complete authoritative state after restart is therefore an
-    // empty active-order set. Persistently terminate replayed owners so the
-    // coordinator cannot retain ownership for orders absent from the venue.
-    // This does not reset any UNCERTAIN mutation block discovered by recovery.
     std::size_t removedOwners = 0;
     std::string reconcileReason;
     if (!m_coordinator->ReconcileOrderOwners(std::set<long>(), true,
