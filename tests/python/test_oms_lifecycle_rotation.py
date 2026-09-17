@@ -73,6 +73,15 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             commands.append(bytes.fromhex(fields[2]).decode())
         return commands
 
+    def current_send_keys(self) -> list[tuple[str, str, int, int, str, str, str]]:
+        generation = json.loads((self.store / "CURRENT").read_text())["generation"]
+        rows = []
+        for line in (self.store / generation / "send-attempt-index.tsv").read_text().splitlines():
+            fields = line.split("\t")
+            rows.append((fields[0], fields[1], int(fields[2]), int(fields[6]),
+                         fields[3], fields[4], fields[5]))
+        return rows
+
     def test_seal_rotates_to_lineage_tail_and_legacy_reader_rejects_it(self) -> None:
         result = lifecycle.seal_generation(self.journal, self.store, stopped=True)
         self.assertEqual(result["schema"], lifecycle.SCHEMA)
@@ -178,6 +187,40 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         with self.assertRaisesRegex(checkpoint.GenerationError,
                                     "OMS_GENERATION_PARENT_CHAIN_INVALID"):
             lifecycle._generation_chain(store, parent)
+
+    def test_send_attempt_index_remains_window_sorted_across_generations(self) -> None:
+        first = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(first["send_attempt_records"], 1)
+        values = command_events("second", 900, 202)
+        for item in values:
+            item["account"] = "AAA"
+            item["execution_domain"] = "PAPER"
+        self.append(values)
+        second = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(second["send_attempt_records"], 2)
+        rows = self.current_send_keys()
+        self.assertEqual(rows, sorted(rows))
+        generation = second["generation"]
+        runtime = (self.store / generation / "runtime-manifest.txt").read_text()
+        self.assertIn(f"send_attempt_index_order={lifecycle.SEND_INDEX_ORDER}\n", runtime)
+        lifecycle.verify_generation(self.store, journal=self.journal)
+
+    def test_v1_send_index_is_migrated_to_sorted_v2_without_full_memory_load(self) -> None:
+        first = checkpoint.build_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(first["schema"], checkpoint.SCHEMA)
+        values = command_events("legacy-migration", 900, 202)
+        for item in values:
+            item["account"] = "AAA"
+            item["execution_domain"] = "PAPER"
+        self.append(values)
+        second = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(second["schema"], lifecycle.SCHEMA)
+        self.assertEqual(second["parent_generation"], first["generation"])
+        rows = self.current_send_keys()
+        self.assertEqual(rows, sorted(rows))
+        runtime = (self.store / second["generation"] / "runtime-manifest.txt").read_text()
+        self.assertIn(f"send_attempt_index_order={lifecycle.SEND_INDEX_ORDER}\n", runtime)
+        lifecycle.verify_generation(self.store, journal=self.journal)
 
     def test_v1_generation_upgrades_to_v2_delta_and_exports_back_to_legacy(self) -> None:
         first = checkpoint.build_generation(self.journal, self.store, stopped=True)
