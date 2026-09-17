@@ -604,17 +604,22 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
     if hashlib.sha256(runtime_raw).hexdigest() != manifest.get("runtime_manifest_sha256"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_MISMATCH")
-    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
-    if len(runtime_lines) != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+    runtime_records = 0
     previous = None
-    for line in runtime_lines:
+    for line in _iter_private_lines(root / "runtime-command-index.tsv"):
         key, _, _ = _runtime_row(line)
         if previous is not None and key <= previous:
             raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
         previous = key
-    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
-    if len(send_lines) != manifest.get("send_attempt_records"):
+        runtime_records += 1
+    if runtime_records != manifest.get("command_records"):
+        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
+    send_records = 0
+    for line in _iter_private_lines(root / "send-attempt-index.tsv"):
+        if len(line) > v1.MAX_INDEX_LINE or len(line.rstrip(b"\n").split(b"\t")) != 7:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+        send_records += 1
+    if send_records != manifest.get("send_attempt_records"):
         raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
     if current and current["generation"] == generation:
         manifest_digest = v1._sha256_file(root / "manifest.json")[1]
