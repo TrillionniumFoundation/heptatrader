@@ -2,97 +2,14 @@ name: Unified remediation runner
 
 on:
   push:
-    branches: ["work/unified-remediation-runner-20260917"]
+    branches:
+      - work/unified-remediation-runner-20260917
 
 permissions:
   contents: read
 
 jobs:
-  remediate:
+  smoke:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-      - name: Apply bounded lifecycle remediation
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          lifecycle = Path('scripts/hepta_oms_lifecycle.py')
-          text = lifecycle.read_text()
-          old = '''    runtime_lines = list(_iter_private_lines(root / "runtime-command-index.tsv"))
-    if len(runtime_lines) != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
-    previous = None
-    for line in runtime_lines:
-        key, _, _ = _runtime_row(line)
-        if previous is not None and key <= previous:
-            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
-        previous = key
-    send_lines = list(_iter_private_lines(root / "send-attempt-index.tsv"))
-    if len(send_lines) != manifest.get("send_attempt_records"):
-        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
-'''
-          new = '''    runtime_records = 0
-    previous = None
-    for line in _iter_private_lines(root / "runtime-command-index.tsv"):
-        key, _, _ = _runtime_row(line)
-        if previous is not None and key <= previous:
-            raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_ORDER_INVALID")
-        previous = key
-        runtime_records += 1
-    if runtime_records != manifest.get("command_records"):
-        raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
-    send_records = 0
-    for line in _iter_private_lines(root / "send-attempt-index.tsv"):
-        if len(line) > v1.MAX_INDEX_LINE or len(line.rstrip(b"\\n").split(b"\\t")) != 7:
-            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
-        send_records += 1
-    if send_records != manifest.get("send_attempt_records"):
-        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
-'''
-          if old not in text:
-              raise SystemExit('lifecycle verification block drifted')
-          lifecycle.write_text(text.replace(old, new, 1))
-
-          tests = Path('tests/python/test_oms_lifecycle_rotation.py')
-          text = tests.read_text()
-          text = text.replace('import unittest\n', 'import unittest\nfrom unittest import mock\n', 1)
-          marker = '\n\nclass OmsLifecycleRotationTests(unittest.TestCase):\n'
-          helper = '''\n\nclass StreamingOnlyIterator:\n    def __init__(self, source):\n        self._source = iter(source)\n\n    def __iter__(self):\n        return self\n\n    def __next__(self):\n        return next(self._source)\n\n    def __length_hint__(self):\n        raise AssertionError("cumulative index verification must stay streaming")\n'''
-          if marker not in text:
-              raise SystemExit('rotation test class marker drifted')
-          text = text.replace(marker, helper + marker, 1)
-          end = '\n\nif __name__ == "__main__":\n'
-          method = '''\n    def test_generation_verification_streams_cumulative_indexes(self) -> None:\n        lifecycle.seal_generation(self.journal, self.store, stopped=True)\n        original = lifecycle._iter_private_lines\n\n        def streaming(path: Path):\n            return StreamingOnlyIterator(original(path))\n\n        with mock.patch.object(lifecycle, "_iter_private_lines", side_effect=streaming):\n            verified = lifecycle.verify_generation(self.store, journal=self.journal)\n        self.assertEqual(verified["result"], "PASS")\n\n    def test_generation_chain_limit_is_explicit_and_fail_closed(self) -> None:\n        def manifest_for(_store: Path, generation: str):\n            index = int(generation[1:])\n            return {"generation": generation, "parent_generation": f"g{index - 1}" if index else ""}\n\n        with mock.patch.object(lifecycle, "_manifest_for", side_effect=manifest_for):\n            with self.assertRaisesRegex(checkpoint.GenerationError, "OMS_GENERATION_PARENT_CHAIN_INVALID"):\n                lifecycle._generation_chain(self.store, f"g{lifecycle.MAX_CHAIN}")\n'''
-          if end not in text:
-              raise SystemExit('rotation test end marker drifted')
-          tests.write_text(text.replace(end, '\n' + method + end, 1))
-
-          docs = Path('docs/technical/persistence-support-window.md')
-          text = docs.read_text()
-          addition = '''\n\n## OMS generation maintenance bounds\n\nV2 generation verification is streaming for the cumulative command and send-attempt indexes: validation retains only the current row, ordering key and counters, rather than materializing either complete index in memory. Physical index bytes still grow with retained command/send history and remain part of stopped-state maintenance cost.\n\nExplicit downgrade export walks at most 1024 linked generations (`MAX_CHAIN`). Reaching that bound is a fail-closed maintenance condition, not permission to discard generations or command identity. Operators must schedule a stopped-state export/rebase before the chain reaches the bound; the exported full JSONL remains subject to the ordinary recovery budget when used by a legacy reader. This is a support boundary until a native bounded rebase operation is implemented.\n'''
-          if '## OMS generation maintenance bounds' not in text:
-              docs.write_text(text.rstrip() + addition + '\n')
-          PY
-      - name: Run lifecycle and documentation tests
-        run: |
-          python3 -m unittest discover -s tests/python -p 'test_oms_lifecycle_rotation.py' -v
-          python3 scripts/check_documentation.py
-          git diff --check
-      - name: Stage verified patch
-        run: |
-          mkdir -p remediation-out
-          git diff --binary -- scripts/hepta_oms_lifecycle.py tests/python/test_oms_lifecycle_rotation.py docs/technical/persistence-support-window.md > remediation-out/remediation.patch
-          cp scripts/hepta_oms_lifecycle.py remediation-out/hepta_oms_lifecycle.py
-          cp tests/python/test_oms_lifecycle_rotation.py remediation-out/test_oms_lifecycle_rotation.py
-          cp docs/technical/persistence-support-window.md remediation-out/persistence-support-window.md
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: unified-remediation-source
-          path: remediation-out/
-          if-no-files-found: error
-          retention-days: 1
+      - run: echo workflow-scheduling-ok
