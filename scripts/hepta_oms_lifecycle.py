@@ -6,9 +6,9 @@ It never expires command identity and never grants PAPER/LIVE authority.
 
 A v2 generation stores only the newly sealed JSONL segment, but publishes a
 cumulative full-key command index, cumulative send-attempt index, and bounded
-hot replay.  The active journal is then replaced by a lineage sentinel followed
-only by new JSONL events.  Legacy full-journal replay rejects that sentinel,
-while generation-aware native recovery verifies it and replays bytes after it.
+hot replay. The active journal is replaced by a lineage sentinel followed only
+by new JSONL events. Legacy full-journal replay rejects that sentinel, while
+generation-aware native recovery verifies it and replays bytes after it.
 `export` reconstructs an ordinary complete JSONL journal for explicit downgrade.
 """
 from __future__ import annotations
@@ -19,7 +19,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import stat
 import sys
 import time
 import uuid
@@ -37,7 +36,9 @@ from verify_oms_journal_replay import (
 SCHEMA = "heptatrader.oms-generation.v2"
 RUNTIME_MANIFEST_HEADER = "HEPTA_OMS_RUNTIME_GENERATION_V2"
 TAIL_HEADER = "HEPTA_OMS_ACTIVE_TAIL_V1"
+SEND_INDEX_ORDER = "account-domain-time-v1"
 MAX_METADATA = 16 * 1024 * 1024
+SEND_SORT_CHUNK_ROWS = 8192
 
 
 def _tail_header(generation: str) -> bytes:
@@ -244,6 +245,218 @@ def _merge_command_record(parent: dict[str, Any], update: dict[str, Any]) -> dic
     return merged
 
 
+def _send_key(line: bytes) -> tuple[str, str, int, int, str, str, str]:
+    if len(line) > v1.MAX_INDEX_LINE:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+    try:
+        fields = line.rstrip(b"\n").decode("ascii").split("\t")
+    except UnicodeError as error:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+    if len(fields) != 7:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+    try:
+        timestamp = int(fields[2])
+        sequence = int(fields[6])
+        v1._unhex(fields[0]); v1._unhex(fields[1])
+        v1._unhex(fields[3]); v1._unhex(fields[4]); v1._unhex(fields[5])
+    except (ValueError, OverflowError, v1.GenerationError) as error:
+        raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID") from error
+    return (fields[0], fields[1], timestamp, sequence,
+            fields[3], fields[4], fields[5])
+
+
+def _parent_send_index_sorted(parent_dir: Path | None) -> bool:
+    if parent_dir is None:
+        return True
+    manifest_path = parent_dir / "runtime-manifest.txt"
+    try:
+        raw = v1._read_private_bytes(manifest_path, MAX_METADATA)
+        fields = v1._parse_line_manifest(raw, RUNTIME_MANIFEST_HEADER)
+    except (OSError, ValueError, v1.GenerationError):
+        return False
+    return fields.get("send_attempt_index_order") == SEND_INDEX_ORDER
+
+
+def _write_private_lines(path: Path, rows: Iterable[bytes]) -> int:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    count = 0
+    try:
+        previous = None
+        for row in rows:
+            key = _send_key(row)
+            if previous is not None and key <= previous:
+                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+            v1._write_all(fd, row)
+            previous = key
+            count += 1
+        v1._fsync(fd)
+    finally:
+        os.close(fd)
+    return count
+
+
+def _merge_sorted_send_files(left: Path, right: Path, output: Path) -> int:
+    left_iter = iter(_iter_private_lines(left))
+    right_iter = iter(_iter_private_lines(right))
+    try:
+        left_row = next(left_iter)
+    except StopIteration:
+        left_row = None
+    try:
+        right_row = next(right_iter)
+    except StopIteration:
+        right_row = None
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    count = 0
+    previous = None
+    try:
+        while left_row is not None or right_row is not None:
+            left_key = _send_key(left_row) if left_row is not None else None
+            right_key = _send_key(right_row) if right_row is not None else None
+            if left_key is not None and right_key is not None and left_key == right_key:
+                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_DUPLICATE")
+            take_left = left_row is not None and (right_key is None or left_key < right_key)
+            row = left_row if take_left else right_row
+            key = left_key if take_left else right_key
+            if previous is not None and key <= previous:
+                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+            v1._write_all(fd, row)
+            previous = key
+            count += 1
+            if take_left:
+                try:
+                    left_row = next(left_iter)
+                except StopIteration:
+                    left_row = None
+            else:
+                try:
+                    right_row = next(right_iter)
+                except StopIteration:
+                    right_row = None
+        v1._fsync(fd)
+    finally:
+        os.close(fd)
+    return count
+
+
+def _external_sort_send_index(generation_dir: Path, parent_dir: Path | None,
+                              tail_lines: list[bytes], output: Path) -> int:
+    temporary: list[Path] = []
+    rows: list[bytes] = []
+    count = 0
+
+    def flush_chunk() -> None:
+        nonlocal rows
+        if not rows:
+            return
+        keyed = sorted((_send_key(row), row) for row in rows)
+        for index in range(1, len(keyed)):
+            if keyed[index - 1][0] == keyed[index][0]:
+                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_DUPLICATE")
+        path = generation_dir / f".send-sort-{uuid.uuid4().hex}.tmp"
+        _write_private_lines(path, (row for _, row in keyed))
+        temporary.append(path)
+        rows = []
+
+    try:
+        if parent_dir is not None:
+            for row in _iter_private_lines(parent_dir / "send-attempt-index.tsv"):
+                _send_key(row)
+                rows.append(row)
+                count += 1
+                if len(rows) >= SEND_SORT_CHUNK_ROWS:
+                    flush_chunk()
+        for row in tail_lines:
+            _send_key(row)
+            rows.append(row)
+            count += 1
+            if len(rows) >= SEND_SORT_CHUNK_ROWS:
+                flush_chunk()
+        flush_chunk()
+        if not temporary:
+            fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                         os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            try:
+                v1._fsync(fd)
+            finally:
+                os.close(fd)
+            return 0
+        while len(temporary) > 1:
+            merged: list[Path] = []
+            for offset in range(0, len(temporary), 2):
+                if offset + 1 == len(temporary):
+                    merged.append(temporary[offset])
+                    continue
+                path = generation_dir / f".send-merge-{uuid.uuid4().hex}.tmp"
+                _merge_sorted_send_files(temporary[offset], temporary[offset + 1], path)
+                temporary[offset].unlink()
+                temporary[offset + 1].unlink()
+                merged.append(path)
+            temporary = merged
+        os.replace(temporary[0], output)
+        temporary.clear()
+        return count
+    finally:
+        for path in temporary:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+
+
+def _write_merged_send_index(generation_dir: Path, parent_dir: Path | None,
+                             tail_attempts: list[dict[str, Any]],
+                             history_base: int) -> int:
+    tail_lines: list[bytes] = []
+    for attempt in tail_attempts:
+        copied = dict(attempt)
+        copied["sequence"] = history_base + int(copied["sequence"])
+        tail_lines.append(v1._send_attempt_line(copied))
+    tail_lines.sort(key=_send_key)
+    send_path = generation_dir / "send-attempt-index.tsv"
+
+    if parent_dir is None or not _parent_send_index_sorted(parent_dir):
+        return _external_sort_send_index(generation_dir, parent_dir, tail_lines, send_path)
+
+    parent_iter = iter(_iter_private_lines(parent_dir / "send-attempt-index.tsv"))
+    try:
+        parent_row = next(parent_iter)
+    except StopIteration:
+        parent_row = None
+    tail_index = 0
+    previous_parent = None
+    fd = os.open(send_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                 os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    count = 0
+    try:
+        while parent_row is not None or tail_index < len(tail_lines):
+            parent_key = _send_key(parent_row) if parent_row is not None else None
+            if parent_key is not None and previous_parent is not None and parent_key <= previous_parent:
+                raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_ORDER_INVALID")
+            tail_key = _send_key(tail_lines[tail_index]) if tail_index < len(tail_lines) else None
+            if parent_key is not None and tail_key is not None and parent_key == tail_key:
+                raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_DUPLICATE")
+            take_parent = parent_row is not None and (tail_key is None or parent_key < tail_key)
+            if take_parent:
+                v1._write_all(fd, parent_row)
+                previous_parent = parent_key
+                count += 1
+                try:
+                    parent_row = next(parent_iter)
+                except StopIteration:
+                    parent_row = None
+            else:
+                v1._write_all(fd, tail_lines[tail_index])
+                tail_index += 1
+                count += 1
+        v1._fsync(fd)
+    finally:
+        os.close(fd)
+    return count
+
+
 def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
                           updates: dict[tuple[str, str, str], dict[str, Any]],
                           tail_attempts: list[dict[str, Any]], history_base: int) -> tuple[int, int]:
@@ -259,7 +472,7 @@ def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
         updates_index = 0
         previous: tuple[str, str, str] | None = None
         for line in parent_iter:
-            key, parent_record, fields = _runtime_row(line)
+            key, parent_record, _ = _runtime_row(line)
             if previous is not None and key <= previous:
                 raise v1.GenerationError("OMS_GENERATION_PARENT_INDEX_ORDER_INVALID")
             previous = key
@@ -291,25 +504,8 @@ def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
     finally:
         os.close(runtime_fd)
         os.close(legacy_fd)
-
-    send_path = generation_dir / "send-attempt-index.tsv"
-    send_fd = os.open(send_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
-    send_count = 0
-    try:
-        if parent_dir is not None:
-            for line in _iter_private_lines(parent_dir / "send-attempt-index.tsv"):
-                if len(line) > v1.MAX_INDEX_LINE or len(line.rstrip(b"\n").split(b"\t")) != 7:
-                    raise v1.GenerationError("OMS_GENERATION_PARENT_SEND_INDEX_INVALID")
-                v1._write_all(send_fd, line)
-                send_count += 1
-        for attempt in tail_attempts:
-            copied = dict(attempt)
-            copied["sequence"] = history_base + int(copied["sequence"])
-            v1._write_all(send_fd, v1._send_attempt_line(copied))
-            send_count += 1
-        v1._fsync(send_fd)
-    finally:
-        os.close(send_fd)
+    send_count = _write_merged_send_index(
+        generation_dir, parent_dir, tail_attempts, history_base)
     return count, send_count
 
 
@@ -334,6 +530,7 @@ def _runtime_manifest_bytes(*, generation: str, parent_generation: str,
         f"command_index_sha256={digests['command-index.tsv']}",
         f"runtime_command_index_sha256={digests['runtime-command-index.tsv']}",
         f"send_attempt_index_sha256={digests['send-attempt-index.tsv']}",
+        f"send_attempt_index_order={SEND_INDEX_ORDER}",
         f"hot_replay_sha256={digests['hot-replay.jsonl']}",
         f"active_tail_header_bytes={len(marker)}",
         f"active_tail_header_sha256={hashlib.sha256(marker).hexdigest()}",
@@ -562,7 +759,7 @@ def verify_generation(store: Path, generation: str | None = None,
             raise v1.GenerationError("OMS_GENERATION_DIGEST_MISMATCH")
     runtime_raw = v1._read_private_bytes(root / "runtime-manifest.txt")
     runtime = v1._parse_line_manifest(runtime_raw, RUNTIME_MANIFEST_HEADER)
-    required = {
+    required_legacy = {
         "generation", "parent_generation", "parent_manifest_sha256", "history_records", "segment_records",
         "command_records", "send_attempt_records", "hot_replay_records",
         "segment_sha256", "checkpoint_sha256", "command_index_sha256",
@@ -570,7 +767,13 @@ def verify_generation(store: Path, generation: str | None = None,
         "hot_replay_sha256", "active_tail_header_bytes", "active_tail_header_sha256",
         "authorization_effect", "paper_authorized", "live_authorized",
     }
-    if set(runtime) != required or runtime["generation"] != generation or runtime["authorization_effect"] != "NONE" or runtime["paper_authorized"] != "0" or runtime["live_authorized"] != "0":
+    required_sorted = set(required_legacy)
+    required_sorted.add("send_attempt_index_order")
+    sorted_send_index = set(runtime) == required_sorted
+    if (set(runtime) not in {frozenset(required_legacy), frozenset(required_sorted)} or
+            (sorted_send_index and runtime["send_attempt_index_order"] != SEND_INDEX_ORDER) or
+            runtime["generation"] != generation or runtime["authorization_effect"] != "NONE" or
+            runtime["paper_authorized"] != "0" or runtime["live_authorized"] != "0"):
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_MANIFEST_INVALID")
     marker = _tail_header(generation)
     expected = {
@@ -616,9 +819,12 @@ def verify_generation(store: Path, generation: str | None = None,
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_COUNT_MISMATCH")
 
     send_count = 0
+    previous_send = None
     for line in _iter_private_lines(root / "send-attempt-index.tsv"):
-        if len(line) > v1.MAX_INDEX_LINE or len(line.rstrip(b"\n").split(b"\t")) != 7:
-            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_INVALID")
+        key = _send_key(line)
+        if sorted_send_index and previous_send is not None and key <= previous_send:
+            raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_ORDER_INVALID")
+        previous_send = key
         send_count += 1
     if send_count != manifest.get("send_attempt_records"):
         raise v1.GenerationError("OMS_GENERATION_SEND_INDEX_COUNT_MISMATCH")
