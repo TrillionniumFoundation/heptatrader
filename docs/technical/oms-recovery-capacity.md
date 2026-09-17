@@ -5,7 +5,7 @@ Applies to: OmsJournal replay, generation-backed recovery, new-entry admission a
 
 ## Recovery modes
 
-HeptaTrader now has two explicit recovery modes. They share the same journal schema, command identity and fail-closed semantics, but they have different resource costs.
+HeptaTrader has two explicit coordinator recovery modes plus one simulator-only complete economic-state replay. They share the journal schema, command identity and fail-closed semantics, but they have deliberately different resource costs.
 
 ### Legacy / no-generation recovery
 
@@ -19,13 +19,19 @@ When no generation store exists, `OmsJournal::Replay` validates the complete pin
 
 Equality is accepted; one over is rejected. Empty, zero, signed, whitespace, nondecimal and overflow settings fail initialization. Settings are trusted deployment inputs, never Agent claims. Gzip storage does not evade decoded limits.
 
-### Generation-backed recovery
+### Generation-backed coordinator recovery
 
-Stopped-state V1/V2 generation maintenance preserves all durable history while changing restart cost. The selected generation is authenticated by `CURRENT`, `CURRENT.runtime`, manifest digests, private-file identity and, for V2, parent-manifest lineage plus an active-tail sentinel. Native startup validates that authority, keeps cumulative command and send-attempt indexes descriptor-pinned, replays the bounded `hot-replay.jsonl` plus bytes after the active-tail sentinel, and services old command identities from disk on demand.
+Stopped-state V1/V2 generation maintenance preserves all durable history while changing coordinator restart cost. The selected generation is authenticated by `CURRENT`, `CURRENT.runtime`, manifest digests, private-file identity and, for V2, parent-manifest lineage plus an active-tail sentinel. Native startup validates that authority, keeps cumulative command and send-attempt indexes descriptor-pinned, replays the bounded `hot-replay.jsonl` plus bytes after the active-tail sentinel, and services old command identities from disk on demand.
 
-V2 seals only the delta since its parent. Command identity is never expired. Immutable segments and cumulative indexes remain retained on disk until an explicit external retention policy exists. A damaged current generation, pointer disagreement, lineage/sentinel mismatch or index drift is a recovery failure; startup never silently falls back to a parent or treats the store as absent.
+V2 seals only the event delta since its parent. Command identity is never expired. Immutable segments and cumulative indexes remain retained on disk. A damaged current generation, pointer disagreement, lineage/sentinel mismatch or index drift is a recovery failure; startup never silently falls back to a parent or treats the store as absent.
 
-The coordinator keeps only current/hot commands plus a bounded historical lookup cache. This closes the former requirement to repopulate the entire permanent command universe into memory on every restart. It does not make disk history finite or eliminate all O(history) administrative operations.
+The coordinator keeps only current/hot commands plus a bounded historical lookup cache. This closes the former requirement to repopulate the entire permanent command universe into memory on every coordinator restart. It does not make disk history finite or eliminate every O(history) operation.
+
+### Simulator complete economic-state replay
+
+The deterministic simulator has one additional requirement: terminal fills, admitted-order count and the order-ID high watermark are economic/risk base state, so bounded coordinator hot replay alone is insufficient after V2 rotation. `ExecutionServiceRuntimeComposition` therefore routes simulator-state restoration through `OmsGenerationStore::ReplayCompleteHistory` when the selected store is V2. That reader verifies the generation lineage and immutable segments, walks them oldest-to-newest, then reads the lineage-bound active tail.
+
+This complete simulator replay is intentionally O(total retained event history) in I/O and projection work. It is separate from coordinator command recovery so production command hot state does not regress to full in-memory history. The installed-process acceptance exercises real simulator fill → stop → V2 seal → restart, then checks position, original command identity, no-resend duplicate behavior and a strictly newer order ID; a second restart checks generation plus active-tail composition.
 
 ## New-entry pause before recovery capacity is exhausted
 
@@ -37,7 +43,7 @@ The coordinator keeps only current/hot commands plus a bounded historical lookup
 
 Division is integer division, so equality is the existing rounded-up 80% pause boundary. Subtraction-based comparisons prevent overflow from manufacturing headroom. A capacity refusal returns `OMS_NEW_ENTRY_CAPACITY_EXHAUSTED` or `OMS_NEW_ENTRY_CAPACITY_UNKNOWN` before a new send, does not append a rejection, does not cache a never-admitted command ID and does not clear old identities.
 
-Generation-aware startup adopts the validated active-tail capacity rather than charging sealed history against the active writer budget. This permits stopped-state sealing to bound active restart/write growth while preserving immutable historical evidence. Guarded cancel, authoritative flatten, callbacks and terminal evidence keep their existing durable-write rules and are not reclassified as new risk entries.
+Generation-aware coordinator startup adopts the validated active-tail capacity rather than charging sealed history against the active writer budget. This permits stopped-state sealing to bound active restart/write growth while preserving immutable historical evidence. Guarded cancel, authoritative flatten, callbacks and terminal evidence keep their existing durable-write rules and are not reclassified as new risk entries.
 
 ## Historical command lookup
 
@@ -47,29 +53,39 @@ Loaded historical commands enter a bounded coordinator cache. Exact duplicate re
 
 ## Historical send-attempt window cost
 
-The cumulative send-attempt index is immutable for the selected generation and preserves account, execution domain, timestamp, request identity and journal sequence.
+Current V2 generations declare `send_attempt_index_order=account-domain-time-v1`. Their cumulative `send-attempt-index.tsv` is globally sorted by encoded account, encoded execution domain, timestamp, journal sequence and request identity. Native lookup validates the pinned file, uses a file lower-bound search to enter the requested account/domain/time suffix, then reads only the relevant ordered window rather than scanning every sealed attempt for each ordinary rate-budget query.
 
-The first query for one selected generation/account/domain/cutoff performs a complete validation/scan of that cumulative index and caches only attempts newer than the requested cutoff. Subsequent queries for the same account/domain with a monotonically increasing cutoff prune that bounded suffix in memory. Ordinary forward-moving PAPER rate checks therefore do not pay O(permanent history) on every preview/place call.
+Pre-change V1 or V2 generations without the order declaration remain readable through the conservative compatibility scanner. The next V2 seal migrates such a parent to the sorted format with bounded external-sort chunks and pairwise file merges; it does not materialize the entire old index in Python memory. Once the parent already declares the sorted order, subsequent seals stream-merge the immutable parent index with the newly sealed attempts.
 
-A changed account/domain or a cutoff that moves backwards deliberately invalidates the optimization and performs a complete exact scan. This preserves the existing strict `timestamp > cutoff` and backwards-clock semantics instead of silently resetting a rolling send budget. Active-tail attempts are merged separately and excluded from the sealed-history result by stable request identity so one send is never double counted across a generation cut.
+A changed account/domain or a cutoff that moves backwards remains semantically valid because the lower-bound query is performed against the requested key/cutoff; the optimization does not reset the rolling budget. Active-tail attempts are merged separately and excluded from the sealed-history result by stable request identity so one send is never double counted across a generation cut.
 
 Index validation failure fails closed at the existing rate guard; it never resets the rate budget to zero.
 
-## Storage maintenance and downgrade
+## Storage maintenance, index memory and generation-chain management
 
 `scripts/hepta_oms_lifecycle.py seal --stopped-state` is an explicit stopped-writer operation. V2 publication order is: create and fsync immutable delta generation files, prepare and fsync the lineage-bound active tail, atomically replace the active journal and sync its parent directory, publish `CURRENT`, then publish digest-bound `CURRENT.runtime`. Crash points before/after each boundary are tested.
 
-`scripts/hepta_oms_lifecycle.py export` reconstructs a complete strict JSONL ledger from the selected base generation, V2 deltas and current tail. Export is create-only, fsync'd and validated before success. It has `authorization_effect=NONE` and never replaces the active journal automatically. An older runtime must receive this explicit export rather than silently reading a V2 tail as if it were a complete ledger.
+Verification is streaming. `runtime-command-index.tsv` and `send-attempt-index.tsv` are counted/validated line by line rather than converted into whole-file Python lists. Legacy send-index migration uses bounded 8,192-row sort chunks and bounded pairwise merges. These changes bound maintenance **working memory** with respect to cumulative index size, apart from bounded per-tail projection structures and the configured hot-replay limits.
+
+The generation parent walk has no arbitrary 1,024-generation cutoff. It records visited generation names and fails closed on a cycle; downgrade export can therefore walk a longer valid lineage. This removes the previous artificial export ceiling, but it does not make an indefinitely long lineage free: verification/export/simulator complete replay still pay I/O proportional to the required lineage/history.
+
+Current generation directories intentionally contain **cumulative command and send-attempt index snapshots** for direct current-generation lookup. Older generation directories are retained because the lineage binds their manifests and immutable event segments. Consequently, frequent sealing can duplicate cumulative index bytes across generations even though event segments themselves are delta-only. The current format has no automatic parent deletion, index garbage collection or generation rebase that would safely remove those bound ancestors. Operators must choose a maintenance cadence with this physical-storage cost in mind; deleting old generation directories or indexes manually is unsupported and can break lineage verification/downgrade.
+
+A future storage-rebase format may reduce cumulative-index duplication, but it must preserve complete durable command identity, every possible send, explicit downgrade semantics and crash-safe authority before any old lineage can be retired. The present implementation prefers retained evidence over silent pruning.
+
+## Downgrade export
+
+`scripts/hepta_oms_lifecycle.py export` reconstructs a complete strict JSONL ledger from the newest applicable V1 base, all subsequent V2 delta segments and the current tail. Export is create-only, fsync'd and validated before success. It has `authorization_effect=NONE` and never replaces the active journal automatically. An older runtime must receive this explicit export rather than silently reading a V2 tail as if it were a complete ledger.
+
+Export has no fixed generation-count ceiling, but it remains proportional to the selected lineage and total exported history. A corrupt parent binding, cycle, segment or active-tail lineage fails the export. This is the explicit downgrade boundary: the tool does not invent a shortened history to satisfy an old reader.
 
 Optional gzip archive maintenance remains a distinct lossless stopped-state operation. Compressed storage is not checkpointing and cannot substitute for generation lineage or decoded recovery validation.
 
 ## Terminal mutation universe boundary
 
-Generation-backed recovery and historical command lookup are long-horizon mechanisms. The IB PAPER terminal mutation manifest is a separate qualification/finalization artifact. Its source universe is now scoped to the exact fenced owner `(agent_id, session_id, account, execution_domain)`: generation-backed enumeration and hot coordinator records both apply that same four-part subject before a command enters HPM1. Historical commands from older or foreign sessions on the same account/domain remain durably queryable in OMS, but they no longer accumulate into the current owner's terminal campaign manifest.
+Generation-backed recovery and historical command lookup are long-horizon mechanisms. The IB PAPER terminal mutation manifest is a separate qualification/finalization artifact. The active finalization source universe remains scoped to the exact fenced owner `(agent_id, session_id, account, execution_domain)`: generation-backed enumeration and hot coordinator records apply that same four-part subject before a command enters the terminal witness. Historical commands from older or foreign sessions on the same account/domain remain durably queryable in OMS and do not silently become current-owner mutation authority.
 
-HPM1 intentionally keeps a finite command/correlation limit for one bounded PAPER owner session. Exceeding that campaign-local limit fails terminalization rather than deleting identity or omitting evidence. The limit therefore is not the storage capacity of the OMS ledger, does not expire permanent command IDs, and must not be presented as proof of unlimited unattended production history.
-
-Before widening PAPER qualification into long-running production-like operation within one persistent owner session, the terminal witness would need a streaming/digest-bound representation or another explicitly reviewed campaign rollover contract. Until then the finite owner-session manifest is a deliberate qualification boundary.
+The manifest implementation also carries a compact partitioned-summary representation for reviewed compatibility/scale work, but the public terminal-fence path must preserve owner-session scoping. A compact digest is not permission to combine foreign sessions or expire command identity.
 
 ## Diagnostics and reasons
 
@@ -94,6 +110,6 @@ A larger budget or a successful generation seal does not resolve uncertain broke
 
 ## Acceptance
 
-Native and Python tests cover inclusive/over-limit replay boundaries, bad settings, torn/oversized records, callback atomicity, new-entry pause, generation publication crash points, V1→V2 compatibility, parent/current/sentinel corruption, ancient same-ID duplicate/conflict, no second venue send, send-attempt continuity across a cut, repeated generations and explicit downgrade export.
+Native and Python tests cover inclusive/over-limit replay boundaries, bad settings, torn/oversized records, callback atomicity, new-entry pause, generation publication crash points, V1→V2 compatibility, parent/current/sentinel corruption, ancient same-ID duplicate/conflict, no second venue send, sorted send-attempt continuity/migration across a cut, streaming cumulative-index verification, a lineage longer than 1,024 generations plus cycle rejection, repeated generations and explicit downgrade export.
 
-The opt-in recovery-growth fixture remains useful for measuring legacy full-ledger cost. Generation fixtures prove bounded hot restart and permanent disk-backed identity behavior. Neither source fixture is a target-host multiday soak, physical durability benchmark, Broker qualification campaign or proof that a chosen maintenance cadence satisfies an operational SLO.
+The opt-in installed process lane additionally executes the real simulator across fill → stop → V2 seal → restart and verifies economic position, command identity, duplicate no-resend and order-ID watermark. The recovery-growth fixture remains useful for measuring legacy full-ledger cost. Generation fixtures prove bounded coordinator hot restart and bounded maintenance working memory, not bounded total disk storage. None of these source fixtures is a target-host multiday soak, physical durability benchmark, Broker qualification campaign or proof that a chosen maintenance cadence satisfies an operational SLO.
