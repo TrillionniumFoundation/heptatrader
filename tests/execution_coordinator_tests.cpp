@@ -2293,6 +2293,83 @@ void TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock()
     std::remove(path.c_str());
 }
 
+void TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool entered = false;
+    bool release = false;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.validateDecisionLease =
+        [](const AgentExecutionContext&, const std::string&,
+           std::string*) { return true; };
+    callbacks.flattenOrder =
+        [&](const AuthoritativeFlattenPlan&, const std::string&) {
+            {
+                std::lock_guard<std::mutex> gate(gateMutex);
+                entered = true;
+            }
+            gateChanged.notify_all();
+            std::unique_lock<std::mutex> gate(gateMutex);
+            gateChanged.wait(gate, [&]() { return release; });
+            return VenueFlattenResult::Submitted(904);
+        };
+    callbacks.onIbOrderPlaced =
+        [](const IbPlaceOrderCommand&, long, std::string*) {
+            return true;
+        };
+
+    ExecutionCoordinator coordinator(journal, callbacks);
+    const FlattenPositionCommand command =
+        MakeFlatten("fence-flatten-dispatch-race");
+    const AuthoritativeFlattenPlan plan = MakeFlattenPlan(command);
+    auto flattenFuture = std::async(std::launch::async, [&]() {
+        return coordinator.ExecuteAuthoritativeFlatten(command, plan);
+    });
+    {
+        std::unique_lock<std::mutex> gate(gateMutex);
+        assert(gateChanged.wait_for(
+            gate, std::chrono::seconds(2), [&]() { return entered; }));
+    }
+
+    assert(coordinator.FenceSessionOwner("agent-a", "session-1") == 1);
+    assert(coordinator.IsSessionOwnerFenced("agent-a", "session-1"));
+    std::string reason;
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence(
+        "agent-a", "session-1", true, reason));
+    assert(reason == "FENCED_OWNER_VENUE_DISPATCH_IN_FLIGHT");
+
+    ExecutionCommandResult pending;
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "fence-flatten-dispatch-race", pending));
+    assert(pending.status == ExecutionCommandStatus::Uncertain);
+
+    {
+        std::lock_guard<std::mutex> gate(gateMutex);
+        release = true;
+    }
+    gateChanged.notify_all();
+    const ExecutionCommandResult flattened = flattenFuture.get();
+    assert(flattened.status == ExecutionCommandStatus::Accepted);
+    assert(flattened.orderId == 904);
+
+    ExecutionOrderOwner owner;
+    assert(coordinator.GetOrderOwner(904, owner));
+    assert(owner.agentId == "agent-a" && owner.sessionId == "session-1");
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence(
+        "agent-a", "session-1", true, reason));
+    assert(reason == "FENCED_OWNER_ACTIVE_ORDERS_REMAIN");
+    assert(coordinator.RecordOrderTerminalDurably(904, &reason));
+    assert(coordinator.AuditAndReleaseSessionOwnerFence(
+        "agent-a", "session-1", true, reason));
+    assert(reason.empty());
+    std::remove(path.c_str());
+}
+
 void TestCompactTerminalUniverseExceedsLegacyEnumerationLimit()
 {
     const std::string empty =
@@ -2374,6 +2451,7 @@ int main(int argc, char** argv)
     TestCancelEligibilityPreflightDoesNotHoldCoordinatorLock();
     TestReconnectFenceRefusesVenueDispatchInFlight();
     TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock();
+    TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();
