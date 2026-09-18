@@ -351,5 +351,43 @@ class AtomicNftReplacementTests(unittest.TestCase):
                 )
 
 
+    def test_observation_reports_exact_allow_or_deny_all_without_authority(self) -> None:
+        nft = Path("/usr/sbin/nft")
+        for fail_allow, expected_state, allowed in (
+            (False, "CANONICAL_ALLOW", True),
+            (True, "DENY_ALL", False),
+        ):
+            calls: list[bool] = []
+
+            def verify(_nft: Path, _policy, *, deny_all: bool) -> None:
+                calls.append(deny_all)
+                if fail_allow and not deny_all:
+                    raise POLICY.PolicyError("not allow")
+
+            with mock.patch.object(POLICY, "_verify_table", side_effect=verify):
+                observed = POLICY.observe_policy(nft, observed_at_ms=1234)
+            self.assertEqual(observed["schema"], POLICY.OBSERVATION_SCHEMA)
+            self.assertEqual(observed["observed_at_ms"], 1234)
+            self.assertEqual(observed["state"], expected_state)
+            self.assertIs(observed["broker_egress_allowed"], allowed)
+            self.assertTrue(observed["exact_readback"])
+            self.assertEqual(observed["authorization_effect"], "NONE")
+            self.assertFalse(observed["paper_authorized"])
+            self.assertFalse(observed["live_authorized"])
+            self.assertEqual(calls, [False] if not fail_allow else [False, True])
+
+    def test_observation_rejects_unrecognized_policy_state(self) -> None:
+        nft = Path("/usr/sbin/nft")
+        with mock.patch.object(
+            POLICY,
+            "_verify_table",
+            side_effect=POLICY.PolicyError("drift"),
+        ):
+            with self.assertRaisesRegex(
+                POLICY.PolicyError, "not in a recognized exact state"
+            ):
+                POLICY.observe_policy(nft, observed_at_ms=1234)
+
+
 if __name__ == "__main__":
     unittest.main()
