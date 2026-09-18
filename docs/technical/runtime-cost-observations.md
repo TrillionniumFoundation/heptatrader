@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: coordinator secondary index and OMS process-instance observations
-Implementation: `HeptaTrade/execution/send_attempt_time_index.h`, `HeptaTrade/oms_latency_observation.h`, `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_capacity_observation.h`
-Tests: `tests/python/test_send_attempt_time_index.py`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`
+Implementation: `HeptaTrade/execution/send_attempt_time_index.h`, `HeptaTrade/execution/generation_index_reader.h`, `HeptaTrade/oms_latency_observation.h`, `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_capacity_observation.h`
+Tests: `tests/python/test_send_attempt_time_index.py`, `tests/python/test_generation_index_reader.py`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_execution_latency_boundaries.py`
 
 ## Send-attempt query contract
 
@@ -200,10 +200,11 @@ extensions, unsupported versions, invalid counts and inconsistent result/reason
 sums fail parsing. Saturation is visible and suppresses affected counter export.
 
 These counts describe calls that reach the coordinator. They do not include all
-preview/profile/risk-policy refusals upstream, snapshot ages, callback lag or
-Broker reconciliation durations. They are process-instance counters, not durable
-trade counts or completed fills. RUNTIME-TELEMETRY-003 remains open for those
-other scopes.
+preview/profile/risk-policy refusals upstream and are not durable trade counts or
+completed fills. Callback/quote age, Broker reconciliation and reconnect producers
+are separately implemented for the bounded IB PAPER runtime; broader portfolio
+notional/PnL/drawdown and deeper product lifecycle metrics remain
+RUNTIME-PORTFOLIO-004 rather than reopening the repository telemetry work.
 
 
 ### Broker reconnect and refresh duration
@@ -221,3 +222,13 @@ fencing or establish a host SLO.
 ### Unlocked venue dispatch timing
 
 Place, cancel and authoritative-flatten observations now distinguish coordinator lock-held work from the interval spent outside the coordinator mutex at the venue boundary. The outside-lock histogram includes the provider call and lock reacquisition. For current producers, inclusive total equals initial lock wait plus lock-held work plus outside-lock time; pre-change producers with only wait+total remain readable without synthesizing an outside-lock zero.
+
+## Generation-index sequential I/O and terminal range
+
+Binary lookup still uses bounded random line probes. Once a line boundary or sorted lower bound is known, immutable command/send indexes use a 64 KiB buffered exact-offset sequential reader; each byte in the selected range is read at most once by that reader rather than rereading a preceding/following window for every row. The core regression builds a 20,000-row, approximately 10 MiB synthetic index and asserts read bytes equal the selected suffix size, including a non-zero starting offset, while oversized or unterminated rows fail closed.
+
+Generation-backed PAPER terminal summary first lower-bounds the command index by encoded `(agent_id, session_id, empty-command)` and stops when that owner/session prefix changes. Account/domain/durable-intent checks and the post-scan pinned-index identity revalidation remain unchanged. The compatibility account/domain enumerator cannot use that prefix and therefore still streams the complete command index, but without overlapping random-probe reads.
+
+## Simulator startup-ready timing
+
+The simulator Execution process publishes two additive startup scopes in addition to coordinator `recovery_latency`: `simulator_state_recovery_latency` measures compact checkpoint/tail economic-state restoration, and `startup_ready_latency` measures `ExecutionServiceRuntimeComposition::Start` from the accepted start attempt through listener/feed activation and the final lifecycle-ready transition. Both use `steady_clock`, are immutable after successful startup, and are omitted by producers that do not observe them. This closes the previous measurement gap where coordinator recovery was visible but the earlier simulator restore and later server activation were not.

@@ -67,7 +67,8 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         raise AssertionError("execution process VmHWM is unavailable")
 
     @staticmethod
-    def _execution_recovery_ns(runtime: base.InstalledRuntime) -> int:
+    def _execution_metrics(runtime: base.InstalledRuntime,
+                           minimum_place_samples: int = 0) -> dict:
         log = next(
             log for _process, _output, log, name in runtime.processes
             if name == "hepta-executiond")
@@ -80,15 +81,51 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                     continue
                 if value.get("schema") != "heptatrader.oms-capacity.v1":
                     continue
-                latency = value.get("execution_metrics", {}).get(
-                    "recovery_latency", {})
-                if latency.get("samples", 0) > 0:
-                    observed = latency.get("last_ns")
-                    if isinstance(observed, int) and observed >= 0:
-                        return observed
+                metrics = value.get("execution_metrics")
+                if not isinstance(metrics, dict):
+                    continue
+                place = metrics.get("place_latency_total", {})
+                if place.get("samples", 0) < minimum_place_samples:
+                    continue
+                return metrics
             time.sleep(0.025)
-        raise AssertionError(
-            "installed Execution did not publish generation recovery latency")
+        raise AssertionError("installed Execution metrics were not published")
+
+    @classmethod
+    def _execution_startup_timings(cls, runtime: base.InstalledRuntime) -> dict:
+        metrics = cls._execution_metrics(runtime)
+        output = {}
+        for source, target in (
+            ("simulator_state_recovery_latency", "simulator_state_recovery_ns"),
+            ("recovery_latency", "coordinator_recovery_ns"),
+            ("startup_ready_latency", "startup_ready_ns"),
+        ):
+            latency = metrics.get(source, {})
+            observed = latency.get("last_ns")
+            if latency.get("samples", 0) <= 0 or not isinstance(observed, int) or observed < 0:
+                raise AssertionError(f"missing installed Execution startup metric: {source}")
+            output[target] = observed
+        if output["startup_ready_ns"] < output["simulator_state_recovery_ns"] or \
+                output["startup_ready_ns"] < output["coordinator_recovery_ns"]:
+            raise AssertionError(
+                "complete startup-ready timing cannot be below an included recovery phase")
+        return output
+
+    @staticmethod
+    def _p99_upper_ns(metric: dict) -> int | None:
+        samples = metric.get("samples", 0)
+        counts = metric.get("bucket_counts")
+        bounds = metric.get("bucket_upper_ns")
+        if not isinstance(samples, int) or samples <= 0 or not isinstance(counts, list) or \
+                not isinstance(bounds, list) or len(counts) != len(bounds):
+            return None
+        rank = (samples * 99 + 99) // 100
+        cumulative = 0
+        for count, bound in zip(counts, bounds):
+            cumulative += count
+            if cumulative >= rank:
+                return bound
+        return None
 
     @staticmethod
     def _store_bytes(store: Path) -> int:
@@ -111,7 +148,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         first_order = None
         expected_admitted = 0
         points = []
-        for stage, pairs in enumerate((1, 3, 6), start=1):
+        for stage, pairs in enumerate((4, 16, 64), start=1):
             for _ in range(pairs):
                 command, fields, order_id = runtime.place("BUY", 1, "1.1002", ttl_ms=600000)
                 runtime.wait_position(1)
@@ -124,6 +161,10 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                     first_command, first_fields, first_order = (
                         command, fields, order_id)
 
+            execution_before_stop = self._execution_metrics(
+                runtime, minimum_place_samples=pairs * 2)
+            place_latency = execution_before_stop["place_latency_total"]
+            journal_bytes_before_seal = journal.stat().st_size
             runtime.stop()
             seal_started = time.monotonic_ns()
             sealed = subprocess.run([
@@ -141,7 +182,8 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             runtime.start(self.slot)
             runtime.wait_position(0)
             runtime.wait_no_orders()
-            recovery_ns = self._execution_recovery_ns(runtime)
+            startup = self._execution_startup_timings(runtime)
+            recovery_ns = startup["coordinator_recovery_ns"]
             peak_rss_kib = self._execution_peak_rss_kib(runtime)
             risk = runtime.call("risk.get_limits", [])["payload"]
             self.assertEqual(risk["admitted_order_count"], expected_admitted)
@@ -163,12 +205,18 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                 "history_records": receipt["history_records"],
                 "seal_ns": seal_ns,
                 "restart_recovery_ns": recovery_ns,
+                "simulator_state_recovery_ns": startup["simulator_state_recovery_ns"],
+                "startup_ready_ns": startup["startup_ready_ns"],
                 "execution_peak_rss_kib": peak_rss_kib,
+                "place_latency_total_samples": place_latency["samples"],
+                "place_latency_total_max_ns": place_latency["max_ns"],
+                "place_latency_total_p99_upper_ns": self._p99_upper_ns(place_latency),
+                "journal_bytes_before_seal": journal_bytes_before_seal,
                 "retained_disk_bytes": self._store_bytes(store),
             })
 
         self.assertEqual(
-            [point["admitted_orders"] for point in points], [2, 8, 20])
+            [point["admitted_orders"] for point in points], [8, 40, 168])
         self.assertTrue(all(point["seal_ns"] > 0 for point in points))
         self.assertTrue(all(point["restart_recovery_ns"] >= 0
                             for point in points))
@@ -200,7 +248,8 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         runtime.start(self.slot)
         runtime.wait_position(0)
         runtime.wait_no_orders()
-        post_rebase_recovery_ns = self._execution_recovery_ns(runtime)
+        post_rebase_startup = self._execution_startup_timings(runtime)
+        post_rebase_recovery_ns = post_rebase_startup["coordinator_recovery_ns"]
         post_rebase_peak_rss_kib = self._execution_peak_rss_kib(runtime)
         risk = runtime.call("risk.get_limits", [])["payload"]
         self.assertEqual(risk["admitted_order_count"], 20)
@@ -221,6 +270,9 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             "retained_disk_bytes_before_rebase": before_rebase,
             "retained_disk_bytes_after_rebase": after_rebase,
             "post_rebase_recovery_ns": post_rebase_recovery_ns,
+            "post_rebase_simulator_state_recovery_ns":
+                post_rebase_startup["simulator_state_recovery_ns"],
+            "post_rebase_startup_ready_ns": post_rebase_startup["startup_ready_ns"],
             "post_rebase_execution_peak_rss_kib": post_rebase_peak_rss_kib,
             "oldest_command_duplicate_no_resend": True,
             "final_position": 0,

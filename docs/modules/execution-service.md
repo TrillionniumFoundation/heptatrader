@@ -97,7 +97,7 @@ Durably rejected, accepted and uncertain commands are never expired merely to re
 
 LIVE is unavailable. IB PAPER remains qualification-gated. CTP and XT do not implement real transports and may not be wired as authoritative venues.
 
-Generation V2 bounds the active replay working set and historical command cache, not every long-horizon operation. Immutable history and cumulative indexes still grow between maintenance rebases; stopped-state rebase can collapse the lineage and safely prune now-unreferenced cumulative-index copies without expiring identity or event history. Ordered historical send-window queries use the declared account/domain/time index to enter the relevant immutable suffix rather than requiring a full scan for ordinary current-format lookups; legacy unsorted generations retain the conservative compatibility scan. Terminal PAPER mutation-manifest construction uses an owner/session-scoped sealed-history digest plus bounded active-tail records, so sealed campaign history is not materialized into a lifetime vector.
+Generation V2 bounds the active replay working set and historical command cache, not every long-horizon operation. Immutable history and cumulative indexes still grow between maintenance rebases; stopped-state rebase can collapse the lineage and safely prune now-unreferenced cumulative-index copies without expiring identity or event history. Ordered historical send-window queries use the declared account/domain/time index to enter the relevant immutable suffix rather than requiring a full scan for ordinary current-format lookups; legacy unsorted generations retain the conservative compatibility scan. Terminal PAPER mutation-manifest construction lower-bounds the sorted command index to the exact owner/session prefix, streams that sealed range into a compact digest, and combines it with bounded active-tail records rather than materializing a lifetime mutation vector.
 
 ## Developer map and recovery examples
 
@@ -109,7 +109,7 @@ Generation V2 bounds the active replay working set and historical command cache,
 
 ## Send-attempt query cost
 
-The live in-memory send-attempt index avoids a full journal scan for current-tail account/domain time-window queries. For sealed history, the generation store's pinned cumulative send-attempt index is immutable. The first query for a generation/account/domain/cutoff scans that index and caches only attempts newer than the cutoff. Later queries for the same subject with a monotonically increasing cutoff prune the cache in memory and do not rescan permanent history. A subject change or backwards cutoff invalidates that optimization and performs a complete exact scan so backwards-clock semantics are preserved rather than silently resetting the rate budget.
+The live in-memory send-attempt index avoids a full journal scan for current-tail account/domain time-window queries. Current V2 sealed history declares the account/domain/time sort order: native lookup performs a binary lower-bound for the requested subject/cutoff, then streams only that ordered suffix with an exact-offset buffered reader. A changed account/domain or backwards cutoff simply performs another lower-bound against the requested historical window; it does not reset the rolling budget. Legacy unsorted generations retain the conservative complete compatibility scan, now also buffered sequentially rather than rereading a random-probe window for every row.
 
 ## Typed venue binding
 
