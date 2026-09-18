@@ -95,7 +95,8 @@ int main() {
         cfg.connectionEpoch = 7;
         cfg.peerProfileSha256 = std::string(64, 'a');
         std::uint64_t observedRequests = 0;
-        cfg.admittedReadOnlyExchange = [&observedRequests](
+        double tradeQuantity = 20.0;
+        cfg.admittedReadOnlyExchange = [&observedRequests, &tradeQuantity](
                 const std::string& requestFrame, std::string& responseFrame) {
             std::string request;
             Require(HeptaXTGatewayAdapter::DecodeFrame(requestFrame, request),
@@ -144,7 +145,7 @@ int main() {
                          << "\"generation\":11,\"complete\":true,\"trades\":["
                          << "{\"trade_id\":\"T-1\",\"order_id\":\"O-1\","
                          << "\"instrument\":\"600000.SH\",\"side\":\"BUY\","
-                         << "\"quantity\":20,\"price\":10.15,"
+                         << "\"quantity\":" << tradeQuantity << ",\"price\":10.15,"
                          << "\"occurred_at_ms\":12340}]}}";
             else if (operation == "quote_subscribe")
                 response << ",\"payload\":{\"schema\":\"heptatrader.xt.quote.v1\","
@@ -214,6 +215,15 @@ int main() {
                     !xt.QuoteFresh("600000.SH", 12344, 100),
                 "stale or future-dated quote must fail freshness");
         Require(observedRequests == 6, "exact read-only request count mismatch");
+        tradeQuantity = 21.0;
+        Require(xt.ReqTrades(),
+                "well-formed but economically inconsistent trade payload should parse");
+        Require(!xt.AccountPositionOrderTradeReadReady(),
+                "trade quantity above cumulative order fill must invalidate readiness");
+        tradeQuantity = 20.0;
+        Require(xt.ReqTrades() && xt.AccountPositionOrderTradeReadReady(),
+                "matching trade quantity must restore the complete read barrier");
+        Require(observedRequests == 8, "revalidation request count mismatch");
         long long orderId = -1;
         Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
                 "read-only HXQ1 must not enable order mutation");

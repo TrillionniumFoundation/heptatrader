@@ -766,13 +766,12 @@ bool HeptaXTGatewayAdapter::AccountPositionOrderTradeReadReady() const
         return false;
 
     std::map<std::string, const HeptaXTOrder*> orders;
-    std::set<std::string> ordersRequiringTradeEvidence;
+    std::map<std::string, double> tradeQuantityByOrder;
     for (std::size_t i = 0; i < m_orderSnapshot.orders.size(); ++i)
     {
         const HeptaXTOrder& order = m_orderSnapshot.orders[i];
         orders[order.orderId] = &order;
-        if (order.filledQuantity > 0.0)
-            ordersRequiringTradeEvidence.insert(order.orderId);
+        tradeQuantityByOrder[order.orderId] = 0.0;
     }
     for (std::size_t i = 0; i < m_tradeSnapshot.trades.size(); ++i)
     {
@@ -780,11 +779,28 @@ bool HeptaXTGatewayAdapter::AccountPositionOrderTradeReadReady() const
         const auto found = orders.find(trade.orderId);
         if (found == orders.end() ||
             found->second->instrument != trade.instrument ||
-            found->second->side != trade.side)
+            found->second->side != trade.side ||
+            found->second->filledQuantity <= 0.0 ||
+            trade.quantity > found->second->filledQuantity)
             return false;
-        ordersRequiringTradeEvidence.erase(trade.orderId);
+        double& total = tradeQuantityByOrder[trade.orderId];
+        total += trade.quantity;
+        const double scale = std::max(1.0, std::fabs(found->second->filledQuantity));
+        const double tolerance = scale * 1e-12;
+        if (!std::isfinite(total) ||
+            total - found->second->filledQuantity > tolerance)
+            return false;
     }
-    return ordersRequiringTradeEvidence.empty();
+    for (std::size_t i = 0; i < m_orderSnapshot.orders.size(); ++i)
+    {
+        const HeptaXTOrder& order = m_orderSnapshot.orders[i];
+        const double total = tradeQuantityByOrder[order.orderId];
+        const double scale = std::max(1.0, std::fabs(order.filledQuantity));
+        const double tolerance = scale * 1e-12;
+        if (std::fabs(total - order.filledQuantity) > tolerance)
+            return false;
+    }
+    return true;
 }
 
 bool HeptaXTGatewayAdapter::QuoteFresh(
