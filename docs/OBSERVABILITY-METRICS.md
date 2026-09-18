@@ -40,21 +40,26 @@ A valid stale sample still has `telemetry_fresh=0` and a nonzero report exit cod
 A surviving file with `telemetry_fresh=1` can outlive a dead collector, so the
 supplied rules independently evaluate collection and source timestamps.
 
-## Requirements not yet delivered as a complete interface
+## Next-stage observability expansion
 
-Complete per-reason execution lifecycle beyond coordinator call outcomes and
-portfolio notional/PnL/drawdown still need individually bounded producers and
-behavior tests. Callback queue lag/conflict, primary quote age, authoritative
-snapshot age, successful post-fill Broker reconciliation duration, whole
-reconnect duration, reconnect authoritative-refresh duration, and exact
-canonical/deny-all Broker network-policy readback are now source-produced. A
-missing/invalid age is represented by an explicit validity bit rather than a
-synthetic zero; failed reconciliation remains a failure/pending state rather
-than being inserted into the successful duration histogram. IB snapshot **generations/completeness**
-and the three continuous observed-stall duration lower bounds are produced,
-reported and collected; this remains deliberately narrower than a native Broker
-reconciliation timer, snapshot age or callback latency. Existing C++ fields do
-not automatically constitute exported metrics.
+The repository telemetry correctness scope is closed for the currently supported
+runtime: callback queue lag/conflict, primary quote age, authoritative snapshot
+age, successful post-fill Broker reconciliation duration, whole reconnect
+duration, reconnect-authoritative-refresh duration, and exact canonical/deny-all
+Broker network-policy readback are source-produced. A missing/invalid age is
+represented by an explicit validity bit rather than a synthetic zero; failed
+reconciliation remains a failure/pending state rather than being inserted into
+the successful duration histogram. IB snapshot **generations/completeness** and
+the three continuous observed-stall duration lower bounds are produced, reported
+and collected. The unprivileged IB collection path is covered by baseline
+Prometheus rules and real-process loopback delivery acceptance; privileged
+network-policy scheduling remains a host operation.
+
+General multi-asset portfolio notional/PnL/drawdown and deeper upstream
+per-reason lifecycle metrics remain a future product expansion
+(`RUNTIME-PORTFOLIO-004`). They require explicit valuation/unit/authority
+contracts and must not be fabricated from existing fields merely to make the
+inventory look complete.
 
 Deployment still owns trusted observer identity, actual installation/activation,
 target mapping, retention, approved receiver and protected receiver credentials.

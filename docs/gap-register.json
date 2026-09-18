@@ -58,22 +58,41 @@
     {
       "id": "RUNTIME-TELEMETRY-003",
       "domain": "REPOSITORY",
-      "state": "OPEN",
-      "summary": "Required callback, quote/snapshot age, Broker reconciliation, reconnect/refresh and exact network-policy source producers are implemented; baseline IB collection and state/integrity alerting are executable.",
+      "state": "CLOSED",
+      "summary": "Callback, quote/snapshot age, Broker reconciliation, reconnect/refresh and exact network-policy source producers are implemented with bounded reporting, collection and baseline IB alerting.",
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/technical/runtime-cost-observations.md",
+        "docs/technical/telemetry-collection.md",
         "HeptaTrade/execution/ib_runtime_observation.h",
         "scripts/hepta_ib_runtime_report.py",
         "scripts/hepta_telemetry_collect.py",
+        "scripts/hepta_broker_egress_policy.py",
+        "systemd/monitoring/hepta.rules.yml.example",
         "tests/python/test_execution_latency_boundaries.py",
         "tests/python/test_execution_reason_metrics.py",
         "tests/python/test_ib_runtime_observation.py",
-        "tests/python/test_ib_telemetry_collection.py"
+        "tests/python/test_ib_telemetry_collection.py",
+        "tests/monitoring/rules.test.yml",
+        "tests/monitoring/process_smoke.py"
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "OPEN. Coordinator lock wait/held/outside-venue/total timing and 41 fixed local reason bins are implemented. IB PAPER emits one lock-bound authoritative observation plus native callback ingress lag/conflict, quote/snapshot age, successful post-fill Broker reconciliation duration, reconnect duration and reconnect authoritative-refresh duration. The installed reporter and `ib-paper` collector publish fixed-cardinality textfiles; the supplied Prometheus/Alertmanager rules now cover IB collector/freshness failure, incomplete authoritative state, pending reconciliation, callback conflicts, missing producer families and unknown quote/snapshot age without inventing numerical SLOs. `hepta_broker_egress_policy.py --observe-json` independently performs exact privileged nftables readback and recognizes only canonical allow or compiled deny-all; it is deliberately not sampled by the unprivileged daemon. Complete upstream per-reason lifecycle and portfolio notional/PnL/drawdown are a separate next-stage capability, while actual privileged policy-observer scheduling, target-host collection and real receiver delivery remain external host evidence."
+      "disposition": "CLOSED for repository telemetry scope. Coordinator timing and 41 fixed local outcome reasons are exported without unbounded labels. IB PAPER produces native callback ingress lag/conflict, quote/snapshot age, successful post-fill Broker reconciliation duration, reconnect duration and reconnect authoritative-refresh duration alongside one lock-bound authoritative state observation. The installed reporter and `ib-paper` collector publish fixed-cardinality textfiles, and the supplied Prometheus/Alertmanager rules cover IB collector/freshness failure, incomplete authoritative state, pending reconciliation, callback conflicts, missing current-artifact producer families and unknown quote/snapshot age. `hepta_broker_egress_policy.py --observe-json` separately provides exact privileged nftables readback and recognizes only canonical allow or compiled deny-all. Its scheduling on a real host is intentionally not delegated to the unprivileged daemon. Target-host activation, multiday retention and real receiver delivery remain HOST-OPERATIONS-003; broader portfolio/per-reason product metrics are RUNTIME-PORTFOLIO-004. PAPER/LIVE authorization remains false."
+    },
+    {
+      "id": "RUNTIME-PORTFOLIO-004",
+      "domain": "REPOSITORY",
+      "state": "DEFERRED",
+      "summary": "General multi-asset portfolio notional/PnL/drawdown and deeper upstream per-reason lifecycle metrics are a next-stage product capability, not a correctness prerequisite for the current bounded IB PAPER scope.",
+      "evidence": [
+        "docs/OBSERVABILITY-METRICS.md",
+        "docs/modules/ib-paper.md",
+        "docs/technical/runtime-cost-observations.md"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "DEFERRED. Current IB PAPER is deliberately constrained to one active order and one CASH quote contract, with authoritative position/risk/reconciliation state and the runtime integrity metrics needed for that scope. Portfolio notional/PnL/drawdown and broader upstream lifecycle reasons require explicit unit, currency, valuation and multi-asset authority contracts before they can be truthful producers. They are tracked as future capability expansion rather than keeping the already-implemented telemetry correctness work artificially OPEN."
     },
     {
       "id": "HOST-OPERATIONS-003",
