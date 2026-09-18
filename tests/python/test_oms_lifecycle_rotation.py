@@ -82,6 +82,17 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             commands.append(bytes.fromhex(fields[2]).decode())
         return commands
 
+    def current_index_owners(self) -> set[tuple[str, str]]:
+        generation = json.loads((self.store / "CURRENT").read_text())["generation"]
+        owners: set[tuple[str, str]] = set()
+        for line in (self.store / generation / "runtime-command-index.tsv").read_text().splitlines():
+            fields = line.split("\t")
+            owners.add((
+                bytes.fromhex(fields[0]).decode(),
+                bytes.fromhex(fields[1]).decode(),
+            ))
+        return owners
+
     def current_send_keys(self) -> list[tuple[str, str, int, int, str, str, str]]:
         generation = json.loads((self.store / "CURRENT").read_text())["generation"]
         rows = []
@@ -291,7 +302,7 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                 )
                 points.append({
                     "generation_count": generation_index,
-                    "owner_count": generation_index,
+                    "owner_count": len(self.current_index_owners()),
                     "history_records": manifest["history_records"],
                     "command_records": manifest["command_records"],
                     "seal_ns": seal_ns,
