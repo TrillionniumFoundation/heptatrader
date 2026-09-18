@@ -63,6 +63,9 @@ bool ParseBrokerErrorCode(const std::string& value, int& code) {
 }  // namespace
 
 void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& reason) {
+    if (reason.find("CONFLICT") != std::string::npos &&
+        m_callbackConflictCount != std::numeric_limits<std::uint64_t>::max())
+        ++m_callbackConflictCount;
     m_correlationRefreshPending = false;
     m_correlationRefreshConflict = false;
     m_pendingCorrelationOrderIds.clear();
@@ -117,6 +120,9 @@ bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
 
 void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
     const std::string& reason) {
+    if (reason.find("CONFLICT") != std::string::npos &&
+        m_callbackConflictCount != std::numeric_limits<std::uint64_t>::max())
+        ++m_callbackConflictCount;
     m_liveTerminalBindings.clear();
     m_completedOrdersRefreshPending = false;
     m_executionsRefreshPending = false;
@@ -347,6 +353,23 @@ bool HeptaIBGatewayAdapter::PollOnce(int timeoutMs) {
 bool HeptaIBGatewayAdapter::DequeueCurrentEpochEvent(IBEvent& event) {
     do {
         if (!m_api->TryDequeueEvent(event)) return false;
+        if (event.callbackReceivedMonotonicMs != 0) {
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            const auto current = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+            if (current >= 0 &&
+                static_cast<std::uint64_t>(current) >= event.callbackReceivedMonotonicMs) {
+                const std::uint64_t lag =
+                    static_cast<std::uint64_t>(current) - event.callbackReceivedMonotonicMs;
+                if (m_callbackLagSamples != std::numeric_limits<std::uint64_t>::max())
+                    ++m_callbackLagSamples;
+                if (m_callbackLagTotalMs <=
+                    std::numeric_limits<std::uint64_t>::max() - lag)
+                    m_callbackLagTotalMs += lag;
+                else
+                    m_callbackLagTotalMs = std::numeric_limits<std::uint64_t>::max();
+                m_callbackLagMaxMs = std::max(m_callbackLagMaxMs, lag);
+            }
+        }
         if (event.connectionEpoch != 0 && event.connectionEpoch != m_connectionEpoch) {
             EmitObsEvent("event.stale_connection_epoch",
                 "\"eventEpoch\":" + std::to_string(event.connectionEpoch)
@@ -1271,4 +1294,25 @@ void HeptaIBGatewayAdapter::PublishPositionEvent(const IBEvent& outEvent) {
             RefreshGrossAbsolutePosition();
         }
     }
+}
+
+
+std::uint64_t HeptaIBGatewayAdapter::CallbackLagSamples() const {
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    return m_callbackLagSamples;
+}
+
+std::uint64_t HeptaIBGatewayAdapter::CallbackLagTotalMs() const {
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    return m_callbackLagTotalMs;
+}
+
+std::uint64_t HeptaIBGatewayAdapter::CallbackLagMaxMs() const {
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    return m_callbackLagMaxMs;
+}
+
+std::uint64_t HeptaIBGatewayAdapter::CallbackConflictCount() const {
+    std::lock_guard<std::recursive_mutex> lock(m_apiMutex);
+    return m_callbackConflictCount;
 }
