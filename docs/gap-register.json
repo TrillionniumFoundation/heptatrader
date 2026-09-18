@@ -59,7 +59,7 @@
       "id": "RUNTIME-TELEMETRY-003",
       "domain": "REPOSITORY",
       "state": "OPEN",
-      "summary": "Detailed per-reason/reconnect telemetry and target-host observation remain incomplete; callback, quote/snapshot age, Broker reconciliation and exact network-policy source producers are implemented.",
+      "summary": "Detailed upstream per-reason and portfolio telemetry remains incomplete; callback, quote/snapshot age, Broker reconciliation, reconnect/refresh and exact network-policy source producers are implemented.",
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/technical/runtime-cost-observations.md",
@@ -73,7 +73,7 @@
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter now derives three fixed-cardinality continuous observed-duration lower bounds from recent samples: post-fill reconciliation pending, authoritative snapshot incompleteness and terminal callback drain pending; service/connection epoch changes and monotonic-clock regression reset those durations rather than manufacturing continuity. The `ib-paper` telemetry profile independently parses and atomically publishes OMS, IB and Gateway textfiles; invalid IB input replaces only IB health with explicit collector failure while valid OMS/Gateway publication continues. Callback ingress-to-routing lag/conflict, quote/snapshot age and successful post-fill Broker reconciliation duration are native source producers. `hepta_broker_egress_policy.py --observe-json` separately performs exact host-owned nftables readback and recognizes only canonical allow or compiled deny-all; the unprivileged IB daemon intentionally does not claim that privileged observation. Complete upstream per-reason lifecycle, reconnect/refresh duration and portfolio notional/PnL/drawdown remain open. No target-host SLO, policy-observer activation or real notification is proven."
+      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter derives bounded observed stall durations and now exports native callback ingress lag/conflict, quote/snapshot age, successful post-fill Broker reconciliation duration, total reconnect duration and reconnect authoritative-refresh duration. `hepta_broker_egress_policy.py --observe-json` separately performs exact host-owned nftables readback and recognizes only canonical allow or compiled deny-all; the unprivileged IB daemon intentionally does not claim that privileged observation. Complete upstream per-reason lifecycle and portfolio notional/PnL/drawdown remain open because those require additional authoritative producer/unit contracts; they are not replaced by synthetic zero values. No target-host SLO, policy-observer activation or real notification is proven."
     },
     {
       "id": "HOST-OPERATIONS-003",

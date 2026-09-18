@@ -105,11 +105,15 @@ notification delivery or IB PAPER qualification. See [bounded acceptance](bounde
 container sizes under its existing mutex. It never scans historical commands to
 publish telemetry. Place, cancel and authoritative flatten record one of five
 fixed outcomes (accepted, rejected, duplicate, uncertain, escaping exception).
-The operation histogram starts after acquiring the coordinator lock and ends
-before releasing it; it includes local durability and venue callback work but
-excludes lock wait, outer policy/preview validation, socket delivery and later
-Broker callbacks. An exception is counted and rethrown, not made successful.
-Planless flatten and policy-layer early returns are not coordinator operations.
+The lock-held operation histogram starts after acquiring the coordinator lock
+and excludes the interval in which place/cancel/flatten releases that mutex for
+the venue callback. A separate outside-lock histogram measures that venue
+interval plus lock reacquisition, while the inclusive total covers initial lock
+wait, all lock-held work and the outside-lock interval. Outer policy/preview
+validation, socket delivery and later Broker callbacks remain outside these
+coordinator operation scopes. An exception is counted and rethrown, not made
+successful. Planless flatten and policy-layer early returns are not coordinator
+operations.
 
 Recovery latency wraps the complete `RecoverFromJournal` execution, including
 validation, projection and failure cleanup, after its lock acquisition. It is
@@ -202,6 +206,18 @@ trade counts or completed fills. RUNTIME-TELEMETRY-003 remains open for those
 other scopes.
 
 
+### Broker reconnect and refresh duration
+
+The IB runtime records two process-local `steady_clock` histograms behind the
+existing runtime-metrics mutex. `broker_reconnect_duration` starts only after
+the coordinator reconnect fence is established and the reconnect campaign is
+scheduled, and terminates on successful authority restoration or a terminal
+reconnect failure. `broker_reconnect_refresh_duration` starts only after quote,
+open-order and terminal-correlation refresh requests are accepted and measures
+the authoritative refresh/reconciliation portion through the same terminal
+boundary. Failed pre-fence reconnect requests are not invented as zero-duration
+samples. These histograms are observation only; they do not relax reconnect
+fencing or establish a host SLO.
 ### Unlocked venue dispatch timing
 
 Place, cancel and authoritative-flatten observations now distinguish coordinator lock-held work from the interval spent outside the coordinator mutex at the venue boundary. The outside-lock histogram includes the provider call and lock reacquisition. For current producers, inclusive total equals initial lock wait plus lock-held work plus outside-lock time; pre-change producers with only wait+total remain readable without synthesizing an outside-lock zero.
