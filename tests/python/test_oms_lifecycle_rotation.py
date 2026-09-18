@@ -376,7 +376,7 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             "rebase_ns": rebase_ns,
             "retained_disk_bytes_before_rebase": before_rebase,
             "retained_disk_bytes_after_rebase": after_rebase,
-            "process_peak_rss_kib": usage.ru_maxrss,
+            "test_process_peak_rss_kib": usage.ru_maxrss,
             "authorization_effect": "NONE",
         }
         print(json.dumps(observation, sort_keys=True))
