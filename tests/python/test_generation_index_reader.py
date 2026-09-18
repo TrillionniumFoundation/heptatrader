@@ -76,7 +76,9 @@ int main(int argc, char** argv)
     return 0;
 }
 """
-\n\nclass GenerationIndexReaderTests(unittest.TestCase):
+
+
+class GenerationIndexReaderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix="hepta-generation-reader-")
