@@ -1127,6 +1127,14 @@ bool OmsGenerationStore::SummarizeMutationRecords(
         offset = end;
     }
 
+    if (ok && !ValidatePinnedIndex(
+            m_commandIndexFd, "runtime-command-index.tsv",
+            m_commandIndexIdentity))
+    {
+        reason = "OMS_GENERATION_COMMAND_INDEX_CHANGED";
+        ok = false;
+    }
+
     auto finish = [](EVP_MD_CTX* context, std::string& output) {
         unsigned char digest[EVP_MAX_MD_SIZE];
         unsigned int length = 0;
