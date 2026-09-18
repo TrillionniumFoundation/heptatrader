@@ -33,7 +33,8 @@ UINT_FIELDS = (
     "terminal_executions", "terminal_exposure_generation", "risk_generation",
     "account_generation", "positions_generation", "fx_cash_generation",
     "risk_absorbed_exposure_generation", "positions", "exposure_generation",
-    "terminal_callbacks_in_flight",
+    "terminal_callbacks_in_flight", "callback_lag_samples",
+    "callback_lag_total_ms", "callback_lag_max_ms", "callback_conflicts_total",
 )
 BOOL_FIELDS = (
     "connected", "event_stream_authoritative", "active_complete",
@@ -108,6 +109,18 @@ def validate(sample: Any) -> dict[str, Any]:
         raise ValueError("active correlation count exceeds active orders")
     if sample["terminal_transport_drain_verified"] and not sample["terminal_transport_halted"]:
         raise ValueError("terminal drain cannot be verified before halt")
+    if not sample["callback_lag_metrics_present"] and any(
+            sample[key] != 0 for key in
+            ("callback_lag_samples", "callback_lag_total_ms", "callback_lag_max_ms")):
+        raise ValueError("absent callback lag family cannot carry values")
+    if not sample["callback_conflict_metrics_present"] and sample["callback_conflicts_total"] != 0:
+        raise ValueError("absent callback conflict family cannot carry values")
+    if sample["callback_lag_samples"] == 0 and (
+            sample["callback_lag_total_ms"] != 0 or sample["callback_lag_max_ms"] != 0):
+        raise ValueError("callback lag without samples")
+    if sample["callback_lag_samples"] and (
+            sample["callback_lag_total_ms"] < sample["callback_lag_max_ms"]):
+        raise ValueError("callback lag accounting mismatch")
     return sample
 
 
@@ -269,7 +282,11 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_terminal_transport_drain_verified": int(latest["terminal_transport_drain_verified"]),
         "hepta_ib_terminal_callbacks_in_flight": latest["terminal_callbacks_in_flight"],
         "hepta_ib_callback_lag_metrics_present": int(latest["callback_lag_metrics_present"]),
+        "hepta_ib_callback_lag_samples_total": latest["callback_lag_samples"],
+        "hepta_ib_callback_lag_total_ms": latest["callback_lag_total_ms"],
+        "hepta_ib_callback_lag_max_ms": latest["callback_lag_max_ms"],
         "hepta_ib_callback_conflict_metrics_present": int(latest["callback_conflict_metrics_present"]),
+        "hepta_ib_callback_conflicts_total": latest["callback_conflicts_total"],
         "hepta_ib_network_policy_metrics_present": int(latest["network_policy_metrics_present"]),
         "hepta_ib_runtime_alerts": len(summary["alerts"]),
     }
