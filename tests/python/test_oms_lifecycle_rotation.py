@@ -212,14 +212,34 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             4 * generations)
 
     def test_generation_cost_curve_observes_seal_verify_storage_and_rebase(self) -> None:
-        points = []
+        # Exercise enough history to expose cumulative-index/storage behavior
+        # without turning the ordinary core lane into a host benchmark.
+        commands_per_generation = 64
+        generations = 16
         checkpoints = {4, 8, 16}
-        for generation_index in range(1, 17):
+        expected_commands: set[str] = set()
+        points = []
+
+        def batch(generation_index: int) -> bytes:
+            events = []
+            for item in range(commands_per_generation):
+                command = f"curve-{generation_index:02d}-{item:03d}"
+                expected_commands.add(command)
+                ordinal = (generation_index - 1) * commands_per_generation + item
+                events.extend(command_events(
+                    command,
+                    10000 + ordinal * 10,
+                    1000 + ordinal))
+            return encode(events)
+
+        self.journal.write_bytes(batch(1))
+        os.chmod(self.journal, 0o600)
+
+        for generation_index in range(1, generations + 1):
             if generation_index > 1:
-                self.append(command_events(
-                    f"curve-{generation_index}",
-                    10000 + generation_index * 100,
-                    1000 + generation_index))
+                with self.journal.open("ab") as stream:
+                    stream.write(batch(generation_index))
+            active_bytes_before_seal = self.journal.stat().st_size
             seal_started = time.monotonic_ns()
             manifest = lifecycle.seal_generation(
                 self.journal, self.store, stopped=True)
@@ -235,6 +255,18 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                 current = json.loads(
                     (self.store / "CURRENT").read_text())["generation"]
                 chain = lifecycle._generation_chain(self.store, current)
+                generation_dir = self.store / current
+                generation_output_bytes = sum(
+                    path.stat().st_size
+                    for path in generation_dir.iterdir()
+                    if path.is_file())
+                command_index_bytes = (
+                    generation_dir / "runtime-command-index.tsv").stat().st_size
+                send_index_bytes = (
+                    generation_dir / "send-attempt-index.tsv").stat().st_size
+                logical_event_bytes = sum(
+                    (self.store / item_generation / "segment-000001.jsonl").stat().st_size
+                    for item_generation, _ in chain)
                 disk_bytes = sum(
                     path.stat().st_size
                     for item_generation, _ in chain
@@ -253,7 +285,14 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                     "command_records": manifest["command_records"],
                     "seal_ns": seal_ns,
                     "verify_ns": verify_ns,
+                    "active_bytes_before_seal": active_bytes_before_seal,
+                    "generation_output_bytes": generation_output_bytes,
+                    "runtime_command_index_bytes": command_index_bytes,
+                    "send_attempt_index_bytes": send_index_bytes,
+                    "logical_event_bytes": logical_event_bytes,
                     "retained_disk_bytes": disk_bytes,
+                    "retained_to_logical_numerator": disk_bytes,
+                    "retained_to_logical_denominator": logical_event_bytes,
                 })
 
         self.assertEqual(
@@ -262,7 +301,14 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertTrue(all(point["verify_ns"] > 0 for point in points))
         self.assertTrue(all(point["retained_disk_bytes"] > 0 for point in points))
         self.assertEqual(
-            [point["history_records"] for point in points], [16, 32, 64])
+            [point["command_records"] for point in points], [256, 512, 1024])
+        self.assertEqual(
+            [point["history_records"] for point in points], [1024, 2048, 4096])
+        self.assertTrue(all(
+            point["runtime_command_index_bytes"] > 0 and
+            point["send_attempt_index_bytes"] > 0 and
+            point["logical_event_bytes"] > 0
+            for point in points))
         self.assertLess(
             points[0]["retained_disk_bytes"],
             points[-1]["retained_disk_bytes"])
@@ -288,15 +334,16 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         )
         self.assertGreater(rebase_ns, 0)
         self.assertLess(after_rebase, before_rebase)
-        self.assertEqual(rebased["history_records"], 64)
-        self.assertEqual(set(self.current_index_commands()),
-                         {"old"} | {f"curve-{index}" for index in range(2, 17)})
+        self.assertEqual(rebased["history_records"], 4096)
+        self.assertEqual(set(self.current_index_commands()), expected_commands)
 
         usage = resource.getrusage(resource.RUSAGE_SELF)
         observation = {
-            "schema": "heptatrader.synthetic-generation-cost-curve.v1",
+            "schema": "heptatrader.synthetic-generation-cost-curve.v2",
             "synthetic": True,
             "broker_io": False,
+            "commands_per_generation": commands_per_generation,
+            "generation_count": generations,
             "points": points,
             "rebase_ns": rebase_ns,
             "retained_disk_bytes_before_rebase": before_rebase,
