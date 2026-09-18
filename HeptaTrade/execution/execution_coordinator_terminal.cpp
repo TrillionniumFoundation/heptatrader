@@ -14,8 +14,6 @@
 
 namespace
 {
-const std::size_t kSessionIndexLineLimit = 64U * 1024U;
-const std::size_t kTerminalMutationLimit = 4097U;
 const std::size_t kGenerationMetadataLimit = 1024U * 1024U;
 const char* const kRuntimeManifestV1 = "HEPTA_OMS_RUNTIME_GENERATION_V1";
 const char* const kRuntimeManifestV2 = "HEPTA_OMS_RUNTIME_GENERATION_V2";
@@ -68,43 +66,6 @@ bool SessionSafeName(const std::string& value)
             return false;
     }
     return true;
-}
-
-bool SessionDecodeHex(const std::string& encoded, std::string& value)
-{
-    if (encoded.size() % 2U != 0) return false;
-    value.clear();
-    value.reserve(encoded.size() / 2U);
-    for (std::size_t offset = 0; offset < encoded.size(); offset += 2U)
-    {
-        unsigned int byte = 0;
-        for (std::size_t digit = 0; digit < 2U; ++digit)
-        {
-            const char c = encoded[offset + digit];
-            unsigned int nibble = 0;
-            if (c >= '0' && c <= '9') nibble = static_cast<unsigned int>(c - '0');
-            else if (c >= 'a' && c <= 'f') nibble = 10U + static_cast<unsigned int>(c - 'a');
-            else return false;
-            byte = byte * 16U + nibble;
-        }
-        value.push_back(static_cast<char>(byte));
-    }
-    return true;
-}
-
-bool SessionSplitTabs(const std::string& line, std::vector<std::string>& fields)
-{
-    fields.clear();
-    if (line.empty() || line.size() > kSessionIndexLineLimit) return false;
-    std::size_t offset = 0;
-    for (;;)
-    {
-        const std::size_t next = line.find('\t', offset);
-        fields.push_back(line.substr(offset,
-            next == std::string::npos ? std::string::npos : next - offset));
-        if (next == std::string::npos) return true;
-        offset = next + 1U;
-    }
 }
 
 std::string SessionSha256(const void* data, std::size_t size)
@@ -293,101 +254,6 @@ struct CompleteHistorySegment
     std::string generation;
     std::string sha256;
 };
-}
-
-bool OmsGenerationStore::EnumerateMutationRecords(
-    const std::string& agentId,
-    const std::string& sessionId,
-    const std::string& account,
-    const std::string& executionDomain,
-    std::vector<OmsGenerationMutationRecord>& records,
-    std::string& reason) const
-{
-    records.clear();
-    if (!m_active) { reason.clear(); return true; }
-    if (!ValidatePinnedIndex(m_commandIndexFd, "runtime-command-index.tsv",
-            m_commandIndexIdentity))
-    {
-        reason = "OMS_GENERATION_COMMAND_INDEX_CHANGED";
-        return false;
-    }
-
-    std::string pending;
-    std::array<char, 64U * 1024U> buffer;
-    off_t offset = 0;
-    while (offset < m_commandIndexIdentity.st_size)
-    {
-        const std::size_t wanted = static_cast<std::size_t>(std::min<off_t>(
-            static_cast<off_t>(buffer.size()), m_commandIndexIdentity.st_size - offset));
-        ssize_t count;
-        do { count = ::pread(m_commandIndexFd, buffer.data(), wanted, offset); }
-        while (count < 0 && errno == EINTR);
-        if (count <= 0)
-        {
-            reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
-            return false;
-        }
-        offset += count;
-        pending.append(buffer.data(), static_cast<std::size_t>(count));
-        for (;;)
-        {
-            const std::size_t newline = pending.find('\n');
-            if (newline == std::string::npos) break;
-            const std::string line = pending.substr(0, newline);
-            pending.erase(0, newline + 1U);
-            std::vector<std::string> fields;
-            if (!SessionSplitTabs(line, fields) || fields.size() != 13U)
-            {
-                reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
-                return false;
-            }
-            std::string rowAgent, rowSession, rowAccount, rowDomain;
-            if (!SessionDecodeHex(fields[0], rowAgent) ||
-                !SessionDecodeHex(fields[1], rowSession) ||
-                !SessionDecodeHex(fields[10], rowAccount) ||
-                !SessionDecodeHex(fields[11], rowDomain) ||
-                (fields[12] != "0" && fields[12] != "1"))
-            {
-                reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
-                return false;
-            }
-            if (fields[12] == "1" && rowAgent == agentId &&
-                rowSession == sessionId && rowAccount == account && rowDomain == executionDomain)
-            {
-                if (records.size() >= kTerminalMutationLimit)
-                {
-                    reason = "OMS_GENERATION_TERMINAL_MUTATION_UNIVERSE_TOO_LARGE";
-                    return false;
-                }
-                OmsGenerationMutationRecord record;
-                record.agentId = rowAgent;
-                record.sessionId = rowSession;
-                if (!SessionDecodeHex(fields[2], record.commandId) ||
-                    !SessionDecodeHex(fields[8], record.venueCorrelationId) ||
-                    (fields[4] != "place" && fields[4] != "cancel" && fields[4] != "flatten"))
-                {
-                    reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
-                    return false;
-                }
-                record.operation = fields[4];
-                records.push_back(record);
-            }
-        }
-        if (pending.size() > kSessionIndexLineLimit)
-        {
-            reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
-            return false;
-        }
-    }
-    if (!pending.empty() ||
-        !ValidatePinnedIndex(m_commandIndexFd, "runtime-command-index.tsv",
-            m_commandIndexIdentity))
-    {
-        reason = "OMS_GENERATION_COMMAND_INDEX_CHANGED";
-        return false;
-    }
-    reason.clear();
-    return true;
 }
 
 bool OmsGenerationStore::ReplayCompleteHistory(
