@@ -648,34 +648,9 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
         m_paperTerminalFenceBinding = binding;
     }
 
-    std::vector<PaperTerminalMutationRecord> records;
+    std::vector<PaperTerminalMutationRecord> activeTail;
     std::set<std::tuple<std::string, std::string, std::string,
                         std::string, std::string>> seen;
-    if (m_generationStore.IsActive())
-    {
-        std::vector<OmsGenerationMutationRecord> historical;
-        if (!m_generationStore.EnumerateMutationRecords(
-                binding.owner.agentId, binding.owner.sessionId,
-                binding.owner.account, binding.owner.executionDomain,
-                historical, reason))
-            return false;
-        for (std::size_t i = 0; i < historical.size(); ++i)
-        {
-            const OmsGenerationMutationRecord& source = historical[i];
-            const std::tuple<std::string, std::string, std::string,
-                             std::string, std::string> key(
-                source.agentId, source.sessionId, source.commandId,
-                source.operation, source.venueCorrelationId);
-            if (!seen.insert(key).second) continue;
-            PaperTerminalMutationRecord record;
-            record.agentId = source.agentId;
-            record.sessionId = source.sessionId;
-            record.toolCallId = source.commandId;
-            record.operation = source.operation;
-            record.venueCorrelationId = source.venueCorrelationId;
-            records.push_back(record);
-        }
-    }
     for (RequestRecordStore::Base::const_iterator it = m_requests.begin();
          it != m_requests.end(); ++it)
     {
@@ -686,10 +661,41 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
             request.context.account != binding.owner.account ||
             request.context.executionDomain != binding.owner.executionDomain)
             continue;
+
+        if (m_generationStore.IsActive())
+        {
+            OmsGenerationCommandRecord sealed;
+            std::string lookupReason;
+            const OmsGenerationLookupStatus lookup =
+                m_generationStore.LookupCommand(
+                    request.context.agentId, request.context.sessionId,
+                    request.context.toolCallId, sealed, lookupReason);
+            if (lookup == OmsGenerationLookupStatus::Error)
+            {
+                reason = lookupReason.empty() ?
+                    "OMS_GENERATION_COMMAND_INDEX_INVALID" : lookupReason;
+                return false;
+            }
+            if (lookup == OmsGenerationLookupStatus::Found)
+            {
+                if (!sealed.durableMutationIntent ||
+                    sealed.account != request.context.account ||
+                    sealed.executionDomain != request.context.executionDomain ||
+                    sealed.operation != request.operation ||
+                    sealed.venueCorrelationId != request.venueCorrelationId)
+                {
+                    reason = "OMS_GENERATION_TERMINAL_MUTATION_CONFLICT";
+                    return false;
+                }
+                continue;
+            }
+        }
+
         const std::tuple<std::string, std::string, std::string,
                          std::string, std::string> key(
             request.context.agentId, request.context.sessionId,
-            request.context.toolCallId, request.operation, request.venueCorrelationId);
+            request.context.toolCallId, request.operation,
+            request.venueCorrelationId);
         if (!seen.insert(key).second) continue;
         PaperTerminalMutationRecord record;
         record.agentId = request.context.agentId;
@@ -697,7 +703,20 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
         record.toolCallId = request.context.toolCallId;
         record.operation = request.operation;
         record.venueCorrelationId = request.venueCorrelationId;
-        records.push_back(record);
+        activeTail.push_back(record);
     }
-    return BuildPaperTerminalMutationUniverse(records, universe, reason);
+
+    if (!m_generationStore.IsActive())
+        return BuildPaperTerminalMutationUniverse(activeTail, universe, reason);
+
+    OmsGenerationMutationSummary sealed;
+    if (!m_generationStore.SummarizeMutationRecords(
+            binding.owner.agentId, binding.owner.sessionId,
+            binding.owner.account, binding.owner.executionDomain,
+            sealed, reason))
+        return false;
+    return BuildPaperTerminalPartitionedUniverse(
+        sealed.commandCount, sealed.commandBindingSha256,
+        sealed.correlationReferenceCount, sealed.correlationBindingSha256,
+        activeTail, universe, reason);
 }
