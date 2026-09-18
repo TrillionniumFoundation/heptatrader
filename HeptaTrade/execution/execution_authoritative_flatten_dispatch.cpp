@@ -192,7 +192,8 @@ ExecutionCommandResult
 ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
     const FlattenPositionCommand& command,
     const AuthoritativeFlattenPlan& plan,
-    const AuthoritativeFlattenDispatchContext& dispatch)
+    const AuthoritativeFlattenDispatchContext& dispatch,
+    std::unique_lock<std::mutex>& coordinatorLock)
 {
     const AgentExecutionContext& context = command.context;
     if (plan.expectedPositionQuantity == 0.0)
@@ -252,21 +253,31 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
         }
     }
 
+    if (!BeginExternalMutationLocked())
+        return RejectAuthoritativeFlattenLocked(
+            command, plan, dispatch, "VENUE_DISPATCH_QUIESCING",
+            "external venue dispatch is closed for a control transition");
     VenueFlattenResult outcome;
-    try
+    coordinatorLock.unlock();
     {
-        outcome = m_callbacks.flattenOrder(plan, dispatch.venueCorrelationId);
+        std::lock_guard<std::mutex> dispatchLock(m_externalDispatchMutex);
+        try
+        {
+            outcome = m_callbacks.flattenOrder(
+                plan, dispatch.venueCorrelationId);
+        }
+        catch (const std::exception& error)
+        {
+            outcome = VenueFlattenResult::Uncertain(-1, error.what());
+        }
+        catch (...)
+        {
+            outcome = VenueFlattenResult::Uncertain(
+                -1, "unknown authoritative flatten exception");
+        }
     }
-    catch (const std::exception& error)
-    {
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, -1, error.what());
-    }
-    catch (...)
-    {
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, -1, "unknown authoritative flatten exception");
-    }
+    coordinatorLock.lock();
+    EndExternalMutationLocked();
     if (outcome.disposition == VenueFlattenDisposition::RejectedBeforeSend)
     {
         const char* const code = VenueFlattenRejectionCode(outcome.rejection);
