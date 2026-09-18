@@ -87,7 +87,9 @@ Optional gzip archive maintenance remains a distinct lossless stopped-state oper
 
 Generation-backed recovery and historical command lookup are long-horizon mechanisms. The IB PAPER terminal mutation manifest is a separate qualification/finalization artifact. The active finalization source universe remains scoped to the exact fenced owner `(agent_id, session_id, account, execution_domain)`: generation-backed enumeration and hot coordinator records apply that same four-part subject before a command enters the terminal witness. Historical commands from older or foreign sessions on the same account/domain remain durably queryable in OMS and do not silently become current-owner mutation authority.
 
-The manifest implementation also carries a compact partitioned-summary representation for reviewed compatibility/scale work, but the public terminal-fence path must preserve owner-session scoping. A compact digest is not permission to combine foreign sessions or expire command identity.
+Generation-backed public finalization uses the owner-scoped cumulative command index as a streaming sealed-history summary rather than enumerating every sealed mutation into memory. Only matching hot/active-tail mutation records that are absent from the sealed index are materialized, and any mismatch between a hot record and its sealed command identity fails closed. The fixed-size HPM2 partition binding combines the sealed summary with that bounded tail, so the old per-enumeration record ceiling is not the public generation-backed finalization limit.
+
+The manifest implementation preserves exact owner-session scoping throughout this compact path. A compact digest is not permission to combine foreign sessions, accept an index conflict or expire command identity.
 
 ## Diagnostics and reasons
 
