@@ -1172,6 +1172,142 @@ def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
             "authorization_effect": "NONE"}
 
 
+
+def _remove_flat_generation_directory(store: Path, generation: str) -> None:
+    root = store / generation
+    info = os.stat(root, follow_symlinks=False)
+    if not v1._private_directory(info):
+        raise v1.GenerationError("OMS_GENERATION_REBASE_PRUNE_UNSAFE")
+    with os.scandir(root) as entries:
+        names = [entry.name for entry in entries]
+    for name in names:
+        path = root / name
+        metadata = os.stat(path, follow_symlinks=False)
+        if not v1._private_regular(metadata):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_PRUNE_UNSAFE")
+        path.unlink()
+    root.rmdir()
+    v1._durable_directory(store)
+
+
+def rebase_generation(journal: Path, store: Path, *, stopped: bool,
+                      prune_ancestors: bool = False,
+                      phase_hook: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Collapse the selected lineage into one lossless root generation.
+
+    Rebase is a stopped-writer maintenance operation. It reconstructs the exact
+    strict JSONL ledger, builds a fresh independent V2 root with cumulative
+    indexes and simulator economic checkpoint, atomically switches the active
+    journal and CURRENT pointers, verifies the new root, and only then may
+    remove the previously selected ancestor chain.
+    """
+    if not stopped:
+        raise v1.GenerationError("OMS_GENERATION_STOP_ALL_WRITERS_REQUIRED")
+    phase_hook = phase_hook or (lambda _: None)
+    journal = journal.resolve()
+    store = store.resolve()
+    if store != Path(str(journal) + ".generations"):
+        raise v1.GenerationError("OMS_GENERATION_STORE_PATH_MISMATCH")
+    current = v1._read_current(store)
+    if current is None:
+        raise v1.GenerationError("OMS_GENERATION_CURRENT_MISSING")
+    old_generation = current["generation"]
+    old_chain = [generation for generation, _ in
+                 _generation_chain(store, old_generation)]
+
+    lock_fd = os.open(
+        journal, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
+    export_path = journal.with_name(
+        f".{journal.name}.{uuid.uuid4().hex}.rebase.jsonl")
+    temp_store = Path(str(export_path) + ".generations")
+    try:
+        before = os.fstat(lock_fd)
+        if not v1._private_regular(before):
+            raise v1.GenerationError("OMS_GENERATION_UNSAFE_JOURNAL")
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        exported = export_legacy(journal, store, export_path)
+        phase_hook("rebase-export-durable")
+        rebased = seal_generation(
+            export_path, temp_store, stopped=True, phase_hook=lambda _: None)
+        generation = rebased["generation"]
+        source_root = temp_store / generation
+        target_root = store / generation
+        if target_root.exists():
+            raise v1.GenerationError("OMS_GENERATION_REBASE_NAME_CONFLICT")
+        os.replace(source_root, target_root)
+        v1._durable_directory(store)
+        phase_hook("rebase-root-durable")
+
+        marker = export_path.read_bytes()
+        if marker != _tail_header(generation):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_TAIL_INVALID")
+        after = os.fstat(lock_fd)
+        named = os.stat(journal, follow_symlinks=False)
+        if v1._identity(before) != v1._identity(after) or \
+                v1._identity(after) != v1._identity(named):
+            raise v1.GenerationError("OMS_GENERATION_JOURNAL_CHANGED")
+
+        os.replace(export_path, journal)
+        v1._durable_directory(journal.parent)
+        phase_hook("rebase-tail-durable")
+
+        current_bytes = v1._read_private_bytes(temp_store / "CURRENT")
+        runtime_current_bytes = v1._read_private_bytes(temp_store / "CURRENT.runtime")
+        v1._atomic_bytes(store / "CURRENT", current_bytes)
+        v1._durable_directory(store)
+        phase_hook("rebase-current-json-durable")
+        v1._atomic_bytes(store / "CURRENT.runtime", runtime_current_bytes)
+        v1._durable_directory(store)
+        phase_hook("rebase-current-durable")
+
+        verified = verify_generation(store, generation, journal)
+        if verified.get("result") != "PASS":
+            raise v1.GenerationError("OMS_GENERATION_REBASE_VERIFY_FAILED")
+        phase_hook("rebase-verified")
+
+        pruned = 0
+        if prune_ancestors:
+            for ancestor in old_chain:
+                if ancestor == generation:
+                    continue
+                _remove_flat_generation_directory(store, ancestor)
+                pruned += 1
+            phase_hook("rebase-pruned")
+
+        return {
+            "schema": "heptatrader.oms-generation-rebase.v1",
+            "result": "PASS",
+            "generation": generation,
+            "history_records": rebased["history_records"],
+            "command_records": rebased["command_records"],
+            "send_attempt_records": rebased["send_attempt_records"],
+            "old_generations": len(old_chain),
+            "pruned_generations": pruned,
+            "exported_records": exported["records"],
+            "authorization_effect": "NONE",
+            "paper_authorized": False,
+            "live_authorized": False,
+        }
+    finally:
+        os.close(lock_fd)
+        for path in (export_path,):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        if temp_store.exists():
+            try:
+                for child in list(temp_store.iterdir()):
+                    if child.is_file():
+                        child.unlink()
+                    elif child.is_dir():
+                        _remove_flat_generation_directory(temp_store, child.name)
+                temp_store.rmdir()
+            except OSError:
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1187,14 +1323,23 @@ def main(argv: list[str] | None = None) -> int:
     export.add_argument("--journal", type=Path, required=True)
     export.add_argument("--store", type=Path, required=True)
     export.add_argument("--output", type=Path, required=True)
+    rebase = sub.add_parser("rebase")
+    rebase.add_argument("--journal", type=Path, required=True)
+    rebase.add_argument("--store", type=Path, required=True)
+    rebase.add_argument("--stopped-state", action="store_true")
+    rebase.add_argument("--prune-ancestors", action="store_true")
     args = parser.parse_args(argv)
     try:
         if args.command == "seal":
             result = seal_generation(args.journal, args.store, stopped=args.stopped_state)
         elif args.command == "verify":
             result = verify_generation(args.store, args.generation, args.journal)
-        else:
+        elif args.command == "export":
             result = export_legacy(args.journal, args.store, args.output)
+        else:
+            result = rebase_generation(
+                args.journal, args.store, stopped=args.stopped_state,
+                prune_ancestors=args.prune_ancestors)
     except (OSError, ValueError, OverflowError) as error:
         code = str(error) if isinstance(error, (v1.GenerationError, JournalError)) else type(error).__name__
         print(json.dumps({"result": "FAIL", "reason": code,
