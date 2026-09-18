@@ -595,6 +595,10 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
     if (!ValidPaperTerminalFenceBinding(binding, reason)) return false;
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (m_generationStore.IsActive())
+        return EnterPaperTerminalFenceAndProjectGenerationAwareLocked(
+            binding, universe, reason);
+
     if (m_mutationBlocked)
     {
         if (m_mutationBlockReason != "IB_PAPER_TERMINAL_HALTED" ||

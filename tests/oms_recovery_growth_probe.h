@@ -166,13 +166,10 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         binding.brokerSocketIdentitySha256 = "sha256:" + std::string(64, 'b');
         PaperTerminalMutationUniverse universe;
         assert(recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason));
-        assert(universe.commands.size() == 2);
-        for (std::size_t i = 0; i < universe.commands.size(); ++i)
-        {
-            assert(universe.commands[i].agentId == oldCommand.context.agentId);
-            assert(universe.commands[i].sessionId == oldCommand.context.sessionId);
-            assert(universe.commands[i].toolCallId != foreignCommand.context.toolCallId);
-        }
+        assert(universe.compactSummary);
+        assert(universe.commandCount == 2);
+        assert(universe.commands.empty());
+        assert(universe.correlations.empty());
         ExecutionCommandResult foreignStatus;
         assert(recovered.GetCommandStatus(
             foreignCommand.context.agentId, foreignCommand.context.sessionId,

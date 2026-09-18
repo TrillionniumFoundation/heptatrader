@@ -17,6 +17,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -509,6 +510,191 @@ def _write_merged_indexes(generation_dir: Path, parent_dir: Path | None,
     return count, send_count
 
 
+
+SIMULATOR_STATE_META = "simulator_state_checkpoint"
+SIMULATOR_STATE_POSITION = "simulator_position_checkpoint"
+SIMULATOR_STATE_READY = "simulator_state_checkpoint_ready"
+
+
+def _empty_simulator_state() -> dict[str, Any]:
+    return {"present": False, "max_order_id": 999999, "admitted_orders": 0, "positions": {}}
+
+
+def _simulator_checkpoint_from_hot(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    state: dict[str, Any] | None = None
+    positions: dict[str, float] = {}
+    ready = False
+    for event in events:
+        kind = event.get("event", "")
+        if kind == SIMULATOR_STATE_META:
+            if state is not None or ready or event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            maximum = event.get("order_id", -1)
+            admitted = event.get("broker_request_id", -1)
+            if (type(maximum) is not int or maximum < 999999 or type(admitted) is not int or admitted < 0):
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            state = {"present": True, "max_order_id": maximum, "admitted_orders": admitted, "positions": positions}
+            continue
+        if kind == SIMULATOR_STATE_POSITION:
+            if state is None or ready or event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            instrument = event.get("instrument", "")
+            side = event.get("side", "")
+            quantity = event.get("qty", 0.0)
+            if (not instrument or instrument in positions or side not in {"BUY", "SELL"} or
+                    isinstance(quantity, bool) or not isinstance(quantity, (int, float)) or
+                    not math.isfinite(float(quantity)) or float(quantity) <= 0.0):
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            positions[instrument] = float(quantity) if side == "BUY" else -float(quantity)
+            continue
+        if kind == SIMULATOR_STATE_READY:
+            if state is None or ready or event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            if (event.get("order_id") != state["max_order_id"] or
+                    event.get("broker_request_id") != state["admitted_orders"]):
+                raise v1.GenerationError("OMS_SIMULATOR_CHECKPOINT_INVALID")
+            ready = True
+    return state if ready else None
+
+
+def _apply_simulator_events(state: dict[str, Any], events: list[dict[str, Any]], *,
+                            require_new_order_ids: bool) -> dict[str, Any]:
+    present = bool(state.get("present", False))
+    maximum = int(state["max_order_id"])
+    base_maximum = maximum
+    admitted = int(state["admitted_orders"])
+    positions = dict(state["positions"])
+    places: dict[int, dict[str, Any]] = {}
+    fills: dict[int, dict[str, Any]] = {}
+    for event in events:
+        if event.get("venue") != "SIMULATOR" or event.get("account") != "SIM":
+            continue
+        is_fill = event.get("event") == "status" and event.get("status") == "Filled"
+        if event.get("event") != "place_sent" and not is_fill:
+            continue
+        present = True
+        order_id = event.get("order_id", -1)
+        if type(order_id) is int and order_id > maximum:
+            maximum = order_id
+        quantity = event.get("qty", 0.0)
+        if (type(order_id) is not int or order_id < 0 or not event.get("instrument") or
+                event.get("side") not in {"BUY", "SELL"} or isinstance(quantity, bool) or
+                not isinstance(quantity, (int, float)) or not math.isfinite(float(quantity)) or
+                float(quantity) <= 0.0):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_EVENT_INVALID")
+        if event.get("event") == "place_sent":
+            prior = places.get(order_id)
+            identity = (event.get("instrument"), event.get("side"), float(quantity),
+                        event.get("req_id"), event.get("request_hash"))
+            if prior is not None:
+                prior_identity = (prior.get("instrument"), prior.get("side"), float(prior.get("qty", 0.0)),
+                                  prior.get("req_id"), prior.get("request_hash"))
+                if identity != prior_identity:
+                    raise v1.GenerationError("OMS_SIMULATOR_STATE_PLACE_CONFLICT")
+                continue
+            if require_new_order_ids and order_id <= base_maximum:
+                raise v1.GenerationError("OMS_SIMULATOR_STATE_ORDER_ID_REGRESSION")
+            places[order_id] = event
+            admitted += 1
+            continue
+        owner = places.get(order_id)
+        price = event.get("price", 0.0)
+        if (owner is None or isinstance(price, bool) or not isinstance(price, (int, float)) or
+                not math.isfinite(float(price)) or float(price) <= 0.0 or
+                owner.get("instrument") != event.get("instrument") or
+                owner.get("side") != event.get("side") or float(owner.get("qty", 0.0)) != float(quantity)):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_FILL_CONFLICT")
+        prior = fills.get(order_id)
+        if prior is not None:
+            if (prior.get("instrument"), prior.get("side"), float(prior.get("qty", 0.0)), float(prior.get("price", 0.0))) != (
+                    event.get("instrument"), event.get("side"), float(quantity), float(price)):
+                raise v1.GenerationError("OMS_SIMULATOR_STATE_FILL_CONFLICT")
+            continue
+        fills[order_id] = event
+        instrument = event["instrument"]
+        positions[instrument] = positions.get(instrument, 0.0) + (
+            float(quantity) if event["side"] == "BUY" else -float(quantity))
+        if not math.isfinite(positions[instrument]):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_POSITION_OVERFLOW")
+    return {"present": present, "max_order_id": maximum, "admitted_orders": admitted, "positions": positions}
+
+
+def _simulator_state_projection(state: dict[str, Any]) -> list[dict[str, Any]]:
+    if not state.get("present", False):
+        return []
+    def base(kind: str) -> dict[str, Any]:
+        return {
+            "schema_version": 4, "event": kind, "ts_ms": 0, "order_id": -1,
+            "req_id": "", "client_req_id": "", "trace_id": "",
+            "event_id": f"{kind}:v1", "risk_code": "", "venue": "SIMULATOR",
+            "strategy": "", "account": "SIM", "execution_domain": "SIM:checkpoint",
+            "request_hash": "", "venue_correlation_id": "", "broker_callback_type": "",
+            "broker_service_epoch": "", "broker_connection_epoch": 0,
+            "broker_request_id": 0, "broker_error_code": 0, "broker_message": "",
+            "broker_advanced_order_reject_json": "", "broker_why_held": "",
+            "broker_execution_id": "", "broker_remaining_quantity": 0.0,
+            "broker_market_cap_price": 0.0, "instrument": "", "side": "",
+            "qty": 0.0, "price": 0.0, "status": "", "reason": "", "source": "",
+        }
+    result: list[dict[str, Any]] = []
+    meta = base(SIMULATOR_STATE_META)
+    meta["order_id"] = int(state["max_order_id"])
+    meta["broker_request_id"] = int(state["admitted_orders"])
+    meta["status"] = "complete"
+    result.append(meta)
+    for instrument, signed in sorted(state["positions"].items()):
+        if not math.isfinite(float(signed)):
+            raise v1.GenerationError("OMS_SIMULATOR_STATE_POSITION_OVERFLOW")
+        if float(signed) == 0.0:
+            continue
+        row = base(SIMULATOR_STATE_POSITION)
+        row["event_id"] = f"{SIMULATOR_STATE_POSITION}:{instrument}"
+        row["instrument"] = instrument
+        row["side"] = "BUY" if float(signed) > 0.0 else "SELL"
+        row["qty"] = abs(float(signed))
+        row["status"] = "complete"
+        result.append(row)
+    ready = base(SIMULATOR_STATE_READY)
+    ready["order_id"] = int(state["max_order_id"])
+    ready["broker_request_id"] = int(state["admitted_orders"])
+    ready["status"] = "complete"
+    result.append(ready)
+    return result
+
+
+def _read_generation_segment(root: Path, max_bytes: int, max_records: int,
+                             max_record_bytes: int) -> list[dict[str, Any]]:
+    path = root / "segment-000001.jsonl"
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not v1._private_regular(info):
+            raise v1.GenerationError("OMS_GENERATION_UNSAFE_SEGMENT")
+        _, events = _strict_records(fd, 0, info.st_size, max_bytes=max_bytes,
+                                    max_records=max_records,
+                                    max_record_bytes=max_record_bytes)
+        return events
+    finally:
+        os.close(fd)
+
+
+def _reconstruct_simulator_state(store: Path, generation: str, *, max_bytes: int,
+                                 max_records: int, max_record_bytes: int) -> dict[str, Any]:
+    chain = _generation_chain(store, generation)
+    base_index = 0
+    for index, (_, manifest) in enumerate(chain):
+        if manifest.get("schema") == v1.SCHEMA:
+            base_index = index
+    state = _empty_simulator_state()
+    applied = False
+    for item_generation, _ in chain[base_index:]:
+        events = _read_generation_segment(store / item_generation, max_bytes,
+                                          max_records, max_record_bytes)
+        state = _apply_simulator_events(state, events, require_new_order_ids=applied)
+        applied = True
+    return state
+
+
 def _runtime_manifest_bytes(*, generation: str, parent_generation: str,
                             parent_manifest_sha256: str,
                             history_records: int, segment_records: int,
@@ -591,6 +777,15 @@ def seal_generation(journal: Path, store: Path, *, stopped: bool,
 
         combined = parent_hot + tail_events
         checkpoint, _, hot_replay, _ = v1._project_hot(combined)
+        simulator_state = _simulator_checkpoint_from_hot(parent_hot)
+        if simulator_state is None:
+            simulator_state = (_reconstruct_simulator_state(
+                store, parent_generation, max_bytes=max_bytes, max_records=max_records,
+                max_record_bytes=max_record_bytes) if parent_generation else
+                _empty_simulator_state())
+        simulator_state = _apply_simulator_events(
+            simulator_state, tail_events, require_new_order_ids=bool(parent_generation))
+        hot_replay.extend(_simulator_state_projection(simulator_state))
         _, tail_commands, _, tail_attempts = v1._project_hot(tail_events)
         for record in tail_commands.values():
             record["last_sequence"] = history_base + int(record["last_sequence"])
