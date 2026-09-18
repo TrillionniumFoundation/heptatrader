@@ -13,9 +13,11 @@ import re
 import stat
 import subprocess
 import sys
+import time
 from typing import Any
 
 SCHEMA = "hepta.broker-network-policy.v1"
+OBSERVATION_SCHEMA = "heptatrader.broker-network-policy-observation.v1"
 FAMILY_RE = re.compile(r"^[A-Za-z0-9_]+$")
 NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,64}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -884,6 +886,44 @@ def _execute(
         raise
 
 
+
+def observe_policy(nft: Path, *, observed_at_ms: int | None = None) -> dict[str, Any]:
+    """Return an identifier-free exact nftables state observation."""
+    failures: list[str] = []
+    state = ""
+    allowed = False
+    try:
+        _verify_table(nft, COMPILED_POLICY, deny_all=False)
+        state = "CANONICAL_ALLOW"
+        allowed = True
+    except (OSError, subprocess.SubprocessError, PolicyError) as error:
+        failures.append(f"allow readback: {error}")
+        try:
+            _verify_table(nft, COMPILED_POLICY, deny_all=True)
+            state = "DENY_ALL"
+        except (OSError, subprocess.SubprocessError, PolicyError) as deny_error:
+            failures.append(f"deny-all readback: {deny_error}")
+            raise PolicyError(
+                "broker network policy is not in a recognized exact state: "
+                + "; ".join(failures)
+            ) from deny_error
+    if observed_at_ms is None:
+        observed_at_ms = time.time_ns() // 1_000_000
+    if type(observed_at_ms) is not int or observed_at_ms < 0:
+        raise PolicyError("observation timestamp must be a non-negative integer")
+    return {
+        "schema": OBSERVATION_SCHEMA,
+        "authorization_effect": "NONE",
+        "paper_authorized": False,
+        "live_authorized": False,
+        "observed_at_ms": observed_at_ms,
+        "policy_sha256": CANONICAL_POLICY_SHA256,
+        "state": state,
+        "broker_egress_allowed": allowed,
+        "exact_readback": True,
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -893,10 +933,14 @@ def main(argv: list[str] | None = None) -> int:
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--deny-all", action="store_true")
+    mode.add_argument("--observe-json", action="store_true")
     args = parser.parse_args(argv)
 
     try:
         nft = _nft_binary(args.nft)
+        if args.observe_json:
+            print(json.dumps(observe_policy(nft), sort_keys=True, separators=(",", ":")))
+            return 0
         _execute(
             nft,
             args.policy,
