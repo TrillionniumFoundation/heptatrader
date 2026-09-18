@@ -1,19 +1,7 @@
 #include "execution_coordinator.h"
 
-#include <algorithm>
-#include <array>
-#include <cerrno>
-#include <fcntl.h>
-#include <iomanip>
-#include <limits>
-#include <openssl/evp.h>
 #include <set>
-#include <sstream>
 #include <tuple>
-#include <unistd.h>
-
-
-
 
 bool ExecutionCoordinator::EnterPaperTerminalFence(
     const AgentExecutionContext& context,
