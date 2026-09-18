@@ -10,6 +10,14 @@ bool ExecutionCoordinator::BeginBrokerReconnectFence(std::string& reason)
             m_mutationBlockReason;
         return false;
     }
+    // Venue dispatch runs outside the coordinator mutex.  Reconnect must not
+    // close the broker transport while a place, cancel, or flatten call can
+    // still have an external effect whose result has not been projected.
+    if (m_venueDispatchesInFlight != 0)
+    {
+        reason = "IB_PAPER_BROKER_RECONNECT_VENUE_DISPATCH_IN_FLIGHT";
+        return false;
+    }
     if (!m_orderOwners.empty())
     {
         reason = "IB_PAPER_BROKER_RECONNECT_LOCAL_ORDERS_UNSAFE";

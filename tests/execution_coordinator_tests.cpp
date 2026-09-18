@@ -2063,6 +2063,61 @@ void TestSlowVenueDispatchDoesNotHoldCoordinatorLock()
 }
 
 
+void TestReconnectFenceRefusesVenueDispatchInFlight()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool entered = false;
+    bool release = false;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement = VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&, const std::string&) {
+            {
+                std::lock_guard<std::mutex> gate(gateMutex);
+                entered = true;
+            }
+            gateChanged.notify_all();
+            std::unique_lock<std::mutex> gate(gateMutex);
+            gateChanged.wait(gate, [&]() { return release; });
+            return VenuePlaceResult::Submitted(501);
+        });
+
+    ExecutionCoordinator coordinator(journal, callbacks);
+    std::promise<ExecutionCommandResult> placePromise;
+    std::future<ExecutionCommandResult> placeFuture = placePromise.get_future();
+    std::thread place([&]() {
+        placePromise.set_value(
+            coordinator.PlaceOrder(MakePlace("reconnect-dispatch-race")));
+    });
+    {
+        std::unique_lock<std::mutex> gate(gateMutex);
+        assert(gateChanged.wait_for(
+            gate, std::chrono::seconds(2), [&]() { return entered; }));
+    }
+
+    std::string reason;
+    assert(!coordinator.BeginBrokerReconnectFence(reason));
+    assert(reason == "IB_PAPER_BROKER_RECONNECT_VENUE_DISPATCH_IN_FLIGHT");
+    assert(!coordinator.IsMutationBlocked());
+
+    {
+        std::lock_guard<std::mutex> gate(gateMutex);
+        release = true;
+    }
+    gateChanged.notify_all();
+    assert(placeFuture.get().status == ExecutionCommandStatus::Accepted);
+    place.join();
+
+    assert(!coordinator.BeginBrokerReconnectFence(reason));
+    assert(reason == "IB_PAPER_BROKER_RECONNECT_LOCAL_ORDERS_UNSAFE");
+    std::remove(path.c_str());
+}
+
+
 void TestCompactTerminalUniverseExceedsLegacyEnumerationLimit()
 {
     const std::string empty =
@@ -2141,6 +2196,7 @@ int main(int argc, char** argv)
     TestCoordinatorMeasurementsPreserveExceptionsAndFlattenRejection();
     TestVenuePlacementConstructionAndResultContract();
     TestSlowVenueDispatchDoesNotHoldCoordinatorLock();
+    TestReconnectFenceRefusesVenueDispatchInFlight();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();
