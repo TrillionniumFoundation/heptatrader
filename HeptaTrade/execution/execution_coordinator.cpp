@@ -139,6 +139,47 @@ ExecutionCoordinator::ExecutionCoordinator(OmsJournal& journal,
         throw std::invalid_argument("reserving venue requires owner projection");
 }
 
+bool ExecutionCoordinator::BeginExternalMutationLocked()
+{
+    if (m_externalMutationAdmissionClosed) return false;
+    m_externalMutationsInFlight.fetch_add(1, std::memory_order_acq_rel);
+    return true;
+}
+
+void ExecutionCoordinator::EndExternalMutationLocked()
+{
+    const std::uint64_t previous =
+        m_externalMutationsInFlight.fetch_sub(1, std::memory_order_acq_rel);
+    if (previous == 1)
+    {
+        std::lock_guard<std::mutex> lock(m_externalQuiescenceMutex);
+        m_externalQuiescenceCv.notify_all();
+    }
+}
+
+void ExecutionCoordinator::CloseExternalMutationAdmissionLocked()
+{
+    m_externalMutationAdmissionClosed = true;
+}
+
+void ExecutionCoordinator::ReopenExternalMutationAdmissionLocked()
+{
+    m_externalMutationAdmissionClosed = false;
+}
+
+void ExecutionCoordinator::WaitExternalMutationsQuiescent(
+    std::unique_lock<std::mutex>& coordinatorLock)
+{
+    CloseExternalMutationAdmissionLocked();
+    coordinatorLock.unlock();
+    std::unique_lock<std::mutex> waitLock(m_externalQuiescenceMutex);
+    m_externalQuiescenceCv.wait(waitLock, [this]() {
+        return m_externalMutationsInFlight.load(std::memory_order_acquire) == 0;
+    });
+    waitLock.unlock();
+    coordinatorLock.lock();
+}
+
 const char* ExecutionCoordinator::StatusName(ExecutionCommandStatus status)
 {
     switch (status)
@@ -372,10 +413,14 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
 
 ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand& command)
 {
-    return ObserveCommand(0U, [&]() { return PlaceOrderLocked(command); });
+    return ObserveCommand(0U, [&](std::unique_lock<std::mutex>& lock) {
+        return PlaceOrderLocked(command, lock);
+    });
 }
 
-ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCommand& command)
+ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
+    const PlaceOrderCommand& command,
+    std::unique_lock<std::mutex>& coordinatorLock)
 {
     const AgentExecutionContext& context = command.context;
 
@@ -480,7 +525,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCo
     dispatch.venueCorrelationId = venueCorrelationId;
     dispatch.instrument = instrument;
     dispatch.eventPrice = eventPrice;
-    return DispatchPlaceOrderLocked(command, dispatch);
+    return DispatchPlaceOrderLocked(command, dispatch, coordinatorLock);
 }
 
 bool ExecutionCoordinator::PrecheckPlaceIbOrder(
