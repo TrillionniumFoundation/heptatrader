@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import resource
+import time
 import sys
 import tempfile
 import unittest
@@ -208,6 +210,101 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertEqual(
             len(list(read_records(output, max_records=4 * generations))),
             4 * generations)
+
+    def test_generation_cost_curve_observes_seal_verify_storage_and_rebase(self) -> None:
+        points = []
+        checkpoints = {4, 8, 16}
+        for generation_index in range(1, 17):
+            if generation_index > 1:
+                self.append(command_events(
+                    f"curve-{generation_index}",
+                    10000 + generation_index * 100,
+                    1000 + generation_index))
+            seal_started = time.monotonic_ns()
+            manifest = lifecycle.seal_generation(
+                self.journal, self.store, stopped=True)
+            seal_ns = time.monotonic_ns() - seal_started
+
+            verify_started = time.monotonic_ns()
+            verified = lifecycle.verify_generation(
+                self.store, journal=self.journal)
+            verify_ns = time.monotonic_ns() - verify_started
+            self.assertEqual(verified["result"], "PASS")
+
+            if generation_index in checkpoints:
+                current = json.loads(
+                    (self.store / "CURRENT").read_text())["generation"]
+                chain = lifecycle._generation_chain(self.store, current)
+                disk_bytes = sum(
+                    path.stat().st_size
+                    for item_generation, _ in chain
+                    for path in (self.store / item_generation).iterdir()
+                    if path.is_file()
+                )
+                disk_bytes += sum(
+                    path.stat().st_size
+                    for path in (self.store / name for name in
+                                 ("CURRENT", "CURRENT.runtime"))
+                    if path.exists()
+                )
+                points.append({
+                    "generation_count": generation_index,
+                    "history_records": manifest["history_records"],
+                    "command_records": manifest["command_records"],
+                    "seal_ns": seal_ns,
+                    "verify_ns": verify_ns,
+                    "retained_disk_bytes": disk_bytes,
+                })
+
+        self.assertEqual(
+            [point["generation_count"] for point in points], [4, 8, 16])
+        self.assertTrue(all(point["seal_ns"] > 0 for point in points))
+        self.assertTrue(all(point["verify_ns"] > 0 for point in points))
+        self.assertTrue(all(point["retained_disk_bytes"] > 0 for point in points))
+        self.assertEqual(
+            [point["history_records"] for point in points], [16, 32, 64])
+        self.assertLess(
+            points[0]["retained_disk_bytes"],
+            points[-1]["retained_disk_bytes"])
+
+        before_rebase = points[-1]["retained_disk_bytes"]
+        rebase_started = time.monotonic_ns()
+        rebased = lifecycle.rebase_generation(
+            self.journal, self.store, stopped=True, prune_ancestors=True)
+        rebase_ns = time.monotonic_ns() - rebase_started
+        current = json.loads(
+            (self.store / "CURRENT").read_text())["generation"]
+        chain = lifecycle._generation_chain(self.store, current)
+        self.assertEqual(len(chain), 1)
+        after_rebase = sum(
+            path.stat().st_size
+            for path in (self.store / current).iterdir()
+            if path.is_file()
+        ) + sum(
+            path.stat().st_size
+            for path in (self.store / name for name in
+                         ("CURRENT", "CURRENT.runtime"))
+            if path.exists()
+        )
+        self.assertGreater(rebase_ns, 0)
+        self.assertLess(after_rebase, before_rebase)
+        self.assertEqual(rebased["history_records"], 64)
+        self.assertEqual(set(self.current_index_commands()),
+                         {"old"} | {f"curve-{index}" for index in range(2, 17)})
+
+        usage = resource.getrusage(resource.RUSAGE_SELF)
+        observation = {
+            "schema": "heptatrader.synthetic-generation-cost-curve.v1",
+            "synthetic": True,
+            "broker_io": False,
+            "points": points,
+            "rebase_ns": rebase_ns,
+            "retained_disk_bytes_before_rebase": before_rebase,
+            "retained_disk_bytes_after_rebase": after_rebase,
+            "process_peak_rss_kib": usage.ru_maxrss,
+            "authorization_effect": "NONE",
+        }
+        print(json.dumps(observation, sort_keys=True))
 
     def test_verifier_streams_cumulative_indexes_instead_of_materializing_them(self) -> None:
         lifecycle.seal_generation(self.journal, self.store, stopped=True)
