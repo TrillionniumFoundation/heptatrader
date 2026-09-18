@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -82,6 +83,10 @@ struct HeptaXTConfig {
     std::string account;
     std::string serviceEpoch;
     std::uint64_t connectionEpoch = 0;
+    // Trusted qualification-profile bindings. Read-side authority is accepted
+    // only for this account currency and this finite normalized instrument set.
+    std::string accountCurrency;
+    std::set<std::string> authorizedInstruments;
     std::string peerProfileSha256;
     std::function<bool(const std::string&, std::string&)> admittedReadOnlyExchange;
 };
@@ -144,6 +149,7 @@ private:
                                    const std::string& expectedInstrument,
                                    HeptaXTQuoteSnapshot& out);
     static bool SafeToken(const std::string& value, std::size_t maximum);
+    bool InstrumentAuthorized(const std::string& instrument) const;
     static bool LowerHexSha256(const std::string& value);
     static std::string EscapeJson(const std::string& value);
     void ResetReadState();

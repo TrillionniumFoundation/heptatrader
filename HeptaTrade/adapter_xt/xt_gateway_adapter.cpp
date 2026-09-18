@@ -13,6 +13,7 @@ namespace
 {
 const std::size_t kHxqMaximumFrameBytes = 256U * 1024U;
 const std::size_t kHxqMaximumPositions = 1024U;
+const std::size_t kHxqMaximumAuthorizedInstruments = 1024U;
 
 class CanonicalCursor
 {
@@ -157,6 +158,13 @@ bool HeptaXTGatewayAdapter::SafeToken(const std::string& value, std::size_t maxi
     return true;
 }
 
+bool HeptaXTGatewayAdapter::InstrumentAuthorized(
+    const std::string& instrument) const
+{
+    return m_config.authorizedInstruments.find(instrument) !=
+        m_config.authorizedInstruments.end();
+}
+
 bool HeptaXTGatewayAdapter::LowerHexSha256(const std::string& value)
 {
     if (value.size() != 64U) return false;
@@ -260,11 +268,25 @@ bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
     }
     if (!SafeToken(cfg.account, 128U) ||
         !SafeToken(cfg.serviceEpoch, 128U) ||
+        !SafeToken(cfg.accountCurrency, 16U) ||
+        cfg.authorizedInstruments.empty() ||
+        cfg.authorizedInstruments.size() > kHxqMaximumAuthorizedInstruments ||
         cfg.connectionEpoch == 0U || !LowerHexSha256(cfg.peerProfileSha256))
     {
         m_initialized = false;
         m_lastRejectReason = "XT_READ_ONLY_PROFILE_INVALID";
         return false;
+    }
+    for (std::set<std::string>::const_iterator instrument =
+             cfg.authorizedInstruments.begin();
+         instrument != cfg.authorizedInstruments.end(); ++instrument)
+    {
+        if (!SafeToken(*instrument, 128U))
+        {
+            m_initialized = false;
+            m_lastRejectReason = "XT_READ_ONLY_PROFILE_INVALID";
+            return false;
+        }
     }
     m_config = cfg;
     m_readOnlyTransportConfigured = true;
@@ -640,6 +662,12 @@ bool HeptaXTGatewayAdapter::ReqAccountSummary()
         m_lastRejectReason = "XT_ACCOUNT_SNAPSHOT_INVALID";
         return false;
     }
+    if (m_accountSnapshot.currency != m_config.accountCurrency)
+    {
+        m_accountSnapshot = HeptaXTAccountSnapshot();
+        m_lastRejectReason = "XT_ACCOUNT_CURRENCY_MISMATCH";
+        return false;
+    }
     return true;
 }
 
@@ -653,6 +681,17 @@ bool HeptaXTGatewayAdapter::ReqPositions()
     {
         m_lastRejectReason = "XT_POSITION_SNAPSHOT_INVALID";
         return false;
+    }
+    for (std::vector<HeptaXTPosition>::const_iterator position =
+             m_positionSnapshot.positions.begin();
+         position != m_positionSnapshot.positions.end(); ++position)
+    {
+        if (!InstrumentAuthorized(position->instrument))
+        {
+            m_positionSnapshot = HeptaXTPositionSnapshot();
+            m_lastRejectReason = "XT_POSITION_INSTRUMENT_UNAUTHORIZED";
+            return false;
+        }
     }
     return true;
 }
@@ -668,6 +707,17 @@ bool HeptaXTGatewayAdapter::ReqOrders()
         m_lastRejectReason = "XT_ORDER_SNAPSHOT_INVALID";
         return false;
     }
+    for (std::vector<HeptaXTOrder>::const_iterator order =
+             m_orderSnapshot.orders.begin();
+         order != m_orderSnapshot.orders.end(); ++order)
+    {
+        if (!InstrumentAuthorized(order->instrument))
+        {
+            m_orderSnapshot = HeptaXTOrderSnapshot();
+            m_lastRejectReason = "XT_ORDER_INSTRUMENT_UNAUTHORIZED";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -682,6 +732,17 @@ bool HeptaXTGatewayAdapter::ReqTrades()
         m_lastRejectReason = "XT_TRADE_SNAPSHOT_INVALID";
         return false;
     }
+    for (std::vector<HeptaXTTrade>::const_iterator trade =
+             m_tradeSnapshot.trades.begin();
+         trade != m_tradeSnapshot.trades.end(); ++trade)
+    {
+        if (!InstrumentAuthorized(trade->instrument))
+        {
+            m_tradeSnapshot = HeptaXTTradeSnapshot();
+            m_lastRejectReason = "XT_TRADE_INSTRUMENT_UNAUTHORIZED";
+            return false;
+        }
+    }
     return true;
 }
 
@@ -691,6 +752,11 @@ bool HeptaXTGatewayAdapter::ReqMktData(const std::string& instrument)
     if (!SafeToken(instrument, 128U))
     {
         m_lastRejectReason = "XT_INSTRUMENT_INVALID";
+        return false;
+    }
+    if (!InstrumentAuthorized(instrument))
+    {
+        m_lastRejectReason = "XT_INSTRUMENT_UNAUTHORIZED";
         return false;
     }
     std::string payload;
@@ -747,12 +813,19 @@ bool HeptaXTGatewayAdapter::GetQuoteSnapshot(
 
 bool HeptaXTGatewayAdapter::AccountPositionReadReady() const
 {
-    return m_connected &&
-        m_accountSnapshot.complete && m_positionSnapshot.complete &&
-        m_accountSnapshot.connectionEpoch == m_config.connectionEpoch &&
-        m_positionSnapshot.connectionEpoch == m_config.connectionEpoch &&
-        m_accountSnapshot.generation != 0 &&
-        m_accountSnapshot.generation == m_positionSnapshot.generation;
+    if (!m_connected ||
+        !m_accountSnapshot.complete || !m_positionSnapshot.complete ||
+        m_accountSnapshot.currency != m_config.accountCurrency ||
+        m_accountSnapshot.connectionEpoch != m_config.connectionEpoch ||
+        m_positionSnapshot.connectionEpoch != m_config.connectionEpoch ||
+        m_accountSnapshot.generation == 0 ||
+        m_accountSnapshot.generation != m_positionSnapshot.generation)
+        return false;
+    for (std::vector<HeptaXTPosition>::const_iterator position =
+             m_positionSnapshot.positions.begin();
+         position != m_positionSnapshot.positions.end(); ++position)
+        if (!InstrumentAuthorized(position->instrument)) return false;
+    return true;
 }
 
 bool HeptaXTGatewayAdapter::AccountPositionOrderTradeReadReady() const
@@ -771,12 +844,14 @@ bool HeptaXTGatewayAdapter::AccountPositionOrderTradeReadReady() const
     for (std::size_t i = 0; i < m_orderSnapshot.orders.size(); ++i)
     {
         const HeptaXTOrder& order = m_orderSnapshot.orders[i];
+        if (!InstrumentAuthorized(order.instrument)) return false;
         orders[order.orderId] = &order;
         tradeQuantityByOrder[order.orderId] = 0.0;
     }
     for (std::size_t i = 0; i < m_tradeSnapshot.trades.size(); ++i)
     {
         const HeptaXTTrade& trade = m_tradeSnapshot.trades[i];
+        if (!InstrumentAuthorized(trade.instrument)) return false;
         const auto found = orders.find(trade.orderId);
         if (found == orders.end() ||
             found->second->instrument != trade.instrument ||
@@ -810,6 +885,7 @@ bool HeptaXTGatewayAdapter::QuoteFresh(
     std::uint64_t maximumAgeMs) const
 {
     return m_connected && maximumAgeMs != 0 && evaluationAtMs != 0 &&
+        InstrumentAuthorized(instrument) &&
         m_quoteSnapshot.complete &&
         m_quoteSnapshot.connectionEpoch == m_config.connectionEpoch &&
         m_quoteSnapshot.instrument == instrument &&

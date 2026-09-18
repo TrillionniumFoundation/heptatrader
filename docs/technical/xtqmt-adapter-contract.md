@@ -11,6 +11,7 @@ The repository currently implements only the native **HXQ1 v1 read-only client s
 - four-byte unsigned big-endian payload length followed by one bounded UTF-8 JSON object;
 - 256 KiB maximum JSON payload;
 - Execution-owned request IDs plus service epoch, connection epoch and exact account binding;
+- trusted expected account currency plus a non-empty bounded normalized instrument universe supplied by the qualification profile; position/order/trade payload rows and quote requests outside that universe fail closed before they can become read authority;
 - exact identity handshake acknowledgement;
 - strict typed `account_snapshot`, `position_snapshot`, `order_snapshot`, `trade_snapshot`, and `quote_subscribe` response payloads through an injected already-admitted read-only exchange;
 - completed known-empty position/order/trade snapshots, bounded unique identities and explicit account/order/trade/quote numeric validation;
@@ -20,7 +21,7 @@ The repository currently implements only the native **HXQ1 v1 read-only client s
 - disconnect invalidation of every cached read snapshot;
 - hard-disabled place/cancel mutation.
 
-The injected exchange is a protocol seam for qualification; it is **not** a production network implementation. The Windows sidecar, mTLS transport, peer certificates, firewall policy, QMT/`xtquant` runtime, order/trade authoritative payloads, callbacks, mutation messages and qualification remain future work below. For the implemented read-only subset `venue_command_id` is the empty string because no durable venue mutation exists. A non-empty stable `venue_command_id` becomes mandatory only for future mutation/status correlation.
+The injected exchange is a protocol seam for qualification; it is **not** a production network implementation. The Windows sidecar, mTLS transport, peer certificates, firewall policy, QMT/`xtquant` runtime, real QMT-produced authoritative payloads, callbacks, mutation messages and qualification remain future work below. For the implemented read-only subset `venue_command_id` is the empty string because no durable venue mutation exists. A non-empty stable `venue_command_id` becomes mandatory only for future mutation/status correlation.
 
 ## Why XT/QMT is the selected next adapter
 
@@ -102,13 +103,13 @@ For future mutation/status requests, `venue_command_id` must remain stable acros
 **Implemented native read-only subset:**
 
 - `identity` — peer/profile handshake using the configured profile digest;
-- `account_snapshot` — typed payload schema `heptatrader.xt.account.v1`: positive generation, completed marker, bounded currency token, finite non-negative cash/total-asset/available-cash; available cash may not exceed total asset in the first cash-only scope;
+- `account_snapshot` — typed payload schema `heptatrader.xt.account.v1`: positive generation, completed marker, bounded currency token exactly matching the trusted profile currency, finite non-negative cash/total-asset/available-cash; available cash may not exceed total asset in the first cash-only scope;
 - `position_snapshot` — typed payload schema `heptatrader.xt.positions.v1`: positive generation, completed marker and 0..1,024 unique instrument rows with finite non-negative quantity/sellable quantity/cost; sellable quantity may not exceed quantity;
 - `order_snapshot` — typed payload schema `heptatrader.xt.orders.v1`: positive generation, completed marker and 0..1,024 unique normalized order rows with exact instrument/side/status, positive quantity/LMT price and status-consistent cumulative fill quantity;
 - `trade_snapshot` — typed payload schema `heptatrader.xt.trades.v1`: positive generation, completed marker and 0..1,024 unique trade rows bound to normalized order identity, instrument/side, positive quantity/price and occurrence time;
 - `quote_subscribe` — typed payload schema `heptatrader.xt.quote.v1`: positive generation, exact requested instrument, positive finite bid/ask with ask >= bid and positive observation timestamp. Freshness uses the caller's Execution-owned evaluation time, never a payload-supplied current clock.
 
-Completed empty arrays are explicit known-empty evidence. `AccountPositionReadReady()` retains the narrower account/position barrier; `AccountPositionOrderTradeReadReady()` requires all four complete snapshots at the configured connection epoch and one non-zero generation, checks trade-to-order identity/instrument/side linkage, rejects trade evidence against a zero-fill order, and requires the bounded per-order trade-quantity sum to match the order's cumulative `filled_quantity` within machine-level relative tolerance. Quote generation remains independently observable. This source subset deliberately does **not** claim the full future venue `READY` state because real sidecar instance identity/health and transport admission are absent.
+Completed empty arrays are explicit known-empty evidence. Non-empty position/order/trade rows must use instruments from the trusted finite profile universe, and `quote_subscribe` rejects an unlisted instrument before entering the admitted exchange. `AccountPositionReadReady()` retains the narrower account/position barrier; `AccountPositionOrderTradeReadReady()` requires all four complete snapshots at the configured connection epoch and one non-zero generation, checks trade-to-order identity/instrument/side linkage, rejects trade evidence against a zero-fill order, and requires the bounded per-order trade-quantity sum to match the order's cumulative `filled_quantity` within machine-level relative tolerance. Quote generation remains independently observable. This source subset deliberately does **not** claim the full future venue `READY` state because real sidecar instance identity/health and transport admission are absent.
 
 **Planned read-only operations:** `health`, `quote_unsubscribe`, `command_status`.
 
@@ -141,7 +142,7 @@ Every future reconnect increments `connection_epoch`, invalidates quote and acco
 
 ## Instrument and order identity
 
-The initial instrument key is the full QMT security identity, not a display symbol: `market + stock_code + security_type`. The supported first qualification universe must be finite and source-controlled. Mapping to any canonical HeptaTrader instrument includes exchange, currency, lot size, price tick and security type.
+The initial instrument key is the full QMT security identity, not a display symbol: `market + stock_code + security_type`. The supported first qualification universe must be finite and source-controlled. The native client now receives that normalized universe as trusted configuration and refuses read authority outside it; the future sidecar must prove that each normalized token maps to the pinned QMT market/security identity, exchange, currency, lot size, price tick and security type.
 
 Future mutation correlation stores all available vendor identities:
 
@@ -227,7 +228,7 @@ The current native read-only adapter exposes bounded status/reject reason throug
 
 ## Development and qualification sequence
 
-1. **Done in source:** implement and test exact native HXQ1 v1 frame codec, request/account/epoch binding, identity handshake, typed account/position/order/trade/quote payloads, explicit known-empty arrays, same-generation read barriers, trade/order correlation, Execution-clock quote freshness, disconnect invalidation, strict JSON-number/response rejection and mutation disablement.
+1. **Done in source:** implement and test exact native HXQ1 v1 frame codec, request/account/epoch binding, trusted account-currency and finite instrument-universe admission, identity handshake, typed account/position/order/trade/quote payloads, explicit known-empty arrays, same-generation read barriers, trade/order correlation, Execution-clock quote freshness, disconnect invalidation, strict JSON-number/response rejection and mutation disablement.
 2. Acquire and hash the actual QMT/xtquant runtime; freeze the qualification profile and supported instrument/order subset.
 3. Implement the peer-pinned mTLS transport, Windows sidecar instance identity/health and endpoint/firewall enforcement using the exact HXQ1 v1 frame contract.
 4. Drive the implemented read schemas from the pinned runtime and require all required barriers before full venue `READY`; prove reconnect invalidation across a strictly newer connection/instance epoch.

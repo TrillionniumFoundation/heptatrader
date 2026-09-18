@@ -91,12 +91,31 @@ int main() {
         HeptaXTGatewayAdapter xt;
         HeptaXTConfig cfg;
         cfg.account = "QMT-SIM";
+        cfg.serviceEpoch = "svc-profile";
+        cfg.connectionEpoch = 6;
+        cfg.accountCurrency = "CNY";
+        cfg.peerProfileSha256 = std::string(64, 'f');
+        cfg.admittedReadOnlyExchange = [](
+                const std::string&, std::string&) { return false; };
+        Require(!xt.Init(cfg),
+                "HXQ1 admitted transport requires a finite authorized instrument universe");
+        Require(xt.LastRejectReason() == "XT_READ_ONLY_PROFILE_INVALID",
+                "missing authorized instrument universe must fail profile admission");
+    }
+    {
+        HeptaXTGatewayAdapter xt;
+        HeptaXTConfig cfg;
+        cfg.account = "QMT-SIM";
         cfg.serviceEpoch = "svc-1";
         cfg.connectionEpoch = 7;
         cfg.peerProfileSha256 = std::string(64, 'a');
+        cfg.accountCurrency = "CNY";
+        cfg.authorizedInstruments.insert("600000.SH");
         std::uint64_t observedRequests = 0;
         double tradeQuantity = 20.0;
-        cfg.admittedReadOnlyExchange = [&observedRequests, &tradeQuantity](
+        std::string observedAccountCurrency = "CNY";
+        cfg.admittedReadOnlyExchange = [
+                &observedRequests, &tradeQuantity, &observedAccountCurrency](
                 const std::string& requestFrame, std::string& responseFrame) {
             std::string request;
             Require(HeptaXTGatewayAdapter::DecodeFrame(requestFrame, request),
@@ -126,8 +145,10 @@ int main() {
                 response << "}";
             else if (operation == "account_snapshot")
                 response << ",\"payload\":{\"schema\":\"heptatrader.xt.account.v1\","
-                         << "\"generation\":11,\"complete\":true,\"currency\":\"CNY\","
-                         << "\"cash\":1000,\"total_asset\":1500,\"available_cash\":900}}";
+                         << "\"generation\":11,\"complete\":true,\"currency\":\""
+                         << observedAccountCurrency
+                         << "\",\"cash\":1000,\"total_asset\":1500,"
+                         << "\"available_cash\":900}}";
             else if (operation == "position_snapshot")
                 response << ",\"payload\":{\"schema\":\"heptatrader.xt.positions.v1\","
                          << "\"generation\":11,\"complete\":true,\"positions\":["
@@ -203,6 +224,12 @@ int main() {
                     trades.trades[0].tradeId == "T-1" &&
                     trades.trades[0].orderId == "O-1",
                 "typed trade snapshot did not retain authoritative fields");
+        const std::uint64_t requestsBeforeUnauthorizedQuote = observedRequests;
+        Require(!xt.ReqMktData("000001.SZ") &&
+                    xt.LastRejectReason() == "XT_INSTRUMENT_UNAUTHORIZED",
+                "quote request outside the trusted instrument universe must fail closed");
+        Require(observedRequests == requestsBeforeUnauthorizedQuote,
+                "unauthorized quote must fail before entering the admitted exchange");
         Require(xt.ReqMktData("600000.SH"), "HXQ1 quote subscribe should round-trip");
         HeptaXTQuoteSnapshot quote;
         Require(xt.GetQuoteSnapshot("600000.SH", quote) &&
@@ -224,6 +251,18 @@ int main() {
         Require(xt.ReqTrades() && xt.AccountPositionOrderTradeReadReady(),
                 "matching trade quantity must restore the complete read barrier");
         Require(observedRequests == 8, "revalidation request count mismatch");
+        observedAccountCurrency = "USD";
+        Require(!xt.ReqAccountSummary() &&
+                    xt.LastRejectReason() == "XT_ACCOUNT_CURRENCY_MISMATCH",
+                "account currency drift from the trusted profile must fail closed");
+        Require(!xt.GetAccountSnapshot(account) &&
+                    !xt.AccountPositionOrderTradeReadReady(),
+                "currency drift must clear cached account authority");
+        observedAccountCurrency = "CNY";
+        Require(xt.ReqAccountSummary() &&
+                    xt.AccountPositionOrderTradeReadReady(),
+                "restoring the trusted currency may rebuild the completed read barrier");
+        Require(observedRequests == 10, "currency binding request count mismatch");
         long long orderId = -1;
         Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
                 "read-only HXQ1 must not enable order mutation");
@@ -249,6 +288,8 @@ int main() {
         cfg.serviceEpoch = "svc-generation";
         cfg.connectionEpoch = 13;
         cfg.peerProfileSha256 = std::string(64, 'c');
+        cfg.accountCurrency = "CNY";
+        cfg.authorizedInstruments.insert("600000.SH");
         cfg.admittedReadOnlyExchange = [](const std::string& requestFrame,
                                           std::string& responseFrame) {
             std::string request;
@@ -296,6 +337,8 @@ int main() {
         cfg.serviceEpoch = "svc-invalid-payload";
         cfg.connectionEpoch = 14;
         cfg.peerProfileSha256 = std::string(64, 'd');
+        cfg.accountCurrency = "CNY";
+        cfg.authorizedInstruments.insert("600000.SH");
         cfg.admittedReadOnlyExchange = [](const std::string& requestFrame,
                                           std::string& responseFrame) {
             std::string request;
@@ -318,6 +361,11 @@ int main() {
                          << "\"generation\":41,\"complete\":true,\"currency\":\"CNY\","
                          << "\"cash\":1000,\"total_asset\":1500,"
                          << "\"available_cash\":1600}}";
+            else if (operation == "position_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.positions.v1\","
+                         << "\"generation\":41,\"complete\":true,\"positions\":["
+                         << "{\"instrument\":\"000001.SZ\",\"quantity\":100,"
+                         << "\"sellable_quantity\":100,\"cost\":10}]}}";
             else if (operation == "order_snapshot")
                 response << ",\"payload\":{\"schema\":\"heptatrader.xt.orders.v1\","
                          << "\"generation\":41,\"complete\":true,\"orders\":["
@@ -349,6 +397,12 @@ int main() {
         Require(!xt.GetAccountSnapshot(absent) &&
                     !xt.AccountPositionReadReady(),
                 "invalid account payload must not retain stale authoritative state");
+        Require(!xt.ReqPositions() &&
+                    xt.LastRejectReason() == "XT_POSITION_INSTRUMENT_UNAUTHORIZED",
+                "position outside the trusted instrument universe must fail closed");
+        HeptaXTPositionSnapshot unauthorizedPositions;
+        Require(!xt.GetPositionSnapshot(unauthorizedPositions),
+                "unauthorized position payload must not remain cached");
         Require(!xt.ReqOrders() &&
                     xt.LastRejectReason() == "XT_ORDER_SNAPSHOT_INVALID",
                 "status-inconsistent order payload must fail closed");
@@ -365,6 +419,8 @@ int main() {
         cfg.serviceEpoch = "svc-number-grammar";
         cfg.connectionEpoch = 15;
         cfg.peerProfileSha256 = std::string(64, 'e');
+        cfg.accountCurrency = "CNY";
+        cfg.authorizedInstruments.insert("600000.SH");
         std::string hostileNumber = "0";
         cfg.admittedReadOnlyExchange = [&hostileNumber](
                 const std::string& requestFrame, std::string& responseFrame) {
@@ -419,6 +475,8 @@ int main() {
         cfg.serviceEpoch = "svc-2";
         cfg.connectionEpoch = 9;
         cfg.peerProfileSha256 = std::string(64, 'b');
+        cfg.accountCurrency = "CNY";
+        cfg.authorizedInstruments.insert("600000.SH");
         cfg.admittedReadOnlyExchange = [](const std::string&, std::string& response) {
             return HeptaXTGatewayAdapter::EncodeFrame(
                 "{\"protocol\":\"HXQ1\",\"version\":1,\"request_id\":999,\"service_epoch\":\"svc-2\",\"connection_epoch\":9,\"operation\":\"identity\",\"account\":\"QMT-SIM\",\"ok\":true}",
