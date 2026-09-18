@@ -85,7 +85,7 @@ Detailed per-reason lifecycle, callback/quote age, end-to-end Broker reconciliat
 
 Tests cover idempotency, journal-before-send, conflicting command IDs, send exceptions, cancel, reconnect, recovery, owner fencing, event ordering, transport failure, simulator end-to-end behavior, and terminal paths. Every new mutation state needs restart tests at each durable boundary.
 
-Generation tests additionally cover V1/V2 verification, repeated generation cuts, pointer/sentinel/lineage corruption, ancient duplicate/conflict lookup, no second venue send, send-attempt continuity, bounded hot recovery and explicit downgrade export. Send-window tests must preserve strict `timestamp > cutoff`, insertion/sequence semantics, exclusion of active-tail duplicates, monotonically increasing cutoff pruning and full-rescan correctness after a backwards cutoff.
+Generation tests additionally cover V1/V2 verification, repeated generation cuts, pointer/sentinel/lineage corruption, ancient duplicate/conflict lookup, no second venue send, send-attempt continuity, bounded hot recovery and explicit downgrade export. PAPER terminal evidence also carries compact HPM2 history counts through the supervisor witness and external-halt capsule as full unsigned counters; the old 4,096 limit remains only on bounded owner/protocol or legacy HPM1 structures, not permanent mutation-history cardinality. Send-window tests must preserve strict `timestamp > cutoff`, insertion/sequence semantics, exclusion of active-tail duplicates, monotonically increasing cutoff pruning and full-rescan correctness after a backwards cutoff.
 
 ### Pre-intent refusals versus retained command identity
 

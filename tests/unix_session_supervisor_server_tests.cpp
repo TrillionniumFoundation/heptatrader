@@ -149,11 +149,11 @@ std::string BuildTerminalEvidence(
 		<< "cash_fx_complete=1\n"
 		<< "risk_complete=1\n"
 		<< "known_mutation_command_set_sha256=" << digest << '\n'
-		<< "known_mutation_command_count=2\n"
+		<< "known_mutation_command_count=4202\n"
 		<< "known_correlation_set_sha256=" << digest << '\n'
-		<< "known_correlation_count=2\n"
+		<< "known_correlation_count=4202\n"
 		<< "all_known_mutation_commands_settled=1\n"
-		<< "settled_mutation_command_count=2\n"
+		<< "settled_mutation_command_count=4202\n"
 		<< "unknown_mutation_command_count=0\n"
 		<< "unresolved_mutation_command_count=0\n"
 		<< "unknown_active_order_count=0\n"

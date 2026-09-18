@@ -808,9 +808,9 @@ bool ValidPaperTerminalAckReceipt(
         !ParseCanonicalUnsigned(v3["egress_policy_generation"],
             egressGeneration) || egressGeneration == 0 ||
         !ParseCanonicalUnsigned(v3["known_mutation_command_count"],
-            knownMutationCount) || knownMutationCount > 4096 ||
+            knownMutationCount) ||
         !ParseCanonicalUnsigned(v3["known_correlation_count"],
-            knownCorrelationCount) || knownCorrelationCount > 4096 ||
+            knownCorrelationCount) ||
         !ParseCanonicalUnsigned(v3["settled_mutation_command_count"],
             settledMutationCount) || settledMutationCount != knownMutationCount)
         return false;

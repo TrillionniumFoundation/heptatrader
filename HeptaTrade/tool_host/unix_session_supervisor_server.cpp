@@ -716,9 +716,9 @@ bool ValidateTerminalEvidence(
 		!ParseCanonicalUnsigned(fields["egress_policy_generation"],
 			egressGeneration) || egressGeneration == 0 ||
 		!ParseCanonicalUnsigned(fields["known_mutation_command_count"],
-			knownMutationCount) || knownMutationCount > 4096 ||
+			knownMutationCount) ||
 		!ParseCanonicalUnsigned(fields["known_correlation_count"],
-			knownCorrelationCount) || knownCorrelationCount > 4096 ||
+			knownCorrelationCount) ||
 		!ParseCanonicalUnsigned(fields["settled_mutation_command_count"],
 			settledMutationCount) || settledMutationCount != knownMutationCount)
 	{
