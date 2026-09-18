@@ -113,10 +113,10 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         points = []
         for stage, pairs in enumerate((1, 3, 6), start=1):
             for _ in range(pairs):
-                command, fields, order_id = runtime.place("BUY", 1, "1.1002")
+                command, fields, order_id = runtime.place("BUY", 1, "1.1002", ttl_ms=600000)
                 runtime.wait_position(1)
                 runtime.wait_no_orders()
-                runtime.place("SELL", 1, "1.1000")
+                runtime.place("SELL", 1, "1.1000", ttl_ms=600000)
                 runtime.wait_position(0)
                 runtime.wait_no_orders()
                 expected_admitted += 2
