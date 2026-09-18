@@ -227,7 +227,7 @@ Place, cancel and authoritative-flatten observations now distinguish coordinator
 
 Binary lookup still uses bounded random line probes. Once a line boundary or sorted lower bound is known, immutable command/send indexes use a 64 KiB buffered exact-offset sequential reader; each byte in the selected range is read at most once by that reader rather than rereading a preceding/following window for every row. The core regression builds a 20,000-row, approximately 10 MiB synthetic index and asserts read bytes equal the selected suffix size, including a non-zero starting offset, while oversized or unterminated rows fail closed.
 
-Generation-backed PAPER terminal summary first lower-bounds the command index by encoded `(agent_id, session_id, empty-command)` and stops when that owner/session prefix changes. Account/domain/durable-intent checks and the post-scan pinned-index identity revalidation remain unchanged. The compatibility account/domain enumerator cannot use that prefix and therefore still streams the complete command index, but without overlapping random-probe reads.
+Generation-backed PAPER terminal summary first lower-bounds the command index by encoded `(agent_id, session_id, empty-command)` and stops when that owner/session prefix changes. Account/domain/durable-intent checks and post-scan pinned-index identity revalidation remain unchanged. Send-window scans and the compatibility account/domain enumerator also revalidate their pinned index after sequential reading and discard partial output if the immutable identity changed. The compatibility enumerator cannot use the owner/session prefix and therefore still streams the complete command index, but without overlapping random-probe reads.
 
 ## Simulator startup-ready timing
 

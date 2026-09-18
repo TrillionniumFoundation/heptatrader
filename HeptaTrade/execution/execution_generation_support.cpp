@@ -984,6 +984,13 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         }
         offset = end;
     }
+    if (!ValidatePinnedIndex(m_sendIndexFd, "send-attempt-index.tsv",
+            m_sendIndexIdentity))
+    {
+        attempts.clear();
+        reason = "OMS_GENERATION_SEND_INDEX_CHANGED";
+        return false;
+    }
     std::sort(attempts.begin(), attempts.end(),
         [](const OmsGenerationSendAttempt& left,
            const OmsGenerationSendAttempt& right) {
@@ -1049,6 +1056,13 @@ bool OmsGenerationStore::EnumerateMutationRecords(
             records.push_back(record);
         }
         offset = end;
+    }
+    if (!ValidatePinnedIndex(m_commandIndexFd, "runtime-command-index.tsv",
+            m_commandIndexIdentity))
+    {
+        records.clear();
+        reason = "OMS_GENERATION_COMMAND_INDEX_CHANGED";
+        return false;
     }
     reason.clear();
     return true;

@@ -66,9 +66,54 @@ public:
         const std::size_t end = m_input.find(delimiter, m_offset);
         if (end == std::string::npos || end == m_offset) return false;
         const std::string token = m_input.substr(m_offset, end - m_offset);
-        if (token[0] == '+' ||
-            token.find_first_of(" \t\r\n") != std::string::npos)
+        if (token.find_first_of(" \t\r\n") != std::string::npos)
             return false;
+        // strtod accepts spellings outside JSON (for example hexadecimal
+        // floats, .5, 1. and leading-zero integers). Validate the JSON number
+        // grammar before conversion so authority-bearing payloads stay exact.
+        std::size_t grammar = 0;
+        if (token[grammar] == '-')
+        {
+            ++grammar;
+            if (grammar == token.size()) return false;
+        }
+        if (token[grammar] == '0')
+        {
+            ++grammar;
+            if (grammar < token.size() &&
+                token[grammar] >= '0' && token[grammar] <= '9')
+                return false;
+        }
+        else
+        {
+            if (token[grammar] < '1' || token[grammar] > '9') return false;
+            while (grammar < token.size() &&
+                   token[grammar] >= '0' && token[grammar] <= '9')
+                ++grammar;
+        }
+        if (grammar < token.size() && token[grammar] == '.')
+        {
+            ++grammar;
+            const std::size_t fraction = grammar;
+            while (grammar < token.size() &&
+                   token[grammar] >= '0' && token[grammar] <= '9')
+                ++grammar;
+            if (grammar == fraction) return false;
+        }
+        if (grammar < token.size() &&
+            (token[grammar] == 'e' || token[grammar] == 'E'))
+        {
+            ++grammar;
+            if (grammar < token.size() &&
+                (token[grammar] == '+' || token[grammar] == '-'))
+                ++grammar;
+            const std::size_t exponent = grammar;
+            while (grammar < token.size() &&
+                   token[grammar] >= '0' && token[grammar] <= '9')
+                ++grammar;
+            if (grammar == exponent) return false;
+        }
+        if (grammar != token.size()) return false;
         char* parsedEnd = nullptr;
         errno = 0;
         const double parsed = std::strtod(token.c_str(), &parsedEnd);

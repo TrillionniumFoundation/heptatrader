@@ -288,6 +288,60 @@ int main() {
         HeptaXTGatewayAdapter xt;
         HeptaXTConfig cfg;
         cfg.account = "QMT-SIM";
+        cfg.serviceEpoch = "svc-number-grammar";
+        cfg.connectionEpoch = 15;
+        cfg.peerProfileSha256 = std::string(64, 'e');
+        std::string hostileNumber = "0";
+        cfg.admittedReadOnlyExchange = [&hostileNumber](
+                const std::string& requestFrame, std::string& responseFrame) {
+            std::string request;
+            Require(HeptaXTGatewayAdapter::DecodeFrame(requestFrame, request),
+                    "number grammar fixture request must decode");
+            const std::uint64_t requestId =
+                ExtractJsonUnsigned(request, "request_id");
+            const std::string operation =
+                ExtractJsonString(request, "operation");
+            std::ostringstream response;
+            response << "{\"protocol\":\"HXQ1\",\"version\":1,\"request_id\":"
+                     << requestId
+                     << ",\"service_epoch\":\"svc-number-grammar\","
+                     << "\"connection_epoch\":15,\"operation\":\""
+                     << operation
+                     << "\",\"account\":\"QMT-SIM\",\"ok\":true";
+            if (operation == "identity")
+                response << "}";
+            else if (operation == "account_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.account.v1\","
+                         << "\"generation\":51,\"complete\":true,\"currency\":\"CNY\","
+                         << "\"cash\":" << hostileNumber
+                         << ",\"total_asset\":1500,\"available_cash\":900}}";
+            else
+                return false;
+            return HeptaXTGatewayAdapter::EncodeFrame(
+                response.str(), responseFrame);
+        };
+        Require(xt.Init(cfg) && xt.Connect(),
+                "number grammar fixture should reach read-only connection");
+        const char* hostileNumbers[] = {
+            "0x1p2", ".5", "1.", "01", "-01"
+        };
+        for (const char* hostile : hostileNumbers)
+        {
+            hostileNumber = hostile;
+            Require(!xt.ReqAccountSummary(),
+                    "non-JSON numeric spelling must fail closed");
+            Require(xt.LastRejectReason() == "XT_ACCOUNT_SNAPSHOT_INVALID",
+                    "non-JSON numeric spelling must have stable rejection");
+            HeptaXTAccountSnapshot absent;
+            Require(!xt.GetAccountSnapshot(absent) &&
+                        !xt.AccountPositionReadReady(),
+                    "rejected numeric spelling must not retain account authority");
+        }
+    }
+    {
+        HeptaXTGatewayAdapter xt;
+        HeptaXTConfig cfg;
+        cfg.account = "QMT-SIM";
         cfg.serviceEpoch = "svc-2";
         cfg.connectionEpoch = 9;
         cfg.peerProfileSha256 = std::string(64, 'b');
