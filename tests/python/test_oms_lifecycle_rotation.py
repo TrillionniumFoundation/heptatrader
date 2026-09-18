@@ -17,10 +17,11 @@ from verify_oms_journal_replay import JournalError, read_records
 
 
 def event(kind: str, command: str, request_hash: str, *, status: str = "",
-          order_id: int = -1, ts_ms: int = 1000) -> dict:
+          order_id: int = -1, ts_ms: int = 1000,
+          agent_id: str = "agent-a", session_id: str = "session-a") -> dict:
     return {
         "schema_version": 4, "event": kind, "ts_ms": ts_ms, "order_id": order_id,
-        "req_id": command, "client_req_id": command, "trace_id": "session-a",
+        "req_id": command, "client_req_id": command, "trace_id": session_id,
         "event_id": f"{kind}:{command}:{status}:{ts_ms}", "risk_code": "",
         "venue": "SIM", "strategy": "fixture", "account": "SIM-1",
         "execution_domain": "SIM", "request_hash": request_hash,
@@ -31,19 +32,25 @@ def event(kind: str, command: str, request_hash: str, *, status: str = "",
         "broker_execution_id": "", "broker_remaining_quantity": 0.0,
         "broker_market_cap_price": 0.0, "instrument": "EUR.USD", "side": "BUY",
         "qty": 10.0, "price": 1.1, "status": status, "reason": "",
-        "source": "agent.tool:agent-a",
+        "source": f"agent.tool:{agent_id}",
     }
 
 
-def command_events(command: str, base: int, order_id: int) -> list[dict]:
+def command_events(command: str, base: int, order_id: int, *,
+                   agent_id: str = "agent-a",
+                   session_id: str = "session-a") -> list[dict]:
     request_hash = f"hash-{command}"
     return [
-        event("order_intent", command, request_hash, ts_ms=base),
-        event("place_send_attempt", command, request_hash, ts_ms=base + 1),
+        event("order_intent", command, request_hash, ts_ms=base,
+              agent_id=agent_id, session_id=session_id),
+        event("place_send_attempt", command, request_hash, ts_ms=base + 1,
+              agent_id=agent_id, session_id=session_id),
         event("place_sent", command, request_hash, status="submitted",
-              order_id=order_id, ts_ms=base + 2),
+              order_id=order_id, ts_ms=base + 2,
+              agent_id=agent_id, session_id=session_id),
         event("order_owner_reconciled_terminal", command, request_hash,
-              status="terminal", order_id=order_id, ts_ms=base + 3),
+              status="terminal", order_id=order_id, ts_ms=base + 3,
+              agent_id=agent_id, session_id=session_id),
     ]
 
 
@@ -226,10 +233,13 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                 command = f"curve-{generation_index:02d}-{item:03d}"
                 expected_commands.add(command)
                 ordinal = (generation_index - 1) * commands_per_generation + item
+                owner_index = item % generation_index
                 events.extend(command_events(
                     command,
                     10000 + ordinal * 10,
-                    1000 + ordinal))
+                    1000 + ordinal,
+                    agent_id=f"curve-agent-{owner_index:02d}",
+                    session_id=f"curve-session-{owner_index:02d}"))
             return encode(events)
 
         self.journal.write_bytes(batch(1))
@@ -281,6 +291,7 @@ class OmsLifecycleRotationTests(unittest.TestCase):
                 )
                 points.append({
                     "generation_count": generation_index,
+                    "owner_count": generation_index,
                     "history_records": manifest["history_records"],
                     "command_records": manifest["command_records"],
                     "seal_ns": seal_ns,
@@ -297,6 +308,8 @@ class OmsLifecycleRotationTests(unittest.TestCase):
 
         self.assertEqual(
             [point["generation_count"] for point in points], [4, 8, 16])
+        self.assertEqual(
+            [point["owner_count"] for point in points], [4, 8, 16])
         self.assertTrue(all(point["seal_ns"] > 0 for point in points))
         self.assertTrue(all(point["verify_ns"] > 0 for point in points))
         self.assertTrue(all(point["retained_disk_bytes"] > 0 for point in points))
@@ -344,6 +357,7 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             "broker_io": False,
             "commands_per_generation": commands_per_generation,
             "generation_count": generations,
+            "maximum_owner_count": generations,
             "points": points,
             "rebase_ns": rebase_ns,
             "retained_disk_bytes_before_rebase": before_rebase,
