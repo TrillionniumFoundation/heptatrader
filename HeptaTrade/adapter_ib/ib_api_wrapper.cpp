@@ -1884,6 +1884,12 @@ private:
     }
 
     void PushEvent(IBEvent e) {
+        if (e.callbackReceivedMonotonicMs == 0) {
+            const auto now = std::chrono::steady_clock::now().time_since_epoch();
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+            e.callbackReceivedMonotonicMs = ms < 0 ? 0 :
+                static_cast<std::uint64_t>(ms);
+        }
         const std::uint64_t currentEpoch =
             m_connectionEpoch.load(std::memory_order_acquire);
         // Internal EWrapper callbacks arrive with epoch 0 and are stamped
