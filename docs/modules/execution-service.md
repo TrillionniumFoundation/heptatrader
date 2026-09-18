@@ -55,7 +55,7 @@ Stopped-state generation maintenance is explicit. It does not run concurrently w
 
 Journal failure before send rejects the mutation. Journal failure after a possible send blocks further risk and requires command-status/reconciliation recovery.
 
-The simulator uses two-phase placement: reserve an inert order, establish its owner and projection, durably append `place_sent` with status `activation_pending`, then activate it and durably append `place_activated`. Reserved orders count toward pending risk but cannot submit or fill. A crash without the final activation receipt replays as uncertain. Activation failure or exception appends a later critical `place_outcome_uncertain`, fences mutations, and survives replay; the pending receipt cannot overwrite that uncertainty. Immediate broker adapters leave the optional activation callback unset.
+The simulator uses two-phase placement: reserve an inert order, establish its owner and projection, durably append `place_sent` with status `activation_pending`, then activate it and durably append `place_activated`. Reserved orders count toward pending risk but cannot submit or fill. A crash without the final activation receipt replays as uncertain. Activation failure or exception appends a later critical `place_outcome_uncertain`, fences mutations, and survives replay; the pending receipt cannot overwrite that uncertainty. Immediate broker adapters leave the optional activation callback unset. V2 stopped-state seals also carry a compact simulator economic checkpoint, so normal restart restores cumulative position/admission/order-ID state without materializing every historical simulator order.
 
 ## Concurrency
 
@@ -97,7 +97,7 @@ Durably rejected, accepted and uncertain commands are never expired merely to re
 
 LIVE is unavailable. IB PAPER remains qualification-gated. CTP and XT do not implement real transports and may not be wired as authoritative venues.
 
-Generation V2 bounds the active replay working set and historical command cache, not every long-horizon operation. Immutable history and cumulative indexes still grow on disk. A first historical send-window query after generation selection, an account/domain change, or a backwards cutoff scans the pinned cumulative send index once before subsequent forward cutoffs reuse the bounded suffix. Terminal PAPER mutation-manifest construction is separately bounded by its campaign manifest contract; that bounded qualification artifact must not be described as an unlimited production-history ledger.
+Generation V2 bounds the active replay working set and historical command cache, not every long-horizon operation. Immutable history and cumulative indexes still grow between maintenance rebases; stopped-state rebase can collapse the lineage and safely prune now-unreferenced cumulative-index copies without expiring identity or event history. Ordered historical send-window queries use the declared account/domain/time index to enter the relevant immutable suffix rather than requiring a full scan for ordinary current-format lookups; legacy unsorted generations retain the conservative compatibility scan. Terminal PAPER mutation-manifest construction uses an owner/session-scoped sealed-history digest plus bounded active-tail records, so sealed campaign history is not materialized into a lifetime vector.
 
 ## Developer map and recovery examples
 

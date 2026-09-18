@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 from pathlib import Path
 import sys
 import time
@@ -1072,6 +1073,319 @@ def _generation_chain(store: Path, current_generation: str) -> list[tuple[str, d
     return chain
 
 
+
+def _copy_private_file(source: Path, destination: Path) -> None:
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    destination_fd = -1
+    try:
+        before = os.fstat(source_fd)
+        if not v1._private_regular(before):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_SOURCE_UNSAFE")
+        destination_fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            0o600,
+        )
+        offset = 0
+        while offset < before.st_size:
+            block = os.pread(source_fd, min(1024 * 1024, before.st_size - offset), offset)
+            if not block:
+                raise v1.GenerationError("OMS_GENERATION_REBASE_SOURCE_IO_FAILURE")
+            v1._write_all(destination_fd, block)
+            offset += len(block)
+        v1._fsync(destination_fd)
+        after = os.fstat(source_fd)
+        named = os.stat(source, follow_symlinks=False)
+        if v1._identity(before) != v1._identity(after) or v1._identity(after) != v1._identity(named):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_SOURCE_CHANGED")
+    finally:
+        if destination_fd >= 0:
+            os.close(destination_fd)
+        os.close(source_fd)
+
+
+def _copy_generation_segment(source: Path, destination_fd: int,
+                             expected_records: int) -> tuple[int, int]:
+    source_fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    records = 0
+    written = 0
+    try:
+        before = os.fstat(source_fd)
+        if not v1._private_regular(before):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_SEGMENT_UNSAFE")
+        offset = 0
+        while offset < before.st_size:
+            block = os.pread(source_fd, min(1024 * 1024, before.st_size - offset), offset)
+            if not block:
+                raise v1.GenerationError("OMS_GENERATION_REBASE_SEGMENT_IO_FAILURE")
+            v1._write_all(destination_fd, block)
+            records += block.count(b"\n")
+            written += len(block)
+            offset += len(block)
+        after = os.fstat(source_fd)
+        named = os.stat(source, follow_symlinks=False)
+        if v1._identity(before) != v1._identity(after) or v1._identity(after) != v1._identity(named):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_SEGMENT_CHANGED")
+    finally:
+        os.close(source_fd)
+    if records != expected_records:
+        raise v1.GenerationError("OMS_GENERATION_REBASE_RECORD_MISMATCH")
+    return records, written
+
+
+def _prune_generation_chain(store: Path, generations: list[str]) -> None:
+    store_fd = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        store_info = os.fstat(store_fd)
+        if not v1._private_directory(store_info):
+            raise v1.GenerationError("OMS_GENERATION_PRIVATE_STORE_REQUIRED")
+        for generation in generations:
+            _tail_header(generation)
+            generation_fd = os.open(
+                generation, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=store_fd,
+            )
+            try:
+                before = os.fstat(generation_fd)
+                if not v1._private_directory(before):
+                    raise v1.GenerationError("OMS_GENERATION_REBASE_PRUNE_UNSAFE")
+                for name in os.listdir(generation_fd):
+                    info = os.stat(name, dir_fd=generation_fd, follow_symlinks=False)
+                    if not stat.S_ISREG(info.st_mode) or not v1._private_regular(info):
+                        raise v1.GenerationError("OMS_GENERATION_REBASE_PRUNE_UNSAFE")
+                    os.unlink(name, dir_fd=generation_fd)
+                os.fsync(generation_fd)
+                named = os.stat(generation, dir_fd=store_fd, follow_symlinks=False)
+                if v1._identity(before) != v1._identity(named):
+                    raise v1.GenerationError("OMS_GENERATION_REBASE_PRUNE_CHANGED")
+            finally:
+                os.close(generation_fd)
+            os.rmdir(generation, dir_fd=store_fd)
+            os.fsync(store_fd)
+    finally:
+        os.close(store_fd)
+
+
+def rebase_generation(journal: Path, store: Path, *, stopped: bool,
+                      prune_ancestors: bool = False,
+                      max_bytes: int = 64 * 1024 * 1024,
+                      max_records: int = 65536,
+                      max_record_bytes: int = 262144,
+                      phase_hook: Callable[[str], None] | None = None) -> dict[str, Any]:
+    """Collapse a verified lineage into one parentless V2 generation.
+
+    The operation is intentionally stopped-state and authority-neutral. It first
+    seals the active tail using the ordinary crash-safe path so the selected
+    generation carries the current simulator economic checkpoint. The rebase
+    then streams the retained logical event history into one immutable segment,
+    copies the verified cumulative identity/send indexes, publishes a new
+    parentless generation, and only then may delete the now-unreferenced source
+    lineage.
+    """
+    if not stopped:
+        raise v1.GenerationError("OMS_GENERATION_STOP_ALL_WRITERS_REQUIRED")
+    phase_hook = phase_hook or (lambda _: None)
+    if not journal.is_absolute():
+        journal = journal.resolve()
+    if not store.is_absolute():
+        store = store.resolve()
+    if store != Path(str(journal) + ".generations"):
+        raise v1.GenerationError("OMS_GENERATION_STORE_PATH_MISMATCH")
+
+    seal_generation(
+        journal, store, stopped=True, max_bytes=max_bytes,
+        max_records=max_records, max_record_bytes=max_record_bytes)
+    current = v1._read_current(store)
+    if current is None:
+        raise v1.GenerationError("OMS_GENERATION_CURRENT_MISSING")
+    source_generation = current["generation"]
+    source_verified = verify_generation(store, source_generation, journal)
+    source_manifest = _manifest_for(store, source_generation)
+    if source_manifest.get("schema") != SCHEMA:
+        raise v1.GenerationError("OMS_GENERATION_REBASE_V2_REQUIRED")
+
+    active_fd = os.open(journal, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        active_info = os.fstat(active_fd)
+        parsed = _parse_tail_header(active_fd, active_info.st_size)
+        if parsed is None or parsed[0] != source_generation or parsed[1] != active_info.st_size:
+            raise v1.GenerationError("OMS_GENERATION_REBASE_ACTIVE_TAIL_NOT_EMPTY")
+    finally:
+        os.close(active_fd)
+
+    chain = _generation_chain(store, source_generation)
+    base_index = 0
+    for index, (_, manifest) in enumerate(chain):
+        if manifest.get("schema") == v1.SCHEMA:
+            base_index = index
+    selected = chain[base_index:]
+
+    chain_digest = hashlib.sha256()
+    for generation, _ in chain:
+        manifest_digest = v1._sha256_file(store / generation / "manifest.json")[1]
+        chain_digest.update(f"{generation}\t{manifest_digest}\n".encode("ascii"))
+
+    generation = f"r-{time.time_ns():020d}-{uuid.uuid4().hex[:12]}"
+    generation_dir = store / generation
+    generation_dir.mkdir(mode=0o700)
+    marker = _tail_header(generation)
+    tail_temp: Path | None = None
+    try:
+        segment = generation_dir / "segment-000001.jsonl"
+        segment_fd = os.open(
+            segment, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+            os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        records = 0
+        try:
+            for item_generation, manifest in selected:
+                verify_generation(store, item_generation)
+                expected_records = (
+                    manifest.get("journal_records")
+                    if manifest.get("schema") == v1.SCHEMA
+                    else manifest.get("segment_records")
+                )
+                if type(expected_records) is not int or expected_records < 0:
+                    raise v1.GenerationError("OMS_GENERATION_REBASE_RECORD_MISMATCH")
+                added, _ = _copy_generation_segment(
+                    store / item_generation / "segment-000001.jsonl",
+                    segment_fd, expected_records)
+                records += added
+            v1._fsync(segment_fd)
+        finally:
+            os.close(segment_fd)
+        history_records = source_verified["history_records"]
+        if records != history_records:
+            raise v1.GenerationError("OMS_GENERATION_REBASE_RECORD_MISMATCH")
+
+        source_dir = store / source_generation
+        for name in (
+            "command-index.tsv", "command-index.json",
+            "runtime-command-index.tsv", "send-attempt-index.tsv",
+            "hot-replay.jsonl",
+        ):
+            _copy_private_file(source_dir / name, generation_dir / name)
+
+        checkpoint = v1._load_json_private(source_dir / "checkpoint.json")
+        if not isinstance(checkpoint, dict):
+            raise v1.GenerationError("OMS_GENERATION_REBASE_CHECKPOINT_INVALID")
+        checkpoint.update({
+            "schema": v1.CHECKPOINT_SCHEMA,
+            "last_sequence": history_records,
+            "history_records": history_records,
+            "parent_generation": "",
+            "segment_records": history_records,
+            "hot_replay_records": source_verified["hot_replay_records"],
+            "send_attempt_records": source_verified["send_attempt_records"],
+            "paper_authorized": False,
+            "live_authorized": False,
+        })
+        v1._atomic_json(generation_dir / "checkpoint.json", checkpoint)
+
+        preliminary = (
+            "segment-000001.jsonl", "checkpoint.json", "command-index.tsv",
+            "command-index.json", "runtime-command-index.tsv",
+            "send-attempt-index.tsv", "hot-replay.jsonl",
+        )
+        files: dict[str, dict[str, Any]] = {}
+        digests: dict[str, str] = {}
+        for name in preliminary:
+            size, digest = v1._sha256_file(generation_dir / name)
+            files[name] = {"bytes": size, "sha256": digest}
+            digests[name] = digest
+        runtime_manifest = _runtime_manifest_bytes(
+            generation=generation, parent_generation="",
+            parent_manifest_sha256="",
+            history_records=history_records, segment_records=history_records,
+            command_records=source_verified["command_records"],
+            send_attempt_records=source_verified["send_attempt_records"],
+            hot_replay_records=source_verified["hot_replay_records"],
+            marker=marker, digests=digests)
+        v1._atomic_bytes(generation_dir / "runtime-manifest.txt", runtime_manifest)
+        runtime_size, runtime_digest = v1._sha256_file(
+            generation_dir / "runtime-manifest.txt")
+        files["runtime-manifest.txt"] = {
+            "bytes": runtime_size, "sha256": runtime_digest,
+        }
+        manifest = {
+            "schema": SCHEMA,
+            "generation": generation,
+            "parent_generation": "",
+            "parent_manifest_sha256": "",
+            "history_records": history_records,
+            "segment_records": history_records,
+            "command_records": source_verified["command_records"],
+            "send_attempt_records": source_verified["send_attempt_records"],
+            "hot_replay_records": source_verified["hot_replay_records"],
+            "active_tail_header_bytes": len(marker),
+            "active_tail_header_sha256": hashlib.sha256(marker).hexdigest(),
+            "runtime_manifest_sha256": runtime_digest,
+            "files": files,
+            "rebase_source_generation": source_generation,
+            "rebase_source_generations": len(chain),
+            "rebase_source_chain_sha256": chain_digest.hexdigest(),
+            "authorization_effect": "NONE",
+            "paper_authorized": False,
+            "live_authorized": False,
+        }
+        v1._atomic_json(generation_dir / "manifest.json", manifest)
+        v1._durable_directory(generation_dir)
+        phase_hook("rebase-generation-durable")
+
+        manifest_digest = v1._sha256_file(generation_dir / "manifest.json")[1]
+        tail_temp = journal.with_name(
+            f".{journal.name}.{uuid.uuid4().hex}.rebase-tail.tmp")
+        tail_fd = os.open(
+            tail_temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+            os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        try:
+            v1._write_all(tail_fd, marker)
+            v1._fsync(tail_fd)
+        finally:
+            os.close(tail_fd)
+        v1._durable_directory(journal.parent)
+        os.replace(tail_temp, journal)
+        tail_temp = None
+        v1._durable_directory(journal.parent)
+        phase_hook("rebase-tail-published")
+
+        pointer = {
+            "schema": v1.CURRENT_SCHEMA,
+            "generation": generation,
+            "manifest_sha256": manifest_digest,
+            "runtime_manifest_sha256": runtime_digest,
+        }
+        v1._atomic_json(store / "CURRENT", pointer)
+        v1._durable_directory(store)
+        current_raw = v1._read_private_bytes(store / "CURRENT")
+        runtime_current = v1._runtime_current_bytes(
+            generation=generation,
+            current_sha256=v1._sha256_bytes(current_raw),
+            manifest_sha256=manifest_digest,
+            runtime_manifest_sha256=runtime_digest)
+        v1._atomic_bytes(store / "CURRENT.runtime", runtime_current)
+        v1._durable_directory(store)
+        phase_hook("rebase-current-durable")
+
+        verify_generation(store, generation, journal)
+        pruned = 0
+        if prune_ancestors:
+            _prune_generation_chain(
+                store, [item_generation for item_generation, _ in chain])
+            pruned = len(chain)
+            phase_hook("rebase-ancestors-pruned")
+        return {
+            **manifest,
+            "result": "PASS",
+            "pruned_generations": pruned,
+        }
+    finally:
+        if tail_temp is not None:
+            try:
+                tail_temp.unlink()
+            except FileNotFoundError:
+                pass
+
+
 def export_legacy(journal: Path, store: Path, output: Path) -> dict[str, Any]:
     current = v1._read_current(store)
     if current is None:
@@ -1168,6 +1482,11 @@ def main(argv: list[str] | None = None) -> int:
     verify.add_argument("--journal", type=Path)
     verify.add_argument("--store", type=Path, required=True)
     verify.add_argument("--generation")
+    rebase = sub.add_parser("rebase")
+    rebase.add_argument("--journal", type=Path, required=True)
+    rebase.add_argument("--store", type=Path, required=True)
+    rebase.add_argument("--stopped-state", action="store_true")
+    rebase.add_argument("--prune-ancestors", action="store_true")
     export = sub.add_parser("export")
     export.add_argument("--journal", type=Path, required=True)
     export.add_argument("--store", type=Path, required=True)
@@ -1178,6 +1497,10 @@ def main(argv: list[str] | None = None) -> int:
             result = seal_generation(args.journal, args.store, stopped=args.stopped_state)
         elif args.command == "verify":
             result = verify_generation(args.store, args.generation, args.journal)
+        elif args.command == "rebase":
+            result = rebase_generation(
+                args.journal, args.store, stopped=args.stopped_state,
+                prune_ancestors=args.prune_ancestors)
         else:
             result = export_legacy(args.journal, args.store, args.output)
     except (OSError, ValueError, OverflowError) as error:

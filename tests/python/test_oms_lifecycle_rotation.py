@@ -163,6 +163,52 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertEqual(state["positions"], {"EUR.USD": 6.0})
         lifecycle.verify_generation(self.store, journal=self.journal)
 
+    def test_rebase_prunes_bound_ancestors_and_preserves_identity_and_export(self) -> None:
+        generations = 8
+        expected = {"old"}
+        for index in range(generations):
+            if index:
+                command = f"rebase-{index}"
+                expected.add(command)
+                self.append(command_events(command, 2000 + index * 100, 300 + index))
+            lifecycle.seal_generation(self.journal, self.store, stopped=True)
+
+        before_current = json.loads((self.store / "CURRENT").read_text())["generation"]
+        before_chain = lifecycle._generation_chain(self.store, before_current)
+        before_bytes = sum(
+            path.stat().st_size
+            for generation, _ in before_chain
+            for path in (self.store / generation).iterdir()
+            if path.is_file()
+        )
+        self.assertEqual(set(self.current_index_commands()), expected)
+
+        rebased = lifecycle.rebase_generation(
+            self.journal, self.store, stopped=True, prune_ancestors=True)
+        self.assertEqual(rebased["result"], "PASS")
+        self.assertEqual(rebased["parent_generation"], "")
+        self.assertGreaterEqual(rebased["pruned_generations"], generations)
+        current = json.loads((self.store / "CURRENT").read_text())["generation"]
+        self.assertEqual(current, rebased["generation"])
+        self.assertEqual(len(lifecycle._generation_chain(self.store, current)), 1)
+        self.assertEqual(set(self.current_index_commands()), expected)
+        for generation, _ in before_chain:
+            self.assertFalse((self.store / generation).exists())
+
+        after_bytes = sum(
+            path.stat().st_size
+            for path in (self.store / current).iterdir()
+            if path.is_file()
+        )
+        self.assertLess(after_bytes, before_bytes)
+
+        output = self.root / "rebased-export.jsonl"
+        exported = lifecycle.export_legacy(self.journal, self.store, output)
+        self.assertEqual(exported["records"], 4 * generations)
+        self.assertEqual(
+            len(list(read_records(output, max_records=4 * generations))),
+            4 * generations)
+
     def test_verifier_streams_cumulative_indexes_instead_of_materializing_them(self) -> None:
         lifecycle.seal_generation(self.journal, self.store, stopped=True)
         self.append(command_events("new", 2000, 202))
