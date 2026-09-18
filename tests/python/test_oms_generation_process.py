@@ -222,6 +222,18 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                             for point in points))
         self.assertTrue(all(point["execution_peak_rss_kib"] > 0
                             for point in points))
+        self.assertTrue(all(point["journal_bytes_before_seal"] > 0 and
+                            point["retained_disk_bytes"] > 0
+                            for point in points))
+        self.assertTrue(all(
+            isinstance(point["place_latency_total_p99_upper_ns"], int) and
+            point["place_latency_total_p99_upper_ns"] >= 0 and
+            point["place_latency_total_max_ns"] >= 0
+            for point in points),
+            "repository envelope requires a finite p99 latency bucket at every stage")
+        self.assertEqual(
+            [point["history_records"] for point in points],
+            sorted(point["history_records"] for point in points))
         self.assertLess(
             points[0]["retained_disk_bytes"],
             points[-1]["retained_disk_bytes"])
