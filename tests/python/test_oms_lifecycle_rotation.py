@@ -306,6 +306,76 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         }
         print(json.dumps(observation, sort_keys=True))
 
+    def test_rebase_crash_points_preserve_old_authority_or_publish_new_authority(self) -> None:
+        phases = (
+            "rebase-generation-durable",
+            "rebase-tail-published",
+            "rebase-current-durable",
+            "rebase-ancestors-pruned",
+        )
+        for phase in phases:
+            with self.subTest(phase=phase):
+                temp = tempfile.TemporaryDirectory(prefix=f"hepta-rebase-{phase}-")
+                self.addCleanup(temp.cleanup)
+                root = Path(temp.name)
+                os.chmod(root, 0o700)
+                journal = root / "oms.jsonl"
+                store = Path(str(journal) + ".generations")
+                journal.write_bytes(encode(command_events("old", 1000, 101)))
+                os.chmod(journal, 0o600)
+                lifecycle.seal_generation(journal, store, stopped=True)
+                with journal.open("ab") as stream:
+                    stream.write(encode(command_events("new", 2000, 202)))
+                lifecycle.seal_generation(journal, store, stopped=True)
+
+                def crash(at: str) -> None:
+                    if at == phase:
+                        raise RuntimeError(phase)
+
+                with self.assertRaisesRegex(RuntimeError, phase):
+                    lifecycle.rebase_generation(
+                        journal, store, stopped=True, prune_ancestors=True,
+                        phase_hook=crash)
+
+                selected = json.loads(
+                    (store / "CURRENT").read_text())["generation"]
+                command_rows = (
+                    store / selected / "runtime-command-index.tsv"
+                ).read_text().splitlines()
+                commands = {
+                    bytes.fromhex(row.split("\t")[2]).decode()
+                    for row in command_rows
+                }
+                self.assertEqual(commands, {"old", "new"})
+
+                if phase == "rebase-tail-published":
+                    with self.assertRaises(checkpoint.GenerationError):
+                        lifecycle.verify_generation(store, journal=journal)
+                    self.assertTrue(any(
+                        path.name.startswith("g-")
+                        for path in store.iterdir() if path.is_dir()))
+                    continue
+
+                verified = lifecycle.verify_generation(
+                    store, journal=journal)
+                self.assertEqual(verified["result"], "PASS")
+                output = root / f"{phase}.jsonl"
+                exported = lifecycle.export_legacy(
+                    journal, store, output)
+                self.assertEqual(exported["records"], 8)
+                self.assertEqual(
+                    len(list(read_records(output, max_records=8))), 8)
+
+                if phase == "rebase-ancestors-pruned":
+                    self.assertTrue(selected.startswith("r-"))
+                    self.assertFalse(any(
+                        path.name.startswith("g-")
+                        for path in store.iterdir() if path.is_dir()))
+                else:
+                    self.assertTrue(any(
+                        path.name.startswith("g-")
+                        for path in store.iterdir() if path.is_dir()))
+
     def test_verifier_streams_cumulative_indexes_instead_of_materializing_them(self) -> None:
         lifecycle.seal_generation(self.journal, self.store, stopped=True)
         self.append(command_events("new", 2000, 202))

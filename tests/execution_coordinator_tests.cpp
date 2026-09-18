@@ -2063,6 +2063,93 @@ void TestSlowVenueDispatchDoesNotHoldCoordinatorLock()
 }
 
 
+void TestCancelEligibilityPreflightDoesNotHoldCoordinatorLock()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool preflightEntered = false;
+    bool releasePreflight = false;
+    int cancelCalls = 0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement = VenuePlacement::Immediate(
+        [](const PlaceOrderCommand&, const std::string&) {
+            return VenuePlaceResult::Submitted(701);
+        });
+    callbacks.canCancelIbOrder =
+        [&](long orderId, std::string* reason) {
+            assert(orderId == 701);
+            {
+                std::lock_guard<std::mutex> gate(gateMutex);
+                preflightEntered = true;
+            }
+            gateChanged.notify_all();
+            std::unique_lock<std::mutex> gate(gateMutex);
+            gateChanged.wait(gate, [&]() { return releasePreflight; });
+            if (reason) reason->clear();
+            return true;
+        };
+    callbacks.cancelOrder = [&](long orderId) {
+        assert(orderId == 701);
+        ++cancelCalls;
+        return VenueCancelResult::Submitted();
+    };
+
+    ExecutionCoordinator coordinator(journal, callbacks);
+    const auto seed = MakePlace("cancel-preflight-seed");
+    assert(coordinator.PlaceOrder(seed).status ==
+        ExecutionCommandStatus::Accepted);
+
+    CancelOrderCommand cancel;
+    cancel.context = seed.context;
+    cancel.context.toolCallId = "cancel-preflight";
+    cancel.orderId = 701;
+    cancel.instrument = seed.instrument;
+    auto cancelFuture = std::async(std::launch::async, [&]() {
+        return coordinator.CancelOrder(cancel);
+    });
+    {
+        std::unique_lock<std::mutex> gate(gateMutex);
+        assert(gateChanged.wait_for(
+            gate, std::chrono::seconds(2),
+            [&]() { return preflightEntered; }));
+    }
+
+    auto statusFuture = std::async(std::launch::async, [&]() {
+        ExecutionCommandResult status;
+        const bool found = coordinator.GetCommandStatus(
+            "agent-a", "session-1", "cancel-preflight-seed", status);
+        return std::make_pair(found, status);
+    });
+    assert(statusFuture.wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready);
+    const auto status = statusFuture.get();
+    assert(status.first);
+    assert(status.second.status == ExecutionCommandStatus::Accepted);
+
+    // Authority may change while the coordinator lock is released. Revalidate
+    // before persisting cancel intent or invoking the venue.
+    assert(coordinator.FenceSessionOwner("agent-a", "session-1") == 1);
+    {
+        std::lock_guard<std::mutex> gate(gateMutex);
+        releasePreflight = true;
+    }
+    gateChanged.notify_all();
+
+    const auto result = cancelFuture.get();
+    assert(result.status == ExecutionCommandStatus::Rejected);
+    assert(result.reasonCode == "SESSION_OWNER_FENCED");
+    assert(cancelCalls == 0);
+    ExecutionCommandResult absent;
+    assert(!coordinator.GetCommandStatus(
+        "agent-a", "session-1", "cancel-preflight", absent));
+    std::remove(path.c_str());
+}
+
+
 void TestReconnectFenceRefusesVenueDispatchInFlight()
 {
     const std::string path = TempJournalPath();
@@ -2196,6 +2283,7 @@ int main(int argc, char** argv)
     TestCoordinatorMeasurementsPreserveExceptionsAndFlattenRejection();
     TestVenuePlacementConstructionAndResultContract();
     TestSlowVenueDispatchDoesNotHoldCoordinatorLock();
+    TestCancelEligibilityPreflightDoesNotHoldCoordinatorLock();
     TestReconnectFenceRefusesVenueDispatchInFlight();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
