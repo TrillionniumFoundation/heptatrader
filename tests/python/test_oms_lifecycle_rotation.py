@@ -360,6 +360,9 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertLess(after_rebase, before_rebase)
         self.assertEqual(rebased["history_records"], 4096)
         self.assertEqual(set(self.current_index_commands()), expected_commands)
+        self.assertEqual(
+            len(self.current_index_owners()), generations,
+            "rebase must preserve every owner/session identity in the cumulative index")
 
         usage = resource.getrusage(resource.RUSAGE_SELF)
         observation = {
