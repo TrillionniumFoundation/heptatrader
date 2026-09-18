@@ -898,6 +898,7 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         return false;
     }
     m_startAttempted = true;
+    const auto startupStarted = std::chrono::steady_clock::now();
     ExecutionServiceRuntimeConfig validationConfig = m_config;
     validationConfig.listenFd = m_ownedListenFd;
     validationConfig.eventListenFd = m_ownedEventListenFd;
@@ -931,7 +932,16 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         CloseUnconsumedListenFd();
         return false;
     }
-    if (!RestoreSimulatorState(reason))
+    const auto simulatorRecoveryStarted = std::chrono::steady_clock::now();
+    const bool simulatorStateRestored = RestoreSimulatorState(reason);
+    const auto simulatorRecoveryFinished = std::chrono::steady_clock::now();
+    const auto simulatorRecoveryRaw =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            simulatorRecoveryFinished - simulatorRecoveryStarted).count();
+    m_simulatorStateRecoveryLatency.Observe(
+        simulatorRecoveryRaw > 0 ?
+            static_cast<std::uint64_t>(simulatorRecoveryRaw) : 0U);
+    if (!simulatorStateRestored)
     {
         CloseUnconsumedListenFd();
         return false;
@@ -1099,6 +1109,12 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         return false;
     }
     m_lifecycleGate->ready.store(true);
+    const auto startupFinished = std::chrono::steady_clock::now();
+    const auto startupRaw =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            startupFinished - startupStarted).count();
+    m_startupReadyLatency.Observe(
+        startupRaw > 0 ? static_cast<std::uint64_t>(startupRaw) : 0U);
     m_started = true;
     reason.clear();
     return true;
@@ -1152,5 +1168,14 @@ ExecutionEventHub& ExecutionServiceRuntimeComposition::EventHub()
 
 ExecutionRuntimeObservation ExecutionServiceRuntimeComposition::CoordinatorObservation() const
 {
-    return m_coordinator ? m_coordinator->RuntimeObservation() : ExecutionRuntimeObservation();
+    if (!m_coordinator) return ExecutionRuntimeObservation();
+    ExecutionRuntimeObservation result = m_coordinator->RuntimeObservation();
+    if (m_simulatorStateRecoveryLatency.samples != 0 &&
+        m_startupReadyLatency.samples != 0)
+    {
+        result.startupTimingPresent = true;
+        result.simulatorStateRecoveryLatency = m_simulatorStateRecoveryLatency;
+        result.startupReadyLatency = m_startupReadyLatency;
+    }
+    return result;
 }

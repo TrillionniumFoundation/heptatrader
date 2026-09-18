@@ -190,6 +190,9 @@ struct ExecutionRuntimeObservation
     // place, cancel, authoritative flatten. No arbitrary reason/owner labels.
     std::array<ExecutionOperationObservation, 3> operations{};
     OmsLatencySummary recoveryLatency;
+    bool startupTimingPresent = false;
+    OmsLatencySummary simulatorStateRecoveryLatency;
+    OmsLatencySummary startupReadyLatency;
     std::uint64_t retainedCommands = 0;
     std::uint64_t orderOwners = 0;
     std::uint64_t fencedOwners = 0;
@@ -259,6 +262,13 @@ inline std::string ExecutionCapacityObservation(
     }
     out << ",\"recovery_latency\":";
     WriteOmsLatencyJson(out, execution.recoveryLatency);
+    if (execution.startupTimingPresent)
+    {
+        out << ",\"simulator_state_recovery_latency\":";
+        WriteOmsLatencyJson(out, execution.simulatorStateRecoveryLatency);
+        out << ",\"startup_ready_latency\":";
+        WriteOmsLatencyJson(out, execution.startupReadyLatency);
+    }
     out << "}}";
     return out.str();
 }

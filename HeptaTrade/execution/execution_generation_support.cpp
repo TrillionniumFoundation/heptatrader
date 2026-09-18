@@ -2,6 +2,7 @@
 // in the existing execution runtime target; no macro method renaming or
 // textual .inc inclusion is required.
 #include "execution_coordinator.h"
+#include "generation_index_reader.h"
 
 // Generation persistence remains part of the existing Execution runtime target.
 // It is isolated behind oms_generation_store.h without a shadow service, product,
@@ -369,6 +370,39 @@ int GenerationCompareKey(const std::vector<std::string>& fields,
         if (fields[i] > wanted[i]) return 1;
     }
     return 0;
+}
+
+bool GenerationLowerBoundCommandKey(
+    int fd, off_t fileSize, const std::array<std::string, 3>& wanted,
+    off_t& offset)
+{
+    offset = 0;
+    off_t low = 0;
+    off_t high = fileSize;
+    while (low < high)
+    {
+        const off_t midpoint = low + (high - low) / 2;
+        off_t start = 0, end = 0;
+        std::string line;
+        std::vector<std::string> fields;
+        if (!GenerationReadLineContaining(
+                fd, fileSize, midpoint, start, end, line) ||
+            !GenerationSplitTabs(line, fields) || fields.size() != 13U)
+            return false;
+        const int comparison = GenerationCompareKey(fields, wanted);
+        if (comparison < 0)
+        {
+            if (end <= low) return false;
+            low = end;
+        }
+        else
+        {
+            if (start >= high && high != 0) return false;
+            high = start;
+        }
+    }
+    offset = low;
+    return true;
 }
 
 bool GenerationReplayRange(int fd, off_t start, off_t end,
@@ -902,13 +936,15 @@ bool OmsGenerationStore::ReadPlaceSendAttemptTimes(
         offset = low;
     }
 
+    GenerationSequentialLineReader sendReader(
+        m_sendIndexFd, m_sendIndexIdentity.st_size, offset,
+        kMaximumGenerationIndexLineBytes);
     while (offset < m_sendIndexIdentity.st_size)
     {
         off_t start = 0, end = 0;
         std::string line;
         std::vector<std::string> fields;
-        if (!GenerationReadLineContaining(m_sendIndexFd,
-                m_sendIndexIdentity.st_size, offset, start, end, line) ||
+        if (!sendReader.Read(start, end, line) ||
             start != offset || end <= offset ||
             !GenerationSplitTabs(line, fields))
         {
@@ -972,13 +1008,15 @@ bool OmsGenerationStore::EnumerateMutationRecords(
         return false;
     }
     off_t offset = 0;
+    GenerationSequentialLineReader commandReader(
+        m_commandIndexFd, m_commandIndexIdentity.st_size, offset,
+        kMaximumGenerationIndexLineBytes);
     while (offset < m_commandIndexIdentity.st_size)
     {
         off_t start = 0, end = 0;
         std::string line;
         std::vector<std::string> fields;
-        if (!GenerationReadLineContaining(m_commandIndexFd,
-                m_commandIndexIdentity.st_size, offset, start, end, line) ||
+        if (!commandReader.Read(start, end, line) ||
             start != offset || end <= offset ||
             !GenerationSplitTabs(line, fields) || fields.size() != 13U)
         {
@@ -1053,14 +1091,27 @@ bool OmsGenerationStore::SummarizeMutationRecords(
     }
 
     bool ok = true;
+    const std::string wantedAgent = GenerationHex(agentId);
+    const std::string wantedSession = GenerationHex(sessionId);
+    const std::array<std::string, 3> lowerKey{{
+        wantedAgent, wantedSession, std::string()}};
     off_t offset = 0;
+    if (!GenerationLowerBoundCommandKey(
+            m_commandIndexFd, m_commandIndexIdentity.st_size,
+            lowerKey, offset))
+    {
+        reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
+        ok = false;
+    }
+    GenerationSequentialLineReader summaryReader(
+        m_commandIndexFd, m_commandIndexIdentity.st_size, offset,
+        kMaximumGenerationIndexLineBytes);
     while (ok && offset < m_commandIndexIdentity.st_size)
     {
         off_t start = 0, end = 0;
         std::string line;
         std::vector<std::string> fields;
-        if (!GenerationReadLineContaining(m_commandIndexFd,
-                m_commandIndexIdentity.st_size, offset, start, end, line) ||
+        if (!summaryReader.Read(start, end, line) ||
             start != offset || end <= offset ||
             !GenerationSplitTabs(line, fields) || fields.size() != 13U)
         {
@@ -1068,6 +1119,8 @@ bool OmsGenerationStore::SummarizeMutationRecords(
             ok = false;
             break;
         }
+        if (fields[0] != wantedAgent || fields[1] != wantedSession)
+            break;
         std::string rowAgent, rowSession, rowAccount, rowDomain;
         if (!GenerationDecodeHex(fields[0], rowAgent) ||
             !GenerationDecodeHex(fields[1], rowSession) ||

@@ -24,6 +24,9 @@ CPP = r'''
 int main() {
     ExecutionRuntimeObservation execution;
     execution.present = true;
+    execution.startupTimingPresent = true;
+    execution.simulatorStateRecoveryLatency.Observe(2000000);
+    execution.startupReadyLatency.Observe(9000000);
     using Clock = ExecutionOperationTiming::Clock;
     const auto start = Clock::time_point{};
     const auto acquired = start + std::chrono::nanoseconds(5000000);
@@ -88,15 +91,19 @@ class ExecutionLatencyBoundaryTests(unittest.TestCase):
         self.assertIn("hepta_execution_place_latency_total_seconds_sum 0.008", text)
         self.assertIn('hepta_execution_operation_timing_present{operation="cancel"} 0', text)
         self.assertNotIn("hepta_execution_cancel_latency_total_seconds", text)
+        self.assertIn("hepta_execution_startup_timing_present 1", text)
+        self.assertIn("hepta_execution_simulator_state_recovery_latency_seconds_sum 0.002", text)
+        self.assertIn("hepta_execution_startup_ready_latency_seconds_sum 0.009", text)
 
     def test_old_producer_is_not_rewritten_as_zero_wait(self):
         sample = copy.deepcopy(self.sample)
-        for name in report.EXECUTION_TIMING_EXTENSION:
+        for name in report.EXECUTION_TIMING_EXTENSION + report.EXECUTION_STARTUP_LATENCIES:
             sample["execution_metrics"].pop(name, None)
         report.validate_execution(sample["execution_metrics"])
         text = report.prometheus(sample, report.report([sample], 1000))
         self.assertNotIn("_lock_wait_seconds", text)
         self.assertNotIn("_total_seconds", text)
+        self.assertIn("hepta_execution_startup_timing_present 0", text)
 
     def test_incomplete_or_inconsistent_new_timing_fails_closed(self):
         metrics = self.sample["execution_metrics"]

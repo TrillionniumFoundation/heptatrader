@@ -81,6 +81,7 @@ EXECUTION_GAUGES = ("retained_commands", "order_owners", "fenced_owners",
 EXECUTION_LATENCIES = ("place_latency", "cancel_latency", "flatten_latency", "recovery_latency")
 EXECUTION_TIMING_EXTENSION = tuple(name + suffix for name in EXECUTION_LATENCIES[:3]
                                    for suffix in ("_lock_wait", "_outside_lock", "_total"))
+EXECUTION_STARTUP_LATENCIES = ("simulator_state_recovery_latency", "startup_ready_latency")
 UINT64_MAX = (1 << 64) - 1
 MAX_BYTES, MAX_LINE, MAX_LINES = 64 << 20, 65536, 100000
 
@@ -167,6 +168,12 @@ def validate_execution(value):
             if not value["metrics_saturated"] and sum(row) != sum(outcomes):
                 raise ValueError("execution reason/result accounting mismatch")
     validate_latency(value.get("recovery_latency"))
+    startup_presence = [name in value for name in EXECUTION_STARTUP_LATENCIES]
+    if any(startup_presence) and not all(startup_presence):
+        raise ValueError("incomplete execution startup timing")
+    if all(startup_presence):
+        for name in EXECUTION_STARTUP_LATENCIES:
+            validate_latency(value.get(name))
     for name in EXECUTION_LATENCIES[:3]:
         wait_key, outside_key, total_key = (
             name + "_lock_wait", name + "_outside_lock", name + "_total")
@@ -362,7 +369,7 @@ def report(samples, now_ms, max_age_ms=15000, planning_seconds=0):
     if execution is not None:
         # A deliberate terminal/maintenance fence is not necessarily an incident.
         # Export the block gauge; existing writer/recovery evidence owns severity.
-        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION if k in execution):
+        if execution["metrics_saturated"] or any(execution[k]["saturated"] for k in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION + EXECUTION_STARTUP_LATENCIES if k in execution):
             alert("EXECUTION_METRIC_SATURATED", "P2")
     return {"schema": "heptatrader.oms-operational-report.v1", "fresh": fresh, "sample_age_ms": age,
             "capacity_status": latest["status"], "known": latest["known"], "service_epoch": latest.get("service_epoch"),
@@ -415,7 +422,9 @@ def prometheus(latest, summary):
                     lines.append(f'hepta_execution_command_reasons_total{{operation="{op}",reason="{reason}"}} {count}')
         for operation, name in zip(EXECUTION_OPERATIONS, EXECUTION_LATENCIES):
             lines.append(f'hepta_execution_operation_timing_present{{operation="{operation}"}} {int(name + "_total" in execution)}')
-        for name in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION:
+        startup_present = all(name in execution for name in EXECUTION_STARTUP_LATENCIES)
+        lines.append(f"hepta_execution_startup_timing_present {int(startup_present)}")
+        for name in EXECUTION_LATENCIES + EXECUTION_TIMING_EXTENSION + EXECUTION_STARTUP_LATENCIES:
             if name not in execution:
                 continue  # An older producer did not observe this scope.
             value = execution[name]
