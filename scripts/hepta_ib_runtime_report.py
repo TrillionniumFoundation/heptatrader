@@ -119,6 +119,27 @@ def validate(sample: Any) -> dict[str, Any]:
     elif ("callback_conflicts_total" in sample or
           "callback_conflict_metrics_saturated" in sample):
         raise ValueError("callback conflict payload without presence")
+    for presence, valid, age in (
+            ("quote_age_metrics_present", "primary_quote_age_valid",
+             "primary_quote_age_ms"),
+            ("snapshot_age_metrics_present", "authoritative_snapshot_age_valid",
+             "authoritative_snapshot_age_ms")):
+        present = sample.get(presence, False)
+        if type(present) is not bool:
+            raise ValueError("invalid IB age-metric presence")
+        if present:
+            if type(sample.get(valid)) is not bool:
+                raise ValueError("invalid IB age validity")
+            uint(sample.get(age))
+            if not sample[valid] and sample[age] != 0:
+                raise ValueError("unknown IB age cannot carry a value")
+    reconciliation_present = sample.get(
+        "broker_reconciliation_duration_metrics_present", False)
+    if type(reconciliation_present) is not bool:
+        raise ValueError("invalid reconciliation-metric presence")
+    if reconciliation_present:
+        base_metrics.validate_latency(
+            sample.get("broker_reconciliation_duration"))
     return sample
 
 
@@ -237,6 +258,10 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         "callback_lag_metrics_present": latest["callback_lag_metrics_present"],
         "callback_conflict_metrics_present": latest["callback_conflict_metrics_present"],
         "network_policy_metrics_present": latest["network_policy_metrics_present"],
+        "quote_age_metrics_present": latest.get("quote_age_metrics_present", False),
+        "snapshot_age_metrics_present": latest.get("snapshot_age_metrics_present", False),
+        "broker_reconciliation_duration_metrics_present": latest.get(
+            "broker_reconciliation_duration_metrics_present", False),
         "authorization_effect": "NONE",
     }
 
@@ -282,6 +307,12 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_callback_lag_metrics_present": int(latest["callback_lag_metrics_present"]),
         "hepta_ib_callback_conflict_metrics_present": int(latest["callback_conflict_metrics_present"]),
         "hepta_ib_network_policy_metrics_present": int(latest["network_policy_metrics_present"]),
+        "hepta_ib_quote_age_metrics_present": int(
+            latest.get("quote_age_metrics_present", False)),
+        "hepta_ib_snapshot_age_metrics_present": int(
+            latest.get("snapshot_age_metrics_present", False)),
+        "hepta_ib_broker_reconciliation_duration_metrics_present": int(
+            latest.get("broker_reconciliation_duration_metrics_present", False)),
         "hepta_ib_runtime_alerts": len(summary["alerts"]),
     }
     lines = [f"{name} {value}" for name, value in values.items()]
@@ -311,6 +342,38 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
             lines.append(
                 "hepta_ib_callback_conflicts_total " +
                 str(latest["callback_conflicts_total"]))
+    if latest.get("quote_age_metrics_present", False):
+        lines.append(
+            "hepta_ib_primary_quote_age_valid " +
+            str(int(latest["primary_quote_age_valid"])))
+        if latest["primary_quote_age_valid"]:
+            lines.append(
+                "hepta_ib_primary_quote_age_ms " +
+                str(latest["primary_quote_age_ms"]))
+    if latest.get("snapshot_age_metrics_present", False):
+        lines.append(
+            "hepta_ib_authoritative_snapshot_age_valid " +
+            str(int(latest["authoritative_snapshot_age_valid"])))
+        if latest["authoritative_snapshot_age_valid"]:
+            lines.append(
+                "hepta_ib_authoritative_snapshot_age_ms " +
+                str(latest["authoritative_snapshot_age_ms"]))
+    if latest.get("broker_reconciliation_duration_metrics_present", False):
+        latency = latest["broker_reconciliation_duration"]
+        lines.append(
+            "hepta_ib_broker_reconciliation_duration_metrics_saturated " +
+            str(int(latency["saturated"])))
+        if not latency["saturated"] and "bucket_counts" in latency:
+            metric = "hepta_ib_broker_reconciliation_duration_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for index, count in enumerate(latency["bucket_counts"]):
+                cumulative += count
+                upper = (str(base_metrics.BOUNDS_NS[index] / 1e9)
+                         if index < len(base_metrics.BOUNDS_NS) else "+Inf")
+                lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
+            lines.append(f"{metric}_count {latency['samples']}")
+            lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
     return "\n".join(lines) + "\n"
 
 
