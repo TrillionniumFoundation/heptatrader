@@ -120,7 +120,25 @@ int main() {
                      << requestId
                      << ",\"service_epoch\":\"svc-1\",\"connection_epoch\":7"
                      << ",\"operation\":\"" << operation
-                     << "\",\"account\":\"QMT-SIM\",\"ok\":true}";
+                     << "\",\"account\":\"QMT-SIM\",\"ok\":true";
+            if (operation == "identity")
+                response << "}";
+            else if (operation == "account_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.account.v1\","
+                         << "\"generation\":11,\"complete\":true,\"currency\":\"CNY\","
+                         << "\"cash\":1000,\"total_asset\":1500,\"available_cash\":900}}";
+            else if (operation == "position_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.positions.v1\","
+                         << "\"generation\":11,\"complete\":true,\"positions\":["
+                         << "{\"instrument\":\"600000.SH\",\"quantity\":100,"
+                         << "\"sellable_quantity\":80,\"cost\":10.5}]}}";
+            else if (operation == "quote_subscribe")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.quote.v1\","
+                         << "\"generation\":12,\"complete\":true,"
+                         << "\"instrument\":\"600000.SH\",\"bid\":10.1,\"ask\":10.2,"
+                         << "\"observed_at_ms\":12345}}";
+            else
+                return false;
             return HeptaXTGatewayAdapter::EncodeFrame(response.str(), responseFrame);
         };
         Require(xt.Init(cfg), "valid HXQ1 read-only profile must initialize");
@@ -128,9 +146,34 @@ int main() {
                 "read-only HXQ1 capability must be explicit");
         Require(xt.Connect() && xt.IsConnected(),
                 "admitted HXQ1 identity handshake should establish read-only connection");
+        Require(xt.LastRejectReason() == "XT_READ_ONLY_CONNECTED",
+                "identity handshake is connection evidence, not snapshot readiness");
+        Require(!xt.AccountPositionReadReady(),
+                "identity handshake alone must not create authoritative read readiness");
         Require(xt.ReqAccountSummary(), "HXQ1 account snapshot request should round-trip");
+        Require(!xt.AccountPositionReadReady(),
+                "account snapshot alone must not complete the account/position barrier");
         Require(xt.ReqPositions(), "HXQ1 position snapshot request should round-trip");
+        Require(xt.AccountPositionReadReady(),
+                "same-epoch/same-generation account and position snapshots should be ready");
+        HeptaXTAccountSnapshot account;
+        Require(xt.GetAccountSnapshot(account) && account.generation == 11 &&
+                    account.currency == "CNY" && account.totalAsset == 1500.0 &&
+                    account.availableCash == 900.0,
+                "typed account snapshot did not retain authoritative fields");
+        HeptaXTPositionSnapshot positions;
+        Require(xt.GetPositionSnapshot(positions) && positions.generation == 11 &&
+                    positions.positions.size() == 1 &&
+                    positions.positions[0].instrument == "600000.SH" &&
+                    positions.positions[0].quantity == 100.0 &&
+                    positions.positions[0].sellableQuantity == 80.0,
+                "typed position snapshot did not retain authoritative fields");
         Require(xt.ReqMktData("600000.SH"), "HXQ1 quote subscribe should round-trip");
+        HeptaXTQuoteSnapshot quote;
+        Require(xt.GetQuoteSnapshot("600000.SH", quote) &&
+                    quote.generation == 12 && quote.bid == 10.1 &&
+                    quote.ask == 10.2 && quote.observedAtMs == 12345,
+                "typed quote snapshot did not retain authoritative fields");
         Require(observedRequests == 4, "exact read-only request count mismatch");
         long long orderId = -1;
         Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
@@ -141,8 +184,105 @@ int main() {
                 "read-only XT cancel must remain disabled");
         xt.Disconnect();
         Require(!xt.IsConnected(), "read-only disconnect clears connection state");
+        Require(!xt.AccountPositionReadReady(),
+                "disconnect invalidates read readiness");
+        Require(!xt.GetAccountSnapshot(account) && !xt.GetPositionSnapshot(positions) &&
+                    !xt.GetQuoteSnapshot("600000.SH", quote),
+                "disconnect must clear cached authoritative read state");
         Require(!xt.ReqPositions() && xt.LastRejectReason() == "XT_READ_ONLY_NOT_CONNECTED",
                 "read-only requests fail closed after disconnect");
+    }
+    {
+        HeptaXTGatewayAdapter xt;
+        HeptaXTConfig cfg;
+        cfg.account = "QMT-SIM";
+        cfg.serviceEpoch = "svc-generation";
+        cfg.connectionEpoch = 13;
+        cfg.peerProfileSha256 = std::string(64, 'c');
+        cfg.admittedReadOnlyExchange = [](const std::string& requestFrame,
+                                          std::string& responseFrame) {
+            std::string request;
+            Require(HeptaXTGatewayAdapter::DecodeFrame(requestFrame, request),
+                    "generation fixture request frame must decode");
+            const std::uint64_t requestId =
+                ExtractJsonUnsigned(request, "request_id");
+            const std::string operation =
+                ExtractJsonString(request, "operation");
+            std::ostringstream response;
+            response << "{\"protocol\":\"HXQ1\",\"version\":1,\"request_id\":"
+                     << requestId
+                     << ",\"service_epoch\":\"svc-generation\","
+                     << "\"connection_epoch\":13,\"operation\":\"" << operation
+                     << "\",\"account\":\"QMT-SIM\",\"ok\":true";
+            if (operation == "identity")
+                response << "}";
+            else if (operation == "account_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.account.v1\","
+                         << "\"generation\":31,\"complete\":true,\"currency\":\"CNY\","
+                         << "\"cash\":1000,\"total_asset\":1000,\"available_cash\":1000}}";
+            else if (operation == "position_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.positions.v1\","
+                         << "\"generation\":32,\"complete\":true,\"positions\":[]}}";
+            else
+                return false;
+            return HeptaXTGatewayAdapter::EncodeFrame(
+                response.str(), responseFrame);
+        };
+        Require(xt.Init(cfg) && xt.Connect(),
+                "generation mismatch fixture should connect");
+        Require(xt.ReqAccountSummary() && xt.ReqPositions(),
+                "known-empty position snapshot is valid completed evidence");
+        HeptaXTPositionSnapshot emptyPositions;
+        Require(xt.GetPositionSnapshot(emptyPositions) &&
+                    emptyPositions.positions.empty(),
+                "known-empty positions require a completed empty snapshot");
+        Require(!xt.AccountPositionReadReady(),
+                "mixed snapshot generations must not be treated as one barrier");
+    }
+    {
+        HeptaXTGatewayAdapter xt;
+        HeptaXTConfig cfg;
+        cfg.account = "QMT-SIM";
+        cfg.serviceEpoch = "svc-invalid-payload";
+        cfg.connectionEpoch = 14;
+        cfg.peerProfileSha256 = std::string(64, 'd');
+        cfg.admittedReadOnlyExchange = [](const std::string& requestFrame,
+                                          std::string& responseFrame) {
+            std::string request;
+            Require(HeptaXTGatewayAdapter::DecodeFrame(requestFrame, request),
+                    "invalid payload fixture request must decode");
+            const std::uint64_t requestId =
+                ExtractJsonUnsigned(request, "request_id");
+            const std::string operation =
+                ExtractJsonString(request, "operation");
+            std::ostringstream response;
+            response << "{\"protocol\":\"HXQ1\",\"version\":1,\"request_id\":"
+                     << requestId
+                     << ",\"service_epoch\":\"svc-invalid-payload\","
+                     << "\"connection_epoch\":14,\"operation\":\"" << operation
+                     << "\",\"account\":\"QMT-SIM\",\"ok\":true";
+            if (operation == "identity")
+                response << "}";
+            else if (operation == "account_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.account.v1\","
+                         << "\"generation\":41,\"complete\":true,\"currency\":\"CNY\","
+                         << "\"cash\":1000,\"total_asset\":1500,"
+                         << "\"available_cash\":1600}}";
+            else
+                return false;
+            return HeptaXTGatewayAdapter::EncodeFrame(
+                response.str(), responseFrame);
+        };
+        Require(xt.Init(cfg) && xt.Connect(),
+                "invalid payload fixture should reach read-only connection");
+        Require(!xt.ReqAccountSummary(),
+                "economically invalid account payload must fail closed");
+        Require(xt.LastRejectReason() == "XT_ACCOUNT_SNAPSHOT_INVALID",
+                "invalid account payload reason must be stable");
+        HeptaXTAccountSnapshot absent;
+        Require(!xt.GetAccountSnapshot(absent) &&
+                    !xt.AccountPositionReadReady(),
+                "invalid account payload must not retain stale authoritative state");
     }
     {
         HeptaXTGatewayAdapter xt;
