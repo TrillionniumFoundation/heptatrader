@@ -105,10 +105,13 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             if latency.get("samples", 0) <= 0 or not isinstance(observed, int) or observed < 0:
                 raise AssertionError(f"missing installed Execution startup metric: {source}")
             output[target] = observed
-        if output["startup_ready_ns"] < output["simulator_state_recovery_ns"] or \
-                output["startup_ready_ns"] < output["coordinator_recovery_ns"]:
+        included_recovery_ns = (
+            output["simulator_state_recovery_ns"] +
+            output["coordinator_recovery_ns"]
+        )
+        if output["startup_ready_ns"] < included_recovery_ns:
             raise AssertionError(
-                "complete startup-ready timing cannot be below an included recovery phase")
+                "complete startup-ready timing must include both sequential recovery phases")
         return output
 
     @staticmethod
