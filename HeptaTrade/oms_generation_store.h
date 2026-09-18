@@ -107,9 +107,9 @@ public:
         std::vector<OmsGenerationSendAttempt>& attempts,
         std::string& reason) const;
 
-    // HPM2 support retained for compatibility with the reviewed PR #95
-    // implementation. The live terminal path below remains owner-session
-    // scoped and therefore uses the explicit overload with agent/session.
+    // Compatibility/read-only account-domain enumeration remains available for
+    // callers that do not carry an owner/session binding. PAPER terminalization
+    // must use the owner/session-scoped summary or overload below.
     bool EnumerateMutationRecords(
         const std::string& account,
         const std::string& executionDomain,
