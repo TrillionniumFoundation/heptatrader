@@ -252,7 +252,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         post_rebase_recovery_ns = post_rebase_startup["coordinator_recovery_ns"]
         post_rebase_peak_rss_kib = self._execution_peak_rss_kib(runtime)
         risk = runtime.call("risk.get_limits", [])["payload"]
-        self.assertEqual(risk["admitted_order_count"], 20)
+        self.assertEqual(risk["admitted_order_count"], expected_admitted)
         tail_before_duplicate = journal.read_bytes()
         duplicate = runtime.call(
             "trade.place_order", first_fields,
