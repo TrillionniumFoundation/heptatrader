@@ -60,13 +60,35 @@ struct IbRuntimeObservationSnapshot
     OmsLatencySummary callbackQueueLag;
     std::uint64_t callbackConflictCount = 0;
     bool callbackConflictMetricsSaturated = false;
+    bool quoteAgeMetricsPresent = false;
+    bool primaryQuoteAgeValid = false;
+    std::uint64_t primaryQuoteAgeMs = 0;
+    bool snapshotAgeMetricsPresent = false;
+    bool authoritativeSnapshotAgeValid = false;
+    std::uint64_t authoritativeSnapshotAgeMs = 0;
+    bool brokerReconciliationDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconciliationDuration;
 };
+struct IbRuntimeObservationSupplement
+{
+    bool quoteAgeMetricsPresent = false;
+    bool primaryQuoteAgeValid = false;
+    std::uint64_t primaryQuoteAgeMs = 0;
+    bool snapshotAgeMetricsPresent = false;
+    bool authoritativeSnapshotAgeValid = false;
+    std::uint64_t authoritativeSnapshotAgeMs = 0;
+    bool brokerReconciliationDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconciliationDuration;
+};
+
 
 inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     HeptaIBGatewayAdapter& adapter,
     std::uint64_t observedAtMs,
     std::uint64_t monotonicMs,
-    const std::string& serviceEpoch)
+    const std::string& serviceEpoch,
+    const IbRuntimeObservationSupplement& supplement =
+        IbRuntimeObservationSupplement())
 {
     const IBAuthoritativeRecoveryAuditSnapshot audit =
         adapter.GetAuthoritativeRecoveryAuditSnapshot();
@@ -125,6 +147,18 @@ inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     out.callbackConflictCount = audit.callbackConflictCount;
     out.callbackConflictMetricsSaturated =
         audit.callbackConflictMetricsSaturated;
+    out.quoteAgeMetricsPresent = supplement.quoteAgeMetricsPresent;
+    out.primaryQuoteAgeValid = supplement.primaryQuoteAgeValid;
+    out.primaryQuoteAgeMs = supplement.primaryQuoteAgeMs;
+    out.snapshotAgeMetricsPresent = supplement.snapshotAgeMetricsPresent;
+    out.authoritativeSnapshotAgeValid =
+        supplement.authoritativeSnapshotAgeValid;
+    out.authoritativeSnapshotAgeMs =
+        supplement.authoritativeSnapshotAgeMs;
+    out.brokerReconciliationDurationMetricsPresent =
+        supplement.brokerReconciliationDurationMetricsPresent;
+    out.brokerReconciliationDuration =
+        supplement.brokerReconciliationDuration;
     return out;
 }
 
@@ -214,6 +248,22 @@ inline std::string SerializeIbRuntimeObservation(
         << ",\"callback_conflicts_total\":" << value.callbackConflictCount
         << ",\"callback_conflict_metrics_saturated\":"
         << (value.callbackConflictMetricsSaturated ? "true" : "false")
+        << ",\"quote_age_metrics_present\":"
+        << (value.quoteAgeMetricsPresent ? "true" : "false")
+        << ",\"primary_quote_age_valid\":"
+        << (value.primaryQuoteAgeValid ? "true" : "false")
+        << ",\"primary_quote_age_ms\":" << value.primaryQuoteAgeMs
+        << ",\"snapshot_age_metrics_present\":"
+        << (value.snapshotAgeMetricsPresent ? "true" : "false")
+        << ",\"authoritative_snapshot_age_valid\":"
+        << (value.authoritativeSnapshotAgeValid ? "true" : "false")
+        << ",\"authoritative_snapshot_age_ms\":"
+        << value.authoritativeSnapshotAgeMs
+        << ",\"broker_reconciliation_duration_metrics_present\":"
+        << (value.brokerReconciliationDurationMetricsPresent ? "true" : "false")
+        << ",\"broker_reconciliation_duration\":";
+    WriteOmsLatencyJson(out, value.brokerReconciliationDuration);
+    out
         // Network policy is host-owned and stays absent until an actual
         // nftables readback producer supplies it.
         << ",\"network_policy_metrics_present\":false"
@@ -225,8 +275,10 @@ inline std::string IbRuntimeObservation(
     HeptaIBGatewayAdapter& adapter,
     std::uint64_t observedAtMs,
     std::uint64_t monotonicMs,
-    const std::string& serviceEpoch)
+    const std::string& serviceEpoch,
+    const IbRuntimeObservationSupplement& supplement =
+        IbRuntimeObservationSupplement())
 {
     return SerializeIbRuntimeObservation(CaptureIbRuntimeObservation(
-        adapter, observedAtMs, monotonicMs, serviceEpoch));
+        adapter, observedAtMs, monotonicMs, serviceEpoch, supplement));
 }

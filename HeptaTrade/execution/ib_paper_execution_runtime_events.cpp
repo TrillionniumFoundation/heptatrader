@@ -145,6 +145,10 @@ bool IbPaperExecutionRuntimeComposition::BeginPostFillRiskRefresh(
     m_postFillNextRetryAt = now;
     m_postFillDeadline = now + std::chrono::seconds(8);
     m_postFillStableSince = std::chrono::steady_clock::time_point();
+    {
+        std::lock_guard<std::mutex> metricsLock(m_runtimeMetricsMutex);
+        m_postFillReconciliationStartedAt = now;
+    }
     m_postFillRiskRefreshPending.store(true);
     if (m_adapter->ReqRiskRefresh()) {
         m_postFillRiskRefreshAttempts = 1;
@@ -215,6 +219,20 @@ void IbPaperExecutionRuntimeComposition::DrivePostFillRiskRefresh()
             if (m_postFillTerminalObserved && m_coordinator)
                 m_coordinator->RecordOrderTerminal(m_postFillOrderId);
             m_postFillTerminalObserved = false;
+            {
+                std::lock_guard<std::mutex> metricsLock(m_runtimeMetricsMutex);
+                if (m_postFillReconciliationStartedAt !=
+                        std::chrono::steady_clock::time_point())
+                {
+                    const auto raw =
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            now - m_postFillReconciliationStartedAt).count();
+                    m_postFillReconciliationLatency.Observe(
+                        raw > 0 ? static_cast<std::uint64_t>(raw) : 0U);
+                    m_postFillReconciliationStartedAt =
+                        std::chrono::steady_clock::time_point();
+                }
+            }
             m_postFillRiskRefreshPending.store(false);
         }
         return;

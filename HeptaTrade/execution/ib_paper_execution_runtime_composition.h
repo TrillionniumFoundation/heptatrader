@@ -78,6 +78,19 @@ public:
     const std::string& ServiceEpoch() const { return m_serviceIdentity.serviceEpoch; }
     OmsJournalHealthSnapshot JournalHealth() const { return m_journal.GetHealthSnapshot(); }
     ExecutionRuntimeObservation CoordinatorObservation() const;
+    AuthoritativeTradingSnapshot AuthoritativeSnapshotForObservation(
+        std::uint64_t nowMs) const {
+        return m_authoritativeSnapshots.GetSnapshot(nowMs);
+    }
+    IBAuthoritativeQuoteSubscriptionHealth QuoteHealthForObservation() const {
+        return m_quoteSubscriptions ?
+            m_quoteSubscriptions->GetHealth() :
+            IBAuthoritativeQuoteSubscriptionHealth();
+    }
+    OmsLatencySummary BrokerReconciliationLatencyObservation() const {
+        std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+        return m_postFillReconciliationLatency;
+    }
 
     HeptaIBGatewayAdapter& Adapter();
     ExecutionCoordinator& Coordinator();
@@ -378,6 +391,9 @@ private:
     std::chrono::steady_clock::time_point m_postFillNextRetryAt;
     std::chrono::steady_clock::time_point m_postFillDeadline;
     std::chrono::steady_clock::time_point m_postFillStableSince;
+    mutable std::mutex m_runtimeMetricsMutex;
+    std::chrono::steady_clock::time_point m_postFillReconciliationStartedAt;
+    OmsLatencySummary m_postFillReconciliationLatency;
     struct RecentBrokerOrder
     {
         long orderId = -1;

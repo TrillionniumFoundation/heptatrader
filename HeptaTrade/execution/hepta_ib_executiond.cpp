@@ -10,6 +10,62 @@
 #include <string>
 #include <unistd.h>
 
+namespace
+{
+IbRuntimeObservationSupplement BuildIbRuntimeObservationSupplement(
+    const IbPaperExecutionRuntimeComposition& runtime,
+    std::uint64_t observedAtMs)
+{
+    IbRuntimeObservationSupplement out;
+    out.quoteAgeMetricsPresent = true;
+    const IBAuthoritativeQuoteSubscriptionHealth quotes =
+        runtime.QuoteHealthForObservation();
+    const std::map<std::string, IBAuthoritativeQuoteContractHealth>::const_iterator
+        primary = quotes.contracts.find(quotes.primaryInstrument);
+    if (quotes.complete && primary != quotes.contracts.end())
+    {
+        const std::uint64_t observed =
+            primary->second.quote.LivenessObservedAtMs();
+        if (observed != 0 && observed <= observedAtMs)
+        {
+            out.primaryQuoteAgeValid = true;
+            out.primaryQuoteAgeMs = observedAtMs - observed;
+        }
+    }
+
+    out.snapshotAgeMetricsPresent = true;
+    const AuthoritativeTradingSnapshot snapshot =
+        runtime.AuthoritativeSnapshotForObservation(observedAtMs);
+    const AuthoritativeSnapshotDomainState* domains[] = {
+        &snapshot.quotesState, &snapshot.accountsState,
+        &snapshot.positionsState, &snapshot.activeOrdersState
+    };
+    std::uint64_t oldest = observedAtMs;
+    bool valid = true;
+    for (const AuthoritativeSnapshotDomainState* domain : domains)
+    {
+        if (!domain->complete || domain->lastUpdatedAtMs == 0 ||
+            domain->lastUpdatedAtMs > observedAtMs)
+        {
+            valid = false;
+            break;
+        }
+        if (domain->lastUpdatedAtMs < oldest)
+            oldest = domain->lastUpdatedAtMs;
+    }
+    if (valid)
+    {
+        out.authoritativeSnapshotAgeValid = true;
+        out.authoritativeSnapshotAgeMs = observedAtMs - oldest;
+    }
+
+    out.brokerReconciliationDurationMetricsPresent = true;
+    out.brokerReconciliationDuration =
+        runtime.BrokerReconciliationLatencyObservation();
+    return out;
+}
+}
+
 int main(int argc, char**)
 {
     if (argc != 1)
@@ -70,9 +126,11 @@ int main(int argc, char**)
             std::cerr << ExecutionCapacityObservation(
                 runtime.JournalHealth(), runtime.CoordinatorObservation(),
                 observedAtMs, runtime.ServiceEpoch(), monotonicMs) << '\n';
+            const IbRuntimeObservationSupplement ibSupplement =
+                BuildIbRuntimeObservationSupplement(runtime, observedAtMs);
             std::cerr << IbRuntimeObservation(
                 runtime.Adapter(), observedAtMs, monotonicMs,
-                runtime.ServiceEpoch()) << '\n';
+                runtime.ServiceEpoch(), ibSupplement) << '\n';
         }
         struct timespec timeout;
         timeout.tv_sec = 1;
