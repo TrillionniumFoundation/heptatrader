@@ -70,15 +70,6 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
-    // Legacy read-only full-history primitive. Canonical V2 simulator restart
-    // restores the compact economic checkpoint plus bounded tail; stopped-state
-    // migration/rebase owns any required O(total-history) reconstruction.
-    bool ReplayCompleteHistory(
-        std::size_t maxRecordBytes,
-        const std::function<void(const OmsJournalEvent&)>& onEvent,
-        std::uint64_t& records,
-        std::string& reason);
-
     bool RecoveryCapacity(std::uint64_t& bytes,
                           std::uint64_t& records,
                           std::string& reason) const;
