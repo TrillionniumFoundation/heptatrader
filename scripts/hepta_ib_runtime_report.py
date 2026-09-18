@@ -392,17 +392,19 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
                 lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
             lines.append(f"{metric}_count {latency['samples']}")
             lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
-    for presence, field, metric in (
+    for presence, field, metric, saturation_metric in (
             ("broker_reconnect_duration_metrics_present",
              "broker_reconnect_duration",
-             "hepta_ib_broker_reconnect_duration_seconds"),
+             "hepta_ib_broker_reconnect_duration_seconds",
+             "hepta_ib_broker_reconnect_duration_metrics_saturated"),
             ("broker_reconnect_refresh_duration_metrics_present",
              "broker_reconnect_refresh_duration",
-             "hepta_ib_broker_reconnect_refresh_duration_seconds")):
+             "hepta_ib_broker_reconnect_refresh_duration_seconds",
+             "hepta_ib_broker_reconnect_refresh_duration_metrics_saturated")):
         if not latest.get(presence, False):
             continue
         latency = latest[field]
-        lines.append(metric + "_metrics_saturated " +
+        lines.append(saturation_metric + " " +
                      str(int(latency["saturated"])))
         if not latency["saturated"] and "bucket_counts" in latency:
             lines.append(f"# TYPE {metric} histogram")

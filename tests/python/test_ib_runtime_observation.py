@@ -178,6 +178,27 @@ class IbRuntimeObservationTests(unittest.TestCase):
             with self.subTest(index=index), self.assertRaises(ValueError):
                 report.validate(value)
 
+    def test_reconnect_latency_presence_shape_and_saturation_fail_closed(self) -> None:
+        wrong_presence = copy.deepcopy(self.sample)
+        wrong_presence["broker_reconnect_duration_metrics_present"] = 1
+        with self.assertRaises(ValueError):
+            report.validate(wrong_presence)
+
+        malformed = copy.deepcopy(self.sample)
+        malformed["broker_reconnect_refresh_duration"]["bucket_counts"] = [1]
+        with self.assertRaises(ValueError):
+            report.validate(malformed)
+
+        saturated = copy.deepcopy(self.sample)
+        saturated["broker_reconnect_duration"]["saturated"] = True
+        saturated = report.validate(saturated)
+        text = report.prometheus(
+            saturated, report.report([saturated], saturated["observed_at_ms"]))
+        self.assertIn(
+            "hepta_ib_broker_reconnect_duration_metrics_saturated 1", text)
+        self.assertNotIn(
+            "hepta_ib_broker_reconnect_duration_seconds_count", text)
+
     def test_alerts_expose_runtime_health_without_reason_labels(self) -> None:
         sample = copy.deepcopy(self.sample)
         sample["connected"] = False
