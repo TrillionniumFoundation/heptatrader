@@ -140,6 +140,16 @@ def validate(sample: Any) -> dict[str, Any]:
     if reconciliation_present:
         base_metrics.validate_latency(
             sample.get("broker_reconciliation_duration"))
+    for presence, latency in (
+            ("broker_reconnect_duration_metrics_present",
+             "broker_reconnect_duration"),
+            ("broker_reconnect_refresh_duration_metrics_present",
+             "broker_reconnect_refresh_duration")):
+        present = sample.get(presence, False)
+        if type(present) is not bool:
+            raise ValueError("invalid reconnect latency presence")
+        if present:
+            base_metrics.validate_latency(sample.get(latency))
     return sample
 
 
@@ -262,6 +272,10 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         "snapshot_age_metrics_present": latest.get("snapshot_age_metrics_present", False),
         "broker_reconciliation_duration_metrics_present": latest.get(
             "broker_reconciliation_duration_metrics_present", False),
+        "broker_reconnect_duration_metrics_present": latest.get(
+            "broker_reconnect_duration_metrics_present", False),
+        "broker_reconnect_refresh_duration_metrics_present": latest.get(
+            "broker_reconnect_refresh_duration_metrics_present", False),
         "authorization_effect": "NONE",
     }
 
@@ -313,6 +327,10 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
             latest.get("snapshot_age_metrics_present", False)),
         "hepta_ib_broker_reconciliation_duration_metrics_present": int(
             latest.get("broker_reconciliation_duration_metrics_present", False)),
+        "hepta_ib_broker_reconnect_duration_metrics_present": int(
+            latest.get("broker_reconnect_duration_metrics_present", False)),
+        "hepta_ib_broker_reconnect_refresh_duration_metrics_present": int(
+            latest.get("broker_reconnect_refresh_duration_metrics_present", False)),
         "hepta_ib_runtime_alerts": len(summary["alerts"]),
     }
     lines = [f"{name} {value}" for name, value in values.items()]
@@ -365,6 +383,28 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
             str(int(latency["saturated"])))
         if not latency["saturated"] and "bucket_counts" in latency:
             metric = "hepta_ib_broker_reconciliation_duration_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for index, count in enumerate(latency["bucket_counts"]):
+                cumulative += count
+                upper = (str(base_metrics.BOUNDS_NS[index] / 1e9)
+                         if index < len(base_metrics.BOUNDS_NS) else "+Inf")
+                lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
+            lines.append(f"{metric}_count {latency['samples']}")
+            lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
+    for presence, field, metric in (
+            ("broker_reconnect_duration_metrics_present",
+             "broker_reconnect_duration",
+             "hepta_ib_broker_reconnect_duration_seconds"),
+            ("broker_reconnect_refresh_duration_metrics_present",
+             "broker_reconnect_refresh_duration",
+             "hepta_ib_broker_reconnect_refresh_duration_seconds")):
+        if not latest.get(presence, False):
+            continue
+        latency = latest[field]
+        lines.append(metric + "_metrics_saturated " +
+                     str(int(latency["saturated"])))
+        if not latency["saturated"] and "bucket_counts" in latency:
             lines.append(f"# TYPE {metric} histogram")
             cumulative = 0
             for index, count in enumerate(latency["bucket_counts"]):

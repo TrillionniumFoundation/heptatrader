@@ -473,6 +473,7 @@ bool IbPaperExecutionRuntimeComposition::DispatchReconnectRefreshIfReady(
         retryScheduled = true;
         return true;
     }
+    BeginBrokerReconnectRefreshObservation(observedNow);
     m_reconnectRefreshDispatched.store(true);
     snapshotDeadline = std::min(
         m_reconnectDeadline,

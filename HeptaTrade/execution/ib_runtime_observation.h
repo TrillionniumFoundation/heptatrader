@@ -68,6 +68,10 @@ struct IbRuntimeObservationSnapshot
     std::uint64_t authoritativeSnapshotAgeMs = 0;
     bool brokerReconciliationDurationMetricsPresent = false;
     OmsLatencySummary brokerReconciliationDuration;
+    bool brokerReconnectDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectDuration;
+    bool brokerReconnectRefreshDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectRefreshDuration;
 };
 struct IbRuntimeObservationSupplement
 {
@@ -79,6 +83,10 @@ struct IbRuntimeObservationSupplement
     std::uint64_t authoritativeSnapshotAgeMs = 0;
     bool brokerReconciliationDurationMetricsPresent = false;
     OmsLatencySummary brokerReconciliationDuration;
+    bool brokerReconnectDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectDuration;
+    bool brokerReconnectRefreshDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectRefreshDuration;
 };
 
 
@@ -159,6 +167,13 @@ inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
         supplement.brokerReconciliationDurationMetricsPresent;
     out.brokerReconciliationDuration =
         supplement.brokerReconciliationDuration;
+    out.brokerReconnectDurationMetricsPresent =
+        supplement.brokerReconnectDurationMetricsPresent;
+    out.brokerReconnectDuration = supplement.brokerReconnectDuration;
+    out.brokerReconnectRefreshDurationMetricsPresent =
+        supplement.brokerReconnectRefreshDurationMetricsPresent;
+    out.brokerReconnectRefreshDuration =
+        supplement.brokerReconnectRefreshDuration;
     return out;
 }
 
@@ -263,6 +278,14 @@ inline std::string SerializeIbRuntimeObservation(
         << (value.brokerReconciliationDurationMetricsPresent ? "true" : "false")
         << ",\"broker_reconciliation_duration\":";
     WriteOmsLatencyJson(out, value.brokerReconciliationDuration);
+    out << ",\"broker_reconnect_duration_metrics_present\":"
+        << (value.brokerReconnectDurationMetricsPresent ? "true" : "false")
+        << ",\"broker_reconnect_duration\":";
+    WriteOmsLatencyJson(out, value.brokerReconnectDuration);
+    out << ",\"broker_reconnect_refresh_duration_metrics_present\":"
+        << (value.brokerReconnectRefreshDurationMetricsPresent ? "true" : "false")
+        << ",\"broker_reconnect_refresh_duration\":";
+    WriteOmsLatencyJson(out, value.brokerReconnectRefreshDuration);
     out
         // Network policy is host-owned and stays absent until an actual
         // nftables readback producer supplies it.

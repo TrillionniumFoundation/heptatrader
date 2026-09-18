@@ -91,6 +91,14 @@ public:
         std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
         return m_postFillReconciliationLatency;
     }
+    OmsLatencySummary BrokerReconnectLatencyObservation() const {
+        std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+        return m_brokerReconnectLatency;
+    }
+    OmsLatencySummary BrokerReconnectRefreshLatencyObservation() const {
+        std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+        return m_brokerReconnectRefreshLatency;
+    }
 
     HeptaIBGatewayAdapter& Adapter();
     ExecutionCoordinator& Coordinator();
@@ -186,6 +194,12 @@ private:
                              bool disconnect = true);
     bool RequestReconnectRiskRefresh(std::string& reason);
     bool ReconnectAuthoritativeStateReady(std::string& reason) const;
+    void BeginBrokerReconnectObservation(
+        std::chrono::steady_clock::time_point now) noexcept;
+    void BeginBrokerReconnectRefreshObservation(
+        std::chrono::steady_clock::time_point now) noexcept;
+    void FinishBrokerReconnectObservation(
+        std::chrono::steady_clock::time_point now) noexcept;
     bool AllowsRiskIncrease(std::string& reason) const;
     bool AllowsAuthoritativeFlatten(
         std::string& reason, bool requireSettledQuote = false) const;
@@ -394,6 +408,10 @@ private:
     mutable std::mutex m_runtimeMetricsMutex;
     std::chrono::steady_clock::time_point m_postFillReconciliationStartedAt;
     OmsLatencySummary m_postFillReconciliationLatency;
+    std::chrono::steady_clock::time_point m_brokerReconnectStartedAt;
+    std::chrono::steady_clock::time_point m_brokerReconnectRefreshStartedAt;
+    OmsLatencySummary m_brokerReconnectLatency;
+    OmsLatencySummary m_brokerReconnectRefreshLatency;
     struct RecentBrokerOrder
     {
         long orderId = -1;

@@ -60,6 +60,10 @@ int main() {
     value.authoritativeSnapshotAgeMs = 250;
     value.brokerReconciliationDurationMetricsPresent = true;
     value.brokerReconciliationDuration.Observe(4000000);
+    value.brokerReconnectDurationMetricsPresent = true;
+    value.brokerReconnectDuration.Observe(8000000);
+    value.brokerReconnectRefreshDurationMetricsPresent = true;
+    value.brokerReconnectRefreshDuration.Observe(5000000);
     std::cout << SerializeIbRuntimeObservation(value) << "\n";
 }
 '''
@@ -99,6 +103,8 @@ class IbRuntimeObservationTests(unittest.TestCase):
         self.assertIn("hepta_ib_primary_quote_age_ms 125", text)
         self.assertIn("hepta_ib_authoritative_snapshot_age_ms 250", text)
         self.assertIn("hepta_ib_broker_reconciliation_duration_seconds_count 1", text)
+        self.assertIn("hepta_ib_broker_reconnect_duration_seconds_count 1", text)
+        self.assertIn("hepta_ib_broker_reconnect_refresh_duration_seconds_count 1", text)
         self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 0", text)
         self.assertNotIn("fixture", text)
         self.assertNotIn("agent", text)
@@ -113,12 +119,16 @@ class IbRuntimeObservationTests(unittest.TestCase):
         sample["quote_age_metrics_present"] = False
         sample["snapshot_age_metrics_present"] = False
         sample["broker_reconciliation_duration_metrics_present"] = False
+        sample["broker_reconnect_duration_metrics_present"] = False
+        sample["broker_reconnect_refresh_duration_metrics_present"] = False
         sample = report.validate(sample)
         self.assertFalse(sample["network_policy_metrics_present"])
         text = report.prometheus(sample, report.report([sample], 10000))
         self.assertNotIn("callback_queue_lag_seconds", text)
         self.assertNotIn("callback_conflicts_total", text)
         self.assertNotIn("network_policy_state", text)
+        self.assertNotIn("broker_reconnect_duration_seconds", text)
+        self.assertNotIn("broker_reconnect_refresh_duration_seconds", text)
 
     def test_continuous_stall_durations_are_bounded_by_retained_samples_and_epoch(self) -> None:
         samples = []

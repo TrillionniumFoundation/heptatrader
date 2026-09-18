@@ -62,6 +62,12 @@ IbRuntimeObservationSupplement BuildIbRuntimeObservationSupplement(
     out.brokerReconciliationDurationMetricsPresent = true;
     out.brokerReconciliationDuration =
         runtime.BrokerReconciliationLatencyObservation();
+    out.brokerReconnectDurationMetricsPresent = true;
+    out.brokerReconnectDuration =
+        runtime.BrokerReconnectLatencyObservation();
+    out.brokerReconnectRefreshDurationMetricsPresent = true;
+    out.brokerReconnectRefreshDuration =
+        runtime.BrokerReconnectRefreshLatencyObservation();
     return out;
 }
 }
