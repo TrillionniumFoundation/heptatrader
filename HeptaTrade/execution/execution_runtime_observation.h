@@ -72,7 +72,8 @@ struct ExecutionOperationObservation
     OmsLatencySummary latency; // Existing lock-held work scope, preserved.
     bool timingPresent = false;
     OmsLatencySummary lockWait;
-    OmsLatencySummary totalLatency; // Call entry through result/exception, before unlock.
+    OmsLatencySummary outsideLock; // Venue callback plus re-acquisition while the coordinator mutex is released.
+    OmsLatencySummary totalLatency; // Call entry through result/exception, before final unlock.
     bool saturated = false;
     static std::size_t ResultIndex(ExecutionCommandStatus status) noexcept
     {
@@ -136,11 +137,25 @@ public:
         else
             m_heldNs += elapsed;
         m_heldActive = false;
+        m_outsideStart = now;
+        m_outsideActive = true;
     }
 
     void ResumeHeld(Clock::time_point now = Clock::now()) noexcept
     {
         if (m_heldActive || m_finished) return;
+        if (m_outsideActive)
+        {
+            const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                now - m_outsideStart).count();
+            const std::uint64_t elapsed =
+                raw > 0 ? static_cast<std::uint64_t>(raw) : 0U;
+            const std::uint64_t maximum =
+                std::numeric_limits<std::uint64_t>::max();
+            if (elapsed > maximum - m_outsideNs) m_outsideNs = maximum;
+            else m_outsideNs += elapsed;
+            m_outsideActive = false;
+        }
         m_heldStart = now;
         m_heldActive = true;
     }
@@ -148,8 +163,11 @@ public:
     void Finish(Clock::time_point now = Clock::now()) noexcept
     {
         if (m_finished) return;
+        if (m_outsideActive) ResumeHeld(now);
         PauseHeld(now);
+        m_outsideActive = false;
         m_target.latency.Observe(m_heldNs);
+        m_target.outsideLock.Observe(m_outsideNs);
         m_total.Finish(now);
         m_finished = true;
     }
@@ -158,8 +176,11 @@ private:
     ExecutionOperationObservation& m_target;
     OmsScopedLatencySample m_total;
     Clock::time_point m_heldStart;
+    Clock::time_point m_outsideStart{};
     std::uint64_t m_heldNs = 0;
+    std::uint64_t m_outsideNs = 0;
     bool m_heldActive = true;
+    bool m_outsideActive = false;
     bool m_finished = false;
 };
 
@@ -230,6 +251,8 @@ inline std::string ExecutionCapacityObservation(
         {
             out << ",\"" << names[i] << "_lock_wait\":";
             WriteOmsLatencyJson(out, execution.operations[i].lockWait);
+            out << ",\"" << names[i] << "_outside_lock\":";
+            WriteOmsLatencyJson(out, execution.operations[i].outsideLock);
             out << ",\"" << names[i] << "_total\":";
             WriteOmsLatencyJson(out, execution.operations[i].totalLatency);
         }

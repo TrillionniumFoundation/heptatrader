@@ -80,7 +80,7 @@ EXECUTION_GAUGES = ("retained_commands", "order_owners", "fenced_owners",
                     "recovery_only_owners", "retained_send_attempts")
 EXECUTION_LATENCIES = ("place_latency", "cancel_latency", "flatten_latency", "recovery_latency")
 EXECUTION_TIMING_EXTENSION = tuple(name + suffix for name in EXECUTION_LATENCIES[:3]
-                                   for suffix in ("_lock_wait", "_total"))
+                                   for suffix in ("_lock_wait", "_outside_lock", "_total"))
 UINT64_MAX = (1 << 64) - 1
 MAX_BYTES, MAX_LINE, MAX_LINES = 64 << 20, 65536, 100000
 
@@ -168,18 +168,30 @@ def validate_execution(value):
                 raise ValueError("execution reason/result accounting mismatch")
     validate_latency(value.get("recovery_latency"))
     for name in EXECUTION_LATENCIES[:3]:
-        pair = (name + "_lock_wait", name + "_total")
-        if not any(key in value for key in pair):
-            continue  # Old/idle producer: absence is not a measured zero.
-        for key in pair:
+        wait_key, outside_key, total_key = (
+            name + "_lock_wait", name + "_outside_lock", name + "_total")
+        extension = (wait_key, outside_key, total_key)
+        if not any(key in value for key in extension):
+            continue
+        legacy = outside_key not in value
+        required = (wait_key, total_key) if legacy else extension
+        for key in required:
             validate_latency(value.get(key))
-        held, wait, total = value[name], value[pair[0]], value[pair[1]]
-        if not any(metric["saturated"] for metric in (held, wait, total)):
-            if held["samples"] != wait["samples"] or held["samples"] != total["samples"]:
+        held, wait, total = value[name], value[wait_key], value[total_key]
+        outside = None if legacy else value[outside_key]
+        metrics = (held, wait, total) if legacy else (held, wait, outside, total)
+        if not any(metric["saturated"] for metric in metrics):
+            samples = held["samples"]
+            if any(metric["samples"] != samples for metric in metrics):
                 raise ValueError("execution timing sample accounting mismatch")
-            if total["total_ns"] != held["total_ns"] + wait["total_ns"]:
+            expected_total = held["total_ns"] + wait["total_ns"]
+            expected_last = held["last_ns"] + wait["last_ns"]
+            if outside is not None:
+                expected_total += outside["total_ns"]
+                expected_last += outside["last_ns"]
+            if total["total_ns"] != expected_total:
                 raise ValueError("execution timing scope accounting mismatch")
-            if total["last_ns"] != held["last_ns"] + wait["last_ns"]:
+            if total["last_ns"] != expected_last:
                 raise ValueError("execution timing last-sample accounting mismatch")
     return value
 
