@@ -4,10 +4,14 @@
 
 ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderCommand& command)
 {
-    return ObserveCommand(1U, [&]() { return CancelOrderLocked(command); });
+    return ObserveCommand(1U, [&](std::unique_lock<std::mutex>& lock) {
+        return CancelOrderLocked(command, lock);
+    });
 }
 
-ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrderCommand& command)
+ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
+    const CancelOrderCommand& command,
+    std::unique_lock<std::mutex>& coordinatorLock)
 {
     const AgentExecutionContext& context = command.context;
 
@@ -31,6 +35,11 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
                             command.orderId);
     if (m_mutationBlocked)
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, command.orderId);
+    if (m_externalMutationAdmissionClosed)
+        return RefuseBeforeIntent(
+            context, "MUTATION_CONTROL_QUIESCING",
+            "external mutation dispatch is quiescing for a control transition",
+            command.orderId);
     if (command.orderId < 0 || !m_callbacks.cancelOrder)
         return RefuseBeforeIntent(context, "INVALID_CANCEL", "valid order_id and cancel callback are required",
                             command.orderId);
@@ -90,7 +99,19 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
         return RejectLocked(context, "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED",
                             "cancel was not sent", command.orderId, requestHash);
 
-    const VenueCancelResult outcome = TryCancelAtVenueLocked(command.orderId);
+    if (!BeginExternalMutationLocked())
+        return RejectLocked(
+            context, "VENUE_DISPATCH_QUIESCING",
+            "external venue dispatch is closed for a control transition",
+            command.orderId, requestHash);
+    VenueCancelResult outcome;
+    coordinatorLock.unlock();
+    {
+        std::lock_guard<std::mutex> dispatchLock(m_externalDispatchMutex);
+        outcome = TryCancelAtVenueLocked(command.orderId);
+    }
+    coordinatorLock.lock();
+    EndExternalMutationLocked();
     if (outcome.disposition == VenueCancelDisposition::Deferred)
         return HandleDeferredCancelLocked(command, context, instrument, side,
                                           requestHash, requestKey, pending);
