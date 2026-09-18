@@ -593,7 +593,8 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
 {
     universe = PaperTerminalMutationUniverse();
     if (!ValidPaperTerminalFenceBinding(binding, reason)) return false;
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    WaitExternalMutationsQuiescent(lock);
 
     if (m_generationStore.IsActive())
         return EnterPaperTerminalFenceAndProjectGenerationAwareLocked(
