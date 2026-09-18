@@ -58,6 +58,15 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
     std::string suppressReason;
     if (m_callbacks.canCancelIbOrder)
     {
+        // Different command identities must not concurrently pass the same
+        // read-only eligibility boundary and later emit duplicate cancel
+        // effects. Reserve this order before releasing the coordinator lock.
+        if (!m_cancelPreflightsInFlight.insert(command.orderId).second)
+            return RefuseBeforeIntent(
+                context, "CANCEL_PREFLIGHT_IN_FLIGHT",
+                "another cancel eligibility check is already in flight",
+                command.orderId);
+
         // The real IB eligibility reader takes the adapter API mutex. A slow
         // place/flatten provider may hold that mutex across vendor IO, so this
         // read-only preflight must not retain the coordinator state mutex while
@@ -77,6 +86,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         }
         lock.lock();
         timing.ResumeHeld();
+        m_cancelPreflightsInFlight.erase(command.orderId);
 
         const std::unordered_map<std::string, RequestRecord>::const_iterator
             refreshedExisting = m_requests.find(requestKey);

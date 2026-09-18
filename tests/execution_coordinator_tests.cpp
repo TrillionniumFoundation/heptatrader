@@ -2130,6 +2130,22 @@ void TestCancelEligibilityPreflightDoesNotHoldCoordinatorLock()
     assert(status.first);
     assert(status.second.status == ExecutionCommandStatus::Accepted);
 
+    CancelOrderCommand competing = cancel;
+    competing.context.toolCallId = "cancel-preflight-competing";
+    auto competingFuture = std::async(std::launch::async, [&]() {
+        return coordinator.CancelOrder(competing);
+    });
+    assert(competingFuture.wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready);
+    const auto competingResult = competingFuture.get();
+    assert(competingResult.status == ExecutionCommandStatus::Rejected);
+    assert(competingResult.reasonCode == "CANCEL_PREFLIGHT_IN_FLIGHT");
+    ExecutionCommandResult competingStatus;
+    assert(!coordinator.GetCommandStatus(
+        "agent-a", "session-1", "cancel-preflight-competing",
+        competingStatus));
+    assert(cancelCalls == 0);
+
     // Authority may change while the coordinator lock is released. Revalidate
     // before persisting cancel intent or invoking the venue.
     assert(coordinator.FenceSessionOwner("agent-a", "session-1") == 1);

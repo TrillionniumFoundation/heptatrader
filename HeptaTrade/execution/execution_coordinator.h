@@ -465,6 +465,11 @@ private:
     std::string m_mutationBlockReason;
     bool m_riskMutationDispatchInFlight = false;
     std::uint64_t m_venueDispatchesInFlight = 0;
+    // Pre-intent, process-local reservation only. It prevents two different
+    // cancel command identities from concurrently passing the unlocked
+    // adapter eligibility read for the same order. No Broker effect exists
+    // while an order ID is present here, so restart intentionally clears it.
+    std::unordered_set<long> m_cancelPreflightsInFlight;
     bool m_paperTerminalFencePresent = false;
     PaperTerminalFenceBinding m_paperTerminalFenceBinding;
 };
