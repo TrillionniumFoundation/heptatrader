@@ -59,7 +59,7 @@
       "id": "RUNTIME-TELEMETRY-003",
       "domain": "REPOSITORY",
       "state": "OPEN",
-      "summary": "Complete per-reason execution, callback/quote age, network-policy and Broker reconciliation telemetry is not yet delivered or target-host observed.",
+      "summary": "Quote/snapshot age, network-policy observed state and exact Broker reconciliation telemetry remain incomplete or not target-host observed.",
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/technical/runtime-cost-observations.md",
@@ -73,7 +73,7 @@
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter now derives three fixed-cardinality continuous observed-duration lower bounds from recent samples: post-fill reconciliation pending, authoritative snapshot incompleteness and terminal callback drain pending; service/connection epoch changes and monotonic-clock regression reset those durations rather than manufacturing continuity. The `ib-paper` telemetry profile independently parses and atomically publishes OMS, IB and Gateway textfiles; invalid IB input replaces only IB health with explicit collector failure while valid OMS/Gateway publication continues. Exact Broker reconciliation timers, callback lag/conflict, quote/snapshot age and network-policy producers remain absent with explicit presence=false rather than synthetic zero. No target-host SLO or real notification is proven."
+      "disposition": "OPEN. Coordinator fixed local reason/timing bins remain implemented. IB PAPER emits one lock-bound authoritative recovery-audit observation. Callback receive-to-normalization lag now has a real steady-clock producer (sample count, total and maximum milliseconds), and callback/state conflicts have a fixed-cardinality cumulative producer; both are exported with presence=true and no payload labels. The reporter still derives bounded continuous pending-duration lower bounds for post-fill reconciliation, authoritative snapshot incompleteness and terminal callback drain. Quote/snapshot age, exact Broker reconciliation duration and target-host network-policy observed state remain absent; network-policy presence stays false rather than fabricating process-local authority. No target-host SLO or real notification is proven."
     },
     {
       "id": "HOST-OPERATIONS-003",
