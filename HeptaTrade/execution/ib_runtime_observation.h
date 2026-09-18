@@ -57,6 +57,9 @@ struct IbRuntimeObservationSnapshot
     bool terminalTransportHalted = false;
     bool terminalTransportDrainVerified = false;
     std::uint64_t terminalCallbacksInFlight = 0;
+    OmsLatencySummary callbackQueueLag;
+    std::uint64_t callbackConflictCount = 0;
+    bool callbackConflictMetricsSaturated = false;
 };
 
 inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
@@ -118,6 +121,10 @@ inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     out.terminalTransportDrainVerified =
         adapter.IsTerminalTransportDrainVerified();
     out.terminalCallbacksInFlight = adapter.TerminalCallbacksInFlight();
+    out.callbackQueueLag = audit.callbackQueueLag;
+    out.callbackConflictCount = audit.callbackConflictCount;
+    out.callbackConflictMetricsSaturated =
+        audit.callbackConflictMetricsSaturated;
     return out;
 }
 
@@ -200,10 +207,15 @@ inline std::string SerializeIbRuntimeObservation(
         << ",\"terminal_transport_drain_verified\":"
         << (value.terminalTransportDrainVerified ? "true" : "false")
         << ",\"terminal_callbacks_in_flight\":" << value.terminalCallbacksInFlight
-        // Presence bits prevent absent callback/network latency families from
-        // being mistaken for observed zero until their producers are added.
-        << ",\"callback_lag_metrics_present\":false"
-        << ",\"callback_conflict_metrics_present\":false"
+        << ",\"callback_lag_metrics_present\":true"
+        << ",\"callback_queue_lag\":";
+    WriteOmsLatencyJson(out, value.callbackQueueLag);
+    out << ",\"callback_conflict_metrics_present\":true"
+        << ",\"callback_conflicts_total\":" << value.callbackConflictCount
+        << ",\"callback_conflict_metrics_saturated\":"
+        << (value.callbackConflictMetricsSaturated ? "true" : "false")
+        // Network policy is host-owned and stays absent until an actual
+        // nftables readback producer supplies it.
         << ",\"network_policy_metrics_present\":false"
         << "}";
     return out.str();

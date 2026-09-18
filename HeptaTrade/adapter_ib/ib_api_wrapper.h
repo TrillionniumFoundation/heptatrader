@@ -113,6 +113,9 @@ struct IBEvent {
     IBOrderLite order;
     std::uint64_t overflowGeneration = 0;
     std::uint64_t droppedEventCount = 0;
+    // Producer-side steady-clock timestamp taken immediately before queue
+    // admission. Zero means a synthetic/non-queued event.
+    std::uint64_t queueIngressMonotonicNs = 0;
 };
 
 // Auxiliary transport shutdown observations. These fields are never an

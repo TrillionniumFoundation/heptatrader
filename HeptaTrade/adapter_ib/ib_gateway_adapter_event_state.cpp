@@ -78,6 +78,12 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
 IBAuthoritativeCorrelationSnapshot HeptaIBGatewayAdapter::GetAuthoritativeCorrelationSnapshot() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     return m_correlationSnapshot;
+std::uint64_t CallbackMonotonicNs() {
+    const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    return raw > 0 ? static_cast<std::uint64_t>(raw) : 1U;
+}
+
 }
 
 bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
@@ -309,6 +315,18 @@ HeptaIBGatewayAdapter::GetAuthoritativeFxCashExposures() const {
     return m_authoritativeFxCashExposures;
 }
 
+void HeptaIBGatewayAdapter::RecordCallbackConflict() noexcept {
+    if (m_callbackConflictCount == std::numeric_limits<std::uint64_t>::max())
+        m_callbackConflictMetricsSaturated = true;
+    else
+        ++m_callbackConflictCount;
+}
+
+void HeptaIBGatewayAdapter::MarkCallbackConflict(bool& flag) noexcept {
+    if (!flag) RecordCallbackConflict();
+    flag = true;
+}
+
 bool HeptaIBGatewayAdapter::IsConnected() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     return m_api ? m_api->IsConnected() : false;
@@ -347,6 +365,13 @@ bool HeptaIBGatewayAdapter::PollOnce(int timeoutMs) {
 bool HeptaIBGatewayAdapter::DequeueCurrentEpochEvent(IBEvent& event) {
     do {
         if (!m_api->TryDequeueEvent(event)) return false;
+        if (event.queueIngressMonotonicNs != 0) {
+            const std::uint64_t now = CallbackMonotonicNs();
+            if (now >= event.queueIngressMonotonicNs)
+                m_callbackQueueLag.Observe(now - event.queueIngressMonotonicNs);
+            else
+                m_callbackQueueLag.saturated = true;
+        }
         if (event.connectionEpoch != 0 && event.connectionEpoch != m_connectionEpoch) {
             EmitObsEvent("event.stale_connection_epoch",
                 "\"eventEpoch\":" + std::to_string(event.connectionEpoch)
@@ -630,6 +655,7 @@ bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
         if ((outEvent.account.empty() || outEvent.account == m_cfg.account) &&
             HasEconomicFillEvidence(outEvent))
             InvalidateRiskSnapshot("IB_RISK_UNTRUSTED_BOUND_ORDER_EVENT");
+        RecordCallbackConflict();
         EmitObsEvent("callback.bound_order_identity_rejected",
             "\"order_id\":" + std::to_string(outEvent.id));
     }
@@ -694,14 +720,14 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
                 return static_cast<char>(std::tolower(ch));
             });
         if (ready != "true" && ready != "false") {
-            if (initialSnapshot) m_fxCashRefreshConflict = true;
+            if (initialSnapshot) MarkCallbackConflict(m_fxCashRefreshConflict);
             else InvalidateRiskSnapshot("IB_ACCOUNT_READY_VALUE_INVALID");
             return true;
         }
         if (initialSnapshot) {
             if (m_accountReadyObserved && m_accountReady !=
                     (ready == "true"))
-                m_fxCashRefreshConflict = true;
+                MarkCallbackConflict(m_fxCashRefreshConflict);
             m_accountReadyObserved = true;
             m_accountReady = ready == "true";
         } else if (ready == "false") {
@@ -719,7 +745,7 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
     const double parsed = std::strtod(event.value.c_str(), &end);
     if (errno == ERANGE || end == event.value.c_str() || end == nullptr ||
         *end != '\0' || !std::isfinite(parsed)) {
-        if (initialSnapshot) m_fxCashRefreshConflict = true;
+        if (initialSnapshot) MarkCallbackConflict(m_fxCashRefreshConflict);
         else InvalidateRiskSnapshot("IB_FX_CASH_BALANCE_INVALID");
         return true;
     }
@@ -728,7 +754,7 @@ bool HeptaIBGatewayAdapter::ConsumeFxCashAccountValue(
             m_pendingFxCashBalances.find(currency);
         if (existing != m_pendingFxCashBalances.end() &&
             existing->second != parsed)
-            m_fxCashRefreshConflict = true;
+            MarkCallbackConflict(m_fxCashRefreshConflict);
         else
             m_pendingFxCashBalances[currency] = parsed;
         return true;
@@ -857,7 +883,7 @@ void HeptaIBGatewayAdapter::ApplyPositionSnapshotItem(
     const IBEvent& event) {
     if (m_cfg.account.empty() || event.account != m_cfg.account) return;
     if (!std::isfinite(event.number)) {
-        m_positionsRefreshConflict = true;
+        MarkCallbackConflict(m_positionsRefreshConflict);
         m_riskSnapshot.reasonCode = "IB_POSITION_VALUE_INVALID";
         return;
     }
@@ -867,7 +893,7 @@ void HeptaIBGatewayAdapter::ApplyPositionSnapshotItem(
     const bool contractInserted = m_pendingPositionContracts.insert(
         std::make_pair(event.key, event.contract)).second;
     if (!inserted.second || !contractInserted) {
-        m_positionsRefreshConflict = true;
+        MarkCallbackConflict(m_positionsRefreshConflict);
         m_riskSnapshot.reasonCode = "IB_POSITION_IDENTITY_CONFLICT";
     }
 }
@@ -1013,7 +1039,7 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
     if (outEvent.type == IBEventType::OpenOrder && m_correlationRefreshPending) {
         if (m_cfg.account.empty() || outEvent.account != m_cfg.account) return;
         if (outEvent.id < 0) {
-            m_correlationRefreshConflict = true;
+            MarkCallbackConflict(m_correlationRefreshConflict);
             m_correlationSnapshot.reasonCode = "IB_ACTIVE_ORDER_ID_INVALID";
             return;
         }
@@ -1027,11 +1053,11 @@ void HeptaIBGatewayAdapter::ApplyActiveCorrelationEvent(
             const auto inserted = m_pendingCorrelationOrderIds.insert(
                 std::make_pair(correlationId, orderId));
             if (!inserted.second && inserted.first->second != orderId) {
-                m_correlationRefreshConflict = true;
+                MarkCallbackConflict(m_correlationRefreshConflict);
                 m_correlationSnapshot.reasonCode = "IB_CORRELATION_DUPLICATE_CONFLICT";
             }
         } else if (outEvent.order.orderRef.compare(0, 2, "H1") == 0) {
-            m_correlationRefreshConflict = true;
+            MarkCallbackConflict(m_correlationRefreshConflict);
             m_correlationSnapshot.reasonCode = decodeReason;
         }
     } else if (outEvent.type == IBEventType::OpenOrderEnd && m_correlationRefreshPending) {
@@ -1215,7 +1241,7 @@ void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEven
                 outEvent.order.orderRef, correlationId, decodeReason)) {
             const long orderId = static_cast<long>(outEvent.id);
             if (orderId < 0 || !IsIbFinalStatus(outEvent.key)) {
-                m_terminalCorrelationRefreshConflict = true;
+                MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
                 m_terminalCorrelationSnapshot.reasonCode = orderId < 0 ?
                     "IB_TERMINAL_ORDER_ID_INVALID" :
                     "IB_TERMINAL_ORDER_STATUS_NOT_FINAL";
@@ -1230,7 +1256,7 @@ void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEven
                      byCorrelation.first->second != orderId) ||
                     (!byOrderId.second &&
                      byOrderId.first->second != correlationId)) {
-                    m_terminalCorrelationRefreshConflict = true;
+                    MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
                     m_terminalCorrelationSnapshot.reasonCode =
                         "IB_TERMINAL_CORRELATION_DUPLICATE_CONFLICT";
                 } else {
@@ -1238,7 +1264,7 @@ void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEven
                 }
             }
         } else if (outEvent.order.orderRef.compare(0, 2, "H1") == 0) {
-            m_terminalCorrelationRefreshConflict = true;
+            MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
             m_terminalCorrelationSnapshot.reasonCode = decodeReason;
         }
     } else if (outEvent.type == IBEventType::CompletedOrdersEnd &&

@@ -502,6 +502,10 @@ HeptaIBGatewayAdapter::BuildRecoveryAuditSnapshotLocked() const {
         (m_recoveryAuditBarrierReason.empty() ?
             "IB_RECOVERY_AUDIT_BARRIER_NOT_COMPLETE" :
             m_recoveryAuditBarrierReason);
+    snapshot.callbackQueueLag = m_callbackQueueLag;
+    snapshot.callbackConflictCount = m_callbackConflictCount;
+    snapshot.callbackConflictMetricsSaturated =
+        m_callbackConflictMetricsSaturated;
     return snapshot;
 }
 
