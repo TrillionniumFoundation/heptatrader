@@ -2062,6 +2062,53 @@ void TestSlowVenueDispatchDoesNotHoldCoordinatorLock()
     std::remove(path.c_str());
 }
 
+
+void TestCompactTerminalUniverseExceedsLegacyEnumerationLimit()
+{
+    const std::string empty =
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    PaperTerminalMutationRecord tail;
+    tail.agentId = "agent-a";
+    tail.sessionId = "session-1";
+    tail.toolCallId = "tail-command";
+    tail.operation = "place";
+    tail.venueCorrelationId = "venue-tail";
+
+    PaperTerminalMutationUniverse universe;
+    std::string reason;
+    assert(BuildPaperTerminalPartitionedUniverse(
+        5000, empty, 5000, empty, {tail}, universe, reason));
+    assert(reason.empty());
+    assert(universe.compactSummary);
+    assert(universe.commands.empty());
+    assert(universe.correlations.empty());
+    assert(universe.commandCount == 5001);
+    assert(universe.correlationCount == 5001);
+
+    PaperTerminalFenceBinding binding;
+    binding.owner.agentId = "agent-a";
+    binding.owner.sessionId = "session-1";
+    binding.owner.account = "DU123";
+    binding.owner.executionDomain = "PAPER";
+    binding.finalizationId = "finalize-large";
+    binding.preliminaryReceiptSha256 = empty;
+    binding.recoveryIngressFence = 1;
+    binding.serviceEpoch = "service-1";
+    binding.serviceFencingGeneration = 1;
+    binding.serviceProcessId = 1;
+    binding.serviceProcessStartTicks = 1;
+    binding.brokerConnectionEpoch = 1;
+    binding.brokerSocketIdentitySha256 = empty;
+
+    PaperTerminalMutationManifest manifest;
+    assert(BuildPaperTerminalMutationManifest(
+        binding, universe, manifest, reason));
+    assert(reason.empty());
+    assert(manifest.universe.compactSummary);
+    assert(manifest.universe.commandCount == 5001);
+    assert(manifest.contents.size() < 4096);
+}
+
 } // namespace
 
 #include "venue_placement_cases.h"
@@ -2094,6 +2141,7 @@ int main(int argc, char** argv)
     TestCoordinatorMeasurementsPreserveExceptionsAndFlattenRejection();
     TestVenuePlacementConstructionAndResultContract();
     TestSlowVenueDispatchDoesNotHoldCoordinatorLock();
+    TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();
     TestJournalFailurePreventsBrokerSend();
