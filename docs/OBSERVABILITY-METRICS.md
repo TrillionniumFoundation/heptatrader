@@ -90,3 +90,19 @@ revision's promotion, not an already qualified immutable artifact. Evidence of
 a compromised running artifact or safety boundary remains a stop/fence issue.
 No metrics file may disarm a kill switch, mint a session or authorize trading.
 Never export credentials, tokens, encrypted-store plaintext or Broker secrets.
+
+
+## IB callback producer closure
+
+The IB callback boundary now stamps each accepted SDK callback with a process-local
+steady-clock receive time. The adapter measures receive-to-normalization lag as
+fixed-cardinality cumulative sample count, total milliseconds and maximum
+milliseconds, and counts fixed-dimension authoritative callback/state conflicts.
+These families are emitted with presence=true only because real producers exist;
+they contain no account, order, instrument or command labels.
+
+Network-policy observed state remains presence=false because nftables/effective
+egress is target-host authority, not something the process can infer safely.
+Quote/snapshot age and exact end-to-end Broker reconciliation duration remain
+separate producer work until their authoritative clocks and source contracts are
+implemented.
