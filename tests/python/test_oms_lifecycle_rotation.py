@@ -170,6 +170,11 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertEqual(state["max_order_id"], 1000000)
         self.assertEqual(state["admitted_orders"], 1)
         self.assertEqual(state["positions"], {"EUR.USD": 10.0})
+        reconstructed = lifecycle._reconstruct_simulator_state(
+            self.store, first["generation"], max_bytes=1024 * 1024,
+            max_records=1024, max_record_bytes=262144)
+        self.assertEqual(reconstructed, state,
+                         "stopped-state migration must reconstruct old V2 economic state")
 
         self.append([
             sim("place_sent", 1000001, "SELL", 4.0, status="submitted", ts=2000),
