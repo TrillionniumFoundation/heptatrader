@@ -132,6 +132,20 @@ int main() {
                          << "\"generation\":11,\"complete\":true,\"positions\":["
                          << "{\"instrument\":\"600000.SH\",\"quantity\":100,"
                          << "\"sellable_quantity\":80,\"cost\":10.5}]}}";
+            else if (operation == "order_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.orders.v1\","
+                         << "\"generation\":11,\"complete\":true,\"orders\":["
+                         << "{\"order_id\":\"O-1\",\"instrument\":\"600000.SH\","
+                         << "\"side\":\"BUY\",\"status\":\"PARTIALLY_FILLED\","
+                         << "\"quantity\":100,\"filled_quantity\":20,"
+                         << "\"limit_price\":10.2}]}}";
+            else if (operation == "trade_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.trades.v1\","
+                         << "\"generation\":11,\"complete\":true,\"trades\":["
+                         << "{\"trade_id\":\"T-1\",\"order_id\":\"O-1\","
+                         << "\"instrument\":\"600000.SH\",\"side\":\"BUY\","
+                         << "\"quantity\":20,\"price\":10.15,"
+                         << "\"occurred_at_ms\":12340}]}}";
             else if (operation == "quote_subscribe")
                 response << ",\"payload\":{\"schema\":\"heptatrader.xt.quote.v1\","
                          << "\"generation\":12,\"complete\":true,"
@@ -156,6 +170,14 @@ int main() {
         Require(xt.ReqPositions(), "HXQ1 position snapshot request should round-trip");
         Require(xt.AccountPositionReadReady(),
                 "same-epoch/same-generation account and position snapshots should be ready");
+        Require(!xt.AccountPositionOrderTradeReadReady(),
+                "account/position alone must not claim order/trade completeness");
+        Require(xt.ReqOrders(), "HXQ1 order snapshot request should round-trip");
+        Require(!xt.AccountPositionOrderTradeReadReady(),
+                "order snapshot without trades must not complete the full read barrier");
+        Require(xt.ReqTrades(), "HXQ1 trade snapshot request should round-trip");
+        Require(xt.AccountPositionOrderTradeReadReady(),
+                "same-generation account/position/order/trade snapshots should be ready");
         HeptaXTAccountSnapshot account;
         Require(xt.GetAccountSnapshot(account) && account.generation == 11 &&
                     account.currency == "CNY" && account.totalAsset == 1500.0 &&
@@ -168,13 +190,30 @@ int main() {
                     positions.positions[0].quantity == 100.0 &&
                     positions.positions[0].sellableQuantity == 80.0,
                 "typed position snapshot did not retain authoritative fields");
+        HeptaXTOrderSnapshot orders;
+        Require(xt.GetOrderSnapshot(orders) && orders.generation == 11 &&
+                    orders.orders.size() == 1 &&
+                    orders.orders[0].orderId == "O-1" &&
+                    orders.orders[0].filledQuantity == 20.0,
+                "typed order snapshot did not retain authoritative fields");
+        HeptaXTTradeSnapshot trades;
+        Require(xt.GetTradeSnapshot(trades) && trades.generation == 11 &&
+                    trades.trades.size() == 1 &&
+                    trades.trades[0].tradeId == "T-1" &&
+                    trades.trades[0].orderId == "O-1",
+                "typed trade snapshot did not retain authoritative fields");
         Require(xt.ReqMktData("600000.SH"), "HXQ1 quote subscribe should round-trip");
         HeptaXTQuoteSnapshot quote;
         Require(xt.GetQuoteSnapshot("600000.SH", quote) &&
                     quote.generation == 12 && quote.bid == 10.1 &&
                     quote.ask == 10.2 && quote.observedAtMs == 12345,
                 "typed quote snapshot did not retain authoritative fields");
-        Require(observedRequests == 4, "exact read-only request count mismatch");
+        Require(xt.QuoteFresh("600000.SH", 12445, 100),
+                "quote should be fresh at the inclusive age bound");
+        Require(!xt.QuoteFresh("600000.SH", 12446, 100) &&
+                    !xt.QuoteFresh("600000.SH", 12344, 100),
+                "stale or future-dated quote must fail freshness");
+        Require(observedRequests == 6, "exact read-only request count mismatch");
         long long orderId = -1;
         Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
                 "read-only HXQ1 must not enable order mutation");
@@ -187,6 +226,7 @@ int main() {
         Require(!xt.AccountPositionReadReady(),
                 "disconnect invalidates read readiness");
         Require(!xt.GetAccountSnapshot(account) && !xt.GetPositionSnapshot(positions) &&
+                    !xt.GetOrderSnapshot(orders) && !xt.GetTradeSnapshot(trades) &&
                     !xt.GetQuoteSnapshot("600000.SH", quote),
                 "disconnect must clear cached authoritative read state");
         Require(!xt.ReqPositions() && xt.LastRejectReason() == "XT_READ_ONLY_NOT_CONNECTED",
@@ -268,6 +308,22 @@ int main() {
                          << "\"generation\":41,\"complete\":true,\"currency\":\"CNY\","
                          << "\"cash\":1000,\"total_asset\":1500,"
                          << "\"available_cash\":1600}}";
+            else if (operation == "order_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.orders.v1\","
+                         << "\"generation\":41,\"complete\":true,\"orders\":["
+                         << "{\"order_id\":\"O-bad\",\"instrument\":\"600000.SH\","
+                         << "\"side\":\"BUY\",\"status\":\"SUBMITTED\","
+                         << "\"quantity\":100,\"filled_quantity\":1,"
+                         << "\"limit_price\":10.2}]}}";
+            else if (operation == "trade_snapshot")
+                response << ",\"payload\":{\"schema\":\"heptatrader.xt.trades.v1\","
+                         << "\"generation\":41,\"complete\":true,\"trades\":["
+                         << "{\"trade_id\":\"T-dup\",\"order_id\":\"O-bad\","
+                         << "\"instrument\":\"600000.SH\",\"side\":\"BUY\","
+                         << "\"quantity\":1,\"price\":10.2,\"occurred_at_ms\":1},"
+                         << "{\"trade_id\":\"T-dup\",\"order_id\":\"O-bad\","
+                         << "\"instrument\":\"600000.SH\",\"side\":\"BUY\","
+                         << "\"quantity\":1,\"price\":10.2,\"occurred_at_ms\":2}]}}";
             else
                 return false;
             return HeptaXTGatewayAdapter::EncodeFrame(
@@ -283,6 +339,14 @@ int main() {
         Require(!xt.GetAccountSnapshot(absent) &&
                     !xt.AccountPositionReadReady(),
                 "invalid account payload must not retain stale authoritative state");
+        Require(!xt.ReqOrders() &&
+                    xt.LastRejectReason() == "XT_ORDER_SNAPSHOT_INVALID",
+                "status-inconsistent order payload must fail closed");
+        Require(!xt.ReqTrades() &&
+                    xt.LastRejectReason() == "XT_TRADE_SNAPSHOT_INVALID",
+                "duplicate trade identity must fail closed");
+        Require(!xt.AccountPositionOrderTradeReadReady(),
+                "invalid order/trade payloads must never complete read readiness");
     }
     {
         HeptaXTGatewayAdapter xt;

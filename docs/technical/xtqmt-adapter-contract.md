@@ -12,10 +12,11 @@ The repository currently implements only the native **HXQ1 v1 read-only client s
 - 256 KiB maximum JSON payload;
 - Execution-owned request IDs plus service epoch, connection epoch and exact account binding;
 - exact identity handshake acknowledgement;
-- strict typed `account_snapshot`, `position_snapshot`, and `quote_subscribe` response payloads through an injected already-admitted read-only exchange;
-- completed known-empty position snapshots, bounded unique position rows and explicit account/quote numeric validation;
-- an account+position readiness barrier requiring the configured connection epoch and one shared non-zero snapshot generation;
-- exact response binding plus fail-closed malformed/mismatched/mixed-generation/economically-invalid response behavior;
+- strict typed `account_snapshot`, `position_snapshot`, `order_snapshot`, `trade_snapshot`, and `quote_subscribe` response payloads through an injected already-admitted read-only exchange;
+- completed known-empty position/order/trade snapshots, bounded unique identities and explicit account/order/trade/quote numeric validation;
+- account+position and account+position+order+trade readiness barriers requiring the configured connection epoch and shared non-zero generation; the latter also binds trade rows to matching order identity/instrument/side and requires positive-fill orders to have trade evidence;
+- quote freshness evaluated against an Execution-owned evaluation clock and explicit maximum age;
+- exact response binding plus fail-closed malformed/mismatched/mixed-generation/economically-invalid response behavior, including non-JSON numeric spellings;
 - disconnect invalidation of every cached read snapshot;
 - hard-disabled place/cancel mutation.
 
@@ -102,12 +103,14 @@ For future mutation/status requests, `venue_command_id` must remain stable acros
 
 - `identity` — peer/profile handshake using the configured profile digest;
 - `account_snapshot` — typed payload schema `heptatrader.xt.account.v1`: positive generation, completed marker, bounded currency token, finite non-negative cash/total-asset/available-cash; available cash may not exceed total asset in the first cash-only scope;
-- `position_snapshot` — typed payload schema `heptatrader.xt.positions.v1`: positive generation, completed marker and 0..1,024 unique instrument rows with finite non-negative quantity/sellable quantity/cost; sellable quantity may not exceed quantity. A completed empty array is the only current known-empty representation;
-- `quote_subscribe` — typed payload schema `heptatrader.xt.quote.v1`: positive generation, exact requested instrument, positive finite bid/ask with ask >= bid and positive observation timestamp.
+- `position_snapshot` — typed payload schema `heptatrader.xt.positions.v1`: positive generation, completed marker and 0..1,024 unique instrument rows with finite non-negative quantity/sellable quantity/cost; sellable quantity may not exceed quantity;
+- `order_snapshot` — typed payload schema `heptatrader.xt.orders.v1`: positive generation, completed marker and 0..1,024 unique normalized order rows with exact instrument/side/status, positive quantity/LMT price and status-consistent cumulative fill quantity;
+- `trade_snapshot` — typed payload schema `heptatrader.xt.trades.v1`: positive generation, completed marker and 0..1,024 unique trade rows bound to normalized order identity, instrument/side, positive quantity/price and occurrence time;
+- `quote_subscribe` — typed payload schema `heptatrader.xt.quote.v1`: positive generation, exact requested instrument, positive finite bid/ask with ask >= bid and positive observation timestamp. Freshness uses the caller's Execution-owned evaluation time, never a payload-supplied current clock.
 
-The client exposes `AccountPositionReadReady()` only after account and position payloads are both complete, bound to the configured connection epoch and share one non-zero generation. Quote generation remains independently observable. This source subset deliberately does **not** claim the full future venue `READY` state because order/trade barriers and sidecar instance identity are absent.
+Completed empty arrays are explicit known-empty evidence. `AccountPositionReadReady()` retains the narrower account/position barrier; `AccountPositionOrderTradeReadReady()` requires all four complete snapshots at the configured connection epoch and one non-zero generation, checks trade-to-order identity/instrument/side linkage, and refuses positive filled quantity without trade evidence. Quote generation remains independently observable. This source subset deliberately does **not** claim the full future venue `READY` state because real sidecar instance identity/health and transport admission are absent.
 
-**Planned read-only operations:** `health`, `order_snapshot`, `trade_snapshot`, `quote_unsubscribe`, `command_status`.
+**Planned read-only operations:** `health`, `quote_unsubscribe`, `command_status`.
 
 **Planned mutation operations:** `place`, `cancel`. Authoritative flatten remains an Execution plan expressed as an exact reduce-only `place`; there is no sidecar-owned flatten policy and no generic raw vendor-call operation. Current `PlaceOrder`/`CancelOrder` never dispatch HXQ1 and fail with `XT_MUTATION_DISABLED` when the read-only seam is configured.
 
@@ -165,7 +168,7 @@ Required first-scope snapshots:
 - trades: trade ID, order correlation, side, quantity, price and timestamp;
 - quotes: bid/ask, observation time, subscription identity and freshness bound.
 
-The implemented account/position subset already enforces this rule at the native boundary: a position set is known-empty only when the typed response carries `complete=true`, a positive generation and an empty `positions` array; absent, malformed or mixed-generation responses never produce `AccountPositionReadReady()`. Full venue readiness still requires the future order/trade barriers. Partial callback batches, query exceptions, account mismatch, unsupported security fields or duplicate conflicting keys therefore remain incomplete rather than being inferred from absence.
+The implemented account/position/order/trade subset already enforces this rule at the native boundary: each set is known-empty only when the typed response carries `complete=true`, a positive generation and an explicit empty array; absent, malformed or mixed-generation responses never produce the corresponding readiness barrier. The stricter four-snapshot barrier also refuses unmatched trade/order correlation and missing trade evidence for a positively filled order. Full venue readiness still requires real sidecar instance/health and transport admission. Partial callback batches, query exceptions, account mismatch, unsupported security fields or duplicate conflicting keys therefore remain incomplete rather than being inferred from absence.
 
 ## Placement contract
 
@@ -224,11 +227,11 @@ The current native read-only adapter exposes bounded status/reject reason throug
 
 ## Development and qualification sequence
 
-1. **Done in source:** implement and test exact native HXQ1 v1 frame codec, request/account/epoch binding, identity handshake, typed account/position/quote payloads, completed known-empty positions, same-generation account/position barrier, disconnect invalidation, response/payload mismatch rejection and mutation disablement.
+1. **Done in source:** implement and test exact native HXQ1 v1 frame codec, request/account/epoch binding, identity handshake, typed account/position/order/trade/quote payloads, explicit known-empty arrays, same-generation read barriers, trade/order correlation, Execution-clock quote freshness, disconnect invalidation, strict JSON-number/response rejection and mutation disablement.
 2. Acquire and hash the actual QMT/xtquant runtime; freeze the qualification profile and supported instrument/order subset.
-3. Implement the peer-pinned mTLS transport, Windows sidecar instance identity and endpoint/firewall enforcement using the exact HXQ1 v1 frame contract.
-4. Implement health plus authoritative read-only order/trade barriers on the pinned runtime and require all required barriers before full venue `READY`; prove reconnect invalidation across a strictly newer connection/instance epoch.
-5. Bind quote freshness policy to Execution-owned time and add deterministic callback/overflow fixtures around the real sidecar payload producer.
+3. Implement the peer-pinned mTLS transport, Windows sidecar instance identity/health and endpoint/firewall enforcement using the exact HXQ1 v1 frame contract.
+4. Drive the implemented read schemas from the pinned runtime and require all required barriers before full venue `READY`; prove reconnect invalidation across a strictly newer connection/instance epoch.
+5. Add deterministic callback/overflow fixtures around the real sidecar producer and bind quote subscription lifecycle to that connection/instance epoch.
 6. Bind typed placement with durable Execution correlation and pre/post-vendor fault injection; same-ID retry must never duplicate a possible send.
 7. Bind typed cancellation and terminal/trade reconciliation.
 8. Add restart fixtures that retain unresolved correlations and require complete authoritative refresh before risk opens.

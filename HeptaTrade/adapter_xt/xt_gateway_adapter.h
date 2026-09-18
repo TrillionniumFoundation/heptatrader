@@ -29,6 +29,40 @@ struct HeptaXTPositionSnapshot {
     std::vector<HeptaXTPosition> positions;
 };
 
+struct HeptaXTOrder {
+    std::string orderId;
+    std::string instrument;
+    std::string side;
+    std::string status;
+    double quantity = 0.0;
+    double filledQuantity = 0.0;
+    double limitPrice = 0.0;
+};
+
+struct HeptaXTOrderSnapshot {
+    bool complete = false;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::vector<HeptaXTOrder> orders;
+};
+
+struct HeptaXTTrade {
+    std::string tradeId;
+    std::string orderId;
+    std::string instrument;
+    std::string side;
+    double quantity = 0.0;
+    double price = 0.0;
+    std::uint64_t occurredAtMs = 0;
+};
+
+struct HeptaXTTradeSnapshot {
+    bool complete = false;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::vector<HeptaXTTrade> trades;
+};
+
 struct HeptaXTQuoteSnapshot {
     bool complete = false;
     std::uint64_t connectionEpoch = 0;
@@ -60,11 +94,19 @@ public:
     bool IsConnected() const { return m_connected; }
     bool ReqAccountSummary();
     bool ReqPositions();
+    bool ReqOrders();
+    bool ReqTrades();
     bool ReqMktData(const std::string& instrument);
     bool GetAccountSnapshot(HeptaXTAccountSnapshot& out) const;
     bool GetPositionSnapshot(HeptaXTPositionSnapshot& out) const;
+    bool GetOrderSnapshot(HeptaXTOrderSnapshot& out) const;
+    bool GetTradeSnapshot(HeptaXTTradeSnapshot& out) const;
     bool GetQuoteSnapshot(const std::string& instrument, HeptaXTQuoteSnapshot& out) const;
     bool AccountPositionReadReady() const;
+    bool AccountPositionOrderTradeReadReady() const;
+    bool QuoteFresh(const std::string& instrument,
+                    std::uint64_t evaluationAtMs,
+                    std::uint64_t maximumAgeMs) const;
     bool PlaceOrder(const std::string& instrument, const std::string& side,
                     double qty, double price, long long* outOrderId = nullptr);
     bool CancelOrder(long long orderId);
@@ -91,6 +133,12 @@ private:
     static bool ParsePositionSnapshot(const std::string& payload,
                                       std::uint64_t connectionEpoch,
                                       HeptaXTPositionSnapshot& out);
+    static bool ParseOrderSnapshot(const std::string& payload,
+                                   std::uint64_t connectionEpoch,
+                                   HeptaXTOrderSnapshot& out);
+    static bool ParseTradeSnapshot(const std::string& payload,
+                                   std::uint64_t connectionEpoch,
+                                   HeptaXTTradeSnapshot& out);
     static bool ParseQuoteSnapshot(const std::string& payload,
                                    std::uint64_t connectionEpoch,
                                    const std::string& expectedInstrument,
@@ -107,6 +155,8 @@ private:
     HeptaXTConfig m_config;
     HeptaXTAccountSnapshot m_accountSnapshot;
     HeptaXTPositionSnapshot m_positionSnapshot;
+    HeptaXTOrderSnapshot m_orderSnapshot;
+    HeptaXTTradeSnapshot m_tradeSnapshot;
     HeptaXTQuoteSnapshot m_quoteSnapshot;
     std::string m_lastRejectReason = "XT_NOT_INITIALIZED";
 };
