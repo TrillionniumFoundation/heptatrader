@@ -3,12 +3,16 @@
 
 #include <cassert>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <iostream>
+#include <mutex>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unistd.h>
 
 namespace {
@@ -1963,6 +1967,101 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
     }
 }
 
+
+void TestSlowVenueDispatchDoesNotHoldCoordinatorLock()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool slowEntered = false;
+    bool releaseSlow = false;
+    int placeCalls = 0;
+    int cancelCalls = 0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement = VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand& command, const std::string&) {
+            ++placeCalls;
+            if (command.context.toolCallId != "slow-venue")
+                return VenuePlaceResult::Submitted(42);
+            {
+                std::lock_guard<std::mutex> gate(gateMutex);
+                slowEntered = true;
+            }
+            gateChanged.notify_all();
+            std::unique_lock<std::mutex> gate(gateMutex);
+            gateChanged.wait(gate, [&]() { return releaseSlow; });
+            return VenuePlaceResult::Submitted(43);
+        });
+    callbacks.cancelOrder = [&](long orderId) {
+        assert(orderId == 42);
+        ++cancelCalls;
+        return VenueCancelResult::Submitted();
+    };
+
+    ExecutionCoordinator coordinator(journal, callbacks);
+    const auto seed = MakePlace("slow-venue-seed");
+    assert(coordinator.PlaceOrder(seed).status == ExecutionCommandStatus::Accepted);
+
+    std::promise<ExecutionCommandResult> slowPromise;
+    std::future<ExecutionCommandResult> slowFuture = slowPromise.get_future();
+    std::thread slow([&]() {
+        slowPromise.set_value(coordinator.PlaceOrder(MakePlace("slow-venue")));
+    });
+    {
+        std::unique_lock<std::mutex> gate(gateMutex);
+        assert(gateChanged.wait_for(
+            gate, std::chrono::seconds(2), [&]() { return slowEntered; }));
+    }
+
+    auto statusFuture = std::async(std::launch::async, [&]() {
+        ExecutionCommandResult status;
+        const bool found = coordinator.GetCommandStatus(
+            "agent-a", "session-1", "slow-venue", status);
+        return std::make_pair(found, status);
+    });
+    CancelOrderCommand cancel;
+    cancel.context = seed.context;
+    cancel.context.toolCallId = "slow-venue-cancel";
+    cancel.orderId = 42;
+    cancel.instrument = seed.instrument;
+    auto cancelFuture = std::async(std::launch::async, [&]() {
+        return coordinator.CancelOrder(cancel);
+    });
+    auto parallelRiskFuture = std::async(std::launch::async, [&]() {
+        return coordinator.PlaceOrder(
+            MakePlace("slow-venue-parallel-risk"));
+    });
+
+    assert(statusFuture.wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready);
+    assert(cancelFuture.wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready);
+    assert(parallelRiskFuture.wait_for(std::chrono::seconds(2)) ==
+        std::future_status::ready);
+    const auto status = statusFuture.get();
+    assert(status.first);
+    assert(status.second.status == ExecutionCommandStatus::Uncertain);
+    assert(status.second.reasonCode == "BROKER_RESULT_PENDING");
+    assert(cancelFuture.get().status == ExecutionCommandStatus::Accepted);
+    const auto parallelRisk = parallelRiskFuture.get();
+    assert(parallelRisk.status == ExecutionCommandStatus::Rejected);
+    assert(parallelRisk.reasonCode == "MUTATION_BLOCKED");
+    assert(cancelCalls == 1);
+
+    {
+        std::lock_guard<std::mutex> gate(gateMutex);
+        releaseSlow = true;
+    }
+    gateChanged.notify_all();
+    assert(slowFuture.get().status == ExecutionCommandStatus::Accepted);
+    slow.join();
+    assert(placeCalls == 2);
+    std::remove(path.c_str());
+}
+
 } // namespace
 
 #include "venue_placement_cases.h"
@@ -1994,6 +2093,7 @@ int main(int argc, char** argv)
     TestBlockedRefusalFloodDoesNotEraseUncertainIdentity();
     TestCoordinatorMeasurementsPreserveExceptionsAndFlattenRejection();
     TestVenuePlacementConstructionAndResultContract();
+    TestSlowVenueDispatchDoesNotHoldCoordinatorLock();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();
     TestJournalFailurePreventsBrokerSend();

@@ -595,6 +595,11 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
     if (!ValidPaperTerminalFenceBinding(binding, reason)) return false;
     std::lock_guard<std::mutex> lock(m_mutex);
 
+    if (m_venueDispatchesInFlight != 0)
+    {
+        reason = "IB_PAPER_TERMINAL_FENCE_VENUE_DISPATCH_IN_FLIGHT";
+        return false;
+    }
     if (m_generationStore.IsActive())
         return EnterPaperTerminalFenceAndProjectGenerationAwareLocked(
             binding, universe, reason);

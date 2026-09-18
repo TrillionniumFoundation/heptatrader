@@ -113,21 +113,54 @@ public:
     ExecutionOperationTiming(ExecutionOperationObservation& target,
                              Clock::time_point entered,
                              Clock::time_point acquired) noexcept
-        : m_held(target.latency, acquired), m_total(target.totalLatency, entered)
+        : m_target(target), m_total(target.totalLatency, entered),
+          m_heldStart(acquired)
     {
         target.timingPresent = true;
         OmsScopedLatencySample wait(target.lockWait, entered);
         wait.Finish(acquired);
     }
     ~ExecutionOperationTiming() noexcept { Finish(); }
+
+    void PauseHeld(Clock::time_point now = Clock::now()) noexcept
+    {
+        if (!m_heldActive || m_finished) return;
+        const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - m_heldStart).count();
+        const std::uint64_t elapsed =
+            raw > 0 ? static_cast<std::uint64_t>(raw) : 0U;
+        const std::uint64_t maximum =
+            std::numeric_limits<std::uint64_t>::max();
+        if (elapsed > maximum - m_heldNs)
+            m_heldNs = maximum;
+        else
+            m_heldNs += elapsed;
+        m_heldActive = false;
+    }
+
+    void ResumeHeld(Clock::time_point now = Clock::now()) noexcept
+    {
+        if (m_heldActive || m_finished) return;
+        m_heldStart = now;
+        m_heldActive = true;
+    }
+
     void Finish(Clock::time_point now = Clock::now()) noexcept
     {
-        m_held.Finish(now);
+        if (m_finished) return;
+        PauseHeld(now);
+        m_target.latency.Observe(m_heldNs);
         m_total.Finish(now);
+        m_finished = true;
     }
+
 private:
-    OmsScopedLatencySample m_held;
+    ExecutionOperationObservation& m_target;
     OmsScopedLatencySample m_total;
+    Clock::time_point m_heldStart;
+    std::uint64_t m_heldNs = 0;
+    bool m_heldActive = true;
+    bool m_finished = false;
 };
 
 struct ExecutionRuntimeObservation

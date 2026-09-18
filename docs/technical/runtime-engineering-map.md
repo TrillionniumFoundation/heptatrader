@@ -49,8 +49,9 @@ The detailed owners are [`../modules/execution-service.md`](../modules/execution
 The maintained runtime follows these boundaries:
 
 - command identity and durable command state are serialized by the Execution coordinator;
+- risk-increasing place/flatten admission remains serialized, but after durable send-attempt persistence the coordinator releases its mutex while the venue callback executes; another new risk mutation fails closed until that dispatch returns;
+- cancellation also releases the coordinator mutex around the venue callback, so status/reconciliation/control reads are not serialized behind a slow provider; terminal evidence is refused while any venue dispatch is still in flight;
 - final simulator reservation/activation evaluates risk while holding the venue mutex so concurrent admissions observe prior pending exposure;
-- the simulator lock order is **coordinator then venue** for reservation/activation;
 - event sinks run after the venue lock is released;
 - Gateway/session shared state is synchronized locally and must not hold its locks across an unbounded external call;
 - Broker callbacks may arrive concurrently or out of order and must enter monotonic/explicitly-incomplete projections;
