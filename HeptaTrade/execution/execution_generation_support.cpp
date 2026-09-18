@@ -1410,9 +1410,8 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
         activeTail, universe, reason);
 }
 
-// Capacity bridge compiled after execution_generation_support.inc so it can
-// reuse the same private generation identity helpers. This is not another
-// translation unit or authority path.
+// Capacity support stays in this canonical translation unit so it can reuse
+// the same private generation identity helpers without another authority path.
 
 bool OmsGenerationStore::RecoveryCapacityGenerationV1(
     std::uint64_t& bytes,
@@ -1517,11 +1516,10 @@ void OmsJournal::AdoptValidatedIncrementalRecoveryCapacity(
 
 // V2 compatibility layer for lineage-sealed OMS generations.
 //
-// execution_generation_support.inc remains the exact V1 implementation. The
-// owning translation unit compiles it under private *GenerationV1 method names,
-// then this file provides the public Prepare/Recover/RecoveryCapacity dispatch.
-// All lookup/index methods stay shared because V1 and V2 intentionally use the
-// same cumulative full-key runtime index formats.
+// The V1 implementation and the V2 public dispatch live in this translation
+// unit. Private *GenerationV1 methods retain legacy behavior; lookup/index
+// methods stay shared because both formats use the same cumulative full-key
+// runtime index formats.
 
 namespace
 {
