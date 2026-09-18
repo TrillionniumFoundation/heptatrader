@@ -18,7 +18,7 @@ SHA = "a" * 40
 
 class CoreReleaseAcceptanceTests(unittest.TestCase):
     def fixture(self, root: Path, fail=None, tamper=False, untracked=False,
-                omit_cost_evidence=False):
+                omit_cost_evidence=False, omit_core_evidence=False):
         calls = []
         candidate = None
 
@@ -63,6 +63,48 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     candidate.write_bytes(b"substituted after testing")
             if fail is not None and phase == fail:
                 raise subprocess.CalledProcessError(29, argv)
+            if phase == "core" and not omit_core_evidence:
+                evidence_dir = Path(kwargs["env"]["HEPTA_CORE_EVIDENCE_DIR"])
+                source_sha = kwargs["env"]["HEPTA_CORE_EVIDENCE_SOURCE_SHA"]
+                evidence_dir.mkdir(parents=True, exist_ok=True)
+                logical = 20000 * 512
+                start = 1234 * 512
+                suffix_bytes = logical - start
+                (evidence_dir / "generation-index-read-cost.json").write_text(json.dumps({
+                    "schema": "heptatrader.generation-index-read-cost.v1",
+                    "result": "PASS", "source_sha": source_sha,
+                    "fixture_rows": 20000, "row_bytes": 512,
+                    "logical_bytes": logical, "suffix_start_bytes": start,
+                    "full": {"lines": 20000, "read_calls": 157,
+                             "read_bytes": logical, "selected_bytes": logical},
+                    "suffix": {"lines": 20000 - 1234, "read_calls": 147,
+                               "read_bytes": suffix_bytes, "selected_bytes": suffix_bytes},
+                    "broker_io": False, "authorization_effect": "NONE",
+                }))
+                points = []
+                for generation, owners, commands, history in (
+                    (4, 4, 256, 1024), (8, 8, 512, 2048), (16, 16, 1024, 4096)
+                ):
+                    points.append({
+                        "generation_count": generation, "owner_count": owners,
+                        "history_records": history, "command_records": commands,
+                        "seal_ns": 1, "verify_ns": 1, "active_bytes_before_seal": 1,
+                        "generation_output_bytes": 1, "runtime_command_index_bytes": 1,
+                        "send_attempt_index_bytes": 1, "logical_event_bytes": 1,
+                        "retained_disk_bytes": generation + 10,
+                        "retained_to_logical_numerator": generation + 10,
+                        "retained_to_logical_denominator": 1,
+                    })
+                (evidence_dir / "synthetic-generation-cost-curve.json").write_text(json.dumps({
+                    "schema": "heptatrader.synthetic-generation-cost-curve.v2",
+                    "result": "PASS", "source_sha": source_sha, "synthetic": True,
+                    "broker_io": False, "commands_per_generation": 64,
+                    "generation_count": 16, "maximum_owner_count": 16,
+                    "points": points, "rebase_ns": 1,
+                    "retained_disk_bytes_before_rebase": 100,
+                    "retained_disk_bytes_after_rebase": 50,
+                    "test_process_peak_rss_kib": 1, "authorization_effect": "NONE",
+                }))
             if phase == "process" and not omit_cost_evidence:
                 evidence_assignment = next(
                     item for item in argv
@@ -162,6 +204,15 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     self.assertTrue(any(c[:3] == ["sudo", "rm", "-rf"] for c in calls))
                 if phase == "process":
                     self.assertFalse(any("tests/systemd_simulator_smoke.py" in c for c in calls))
+
+    def test_missing_core_cost_evidence_prevents_acceptance(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "VERSION").write_text("0.3.0\n")
+            run, _calls = self.fixture(root, omit_core_evidence=True)
+            with self.assertRaisesRegex(ValueError, "generation index read evidence"):
+                acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
+            self.assertFalse((root / "dist/core-acceptance.json").exists())
 
     def test_missing_generation_cost_evidence_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:

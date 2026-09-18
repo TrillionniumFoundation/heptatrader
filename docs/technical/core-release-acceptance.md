@@ -12,11 +12,17 @@ driver. Rebuilding a tag is permitted, but its newly built package must pass
 installed acceptance; another run's source-only green status is not substituted.
 
 The driver verifies the source checkout, runs the install/core Python partitions,
-packages the existing build once and computes its SHA-256. That same path/digest
-is supplied to simulator lifecycle smoke, installed multi-UID process tests and
-real PID 1 systemd acceptance. The process partition also exercises the pinned
-prior-source package through upgrade, rollback and re-promotion using shared
-persisted state. There is only one orchestration implementation for these steps.
+and requires source-bound structured generation I/O/cost evidence before packaging
+the existing build once and computing its SHA-256. The retained core evidence
+proves exact selected-range index reads plus the 4/8/16-generation sampled
+seal/verify/storage curve. That same package path/digest is supplied to simulator
+lifecycle smoke, installed multi-UID process tests and real PID 1 systemd
+acceptance. The process partition emits a second exact-source/package-bound
+generation curve for recovery, simulator recovery, startup readiness, VmHWM,
+place p99 and retained disk; the driver rejects missing or identity-drifted
+evidence before PASS. The process partition also exercises the pinned prior-source
+package through upgrade, rollback and re-promotion using shared persisted state.
+There is only one orchestration implementation for these steps.
 
 The fixed previous source remains `d003f54c7c6c2bd19002627f2bcd9081228b01cd`.
 This is an explicit regression pair, not universal historical compatibility.

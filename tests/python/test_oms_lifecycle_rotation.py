@@ -372,6 +372,7 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         usage = resource.getrusage(resource.RUSAGE_SELF)
         observation = {
             "schema": "heptatrader.synthetic-generation-cost-curve.v2",
+            "result": "PASS",
             "synthetic": True,
             "broker_io": False,
             "commands_per_generation": commands_per_generation,
@@ -384,6 +385,21 @@ class OmsLifecycleRotationTests(unittest.TestCase):
             "test_process_peak_rss_kib": usage.ru_maxrss,
             "authorization_effect": "NONE",
         }
+        evidence_root = os.environ.get("HEPTA_CORE_EVIDENCE_DIR")
+        if evidence_root:
+            source_sha = os.environ.get("HEPTA_CORE_EVIDENCE_SOURCE_SHA", "")
+            evidence_directory = Path(evidence_root)
+            if (not evidence_directory.is_dir() or evidence_directory.is_symlink()
+                    or len(source_sha) != 40
+                    or any(c not in "0123456789abcdef" for c in source_sha)):
+                raise AssertionError("core evidence identity or directory is invalid")
+            observation["source_sha"] = source_sha
+            evidence_path = evidence_directory / "synthetic-generation-cost-curve.json"
+            with evidence_path.open("x") as stream:
+                json.dump(observation, stream, sort_keys=True, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
         print(json.dumps(observation, sort_keys=True))
 
     def test_rebase_crash_points_preserve_old_authority_or_publish_new_authority(self) -> None:

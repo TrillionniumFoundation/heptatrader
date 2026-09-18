@@ -113,6 +113,102 @@ def validate_generation_cost_evidence(
     return value
 
 
+def validate_generation_index_read_evidence(path: Path, source_sha: str) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("generation index read evidence is missing or invalid") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "heptatrader.generation-index-read-cost.v1"
+        or value.get("result") != "PASS"
+        or value.get("source_sha") != source_sha
+        or value.get("fixture_rows") != 20000
+        or value.get("row_bytes") != 512
+        or value.get("logical_bytes") != 20000 * 512
+        or value.get("broker_io") is not False
+        or value.get("authorization_effect") != "NONE"
+    ):
+        raise ValueError("generation index read evidence identity is invalid")
+    full, suffix = value.get("full"), value.get("suffix")
+    if not isinstance(full, dict) or not isinstance(suffix, dict):
+        raise ValueError("generation index read evidence scans are invalid")
+    if (
+        full.get("lines") != 20000
+        or full.get("read_bytes") != value["logical_bytes"]
+        or full.get("selected_bytes") != value["logical_bytes"]
+        or type(full.get("read_calls")) is not int
+        or not 0 < full["read_calls"] <= (value["logical_bytes"] + 65535) // 65536
+    ):
+        raise ValueError("generation index full-scan evidence is invalid")
+    expected_suffix = value["logical_bytes"] - 1234 * 512
+    if (
+        value.get("suffix_start_bytes") != 1234 * 512
+        or suffix.get("lines") != 20000 - 1234
+        or suffix.get("read_bytes") != expected_suffix
+        or suffix.get("selected_bytes") != expected_suffix
+        or type(suffix.get("read_calls")) is not int
+        or not 0 < suffix["read_calls"] <= (expected_suffix + 65535) // 65536
+    ):
+        raise ValueError("generation index suffix evidence is invalid")
+    return value
+
+
+def validate_synthetic_generation_cost_evidence(path: Path, source_sha: str) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("synthetic generation cost evidence is missing or invalid") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "heptatrader.synthetic-generation-cost-curve.v2"
+        or value.get("result") != "PASS"
+        or value.get("source_sha") != source_sha
+        or value.get("synthetic") is not True
+        or value.get("broker_io") is not False
+        or value.get("commands_per_generation") != 64
+        or value.get("generation_count") != 16
+        or value.get("maximum_owner_count") != 16
+        or value.get("authorization_effect") != "NONE"
+    ):
+        raise ValueError("synthetic generation cost evidence identity is invalid")
+    points = value.get("points")
+    if not isinstance(points, list) or len(points) != 3:
+        raise ValueError("synthetic generation cost evidence point inventory is invalid")
+    expected = ((4, 4, 256, 1024), (8, 8, 512, 2048), (16, 16, 1024, 4096))
+    for point, (generation, owners, commands, history) in zip(points, expected):
+        if (
+            not isinstance(point, dict)
+            or point.get("generation_count") != generation
+            or point.get("owner_count") != owners
+            or point.get("command_records") != commands
+            or point.get("history_records") != history
+        ):
+            raise ValueError("synthetic generation cost evidence cardinality is invalid")
+        for name in (
+            "seal_ns", "verify_ns", "active_bytes_before_seal",
+            "generation_output_bytes", "runtime_command_index_bytes",
+            "send_attempt_index_bytes", "logical_event_bytes", "retained_disk_bytes",
+        ):
+            if type(point.get(name)) is not int or point[name] <= 0:
+                raise ValueError("synthetic generation cost evidence metric is invalid")
+        if (
+            point.get("retained_to_logical_numerator") != point["retained_disk_bytes"]
+            or point.get("retained_to_logical_denominator") != point["logical_event_bytes"]
+        ):
+            raise ValueError("synthetic generation storage amplification evidence is invalid")
+    before, after = value.get("retained_disk_bytes_before_rebase"), value.get("retained_disk_bytes_after_rebase")
+    if (
+        type(value.get("rebase_ns")) is not int or value["rebase_ns"] <= 0
+        or type(before) is not int or type(after) is not int
+        or before <= 0 or after <= 0 or after >= before
+        or type(value.get("test_process_peak_rss_kib")) is not int
+        or value["test_process_peak_rss_kib"] <= 0
+    ):
+        raise ValueError("synthetic generation rebase evidence is invalid")
+    return value
+
+
 def installed_executable_targets(source: Path, build: Path) -> list[str]:
     """Use fresh CMake install ownership, not a second handwritten target list.
 
@@ -204,8 +300,20 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
     environment = dict(os.environ)
     environment["HEPTA_RELEASE_INTEGRATION_BUILD_DIR"] = str(build)
     environment["PYTHONWARNINGS"] = "error::ResourceWarning"
+    core_evidence = output / "core-evidence"
     for lane in ("install", "core"):
-        command([sys.executable, "scripts/run_python_tests.py", "--lane", lane], env=environment)
+        lane_environment = dict(environment)
+        if lane == "core":
+            core_evidence.mkdir(mode=0o755)
+            lane_environment["HEPTA_CORE_EVIDENCE_DIR"] = str(core_evidence)
+            lane_environment["HEPTA_CORE_EVIDENCE_SOURCE_SHA"] = source
+        command([sys.executable, "scripts/run_python_tests.py", "--lane", lane],
+                env=lane_environment)
+        if lane == "core":
+            validate_generation_index_read_evidence(
+                core_evidence / "generation-index-read-cost.json", source)
+            validate_synthetic_generation_cost_evidence(
+                core_evidence / "synthetic-generation-cost-curve.json", source)
     epoch = text(["git", "show", "-s", "--format=%ct", source])
     command([sys.executable, "scripts/build_release_package.py", "--build-dir", build,
              "--output", candidate, "--version", version, "--profile", "core",

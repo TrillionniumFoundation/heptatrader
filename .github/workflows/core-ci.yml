@@ -57,6 +57,7 @@ jobs:
         with:
           name: core-lifecycle-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            dist/core-evidence/
             dist/process-evidence/
             dist/systemd-evidence/
             dist/core-acceptance.json
@@ -75,6 +76,8 @@ jobs:
             dist/heptatrader-*-core-*.tar.gz.receipt.json
             dist/release-simulator-smoke-*.json
             dist/core-acceptance.json
+            dist/core-evidence/
+            dist/process-evidence/
           if-no-files-found: error
           retention-days: 30
           compression-level: 0

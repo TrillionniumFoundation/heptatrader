@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -94,6 +95,34 @@ class GenerationIndexReaderTests(unittest.TestCase):
         self.assertEqual(suffix["lines"], 20000 - 1234)
         self.assertEqual(suffix["read_bytes"], len(payload) - start)
         self.assertEqual(suffix["selected_bytes"], len(payload) - start)
+
+        evidence_root = os.environ.get("HEPTA_CORE_EVIDENCE_DIR")
+        if evidence_root:
+            source_sha = os.environ.get("HEPTA_CORE_EVIDENCE_SOURCE_SHA", "")
+            evidence_directory = Path(evidence_root)
+            if (not evidence_directory.is_dir() or evidence_directory.is_symlink()
+                    or len(source_sha) != 40
+                    or any(c not in "0123456789abcdef" for c in source_sha)):
+                raise AssertionError("core evidence identity or directory is invalid")
+            observation = {
+                "schema": "heptatrader.generation-index-read-cost.v1",
+                "result": "PASS",
+                "source_sha": source_sha,
+                "fixture_rows": 20000,
+                "row_bytes": 512,
+                "logical_bytes": len(payload),
+                "suffix_start_bytes": start,
+                "full": full,
+                "suffix": suffix,
+                "broker_io": False,
+                "authorization_effect": "NONE",
+            }
+            evidence_path = evidence_directory / "generation-index-read-cost.json"
+            with evidence_path.open("x") as stream:
+                json.dump(observation, stream, sort_keys=True, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
 
     def test_oversized_or_unterminated_row_fails_closed(self):
         oversized = b"x" * 65537 + b"\n"
