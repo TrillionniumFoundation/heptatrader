@@ -7,7 +7,7 @@ Tests: `tests/venue_capability_tests.cpp`, `tests/python/test_legacy_runtime_bou
 
 ## Current capability
 
-The XT/QMT source now implements the exact **HXQ1 v1 read-only client boundary**, but not the production Windows/QMT transport. `HeptaXTGatewayAdapter` can frame and validate bounded HXQ1 messages, bind account/service epoch/connection epoch, perform an identity handshake, and issue `account_snapshot`, `position_snapshot`, and `quote_subscribe` requests through an explicitly injected **already-admitted read-only exchange**.
+The XT/QMT source now implements the exact **HXQ1 v1 read-only client boundary**, but not the production Windows/QMT transport. `HeptaXTGatewayAdapter` can frame and validate bounded HXQ1 messages, bind account/service epoch/connection epoch, perform an identity handshake, and decode strict typed `account_snapshot`, `position_snapshot`, and `quote_subscribe` payloads through an explicitly injected **already-admitted read-only exchange**. Account/position state is exposed as ready only when both completed snapshots share the configured connection epoch and the same non-zero snapshot generation; identity handshake alone is only `XT_READ_ONLY_CONNECTED`.
 
 That injected exchange is deliberately not a generic socket or Agent callback. Production wiring must supply a peer-pinned mTLS channel owned by the Execution identity. The repository does not claim that the QMT sidecar, certificates, Windows firewall policy, pinned `xtquant` runtime, or target account exists merely because the protocol client is executable.
 
@@ -19,7 +19,7 @@ XT/QMT is the selected next venue after the simulator and the bounded IB PAPER p
 
 Current source work is intentionally staged:
 
-1. **Implemented now:** bounded HXQ1 v1 framing, exact response binding, account/service/connection-epoch identity, read-only handshake and read-only query dispatch, hostile/mismatched-response rejection, and hard mutation disablement.
+1. **Implemented now:** bounded HXQ1 v1 framing, exact response binding, account/service/connection-epoch identity, read-only handshake, strict account/position/quote payload decoding, completed known-empty positions, same-generation account/position barrier, hostile/mismatched/economically-invalid response rejection, disconnect invalidation, and hard mutation disablement.
 2. **Still external/unimplemented:** the real mTLS channel, Windows sidecar process, pinned QMT/Python/`xtquant` inputs, firewall/credential policy, callback normalization and target-host qualification.
 3. **Future mutation stage:** only after read-only qualification, add durable `venue_command_id` mutation correlation and uncertain-send recovery. No mutation method is enabled by the current work.
 
@@ -27,7 +27,9 @@ Current source work is intentionally staged:
 
 HXQ1 frames are a four-byte unsigned big-endian payload length followed by one canonical UTF-8 JSON object, with a maximum JSON payload of 256 KiB. The current client binds every request and response to `protocol=HXQ1`, `version=1`, request ID, Execution service epoch, XT/QMT connection epoch, operation and qualification account. A response with a changed request ID, epoch, operation, account, framing length, or extra/noncanonical content is rejected rather than interpreted loosely.
 
-The current C++ adapter exposes only the read operations that already have a defined first-stage consumer surface: identity, account snapshot, position snapshot and quote subscription. `venue_command_id` is empty on these read operations; it remains reserved for future durable mutation correlation.
+The current C++ adapter exposes only the read operations that already have a defined first-stage consumer surface: identity, account snapshot, position snapshot and quote subscription. Account payloads carry one currency plus finite non-negative cash/asset/available-cash values; position payloads carry a bounded unique instrument set with finite non-negative quantity/sellable quantity/cost and explicit completed empty sets; quote payloads bind instrument, generation, bid/ask and observation time. These schemas use exact canonical field order and reject extra/duplicate/noncanonical alternatives rather than accepting a permissive JSON variant. `venue_command_id` is empty on these read operations; it remains reserved for future durable mutation correlation.
+
+This is still not full venue `READY`: order/trade refresh barriers, sidecar instance identity and real transport admission are not implemented. `AccountPositionReadReady()` intentionally names only the source subset it can prove.
 
 ## Failure semantics
 
@@ -43,7 +45,7 @@ A Python sidecar may never become a second order authority. Stable command ident
 
 ## Observability and tests
 
-`venue_capability_tests.cpp` covers both negative capability and the executable read-only boundary: exact length framing, identity/account/epoch binding, successful read-only query round trips, mismatched response rejection, disconnect behavior, and proof that read-only connectivity still cannot place or cancel an order.
+`venue_capability_tests.cpp` covers both negative capability and the executable read-only boundary: exact length framing, identity/account/epoch binding, typed account/position/quote payloads, completed known-empty positions, same-generation readiness, mixed-generation refusal, economically invalid payload rejection, disconnect state erasure, mismatched response rejection, and proof that read-only connectivity still cannot place or cancel an order.
 
 Promotion beyond `EXPERIMENTAL` still requires real mTLS peer tests, QMT callback ordering, duplicate/conflicting events, partial fills, cancel races, reconnect, account mismatch, invalid price type, stale quote, uncertain send, sidecar restart, old-command duplicate/conflict and final reconciliation evidence against the pinned runtime.
 
