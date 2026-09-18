@@ -267,6 +267,7 @@
             "hepta_oms_journal_durability_tests",
             "hepta_oms_journal_schema_v4_tests",
             "hepta_paper_terminal_latch_committer",
+            "hepta_portfolio_risk_snapshot_builder_tests",
             "hepta_pre_trade_risk_engine_tests",
             "hepta_session_supervisor_lease_store_migration_tests",
             "hepta_sessionctl",
@@ -741,13 +742,6 @@
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
-              "kind": "implementation",
-              "owner": "ib-paper",
-              "language": "CXX",
-              "standard": "11"
-            },
-            {
               "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
               "kind": "implementation",
               "owner": "ib-paper",
@@ -770,6 +764,13 @@
             },
             {
               "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
               "kind": "implementation",
               "owner": "ib-paper",
               "language": "CXX",
@@ -902,14 +903,14 @@
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp",
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp",
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",
@@ -926,6 +927,13 @@
               "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
               "kind": "implementation",
               "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
               "language": "CXX",
               "standard": "11"
             },
@@ -1277,6 +1285,29 @@
           ]
         },
         {
+          "name": "hepta_portfolio_risk_snapshot_builder_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/portfolio_risk_snapshot_builder_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_portfolio_risk_snapshot_builder_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
           "name": "hepta_pre_trade_risk_engine_tests",
           "type": "EXECUTABLE",
           "declared_in": "tests/CMakeLists.txt",
@@ -1418,6 +1449,13 @@
           "precompiled_headers": [],
           "dependencies": [],
           "translation_units": [
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
             {
               "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
               "kind": "implementation",
@@ -1999,6 +2037,7 @@
             "hepta_oms_journal_durability_tests",
             "hepta_oms_journal_schema_v4_tests",
             "hepta_paper_terminal_latch_committer",
+            "hepta_portfolio_risk_snapshot_builder_tests",
             "hepta_pre_trade_risk_engine_tests",
             "hepta_session_supervisor_lease_store_migration_tests",
             "hepta_sessionctl",
@@ -2492,13 +2531,6 @@
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
-              "kind": "implementation",
-              "owner": "ib-paper",
-              "language": "CXX",
-              "standard": "11"
-            },
-            {
               "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp",
               "kind": "implementation",
               "owner": "ib-paper",
@@ -2521,6 +2553,13 @@
             },
             {
               "path": "HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp",
+              "kind": "implementation",
+              "owner": "ib-paper",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/adapter_ib/ib_gateway_adapter.cpp",
               "kind": "implementation",
               "owner": "ib-paper",
               "language": "CXX",
@@ -2653,14 +2692,14 @@
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp",
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal_state.cpp",
+              "path": "HeptaTrade/execution/ib_paper_execution_runtime_terminal.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",
@@ -2677,6 +2716,13 @@
               "path": "HeptaTrade/execution/ib_paper_kill_switch.cpp",
               "kind": "implementation",
               "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
               "language": "CXX",
               "standard": "11"
             },
@@ -3198,6 +3244,29 @@
           ]
         },
         {
+          "name": "hepta_portfolio_risk_snapshot_builder_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/portfolio_risk_snapshot_builder_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_portfolio_risk_snapshot_builder_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
           "name": "hepta_pre_trade_risk_engine_tests",
           "type": "EXECUTABLE",
           "declared_in": "tests/CMakeLists.txt",
@@ -3339,6 +3408,13 @@
           "precompiled_headers": [],
           "dependencies": [],
           "translation_units": [
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
             {
               "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
               "kind": "implementation",

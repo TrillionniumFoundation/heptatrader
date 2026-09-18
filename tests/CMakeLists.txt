@@ -200,6 +200,11 @@ add_executable(hepta_pre_trade_risk_engine_tests
     ../HeptaTrade/risk/pre_trade_risk_engine.cpp)
 hepta_register_core_test(hepta_pre_trade_risk_engine_tests)
 
+add_executable(hepta_portfolio_risk_snapshot_builder_tests
+    portfolio_risk_snapshot_builder_tests.cpp
+    ../HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp)
+hepta_register_core_test(hepta_portfolio_risk_snapshot_builder_tests)
+
 add_executable(hepta_venue_capability_tests
     venue_capability_tests.cpp
     ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp

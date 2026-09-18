@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/risk`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`
-Tests: `tests/pre_trade_risk_engine_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`
+Tests: `tests/pre_trade_risk_engine_tests.cpp`, `tests/portfolio_risk_snapshot_builder_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`
 
 ## Responsibilities
 
@@ -24,6 +24,14 @@ The generic engine evaluates:
 - flatten-only exposure reduction without crossing zero.
 
 All monetary values in the generic notional and PnL fields use one declared account base currency. Raw quantities from different instruments must never be added as a portfolio risk measure.
+
+## Authority-side portfolio snapshot builder
+
+`PortfolioRiskSnapshotBuilder` converts a complete authorized instrument set into the existing `PreTradeRiskAuthoritativeSnapshot` rather than requiring callers to hand-assemble portfolio scalars. Every authorized instrument has exactly one valuation row with a reviewed instrument specification, configured quote/FX source identities, a finite net quantity, and quote/FX evidence bound to one connection epoch and generation. Pending orders reuse the exact instrument/source binding and are charged at the greater of their LMT price and authoritative quote. Current gross and pending buy/sell exposure are accumulated only after conversion into the subject's declared account base currency.
+
+The builder requires explicit PnL/equity evidence in that same base currency and generation. Snapshot observation time is the oldest contributing quote, FX or account observation, while evaluation time is Execution-owned. Missing instruments, duplicate rows, stale/future evidence, source or currency drift, contract/multiplier ambiguity, mixed generations and arithmetic overflow fail closed. Same-currency FX still requires an explicit identity-rate observation.
+
+This is a reusable source producer, not a new trading authority. The current IB PAPER profile remains one active order / one CASH quote contract and does not consume this builder to expand its qualified universe. Margin consumption, real multi-asset adapter production and portfolio telemetry remain required before a venue can claim broader qualification.
 
 ## Explicit authoritative snapshot contract
 

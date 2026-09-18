@@ -88,11 +88,15 @@
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/modules/ib-paper.md",
-        "docs/technical/runtime-cost-observations.md"
+        "docs/technical/runtime-cost-observations.md",
+        "docs/modules/risk-engine.md",
+        "HeptaTrade/risk/portfolio_risk_snapshot_builder.h",
+        "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+        "tests/portfolio_risk_snapshot_builder_tests.cpp"
       ],
       "issue": null,
       "blocking_releases": [],
-      "disposition": "DEFERRED. Current IB PAPER is deliberately constrained to one active order and one CASH quote contract, with authoritative position/risk/reconciliation state and the runtime integrity metrics needed for that scope. Portfolio notional/PnL/drawdown and broader upstream lifecycle reasons require explicit unit, currency, valuation and multi-asset authority contracts before they can be truthful producers. They are tracked as future capability expansion rather than keeping the already-implemented telemetry correctness work artificially OPEN."
+      "disposition": "DEFERRED product expansion, with the authority-side valuation foundation now implemented. `PortfolioRiskSnapshotBuilder` requires a complete authorized instrument set, exact contract/unit metadata, configured quote/FX source identities, one epoch/generation, Execution-owned freshness, explicit base-currency PnL/equity evidence, conservative pending-order valuation and overflow-safe aggregation before producing the generic risk snapshot. This does not expand the current IB PAPER qualification: no qualified multi-asset adapter currently feeds the builder, margin consumption is not yet part of the generic snapshot, and portfolio notional/PnL/drawdown product metrics plus deeper upstream lifecycle reasons remain future capability. PAPER/LIVE authorization remains unchanged."
     },
     {
       "id": "HOST-OPERATIONS-003",
