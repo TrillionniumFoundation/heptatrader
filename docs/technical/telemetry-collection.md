@@ -114,23 +114,29 @@ Validate with `promtool check config`, `promtool check rules` and Alertmanager's
 
 ## Alert behavior and acceptance
 
-The supplied existing rules cover missing/unreachable scrape targets,
-absent/failed collectors, dead collectors retaining old healthy files, expired
-source observations, future clocks, poisoned OMS writes, recovery headroom,
-pending queues, Gateway delivery/backpressure and metric saturation. The new IB
-textfile exposes fixed state gauges and reporter alert count, but production rule
-promotion for each IB-specific condition should accompany target-host acceptance
-rather than inventing unmeasured SLOs. Missing metrics never mean observed zero.
-No notification performs a cancel, retry, restart or authority change.
+The supplied rules cover missing/unreachable scrape targets, absent/failed
+collectors, dead collectors retaining old healthy files, expired source
+observations, future clocks, poisoned OMS writes, recovery headroom, pending
+queues, Gateway delivery/backpressure and metric saturation. The IB rules add
+collector/freshness failures, incomplete authoritative state, post-fill
+reconciliation pending, callback conflicts, missing current-artifact producer
+families and unknown quote/snapshot age while coherent risk is claimed. They use
+state/integrity predicates only; no universal callback/reconnect/age SLO is
+invented. The root-owned network-policy observation remains a separate privileged
+producer because the unprivileged journald collector must not gain nftables
+authority. Its target-host scheduling and alert routing are part of external
+host acceptance. Missing metrics never mean observed zero. No notification
+performs a cancel, retry, restart or authority change.
 
 `test_telemetry_collection.py` executes OMS/Gateway parser/publication behavior.
 `test_ib_telemetry_collection.py` executes the `ib-paper` three-stream path and
 requires independent atomic files; an invalid IB stream becomes failure-only
-IB health without suppressing valid OMS/Gateway output. The process acceptance
-runs the real collector/publisher, node_exporter, Prometheus and Alertmanager
-against synthetic journal envelopes, including receiver HTTP 503 retry,
-resolution and dead-collector detection. Loopback evidence is not target-host
-or Broker qualification evidence.
+IB health without suppressing valid OMS/Gateway output. The process acceptance runs the real collector/publisher, node_exporter,
+Prometheus and Alertmanager against synthetic journal envelopes. It covers OMS
+failure plus HTTP 503 retry/resolution, the IB three-stream scrape, independent
+IB-stream failure/recovery, a post-fill reconciliation firing/resolution, and
+dead-collector detection. Loopback evidence is not target-host or Broker
+qualification evidence.
 
 On the real deployment, repeat the receiver drill, disable the timer to verify
 dead-collector detection, interrupt each source independently and test recovery

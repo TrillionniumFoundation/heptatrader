@@ -105,3 +105,73 @@ groups:
       component: gateway
     annotations:
       summary: Gateway counters are saturated and cannot support rates
+  - alert: HeptaIbCollectorFailed
+    expr: (hepta_ib_collector_success{job="heptatrader"} == 0) or ((up{job="heptatrader"} == 1) unless on(job, instance)
+      hepta_ib_collector_success{job="heptatrader"})
+    labels:
+      severity: warning
+      component: ib
+    annotations:
+      summary: IB telemetry collection failed or its success signal is missing
+  - alert: HeptaIbCollectorStale
+    expr: (time() - hepta_ib_collector_timestamp_seconds{job="heptatrader"} > 30) or (hepta_ib_collector_timestamp_seconds{job="heptatrader"}
+      > time() + 1) or ((up{job="heptatrader"} == 1) unless on(job, instance) hepta_ib_collector_timestamp_seconds{job="heptatrader"})
+    labels:
+      severity: warning
+      component: ib
+    annotations:
+      summary: IB collector stopped, its clock is invalid, or its timestamp is missing
+  - alert: HeptaIbObservationStale
+    expr: (hepta_ib_runtime_telemetry_fresh{job="heptatrader"} == 0) or (time() - hepta_ib_sample_timestamp_seconds{job="heptatrader"}
+      > 15) or (hepta_ib_sample_timestamp_seconds{job="heptatrader"} > time() + 1) or ((hepta_ib_collector_success{job="heptatrader"}
+      == 1) unless on(job, instance) hepta_ib_sample_timestamp_seconds{job="heptatrader"})
+    labels:
+      severity: warning
+      component: ib
+    annotations:
+      summary: IB runtime observation is stale, missing or future-dated
+  - alert: HeptaIbAuthorityIncomplete
+    expr: (hepta_ib_runtime_telemetry_fresh{job="heptatrader"} == 1) and on(job, instance) ((hepta_ib_runtime_connected{job="heptatrader"}
+      == 0) or (hepta_ib_event_stream_authoritative{job="heptatrader"} == 0) or (hepta_ib_coherent_risk_complete{job="heptatrader"}
+      == 0) or (hepta_ib_new_connection_epoch_required{job="heptatrader"} == 1))
+    labels:
+      severity: critical
+      component: ib
+    annotations:
+      summary: IB authoritative runtime state is incomplete; keep risk increase fenced
+  - alert: HeptaIbReconciliationPending
+    expr: (hepta_ib_runtime_telemetry_fresh{job="heptatrader"} == 1) and on(job, instance) (hepta_ib_post_fill_reconciliation_pending{job="heptatrader"}
+      == 1)
+    labels:
+      severity: critical
+      component: ib
+    annotations:
+      summary: IB post-fill authoritative reconciliation remains pending
+  - alert: HeptaIbCallbackConflict
+    expr: (hepta_ib_callback_conflict_metrics_present{job="heptatrader"} == 1) and on(job, instance) (hepta_ib_callback_conflicts_total{job="heptatrader"}
+      > 0)
+    labels:
+      severity: critical
+      component: ib
+    annotations:
+      summary: IB callback identity or projection conflicts were observed
+  - alert: HeptaIbRequiredMetricFamilyMissing
+    expr: (hepta_ib_runtime_telemetry_fresh{job="heptatrader"} == 1) and on(job, instance) ((hepta_ib_callback_lag_metrics_present{job="heptatrader"}
+      == 0) or (hepta_ib_callback_conflict_metrics_present{job="heptatrader"} == 0) or (hepta_ib_quote_age_metrics_present{job="heptatrader"}
+      == 0) or (hepta_ib_snapshot_age_metrics_present{job="heptatrader"} == 0) or (hepta_ib_broker_reconciliation_duration_metrics_present{job="heptatrader"}
+      == 0) or (hepta_ib_broker_reconnect_duration_metrics_present{job="heptatrader"} == 0) or (hepta_ib_broker_reconnect_refresh_duration_metrics_present{job="heptatrader"}
+      == 0))
+    labels:
+      severity: warning
+      component: ib
+    annotations:
+      summary: A required current-artifact IB metric producer is absent
+  - alert: HeptaIbAuthoritativeAgeUnknown
+    expr: (hepta_ib_runtime_telemetry_fresh{job="heptatrader"} == 1) and on(job, instance) (hepta_ib_coherent_risk_complete{job="heptatrader"}
+      == 1) and on(job, instance) ((hepta_ib_primary_quote_age_valid{job="heptatrader"} == 0) or (hepta_ib_authoritative_snapshot_age_valid{job="heptatrader"}
+      == 0))
+    labels:
+      severity: warning
+      component: ib
+    annotations:
+      summary: IB reports coherent risk while quote or authoritative snapshot age is unknown

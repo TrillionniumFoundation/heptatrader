@@ -214,3 +214,39 @@ tests:
         component: oms
       exp_annotations:
         summary: OMS durability failed; preserve evidence and use fenced recovery
+- name: ib-collector-failure
+  interval: 1s
+  input_series:
+  - *id001
+  - series: hepta_ib_collector_success{job="heptatrader",instance="fixture:1"}
+    values: '0x60'
+  alert_rule_test:
+  - eval_time: 1s
+    alertname: HeptaIbCollectorFailed
+    exp_alerts:
+    - exp_labels:
+        job: heptatrader
+        instance: fixture:1
+        severity: warning
+        component: ib
+      exp_annotations:
+        summary: IB telemetry collection failed or its success signal is missing
+- name: ib-reconciliation-pending
+  interval: 1s
+  input_series:
+  - *id001
+  - series: hepta_ib_runtime_telemetry_fresh{job="heptatrader",instance="fixture:1"}
+    values: 1x60
+  - series: hepta_ib_post_fill_reconciliation_pending{job="heptatrader",instance="fixture:1"}
+    values: 1x60
+  alert_rule_test:
+  - eval_time: 1s
+    alertname: HeptaIbReconciliationPending
+    exp_alerts:
+    - exp_labels:
+        job: heptatrader
+        instance: fixture:1
+        severity: critical
+        component: ib
+      exp_annotations:
+        summary: IB post-fill authoritative reconciliation remains pending

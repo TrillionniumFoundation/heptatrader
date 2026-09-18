@@ -83,9 +83,14 @@ streams independently. The five-second observations, 15-second source age and
 30-second collector age are explicit baseline choices, not a universal host SLA.
 
 Actual host notification and multiday stability remain open. The source now has
-network-policy, quote/snapshot-age and successful Broker-reconciliation producers,
-but target-host activation, retention and operator delivery are still external
-evidence. Do not close those gaps merely because the source-side chain is executable.
+network-policy, quote/snapshot-age and successful Broker-reconciliation producers.
+The supplied Prometheus/Alertmanager baseline consumes the unprivileged IB
+textfile for collector/freshness, authoritative-state, reconciliation and
+callback-integrity alarms; the privileged nftables observation remains a
+separate host-owned producer and is not sampled by the unprivileged daemon.
+Target-host activation, retention, privileged policy-observer scheduling and
+operator delivery are still external evidence. Do not close those gaps merely
+because the source-side chain is executable.
 
 ## Alert and authority boundary
 
