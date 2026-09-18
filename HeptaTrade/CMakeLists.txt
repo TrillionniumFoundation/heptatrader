@@ -383,8 +383,7 @@ endif()
 
 add_library(hepta_simulator_runtime STATIC
     simulator/deterministic_execution_venue.cpp
-    risk/pre_trade_risk_engine.cpp
-    risk/portfolio_risk_snapshot_builder.cpp)
+    risk/pre_trade_risk_engine.cpp)
 target_include_directories(hepta_simulator_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(hepta_execution_service_runtime STATIC
@@ -428,7 +427,6 @@ add_executable(hepta_ib_executiond
     adapter_ib/ib_order_lifecycle.cpp
     adapter_ib/ib_venue_correlation.cpp
     risk/pre_trade_risk_engine.cpp
-    risk/portfolio_risk_snapshot_builder.cpp
     state/authoritative_trading_snapshot_store.cpp
     state/ib_authoritative_quote_subscription_set.cpp
     state/ib_contract_identity.cpp)
