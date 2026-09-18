@@ -86,6 +86,20 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         assert(coordinator.RecordOrderTerminalDurably(foreign.orderId, &reason));
         assert(coordinator.RuntimeObservation().orderOwners == 0);
         assert(sends == 2);
+
+        // Cross the former 4097-record terminal enumeration ceiling in the
+        // same owner/session. These commands are fully terminal before seal;
+        // the generation-backed public terminal API must summarize them
+        // without materializing the historical mutation universe.
+        for (unsigned i = 0; i < 4200; ++i)
+        {
+            auto scale = MakePlace("generation-scale-" + std::to_string(i));
+            bindPaperContext(scale);
+            const auto placed = coordinator.PlaceIbOrder(scale);
+            assert(placed.status == ExecutionCommandStatus::Accepted);
+            assert(coordinator.RecordOrderTerminalDurably(placed.orderId, &reason));
+        }
+        assert(sends == 4202);
     }
 
     // Exercise the exact v2 stopped-state producer after the real writer has
@@ -119,13 +133,13 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         auto conflict = oldCommand;
         conflict.order.totalQuantity += 1.0;
         assert(recovered.PlaceIbOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
-        assert(sends == 2); // disk lookup never calls the venue
+        assert(sends == 4202); // disk lookup never calls the venue
 
         auto newCommand = MakePlace("generation-new-command");
         bindPaperContext(newCommand);
         const auto next = recovered.PlaceIbOrder(newCommand);
         assert(next.status == ExecutionCommandStatus::Accepted);
-        assert(sends == 3); // capacity was adopted, so new entry is not UNKNOWN
+        assert(sends == 4203); // capacity was adopted, so new entry is not UNKNOWN
         assert(recovered.RecordOrderTerminalDurably(next.orderId, &reason));
 
         std::vector<std::int64_t> attempts;
@@ -166,13 +180,10 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
         binding.brokerSocketIdentitySha256 = "sha256:" + std::string(64, 'b');
         PaperTerminalMutationUniverse universe;
         assert(recovered.EnterPaperTerminalFenceAndProject(binding, universe, reason));
-        assert(universe.commands.size() == 2);
-        for (std::size_t i = 0; i < universe.commands.size(); ++i)
-        {
-            assert(universe.commands[i].agentId == oldCommand.context.agentId);
-            assert(universe.commands[i].sessionId == oldCommand.context.sessionId);
-            assert(universe.commands[i].toolCallId != foreignCommand.context.toolCallId);
-        }
+        assert(universe.compactSummary);
+        assert(universe.commands.empty());
+        assert(universe.commandCount == 4202);
+        assert(universe.correlationCount <= universe.commandCount);
         ExecutionCommandResult foreignStatus;
         assert(recovered.GetCommandStatus(
             foreignCommand.context.agentId, foreignCommand.context.sessionId,
