@@ -601,12 +601,18 @@ bool ExecutionServiceRuntimeComposition::LoadFenceCredential(std::string& reason
 }
 bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reason)
 {
-    long maximumOrderId = 999999;
-    std::map<long, OmsJournalEvent> admitted;
-    std::map<long, OmsJournalEvent> fills;
+    const long kInitialOrderId = 999999;
+    long maximumOrderId = kInitialOrderId;
+    std::uint64_t admittedOrderCount = 0;
+    std::map<std::string, double> positions;
+    std::map<long, OmsJournalEvent> tailAdmitted;
+    std::map<long, OmsJournalEvent> tailFills;
+    bool checkpointSeen = false;
+    bool checkpointReady = false;
     bool valid = true;
-    const std::function<void(const OmsJournalEvent&)> project =
-        [&](const OmsJournalEvent& event) {
+    long checkpointMaximumOrderId = kInitialOrderId;
+
+    const auto applyTail = [&](const OmsJournalEvent& event) {
         if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
         const bool fill = event.eventType == "status" && event.status == "Filled";
         if (event.eventType != "place_sent" && !fill) return;
@@ -617,12 +623,160 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
             valid = false;
             return;
         }
-        if (!fill)
+        if (event.eventType == "place_sent")
+        {
+            const auto prior = tailAdmitted.find(event.orderId);
+            if (prior != tailAdmitted.end())
+            {
+                if (prior->second.instrument != event.instrument ||
+                    prior->second.side != event.side ||
+                    prior->second.qty != event.qty ||
+                    prior->second.reqId != event.reqId ||
+                    prior->second.requestHash != event.requestHash)
+                    valid = false;
+                return;
+            }
+            if (event.orderId <= checkpointMaximumOrderId ||
+                admittedOrderCount == std::numeric_limits<std::uint64_t>::max())
+            {
+                valid = false;
+                return;
+            }
+            tailAdmitted[event.orderId] = event;
+            ++admittedOrderCount;
+            return;
+        }
+        const auto owner = tailAdmitted.find(event.orderId);
+        if (!std::isfinite(event.price) || event.price <= 0.0 ||
+            owner == tailAdmitted.end() ||
+            owner->second.instrument != event.instrument ||
+            owner->second.side != event.side || owner->second.qty != event.qty)
+        {
+            valid = false;
+            return;
+        }
+        const auto prior = tailFills.find(event.orderId);
+        if (prior != tailFills.end())
+        {
+            if (prior->second.instrument != event.instrument ||
+                prior->second.side != event.side ||
+                prior->second.qty != event.qty || prior->second.price != event.price)
+                valid = false;
+            return;
+        }
+        tailFills[event.orderId] = event;
+        positions[event.instrument] += event.side == "BUY" ? event.qty : -event.qty;
+        if (!std::isfinite(positions[event.instrument])) valid = false;
+    };
+
+    OmsGenerationStore generation(m_config.journalPath);
+    const bool generationPresent = generation.HasStore();
+    if (generationPresent)
+    {
+        const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+        std::string generationReason;
+        if (!generation.Recover(
+                health.replayMaxBytes, health.replayMaxRecords,
+                health.replayMaxRecordBytes,
+                [&](const OmsJournalEvent& event) {
+                    if (!checkpointReady && event.eventType == "simulator_state_checkpoint")
+                    {
+                        if (checkpointSeen || event.venue != "SIMULATOR" ||
+                            event.account != "SIM" || event.orderId < kInitialOrderId ||
+                            event.brokerRequestId < 0)
+                        {
+                            valid = false;
+                            return;
+                        }
+                        checkpointSeen = true;
+                        maximumOrderId = event.orderId;
+                        checkpointMaximumOrderId = event.orderId;
+                        admittedOrderCount =
+                            static_cast<std::uint64_t>(event.brokerRequestId);
+                        positions.clear();
+                        return;
+                    }
+                    if (!checkpointReady &&
+                        event.eventType == "simulator_position_checkpoint")
+                    {
+                        if (!checkpointSeen || event.venue != "SIMULATOR" ||
+                            event.account != "SIM" || event.instrument.empty() ||
+                            positions.count(event.instrument) != 0 ||
+                            (event.side != "BUY" && event.side != "SELL") ||
+                            !std::isfinite(event.qty) || event.qty <= 0.0)
+                        {
+                            valid = false;
+                            return;
+                        }
+                        positions[event.instrument] =
+                            event.side == "BUY" ? event.qty : -event.qty;
+                        return;
+                    }
+                    if (!checkpointReady &&
+                        event.eventType == "simulator_state_checkpoint_ready")
+                    {
+                        if (!checkpointSeen || event.venue != "SIMULATOR" ||
+                            event.account != "SIM" || event.orderId != maximumOrderId ||
+                            event.brokerRequestId < 0 ||
+                            static_cast<std::uint64_t>(event.brokerRequestId) !=
+                                admittedOrderCount)
+                        {
+                            valid = false;
+                            return;
+                        }
+                        checkpointReady = true;
+                        checkpointMaximumOrderId = maximumOrderId;
+                        return;
+                    }
+                    if (checkpointReady) applyTail(event);
+                }, generationReason))
+        {
+            reason = generationReason.empty() ?
+                "EXECUTION_SIMULATOR_GENERATION_RECOVERY_FAILED" : generationReason;
+            return false;
+        }
+        if (!valid)
+        {
+            reason = "EXECUTION_SIMULATOR_GENERATION_CHECKPOINT_CONFLICT";
+            return false;
+        }
+        if (checkpointReady)
+        {
+            if (maximumOrderId == std::numeric_limits<long>::max())
+            {
+                reason = "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+                return false;
+            }
+            if (!m_venue.RestoreRiskState(positions, admittedOrderCount, reason))
+                return false;
+            m_venue.RestoreNextOrderIdAtLeast(maximumOrderId + 1);
+            reason.clear();
+            return true;
+        }
+    }
+
+    maximumOrderId = kInitialOrderId;
+    std::map<long, OmsJournalEvent> admitted;
+    std::map<long, OmsJournalEvent> fills;
+    valid = true;
+    const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
+        if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
+        const bool fill = event.eventType == "status" && event.status == "Filled";
+        if (event.eventType != "place_sent" && !fill) return;
+        if (event.orderId < 0 || event.venue != "SIMULATOR" || event.account != "SIM" ||
+            event.instrument.empty() || (event.side != "BUY" && event.side != "SELL") ||
+            !std::isfinite(event.qty) || event.qty <= 0.0)
+        {
+            valid = false;
+            return;
+        }
+        if (event.eventType == "place_sent")
         {
             const auto prior = admitted.find(event.orderId);
             if (prior != admitted.end() &&
-                (prior->second.instrument != event.instrument || prior->second.side != event.side ||
-                 prior->second.qty != event.qty || prior->second.reqId != event.reqId ||
+                (prior->second.instrument != event.instrument ||
+                 prior->second.side != event.side || prior->second.qty != event.qty ||
+                 prior->second.reqId != event.reqId ||
                  prior->second.requestHash != event.requestHash))
                 valid = false;
             admitted[event.orderId] = event;
@@ -635,36 +789,18 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
             valid = false;
         const auto prior = fills.find(event.orderId);
         if (prior != fills.end() &&
-            (prior->second.instrument != event.instrument || prior->second.side != event.side ||
-             prior->second.qty != event.qty || prior->second.price != event.price))
+            (prior->second.instrument != event.instrument ||
+             prior->second.side != event.side || prior->second.qty != event.qty ||
+             prior->second.price != event.price))
             valid = false;
         fills[event.orderId] = event;
-    };
-
-    bool replayOk = false;
-    OmsGenerationStore generations(m_config.journalPath);
-    if (generations.HasStore())
+    });
+    if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
     {
-        std::uint64_t records = 0;
-        std::string generationReason;
-        const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
-        if (generations.ReplayCompleteHistory(
-                health.replayMaxRecordBytes, project, records, generationReason))
-            replayOk = true;
-        else if (generationReason != "OMS_GENERATION_COMPLETE_REPLAY_REQUIRES_V2")
-        {
-            reason = generationReason.empty() ?
-                "EXECUTION_OMS_GENERATION_REPLAY_FAILED" : generationReason;
-            return false;
-        }
-    }
-    if (!replayOk)
-        replayOk = m_journal.Replay(project) >= 0;
-
-    if (!replayOk || maximumOrderId == std::numeric_limits<long>::max())
-    {
-        reason = !replayOk ? "EXECUTION_OMS_REPLAY_FAILED" :
-            "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+        reason = replayed < 0 && generationPresent ?
+            "EXECUTION_SIMULATOR_GENERATION_CHECKPOINT_REQUIRED" :
+            (replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
+             "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED");
         return false;
     }
     if (!valid)
@@ -672,7 +808,7 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
         reason = "EXECUTION_SIMULATOR_RISK_REPLAY_CONFLICT";
         return false;
     }
-    std::map<std::string, double> positions;
+    positions.clear();
     for (const auto& fill : fills)
     {
         const auto& event = fill.second;
@@ -683,7 +819,8 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
             return false;
         }
     }
-    if (!m_venue.RestoreRiskState(positions, static_cast<std::uint64_t>(admitted.size()), reason))
+    if (!m_venue.RestoreRiskState(
+            positions, static_cast<std::uint64_t>(admitted.size()), reason))
         return false;
     m_venue.RestoreNextOrderIdAtLeast(maximumOrderId + 1);
     reason.clear();
