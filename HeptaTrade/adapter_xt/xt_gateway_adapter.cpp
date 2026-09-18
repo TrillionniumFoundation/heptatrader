@@ -1,5 +1,6 @@
 #include "xt_gateway_adapter.h"
 
+#include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
