@@ -931,13 +931,6 @@
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
-              "kind": "implementation",
-              "owner": "risk-engine",
-              "language": "CXX",
-              "standard": "11"
-            },
-            {
               "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
               "kind": "implementation",
               "owner": "risk-engine",
@@ -1449,13 +1442,6 @@
           "precompiled_headers": [],
           "dependencies": [],
           "translation_units": [
-            {
-              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
-              "kind": "implementation",
-              "owner": "risk-engine",
-              "language": "CXX",
-              "standard": "11"
-            },
             {
               "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
               "kind": "implementation",
@@ -2720,13 +2706,6 @@
               "standard": "11"
             },
             {
-              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
-              "kind": "implementation",
-              "owner": "risk-engine",
-              "language": "CXX",
-              "standard": "11"
-            },
-            {
               "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
               "kind": "implementation",
               "owner": "risk-engine",
@@ -3408,13 +3387,6 @@
           "precompiled_headers": [],
           "dependencies": [],
           "translation_units": [
-            {
-              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
-              "kind": "implementation",
-              "owner": "risk-engine",
-              "language": "CXX",
-              "standard": "11"
-            },
             {
               "path": "HeptaTrade/risk/pre_trade_risk_engine.cpp",
               "kind": "implementation",
