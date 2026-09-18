@@ -47,7 +47,8 @@ int main(int argc, char** argv)
               << "}\n";
     return ::close(fd) == 0 ? 0 : 6;
 }
-"""\n
+"""
+
 PROBE_CPP = r"""
 #include "HeptaTrade/execution/generation_index_reader.h"
 #include <fcntl.h>
@@ -70,9 +71,9 @@ int main(int argc, char** argv)
         fd, metadata.st_size, probe, 65536U, rowStart, rowEnd, line);
     const int closeResult = ::close(fd);
     if (!ok || closeResult != 0) return 5;
-    std::cout << "{\\\"start\\\":" << rowStart
-              << ",\\\"end\\\":" << rowEnd
-              << ",\\\"line_bytes\\\":" << line.size() << "}\\n";
+    std::cout << "{\"start\":" << rowStart
+              << ",\"end\":" << rowEnd
+              << ",\"line_bytes\":" << line.size() << "}\n";
     return 0;
 }
 """
@@ -161,9 +162,9 @@ class GenerationIndexReaderTests(unittest.TestCase):
 
     def test_random_probe_accepts_maximum_sized_nonfirst_row(self):
         path = Path(self.tmp.name) / "probe-index.tsv"
-        prefix = b"p\\n"
-        maximum_row = b"x" * 65536 + b"\\n"
-        suffix = b"q\\n"
+        prefix = b"p\n"
+        maximum_row = b"x" * 65536 + b"\n"
+        suffix = b"q\n"
         payload = prefix + maximum_row + suffix
         path.write_bytes(payload)
         probe = len(prefix) + 65536
