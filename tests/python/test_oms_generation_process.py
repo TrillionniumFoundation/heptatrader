@@ -277,9 +277,12 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
 
         observation = {
             "schema": "heptatrader.installed-generation-cost-curve.v1",
+            "result": "PASS",
             "synthetic": True,
             "installed_processes": True,
             "broker_io": False,
+            "source_sha": self.manifest["source_sha"],
+            "artifact_sha256": os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"],
             "points": points,
             "rebase_ns": rebase_ns,
             "retained_disk_bytes_before_rebase": before_rebase,
@@ -293,6 +296,24 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             "final_position": 0,
             "authorization_effect": "NONE",
         }
+        evidence_root = os.environ.get("HEPTA_PROCESS_EVIDENCE_DIR")
+        if evidence_root:
+            evidence_directory = Path(evidence_root)
+            if not evidence_directory.is_dir() or evidence_directory.is_symlink():
+                raise AssertionError("process evidence directory is unavailable or unsafe")
+            evidence_path = evidence_directory / "installed-generation-cost-curve.json"
+            with evidence_path.open("x") as stream:
+                json.dump(observation, stream, sort_keys=True, indent=2)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            directory_fd = os.open(
+                evidence_directory,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
         print(json.dumps(observation, sort_keys=True))
 
     def test_fill_stop_seal_restart_preserves_state_identity_and_order_watermark(self):

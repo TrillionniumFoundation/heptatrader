@@ -31,6 +31,88 @@ def digest(path: Path) -> str:
     return result.hexdigest()
 
 
+def validate_generation_cost_evidence(
+    path: Path, source_sha: str, artifact_sha256: str
+) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("generation cost evidence is missing or invalid") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "heptatrader.installed-generation-cost-curve.v1"
+        or value.get("result") != "PASS"
+        or value.get("source_sha") != source_sha
+        or value.get("artifact_sha256") != artifact_sha256
+        or value.get("synthetic") is not True
+        or value.get("installed_processes") is not True
+        or value.get("broker_io") is not False
+        or value.get("authorization_effect") != "NONE"
+        or value.get("oldest_command_duplicate_no_resend") is not True
+        or value.get("final_position") != 0
+    ):
+        raise ValueError("generation cost evidence identity or result is invalid")
+    points = value.get("points")
+    if not isinstance(points, list) or len(points) != 3:
+        raise ValueError("generation cost evidence point inventory is invalid")
+
+    def unsigned(number, *, positive: bool = False) -> bool:
+        return type(number) is int and number >= (1 if positive else 0)
+
+    expected_admitted = [8, 40, 168]
+    if [point.get("admitted_orders") for point in points
+            if isinstance(point, dict)] != expected_admitted:
+        raise ValueError("generation cost evidence cardinality is invalid")
+    previous_history = -1
+    for point in points:
+        if not isinstance(point, dict):
+            raise ValueError("generation cost evidence point is invalid")
+        required_positive = (
+            "history_records", "seal_ns", "execution_peak_rss_kib",
+            "place_latency_total_samples", "journal_bytes_before_seal",
+            "retained_disk_bytes",
+        )
+        if any(not unsigned(point.get(name), positive=True)
+               for name in required_positive):
+            raise ValueError("generation cost evidence positive metric is invalid")
+        required_nonnegative = (
+            "restart_recovery_ns", "simulator_state_recovery_ns",
+            "startup_ready_ns", "place_latency_total_max_ns",
+            "place_latency_total_p99_upper_ns",
+        )
+        if any(not unsigned(point.get(name))
+               for name in required_nonnegative):
+            raise ValueError("generation cost evidence latency metric is invalid")
+        if point["startup_ready_ns"] < (
+            point["restart_recovery_ns"] +
+            point["simulator_state_recovery_ns"]
+        ):
+            raise ValueError("generation cost evidence startup scope is incomplete")
+        if point["history_records"] < previous_history:
+            raise ValueError("generation cost evidence history regressed")
+        previous_history = point["history_records"]
+
+    before = value.get("retained_disk_bytes_before_rebase")
+    after = value.get("retained_disk_bytes_after_rebase")
+    if (
+        not unsigned(value.get("rebase_ns"), positive=True)
+        or not unsigned(before, positive=True)
+        or not unsigned(after, positive=True)
+        or after >= before
+        or not unsigned(value.get("post_rebase_recovery_ns"))
+        or not unsigned(value.get("post_rebase_simulator_state_recovery_ns"))
+        or not unsigned(value.get("post_rebase_startup_ready_ns"))
+        or not unsigned(value.get("post_rebase_execution_peak_rss_kib"), positive=True)
+    ):
+        raise ValueError("generation cost evidence rebase boundary is invalid")
+    if value["post_rebase_startup_ready_ns"] < (
+        value["post_rebase_recovery_ns"] +
+        value["post_rebase_simulator_state_recovery_ns"]
+    ):
+        raise ValueError("post-rebase startup scope is incomplete")
+    return value
+
+
 def installed_executable_targets(source: Path, build: Path) -> list[str]:
     """Use fresh CMake install ownership, not a second handwritten target list.
 
@@ -186,6 +268,9 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
                     "HEPTA_PROCESS_PREVIOUS_SHA256=" + previous_digest,
                     "HEPTA_PROCESS_EVIDENCE_DIR=" + str(output / "process-evidence"),
                     "python3", "scripts/run_python_tests.py", "--lane", "process"])
+            validate_generation_cost_evidence(
+                output / "process-evidence/installed-generation-cost-curve.json",
+                source, candidate_digest)
             command(clean + ["HEPTA_DISPOSABLE_SYSTEMD_TEST=1", "python3", "tests/systemd_simulator_smoke.py",
                     "--artifact", candidate, "--expected-sha256", candidate_digest,
                     "--evidence-dir", output / "systemd-evidence"])
