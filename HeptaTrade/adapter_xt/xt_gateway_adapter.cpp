@@ -1,11 +1,99 @@
 #include "xt_gateway_adapter.h"
 
+#include <cerrno>
+#include <cmath>
+#include <cstdlib>
 #include <limits>
+#include <set>
 #include <sstream>
 
 namespace
 {
 const std::size_t kHxqMaximumFrameBytes = 256U * 1024U;
+const std::size_t kHxqMaximumPositions = 1024U;
+
+class CanonicalCursor
+{
+public:
+    explicit CanonicalCursor(const std::string& input) : m_input(input) {}
+
+    bool Consume(const char* literal)
+    {
+        const std::string wanted(literal);
+        if (m_input.compare(m_offset, wanted.size(), wanted) != 0) return false;
+        m_offset += wanted.size();
+        return true;
+    }
+
+    bool String(std::string& value)
+    {
+        value.clear();
+        const std::size_t end = m_input.find('"', m_offset);
+        if (end == std::string::npos) return false;
+        for (std::size_t i = m_offset; i < end; ++i)
+        {
+            const unsigned char byte = static_cast<unsigned char>(m_input[i]);
+            if (byte < 0x20U || byte == '\\') return false;
+        }
+        value.assign(m_input, m_offset, end - m_offset);
+        m_offset = end + 1U;
+        return true;
+    }
+
+    bool Unsigned(char delimiter, std::uint64_t& value)
+    {
+        const std::size_t end = m_input.find(delimiter, m_offset);
+        if (end == std::string::npos || end == m_offset) return false;
+        std::uint64_t parsed = 0;
+        if (end - m_offset > 1U && m_input[m_offset] == '0') return false;
+        for (std::size_t i = m_offset; i < end; ++i)
+        {
+            if (m_input[i] < '0' || m_input[i] > '9') return false;
+            const std::uint64_t digit =
+                static_cast<std::uint64_t>(m_input[i] - '0');
+            if (parsed >
+                (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+                return false;
+            parsed = parsed * 10U + digit;
+        }
+        value = parsed;
+        m_offset = end + 1U;
+        return true;
+    }
+
+    bool Number(char delimiter, double& value)
+    {
+        const std::size_t end = m_input.find(delimiter, m_offset);
+        if (end == std::string::npos || end == m_offset) return false;
+        const std::string token = m_input.substr(m_offset, end - m_offset);
+        if (token[0] == '+' ||
+            token.find_first_of(" \t\r\n") != std::string::npos)
+            return false;
+        char* parsedEnd = nullptr;
+        errno = 0;
+        const double parsed = std::strtod(token.c_str(), &parsedEnd);
+        if (errno == ERANGE || parsedEnd == token.c_str() ||
+            *parsedEnd != '\0' || !std::isfinite(parsed))
+            return false;
+        if (parsed == 0.0 &&
+            token.find_first_of("123456789") != std::string::npos)
+            return false;
+        value = parsed;
+        m_offset = end + 1U;
+        return true;
+    }
+
+    bool Peek(char byte) const
+    {
+        return m_offset < m_input.size() && m_input[m_offset] == byte;
+    }
+
+    bool End() const { return m_offset == m_input.size(); }
+
+private:
+    const std::string& m_input;
+    std::size_t m_offset = 0;
+};
 }
 
 bool HeptaXTGatewayAdapter::SafeToken(const std::string& value, std::size_t maximum)
@@ -95,6 +183,13 @@ bool HeptaXTGatewayAdapter::DecodeFrame(
         canonicalJson.find('\r') == std::string::npos;
 }
 
+void HeptaXTGatewayAdapter::ResetReadState()
+{
+    m_accountSnapshot = HeptaXTAccountSnapshot();
+    m_positionSnapshot = HeptaXTPositionSnapshot();
+    m_quoteSnapshot = HeptaXTQuoteSnapshot();
+}
+
 bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
 {
     m_initialized = false;
@@ -102,6 +197,7 @@ bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
     m_readOnlyTransportConfigured = false;
     m_nextRequestId = 1;
     m_config = HeptaXTConfig();
+    ResetReadState();
     if (cfg.mode != "XT")
     {
         m_lastRejectReason = "XT_MODE_INVALID";
@@ -128,7 +224,8 @@ bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
 }
 
 bool HeptaXTGatewayAdapter::ExchangeReadOnly(
-    const std::string& operation, const std::string& payloadJson)
+    const std::string& operation, const std::string& payloadJson,
+    std::string* responsePayloadJson)
 {
     if (!m_initialized)
     {
@@ -185,13 +282,147 @@ bool HeptaXTGatewayAdapter::ExchangeReadOnly(
              << "\",\"connection_epoch\":" << m_config.connectionEpoch
              << ",\"operation\":\"" << operation
              << "\",\"account\":\"" << EscapeJson(m_config.account)
-             << "\",\"ok\":true}";
-    if (response != expected.str())
+             << "\",\"ok\":true";
+    if (responsePayloadJson == nullptr)
     {
-        m_lastRejectReason = "XT_HXQ1_RESPONSE_BINDING_INVALID";
-        return false;
+        expected << "}";
+        if (response != expected.str())
+        {
+            m_lastRejectReason = "XT_HXQ1_RESPONSE_BINDING_INVALID";
+            return false;
+        }
+    }
+    else
+    {
+        const std::string prefix = expected.str() + ",\"payload\":";
+        if (response.size() <= prefix.size() + 2U ||
+            response.compare(0, prefix.size(), prefix) != 0 ||
+            response.back() != '}')
+        {
+            m_lastRejectReason = "XT_HXQ1_RESPONSE_BINDING_INVALID";
+            return false;
+        }
+        responsePayloadJson->assign(
+            response, prefix.size(), response.size() - prefix.size() - 1U);
+        if (responsePayloadJson->empty() ||
+            responsePayloadJson->front() != '{' ||
+            responsePayloadJson->back() != '}')
+        {
+            responsePayloadJson->clear();
+            m_lastRejectReason = "XT_HXQ1_RESPONSE_PAYLOAD_INVALID";
+            return false;
+        }
     }
     m_lastRejectReason.clear();
+    return true;
+}
+
+bool HeptaXTGatewayAdapter::ParseAccountSnapshot(
+    const std::string& payload, std::uint64_t connectionEpoch,
+    HeptaXTAccountSnapshot& out)
+{
+    out = HeptaXTAccountSnapshot();
+    CanonicalCursor cursor(payload);
+    std::uint64_t generation = 0;
+    std::string currency;
+    double cash = 0.0, total = 0.0, available = 0.0;
+    if (!cursor.Consume(
+            "{\"schema\":\"heptatrader.xt.account.v1\",\"generation\":") ||
+        !cursor.Unsigned(',', generation) || generation == 0 ||
+        !cursor.Consume("\"complete\":true,\"currency\":\"") ||
+        !cursor.String(currency) || !SafeToken(currency, 16U) ||
+        !cursor.Consume(",\"cash\":") || !cursor.Number(',', cash) ||
+        !cursor.Consume("\"total_asset\":") || !cursor.Number(',', total) ||
+        !cursor.Consume("\"available_cash\":") ||
+        !cursor.Number('}', available) || !cursor.End() ||
+        cash < 0.0 || total < 0.0 || available < 0.0 ||
+        available > total)
+        return false;
+    out.complete = true;
+    out.connectionEpoch = connectionEpoch;
+    out.generation = generation;
+    out.currency = currency;
+    out.cash = cash;
+    out.totalAsset = total;
+    out.availableCash = available;
+    return true;
+}
+
+bool HeptaXTGatewayAdapter::ParsePositionSnapshot(
+    const std::string& payload, std::uint64_t connectionEpoch,
+    HeptaXTPositionSnapshot& out)
+{
+    out = HeptaXTPositionSnapshot();
+    CanonicalCursor cursor(payload);
+    std::uint64_t generation = 0;
+    if (!cursor.Consume(
+            "{\"schema\":\"heptatrader.xt.positions.v1\",\"generation\":") ||
+        !cursor.Unsigned(',', generation) || generation == 0 ||
+        !cursor.Consume("\"complete\":true,\"positions\":["))
+        return false;
+    std::set<std::string> instruments;
+    while (!cursor.Peek(']'))
+    {
+        if (out.positions.size() >= kHxqMaximumPositions ||
+            !cursor.Consume("{\"instrument\":\""))
+            return false;
+        HeptaXTPosition position;
+        if (!cursor.String(position.instrument) ||
+            !SafeToken(position.instrument, 128U) ||
+            !instruments.insert(position.instrument).second ||
+            !cursor.Consume(",\"quantity\":") ||
+            !cursor.Number(',', position.quantity) ||
+            !cursor.Consume("\"sellable_quantity\":") ||
+            !cursor.Number(',', position.sellableQuantity) ||
+            !cursor.Consume("\"cost\":") ||
+            !cursor.Number('}', position.cost) ||
+            position.quantity < 0.0 ||
+            position.sellableQuantity < 0.0 ||
+            position.sellableQuantity > position.quantity ||
+            position.cost < 0.0)
+            return false;
+        out.positions.push_back(position);
+        if (cursor.Peek(','))
+        {
+            if (!cursor.Consume(",")) return false;
+            continue;
+        }
+        break;
+    }
+    if (!cursor.Consume("]}") || !cursor.End()) return false;
+    out.complete = true;
+    out.connectionEpoch = connectionEpoch;
+    out.generation = generation;
+    return true;
+}
+
+bool HeptaXTGatewayAdapter::ParseQuoteSnapshot(
+    const std::string& payload, std::uint64_t connectionEpoch,
+    const std::string& expectedInstrument, HeptaXTQuoteSnapshot& out)
+{
+    out = HeptaXTQuoteSnapshot();
+    CanonicalCursor cursor(payload);
+    std::uint64_t generation = 0, observedAtMs = 0;
+    std::string instrument;
+    double bid = 0.0, ask = 0.0;
+    if (!cursor.Consume(
+            "{\"schema\":\"heptatrader.xt.quote.v1\",\"generation\":") ||
+        !cursor.Unsigned(',', generation) || generation == 0 ||
+        !cursor.Consume("\"complete\":true,\"instrument\":\"") ||
+        !cursor.String(instrument) || instrument != expectedInstrument ||
+        !cursor.Consume(",\"bid\":") || !cursor.Number(',', bid) ||
+        !cursor.Consume("\"ask\":") || !cursor.Number(',', ask) ||
+        !cursor.Consume("\"observed_at_ms\":") ||
+        !cursor.Unsigned('}', observedAtMs) || observedAtMs == 0 ||
+        !cursor.End() || bid <= 0.0 || ask <= 0.0 || ask < bid)
+        return false;
+    out.complete = true;
+    out.connectionEpoch = connectionEpoch;
+    out.generation = generation;
+    out.instrument = instrument;
+    out.bid = bid;
+    out.ask = ask;
+    out.observedAtMs = observedAtMs;
     return true;
 }
 
@@ -207,17 +438,19 @@ bool HeptaXTGatewayAdapter::Connect()
         m_lastRejectReason = "XT_TRANSPORT_NOT_IMPLEMENTED";
         return false;
     }
+    ResetReadState();
     const std::string payload = std::string("{\"peer_profile_sha256\":\"") +
         m_config.peerProfileSha256 + "\"}";
     if (!ExchangeReadOnly("identity", payload)) return false;
     m_connected = true;
-    m_lastRejectReason = "XT_READ_ONLY_READY";
+    m_lastRejectReason = "XT_READ_ONLY_CONNECTED";
     return true;
 }
 
 void HeptaXTGatewayAdapter::Disconnect()
 {
     m_connected = false;
+    ResetReadState();
     m_lastRejectReason = m_readOnlyTransportConfigured ?
         "XT_READ_ONLY_NOT_CONNECTED" :
         (m_initialized ? "XT_TRANSPORT_NOT_IMPLEMENTED" : "XT_NOT_INITIALIZED");
@@ -225,23 +458,86 @@ void HeptaXTGatewayAdapter::Disconnect()
 
 bool HeptaXTGatewayAdapter::ReqAccountSummary()
 {
-    return ExchangeReadOnly("account_snapshot", "{}");
+    m_accountSnapshot = HeptaXTAccountSnapshot();
+    std::string payload;
+    if (!ExchangeReadOnly("account_snapshot", "{}", &payload)) return false;
+    if (!ParseAccountSnapshot(
+            payload, m_config.connectionEpoch, m_accountSnapshot))
+    {
+        m_lastRejectReason = "XT_ACCOUNT_SNAPSHOT_INVALID";
+        return false;
+    }
+    return true;
 }
 
 bool HeptaXTGatewayAdapter::ReqPositions()
 {
-    return ExchangeReadOnly("position_snapshot", "{}");
+    m_positionSnapshot = HeptaXTPositionSnapshot();
+    std::string payload;
+    if (!ExchangeReadOnly("position_snapshot", "{}", &payload)) return false;
+    if (!ParsePositionSnapshot(
+            payload, m_config.connectionEpoch, m_positionSnapshot))
+    {
+        m_lastRejectReason = "XT_POSITION_SNAPSHOT_INVALID";
+        return false;
+    }
+    return true;
 }
 
 bool HeptaXTGatewayAdapter::ReqMktData(const std::string& instrument)
 {
+    m_quoteSnapshot = HeptaXTQuoteSnapshot();
     if (!SafeToken(instrument, 128U))
     {
         m_lastRejectReason = "XT_INSTRUMENT_INVALID";
         return false;
     }
-    return ExchangeReadOnly("quote_subscribe",
-        std::string("{\"instrument\":\"") + EscapeJson(instrument) + "\"}");
+    std::string payload;
+    if (!ExchangeReadOnly(
+            "quote_subscribe",
+            std::string("{\"instrument\":\"") +
+                EscapeJson(instrument) + "\"}",
+            &payload))
+        return false;
+    if (!ParseQuoteSnapshot(
+            payload, m_config.connectionEpoch,
+            instrument, m_quoteSnapshot))
+    {
+        m_lastRejectReason = "XT_QUOTE_SNAPSHOT_INVALID";
+        return false;
+    }
+    return true;
+}
+
+bool HeptaXTGatewayAdapter::GetAccountSnapshot(
+    HeptaXTAccountSnapshot& out) const
+{
+    out = m_accountSnapshot;
+    return out.complete;
+}
+
+bool HeptaXTGatewayAdapter::GetPositionSnapshot(
+    HeptaXTPositionSnapshot& out) const
+{
+    out = m_positionSnapshot;
+    return out.complete;
+}
+
+bool HeptaXTGatewayAdapter::GetQuoteSnapshot(
+    const std::string& instrument, HeptaXTQuoteSnapshot& out) const
+{
+    out = m_quoteSnapshot;
+    return out.complete && out.instrument == instrument;
+}
+
+bool HeptaXTGatewayAdapter::AccountPositionReadReady() const
+{
+    return m_connected &&
+        m_accountSnapshot.complete && m_positionSnapshot.complete &&
+        m_accountSnapshot.connectionEpoch == m_config.connectionEpoch &&
+        m_positionSnapshot.connectionEpoch == m_config.connectionEpoch &&
+        m_accountSnapshot.generation != 0 &&
+        m_accountSnapshot.generation == m_positionSnapshot.generation;
 }
 
 bool HeptaXTGatewayAdapter::RejectUnsupportedMutation()

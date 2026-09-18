@@ -3,6 +3,41 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <vector>
+
+struct HeptaXTAccountSnapshot {
+    bool complete = false;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::string currency;
+    double cash = 0.0;
+    double totalAsset = 0.0;
+    double availableCash = 0.0;
+};
+
+struct HeptaXTPosition {
+    std::string instrument;
+    double quantity = 0.0;
+    double sellableQuantity = 0.0;
+    double cost = 0.0;
+};
+
+struct HeptaXTPositionSnapshot {
+    bool complete = false;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::vector<HeptaXTPosition> positions;
+};
+
+struct HeptaXTQuoteSnapshot {
+    bool complete = false;
+    std::uint64_t connectionEpoch = 0;
+    std::uint64_t generation = 0;
+    std::string instrument;
+    double bid = 0.0;
+    double ask = 0.0;
+    std::uint64_t observedAtMs = 0;
+};
 
 // HXQ1 v1 read-only client boundary. The injected exchange is deliberately
 // narrower than a socket: production wiring must supply an already-admitted,
@@ -26,6 +61,10 @@ public:
     bool ReqAccountSummary();
     bool ReqPositions();
     bool ReqMktData(const std::string& instrument);
+    bool GetAccountSnapshot(HeptaXTAccountSnapshot& out) const;
+    bool GetPositionSnapshot(HeptaXTPositionSnapshot& out) const;
+    bool GetQuoteSnapshot(const std::string& instrument, HeptaXTQuoteSnapshot& out) const;
+    bool AccountPositionReadReady() const;
     bool PlaceOrder(const std::string& instrument, const std::string& side,
                     double qty, double price, long long* outOrderId = nullptr);
     bool CancelOrder(long long orderId);
@@ -44,15 +83,30 @@ public:
 private:
     bool RejectUnsupportedMutation();
     bool ExchangeReadOnly(const std::string& operation,
-                          const std::string& payloadJson);
+                          const std::string& payloadJson,
+                          std::string* responsePayloadJson = nullptr);
+    static bool ParseAccountSnapshot(const std::string& payload,
+                                     std::uint64_t connectionEpoch,
+                                     HeptaXTAccountSnapshot& out);
+    static bool ParsePositionSnapshot(const std::string& payload,
+                                      std::uint64_t connectionEpoch,
+                                      HeptaXTPositionSnapshot& out);
+    static bool ParseQuoteSnapshot(const std::string& payload,
+                                   std::uint64_t connectionEpoch,
+                                   const std::string& expectedInstrument,
+                                   HeptaXTQuoteSnapshot& out);
     static bool SafeToken(const std::string& value, std::size_t maximum);
     static bool LowerHexSha256(const std::string& value);
     static std::string EscapeJson(const std::string& value);
+    void ResetReadState();
 
     bool m_initialized = false;
     bool m_connected = false;
     bool m_readOnlyTransportConfigured = false;
     std::uint64_t m_nextRequestId = 1;
     HeptaXTConfig m_config;
+    HeptaXTAccountSnapshot m_accountSnapshot;
+    HeptaXTPositionSnapshot m_positionSnapshot;
+    HeptaXTQuoteSnapshot m_quoteSnapshot;
     std::string m_lastRejectReason = "XT_NOT_INITIALIZED";
 };
