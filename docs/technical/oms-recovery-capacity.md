@@ -27,11 +27,30 @@ V2 seals only the event delta since its parent. Command identity is never expire
 
 The coordinator keeps only current/hot commands plus a bounded historical lookup cache. This closes the former requirement to repopulate the entire permanent command universe into memory on every coordinator restart. It does not make disk history finite or eliminate every O(history) operation.
 
-### Simulator complete economic-state replay
+### Simulator economic checkpoint plus active-tail replay
 
-The deterministic simulator has one additional requirement: terminal fills, admitted-order count and the order-ID high watermark are economic/risk base state, so bounded coordinator hot replay alone is insufficient after V2 rotation. `ExecutionServiceRuntimeComposition` therefore routes simulator-state restoration through `OmsGenerationStore::ReplayCompleteHistory` when the selected store is V2. That reader verifies the generation lineage and immutable segments, walks them oldest-to-newest, then reads the lineage-bound active tail.
+The deterministic simulator needs terminal fills, admitted-order count and the
+order-ID high watermark as economic/risk base state. A V2 seal therefore projects
+one digest-bound simulator checkpoint into the bounded generation hot replay:
+the maximum order ID, cumulative admitted-order count and non-zero instrument
+positions are written as explicit checkpoint records followed by a ready marker.
+The checkpoint is derived while all writers are stopped from the previously
+verified checkpoint (or, for a pre-checkpoint lineage, one verified historical
+reconstruction) plus the newly sealed delta.
 
-This complete simulator replay is intentionally O(total retained event history) in I/O and projection work. It is separate from coordinator command recovery so production command hot state does not regress to full in-memory history. The installed-process acceptance exercises real simulator fill → stop → V2 seal → restart, then checks position, original command identity, no-resend duplicate behavior and a strictly newer order ID; a second restart checks generation plus active-tail composition.
+On normal V2 startup, `ExecutionServiceRuntimeComposition` uses
+`OmsGenerationStore::Recover` and restores the simulator from that checkpoint,
+then applies only post-checkpoint active-tail place/fill events. Startup therefore
+does not materialize maps for every historical admitted order and fill. A malformed,
+duplicate, incomplete or regressing checkpoint fails closed. Legacy/V1 recovery
+retains the original full-ledger semantics, and a V2 lineage without a valid
+checkpoint is rejected rather than treated as empty history.
+
+The stopped-state maintenance operation may still pay O(retained history) once
+when upgrading an older lineage that predates simulator checkpoints. Subsequent
+seals carry the checkpoint forward incrementally. Installed-process acceptance
+exercises fill -> stop -> V2 seal -> restart, position, original command identity,
+duplicate no-resend and a strictly newer order ID.
 
 ## New-entry pause before recovery capacity is exhausted
 
@@ -72,6 +91,27 @@ The generation parent walk has no arbitrary 1,024-generation cutoff. It records 
 Current generation directories intentionally contain **cumulative command and send-attempt index snapshots** for direct current-generation lookup. Older generation directories are retained because the lineage binds their manifests and immutable event segments. Consequently, frequent sealing can duplicate cumulative index bytes across generations even though event segments themselves are delta-only. The current format has no automatic parent deletion, index garbage collection or generation rebase that would safely remove those bound ancestors. Operators must choose a maintenance cadence with this physical-storage cost in mind; deleting old generation directories or indexes manually is unsupported and can break lineage verification/downgrade.
 
 A future storage-rebase format may reduce cumulative-index duplication, but it must preserve complete durable command identity, every possible send, explicit downgrade semantics and crash-safe authority before any old lineage can be retired. The present implementation prefers retained evidence over silent pruning.
+
+### Lineage rebase and cumulative-index compaction
+
+Frequent ordinary seals intentionally retain cumulative index snapshots in each
+ancestor generation. To keep that correct format from becoming permanent
+quadratic physical duplication, `hepta_oms_lifecycle.py rebase --stopped-state`
+provides an explicit lossless compaction boundary. It first reconstructs and
+validates the complete strict JSONL ledger, builds a fresh independent V2 root
+generation with cumulative command/send indexes and the simulator economic
+checkpoint, durably moves that root into the real store, rotates the active
+journal to the new lineage marker, then publishes `CURRENT` and
+`CURRENT.runtime`. Every intermediate crash boundary remains fail-closed.
+
+`--prune-ancestors` is deliberately separate. Old selected ancestors are
+removed only after the new root and active journal verify successfully. The
+new root contains the complete exported ledger, so permanent command identity,
+every possible send, exact downgrade export and historical evidence remain
+available even after the old chain is deleted. Unexpected file types or unsafe
+metadata stop pruning rather than widening deletion. Rebase is maintenance work,
+not authorization, and must never run concurrently with a writer.
+
 
 ## Downgrade export
 
