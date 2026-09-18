@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL  
 Applies to: `HeptaTrade/adapter_xt/`
 
-The current adapter has an executable **HXQ1 v1 read-only client boundary**, not a qualified QMT transport. It can frame and validate bounded HXQ1 messages, bind account/service/connection epoch plus trusted account currency and a finite authorized instrument universe, perform an identity handshake, and decode typed account/position/order/trade/quote reads through an already-admitted Execution-owned exchange. The repository still has no production Windows/QMT mTLS channel, pinned QMT/Python/`xtquant` runtime, deployed sidecar, firewall policy or qualified account.
+The current adapter has an executable **HXQ1 v1 read-only client boundary**, not a qualified QMT transport. It can frame and validate bounded HXQ1 messages, bind account/service/connection epoch plus trusted account currency and a finite authorized instrument universe, perform an identity handshake, and decode typed account/position/order/trade/quote reads through an already-admitted Execution-owned exchange. Quote authority is retained independently per authorized instrument, and admitted-channel or peer-response ambiguity invalidates the read connection plus every cached authority family. The repository still has no production Windows/QMT mTLS channel, pinned QMT/Python/`xtquant` runtime, deployed sidecar, firewall policy or qualified account.
 
 Mutation remains unavailable. `place` and `cancel` never enter the read-only exchange and fail closed; no local order ID, accepted event or submitted event is manufactured. A source-level read-only protocol client is therefore not equivalent to `transport_implemented=true`, venue advertisement or trading authorization.
 

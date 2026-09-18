@@ -111,11 +111,14 @@ int main() {
         cfg.peerProfileSha256 = std::string(64, 'a');
         cfg.accountCurrency = "CNY";
         cfg.authorizedInstruments.insert("600000.SH");
+        cfg.authorizedInstruments.insert("000001.SZ");
         std::uint64_t observedRequests = 0;
         double tradeQuantity = 20.0;
         std::string observedAccountCurrency = "CNY";
+        bool transportAvailable = true;
         cfg.admittedReadOnlyExchange = [
-                &observedRequests, &tradeQuantity, &observedAccountCurrency](
+                &observedRequests, &tradeQuantity, &observedAccountCurrency,
+                &transportAvailable](
                 const std::string& requestFrame, std::string& responseFrame) {
             std::string request;
             Require(HeptaXTGatewayAdapter::DecodeFrame(requestFrame, request),
@@ -135,6 +138,7 @@ int main() {
             Require(ExtractJsonString(request, "venue_command_id").empty(),
                     "read-only HXQ1 request must not carry mutation identity");
             ++observedRequests;
+            if (!transportAvailable) return false;
             std::ostringstream response;
             response << "{\"protocol\":\"HXQ1\",\"version\":1,\"request_id\":"
                      << requestId
@@ -169,10 +173,22 @@ int main() {
                          << "\"quantity\":" << tradeQuantity << ",\"price\":10.15,"
                          << "\"occurred_at_ms\":12340}]}}";
             else if (operation == "quote_subscribe")
-                response << ",\"payload\":{\"schema\":\"heptatrader.xt.quote.v1\","
-                         << "\"generation\":12,\"complete\":true,"
-                         << "\"instrument\":\"600000.SH\",\"bid\":10.1,\"ask\":10.2,"
-                         << "\"observed_at_ms\":12345}}";
+            {
+                const std::string quoteInstrument =
+                    ExtractJsonString(request, "instrument");
+                if (quoteInstrument == "600000.SH")
+                    response << ",\"payload\":{\"schema\":\"heptatrader.xt.quote.v1\","
+                             << "\"generation\":12,\"complete\":true,"
+                             << "\"instrument\":\"600000.SH\",\"bid\":10.1,\"ask\":10.2,"
+                             << "\"observed_at_ms\":12345}}";
+                else if (quoteInstrument == "000001.SZ")
+                    response << ",\"payload\":{\"schema\":\"heptatrader.xt.quote.v1\","
+                             << "\"generation\":13,\"complete\":true,"
+                             << "\"instrument\":\"000001.SZ\",\"bid\":20.1,\"ask\":20.2,"
+                             << "\"observed_at_ms\":12346}}";
+                else
+                    return false;
+            }
             else
                 return false;
             return HeptaXTGatewayAdapter::EncodeFrame(response.str(), responseFrame);
@@ -225,7 +241,7 @@ int main() {
                     trades.trades[0].orderId == "O-1",
                 "typed trade snapshot did not retain authoritative fields");
         const std::uint64_t requestsBeforeUnauthorizedQuote = observedRequests;
-        Require(!xt.ReqMktData("000001.SZ") &&
+        Require(!xt.ReqMktData("300001.SZ") &&
                     xt.LastRejectReason() == "XT_INSTRUMENT_UNAUTHORIZED",
                 "quote request outside the trusted instrument universe must fail closed");
         Require(observedRequests == requestsBeforeUnauthorizedQuote,
@@ -236,12 +252,22 @@ int main() {
                     quote.generation == 12 && quote.bid == 10.1 &&
                     quote.ask == 10.2 && quote.observedAtMs == 12345,
                 "typed quote snapshot did not retain authoritative fields");
-        Require(xt.QuoteFresh("600000.SH", 12445, 100),
-                "quote should be fresh at the inclusive age bound");
+        Require(xt.ReqMktData("000001.SZ"),
+                "second authorized HXQ1 quote should round-trip independently");
+        HeptaXTQuoteSnapshot secondQuote;
+        Require(xt.GetQuoteSnapshot("000001.SZ", secondQuote) &&
+                    secondQuote.generation == 13 && secondQuote.bid == 20.1 &&
+                    secondQuote.ask == 20.2 && secondQuote.observedAtMs == 12346,
+                "second typed quote snapshot did not retain authoritative fields");
+        Require(xt.GetQuoteSnapshot("600000.SH", quote),
+                "subscribing a second instrument must not evict the first quote authority");
+        Require(xt.QuoteFresh("600000.SH", 12445, 100) &&
+                    xt.QuoteFresh("000001.SZ", 12446, 100),
+                "each authorized quote should evaluate freshness independently");
         Require(!xt.QuoteFresh("600000.SH", 12446, 100) &&
                     !xt.QuoteFresh("600000.SH", 12344, 100),
                 "stale or future-dated quote must fail freshness");
-        Require(observedRequests == 6, "exact read-only request count mismatch");
+        Require(observedRequests == 7, "exact read-only request count mismatch");
         tradeQuantity = 21.0;
         Require(xt.ReqTrades(),
                 "well-formed but economically inconsistent trade payload should parse");
@@ -250,7 +276,7 @@ int main() {
         tradeQuantity = 20.0;
         Require(xt.ReqTrades() && xt.AccountPositionOrderTradeReadReady(),
                 "matching trade quantity must restore the complete read barrier");
-        Require(observedRequests == 8, "revalidation request count mismatch");
+        Require(observedRequests == 9, "revalidation request count mismatch");
         observedAccountCurrency = "USD";
         Require(!xt.ReqAccountSummary() &&
                     xt.LastRejectReason() == "XT_ACCOUNT_CURRENCY_MISMATCH",
@@ -262,7 +288,7 @@ int main() {
         Require(xt.ReqAccountSummary() &&
                     xt.AccountPositionOrderTradeReadReady(),
                 "restoring the trusted currency may rebuild the completed read barrier");
-        Require(observedRequests == 10, "currency binding request count mismatch");
+        Require(observedRequests == 11, "currency binding request count mismatch");
         long long orderId = -1;
         Require(!xt.PlaceOrder("600000.SH", "BUY", 100.0, 10.0, &orderId),
                 "read-only HXQ1 must not enable order mutation");
@@ -270,13 +296,36 @@ int main() {
                 "read-only XT mutation refusal must be explicit");
         Require(!xt.CancelOrder(1) && xt.LastRejectReason() == "XT_MUTATION_DISABLED",
                 "read-only XT cancel must remain disabled");
+        transportAvailable = false;
+        Require(!xt.ReqMktData("600000.SH") &&
+                    xt.LastRejectReason() == "XT_HXQ1_TRANSPORT_FAILED",
+                "admitted-channel failure must be explicit");
+        Require(!xt.IsConnected() && !xt.AccountPositionReadReady() &&
+                    !xt.AccountPositionOrderTradeReadReady(),
+                "transport ambiguity must invalidate the read-only connection and barriers");
+        Require(!xt.GetAccountSnapshot(account) && !xt.GetPositionSnapshot(positions) &&
+                    !xt.GetOrderSnapshot(orders) && !xt.GetTradeSnapshot(trades) &&
+                    !xt.GetQuoteSnapshot("600000.SH", quote) &&
+                    !xt.GetQuoteSnapshot("000001.SZ", secondQuote),
+                "transport ambiguity must erase every cached authority family");
+        Require(!xt.ReqPositions() &&
+                    xt.LastRejectReason() == "XT_READ_ONLY_NOT_CONNECTED",
+                "reads after transport ambiguity require a new identity handshake");
+        transportAvailable = true;
+        Require(xt.Connect() && xt.IsConnected(),
+                "explicit identity handshake may restore the read-only connection");
+        Require(!xt.AccountPositionReadReady() &&
+                    !xt.AccountPositionOrderTradeReadReady() &&
+                    !xt.GetQuoteSnapshot("600000.SH", quote),
+                "reconnect must not restore stale authority without a fresh snapshot barrier");
         xt.Disconnect();
         Require(!xt.IsConnected(), "read-only disconnect clears connection state");
         Require(!xt.AccountPositionReadReady(),
                 "disconnect invalidates read readiness");
         Require(!xt.GetAccountSnapshot(account) && !xt.GetPositionSnapshot(positions) &&
                     !xt.GetOrderSnapshot(orders) && !xt.GetTradeSnapshot(trades) &&
-                    !xt.GetQuoteSnapshot("600000.SH", quote),
+                    !xt.GetQuoteSnapshot("600000.SH", quote) &&
+                    !xt.GetQuoteSnapshot("000001.SZ", secondQuote),
                 "disconnect must clear cached authoritative read state");
         Require(!xt.ReqPositions() && xt.LastRejectReason() == "XT_READ_ONLY_NOT_CONNECTED",
                 "read-only requests fail closed after disconnect");

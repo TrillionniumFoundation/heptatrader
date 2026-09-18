@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -153,6 +154,7 @@ private:
     static bool LowerHexSha256(const std::string& value);
     static std::string EscapeJson(const std::string& value);
     void ResetReadState();
+    bool FailReadOnlyConnection(const char* reason);
 
     bool m_initialized = false;
     bool m_connected = false;
@@ -163,6 +165,6 @@ private:
     HeptaXTPositionSnapshot m_positionSnapshot;
     HeptaXTOrderSnapshot m_orderSnapshot;
     HeptaXTTradeSnapshot m_tradeSnapshot;
-    HeptaXTQuoteSnapshot m_quoteSnapshot;
+    std::map<std::string, HeptaXTQuoteSnapshot> m_quoteSnapshots;
     std::string m_lastRejectReason = "XT_NOT_INITIALIZED";
 };

@@ -244,7 +244,15 @@ void HeptaXTGatewayAdapter::ResetReadState()
     m_positionSnapshot = HeptaXTPositionSnapshot();
     m_orderSnapshot = HeptaXTOrderSnapshot();
     m_tradeSnapshot = HeptaXTTradeSnapshot();
-    m_quoteSnapshot = HeptaXTQuoteSnapshot();
+    m_quoteSnapshots.clear();
+}
+
+bool HeptaXTGatewayAdapter::FailReadOnlyConnection(const char* reason)
+{
+    m_connected = false;
+    ResetReadState();
+    m_lastRejectReason = reason ? reason : "XT_HXQ1_TRANSPORT_FAILED";
+    return false;
 }
 
 bool HeptaXTGatewayAdapter::Init(const HeptaXTConfig& cfg)
@@ -336,16 +344,10 @@ bool HeptaXTGatewayAdapter::ExchangeReadOnly(
     }
     std::string responseFrame;
     if (!m_config.admittedReadOnlyExchange(requestFrame, responseFrame))
-    {
-        m_lastRejectReason = "XT_HXQ1_TRANSPORT_FAILED";
-        return false;
-    }
+        return FailReadOnlyConnection("XT_HXQ1_TRANSPORT_FAILED");
     std::string response;
     if (!DecodeFrame(responseFrame, response))
-    {
-        m_lastRejectReason = "XT_HXQ1_RESPONSE_FRAME_INVALID";
-        return false;
-    }
+        return FailReadOnlyConnection("XT_HXQ1_RESPONSE_FRAME_INVALID");
     std::ostringstream expected;
     expected << "{\"protocol\":\"HXQ1\",\"version\":1,\"request_id\":"
              << requestId
@@ -358,10 +360,7 @@ bool HeptaXTGatewayAdapter::ExchangeReadOnly(
     {
         expected << "}";
         if (response != expected.str())
-        {
-            m_lastRejectReason = "XT_HXQ1_RESPONSE_BINDING_INVALID";
-            return false;
-        }
+            return FailReadOnlyConnection("XT_HXQ1_RESPONSE_BINDING_INVALID");
     }
     else
     {
@@ -369,10 +368,7 @@ bool HeptaXTGatewayAdapter::ExchangeReadOnly(
         if (response.size() <= prefix.size() + 2U ||
             response.compare(0, prefix.size(), prefix) != 0 ||
             response.back() != '}')
-        {
-            m_lastRejectReason = "XT_HXQ1_RESPONSE_BINDING_INVALID";
-            return false;
-        }
+            return FailReadOnlyConnection("XT_HXQ1_RESPONSE_BINDING_INVALID");
         responsePayloadJson->assign(
             response, prefix.size(), response.size() - prefix.size() - 1U);
         if (responsePayloadJson->empty() ||
@@ -380,8 +376,7 @@ bool HeptaXTGatewayAdapter::ExchangeReadOnly(
             responsePayloadJson->back() != '}')
         {
             responsePayloadJson->clear();
-            m_lastRejectReason = "XT_HXQ1_RESPONSE_PAYLOAD_INVALID";
-            return false;
+            return FailReadOnlyConnection("XT_HXQ1_RESPONSE_PAYLOAD_INVALID");
         }
     }
     m_lastRejectReason.clear();
@@ -748,7 +743,6 @@ bool HeptaXTGatewayAdapter::ReqTrades()
 
 bool HeptaXTGatewayAdapter::ReqMktData(const std::string& instrument)
 {
-    m_quoteSnapshot = HeptaXTQuoteSnapshot();
     if (!SafeToken(instrument, 128U))
     {
         m_lastRejectReason = "XT_INSTRUMENT_INVALID";
@@ -759,6 +753,7 @@ bool HeptaXTGatewayAdapter::ReqMktData(const std::string& instrument)
         m_lastRejectReason = "XT_INSTRUMENT_UNAUTHORIZED";
         return false;
     }
+    m_quoteSnapshots.erase(instrument);
     std::string payload;
     if (!ExchangeReadOnly(
             "quote_subscribe",
@@ -766,13 +761,15 @@ bool HeptaXTGatewayAdapter::ReqMktData(const std::string& instrument)
                 EscapeJson(instrument) + "\"}",
             &payload))
         return false;
+    HeptaXTQuoteSnapshot quote;
     if (!ParseQuoteSnapshot(
             payload, m_config.connectionEpoch,
-            instrument, m_quoteSnapshot))
+            instrument, quote))
     {
         m_lastRejectReason = "XT_QUOTE_SNAPSHOT_INVALID";
         return false;
     }
+    m_quoteSnapshots[instrument] = quote;
     return true;
 }
 
@@ -807,7 +804,11 @@ bool HeptaXTGatewayAdapter::GetTradeSnapshot(
 bool HeptaXTGatewayAdapter::GetQuoteSnapshot(
     const std::string& instrument, HeptaXTQuoteSnapshot& out) const
 {
-    out = m_quoteSnapshot;
+    out = HeptaXTQuoteSnapshot();
+    const std::map<std::string, HeptaXTQuoteSnapshot>::const_iterator found =
+        m_quoteSnapshots.find(instrument);
+    if (found == m_quoteSnapshots.end()) return false;
+    out = found->second;
     return out.complete && out.instrument == instrument;
 }
 
@@ -884,14 +885,16 @@ bool HeptaXTGatewayAdapter::QuoteFresh(
     std::uint64_t evaluationAtMs,
     std::uint64_t maximumAgeMs) const
 {
+    const std::map<std::string, HeptaXTQuoteSnapshot>::const_iterator found =
+        m_quoteSnapshots.find(instrument);
     return m_connected && maximumAgeMs != 0 && evaluationAtMs != 0 &&
-        InstrumentAuthorized(instrument) &&
-        m_quoteSnapshot.complete &&
-        m_quoteSnapshot.connectionEpoch == m_config.connectionEpoch &&
-        m_quoteSnapshot.instrument == instrument &&
-        m_quoteSnapshot.observedAtMs != 0 &&
-        m_quoteSnapshot.observedAtMs <= evaluationAtMs &&
-        evaluationAtMs - m_quoteSnapshot.observedAtMs <= maximumAgeMs;
+        InstrumentAuthorized(instrument) && found != m_quoteSnapshots.end() &&
+        found->second.complete &&
+        found->second.connectionEpoch == m_config.connectionEpoch &&
+        found->second.instrument == instrument &&
+        found->second.observedAtMs != 0 &&
+        found->second.observedAtMs <= evaluationAtMs &&
+        evaluationAtMs - found->second.observedAtMs <= maximumAgeMs;
 }
 
 bool HeptaXTGatewayAdapter::RejectUnsupportedMutation()

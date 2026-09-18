@@ -13,11 +13,12 @@ The repository currently implements only the native **HXQ1 v1 read-only client s
 - Execution-owned request IDs plus service epoch, connection epoch and exact account binding;
 - trusted expected account currency plus a non-empty bounded normalized instrument universe supplied by the qualification profile; position/order/trade payload rows and quote requests outside that universe fail closed before they can become read authority;
 - exact identity handshake acknowledgement;
-- strict typed `account_snapshot`, `position_snapshot`, `order_snapshot`, `trade_snapshot`, and `quote_subscribe` response payloads through an injected already-admitted read-only exchange;
+- strict typed `account_snapshot`, `position_snapshot`, `order_snapshot`, `trade_snapshot`, and `quote_subscribe` response payloads through an injected already-admitted read-only exchange, with quote authority retained independently for each authorized instrument;
 - completed known-empty position/order/trade snapshots, bounded unique identities and explicit account/order/trade/quote numeric validation;
 - account+position and account+position+order+trade readiness barriers requiring the configured connection epoch and shared non-zero generation; the latter also binds trade rows to matching order identity/instrument/side and requires positive-fill orders to have trade evidence;
 - quote freshness evaluated against an Execution-owned evaluation clock and explicit maximum age;
 - exact response binding plus fail-closed malformed/mismatched/mixed-generation/economically-invalid response behavior, including non-JSON numeric spellings;
+- admitted-channel failure, malformed response framing or response-binding ambiguity invalidates the read connection and every cached authority family before another read can proceed;
 - disconnect invalidation of every cached read snapshot;
 - hard-disabled place/cancel mutation.
 
@@ -205,7 +206,8 @@ The first qualification scope should be deliberately narrow: one account, a fini
 
 | Failure | Required behavior |
 |---|---|
-| sidecar unavailable before read/mutation | read unavailable or future mutation pre-send rejection; no external mutation effect |
+| sidecar unavailable / admitted-channel failure during read | invalidate native read connection and every cached authority family; require a new identity handshake before reads resume |
+| sidecar unavailable before future mutation | future mutation pre-send rejection; no external mutation effect |
 | malformed/oversized HXQ1 frame | reject response/request; no mutation |
 | stale service or connection epoch | reject before future vendor call |
 | read-only acknowledgement identity mismatch | fail closed and do not mark native client connected |
