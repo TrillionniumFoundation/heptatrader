@@ -50,6 +50,10 @@ int main() {
     value.terminalReason = "";
     value.riskReason = "";
     value.recoveryReason = "fixture \"safe\"\nreason";
+    value.callbackLagSamples = 4;
+    value.callbackLagTotalMs = 20;
+    value.callbackLagMaxMs = 8;
+    value.callbackConflictCount = 3;
     std::cout << SerializeIbRuntimeObservation(value) << "\n";
 }
 '''
@@ -83,19 +87,23 @@ class IbRuntimeObservationTests(unittest.TestCase):
         text = report.prometheus(sample, summary)
         self.assertIn("hepta_ib_active_snapshot_generation 11", text)
         self.assertIn("hepta_ib_gross_absolute_position 25.5", text)
-        self.assertIn("hepta_ib_callback_lag_metrics_present 0", text)
+        self.assertIn("hepta_ib_callback_lag_metrics_present 1", text)\n        self.assertIn("hepta_ib_callback_lag_samples_total 4", text)\n        self.assertIn("hepta_ib_callback_conflicts_total 3", text)
         self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 0", text)
         self.assertNotIn("fixture", text)
         self.assertNotIn("agent", text)
 
-    def test_absent_metric_families_are_presence_false_not_zero_measurements(self) -> None:
+    def test_callback_metric_families_are_real_and_network_policy_remains_external(self) -> None:
         sample = report.validate(copy.deepcopy(self.sample))
-        self.assertFalse(sample["callback_lag_metrics_present"])
-        self.assertFalse(sample["callback_conflict_metrics_present"])
+        self.assertTrue(sample["callback_lag_metrics_present"])
+        self.assertTrue(sample["callback_conflict_metrics_present"])
         self.assertFalse(sample["network_policy_metrics_present"])
+        self.assertEqual(sample["callback_lag_samples"], 4)
+        self.assertEqual(sample["callback_lag_total_ms"], 20)
+        self.assertEqual(sample["callback_lag_max_ms"], 8)
+        self.assertEqual(sample["callback_conflicts_total"], 3)
         text = report.prometheus(sample, report.report([sample], 10000))
-        self.assertNotIn("callback_lag_seconds", text)
-        self.assertNotIn("callback_conflicts_total", text)
+        self.assertIn("hepta_ib_callback_lag_samples_total 4", text)
+        self.assertIn("hepta_ib_callback_conflicts_total 3", text)
         self.assertNotIn("network_policy_state", text)
 
     def test_continuous_stall_durations_are_bounded_by_retained_samples_and_epoch(self) -> None:
