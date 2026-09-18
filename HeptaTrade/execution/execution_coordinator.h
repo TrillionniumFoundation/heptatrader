@@ -10,6 +10,8 @@
 #include "../oms_generation_store.h"
 #include "execution_runtime_observation.h"
 
+#include <atomic>
+#include <condition_variable>
 #include <deque>
 #include <functional>
 #include <cstdint>
@@ -307,7 +309,8 @@ private:
         ExecutionCommandResult& rejection);
     ExecutionCommandResult DispatchPlaceOrderLocked(
         const IbPlaceOrderCommand& command,
-        const PlaceOrderDispatchContext& dispatch);
+        const PlaceOrderDispatchContext& dispatch,
+        std::unique_lock<std::mutex>& coordinatorLock);
     ExecutionCommandResult RejectAuthoritativeFlattenLocked(
         const FlattenPositionCommand& command,
         const AuthoritativeFlattenPlan& plan,
@@ -328,7 +331,8 @@ private:
     ExecutionCommandResult DispatchAuthoritativeFlattenLocked(
         const FlattenPositionCommand& command,
         const AuthoritativeFlattenPlan& plan,
-        const AuthoritativeFlattenDispatchContext& dispatch);
+        const AuthoritativeFlattenDispatchContext& dispatch,
+        std::unique_lock<std::mutex>& coordinatorLock);
     ExecutionCommandResult HandleCancelProjectionFailureLocked(
         const CancelOrderCommand& command,
         const std::string& instrument,
@@ -414,21 +418,31 @@ private:
                                           const std::string& requestHash);
 
 private:
-    ExecutionCommandResult PlaceOrderLocked(const PlaceOrderCommand& command);
-    ExecutionCommandResult CancelOrderLocked(const CancelOrderCommand& command);
+    ExecutionCommandResult PlaceOrderLocked(
+        const PlaceOrderCommand& command,
+        std::unique_lock<std::mutex>& coordinatorLock);
+    ExecutionCommandResult CancelOrderLocked(
+        const CancelOrderCommand& command,
+        std::unique_lock<std::mutex>& coordinatorLock);
     ExecutionCommandResult ExecuteAuthoritativeFlattenLocked(
-        const FlattenPositionCommand& command, const AuthoritativeFlattenPlan& plan);
+        const FlattenPositionCommand& command, const AuthoritativeFlattenPlan& plan,
+        std::unique_lock<std::mutex>& coordinatorLock);
+    bool BeginExternalMutationLocked();
+    void EndExternalMutationLocked();
+    void CloseExternalMutationAdmissionLocked();
+    void ReopenExternalMutationAdmissionLocked();
+    void WaitExternalMutationsQuiescent(std::unique_lock<std::mutex>& coordinatorLock);
     template <typename Action>
     ExecutionCommandResult ObserveCommand(std::size_t operation, Action action)
     {
         const auto entered = OmsScopedLatencySample::Clock::now();
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const auto acquired = OmsScopedLatencySample::Clock::now();
         auto& observation = m_observation.operations[operation];
         ExecutionOperationTiming timer(observation, entered, acquired);
         try
         {
-            auto result = action();
+            auto result = action(lock);
             observation.Observe(result);
             return result;
         }
@@ -442,6 +456,14 @@ private:
     OmsJournal& m_journal;
     ExecutionCoordinatorCallbacks m_callbacks;
     mutable std::mutex m_mutex;
+    // External venue mutation calls are serialized independently from
+    // coordinator state. Callers release m_mutex while waiting/calling so
+    // read/status/control paths are not hostage to a slow provider.
+    std::mutex m_externalDispatchMutex;
+    std::mutex m_externalQuiescenceMutex;
+    std::condition_variable m_externalQuiescenceCv;
+    std::atomic<std::uint64_t> m_externalMutationsInFlight{0};
+    bool m_externalMutationAdmissionClosed = false;
     OmsGenerationStore m_generationStore;
     RequestRecordStore m_requests;
     std::unordered_map<long, ExecutionOrderOwner> m_orderOwners;
