@@ -201,7 +201,8 @@ bool ExecutionCoordinator::PreVenuePlaceAllowedLocked(
 ExecutionCommandResult
 ExecutionCoordinator::DispatchPlaceOrderLocked(
     const IbPlaceOrderCommand& command,
-    const PlaceOrderDispatchContext& dispatch)
+    const PlaceOrderDispatchContext& dispatch,
+    std::unique_lock<std::mutex>& coordinatorLock)
 {
     const AgentExecutionContext& context = command.context;
     // This marker is immediately before venue IO and restores the rolling
@@ -228,19 +229,32 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
     ExecutionCommandResult preVenueRejection;
     if (!PreVenuePlaceAllowedLocked(command, dispatch, preVenueRejection))
         return preVenueRejection;
+    if (!BeginExternalMutationLocked())
+        return RejectLocked(
+            context, "VENUE_DISPATCH_QUIESCING",
+            "external venue dispatch is closed for a control transition",
+            -1, dispatch.requestHash);
     VenuePlaceResult outcome;
-    try
+    coordinatorLock.unlock();
     {
-        outcome = m_callbacks.placement.Dispatch(command, dispatch.venueCorrelationId);
+        std::lock_guard<std::mutex> dispatchLock(m_externalDispatchMutex);
+        try
+        {
+            outcome = m_callbacks.placement.Dispatch(
+                command, dispatch.venueCorrelationId);
+        }
+        catch (const std::exception& error)
+        {
+            outcome = VenuePlaceResult::Uncertain(error.what());
+        }
+        catch (...)
+        {
+            outcome = VenuePlaceResult::Uncertain(
+                "unknown venue place exception");
+        }
     }
-    catch (const std::exception& error)
-    {
-        outcome = VenuePlaceResult::Uncertain(error.what());
-    }
-    catch (...)
-    {
-        outcome = VenuePlaceResult::Uncertain("unknown venue place exception");
-    }
+    coordinatorLock.lock();
+    EndExternalMutationLocked();
     const long orderId = outcome.orderId;
     if (outcome.disposition == VenuePlaceDisposition::Uncertain)
         return UncertainPlaceOutcomeLocked(command, dispatch, orderId, outcome.detail);
