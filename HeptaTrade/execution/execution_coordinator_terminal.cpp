@@ -662,35 +662,6 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
             request.context.executionDomain != binding.owner.executionDomain)
             continue;
 
-        if (m_generationStore.IsActive())
-        {
-            OmsGenerationCommandRecord sealed;
-            std::string lookupReason;
-            const OmsGenerationLookupStatus lookup =
-                m_generationStore.LookupCommand(
-                    request.context.agentId, request.context.sessionId,
-                    request.context.toolCallId, sealed, lookupReason);
-            if (lookup == OmsGenerationLookupStatus::Error)
-            {
-                reason = lookupReason.empty() ?
-                    "OMS_GENERATION_COMMAND_INDEX_INVALID" : lookupReason;
-                return false;
-            }
-            if (lookup == OmsGenerationLookupStatus::Found)
-            {
-                if (!sealed.durableMutationIntent ||
-                    sealed.account != request.context.account ||
-                    sealed.executionDomain != request.context.executionDomain ||
-                    sealed.operation != request.operation ||
-                    sealed.venueCorrelationId != request.venueCorrelationId)
-                {
-                    reason = "OMS_GENERATION_TERMINAL_MUTATION_CONFLICT";
-                    return false;
-                }
-                continue;
-            }
-        }
-
         const std::tuple<std::string, std::string, std::string,
                          std::string, std::string> key(
             request.context.agentId, request.context.sessionId,
@@ -706,17 +677,5 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProject(
         activeTail.push_back(record);
     }
 
-    if (!m_generationStore.IsActive())
-        return BuildPaperTerminalMutationUniverse(activeTail, universe, reason);
-
-    OmsGenerationMutationSummary sealed;
-    if (!m_generationStore.SummarizeMutationRecords(
-            binding.owner.agentId, binding.owner.sessionId,
-            binding.owner.account, binding.owner.executionDomain,
-            sealed, reason))
-        return false;
-    return BuildPaperTerminalPartitionedUniverse(
-        sealed.commandCount, sealed.commandBindingSha256,
-        sealed.correlationReferenceCount, sealed.correlationBindingSha256,
-        activeTail, universe, reason);
+    return BuildPaperTerminalMutationUniverse(activeTail, universe, reason);
 }

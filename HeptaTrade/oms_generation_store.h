@@ -79,9 +79,9 @@ public:
         const std::function<void(const OmsJournalEvent&)>& onEvent,
         std::string& reason);
 
-    // Complete logical replay is deliberately separate from bounded hot
-    // coordinator recovery. Simulator state needs terminal fills, admission
-    // count and order-id history across every sealed generation.
+    // Legacy read-only full-history primitive. Canonical V2 simulator restart
+    // restores the compact economic checkpoint plus bounded tail; stopped-state
+    // migration/rebase owns any required O(total-history) reconstruction.
     bool ReplayCompleteHistory(
         std::size_t maxRecordBytes,
         const std::function<void(const OmsJournalEvent&)>& onEvent,

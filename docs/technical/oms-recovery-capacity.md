@@ -5,7 +5,7 @@ Applies to: OmsJournal replay, generation-backed recovery, new-entry admission a
 
 ## Recovery modes
 
-HeptaTrader has two explicit coordinator recovery modes plus one simulator-only complete economic-state replay. They share the journal schema, command identity and fail-closed semantics, but they have deliberately different resource costs.
+HeptaTrader has two explicit coordinator recovery modes plus a simulator economic-checkpoint/tail projection. They share the journal schema, command identity and fail-closed semantics, but they have deliberately different resource costs.
 
 ### Legacy / no-generation recovery
 
@@ -67,7 +67,7 @@ Index validation failure fails closed at the existing rate guard; it never reset
 
 Verification is streaming. `runtime-command-index.tsv` and `send-attempt-index.tsv` are counted/validated line by line rather than converted into whole-file Python lists. Legacy send-index migration uses bounded 8,192-row sort chunks and bounded pairwise merges. These changes bound maintenance **working memory** with respect to cumulative index size, apart from bounded per-tail projection structures and the configured hot-replay limits.
 
-The generation parent walk has no arbitrary 1,024-generation cutoff. It records visited generation names and fails closed on a cycle; downgrade export can therefore walk a longer valid lineage. This removes the previous artificial export ceiling, but it does not make an indefinitely long lineage free: verification/export/simulator complete replay still pay I/O proportional to the required lineage/history.
+The generation parent walk has no arbitrary 1,024-generation cutoff. It records visited generation names and fails closed on a cycle; downgrade export can therefore walk a longer valid lineage. This removes the previous artificial export ceiling, but it does not make an indefinitely long lineage free: verification/export and stopped-state migration or rebase still pay I/O proportional to the required lineage/history.
 
 Current generation directories intentionally contain **cumulative command and send-attempt index snapshots** for direct current-generation lookup. Between maintenance rebases, frequent sealing therefore duplicates cumulative index bytes even though event segments are delta-only.
 
