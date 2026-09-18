@@ -113,6 +113,10 @@ struct IBEvent {
     IBOrderLite order;
     std::uint64_t overflowGeneration = 0;
     std::uint64_t droppedEventCount = 0;
+    // Steady-clock receive timestamp stamped at the EWrapper publication
+    // boundary. It is process-local telemetry only and never an authority
+    // or broker timestamp.
+    std::uint64_t callbackReceivedMonotonicMs = 0;
 };
 
 // Auxiliary transport shutdown observations. These fields are never an
