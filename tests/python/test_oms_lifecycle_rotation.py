@@ -157,6 +157,48 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         finally:
             lifecycle._iter_private_lines = original
 
+    def test_simulator_checkpoint_carries_position_count_and_watermark_across_seals(self) -> None:
+        def sim(kind: str, order_id: int, side: str, qty: float, *,
+                status: str = "", price: float = 1.1, ts: int = 1000) -> dict:
+            value = event(kind, f"sim-{order_id}", f"hash-{order_id}",
+                          status=status, order_id=order_id, ts_ms=ts)
+            value.update(venue="SIMULATOR", account="SIM",
+                         execution_domain="SIM:fixture", side=side, qty=qty,
+                         price=price, instrument="EUR.USD")
+            return value
+
+        self.journal.write_bytes(encode([
+            sim("place_sent", 1000000, "BUY", 10.0,
+                status="submitted", ts=1000),
+            sim("status", 1000000, "BUY", 10.0,
+                status="Filled", ts=1001),
+        ]))
+        os.chmod(self.journal, 0o600)
+        first = lifecycle.seal_generation(
+            self.journal, self.store, stopped=True)
+        first_hot = lifecycle._read_hot(
+            self.store / first["generation"], 1024 * 1024, 1024, 262144)
+        state = lifecycle._simulator_checkpoint_from_hot(first_hot)
+        self.assertEqual(state["max_order_id"], 1000000)
+        self.assertEqual(state["admitted_orders"], 1)
+        self.assertEqual(state["positions"], {"EUR.USD": 10.0})
+
+        self.append([
+            sim("place_sent", 1000001, "SELL", 4.0,
+                status="submitted", ts=2000),
+            sim("status", 1000001, "SELL", 4.0,
+                status="Filled", ts=2001),
+        ])
+        second = lifecycle.seal_generation(
+            self.journal, self.store, stopped=True)
+        second_hot = lifecycle._read_hot(
+            self.store / second["generation"], 1024 * 1024, 1024, 262144)
+        state = lifecycle._simulator_checkpoint_from_hot(second_hot)
+        self.assertEqual(state["max_order_id"], 1000001)
+        self.assertEqual(state["admitted_orders"], 2)
+        self.assertEqual(state["positions"], {"EUR.USD": 6.0})
+        lifecycle.verify_generation(self.store, journal=self.journal)
+
     def test_generation_chain_has_no_fixed_1024_export_ceiling_and_cycles_fail_closed(self) -> None:
         store = self.root / "long-chain"
         store.mkdir(mode=0o700)
