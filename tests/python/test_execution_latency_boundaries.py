@@ -38,6 +38,7 @@ int main() {
     assert(operation.timingPresent);
     assert(operation.lockWait.samples == 1 && operation.lockWait.totalNs == 5000000);
     assert(operation.latency.samples == 1 && operation.latency.totalNs == 3000000);
+    assert(operation.outsideLock.samples == 1 && operation.outsideLock.totalNs == 0);
     assert(operation.totalLatency.samples == 1 && operation.totalLatency.totalNs == 8000000);
     assert(!execution.operations[1].timingPresent);
     // Destruction during exception unwinding records both scopes once.
@@ -83,6 +84,7 @@ class ExecutionLatencyBoundaryTests(unittest.TestCase):
         report.validate_execution(sample["execution_metrics"])
         text = report.prometheus(sample, report.report([sample], 1000))
         self.assertIn("hepta_execution_place_latency_lock_wait_seconds_sum 0.005", text)
+        self.assertIn("hepta_execution_place_latency_outside_lock_seconds_sum 0.0", text)
         self.assertIn("hepta_execution_place_latency_total_seconds_sum 0.008", text)
         self.assertIn('hepta_execution_operation_timing_present{operation="cancel"} 0', text)
         self.assertNotIn("hepta_execution_cancel_latency_total_seconds", text)
@@ -96,7 +98,7 @@ class ExecutionLatencyBoundaryTests(unittest.TestCase):
         self.assertNotIn("_lock_wait_seconds", text)
         self.assertNotIn("_total_seconds", text)
 
-    def test_incomplete_or_inconsistent_new_pair_fails_closed(self):
+    def test_incomplete_or_inconsistent_new_timing_fails_closed(self):
         metrics = self.sample["execution_metrics"]
         for name in ("place_latency_lock_wait", "place_latency_total"):
             changed = copy.deepcopy(metrics)
@@ -104,7 +106,10 @@ class ExecutionLatencyBoundaryTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 report.validate_execution(changed)
         changed = copy.deepcopy(metrics)
-        changed["place_latency_total"]["total_ns"] += 100
+        changed["place_latency_outside_lock"]["total_ns"] += 100
+        changed["place_latency_outside_lock"]["max_ns"] += 100
+        changed["place_latency_outside_lock"]["last_ns"] += 100
+        changed["place_latency_total"]["total_ns"] += 50
         with self.assertRaises(ValueError):
             report.validate_execution(changed)
 

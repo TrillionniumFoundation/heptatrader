@@ -50,6 +50,8 @@ int main() {
     value.terminalReason = "";
     value.riskReason = "";
     value.recoveryReason = "fixture \"safe\"\nreason";
+    value.callbackQueueLag.Observe(2000000);
+    value.callbackConflictCount = 3;
     std::cout << SerializeIbRuntimeObservation(value) << "\n";
 }
 '''
@@ -83,18 +85,24 @@ class IbRuntimeObservationTests(unittest.TestCase):
         text = report.prometheus(sample, summary)
         self.assertIn("hepta_ib_active_snapshot_generation 11", text)
         self.assertIn("hepta_ib_gross_absolute_position 25.5", text)
-        self.assertIn("hepta_ib_callback_lag_metrics_present 0", text)
+        self.assertIn("hepta_ib_callback_lag_metrics_present 1", text)
+        self.assertIn("hepta_ib_callback_queue_lag_seconds_count 1", text)
+        self.assertIn("hepta_ib_callback_conflicts_total 3", text)
         self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 0", text)
         self.assertNotIn("fixture", text)
         self.assertNotIn("agent", text)
 
-    def test_absent_metric_families_are_presence_false_not_zero_measurements(self) -> None:
-        sample = report.validate(copy.deepcopy(self.sample))
-        self.assertFalse(sample["callback_lag_metrics_present"])
-        self.assertFalse(sample["callback_conflict_metrics_present"])
+    def test_legacy_absence_is_not_rewritten_as_zero_measurements(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        sample["callback_lag_metrics_present"] = False
+        sample["callback_conflict_metrics_present"] = False
+        sample.pop("callback_queue_lag")
+        sample.pop("callback_conflicts_total")
+        sample.pop("callback_conflict_metrics_saturated")
+        sample = report.validate(sample)
         self.assertFalse(sample["network_policy_metrics_present"])
         text = report.prometheus(sample, report.report([sample], 10000))
-        self.assertNotIn("callback_lag_seconds", text)
+        self.assertNotIn("callback_queue_lag_seconds", text)
         self.assertNotIn("callback_conflicts_total", text)
         self.assertNotIn("network_policy_state", text)
 

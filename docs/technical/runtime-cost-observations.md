@@ -200,3 +200,8 @@ preview/profile/risk-policy refusals upstream, snapshot ages, callback lag or
 Broker reconciliation durations. They are process-instance counters, not durable
 trade counts or completed fills. RUNTIME-TELEMETRY-003 remains open for those
 other scopes.
+
+
+### Unlocked venue dispatch timing
+
+Place, cancel and authoritative-flatten observations now distinguish coordinator lock-held work from the interval spent outside the coordinator mutex at the venue boundary. The outside-lock histogram includes the provider call and lock reacquisition. For current producers, inclusive total equals initial lock wait plus lock-held work plus outside-lock time; pre-change producers with only wait+total remain readable without synthesizing an outside-lock zero.

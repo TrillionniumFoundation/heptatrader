@@ -108,6 +108,17 @@ def validate(sample: Any) -> dict[str, Any]:
         raise ValueError("active correlation count exceeds active orders")
     if sample["terminal_transport_drain_verified"] and not sample["terminal_transport_halted"]:
         raise ValueError("terminal drain cannot be verified before halt")
+    if sample["callback_lag_metrics_present"]:
+        base_metrics.validate_latency(sample.get("callback_queue_lag"))
+    elif "callback_queue_lag" in sample:
+        raise ValueError("callback lag payload without presence")
+    if sample["callback_conflict_metrics_present"]:
+        uint(sample.get("callback_conflicts_total"))
+        if type(sample.get("callback_conflict_metrics_saturated")) is not bool:
+            raise ValueError("invalid callback conflict saturation")
+    elif ("callback_conflicts_total" in sample or
+          "callback_conflict_metrics_saturated" in sample):
+        raise ValueError("callback conflict payload without presence")
     return sample
 
 
@@ -273,7 +284,34 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_network_policy_metrics_present": int(latest["network_policy_metrics_present"]),
         "hepta_ib_runtime_alerts": len(summary["alerts"]),
     }
-    return "\n".join(f"{name} {value}" for name, value in values.items()) + "\n"
+    lines = [f"{name} {value}" for name, value in values.items()]
+    if latest["callback_lag_metrics_present"]:
+        latency = latest["callback_queue_lag"]
+        lines.append(
+            "hepta_ib_callback_lag_metrics_saturated " +
+            str(int(latency["saturated"])))
+        if not latency["saturated"] and "bucket_counts" in latency:
+            metric = "hepta_ib_callback_queue_lag_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for index, count in enumerate(latency["bucket_counts"]):
+                cumulative += count
+                upper = (str(base_metrics.BOUNDS_NS[index] / 1e9)
+                         if index < len(base_metrics.BOUNDS_NS) else "+Inf")
+                lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
+            lines.append(f"{metric}_count {latency['samples']}")
+            lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
+    if latest["callback_conflict_metrics_present"]:
+        saturated = latest["callback_conflict_metrics_saturated"]
+        lines.append(
+            "hepta_ib_callback_conflict_metrics_saturated " +
+            str(int(saturated)))
+        if not saturated:
+            lines.append("# TYPE hepta_ib_callback_conflicts_total counter")
+            lines.append(
+                "hepta_ib_callback_conflicts_total " +
+                str(latest["callback_conflicts_total"]))
+    return "\n".join(lines) + "\n"
 
 
 def collection_metrics(now_ms: int, latest: dict[str, Any] | None = None) -> str:
