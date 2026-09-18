@@ -131,9 +131,10 @@ public:
         std::string& reason);
     // Atomically persists and verifies the irreversible v2 terminal fence,
     // closes every mutation path, and projects the complete durable mutation
-    // universe for one account/domain while holding the same coordinator
-    // mutex.  Disk-backed historical commands are included without loading
-    // them into the ordinary hot idempotency map.
+    // universe for the exact fenced owner/session/account/domain while holding
+    // the same coordinator mutex. Disk-backed historical commands are included
+    // through the generation summary without loading them into the ordinary
+    // hot idempotency map.
     bool EnterPaperTerminalFenceAndProject(
         const PaperTerminalFenceBinding& binding,
         PaperTerminalMutationUniverse& universe,
