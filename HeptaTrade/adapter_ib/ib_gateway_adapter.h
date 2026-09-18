@@ -294,6 +294,10 @@ public:
     bool IsTerminalTransportHalted() const;
     bool IsTerminalTransportDrainVerified() const;
     std::uint64_t TerminalCallbacksInFlight() const;
+    std::uint64_t CallbackLagSamples() const;
+    std::uint64_t CallbackLagTotalMs() const;
+    std::uint64_t CallbackLagMaxMs() const;
+    std::uint64_t CallbackConflictCount() const;
     std::map<std::string, double> GetAuthoritativePositionQuantities() const;
     std::map<std::string, double>
         GetAuthoritativeFxCashPositionQuantities() const;
@@ -532,6 +536,10 @@ private:
     bool m_terminalTransportHalted = false;
     bool m_terminalTransportDrainVerified = false;
     std::uint64_t m_terminalCallbacksInFlight = 0;
+    std::uint64_t m_callbackLagSamples = 0;
+    std::uint64_t m_callbackLagTotalMs = 0;
+    std::uint64_t m_callbackLagMaxMs = 0;
+    std::uint64_t m_callbackConflictCount = 0;
 };
 
 inline bool HeptaIBGatewayAdapter::ResolveAuthoritativePositionQuantity(
