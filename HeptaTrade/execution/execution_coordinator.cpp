@@ -450,6 +450,10 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
             -1);
     if (m_mutationBlocked)
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1);
+    if (m_externalMutationAdmissionClosed)
+        return RefuseBeforeIntent(
+            context, "MUTATION_CONTROL_QUIESCING",
+            "external mutation dispatch is quiescing for a control transition", -1);
     if (!m_callbacks.placement.Configured())
         return RefuseBeforeIntent(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
                             -1);
