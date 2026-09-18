@@ -157,6 +157,46 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         finally:
             lifecycle._iter_private_lines = original
 
+    def test_rebase_collapses_lineage_without_changing_export_or_identity(self) -> None:
+        self.journal.write_bytes(encode([
+            event("intent", "old", "hash-old", ts_ms=1000),
+            event("place_sent", "old", "hash-old", order_id=1000000,
+                  ts_ms=1001),
+        ]))
+        os.chmod(self.journal, 0o600)
+        first = lifecycle.seal_generation(
+            self.journal, self.store, stopped=True)
+        self.append([
+            event("intent", "new", "hash-new", ts_ms=2000),
+            event("place_sent", "new", "hash-new", order_id=1000001,
+                  ts_ms=2001),
+        ])
+        second = lifecycle.seal_generation(
+            self.journal, self.store, stopped=True)
+        before = self.root / "before-rebase.jsonl"
+        before.parent.chmod(0o700)
+        lifecycle.export_legacy(self.journal, self.store, before)
+        old_chain = lifecycle._generation_chain(
+            self.store, second["generation"])
+        self.assertGreaterEqual(len(old_chain), 2)
+
+        result = lifecycle.rebase_generation(
+            self.journal, self.store, stopped=True, prune_ancestors=True)
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["old_generations"], len(old_chain))
+        self.assertEqual(result["pruned_generations"], len(old_chain))
+        current = lifecycle.verify_generation(
+            self.store, journal=self.journal)
+        self.assertEqual(current["generation"], result["generation"])
+        self.assertEqual(
+            len(lifecycle._generation_chain(
+                self.store, result["generation"])), 1)
+        after = self.root / "after-rebase.jsonl"
+        lifecycle.export_legacy(self.journal, self.store, after)
+        self.assertEqual(before.read_bytes(), after.read_bytes())
+        for generation, _manifest in old_chain:
+            self.assertFalse((self.store / generation).exists())
+
     def test_simulator_checkpoint_carries_position_count_and_watermark_across_seals(self) -> None:
         def sim(kind: str, order_id: int, side: str, qty: float, *,
                 status: str = "", price: float = 1.1, ts: int = 1000) -> dict:
