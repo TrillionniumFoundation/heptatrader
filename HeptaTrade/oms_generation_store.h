@@ -26,15 +26,6 @@ struct OmsGenerationCommandRecord
     bool durableMutationIntent = false;
 };
 
-struct OmsGenerationMutationRecord
-{
-    std::string agentId;
-    std::string sessionId;
-    std::string commandId;
-    std::string operation;
-    std::string venueCorrelationId;
-};
-
 struct OmsGenerationMutationSummary
 {
     std::uint64_t commandCount = 0;
@@ -105,23 +96,6 @@ public:
         std::int64_t cutoffMs,
         const std::set<std::string>& excludedRequestKeys,
         std::vector<OmsGenerationSendAttempt>& attempts,
-        std::string& reason) const;
-
-    // Compatibility/read-only account-domain enumeration remains available for
-    // callers that do not carry an owner/session binding. PAPER terminalization
-    // must use the owner/session-scoped summary or overload below.
-    bool EnumerateMutationRecords(
-        const std::string& account,
-        const std::string& executionDomain,
-        std::vector<OmsGenerationMutationRecord>& records,
-        std::string& reason) const;
-
-    bool EnumerateMutationRecords(
-        const std::string& agentId,
-        const std::string& sessionId,
-        const std::string& account,
-        const std::string& executionDomain,
-        std::vector<OmsGenerationMutationRecord>& records,
         std::string& reason) const;
 
     bool SummarizeMutationRecords(
