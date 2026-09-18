@@ -268,12 +268,12 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
         }
         catch (const std::exception& error)
         {
-            outcome = VenueFlattenResult::Uncertain(-1, error.what());
+            outcome = VenueFlattenResult::Uncertain(error.what(), -1);
         }
         catch (...)
         {
             outcome = VenueFlattenResult::Uncertain(
-                -1, "unknown authoritative flatten exception");
+                "unknown authoritative flatten exception", -1);
         }
     }
     coordinatorLock.lock();
