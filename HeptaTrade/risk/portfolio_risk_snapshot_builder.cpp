@@ -20,6 +20,16 @@ bool ValidSubject(const PreTradeRiskSubject& subject) {
         !subject.instruments.empty() && subject.instruments.count("") == 0;
 }
 
+bool SameSubject(const PreTradeRiskSubject& left,
+                 const PreTradeRiskSubject& right) {
+    return ValidSubject(left) && ValidSubject(right) &&
+        left.portfolioId == right.portfolioId &&
+        left.account == right.account &&
+        left.venue == right.venue &&
+        left.baseCurrency == right.baseCurrency &&
+        left.instruments == right.instruments;
+}
+
 bool ValidContract(const PreTradeRiskInstrumentContract& contract) {
     if (contract.specificationId.empty() || contract.specificationVersion == 0 ||
         contract.instrument.empty() || contract.quoteCurrency.empty() ||
@@ -57,6 +67,15 @@ bool Fresh(std::int64_t observedAtMs,
            const PortfolioRiskSnapshotBuildRequest& request) {
     return observedAtMs > 0 && observedAtMs <= request.evaluatedAtMs &&
         request.evaluatedAtMs - observedAtMs <= request.maxEvidenceAgeMs;
+}
+
+bool ValidSetIdentity(const PortfolioRiskSnapshotSetIdentity& identity,
+                      const PortfolioRiskSnapshotBuildRequest& request) {
+    return identity.complete &&
+        SameSubject(identity.subject, request.subject) &&
+        identity.connectionEpoch == request.connectionEpoch &&
+        identity.generation == request.generation &&
+        Fresh(identity.observedAtMs, request);
 }
 
 bool ValidPrice(const PreTradeRiskPriceEvidence& price,
@@ -119,18 +138,26 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
         request.evaluatedAtMs <= 0 || request.maxEvidenceAgeMs <= 0)
         return Reject("PORTFOLIO_RISK_IDENTITY_INVALID",
                       "epoch, generation, evaluation time and evidence age must be positive");
-    if (!request.positionsComplete ||
+    if (!request.positionsIdentity.complete ||
         request.positions.size() != request.subject.instruments.size())
         return Reject("PORTFOLIO_RISK_POSITION_SET_INCOMPLETE",
                       "a complete position snapshot with exactly one valuation row per authorized instrument is required");
-    if (!request.pendingOrdersComplete)
+    if (!ValidSetIdentity(request.positionsIdentity, request))
+        return Reject("PORTFOLIO_RISK_POSITION_SET_IDENTITY_INVALID",
+                      "position snapshot must bind the exact subject, epoch, generation and fresh observation time");
+    if (!request.pendingOrdersIdentity.complete)
         return Reject("PORTFOLIO_RISK_PENDING_SET_INCOMPLETE",
                       "pending-order snapshot completeness must be explicit even when the set is empty");
+    if (!ValidSetIdentity(request.pendingOrdersIdentity, request))
+        return Reject("PORTFOLIO_RISK_PENDING_SET_IDENTITY_INVALID",
+                      "pending-order snapshot must bind the exact subject, epoch, generation and fresh observation time");
 
     double currentGross = 0.0;
     double pendingBuy = 0.0;
     double pendingSell = 0.0;
-    std::int64_t oldestObservedAtMs = request.evaluatedAtMs;
+    std::int64_t oldestObservedAtMs = std::min(
+        request.positionsIdentity.observedAtMs,
+        request.pendingOrdersIdentity.observedAtMs);
     std::map<std::string, InstrumentAuthority> authority;
 
     for (std::size_t index = 0; index < request.positions.size(); ++index) {
@@ -199,6 +226,7 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
 
     const PortfolioRiskAccountInput& account = request.account;
     if (!account.complete ||
+        !SameSubject(account.subject, request.subject) ||
         account.baseCurrency != request.subject.baseCurrency ||
         account.connectionEpoch != request.connectionEpoch ||
         account.generation != request.generation ||

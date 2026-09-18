@@ -71,8 +71,16 @@ PortfolioRiskSnapshotBuildRequest BaseRequest() {
     request.generation = 4;
     request.evaluatedAtMs = 10000;
     request.maxEvidenceAgeMs = 1000;
-    request.positionsComplete = true;
-    request.pendingOrdersComplete = true;
+    request.positionsIdentity.subject = request.subject;
+    request.positionsIdentity.complete = true;
+    request.positionsIdentity.connectionEpoch = 9;
+    request.positionsIdentity.generation = 4;
+    request.positionsIdentity.observedAtMs = 9400;
+    request.pendingOrdersIdentity.subject = request.subject;
+    request.pendingOrdersIdentity.complete = true;
+    request.pendingOrdersIdentity.connectionEpoch = 9;
+    request.pendingOrdersIdentity.generation = 4;
+    request.pendingOrdersIdentity.observedAtMs = 9450;
 
     PortfolioRiskValuationInput aapl;
     aapl.contract = Stock("AAPL-US", "USD");
@@ -116,6 +124,7 @@ PortfolioRiskSnapshotBuildRequest BaseRequest() {
     sell.fx = aapl.fx;
     request.pendingOrders.push_back(sell);
 
+    request.account.subject = request.subject;
     request.account.complete = true;
     request.account.baseCurrency = "USD";
     request.account.connectionEpoch = 9;
@@ -143,7 +152,7 @@ int main() {
         Require(result.snapshot.identity.complete &&
                     result.snapshot.identity.connectionEpoch == 9 &&
                     result.snapshot.identity.generation == 4 &&
-                    result.snapshot.identity.observedAtMs == 9500,
+                    result.snapshot.identity.observedAtMs == 9400,
                 "snapshot identity must bind the oldest contributing evidence");
         Require(Near(result.snapshot.exposure.currentGrossNotional, 4200.0),
                 "current gross must convert both instruments to USD");
@@ -159,17 +168,52 @@ int main() {
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
-        request.positionsComplete = false;
+        request.positionsIdentity.complete = false;
         Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
                     "PORTFOLIO_RISK_POSITION_SET_INCOMPLETE",
                 "position known-empty/completeness must be explicit");
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
-        request.pendingOrdersComplete = false;
+        request.pendingOrdersIdentity.complete = false;
         Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
                     "PORTFOLIO_RISK_PENDING_SET_INCOMPLETE",
                 "pending known-empty/completeness must be explicit");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.positionsIdentity.generation = 3;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_POSITION_SET_IDENTITY_INVALID",
+                "position set generation must match the assembled snapshot");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.positionsIdentity.subject.account = "A2";
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_POSITION_SET_IDENTITY_INVALID",
+                "position set subject must match portfolio/account/venue scope");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.positionsIdentity.observedAtMs = 8999;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_POSITION_SET_IDENTITY_INVALID",
+                "stale position set identity must fail");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.pendingOrdersIdentity.connectionEpoch = 8;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_PENDING_SET_IDENTITY_INVALID",
+                "pending-order set epoch must match the assembled snapshot");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.pendingOrdersIdentity.subject.portfolioId = "P2";
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_PENDING_SET_IDENTITY_INVALID",
+                "pending-order set subject must match portfolio scope");
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
@@ -226,6 +270,13 @@ int main() {
         Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
                     "PORTFOLIO_RISK_PENDING_CONTRACT_INVALID",
                 "pending order source drift must fail");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.account.subject.account = "A2";
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_ACCOUNT_EVIDENCE_INVALID",
+                "account evidence subject must match portfolio/account/venue scope");
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
