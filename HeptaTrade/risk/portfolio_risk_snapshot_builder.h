@@ -16,6 +16,7 @@ struct PortfolioRiskValuationInput {
 };
 
 struct PortfolioRiskPendingOrderInput {
+    std::string orderId;
     PreTradeRiskInstrumentContract contract;
     std::string authorizedQuoteSourceId;
     std::string authorizedFxSourceId;
@@ -27,6 +28,7 @@ struct PortfolioRiskPendingOrderInput {
 };
 
 struct PortfolioRiskAccountInput {
+    bool complete = false;
     std::string baseCurrency;
     std::uint64_t connectionEpoch = 0;
     std::uint64_t generation = 0;
@@ -43,6 +45,8 @@ struct PortfolioRiskSnapshotBuildRequest {
     std::uint64_t generation = 0;
     std::int64_t evaluatedAtMs = 0;
     std::int64_t maxEvidenceAgeMs = 0;
+    bool positionsComplete = false;
+    bool pendingOrdersComplete = false;
     std::vector<PortfolioRiskValuationInput> positions;
     std::vector<PortfolioRiskPendingOrderInput> pendingOrders;
     PortfolioRiskAccountInput account;

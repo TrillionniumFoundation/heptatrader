@@ -4,6 +4,7 @@
 #include <cmath>
 #include <limits>
 #include <map>
+#include <set>
 
 namespace {
 PortfolioRiskSnapshotBuildResult Reject(const char* code, const char* detail) {
@@ -118,9 +119,13 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
         request.evaluatedAtMs <= 0 || request.maxEvidenceAgeMs <= 0)
         return Reject("PORTFOLIO_RISK_IDENTITY_INVALID",
                       "epoch, generation, evaluation time and evidence age must be positive");
-    if (request.positions.size() != request.subject.instruments.size())
+    if (!request.positionsComplete ||
+        request.positions.size() != request.subject.instruments.size())
         return Reject("PORTFOLIO_RISK_POSITION_SET_INCOMPLETE",
-                      "exactly one valuation row is required for every authorized instrument");
+                      "a complete position snapshot with exactly one valuation row per authorized instrument is required");
+    if (!request.pendingOrdersComplete)
+        return Reject("PORTFOLIO_RISK_PENDING_SET_INCOMPLETE",
+                      "pending-order snapshot completeness must be explicit even when the set is empty");
 
     double currentGross = 0.0;
     double pendingBuy = 0.0;
@@ -158,8 +163,12 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
             std::min(row.mark.observedAtMs, row.fx.observedAtMs));
     }
 
+    std::set<std::string> pendingOrderIds;
     for (std::size_t index = 0; index < request.pendingOrders.size(); ++index) {
         const PortfolioRiskPendingOrderInput& order = request.pendingOrders[index];
+        if (order.orderId.empty() || !pendingOrderIds.insert(order.orderId).second)
+            return Reject("PORTFOLIO_RISK_PENDING_ORDER_IDENTITY_INVALID",
+                          "pending orders require unique stable identities");
         const std::map<std::string, InstrumentAuthority>::const_iterator found =
             authority.find(order.contract.instrument);
         if (found == authority.end() || !SameContract(found->second.contract, order.contract) ||
@@ -189,7 +198,8 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
     }
 
     const PortfolioRiskAccountInput& account = request.account;
-    if (account.baseCurrency != request.subject.baseCurrency ||
+    if (!account.complete ||
+        account.baseCurrency != request.subject.baseCurrency ||
         account.connectionEpoch != request.connectionEpoch ||
         account.generation != request.generation ||
         !Fresh(account.observedAtMs, request) ||

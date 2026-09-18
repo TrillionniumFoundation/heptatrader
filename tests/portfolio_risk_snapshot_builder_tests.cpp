@@ -71,6 +71,8 @@ PortfolioRiskSnapshotBuildRequest BaseRequest() {
     request.generation = 4;
     request.evaluatedAtMs = 10000;
     request.maxEvidenceAgeMs = 1000;
+    request.positionsComplete = true;
+    request.pendingOrdersComplete = true;
 
     PortfolioRiskValuationInput aapl;
     aapl.contract = Stock("AAPL-US", "USD");
@@ -91,6 +93,7 @@ PortfolioRiskSnapshotBuildRequest BaseRequest() {
     request.positions.push_back(bmw);
 
     PortfolioRiskPendingOrderInput buy;
+    buy.orderId = "ORDER-BUY-1";
     buy.contract = bmw.contract;
     buy.authorizedQuoteSourceId = bmw.authorizedQuoteSourceId;
     buy.authorizedFxSourceId = bmw.authorizedFxSourceId;
@@ -102,6 +105,7 @@ PortfolioRiskSnapshotBuildRequest BaseRequest() {
     request.pendingOrders.push_back(buy);
 
     PortfolioRiskPendingOrderInput sell;
+    sell.orderId = "ORDER-SELL-1";
     sell.contract = aapl.contract;
     sell.authorizedQuoteSourceId = aapl.authorizedQuoteSourceId;
     sell.authorizedFxSourceId = aapl.authorizedFxSourceId;
@@ -112,6 +116,7 @@ PortfolioRiskSnapshotBuildRequest BaseRequest() {
     sell.fx = aapl.fx;
     request.pendingOrders.push_back(sell);
 
+    request.account.complete = true;
     request.account.baseCurrency = "USD";
     request.account.connectionEpoch = 9;
     request.account.generation = 4;
@@ -154,6 +159,20 @@ int main() {
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.positionsComplete = false;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_POSITION_SET_INCOMPLETE",
+                "position known-empty/completeness must be explicit");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.pendingOrdersComplete = false;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_PENDING_SET_INCOMPLETE",
+                "pending known-empty/completeness must be explicit");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
         request.positions.pop_back();
         Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
                     "PORTFOLIO_RISK_POSITION_SET_INCOMPLETE",
@@ -189,6 +208,13 @@ int main() {
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.pendingOrders[1].orderId = request.pendingOrders[0].orderId;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_PENDING_ORDER_IDENTITY_INVALID",
+                "duplicate pending order identity must fail");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
         request.pendingOrders[0].contract.specificationVersion = 2;
         Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
                     "PORTFOLIO_RISK_PENDING_CONTRACT_INVALID",
@@ -200,6 +226,13 @@ int main() {
         Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
                     "PORTFOLIO_RISK_PENDING_CONTRACT_INVALID",
                 "pending order source drift must fail");
+    }
+    {
+        PortfolioRiskSnapshotBuildRequest request = BaseRequest();
+        request.account.complete = false;
+        Require(PortfolioRiskSnapshotBuilder::Build(request).reasonCode ==
+                    "PORTFOLIO_RISK_ACCOUNT_EVIDENCE_INVALID",
+                "account snapshot completeness must be explicit");
     }
     {
         PortfolioRiskSnapshotBuildRequest request = BaseRequest();
