@@ -9,6 +9,65 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+
+// Bounded random row locator used by immutable generation-index binary search.
+// The look-behind includes one extra byte so a maximum-sized row that is not
+// the first row can still see the preceding newline delimiter.
+inline bool GenerationReadLineContainingBounded(
+    int fd, off_t fileSize, off_t probe, std::size_t maximumLineBytes,
+    off_t& start, off_t& end, std::string& line)
+{
+    line.clear();
+    start = 0;
+    end = 0;
+    if (fd < 0 || fileSize <= 0 || probe < 0 || maximumLineBytes == 0 ||
+        maximumLineBytes >= static_cast<std::size_t>(
+            std::numeric_limits<off_t>::max()))
+        return false;
+    if (probe >= fileSize) probe = fileSize - 1;
+
+    const off_t backwardLimit = static_cast<off_t>(maximumLineBytes) + 1;
+    const off_t backward = std::min<off_t>(probe, backwardLimit);
+    const off_t base = probe - backward;
+    std::string before(static_cast<std::size_t>(backward), '\0');
+    if (backward > 0)
+    {
+        ssize_t count;
+        do
+        {
+            count = ::pread(fd, &before[0], before.size(), base);
+        } while (count < 0 && errno == EINTR);
+        if (count != static_cast<ssize_t>(before.size())) return false;
+    }
+    const std::size_t newline = before.rfind('\n');
+    if (newline == std::string::npos)
+    {
+        if (base != 0) return false;
+        start = 0;
+    }
+    else
+        start = base + static_cast<off_t>(newline + 1U);
+
+    const off_t available = fileSize - start;
+    if (available <= 0) return false;
+    const off_t forwardLimit = static_cast<off_t>(maximumLineBytes) + 1;
+    const std::size_t maximum = static_cast<std::size_t>(
+        std::min<off_t>(forwardLimit, available));
+    std::string forward(maximum, '\0');
+    ssize_t count;
+    do
+    {
+        count = ::pread(fd, &forward[0], forward.size(), start);
+    } while (count < 0 && errno == EINTR);
+    if (count <= 0) return false;
+    forward.resize(static_cast<std::size_t>(count));
+    const std::size_t found = forward.find('\n');
+    if (found == std::string::npos || found > maximumLineBytes) return false;
+    line.assign(forward.data(), found);
+    end = start + static_cast<off_t>(found + 1U);
+    return true;
+}
+
 // Exact-offset sequential reader for immutable generation indexes. Random
 // binary-search probes use GenerationReadLineContaining in the owning
 // translation unit; once a lower-bound/line boundary is known, this reader

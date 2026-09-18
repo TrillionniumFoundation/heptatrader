@@ -320,45 +320,9 @@ bool GenerationSplitTabs(const std::string& line,
 bool GenerationReadLineContaining(int fd, off_t fileSize, off_t probe,
                                   off_t& start, off_t& end, std::string& line)
 {
-    if (fileSize <= 0) return false;
-    if (probe >= fileSize) probe = fileSize - 1;
-    const off_t backward = std::min<off_t>(probe,
-        static_cast<off_t>(kMaximumGenerationIndexLineBytes));
-    const off_t base = probe - backward;
-    std::string before(static_cast<std::size_t>(backward), '\0');
-    if (backward > 0)
-    {
-        ssize_t count;
-        do
-        {
-            count = ::pread(fd, &before[0], before.size(), base);
-        } while (count < 0 && errno == EINTR);
-        if (count != static_cast<ssize_t>(before.size())) return false;
-    }
-    const std::size_t newline = before.rfind('\n');
-    if (newline == std::string::npos)
-    {
-        if (base != 0) return false;
-        start = 0;
-    }
-    else
-        start = base + static_cast<off_t>(newline + 1U);
-
-    const std::size_t maximum = static_cast<std::size_t>(std::min<off_t>(
-        static_cast<off_t>(kMaximumGenerationIndexLineBytes + 1U), fileSize - start));
-    std::string forward(maximum, '\0');
-    ssize_t count;
-    do
-    {
-        count = ::pread(fd, &forward[0], forward.size(), start);
-    } while (count < 0 && errno == EINTR);
-    if (count <= 0) return false;
-    forward.resize(static_cast<std::size_t>(count));
-    const std::size_t found = forward.find('\n');
-    if (found == std::string::npos || found > kMaximumGenerationIndexLineBytes) return false;
-    line.assign(forward.data(), found);
-    end = start + static_cast<off_t>(found + 1U);
-    return true;
+    return GenerationReadLineContainingBounded(
+        fd, fileSize, probe, kMaximumGenerationIndexLineBytes,
+        start, end, line);
 }
 
 int GenerationCompareKey(const std::vector<std::string>& fields,

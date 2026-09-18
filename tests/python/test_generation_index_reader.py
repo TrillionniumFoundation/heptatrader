@@ -47,10 +47,36 @@ int main(int argc, char** argv)
               << "}\n";
     return ::close(fd) == 0 ? 0 : 6;
 }
+"""\n
+PROBE_CPP = r"""
+#include "HeptaTrade/execution/generation_index_reader.h"
+#include <fcntl.h>
+#include <iostream>
+#include <string>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(int argc, char** argv)
+{
+    if (argc != 3) return 2;
+    const off_t probe = static_cast<off_t>(std::stoll(argv[2]));
+    const int fd = ::open(argv[1], O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return 3;
+    struct stat metadata{};
+    if (::fstat(fd, &metadata) != 0) return 4;
+    off_t rowStart = 0, rowEnd = 0;
+    std::string line;
+    const bool ok = GenerationReadLineContainingBounded(
+        fd, metadata.st_size, probe, 65536U, rowStart, rowEnd, line);
+    const int closeResult = ::close(fd);
+    if (!ok || closeResult != 0) return 5;
+    std::cout << "{\\\"start\\\":" << rowStart
+              << ",\\\"end\\\":" << rowEnd
+              << ",\\\"line_bytes\\\":" << line.size() << "}\\n";
+    return 0;
+}
 """
-
-
-class GenerationIndexReaderTests(unittest.TestCase):
+\n\nclass GenerationIndexReaderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(prefix="hepta-generation-reader-")
@@ -62,6 +88,13 @@ class GenerationIndexReaderTests(unittest.TestCase):
         subprocess.run(
             ["g++", "-std=c++11", "-Wall", "-Wextra", "-Werror",
              "-I", str(ROOT), str(source), "-o", str(cls.binary)],
+            check=True, capture_output=True, text=True, timeout=60)
+        probe_source = root / "probe.cpp"
+        cls.probe_binary = root / "probe"
+        probe_source.write_text(PROBE_CPP)
+        subprocess.run(
+            ["g++", "-std=c++11", "-Wall", "-Wextra", "-Werror",
+             "-I", str(ROOT), str(probe_source), "-o", str(cls.probe_binary)],
             check=True, capture_output=True, text=True, timeout=60)
 
     def _run(self, payload: bytes, start: int = 0, check: bool = True):
@@ -123,6 +156,22 @@ class GenerationIndexReaderTests(unittest.TestCase):
                 stream.write("\n")
                 stream.flush()
                 os.fsync(stream.fileno())
+
+    def test_random_probe_accepts_maximum_sized_nonfirst_row(self):
+        path = Path(self.tmp.name) / "probe-index.tsv"
+        prefix = b"p\\n"
+        maximum_row = b"x" * 65536 + b"\\n"
+        suffix = b"q\\n"
+        payload = prefix + maximum_row + suffix
+        path.write_bytes(payload)
+        probe = len(prefix) + 65536
+        result = subprocess.run(
+            [str(self.probe_binary), str(path), str(probe)],
+            check=True, capture_output=True, text=True, timeout=10)
+        observed = json.loads(result.stdout)
+        self.assertEqual(observed["start"], len(prefix))
+        self.assertEqual(observed["end"], len(prefix) + len(maximum_row))
+        self.assertEqual(observed["line_bytes"], 65536)
 
     def test_oversized_or_unterminated_row_fails_closed(self):
         oversized = b"x" * 65537 + b"\n"
