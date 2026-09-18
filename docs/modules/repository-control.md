@@ -46,7 +46,7 @@ The repository is maintained as an owner-operated project. Under that operating 
 - retain deletion and non-fast-forward protection;
 - remove required approval count, CODEOWNER approval, last-push approval and stale-review churn when there is no genuinely independent reviewer performing those roles;
 - remove Merge Queue when it adds no real concurrent-integration value for the current owner-operated flow;
-- keep squash-only integration and exact-head evidence semantics through the remaining checks.
+- keep exact-head evidence semantics through the remaining checks. Removing the `pull_request` rule also removes that Ruleset's server-enforced merge-method restriction; squash-only history is therefore not claimed by this transition unless repository merge settings are changed separately and read back.
 
 This is **not** implemented by inventing a source-side “approval” file, dummy reviewer, duplicate CI gate or token check. Those would recreate the same formalism in another layer without adding independent judgment.
 
