@@ -130,6 +130,14 @@ public:
         OmsGenerationMutationSummary& summary,
         std::string& reason) const;
 
+    bool SummarizeMutationRecords(
+        const std::string& agentId,
+        const std::string& sessionId,
+        const std::string& account,
+        const std::string& executionDomain,
+        OmsGenerationMutationSummary& summary,
+        std::string& reason) const;
+
 private:
     void Close() noexcept;
     bool Prepare(std::string& reason);
