@@ -307,7 +307,9 @@ private:
         ExecutionCommandResult& rejection);
     ExecutionCommandResult DispatchPlaceOrderLocked(
         const IbPlaceOrderCommand& command,
-        const PlaceOrderDispatchContext& dispatch);
+        const PlaceOrderDispatchContext& dispatch,
+        std::unique_lock<std::mutex>& lock,
+        ExecutionOperationTiming& timing);
     ExecutionCommandResult RejectAuthoritativeFlattenLocked(
         const FlattenPositionCommand& command,
         const AuthoritativeFlattenPlan& plan,
@@ -328,7 +330,9 @@ private:
     ExecutionCommandResult DispatchAuthoritativeFlattenLocked(
         const FlattenPositionCommand& command,
         const AuthoritativeFlattenPlan& plan,
-        const AuthoritativeFlattenDispatchContext& dispatch);
+        const AuthoritativeFlattenDispatchContext& dispatch,
+        std::unique_lock<std::mutex>& lock,
+        ExecutionOperationTiming& timing);
     ExecutionCommandResult HandleCancelProjectionFailureLocked(
         const CancelOrderCommand& command,
         const std::string& instrument,
@@ -344,7 +348,9 @@ private:
         const std::string& requestHash,
         const std::string& requestKey,
         RequestRecord& pending);
-    VenueCancelResult TryCancelAtVenueLocked(long orderId);
+    VenueCancelResult TryCancelAtVenueUnlocked(
+        long orderId, std::unique_lock<std::mutex>& lock,
+        ExecutionOperationTiming& timing);
     ExecutionCommandResult UncertainCancelOutcomeLocked(
         const CancelOrderCommand& command, const std::string& instrument,
         const std::string& side, const std::string& requestHash,
@@ -414,21 +420,26 @@ private:
                                           const std::string& requestHash);
 
 private:
-    ExecutionCommandResult PlaceOrderLocked(const PlaceOrderCommand& command);
-    ExecutionCommandResult CancelOrderLocked(const CancelOrderCommand& command);
+    ExecutionCommandResult PlaceOrderLocked(
+        const PlaceOrderCommand& command, std::unique_lock<std::mutex>& lock,
+        ExecutionOperationTiming& timing);
+    ExecutionCommandResult CancelOrderLocked(
+        const CancelOrderCommand& command, std::unique_lock<std::mutex>& lock,
+        ExecutionOperationTiming& timing);
     ExecutionCommandResult ExecuteAuthoritativeFlattenLocked(
-        const FlattenPositionCommand& command, const AuthoritativeFlattenPlan& plan);
+        const FlattenPositionCommand& command, const AuthoritativeFlattenPlan& plan,
+        std::unique_lock<std::mutex>& lock, ExecutionOperationTiming& timing);
     template <typename Action>
     ExecutionCommandResult ObserveCommand(std::size_t operation, Action action)
     {
         const auto entered = OmsScopedLatencySample::Clock::now();
-        std::lock_guard<std::mutex> lock(m_mutex);
+        std::unique_lock<std::mutex> lock(m_mutex);
         const auto acquired = OmsScopedLatencySample::Clock::now();
         auto& observation = m_observation.operations[operation];
         ExecutionOperationTiming timer(observation, entered, acquired);
         try
         {
-            auto result = action();
+            auto result = action(lock, timer);
             observation.Observe(result);
             return result;
         }
@@ -452,6 +463,8 @@ private:
     std::unordered_set<std::string> m_placeSendAttemptKeys;
     bool m_mutationBlocked = false;
     std::string m_mutationBlockReason;
+    bool m_riskMutationDispatchInFlight = false;
+    std::uint64_t m_venueDispatchesInFlight = 0;
     bool m_paperTerminalFencePresent = false;
     PaperTerminalFenceBinding m_paperTerminalFenceBinding;
 };

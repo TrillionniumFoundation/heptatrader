@@ -261,18 +261,22 @@ ExecutionCommandResult ExecutionCoordinator::HandleDeferredCancelLocked(
     return result;
 }
 
-VenueCancelResult ExecutionCoordinator::TryCancelAtVenueLocked(long orderId)
+VenueCancelResult ExecutionCoordinator::TryCancelAtVenueUnlocked(
+    long orderId, std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
-    try
-    {
-        return m_callbacks.cancelOrder(orderId);
-    }
-    catch (...)
-    {
-        // Also covers allocation failures after an effect. The empty default
-        // result does not allocate while translating an arbitrary exception.
-        return VenueCancelResult();
-    }
+    ++m_venueDispatchesInFlight;
+    timing.PauseHeld();
+    lock.unlock();
+    VenueCancelResult outcome;
+    std::exception_ptr failure;
+    try { outcome = m_callbacks.cancelOrder(orderId); }
+    catch (...) { failure = std::current_exception(); }
+    lock.lock();
+    timing.ResumeHeld();
+    --m_venueDispatchesInFlight;
+    if (failure) return VenueCancelResult();
+    return outcome;
 }
 
 std::string ExecutionCoordinator::RequestKey(const std::string& agentId,
@@ -372,10 +376,15 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
 
 ExecutionCommandResult ExecutionCoordinator::PlaceOrder(const PlaceOrderCommand& command)
 {
-    return ObserveCommand(0U, [&]() { return PlaceOrderLocked(command); });
+    return ObserveCommand(0U, [&](std::unique_lock<std::mutex>& lock,
+                                  ExecutionOperationTiming& timing) {
+        return PlaceOrderLocked(command, lock, timing);
+    });
 }
 
-ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCommand& command)
+ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
+    const PlaceOrderCommand& command, std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
 
@@ -405,6 +414,9 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCo
             -1);
     if (m_mutationBlocked)
         return RefuseBeforeIntent(context, "MUTATION_BLOCKED", m_mutationBlockReason, -1);
+    if (m_riskMutationDispatchInFlight)
+        return RefuseBeforeIntent(context, "MUTATION_BLOCKED",
+            "another risk mutation is already at the venue boundary", -1);
     if (!m_callbacks.placement.Configured())
         return RefuseBeforeIntent(context, "IB_PLACE_CALLBACK_MISSING", "IB place callback is not configured",
                             -1);
@@ -480,7 +492,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(const PlaceOrderCo
     dispatch.venueCorrelationId = venueCorrelationId;
     dispatch.instrument = instrument;
     dispatch.eventPrice = eventPrice;
-    return DispatchPlaceOrderLocked(command, dispatch);
+    return DispatchPlaceOrderLocked(command, dispatch, lock, timing);
 }
 
 bool ExecutionCoordinator::PrecheckPlaceIbOrder(
@@ -556,6 +568,8 @@ void ExecutionCoordinator::ResetRecoveryProjectionLocked()
     m_placeSendAttemptKeys.clear();
     m_mutationBlocked = false;
     m_mutationBlockReason.clear();
+    m_riskMutationDispatchInFlight = false;
+    m_venueDispatchesInFlight = 0;
     m_paperTerminalFencePresent = false;
     m_paperTerminalFenceBinding = PaperTerminalFenceBinding();
 }

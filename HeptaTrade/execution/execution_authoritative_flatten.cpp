@@ -306,12 +306,17 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlatten(
     const FlattenPositionCommand& command,
     const AuthoritativeFlattenPlan& plan)
 {
-    return ObserveCommand(2U, [&]() { return ExecuteAuthoritativeFlattenLocked(command, plan); });
+    return ObserveCommand(2U, [&](std::unique_lock<std::mutex>& lock,
+                                  ExecutionOperationTiming& timing) {
+        return ExecuteAuthoritativeFlattenLocked(command, plan, lock, timing);
+    });
 }
 
 ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
     const FlattenPositionCommand& command,
-    const AuthoritativeFlattenPlan& plan)
+    const AuthoritativeFlattenPlan& plan,
+    std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
     if (context.toolCallId.empty() || context.agentId.empty() ||
@@ -355,6 +360,9 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
         return RejectAuthoritativeFlattenLocked(
             command, plan, dispatch, "MUTATION_BLOCKED",
             m_mutationBlockReason);
+    if (m_riskMutationDispatchInFlight)
+        return RefuseBeforeIntent(context, "MUTATION_BLOCKED",
+            "another risk mutation is already at the venue boundary");
     if (!ExactReduceOnly(command, plan))
         return RejectAuthoritativeFlattenLocked(
             command, plan, dispatch,
@@ -398,7 +406,7 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
     pending.durableMutationIntent = true;
     m_requests[requestKey] = pending;
     return DispatchAuthoritativeFlattenLocked(
-        command, plan, dispatch);
+        command, plan, dispatch, lock, timing);
 }
 
 ExecutionCommandResult

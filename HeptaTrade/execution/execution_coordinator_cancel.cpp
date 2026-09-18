@@ -4,10 +4,15 @@
 
 ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderCommand& command)
 {
-    return ObserveCommand(1U, [&]() { return CancelOrderLocked(command); });
+    return ObserveCommand(1U, [&](std::unique_lock<std::mutex>& lock,
+                                  ExecutionOperationTiming& timing) {
+        return CancelOrderLocked(command, lock, timing);
+    });
 }
 
-ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrderCommand& command)
+ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
+    const CancelOrderCommand& command, std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
 
@@ -90,7 +95,8 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
         return RejectLocked(context, "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED",
                             "cancel was not sent", command.orderId, requestHash);
 
-    const VenueCancelResult outcome = TryCancelAtVenueLocked(command.orderId);
+    const VenueCancelResult outcome =
+        TryCancelAtVenueUnlocked(command.orderId, lock, timing);
     if (outcome.disposition == VenueCancelDisposition::Deferred)
         return HandleDeferredCancelLocked(command, context, instrument, side,
                                           requestHash, requestKey, pending);

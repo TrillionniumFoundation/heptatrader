@@ -192,7 +192,9 @@ ExecutionCommandResult
 ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
     const FlattenPositionCommand& command,
     const AuthoritativeFlattenPlan& plan,
-    const AuthoritativeFlattenDispatchContext& dispatch)
+    const AuthoritativeFlattenDispatchContext& dispatch,
+    std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
     if (plan.expectedPositionQuantity == 0.0)
@@ -252,20 +254,30 @@ ExecutionCoordinator::DispatchAuthoritativeFlattenLocked(
         }
     }
 
+    m_riskMutationDispatchInFlight = true;
+    ++m_venueDispatchesInFlight;
+    timing.PauseHeld();
+    lock.unlock();
     VenueFlattenResult outcome;
-    try
+    std::exception_ptr failure;
+    try { outcome = m_callbacks.flattenOrder(plan, dispatch.venueCorrelationId); }
+    catch (...) { failure = std::current_exception(); }
+    lock.lock();
+    timing.ResumeHeld();
+    --m_venueDispatchesInFlight;
+    m_riskMutationDispatchInFlight = false;
+    if (failure)
     {
-        outcome = m_callbacks.flattenOrder(plan, dispatch.venueCorrelationId);
-    }
-    catch (const std::exception& error)
-    {
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, -1, error.what());
-    }
-    catch (...)
-    {
-        return UncertainAuthoritativeFlattenLocked(
-            command, plan, dispatch, -1, "unknown authoritative flatten exception");
+        try { std::rethrow_exception(failure); }
+        catch (const std::exception& error)
+        {
+            return UncertainAuthoritativeFlattenLocked(command, plan, dispatch, -1, error.what());
+        }
+        catch (...)
+        {
+            return UncertainAuthoritativeFlattenLocked(
+                command, plan, dispatch, -1, "unknown authoritative flatten exception");
+        }
     }
     if (outcome.disposition == VenueFlattenDisposition::RejectedBeforeSend)
     {

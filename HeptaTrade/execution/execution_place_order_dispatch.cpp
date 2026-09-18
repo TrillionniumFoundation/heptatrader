@@ -201,7 +201,9 @@ bool ExecutionCoordinator::PreVenuePlaceAllowedLocked(
 ExecutionCommandResult
 ExecutionCoordinator::DispatchPlaceOrderLocked(
     const IbPlaceOrderCommand& command,
-    const PlaceOrderDispatchContext& dispatch)
+    const PlaceOrderDispatchContext& dispatch,
+    std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
     // This marker is immediately before venue IO and restores the rolling
@@ -228,18 +230,23 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
     ExecutionCommandResult preVenueRejection;
     if (!PreVenuePlaceAllowedLocked(command, dispatch, preVenueRejection))
         return preVenueRejection;
+    m_riskMutationDispatchInFlight = true;
+    ++m_venueDispatchesInFlight;
+    timing.PauseHeld();
+    lock.unlock();
     VenuePlaceResult outcome;
-    try
+    std::exception_ptr failure;
+    try { outcome = m_callbacks.placement.Dispatch(command, dispatch.venueCorrelationId); }
+    catch (...) { failure = std::current_exception(); }
+    lock.lock();
+    timing.ResumeHeld();
+    --m_venueDispatchesInFlight;
+    m_riskMutationDispatchInFlight = false;
+    if (failure)
     {
-        outcome = m_callbacks.placement.Dispatch(command, dispatch.venueCorrelationId);
-    }
-    catch (const std::exception& error)
-    {
-        outcome = VenuePlaceResult::Uncertain(error.what());
-    }
-    catch (...)
-    {
-        outcome = VenuePlaceResult::Uncertain("unknown venue place exception");
+        try { std::rethrow_exception(failure); }
+        catch (const std::exception& error) { outcome = VenuePlaceResult::Uncertain(error.what()); }
+        catch (...) { outcome = VenuePlaceResult::Uncertain("unknown venue place exception"); }
     }
     const long orderId = outcome.orderId;
     if (outcome.disposition == VenuePlaceDisposition::Uncertain)
