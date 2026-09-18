@@ -464,6 +464,7 @@ private:
     bool m_mutationBlocked = false;
     std::string m_mutationBlockReason;
     bool m_riskMutationDispatchInFlight = false;
+    std::string m_riskMutationDispatchOwnerKey;
     std::uint64_t m_venueDispatchesInFlight = 0;
     // Pre-intent, process-local reservation only. It prevents two different
     // cancel command identities from concurrently passing the unlocked

@@ -1384,7 +1384,18 @@ bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocke
             return false;
         }
         if (lookup == OmsGenerationLookupStatus::Found)
-            continue; // already sealed into the fixed-size history binding
+        {
+            if (!historical.durableMutationIntent ||
+                historical.account != request.context.account ||
+                historical.executionDomain != request.context.executionDomain ||
+                historical.operation != request.operation ||
+                historical.venueCorrelationId != request.venueCorrelationId)
+            {
+                reason = "OMS_GENERATION_TERMINAL_MUTATION_CONFLICT";
+                return false;
+            }
+            continue; // verified as already sealed into the fixed-size history binding
+        }
         PaperTerminalMutationRecord record;
         record.agentId = request.context.agentId;
         record.sessionId = request.context.sessionId;

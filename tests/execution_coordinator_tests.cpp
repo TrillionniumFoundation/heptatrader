@@ -2221,6 +2221,78 @@ void TestReconnectFenceRefusesVenueDispatchInFlight()
 }
 
 
+void TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+
+    std::mutex gateMutex;
+    std::condition_variable gateChanged;
+    bool entered = false;
+    bool release = false;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement = VenuePlacement::Immediate(
+        [&](const PlaceOrderCommand&, const std::string&) {
+            {
+                std::lock_guard<std::mutex> gate(gateMutex);
+                entered = true;
+            }
+            gateChanged.notify_all();
+            std::unique_lock<std::mutex> gate(gateMutex);
+            gateChanged.wait(gate, [&]() { return release; });
+            return VenuePlaceResult::Submitted(903);
+        });
+
+    ExecutionCoordinator coordinator(journal, callbacks);
+    const auto command = MakePlace("fence-dispatch-race");
+    auto placeFuture = std::async(std::launch::async, [&]() {
+        return coordinator.PlaceOrder(command);
+    });
+    {
+        std::unique_lock<std::mutex> gate(gateMutex);
+        assert(gateChanged.wait_for(
+            gate, std::chrono::seconds(2), [&]() { return entered; }));
+    }
+
+    // The durable send boundary has been crossed but the order owner cannot be
+    // projected until the provider returns. Fencing must not report a false
+    // zero or allow the fence to be released through that gap.
+    assert(coordinator.FenceSessionOwner("agent-a", "session-1") == 1);
+    assert(coordinator.IsSessionOwnerFenced("agent-a", "session-1"));
+    std::string reason;
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence(
+        "agent-a", "session-1", true, reason));
+    assert(reason == "FENCED_OWNER_VENUE_DISPATCH_IN_FLIGHT");
+
+    ExecutionCommandResult pending;
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "fence-dispatch-race", pending));
+    assert(pending.status == ExecutionCommandStatus::Uncertain);
+
+    {
+        std::lock_guard<std::mutex> gate(gateMutex);
+        release = true;
+    }
+    gateChanged.notify_all();
+    const ExecutionCommandResult placed = placeFuture.get();
+    assert(placed.status == ExecutionCommandStatus::Accepted);
+    assert(placed.orderId == 903);
+
+    ExecutionOrderOwner owner;
+    assert(coordinator.GetOrderOwner(903, owner));
+    assert(owner.agentId == "agent-a" && owner.sessionId == "session-1");
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence(
+        "agent-a", "session-1", true, reason));
+    assert(reason == "FENCED_OWNER_ACTIVE_ORDERS_REMAIN");
+    assert(coordinator.RecordOrderTerminalDurably(903, &reason));
+    assert(coordinator.AuditAndReleaseSessionOwnerFence(
+        "agent-a", "session-1", true, reason));
+    assert(reason.empty());
+    assert(!coordinator.IsSessionOwnerFenced("agent-a", "session-1"));
+    std::remove(path.c_str());
+}
+
 void TestCompactTerminalUniverseExceedsLegacyEnumerationLimit()
 {
     const std::string empty =
@@ -2301,6 +2373,7 @@ int main(int argc, char** argv)
     TestSlowVenueDispatchDoesNotHoldCoordinatorLock();
     TestCancelEligibilityPreflightDoesNotHoldCoordinatorLock();
     TestReconnectFenceRefusesVenueDispatchInFlight();
+    TestSessionFenceTracksRiskDispatchOutsideCoordinatorLock();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
     TestTwoPhaseActivationDurabilityAndRecovery();

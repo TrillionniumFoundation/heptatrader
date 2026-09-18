@@ -569,6 +569,7 @@ void ExecutionCoordinator::ResetRecoveryProjectionLocked()
     m_mutationBlocked = false;
     m_mutationBlockReason.clear();
     m_riskMutationDispatchInFlight = false;
+    m_riskMutationDispatchOwnerKey.clear();
     m_venueDispatchesInFlight = 0;
     m_paperTerminalFencePresent = false;
     m_paperTerminalFenceBinding = PaperTerminalFenceBinding();
@@ -1242,6 +1243,9 @@ std::size_t ExecutionCoordinator::FenceSessionOwner(
     for (std::unordered_map<long, ExecutionOrderOwner>::const_iterator it = m_orderOwners.begin();
          it != m_orderOwners.end(); ++it)
         if (it->second.agentId == agentId && it->second.sessionId == sessionId) ++activeOrders;
+    if (m_riskMutationDispatchInFlight &&
+        m_riskMutationDispatchOwnerKey == ownerKey)
+        ++activeOrders;
     return activeOrders;
 }
 
@@ -1275,6 +1279,12 @@ bool ExecutionCoordinator::AuditAndReleaseSessionOwnerFence(
     if (!authoritativeOpenOrdersComplete)
     {
         reason = "AUTHORITATIVE_OPEN_ORDERS_INCOMPLETE";
+        return false;
+    }
+    if (m_riskMutationDispatchInFlight &&
+        m_riskMutationDispatchOwnerKey == ownerKey)
+    {
+        reason = "FENCED_OWNER_VENUE_DISPATCH_IN_FLIGHT";
         return false;
     }
     for (std::unordered_map<long, ExecutionOrderOwner>::const_iterator it = m_orderOwners.begin();
