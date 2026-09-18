@@ -2,17 +2,20 @@
 
 bool ExecutionCoordinator::BeginBrokerReconnectFence(std::string& reason)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    std::unique_lock<std::mutex> lock(m_mutex);
+    WaitExternalMutationsQuiescent(lock);
     if (m_mutationBlocked)
     {
         reason = m_mutationBlockReason.empty() ?
             "IB_PAPER_BROKER_RECONNECT_COORDINATOR_BLOCKED" :
             m_mutationBlockReason;
+        ReopenExternalMutationAdmissionLocked();
         return false;
     }
     if (!m_orderOwners.empty())
     {
         reason = "IB_PAPER_BROKER_RECONNECT_LOCAL_ORDERS_UNSAFE";
+        ReopenExternalMutationAdmissionLocked();
         return false;
     }
     m_mutationBlocked = true;
@@ -34,6 +37,7 @@ bool ExecutionCoordinator::EndBrokerReconnectFence(std::string& reason)
     }
     m_mutationBlocked = false;
     m_mutationBlockReason.clear();
+    ReopenExternalMutationAdmissionLocked();
     reason.clear();
     return true;
 }
