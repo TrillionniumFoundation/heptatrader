@@ -548,9 +548,9 @@ bool ValidateCapsule(const std::string& contents,
         !ParseUnsigned(fields["egress_policy_generation"],
             egressGeneration) || egressGeneration == 0 ||
         !ParseUnsigned(fields["known_mutation_command_count"],
-            knownMutationCount) || knownMutationCount > 4096 ||
+            knownMutationCount) ||
         !ParseUnsigned(fields["known_correlation_count"],
-            knownCorrelationCount) || knownCorrelationCount > 4096 ||
+            knownCorrelationCount) ||
         !ParseUnsigned(fields["settled_mutation_command_count"],
             settledMutationCount) || settledMutationCount != knownMutationCount)
         return false;

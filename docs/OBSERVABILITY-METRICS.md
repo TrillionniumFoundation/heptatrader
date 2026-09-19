@@ -12,9 +12,9 @@ it does not mean every requested metric or host integration has been delivered.
 |---|---|---|
 | OMS append, data-sync and replay-validation timing | `OmsJournal::GetHealthSnapshot`, five-second Execution observations | counts, nanoseconds and bounded histograms, including failed attempts; not complete recovery SLOs; [measurement boundaries](technical/runtime-cost-observations.md) |
 | OMS capacity and pending queues | same snapshot/observation stream | decoded bytes, records, pending count/bytes, budgets, poison/unknown state; physical gzip size is separate; [online capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md) |
-| Coordinator operations, local recovery and state size | `ExecutionCoordinator::RuntimeObservation`, additive `execution_metrics` in Execution observations and the installed report | fixed outcome counts, lock-wait/inclusive/lock-held operation and replay-projection histograms and O(1) identity/owner/index sizes; no per-ID labels; [exact scopes](technical/runtime-cost-observations.md) |
+| Coordinator operations, local recovery and state size | `ExecutionCoordinator::RuntimeObservation`, additive `execution_metrics` in Execution observations and the installed report | fixed outcome counts, lock-wait/inclusive/lock-held operation, coordinator replay-projection, simulator-state recovery and complete startup-ready histograms plus O(1) identity/owner/index sizes; no per-ID labels; [exact scopes](technical/runtime-cost-observations.md) |
 | Coordinator bounded reason counters | same additive `execution_metrics` stream and installed report | 41 fixed reason bins for each of place/cancel/flatten; unknown maps to OTHER, no arbitrary labels; explicit presence and saturation; not all upstream risk/profile decisions |
-| IB authoritative runtime state | `hepta-ib-executiond` `heptatrader.ib-runtime-observation.v1`, installed `hepta_ib_runtime_report.py` | one adapter-lock recovery-audit view: connection/event-stream state; active/terminal/risk generations, completeness and bounded counts; gross position; exposure/post-fill reconciliation; terminal-drain state. No account/order/command labels. Callback-lag, callback-conflict and network-policy families have explicit presence `false`, not observed zero. |
+| IB authoritative runtime state | `hepta-ib-executiond` `heptatrader.ib-runtime-observation.v1`, installed `hepta_ib_runtime_report.py` | one adapter-lock recovery-audit view: connection/event-stream state; active/terminal/risk generations, completeness and bounded counts; gross position; exposure/post-fill reconciliation; terminal-drain state. The reporter additionally derives conservative continuous observed-duration lower bounds for post-fill reconciliation pending, authoritative snapshot incompleteness and terminal callback drain pending, reset at service/connection epoch boundaries. No account/order/command labels. Callback queue-ingress-to-routing lag and bounded callback-conflict counters are native producers with fixed cardinality. The IB daemon also exports primary-quote age, oldest complete authoritative-domain age, a native successful post-fill Broker reconciliation duration histogram, and process-local reconnect plus reconnect-authoritative-refresh duration histograms. `hepta_broker_egress_policy.py --observe-json` is the separate host-owned read-only producer for the exact nftables Broker boundary: it recognizes only the canonical allow state or the compiled deny-all fallback and fails closed on any other ruleset. It does not grant PAPER/LIVE authority and is not implicitly sampled by the unprivileged IB daemon. |
 | Gateway scheduling, results and writes | actual Unix Gateway observations | fixed result bins, pending/active/ready gauges, delivery failures and three latency histograms; application success is distinct from socket delivery; [contract](technical/gateway-runtime-observability.md) |
 | Read-only reports | installed `hepta_oms_report.py` and `hepta_ib_runtime_report.py` | strict validated OMS/Gateway/IB samples, fixed-cardinality metrics and health classification; no listener and no trading authority |
 | Atomic metrics textfile publication | OMS/Gateway publisher plus IB reporter publisher | fixed names (`hepta_oms.prom`, `hepta_gateway.prom`, `hepta_ib.prom`), nonblocking writer locks, descriptor/namespace validation, fsync + atomic replacement and explicit failure; no old healthy series is retained as a synthetic success after invalid input |
@@ -25,6 +25,14 @@ it does not mean every requested metric or host integration has been delivered.
 | Owner-scoped health | `owner_scoped_health_publisher.cpp` | owner-scoped event delivery, not complete portfolio state or a general exporter |
 | Package and qualification receipts | release/qualification verifiers | exact source/artifact/harness/profile evidence; package success is never PAPER/LIVE authorization |
 
+The new fixed-cardinality duration gauges are:
+
+- `hepta_ib_post_fill_reconciliation_pending_observed_ms`;
+- `hepta_ib_authoritative_snapshot_incomplete_observed_ms`;
+- `hepta_ib_terminal_callback_drain_pending_observed_ms`.
+
+They are **observed lower bounds**, not hidden internal start timestamps. The reporter walks only the retained recent sample window and stops at a service/connection epoch boundary, a false condition or monotonic-clock regression. A value of zero therefore means “not continuously observed across two retained samples”, not “the operation consumed zero milliseconds”.
+
 Presence and freshness must be checked before numerical values. Missing or
 saturated histograms are omitted; unknown state must not become observed zero.
 `collector_success=1` means input was parsed, not that the service is healthy.
@@ -32,15 +40,26 @@ A valid stale sample still has `telemetry_fresh=0` and a nonzero report exit cod
 A surviving file with `telemetry_fresh=1` can outlive a dead collector, so the
 supplied rules independently evaluate collection and source timestamps.
 
-## Requirements not yet delivered as a complete interface
+## Next-stage observability expansion
 
-Complete per-reason execution lifecycle beyond coordinator call outcomes, full
-Broker reconciliation duration/SLOs, callback lag and conflict counters, quote
-and snapshot ages, portfolio notional/PnL/drawdown, connection/refresh duration
-and network-policy state still need individually bounded producers and behavior
-tests. IB snapshot **generations/completeness** are now produced, reported and
-collected; this is deliberately narrower than snapshot age or callback latency.
-Existing C++ fields do not automatically constitute exported metrics.
+The repository telemetry correctness scope is closed for the currently supported
+runtime: callback queue lag/conflict, primary quote age, authoritative snapshot
+age, successful post-fill Broker reconciliation duration, whole reconnect
+duration, reconnect-authoritative-refresh duration, and exact canonical/deny-all
+Broker network-policy readback are source-produced. A missing/invalid age is
+represented by an explicit validity bit rather than a synthetic zero; failed
+reconciliation remains a failure/pending state rather than being inserted into
+the successful duration histogram. IB snapshot **generations/completeness** and
+the three continuous observed-stall duration lower bounds are produced, reported
+and collected. The unprivileged IB collection path is covered by baseline
+Prometheus rules and real-process loopback delivery acceptance; privileged
+network-policy scheduling remains a host operation.
+
+General multi-asset portfolio notional/PnL/drawdown and deeper upstream
+per-reason lifecycle metrics remain a future product expansion
+(`RUNTIME-PORTFOLIO-004`). They require explicit valuation/unit/authority
+contracts and must not be fabricated from existing fields merely to make the
+inventory look complete.
 
 Deployment still owns trusted observer identity, actual installation/activation,
 target mapping, retention, approved receiver and protected receiver credentials.
@@ -55,10 +74,11 @@ subprocess limits and failure behavior using synthetic journal envelopes.
 including independent publication and replacement of an invalid IB stream with
 failure-only health while preserving valid OMS/Gateway files. The IB observation
 contract also has a compiler-backed cross-language test executing the production
-C++ serializer and Python validator/exporter. The process acceptance launches
-real node_exporter, Prometheus and Alertmanager and requires loopback webhook
-firing, HTTP 503 retry, resolution and dead-collector detection. No synthetic or
-loopback receipt is target-host evidence.
+C++ serializer and Python validator/exporter; that test covers the continuous
+observed-duration calculations and epoch reset behavior. The process acceptance
+launches real node_exporter, Prometheus and Alertmanager and requires loopback
+webhook firing, HTTP 503 retry, resolution and dead-collector detection. No
+synthetic or loopback receipt is target-host evidence.
 
 On the target host, demonstrate collection of actual daemon output, stopped
 publication, stale/missing/malformed input, denied output writes, writer poison,
@@ -67,8 +87,14 @@ identity and measured timestamps. Test OMS, Gateway and IB authoritative-state
 streams independently. The five-second observations, 15-second source age and
 30-second collector age are explicit baseline choices, not a universal host SLA.
 
-Actual host notification, multiday stability and the missing callback/network/
-Broker-duration metric families remain open. Do not close those gaps merely
+Actual host notification and multiday stability remain open. The source now has
+network-policy, quote/snapshot-age and successful Broker-reconciliation producers.
+The supplied Prometheus/Alertmanager baseline consumes the unprivileged IB
+textfile for collector/freshness, authoritative-state, reconciliation and
+callback-integrity alarms; the privileged nftables observation remains a
+separate host-owned producer and is not sampled by the unprivileged daemon.
+Target-host activation, retention, privileged policy-observer scheduling and
+operator delivery are still external evidence. Do not close those gaps merely
 because the source-side chain is executable.
 
 ## Alert and authority boundary

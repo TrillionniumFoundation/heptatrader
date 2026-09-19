@@ -5,6 +5,10 @@ Applies to: repository HEAD
 Implementation: `HeptaTrade/adapter_ctp`, `third_party/ctp`
 Tests: `tests/venue_capability_tests.cpp`, `tests/python/test_legacy_runtime_boundary.py`
 
+## Development priority
+
+**DEFERRED.** XT/QMT is the selected next venue. CTP remains in the repository only as a fail-closed capability boundary and a future implementation contract; parallel CTP transport development should not consume current execution-runtime capacity until the XT read-only/qualification path has converged. This priority statement does not remove the scaffold or weaken its rejection behavior.
+
 ## Current capability
 
 The CTP adapter is an interface scaffold only. It does not implement a real CTP transport, authentication, settlement confirmation, order insertion, cancel, query, callback normalization, recovery, or reconciliation path.
@@ -27,6 +31,8 @@ Required future work includes:
 - price tick, volume multiple, trading-day, and exchange-state checks;
 - durable uncertain-order recovery;
 - venue-specific qualification fixtures.
+
+These items are specification backlog, not an invitation to add placeholder callbacks or a second speculative execution framework while CTP is deferred.
 
 ## Security boundary
 

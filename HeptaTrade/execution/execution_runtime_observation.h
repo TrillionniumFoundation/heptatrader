@@ -72,7 +72,8 @@ struct ExecutionOperationObservation
     OmsLatencySummary latency; // Existing lock-held work scope, preserved.
     bool timingPresent = false;
     OmsLatencySummary lockWait;
-    OmsLatencySummary totalLatency; // Call entry through result/exception, before unlock.
+    OmsLatencySummary outsideLock; // Venue callback plus re-acquisition while the coordinator mutex is released.
+    OmsLatencySummary totalLatency; // Call entry through result/exception, before final unlock.
     bool saturated = false;
     static std::size_t ResultIndex(ExecutionCommandStatus status) noexcept
     {
@@ -113,21 +114,74 @@ public:
     ExecutionOperationTiming(ExecutionOperationObservation& target,
                              Clock::time_point entered,
                              Clock::time_point acquired) noexcept
-        : m_held(target.latency, acquired), m_total(target.totalLatency, entered)
+        : m_target(target), m_total(target.totalLatency, entered),
+          m_heldStart(acquired)
     {
         target.timingPresent = true;
         OmsScopedLatencySample wait(target.lockWait, entered);
         wait.Finish(acquired);
     }
     ~ExecutionOperationTiming() noexcept { Finish(); }
+
+    void PauseHeld(Clock::time_point now = Clock::now()) noexcept
+    {
+        if (!m_heldActive || m_finished) return;
+        const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - m_heldStart).count();
+        const std::uint64_t elapsed =
+            raw > 0 ? static_cast<std::uint64_t>(raw) : 0U;
+        const std::uint64_t maximum =
+            std::numeric_limits<std::uint64_t>::max();
+        if (elapsed > maximum - m_heldNs)
+            m_heldNs = maximum;
+        else
+            m_heldNs += elapsed;
+        m_heldActive = false;
+        m_outsideStart = now;
+        m_outsideActive = true;
+    }
+
+    void ResumeHeld(Clock::time_point now = Clock::now()) noexcept
+    {
+        if (m_heldActive || m_finished) return;
+        if (m_outsideActive)
+        {
+            const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                now - m_outsideStart).count();
+            const std::uint64_t elapsed =
+                raw > 0 ? static_cast<std::uint64_t>(raw) : 0U;
+            const std::uint64_t maximum =
+                std::numeric_limits<std::uint64_t>::max();
+            if (elapsed > maximum - m_outsideNs) m_outsideNs = maximum;
+            else m_outsideNs += elapsed;
+            m_outsideActive = false;
+        }
+        m_heldStart = now;
+        m_heldActive = true;
+    }
+
     void Finish(Clock::time_point now = Clock::now()) noexcept
     {
-        m_held.Finish(now);
+        if (m_finished) return;
+        if (m_outsideActive) ResumeHeld(now);
+        PauseHeld(now);
+        m_outsideActive = false;
+        m_target.latency.Observe(m_heldNs);
+        m_target.outsideLock.Observe(m_outsideNs);
         m_total.Finish(now);
+        m_finished = true;
     }
+
 private:
-    OmsScopedLatencySample m_held;
+    ExecutionOperationObservation& m_target;
     OmsScopedLatencySample m_total;
+    Clock::time_point m_heldStart;
+    Clock::time_point m_outsideStart{};
+    std::uint64_t m_heldNs = 0;
+    std::uint64_t m_outsideNs = 0;
+    bool m_heldActive = true;
+    bool m_outsideActive = false;
+    bool m_finished = false;
 };
 
 struct ExecutionRuntimeObservation
@@ -136,6 +190,9 @@ struct ExecutionRuntimeObservation
     // place, cancel, authoritative flatten. No arbitrary reason/owner labels.
     std::array<ExecutionOperationObservation, 3> operations{};
     OmsLatencySummary recoveryLatency;
+    bool startupTimingPresent = false;
+    OmsLatencySummary simulatorStateRecoveryLatency;
+    OmsLatencySummary startupReadyLatency;
     std::uint64_t retainedCommands = 0;
     std::uint64_t orderOwners = 0;
     std::uint64_t fencedOwners = 0;
@@ -197,12 +254,21 @@ inline std::string ExecutionCapacityObservation(
         {
             out << ",\"" << names[i] << "_lock_wait\":";
             WriteOmsLatencyJson(out, execution.operations[i].lockWait);
+            out << ",\"" << names[i] << "_outside_lock\":";
+            WriteOmsLatencyJson(out, execution.operations[i].outsideLock);
             out << ",\"" << names[i] << "_total\":";
             WriteOmsLatencyJson(out, execution.operations[i].totalLatency);
         }
     }
     out << ",\"recovery_latency\":";
     WriteOmsLatencyJson(out, execution.recoveryLatency);
+    if (execution.startupTimingPresent)
+    {
+        out << ",\"simulator_state_recovery_latency\":";
+        WriteOmsLatencyJson(out, execution.simulatorStateRecoveryLatency);
+        out << ",\"startup_ready_latency\":";
+        WriteOmsLatencyJson(out, execution.startupReadyLatency);
+    }
     out << "}}";
     return out.str();
 }

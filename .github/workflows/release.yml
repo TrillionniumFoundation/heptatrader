@@ -83,6 +83,7 @@ jobs:
         with:
           name: failed-release-lifecycle-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            dist/core-evidence/
             dist/process-evidence/
             dist/systemd-evidence/
           if-no-files-found: warn
@@ -99,6 +100,7 @@ jobs:
             dist/release-manifest.json
             dist/release-manifest.json.sha256
             dist/release-simulator-smoke-*.json
+            dist/core-evidence/
             dist/process-evidence/
             dist/systemd-evidence/
           if-no-files-found: error

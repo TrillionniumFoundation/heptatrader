@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/risk`, `HeptaTrade/execution/ib_paper_execution_profile.cpp`
-Tests: `tests/pre_trade_risk_engine_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`
+Tests: `tests/pre_trade_risk_engine_tests.cpp`, `tests/portfolio_risk_snapshot_builder_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`
 
 ## Responsibilities
 
@@ -24,6 +24,14 @@ The generic engine evaluates:
 - flatten-only exposure reduction without crossing zero.
 
 All monetary values in the generic notional and PnL fields use one declared account base currency. Raw quantities from different instruments must never be added as a portfolio risk measure.
+
+## Portfolio snapshot builder foundation
+
+`PortfolioRiskSnapshotBuilder` is a reusable source-level valuation builder for a future Execution-owned multi-asset producer. It converts a complete authorized instrument set into the existing `PreTradeRiskAuthoritativeSnapshot` rather than requiring a future caller to hand-assemble portfolio scalars. Every authorized instrument has exactly one valuation row from an explicitly complete position snapshot. The position set itself carries the exact portfolio/account/venue/base-currency/instrument-set subject, connection epoch, generation and observation time, so old quantities cannot be rebound to newer quote/FX evidence merely by assembling a new request. Each row then carries a reviewed instrument specification, configured quote/FX source identities, a finite net quantity, and quote/FX evidence bound to that same epoch/generation. Pending-order snapshot completeness is explicit even when the set is known-empty; that set independently binds the same subject/epoch/generation/freshness barrier, and every retained pending order has a unique stable identity, reuses the exact instrument/source binding and is charged at the greater of its LMT price and authoritative quote. Current gross and pending buy/sell exposure are accumulated only after conversion into the subject's declared account base currency.
+
+The builder requires an explicitly complete account observation carrying the same full subject plus PnL/equity evidence in that base currency and generation. Snapshot observation time is the oldest contributing position-set, pending-order-set, quote, FX or account observation, while evaluation time is Execution-owned. Missing instruments, duplicate rows, stale/future evidence, source or currency drift, contract/multiplier ambiguity, mixed generations and arithmetic overflow fail closed. Same-currency FX still requires an explicit identity-rate observation.
+
+This is a tested foundation, not a new trading authority or a runtime capability. No current production daemon links this translation unit because no qualified multi-asset venue producer consumes it yet. The current IB PAPER profile remains one active order / one CASH quote contract. Margin consumption, real multi-asset adapter production, wiring through an Execution-owned authoritative snapshot assembly path and portfolio telemetry remain required before a venue can claim broader qualification.
 
 ## Explicit authoritative snapshot contract
 

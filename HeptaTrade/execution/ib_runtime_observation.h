@@ -57,13 +57,46 @@ struct IbRuntimeObservationSnapshot
     bool terminalTransportHalted = false;
     bool terminalTransportDrainVerified = false;
     std::uint64_t terminalCallbacksInFlight = 0;
+    OmsLatencySummary callbackQueueLag;
+    std::uint64_t callbackConflictCount = 0;
+    bool callbackConflictMetricsSaturated = false;
+    bool quoteAgeMetricsPresent = false;
+    bool primaryQuoteAgeValid = false;
+    std::uint64_t primaryQuoteAgeMs = 0;
+    bool snapshotAgeMetricsPresent = false;
+    bool authoritativeSnapshotAgeValid = false;
+    std::uint64_t authoritativeSnapshotAgeMs = 0;
+    bool brokerReconciliationDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconciliationDuration;
+    bool brokerReconnectDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectDuration;
+    bool brokerReconnectRefreshDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectRefreshDuration;
 };
+struct IbRuntimeObservationSupplement
+{
+    bool quoteAgeMetricsPresent = false;
+    bool primaryQuoteAgeValid = false;
+    std::uint64_t primaryQuoteAgeMs = 0;
+    bool snapshotAgeMetricsPresent = false;
+    bool authoritativeSnapshotAgeValid = false;
+    std::uint64_t authoritativeSnapshotAgeMs = 0;
+    bool brokerReconciliationDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconciliationDuration;
+    bool brokerReconnectDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectDuration;
+    bool brokerReconnectRefreshDurationMetricsPresent = false;
+    OmsLatencySummary brokerReconnectRefreshDuration;
+};
+
 
 inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     HeptaIBGatewayAdapter& adapter,
     std::uint64_t observedAtMs,
     std::uint64_t monotonicMs,
-    const std::string& serviceEpoch)
+    const std::string& serviceEpoch,
+    const IbRuntimeObservationSupplement& supplement =
+        IbRuntimeObservationSupplement())
 {
     const IBAuthoritativeRecoveryAuditSnapshot audit =
         adapter.GetAuthoritativeRecoveryAuditSnapshot();
@@ -118,6 +151,29 @@ inline IbRuntimeObservationSnapshot CaptureIbRuntimeObservation(
     out.terminalTransportDrainVerified =
         adapter.IsTerminalTransportDrainVerified();
     out.terminalCallbacksInFlight = adapter.TerminalCallbacksInFlight();
+    out.callbackQueueLag = audit.callbackQueueLag;
+    out.callbackConflictCount = audit.callbackConflictCount;
+    out.callbackConflictMetricsSaturated =
+        audit.callbackConflictMetricsSaturated;
+    out.quoteAgeMetricsPresent = supplement.quoteAgeMetricsPresent;
+    out.primaryQuoteAgeValid = supplement.primaryQuoteAgeValid;
+    out.primaryQuoteAgeMs = supplement.primaryQuoteAgeMs;
+    out.snapshotAgeMetricsPresent = supplement.snapshotAgeMetricsPresent;
+    out.authoritativeSnapshotAgeValid =
+        supplement.authoritativeSnapshotAgeValid;
+    out.authoritativeSnapshotAgeMs =
+        supplement.authoritativeSnapshotAgeMs;
+    out.brokerReconciliationDurationMetricsPresent =
+        supplement.brokerReconciliationDurationMetricsPresent;
+    out.brokerReconciliationDuration =
+        supplement.brokerReconciliationDuration;
+    out.brokerReconnectDurationMetricsPresent =
+        supplement.brokerReconnectDurationMetricsPresent;
+    out.brokerReconnectDuration = supplement.brokerReconnectDuration;
+    out.brokerReconnectRefreshDurationMetricsPresent =
+        supplement.brokerReconnectRefreshDurationMetricsPresent;
+    out.brokerReconnectRefreshDuration =
+        supplement.brokerReconnectRefreshDuration;
     return out;
 }
 
@@ -200,10 +256,39 @@ inline std::string SerializeIbRuntimeObservation(
         << ",\"terminal_transport_drain_verified\":"
         << (value.terminalTransportDrainVerified ? "true" : "false")
         << ",\"terminal_callbacks_in_flight\":" << value.terminalCallbacksInFlight
-        // Presence bits prevent absent callback/network latency families from
-        // being mistaken for observed zero until their producers are added.
-        << ",\"callback_lag_metrics_present\":false"
-        << ",\"callback_conflict_metrics_present\":false"
+        << ",\"callback_lag_metrics_present\":true"
+        << ",\"callback_queue_lag\":";
+    WriteOmsLatencyJson(out, value.callbackQueueLag);
+    out << ",\"callback_conflict_metrics_present\":true"
+        << ",\"callback_conflicts_total\":" << value.callbackConflictCount
+        << ",\"callback_conflict_metrics_saturated\":"
+        << (value.callbackConflictMetricsSaturated ? "true" : "false")
+        << ",\"quote_age_metrics_present\":"
+        << (value.quoteAgeMetricsPresent ? "true" : "false")
+        << ",\"primary_quote_age_valid\":"
+        << (value.primaryQuoteAgeValid ? "true" : "false")
+        << ",\"primary_quote_age_ms\":" << value.primaryQuoteAgeMs
+        << ",\"snapshot_age_metrics_present\":"
+        << (value.snapshotAgeMetricsPresent ? "true" : "false")
+        << ",\"authoritative_snapshot_age_valid\":"
+        << (value.authoritativeSnapshotAgeValid ? "true" : "false")
+        << ",\"authoritative_snapshot_age_ms\":"
+        << value.authoritativeSnapshotAgeMs
+        << ",\"broker_reconciliation_duration_metrics_present\":"
+        << (value.brokerReconciliationDurationMetricsPresent ? "true" : "false")
+        << ",\"broker_reconciliation_duration\":";
+    WriteOmsLatencyJson(out, value.brokerReconciliationDuration);
+    out << ",\"broker_reconnect_duration_metrics_present\":"
+        << (value.brokerReconnectDurationMetricsPresent ? "true" : "false")
+        << ",\"broker_reconnect_duration\":";
+    WriteOmsLatencyJson(out, value.brokerReconnectDuration);
+    out << ",\"broker_reconnect_refresh_duration_metrics_present\":"
+        << (value.brokerReconnectRefreshDurationMetricsPresent ? "true" : "false")
+        << ",\"broker_reconnect_refresh_duration\":";
+    WriteOmsLatencyJson(out, value.brokerReconnectRefreshDuration);
+    out
+        // Network policy is host-owned and stays absent until an actual
+        // nftables readback producer supplies it.
         << ",\"network_policy_metrics_present\":false"
         << "}";
     return out.str();
@@ -213,8 +298,10 @@ inline std::string IbRuntimeObservation(
     HeptaIBGatewayAdapter& adapter,
     std::uint64_t observedAtMs,
     std::uint64_t monotonicMs,
-    const std::string& serviceEpoch)
+    const std::string& serviceEpoch,
+    const IbRuntimeObservationSupplement& supplement =
+        IbRuntimeObservationSupplement())
 {
     return SerializeIbRuntimeObservation(CaptureIbRuntimeObservation(
-        adapter, observedAtMs, monotonicMs, serviceEpoch));
+        adapter, observedAtMs, monotonicMs, serviceEpoch, supplement));
 }

@@ -64,6 +64,8 @@ private:
     bool m_startAttempted;
     bool m_started;
     std::string m_recoveryReason;
+    OmsLatencySummary m_simulatorStateRecoveryLatency;
+    OmsLatencySummary m_startupReadyLatency;
     OmsJournal m_journal;
     DeterministicExecutionVenue m_venue;
     std::unique_ptr<ExecutionEventHub> m_eventHub;

@@ -29,16 +29,18 @@
         "docs/technical/oms-recovery-capacity.md",
         "docs/technical/persistence-support-window.md",
         "HeptaTrade/oms_generation_store.h",
-        "HeptaTrade/execution/execution_generation_v2_support.inc",
+        "HeptaTrade/execution/execution_generation_support.cpp",
+        "HeptaTrade/execution/execution_service_runtime_composition.cpp",
         "scripts/hepta_oms_checkpoint.py",
         "scripts/hepta_oms_lifecycle.py",
         "tests/oms_recovery_growth_probe.h",
         "tests/python/test_oms_checkpoint.py",
-        "tests/python/test_oms_lifecycle_rotation.py"
+        "tests/python/test_oms_lifecycle_rotation.py",
+        "tests/python/test_oms_generation_process.py"
       ],
       "issue": 89,
       "blocking_releases": [],
-      "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup; send-attempt history is merged across the cut and index corruption fails closed. V2 stopped-state maintenance fsyncs immutable delta generations, atomically rotates the active path to a non-JSON lineage sentinel, binds parent manifests and current pointers by SHA-256, and preserves V1 reading for upgrade. Tests cover repeated generations, bounded active-tail growth, publication crash boundaries, ancient same-ID duplicate/conflict, native restart without a second venue send, send-attempt continuity, current/parent/sentinel corruption rejection, V1-to-V2 upgrade and create-only strict legacy JSONL export for downgrade. No command identity is expired, no journal history is deleted, and PAPER/LIVE authorization remains false."
+      "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. V2 sealing carries a compact simulator economic checkpoint (positions, admitted-order count and order-ID watermark) so normal simulator restart restores checkpoint plus bounded tail rather than replaying permanent event history; legacy/V1 and older-V2 migration reconstructs that checkpoint only during stopped-state maintenance; normal V2 startup never replays permanent event history as a compatibility fallback. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup. Current V2 send-attempt indexes are globally ordered by account/domain/time and use stream merge; a legacy unsorted parent is migrated with bounded external-sort chunks rather than whole-file materialization. Verification streams cumulative indexes. Stopped-state `rebase` can collapse a verified lineage into one parentless generation, publish it crash-safely and only then prune unreferenced ancestors, preserving complete logical events and permanent command/send indexes. Installed-process cost-curve acceptance measures restart recovery, Execution peak RSS, seal cost and retained disk bytes across increasing history and re-verifies an ancient duplicate without resend after rebase. No command identity is expired and PAPER/LIVE authorization remains false."
     },
     {
       "id": "OWNER-RULESET-002",
@@ -56,22 +58,45 @@
     {
       "id": "RUNTIME-TELEMETRY-003",
       "domain": "REPOSITORY",
-      "state": "OPEN",
-      "summary": "Complete per-reason execution, callback/quote age, network-policy and Broker reconciliation telemetry is not yet delivered or target-host observed.",
+      "state": "CLOSED",
+      "summary": "Callback, quote/snapshot age, Broker reconciliation, reconnect/refresh and exact network-policy source producers are implemented with bounded reporting, collection and baseline IB alerting.",
       "evidence": [
         "docs/OBSERVABILITY-METRICS.md",
         "docs/technical/runtime-cost-observations.md",
+        "docs/technical/telemetry-collection.md",
         "HeptaTrade/execution/ib_runtime_observation.h",
         "scripts/hepta_ib_runtime_report.py",
         "scripts/hepta_telemetry_collect.py",
+        "scripts/hepta_broker_egress_policy.py",
+        "systemd/monitoring/hepta.rules.yml.example",
         "tests/python/test_execution_latency_boundaries.py",
         "tests/python/test_execution_reason_metrics.py",
         "tests/python/test_ib_runtime_observation.py",
-        "tests/python/test_ib_telemetry_collection.py"
+        "tests/python/test_ib_telemetry_collection.py",
+        "tests/monitoring/rules.test.yml",
+        "tests/monitoring/process_smoke.py"
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "OPEN. Coordinator lock wait/operation timing and 41 fixed local reason bins remain implemented. IB PAPER additionally emits one lock-bound authoritative recovery-audit observation containing connection/event-stream state, active/terminal/risk generations and completeness, exposure/post-fill reconciliation and terminal-drain state. The installed reporter validates fixed-cardinality gauges without account/order/command labels. The `ib-paper` telemetry profile now independently parses and atomically publishes OMS, IB and Gateway textfiles; invalid IB input replaces only IB health with explicit collector failure while valid OMS/Gateway publication continues. Callback lag, callback conflict, quote/snapshot age, Broker reconciliation duration and network-policy producers remain absent with explicit presence=false rather than synthetic zero. No target-host SLO or real notification is proven."
+      "disposition": "CLOSED for repository telemetry scope. Coordinator timing and 41 fixed local outcome reasons are exported without unbounded labels. IB PAPER produces native callback ingress lag/conflict, quote/snapshot age, successful post-fill Broker reconciliation duration, reconnect duration and reconnect authoritative-refresh duration alongside one lock-bound authoritative state observation. The installed reporter and `ib-paper` collector publish fixed-cardinality textfiles, and the supplied Prometheus/Alertmanager rules cover IB collector/freshness failure, incomplete authoritative state, pending reconciliation, callback conflicts, missing current-artifact producer families and unknown quote/snapshot age. `hepta_broker_egress_policy.py --observe-json` separately provides exact privileged nftables readback and recognizes only canonical allow or compiled deny-all. Its scheduling on a real host is intentionally not delegated to the unprivileged daemon. Target-host activation, multiday retention and real receiver delivery remain HOST-OPERATIONS-003; broader portfolio/per-reason product metrics are RUNTIME-PORTFOLIO-004. PAPER/LIVE authorization remains false."
+    },
+    {
+      "id": "RUNTIME-PORTFOLIO-004",
+      "domain": "REPOSITORY",
+      "state": "DEFERRED",
+      "summary": "General multi-asset portfolio notional/PnL/drawdown and deeper upstream per-reason lifecycle metrics are a next-stage product capability, not a correctness prerequisite for the current bounded IB PAPER scope.",
+      "evidence": [
+        "docs/OBSERVABILITY-METRICS.md",
+        "docs/modules/ib-paper.md",
+        "docs/technical/runtime-cost-observations.md",
+        "docs/modules/risk-engine.md",
+        "HeptaTrade/risk/portfolio_risk_snapshot_builder.h",
+        "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+        "tests/portfolio_risk_snapshot_builder_tests.cpp"
+      ],
+      "issue": null,
+      "blocking_releases": [],
+      "disposition": "DEFERRED product expansion, with a tested source-level valuation foundation implemented but intentionally not linked into current production daemons. `PortfolioRiskSnapshotBuilder` requires explicit complete position/pending-order/account snapshots, a complete authorized instrument set, unique pending-order identities, exact contract/unit metadata, configured quote/FX source identities, one epoch/generation, Execution-owned freshness, explicit base-currency PnL/equity evidence, conservative pending-order valuation and overflow-safe aggregation before producing the generic risk snapshot. No qualified multi-asset adapter currently feeds it, so linking an unused object into simulator/IB targets would not constitute product progress and has been removed. The current IB PAPER qualification remains one active order / one CASH quote contract; margin consumption, a real Execution-owned producer/wiring path, portfolio notional/PnL/drawdown metrics and deeper upstream lifecycle reasons remain future capability. PAPER/LIVE authorization remains unchanged."
     },
     {
       "id": "HOST-OPERATIONS-003",
@@ -85,7 +110,7 @@
       ],
       "issue": 91,
       "blocking_releases": [],
-      "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. The source-side IB state stream now has bounded collection and atomic publication, but the actual target host still has to run it, retain failure evidence and deliver an alert through an approved operator receiver. No host, credential, network policy or trading authority was changed."
+      "disposition": "Split from the external operations portion of OMS-LIFECYCLE-002 without claiming completion. Disposable PID1, multi-UID process fixtures and loopback monitoring are independent source evidence, not an activated target-host collector or a real receiver. The source-side IB state stream has bounded collection and atomic publication, but the actual target host still has to run it, retain failure evidence and deliver an alert through an approved operator receiver. No host, credential, network policy or trading authority was changed."
     }
   ]
 }

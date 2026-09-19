@@ -56,12 +56,15 @@ Example of a newly discovered core release blocker:
 
 The register separates completed repository capabilities from still-open
 external target-host rollback, actual server-side governance and target-host
-operations. `OMS-LIFECYCLE-002` is closed only for its repository scope: native
-generation recovery, lineage-sealed active-tail handling, permanent disk-backed
-command identity and explicit downgrade export. That closure is not evidence of
-a real host deployment, provider availability, multi-day operation or arbitrary
-future-schema compatibility. Refer to the machine register for current states
-rather than maintaining a second handwritten all-closed checklist.
+operations, and from deferred product expansion. `OMS-LIFECYCLE-002` is closed
+only for repository recovery/storage correctness and `RUNTIME-TELEMETRY-003`
+only for the bounded source producer/report/collection/alert contract. Neither
+closure is evidence of a real host deployment, provider availability, multi-day
+operation or arbitrary future-schema compatibility. Broader multi-asset
+portfolio/per-reason observability is tracked separately as
+`RUNTIME-PORTFOLIO-004` instead of keeping a completed correctness gap open.
+Refer to the machine register for current states rather than maintaining a
+second handwritten all-closed checklist.
 
 Optional IB PAPER activation still requires the independently controlled SDK,
 harness, account, host isolation and an actual campaign bound to the exact
@@ -77,8 +80,10 @@ closures that still matter to current implementation navigation. The 18 older
 CLOSED records are retained in the [exact pre-cleanup register](https://github.com/TrillionniumFoundation/heptatrader/blob/5409e0911afa405f2413d69e33d0c0df3cf1fcad/docs/gap-register.json),
 not copied into another archive or revalidated as permanent HEAD certification.
 No implementation, regression test or persistent-format reader is removed by
-this inventory cleanup. Runtime telemetry and actual-host operations remain
-separate open scopes; closing the repository OMS lifecycle work does not close
-either of them. Future regression reports receive their own issue and behavior
-test; successful CI remains evidence for its own source/artifact rather than a
-recurring paperwork gap. There is no requirement for every issue to be CLOSED.
+this inventory cleanup. Repository telemetry correctness and actual-host operations remain separate
+scopes: the former can be CLOSED while the latter stays OPEN, and future
+portfolio observability can remain DEFERRED. Closing repository OMS or telemetry
+work does not claim target-host or Broker evidence. Future regression reports
+receive their own issue and behavior test; successful CI remains evidence for
+its own source/artifact rather than a recurring paperwork gap. There is no
+requirement for every issue to be CLOSED.

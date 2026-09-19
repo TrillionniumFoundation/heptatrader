@@ -31,6 +31,184 @@ def digest(path: Path) -> str:
     return result.hexdigest()
 
 
+def validate_generation_cost_evidence(
+    path: Path, source_sha: str, artifact_sha256: str
+) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("generation cost evidence is missing or invalid") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "heptatrader.installed-generation-cost-curve.v1"
+        or value.get("result") != "PASS"
+        or value.get("source_sha") != source_sha
+        or value.get("artifact_sha256") != artifact_sha256
+        or value.get("synthetic") is not True
+        or value.get("installed_processes") is not True
+        or value.get("broker_io") is not False
+        or value.get("authorization_effect") != "NONE"
+        or value.get("oldest_command_duplicate_no_resend") is not True
+        or value.get("final_position") != 0
+    ):
+        raise ValueError("generation cost evidence identity or result is invalid")
+    points = value.get("points")
+    if not isinstance(points, list) or len(points) != 3:
+        raise ValueError("generation cost evidence point inventory is invalid")
+
+    def unsigned(number, *, positive: bool = False) -> bool:
+        return type(number) is int and number >= (1 if positive else 0)
+
+    expected_admitted = [8, 40, 168]
+    if [point.get("admitted_orders") for point in points
+            if isinstance(point, dict)] != expected_admitted:
+        raise ValueError("generation cost evidence cardinality is invalid")
+    previous_history = -1
+    for point in points:
+        if not isinstance(point, dict):
+            raise ValueError("generation cost evidence point is invalid")
+        required_positive = (
+            "history_records", "seal_ns", "execution_peak_rss_kib",
+            "place_latency_total_samples", "journal_bytes_before_seal",
+            "retained_disk_bytes",
+        )
+        if any(not unsigned(point.get(name), positive=True)
+               for name in required_positive):
+            raise ValueError("generation cost evidence positive metric is invalid")
+        required_nonnegative = (
+            "restart_recovery_ns", "simulator_state_recovery_ns",
+            "startup_ready_ns", "place_latency_total_max_ns",
+            "place_latency_total_p99_upper_ns",
+        )
+        if any(not unsigned(point.get(name))
+               for name in required_nonnegative):
+            raise ValueError("generation cost evidence latency metric is invalid")
+        if point["startup_ready_ns"] < (
+            point["restart_recovery_ns"] +
+            point["simulator_state_recovery_ns"]
+        ):
+            raise ValueError("generation cost evidence startup scope is incomplete")
+        if point["history_records"] < previous_history:
+            raise ValueError("generation cost evidence history regressed")
+        previous_history = point["history_records"]
+
+    before = value.get("retained_disk_bytes_before_rebase")
+    after = value.get("retained_disk_bytes_after_rebase")
+    if (
+        not unsigned(value.get("rebase_ns"), positive=True)
+        or not unsigned(before, positive=True)
+        or not unsigned(after, positive=True)
+        or after >= before
+        or not unsigned(value.get("post_rebase_recovery_ns"))
+        or not unsigned(value.get("post_rebase_simulator_state_recovery_ns"))
+        or not unsigned(value.get("post_rebase_startup_ready_ns"))
+        or not unsigned(value.get("post_rebase_execution_peak_rss_kib"), positive=True)
+    ):
+        raise ValueError("generation cost evidence rebase boundary is invalid")
+    if value["post_rebase_startup_ready_ns"] < (
+        value["post_rebase_recovery_ns"] +
+        value["post_rebase_simulator_state_recovery_ns"]
+    ):
+        raise ValueError("post-rebase startup scope is incomplete")
+    return value
+
+
+def validate_generation_index_read_evidence(path: Path, source_sha: str) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("generation index read evidence is missing or invalid") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "heptatrader.generation-index-read-cost.v1"
+        or value.get("result") != "PASS"
+        or value.get("source_sha") != source_sha
+        or value.get("fixture_rows") != 20000
+        or value.get("row_bytes") != 512
+        or value.get("logical_bytes") != 20000 * 512
+        or value.get("broker_io") is not False
+        or value.get("authorization_effect") != "NONE"
+    ):
+        raise ValueError("generation index read evidence identity is invalid")
+    full, suffix = value.get("full"), value.get("suffix")
+    if not isinstance(full, dict) or not isinstance(suffix, dict):
+        raise ValueError("generation index read evidence scans are invalid")
+    if (
+        full.get("lines") != 20000
+        or full.get("read_bytes") != value["logical_bytes"]
+        or full.get("selected_bytes") != value["logical_bytes"]
+        or type(full.get("read_calls")) is not int
+        or not 0 < full["read_calls"] <= (value["logical_bytes"] + 65535) // 65536
+    ):
+        raise ValueError("generation index full-scan evidence is invalid")
+    expected_suffix = value["logical_bytes"] - 1234 * 512
+    if (
+        value.get("suffix_start_bytes") != 1234 * 512
+        or suffix.get("lines") != 20000 - 1234
+        or suffix.get("read_bytes") != expected_suffix
+        or suffix.get("selected_bytes") != expected_suffix
+        or type(suffix.get("read_calls")) is not int
+        or not 0 < suffix["read_calls"] <= (expected_suffix + 65535) // 65536
+    ):
+        raise ValueError("generation index suffix evidence is invalid")
+    return value
+
+
+def validate_synthetic_generation_cost_evidence(path: Path, source_sha: str) -> dict:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("synthetic generation cost evidence is missing or invalid") from error
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "heptatrader.synthetic-generation-cost-curve.v2"
+        or value.get("result") != "PASS"
+        or value.get("source_sha") != source_sha
+        or value.get("synthetic") is not True
+        or value.get("broker_io") is not False
+        or value.get("commands_per_generation") != 64
+        or value.get("generation_count") != 16
+        or value.get("maximum_owner_count") != 16
+        or value.get("authorization_effect") != "NONE"
+    ):
+        raise ValueError("synthetic generation cost evidence identity is invalid")
+    points = value.get("points")
+    if not isinstance(points, list) or len(points) != 3:
+        raise ValueError("synthetic generation cost evidence point inventory is invalid")
+    expected = ((4, 4, 256, 1024), (8, 8, 512, 2048), (16, 16, 1024, 4096))
+    for point, (generation, owners, commands, history) in zip(points, expected):
+        if (
+            not isinstance(point, dict)
+            or point.get("generation_count") != generation
+            or point.get("owner_count") != owners
+            or point.get("command_records") != commands
+            or point.get("history_records") != history
+        ):
+            raise ValueError("synthetic generation cost evidence cardinality is invalid")
+        for name in (
+            "seal_ns", "verify_ns", "active_bytes_before_seal",
+            "generation_output_bytes", "runtime_command_index_bytes",
+            "send_attempt_index_bytes", "logical_event_bytes", "retained_disk_bytes",
+        ):
+            if type(point.get(name)) is not int or point[name] <= 0:
+                raise ValueError("synthetic generation cost evidence metric is invalid")
+        if (
+            point.get("retained_to_logical_numerator") != point["retained_disk_bytes"]
+            or point.get("retained_to_logical_denominator") != point["logical_event_bytes"]
+        ):
+            raise ValueError("synthetic generation storage amplification evidence is invalid")
+    before, after = value.get("retained_disk_bytes_before_rebase"), value.get("retained_disk_bytes_after_rebase")
+    if (
+        type(value.get("rebase_ns")) is not int or value["rebase_ns"] <= 0
+        or type(before) is not int or type(after) is not int
+        or before <= 0 or after <= 0 or after >= before
+        or type(value.get("test_process_peak_rss_kib")) is not int
+        or value["test_process_peak_rss_kib"] <= 0
+    ):
+        raise ValueError("synthetic generation rebase evidence is invalid")
+    return value
+
+
 def installed_executable_targets(source: Path, build: Path) -> list[str]:
     """Use fresh CMake install ownership, not a second handwritten target list.
 
@@ -122,8 +300,20 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
     environment = dict(os.environ)
     environment["HEPTA_RELEASE_INTEGRATION_BUILD_DIR"] = str(build)
     environment["PYTHONWARNINGS"] = "error::ResourceWarning"
+    core_evidence = output / "core-evidence"
     for lane in ("install", "core"):
-        command([sys.executable, "scripts/run_python_tests.py", "--lane", lane], env=environment)
+        lane_environment = dict(environment)
+        if lane == "core":
+            core_evidence.mkdir(mode=0o755)
+            lane_environment["HEPTA_CORE_EVIDENCE_DIR"] = str(core_evidence)
+            lane_environment["HEPTA_CORE_EVIDENCE_SOURCE_SHA"] = source
+        command([sys.executable, "scripts/run_python_tests.py", "--lane", lane],
+                env=lane_environment)
+        if lane == "core":
+            validate_generation_index_read_evidence(
+                core_evidence / "generation-index-read-cost.json", source)
+            validate_synthetic_generation_cost_evidence(
+                core_evidence / "synthetic-generation-cost-curve.json", source)
     epoch = text(["git", "show", "-s", "--format=%ct", source])
     command([sys.executable, "scripts/build_release_package.py", "--build-dir", build,
              "--output", candidate, "--version", version, "--profile", "core",
@@ -186,6 +376,9 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
                     "HEPTA_PROCESS_PREVIOUS_SHA256=" + previous_digest,
                     "HEPTA_PROCESS_EVIDENCE_DIR=" + str(output / "process-evidence"),
                     "python3", "scripts/run_python_tests.py", "--lane", "process"])
+            validate_generation_cost_evidence(
+                output / "process-evidence/installed-generation-cost-curve.json",
+                source, candidate_digest)
             command(clean + ["HEPTA_DISPOSABLE_SYSTEMD_TEST=1", "python3", "tests/systemd_simulator_smoke.py",
                     "--artifact", candidate, "--expected-sha256", candidate_digest,
                     "--evidence-dir", output / "systemd-evidence"])

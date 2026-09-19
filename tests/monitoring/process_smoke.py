@@ -27,6 +27,7 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tests/python"))
 from test_telemetry_collection import collect, envelope, sample
+import test_ib_telemetry_collection as ib_fixture
 
 HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -114,10 +115,11 @@ def main():
         def log_message(self, *args):
             pass
 
-    def delivered(name, status="firing"):
+    def delivered(name, status="firing", component="oms"):
         with sink_lock:
             return any(a.get("labels", {}).get("alertname") == name and
-                       a.get("labels", {}).get("component") == "oms" and a.get("status") == status
+                       a.get("labels", {}).get("component") == component and
+                       a.get("status") == status
                        for payload in accepted for a in payload.get("alerts", []))
 
     with tempfile.TemporaryDirectory(prefix="hepta-monitoring-") as tmp, ExitStack() as stack:
@@ -181,6 +183,24 @@ def main():
             if result != 0:
                 raise AssertionError("healthy source fixture was not collected")
 
+        def collect_ib(*, include_ib=True, reconciliation_pending=False):
+            profile = collect.PROFILES["ib-paper"]
+            def reader(unit):
+                now = time.time_ns() // 1000000
+                if unit == profile["gateway"]:
+                    return ib_fixture.envelope(
+                        ib_fixture.gateway_sample(now), unit)
+                payload = ib_fixture.envelope(
+                    ib_fixture.oms_sample(now), unit)
+                if include_ib:
+                    value = ib_fixture.ib_sample(now)
+                    if reconciliation_pending:
+                        value["post_fill_risk_reconciliation_pending"] = True
+                    payload += ib_fixture.envelope(value, unit)
+                return payload
+            with redirect_stdout(io.StringIO()):
+                return collect.collect_profile(textfiles, "ib-paper", reader)
+
         healthy()
         launch("node_exporter", [f"--web.listen-address=127.0.0.1:{p_node}", "--collector.disable-defaults",
                                  "--collector.textfile", f"--collector.textfile.directory={textfiles}"])
@@ -203,6 +223,32 @@ def main():
             raise AssertionError("notification retry was not exercised")
         healthy()
         wait_until(lambda: delivered("HeptaCollectorFailed", "resolved"), "resolved webhook")
+
+        if collect_ib() != 0:
+            raise AssertionError("healthy IB three-stream fixture was not collected")
+        wait_until(
+            lambda: query('hepta_ib_collector_success{job="heptatrader"}')[0]["value"][1] == "1",
+            "IB three-stream scrape")
+        if collect_ib(include_ib=False) != 2:
+            raise AssertionError("missing IB runtime stream was not a collection failure")
+        wait_until(
+            lambda: delivered("HeptaIbCollectorFailed", component="ib"),
+            "IB collector failure webhook")
+        if collect_ib() != 0:
+            raise AssertionError("IB collector did not recover")
+        wait_until(
+            lambda: delivered("HeptaIbCollectorFailed", "resolved", "ib"),
+            "IB collector resolved webhook")
+        if collect_ib(reconciliation_pending=True) != 1:
+            raise AssertionError("IB reconciliation incident was not a runtime alert")
+        wait_until(
+            lambda: delivered("HeptaIbReconciliationPending", component="ib"),
+            "IB reconciliation webhook")
+        if collect_ib() != 0:
+            raise AssertionError("IB reconciliation fixture did not recover")
+        wait_until(
+            lambda: delivered("HeptaIbReconciliationPending", "resolved", "ib"),
+            "IB reconciliation resolved webhook")
         before = (textfiles / "hepta_oms.prom").read_bytes()
         # Stop updating, but leave a healthy old .prom file intact. No artificial
         # clock or weakened 30-second production threshold is used here.
@@ -216,7 +262,10 @@ def main():
             "source_sha": source_sha,
             "elapsed_seconds": time.monotonic() - started,
             "checks": ["exact-production-promtool-rules", "actual-textfile-scrape", "failed-input-firing",
-                       "receiver-503-retry", "resolved-delivery", "stopped-collector-with-unchanged-file"],
+                       "receiver-503-retry", "resolved-delivery", "ib-three-stream-scrape",
+                       "ib-failed-stream-firing-and-resolution",
+                       "ib-reconciliation-firing-and-resolution",
+                       "stopped-collector-with-unchanged-file"],
             "rule_sha256": hashlib.sha256((ROOT / "systemd/monitoring/hepta.rules.yml.example").read_bytes()).hexdigest(),
             "template_sha256": hashlib.sha256(template.read_bytes()).hexdigest(),
             "binaries": {key: hashlib.sha256(value.read_bytes()).hexdigest() for key, value in bins.items()},

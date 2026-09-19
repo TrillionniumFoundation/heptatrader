@@ -280,10 +280,10 @@ class InstalledRuntime:
         if observed != expected:
             raise AssertionError(f"position did not settle: expected={expected}, observed={observed}")
 
-    def place(self, side: str, quantity: int, price: str) -> tuple[str, list[str], int]:
+    def place(self, side: str, quantity: int, price: str, *, ttl_ms: int = 60000) -> tuple[str, list[str], int]:
         fields = ["instrument=EUR.USD", "symbol=EUR", "currency=USD", "sec_type=CASH", "exchange=IDEALPRO",
                   f"side={side}", "order_type=LMT", "tif=DAY", f"quantity={quantity}",
-                  f"limit_price={price}", "reference_price=1.1001", f"expires_at_ms={int(time.time()*1000)+60000}"]
+                  f"limit_price={price}", "reference_price=1.1001", f"expires_at_ms={int(time.time()*1000)+ttl_ms}"]
         preview = self.call("risk.preview_order", fields)["payload"]
         if preview.get("approved") is not True or preview.get("single_use") is not True:
             raise AssertionError(preview)

@@ -15,6 +15,7 @@
 
 #include "ib_api_wrapper.h"
 #include "ib_order_lifecycle.h"
+#include "../oms_latency_observation.h"
 #include "../execution/venue_place_result.h"
 #include "../execution/venue_flatten_result.h"
 #include "../execution/venue_cancel_result.h"
@@ -147,6 +148,9 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
     std::uint64_t riskAbsorbedExposureGeneration = 0;
     bool barrierComplete = false;
     bool newConnectionEpochRequired = false;
+    OmsLatencySummary callbackQueueLag;
+    std::uint64_t callbackConflictCount = 0;
+    bool callbackConflictMetricsSaturated = false;
     std::string reasonCode;
 };
 
@@ -404,6 +408,8 @@ private:
     bool ConsumeFxCashAccountValue(const IBEvent& event,
                                    bool initialSnapshot);
     void BindEventIngressFence();
+    void RecordCallbackConflict() noexcept;
+    void MarkCallbackConflict(bool& flag) noexcept;
 
     void EmitObsEvent(const char* eventName, const std::string& fieldsJson = "") const;
     void EmitLatency(const char* path, const char* stage, long latencyMs, bool ok, const std::string& fieldsJson = "") const;
@@ -532,6 +538,9 @@ private:
     bool m_terminalTransportHalted = false;
     bool m_terminalTransportDrainVerified = false;
     std::uint64_t m_terminalCallbacksInFlight = 0;
+    OmsLatencySummary m_callbackQueueLag;
+    std::uint64_t m_callbackConflictCount = 0;
+    bool m_callbackConflictMetricsSaturated = false;
 };
 
 inline bool HeptaIBGatewayAdapter::ResolveAuthoritativePositionQuantity(

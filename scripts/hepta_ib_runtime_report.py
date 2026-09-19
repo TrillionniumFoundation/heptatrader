@@ -14,7 +14,7 @@ import secrets
 import stat
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 import hepta_oms_report as base_metrics
 
@@ -108,6 +108,48 @@ def validate(sample: Any) -> dict[str, Any]:
         raise ValueError("active correlation count exceeds active orders")
     if sample["terminal_transport_drain_verified"] and not sample["terminal_transport_halted"]:
         raise ValueError("terminal drain cannot be verified before halt")
+    if sample["callback_lag_metrics_present"]:
+        base_metrics.validate_latency(sample.get("callback_queue_lag"))
+    elif "callback_queue_lag" in sample:
+        raise ValueError("callback lag payload without presence")
+    if sample["callback_conflict_metrics_present"]:
+        uint(sample.get("callback_conflicts_total"))
+        if type(sample.get("callback_conflict_metrics_saturated")) is not bool:
+            raise ValueError("invalid callback conflict saturation")
+    elif ("callback_conflicts_total" in sample or
+          "callback_conflict_metrics_saturated" in sample):
+        raise ValueError("callback conflict payload without presence")
+    for presence, valid, age in (
+            ("quote_age_metrics_present", "primary_quote_age_valid",
+             "primary_quote_age_ms"),
+            ("snapshot_age_metrics_present", "authoritative_snapshot_age_valid",
+             "authoritative_snapshot_age_ms")):
+        present = sample.get(presence, False)
+        if type(present) is not bool:
+            raise ValueError("invalid IB age-metric presence")
+        if present:
+            if type(sample.get(valid)) is not bool:
+                raise ValueError("invalid IB age validity")
+            uint(sample.get(age))
+            if not sample[valid] and sample[age] != 0:
+                raise ValueError("unknown IB age cannot carry a value")
+    reconciliation_present = sample.get(
+        "broker_reconciliation_duration_metrics_present", False)
+    if type(reconciliation_present) is not bool:
+        raise ValueError("invalid reconciliation-metric presence")
+    if reconciliation_present:
+        base_metrics.validate_latency(
+            sample.get("broker_reconciliation_duration"))
+    for presence, latency in (
+            ("broker_reconnect_duration_metrics_present",
+             "broker_reconnect_duration"),
+            ("broker_reconnect_refresh_duration_metrics_present",
+             "broker_reconnect_refresh_duration")):
+        present = sample.get(presence, False)
+        if type(present) is not bool:
+            raise ValueError("invalid reconnect latency presence")
+        if present:
+            base_metrics.validate_latency(sample.get(latency))
     return sample
 
 
@@ -152,6 +194,35 @@ def read_samples(path: Path) -> list[dict[str, Any]]:
     return list(recent)
 
 
+def observed_condition_duration_ms(
+        samples: list[dict[str, Any]],
+        predicate: Callable[[dict[str, Any]], bool]) -> int:
+    """Return a conservative continuous-duration lower bound from recent samples.
+
+    A service or connection epoch boundary resets the interval. Monotonic clock
+    regression also resets it rather than manufacturing negative or cross-process
+    duration. The result is zero when the latest sample does not satisfy the
+    condition; it never claims time before the oldest retained matching sample.
+    """
+    if not samples or not predicate(samples[-1]):
+        return 0
+    latest = samples[-1]
+    latest_mono = uint(latest["monotonic_ms"])
+    earliest = latest_mono
+    previous = latest_mono
+    for sample in reversed(samples[:-1]):
+        if (sample["service_epoch"] != latest["service_epoch"] or
+                sample["connection_epoch"] != latest["connection_epoch"] or
+                not predicate(sample)):
+            break
+        current = uint(sample["monotonic_ms"])
+        if current > previous:
+            break
+        earliest = current
+        previous = current
+    return latest_mono - earliest
+
+
 def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) -> dict[str, Any]:
     uint(now_ms); uint(max_age_ms)
     if not max_age_ms or not samples:
@@ -160,6 +231,13 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
     latest = samples[-1]
     age = now_ms - latest["observed_at_ms"]
     fresh = 0 <= age <= max_age_ms
+    post_fill_pending_ms = observed_condition_duration_ms(
+        samples, lambda sample: sample["post_fill_risk_reconciliation_pending"])
+    snapshot_incomplete_ms = observed_condition_duration_ms(
+        samples, lambda sample: not sample["risk_complete"] or not sample["active_complete"])
+    terminal_drain_pending_ms = observed_condition_duration_ms(
+        samples, lambda sample: sample["terminal_transport_halted"] and
+        sample["terminal_callbacks_in_flight"] > 0)
     alerts: list[dict[str, str]] = []
     def alert(rule: str, severity: str = "P2") -> None:
         if not any(item["rule_id"] == rule for item in alerts):
@@ -184,9 +262,20 @@ def report(samples: list[dict[str, Any]], now_ms: int, max_age_ms: int = 15000) 
         "schema": REPORT_SCHEMA, "fresh": fresh, "sample_age_ms": age,
         "service_epoch": latest["service_epoch"],
         "connection_epoch": latest["connection_epoch"], "alerts": alerts,
+        "post_fill_reconciliation_pending_observed_ms": post_fill_pending_ms,
+        "authoritative_snapshot_incomplete_observed_ms": snapshot_incomplete_ms,
+        "terminal_callback_drain_pending_observed_ms": terminal_drain_pending_ms,
         "callback_lag_metrics_present": latest["callback_lag_metrics_present"],
         "callback_conflict_metrics_present": latest["callback_conflict_metrics_present"],
         "network_policy_metrics_present": latest["network_policy_metrics_present"],
+        "quote_age_metrics_present": latest.get("quote_age_metrics_present", False),
+        "snapshot_age_metrics_present": latest.get("snapshot_age_metrics_present", False),
+        "broker_reconciliation_duration_metrics_present": latest.get(
+            "broker_reconciliation_duration_metrics_present", False),
+        "broker_reconnect_duration_metrics_present": latest.get(
+            "broker_reconnect_duration_metrics_present", False),
+        "broker_reconnect_refresh_duration_metrics_present": latest.get(
+            "broker_reconnect_refresh_duration_metrics_present", False),
         "authorization_effect": "NONE",
     }
 
@@ -220,6 +309,9 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_gross_absolute_position": float(latest["gross_absolute_position"]),
         "hepta_ib_position_instruments": latest["positions"],
         "hepta_ib_post_fill_reconciliation_pending": int(latest["post_fill_risk_reconciliation_pending"]),
+        "hepta_ib_post_fill_reconciliation_pending_observed_ms": summary["post_fill_reconciliation_pending_observed_ms"],
+        "hepta_ib_authoritative_snapshot_incomplete_observed_ms": summary["authoritative_snapshot_incomplete_observed_ms"],
+        "hepta_ib_terminal_callback_drain_pending_observed_ms": summary["terminal_callback_drain_pending_observed_ms"],
         "hepta_ib_exposure_generation": latest["exposure_generation"],
         "hepta_ib_recovery_barrier_complete": int(latest["recovery_barrier_complete"]),
         "hepta_ib_new_connection_epoch_required": int(latest["new_connection_epoch_required"]),
@@ -229,9 +321,102 @@ def prometheus(latest: dict[str, Any], summary: dict[str, Any]) -> str:
         "hepta_ib_callback_lag_metrics_present": int(latest["callback_lag_metrics_present"]),
         "hepta_ib_callback_conflict_metrics_present": int(latest["callback_conflict_metrics_present"]),
         "hepta_ib_network_policy_metrics_present": int(latest["network_policy_metrics_present"]),
+        "hepta_ib_quote_age_metrics_present": int(
+            latest.get("quote_age_metrics_present", False)),
+        "hepta_ib_snapshot_age_metrics_present": int(
+            latest.get("snapshot_age_metrics_present", False)),
+        "hepta_ib_broker_reconciliation_duration_metrics_present": int(
+            latest.get("broker_reconciliation_duration_metrics_present", False)),
+        "hepta_ib_broker_reconnect_duration_metrics_present": int(
+            latest.get("broker_reconnect_duration_metrics_present", False)),
+        "hepta_ib_broker_reconnect_refresh_duration_metrics_present": int(
+            latest.get("broker_reconnect_refresh_duration_metrics_present", False)),
         "hepta_ib_runtime_alerts": len(summary["alerts"]),
     }
-    return "\n".join(f"{name} {value}" for name, value in values.items()) + "\n"
+    lines = [f"{name} {value}" for name, value in values.items()]
+    if latest["callback_lag_metrics_present"]:
+        latency = latest["callback_queue_lag"]
+        lines.append(
+            "hepta_ib_callback_lag_metrics_saturated " +
+            str(int(latency["saturated"])))
+        if not latency["saturated"] and "bucket_counts" in latency:
+            metric = "hepta_ib_callback_queue_lag_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for index, count in enumerate(latency["bucket_counts"]):
+                cumulative += count
+                upper = (str(base_metrics.BOUNDS_NS[index] / 1e9)
+                         if index < len(base_metrics.BOUNDS_NS) else "+Inf")
+                lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
+            lines.append(f"{metric}_count {latency['samples']}")
+            lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
+    if latest["callback_conflict_metrics_present"]:
+        saturated = latest["callback_conflict_metrics_saturated"]
+        lines.append(
+            "hepta_ib_callback_conflict_metrics_saturated " +
+            str(int(saturated)))
+        if not saturated:
+            lines.append("# TYPE hepta_ib_callback_conflicts_total counter")
+            lines.append(
+                "hepta_ib_callback_conflicts_total " +
+                str(latest["callback_conflicts_total"]))
+    if latest.get("quote_age_metrics_present", False):
+        lines.append(
+            "hepta_ib_primary_quote_age_valid " +
+            str(int(latest["primary_quote_age_valid"])))
+        if latest["primary_quote_age_valid"]:
+            lines.append(
+                "hepta_ib_primary_quote_age_ms " +
+                str(latest["primary_quote_age_ms"]))
+    if latest.get("snapshot_age_metrics_present", False):
+        lines.append(
+            "hepta_ib_authoritative_snapshot_age_valid " +
+            str(int(latest["authoritative_snapshot_age_valid"])))
+        if latest["authoritative_snapshot_age_valid"]:
+            lines.append(
+                "hepta_ib_authoritative_snapshot_age_ms " +
+                str(latest["authoritative_snapshot_age_ms"]))
+    if latest.get("broker_reconciliation_duration_metrics_present", False):
+        latency = latest["broker_reconciliation_duration"]
+        lines.append(
+            "hepta_ib_broker_reconciliation_duration_metrics_saturated " +
+            str(int(latency["saturated"])))
+        if not latency["saturated"] and "bucket_counts" in latency:
+            metric = "hepta_ib_broker_reconciliation_duration_seconds"
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for index, count in enumerate(latency["bucket_counts"]):
+                cumulative += count
+                upper = (str(base_metrics.BOUNDS_NS[index] / 1e9)
+                         if index < len(base_metrics.BOUNDS_NS) else "+Inf")
+                lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
+            lines.append(f"{metric}_count {latency['samples']}")
+            lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
+    for presence, field, metric, saturation_metric in (
+            ("broker_reconnect_duration_metrics_present",
+             "broker_reconnect_duration",
+             "hepta_ib_broker_reconnect_duration_seconds",
+             "hepta_ib_broker_reconnect_duration_metrics_saturated"),
+            ("broker_reconnect_refresh_duration_metrics_present",
+             "broker_reconnect_refresh_duration",
+             "hepta_ib_broker_reconnect_refresh_duration_seconds",
+             "hepta_ib_broker_reconnect_refresh_duration_metrics_saturated")):
+        if not latest.get(presence, False):
+            continue
+        latency = latest[field]
+        lines.append(saturation_metric + " " +
+                     str(int(latency["saturated"])))
+        if not latency["saturated"] and "bucket_counts" in latency:
+            lines.append(f"# TYPE {metric} histogram")
+            cumulative = 0
+            for index, count in enumerate(latency["bucket_counts"]):
+                cumulative += count
+                upper = (str(base_metrics.BOUNDS_NS[index] / 1e9)
+                         if index < len(base_metrics.BOUNDS_NS) else "+Inf")
+                lines.append(f'{metric}_bucket{{le="{upper}"}} {cumulative}')
+            lines.append(f"{metric}_count {latency['samples']}")
+            lines.append(f"{metric}_sum {latency['total_ns'] / 1e9}")
+    return "\n".join(lines) + "\n"
 
 
 def collection_metrics(now_ms: int, latest: dict[str, Any] | None = None) -> str:

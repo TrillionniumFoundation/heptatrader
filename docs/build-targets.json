@@ -267,6 +267,7 @@
             "hepta_oms_journal_durability_tests",
             "hepta_oms_journal_schema_v4_tests",
             "hepta_paper_terminal_latch_committer",
+            "hepta_portfolio_risk_snapshot_builder_tests",
             "hepta_pre_trade_risk_engine_tests",
             "hepta_session_supervisor_lease_store_migration_tests",
             "hepta_sessionctl",
@@ -449,6 +450,13 @@
             },
             {
               "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_generation_support.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",
@@ -1270,6 +1278,29 @@
           ]
         },
         {
+          "name": "hepta_portfolio_risk_snapshot_builder_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/portfolio_risk_snapshot_builder_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_portfolio_risk_snapshot_builder_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
           "name": "hepta_pre_trade_risk_engine_tests",
           "type": "EXECUTABLE",
           "declared_in": "tests/CMakeLists.txt",
@@ -1992,6 +2023,7 @@
             "hepta_oms_journal_durability_tests",
             "hepta_oms_journal_schema_v4_tests",
             "hepta_paper_terminal_latch_committer",
+            "hepta_portfolio_risk_snapshot_builder_tests",
             "hepta_pre_trade_risk_engine_tests",
             "hepta_session_supervisor_lease_store_migration_tests",
             "hepta_sessionctl",
@@ -2174,6 +2206,13 @@
             },
             {
               "path": "HeptaTrade/execution/execution_coordinator_terminal.cpp",
+              "kind": "implementation",
+              "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "HeptaTrade/execution/execution_generation_support.cpp",
               "kind": "implementation",
               "owner": "execution-service",
               "language": "CXX",
@@ -3178,6 +3217,29 @@
               "path": "HeptaTrade/execution/paper_terminal_external_latch.cpp",
               "kind": "implementation",
               "owner": "execution-service",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_portfolio_risk_snapshot_builder_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "tests/CMakeLists.txt",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp",
+              "kind": "implementation",
+              "owner": "risk-engine",
+              "language": "CXX",
+              "standard": "11"
+            },
+            {
+              "path": "tests/portfolio_risk_snapshot_builder_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_portfolio_risk_snapshot_builder_tests",
               "language": "CXX",
               "standard": "11"
             }

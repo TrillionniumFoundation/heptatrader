@@ -78,6 +78,27 @@ public:
     const std::string& ServiceEpoch() const { return m_serviceIdentity.serviceEpoch; }
     OmsJournalHealthSnapshot JournalHealth() const { return m_journal.GetHealthSnapshot(); }
     ExecutionRuntimeObservation CoordinatorObservation() const;
+    AuthoritativeTradingSnapshot AuthoritativeSnapshotForObservation(
+        std::uint64_t nowMs) const {
+        return m_authoritativeSnapshots.GetSnapshot(nowMs);
+    }
+    IBAuthoritativeQuoteSubscriptionHealth QuoteHealthForObservation() const {
+        return m_quoteSubscriptions ?
+            m_quoteSubscriptions->GetHealth() :
+            IBAuthoritativeQuoteSubscriptionHealth();
+    }
+    OmsLatencySummary BrokerReconciliationLatencyObservation() const {
+        std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+        return m_postFillReconciliationLatency;
+    }
+    OmsLatencySummary BrokerReconnectLatencyObservation() const {
+        std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+        return m_brokerReconnectLatency;
+    }
+    OmsLatencySummary BrokerReconnectRefreshLatencyObservation() const {
+        std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+        return m_brokerReconnectRefreshLatency;
+    }
 
     HeptaIBGatewayAdapter& Adapter();
     ExecutionCoordinator& Coordinator();
@@ -173,6 +194,12 @@ private:
                              bool disconnect = true);
     bool RequestReconnectRiskRefresh(std::string& reason);
     bool ReconnectAuthoritativeStateReady(std::string& reason) const;
+    void BeginBrokerReconnectObservation(
+        std::chrono::steady_clock::time_point now) noexcept;
+    void BeginBrokerReconnectRefreshObservation(
+        std::chrono::steady_clock::time_point now) noexcept;
+    void FinishBrokerReconnectObservation(
+        std::chrono::steady_clock::time_point now) noexcept;
     bool AllowsRiskIncrease(std::string& reason) const;
     bool AllowsAuthoritativeFlatten(
         std::string& reason, bool requireSettledQuote = false) const;
@@ -378,6 +405,13 @@ private:
     std::chrono::steady_clock::time_point m_postFillNextRetryAt;
     std::chrono::steady_clock::time_point m_postFillDeadline;
     std::chrono::steady_clock::time_point m_postFillStableSince;
+    mutable std::mutex m_runtimeMetricsMutex;
+    std::chrono::steady_clock::time_point m_postFillReconciliationStartedAt;
+    OmsLatencySummary m_postFillReconciliationLatency;
+    std::chrono::steady_clock::time_point m_brokerReconnectStartedAt;
+    std::chrono::steady_clock::time_point m_brokerReconnectRefreshStartedAt;
+    OmsLatencySummary m_brokerReconnectLatency;
+    OmsLatencySummary m_brokerReconnectRefreshLatency;
     struct RecentBrokerOrder
     {
         long orderId = -1;

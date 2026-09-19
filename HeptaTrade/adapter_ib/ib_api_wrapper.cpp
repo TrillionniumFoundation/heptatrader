@@ -106,6 +106,12 @@ IBAuthoritativeEventQueue::IBAuthoritativeEventQueue(std::size_t maxEvents)
 }
 
 void IBAuthoritativeEventQueue::Push(IBEvent event) {
+    if (event.queueIngressMonotonicNs == 0) {
+        const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        event.queueIngressMonotonicNs =
+            raw > 0 ? static_cast<std::uint64_t>(raw) : 1U;
+    }
     std::lock_guard<std::mutex> lock(m_mutex);
     // Callback publication can be delayed across a reconnect.  Keep the
     // overflow witness bound to the newest epoch observed by the queue; a
@@ -123,6 +129,12 @@ void IBAuthoritativeEventQueue::Push(IBEvent event) {
 bool IBAuthoritativeEventQueue::TryPush(
     IBEvent event, bool& overflowed) {
     overflowed = false;
+    if (event.queueIngressMonotonicNs == 0) {
+        const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        event.queueIngressMonotonicNs =
+            raw > 0 ? static_cast<std::uint64_t>(raw) : 1U;
+    }
     std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
     if (!lock.owns_lock()) return false;
     if (event.connectionEpoch > m_latestConnectionEpoch)

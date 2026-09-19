@@ -4,10 +4,15 @@
 
 ExecutionCommandResult ExecutionCoordinator::CancelOrder(const CancelOrderCommand& command)
 {
-    return ObserveCommand(1U, [&]() { return CancelOrderLocked(command); });
+    return ObserveCommand(1U, [&](std::unique_lock<std::mutex>& lock,
+                                  ExecutionOperationTiming& timing) {
+        return CancelOrderLocked(command, lock, timing);
+    });
 }
 
-ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrderCommand& command)
+ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
+    const CancelOrderCommand& command, std::unique_lock<std::mutex>& lock,
+    ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
 
@@ -49,20 +54,105 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
                                 command.orderId);
     }
 
+    bool cancelAllowed = true;
     std::string suppressReason;
-    if (m_callbacks.canCancelIbOrder &&
-        !m_callbacks.canCancelIbOrder(command.orderId, &suppressReason) &&
-        // A locally accepted order can legitimately be cancelled before IB
-        // emits Submitted/OpenOrder.  The IB adapter records a pending cancel
-        // and dispatches it on acknowledgement; all other guard failures
-        // remain fail-closed.
-        suppressReason != "NO_BROKER_ACK")
-        return RefuseBeforeIntent(context, "IB_CANCEL_SUPPRESSED", suppressReason, command.orderId);
+    if (m_callbacks.canCancelIbOrder)
+    {
+        // Different command identities must not concurrently pass the same
+        // read-only eligibility boundary and later emit duplicate cancel
+        // effects. Reserve this order before releasing the coordinator lock.
+        if (!m_cancelPreflightsInFlight.insert(command.orderId).second)
+            return RefuseBeforeIntent(
+                context, "CANCEL_PREFLIGHT_IN_FLIGHT",
+                "another cancel eligibility check is already in flight",
+                command.orderId);
 
+        // The real IB eligibility reader takes the adapter API mutex. A slow
+        // place/flatten provider may hold that mutex across vendor IO, so this
+        // read-only preflight must not retain the coordinator state mutex while
+        // it waits. Nothing is durable yet; reacquire and revalidate every
+        // authority/identity fact before writing cancel intent.
+        timing.PauseHeld();
+        lock.unlock();
+        try
+        {
+            cancelAllowed =
+                m_callbacks.canCancelIbOrder(command.orderId, &suppressReason);
+        }
+        catch (...)
+        {
+            cancelAllowed = false;
+            suppressReason = "IB_CANCEL_PREFLIGHT_FAILED";
+        }
+        lock.lock();
+        timing.ResumeHeld();
+        m_cancelPreflightsInFlight.erase(command.orderId);
+
+        const std::unordered_map<std::string, RequestRecord>::const_iterator
+            refreshedExisting = m_requests.find(requestKey);
+        if (refreshedExisting != m_requests.end())
+        {
+            if (!refreshedExisting->second.requestHash.empty() &&
+                refreshedExisting->second.requestHash != requestHash)
+                return IdempotencyConflictLocked(
+                    context, refreshedExisting->second.orderId);
+            return DuplicateResultLocked(context);
+        }
+        if (m_fencedSessionOwners.find(
+                OwnerKey(context.agentId, context.sessionId)) !=
+            m_fencedSessionOwners.end())
+            return RefuseBeforeIntent(
+                context, "SESSION_OWNER_FENCED",
+                "revoked or expired session owner cannot mutate",
+                command.orderId);
+        if (m_mutationBlocked)
+            return RefuseBeforeIntent(
+                context, "MUTATION_BLOCKED", m_mutationBlockReason,
+                command.orderId);
+        if (command.orderId < 0 || !m_callbacks.cancelOrder)
+            return RefuseBeforeIntent(
+                context, "INVALID_CANCEL",
+                "valid order_id and cancel callback are required",
+                command.orderId);
+
+        const std::unordered_map<long, ExecutionOrderOwner>::const_iterator
+            refreshedOwner = m_orderOwners.find(command.orderId);
+        if (!context.allowCancelAny)
+        {
+            if (refreshedOwner == m_orderOwners.end())
+                return RefuseBeforeIntent(
+                    context, "ORDER_OWNER_UNKNOWN",
+                    "order is not owned by this coordinator",
+                    command.orderId);
+            if (refreshedOwner->second.agentId != context.agentId ||
+                refreshedOwner->second.sessionId != context.sessionId ||
+                refreshedOwner->second.account != context.account ||
+                refreshedOwner->second.executionDomain !=
+                    context.executionDomain)
+                return RefuseBeforeIntent(
+                    context, "ORDER_OWNER_MISMATCH",
+                    "agent cannot cancel another agent's order",
+                    command.orderId);
+        }
+
+        // A locally accepted order can legitimately be cancelled before IB
+        // emits Submitted/OpenOrder. The adapter records a pending cancel and
+        // dispatches it on acknowledgement; all other guard failures remain
+        // fail-closed.
+        if (!cancelAllowed && suppressReason != "NO_BROKER_ACK")
+            return RefuseBeforeIntent(
+                context, "IB_CANCEL_SUPPRESSED",
+                suppressReason.empty() ? "IB_CANCEL_PREFLIGHT_FAILED" :
+                    suppressReason,
+                command.orderId);
+    }
+
+    const std::unordered_map<long, ExecutionOrderOwner>::const_iterator
+        currentOwner = m_orderOwners.find(command.orderId);
     const std::string instrument = !command.instrument.empty() ? command.instrument :
-        (ownerIt != m_orderOwners.end() ? ownerIt->second.instrument : "");
+        (currentOwner != m_orderOwners.end() ? currentOwner->second.instrument : "");
     const std::string side = !command.side.empty() ? command.side :
-        (ownerIt != m_orderOwners.end() ? ownerIt->second.side : "");
+        (currentOwner != m_orderOwners.end() ? currentOwner->second.side : "");
     const OmsJournalEvent intent = BuildEvent(context, "cancel", command.orderId, instrument,
                                               side, 0.0, 0.0, "intent_recorded", "", "", requestHash);
     if (!AppendOrBlockLocked(intent, "OMS_CANCEL_INTENT_WRITE_FAILED"))
@@ -90,7 +180,8 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(const CancelOrder
         return RejectLocked(context, "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED",
                             "cancel was not sent", command.orderId, requestHash);
 
-    const VenueCancelResult outcome = TryCancelAtVenueLocked(command.orderId);
+    const VenueCancelResult outcome =
+        TryCancelAtVenueUnlocked(command.orderId, lock, timing);
     if (outcome.disposition == VenueCancelDisposition::Deferred)
         return HandleDeferredCancelLocked(command, context, instrument, side,
                                           requestHash, requestKey, pending);

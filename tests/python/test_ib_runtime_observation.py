@@ -50,6 +50,20 @@ int main() {
     value.terminalReason = "";
     value.riskReason = "";
     value.recoveryReason = "fixture \"safe\"\nreason";
+    value.callbackQueueLag.Observe(2000000);
+    value.callbackConflictCount = 3;
+    value.quoteAgeMetricsPresent = true;
+    value.primaryQuoteAgeValid = true;
+    value.primaryQuoteAgeMs = 125;
+    value.snapshotAgeMetricsPresent = true;
+    value.authoritativeSnapshotAgeValid = true;
+    value.authoritativeSnapshotAgeMs = 250;
+    value.brokerReconciliationDurationMetricsPresent = true;
+    value.brokerReconciliationDuration.Observe(4000000);
+    value.brokerReconnectDurationMetricsPresent = true;
+    value.brokerReconnectDuration.Observe(8000000);
+    value.brokerReconnectRefreshDurationMetricsPresent = true;
+    value.brokerReconnectRefreshDuration.Observe(5000000);
     std::cout << SerializeIbRuntimeObservation(value) << "\n";
 }
 '''
@@ -83,19 +97,68 @@ class IbRuntimeObservationTests(unittest.TestCase):
         text = report.prometheus(sample, summary)
         self.assertIn("hepta_ib_active_snapshot_generation 11", text)
         self.assertIn("hepta_ib_gross_absolute_position 25.5", text)
-        self.assertIn("hepta_ib_callback_lag_metrics_present 0", text)
+        self.assertIn("hepta_ib_callback_lag_metrics_present 1", text)
+        self.assertIn("hepta_ib_callback_queue_lag_seconds_count 1", text)
+        self.assertIn("hepta_ib_callback_conflicts_total 3", text)
+        self.assertIn("hepta_ib_primary_quote_age_ms 125", text)
+        self.assertIn("hepta_ib_authoritative_snapshot_age_ms 250", text)
+        self.assertIn("hepta_ib_broker_reconciliation_duration_seconds_count 1", text)
+        self.assertIn("hepta_ib_broker_reconnect_duration_seconds_count 1", text)
+        self.assertIn("hepta_ib_broker_reconnect_refresh_duration_seconds_count 1", text)
+        self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 0", text)
         self.assertNotIn("fixture", text)
         self.assertNotIn("agent", text)
 
-    def test_absent_metric_families_are_presence_false_not_zero_measurements(self) -> None:
-        sample = report.validate(copy.deepcopy(self.sample))
-        self.assertFalse(sample["callback_lag_metrics_present"])
-        self.assertFalse(sample["callback_conflict_metrics_present"])
+    def test_legacy_absence_is_not_rewritten_as_zero_measurements(self) -> None:
+        sample = copy.deepcopy(self.sample)
+        sample["callback_lag_metrics_present"] = False
+        sample["callback_conflict_metrics_present"] = False
+        sample.pop("callback_queue_lag")
+        sample.pop("callback_conflicts_total")
+        sample.pop("callback_conflict_metrics_saturated")
+        sample["quote_age_metrics_present"] = False
+        sample["snapshot_age_metrics_present"] = False
+        sample["broker_reconciliation_duration_metrics_present"] = False
+        sample["broker_reconnect_duration_metrics_present"] = False
+        sample["broker_reconnect_refresh_duration_metrics_present"] = False
+        sample = report.validate(sample)
         self.assertFalse(sample["network_policy_metrics_present"])
         text = report.prometheus(sample, report.report([sample], 10000))
-        self.assertNotIn("callback_lag_seconds", text)
+        self.assertNotIn("callback_queue_lag_seconds", text)
         self.assertNotIn("callback_conflicts_total", text)
         self.assertNotIn("network_policy_state", text)
+        self.assertNotIn("broker_reconnect_duration_seconds", text)
+        self.assertNotIn("broker_reconnect_refresh_duration_seconds", text)
+
+    def test_continuous_stall_durations_are_bounded_by_retained_samples_and_epoch(self) -> None:
+        samples = []
+        for observed, monotonic in ((6000, 1000), (8000, 3000), (10000, 5000)):
+            sample = copy.deepcopy(self.sample)
+            sample["observed_at_ms"] = observed
+            sample["monotonic_ms"] = monotonic
+            sample["post_fill_risk_reconciliation_pending"] = True
+            sample["risk_complete"] = False
+            sample["coherent_risk_complete"] = False
+            sample["terminal_transport_halted"] = True
+            sample["terminal_callbacks_in_flight"] = 2
+            samples.append(sample)
+        summary = report.report(samples, 10000)
+        self.assertEqual(summary["post_fill_reconciliation_pending_observed_ms"], 4000)
+        self.assertEqual(summary["authoritative_snapshot_incomplete_observed_ms"], 4000)
+        self.assertEqual(summary["terminal_callback_drain_pending_observed_ms"], 4000)
+        text = report.prometheus(samples[-1], summary)
+        self.assertIn("hepta_ib_post_fill_reconciliation_pending_observed_ms 4000", text)
+        self.assertIn("hepta_ib_authoritative_snapshot_incomplete_observed_ms 4000", text)
+        self.assertIn("hepta_ib_terminal_callback_drain_pending_observed_ms 4000", text)
+
+        changed = copy.deepcopy(samples[-1])
+        changed["connection_epoch"] = 8
+        changed["monotonic_ms"] = 6000
+        changed["observed_at_ms"] = 11000
+        reset = report.report(samples + [changed], 11000)
+        self.assertEqual(reset["post_fill_reconciliation_pending_observed_ms"], 0)
+        self.assertEqual(reset["authoritative_snapshot_incomplete_observed_ms"], 0)
+        self.assertEqual(reset["terminal_callback_drain_pending_observed_ms"], 0)
 
     def test_incomplete_or_inconsistent_samples_fail_closed(self) -> None:
         mutations = [
@@ -114,6 +177,27 @@ class IbRuntimeObservationTests(unittest.TestCase):
             mutation(value)
             with self.subTest(index=index), self.assertRaises(ValueError):
                 report.validate(value)
+
+    def test_reconnect_latency_presence_shape_and_saturation_fail_closed(self) -> None:
+        wrong_presence = copy.deepcopy(self.sample)
+        wrong_presence["broker_reconnect_duration_metrics_present"] = 1
+        with self.assertRaises(ValueError):
+            report.validate(wrong_presence)
+
+        malformed = copy.deepcopy(self.sample)
+        malformed["broker_reconnect_refresh_duration"]["bucket_counts"] = [1]
+        with self.assertRaises(ValueError):
+            report.validate(malformed)
+
+        saturated = copy.deepcopy(self.sample)
+        saturated["broker_reconnect_duration"]["saturated"] = True
+        saturated = report.validate(saturated)
+        text = report.prometheus(
+            saturated, report.report([saturated], saturated["observed_at_ms"]))
+        self.assertIn(
+            "hepta_ib_broker_reconnect_duration_metrics_saturated 1", text)
+        self.assertNotIn(
+            "hepta_ib_broker_reconnect_duration_seconds_count", text)
 
     def test_alerts_expose_runtime_health_without_reason_labels(self) -> None:
         sample = copy.deepcopy(self.sample)

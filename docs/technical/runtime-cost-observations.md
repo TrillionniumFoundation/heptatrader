@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: coordinator secondary index and OMS process-instance observations
-Implementation: `HeptaTrade/execution/send_attempt_time_index.h`, `HeptaTrade/oms_latency_observation.h`, `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_capacity_observation.h`
-Tests: `tests/python/test_send_attempt_time_index.py`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`
+Implementation: `HeptaTrade/execution/send_attempt_time_index.h`, `HeptaTrade/execution/generation_index_reader.h`, `HeptaTrade/oms_latency_observation.h`, `HeptaTrade/oms_journal.cpp`, `HeptaTrade/oms_capacity_observation.h`
+Tests: `tests/python/test_send_attempt_time_index.py`, `tests/python/test_generation_index_reader.py`, `tests/oms_runtime_observation_cases.h`, `tests/python/test_oms_observation_faults.py`, `tests/python/test_execution_latency_boundaries.py`
 
 ## Send-attempt query contract
 
@@ -105,11 +105,15 @@ notification delivery or IB PAPER qualification. See [bounded acceptance](bounde
 container sizes under its existing mutex. It never scans historical commands to
 publish telemetry. Place, cancel and authoritative flatten record one of five
 fixed outcomes (accepted, rejected, duplicate, uncertain, escaping exception).
-The operation histogram starts after acquiring the coordinator lock and ends
-before releasing it; it includes local durability and venue callback work but
-excludes lock wait, outer policy/preview validation, socket delivery and later
-Broker callbacks. An exception is counted and rethrown, not made successful.
-Planless flatten and policy-layer early returns are not coordinator operations.
+The lock-held operation histogram starts after acquiring the coordinator lock
+and excludes the interval in which place/cancel/flatten releases that mutex for
+the venue callback. A separate outside-lock histogram measures that venue
+interval plus lock reacquisition, while the inclusive total covers initial lock
+wait, all lock-held work and the outside-lock interval. Outer policy/preview
+validation, socket delivery and later Broker callbacks remain outside these
+coordinator operation scopes. An exception is counted and rethrown, not made
+successful. Planless flatten and policy-layer early returns are not coordinator
+operations.
 
 Recovery latency wraps the complete `RecoverFromJournal` execution, including
 validation, projection and failure cleanup, after its lock acquisition. It is
@@ -196,7 +200,41 @@ extensions, unsupported versions, invalid counts and inconsistent result/reason
 sums fail parsing. Saturation is visible and suppresses affected counter export.
 
 These counts describe calls that reach the coordinator. They do not include all
-preview/profile/risk-policy refusals upstream, snapshot ages, callback lag or
-Broker reconciliation durations. They are process-instance counters, not durable
-trade counts or completed fills. RUNTIME-TELEMETRY-003 remains open for those
-other scopes.
+preview/profile/risk-policy refusals upstream and are not durable trade counts or
+completed fills. Callback/quote age, Broker reconciliation and reconnect producers
+are separately implemented for the bounded IB PAPER runtime; broader portfolio
+notional/PnL/drawdown and deeper product lifecycle metrics remain
+RUNTIME-PORTFOLIO-004 rather than reopening the repository telemetry work.
+
+
+### Broker reconnect and refresh duration
+
+The IB runtime records two process-local `steady_clock` histograms behind the
+existing runtime-metrics mutex. `broker_reconnect_duration` starts only after
+the coordinator reconnect fence is established and the reconnect campaign is
+scheduled, and terminates on successful authority restoration or a terminal
+reconnect failure. `broker_reconnect_refresh_duration` starts only after quote,
+open-order and terminal-correlation refresh requests are accepted and measures
+the authoritative refresh/reconciliation portion through the same terminal
+boundary. Failed pre-fence reconnect requests are not invented as zero-duration
+samples. These histograms are observation only; they do not relax reconnect
+fencing or establish a host SLO.
+### Unlocked venue dispatch timing
+
+Place, cancel and authoritative-flatten observations now distinguish coordinator lock-held work from the interval spent outside the coordinator mutex at the venue boundary. The outside-lock histogram includes the provider call and lock reacquisition. For current producers, inclusive total equals initial lock wait plus lock-held work plus outside-lock time; pre-change producers with only wait+total remain readable without synthesizing an outside-lock zero.
+
+## Generation-index sequential I/O and terminal range
+
+Binary lookup still uses bounded random line probes. Once a line boundary or sorted lower bound is known, immutable command/send indexes use a 64 KiB buffered exact-offset sequential reader; each byte in the selected range is read at most once by that reader rather than rereading a preceding/following window for every row. The core regression builds a 20,000-row, approximately 10 MiB synthetic index and asserts read bytes equal the selected suffix size, including a non-zero starting offset, while oversized or unterminated rows fail closed.
+
+Generation-backed PAPER terminal summary first lower-bounds the command index by encoded `(agent_id, session_id, empty-command)` and stops when that owner/session prefix changes. Account/domain/durable-intent checks and post-scan pinned-index identity revalidation remain unchanged. Send-window scans also revalidate their pinned index after sequential reading and discard partial output if the immutable identity changed. The obsolete account/domain mutation-history enumeration path has been removed, so no maintained terminal consumer retains a compatibility full-command-index scan.
+
+## Simulator startup-ready timing
+
+The simulator Execution process publishes two additive startup scopes in addition to coordinator `recovery_latency`: `simulator_state_recovery_latency` measures compact checkpoint/tail economic-state restoration, and `startup_ready_latency` measures `ExecutionServiceRuntimeComposition::Start` from the accepted start attempt through listener/feed activation and the final lifecycle-ready transition. Both use `steady_clock`, are immutable after successful startup, and are omitted by producers that do not observe them. Simulator-state restoration completes before coordinator journal recovery begins, so installed acceptance requires complete `startup_ready_latency` to be at least the sum of those two sequential recovery scopes; this prevents a partial timer from being presented as end-to-end readiness. This closes the previous measurement gap where coordinator recovery was visible but the earlier simulator restore and later server activation were not.
+
+## Repository-scale evidence envelope
+
+The ordinary source lane deliberately separates deterministic cost-shape regressions from target-host SLOs. Its generation lifecycle curve retains 16 generations and 1,024 commands (4,096 logical events), grows the decoded generation index through 4, 8 and 16 distinct owner/session pairs at the sampled checkpoints, and reports cumulative index bytes, generation output bytes and retained/logical storage amplification before a verified rebase. The native terminal fixture independently covers more than the legacy enumeration ceiling with a compact same-owner/session mutation universe. The privileged installed-process lane exercises smaller real-process stages because each order is actually admitted, filled, stopped/sealed and recovered; its current curve is 8, 40 and 168 cumulative admitted orders.
+
+Repository acceptance is behavioral and structural rather than tied to a GitHub-runner millisecond budget: the sequential reader must read exactly the selected index range; every generation point must verify, preserve the declared command/event cardinality and publish non-zero storage evidence; installed stages must expose coordinator recovery, simulator recovery, complete startup-ready timing, VmHWM and a finite p99 place-latency bucket; the oldest command must remain idempotent with no resend; and rebase must collapse the lineage while reducing retained bytes without changing logical history. The source-side reader and generation curves are retained create-only as `core-evidence/generation-index-read-cost.json` and `core-evidence/synthetic-generation-cost-curve.json`; both bind the exact source SHA and are structurally revalidated by `accept_core_release.py`. The installed curve is written create-only as `process-evidence/installed-generation-cost-curve.json`, binds the exact candidate source SHA and package SHA-256, and is revalidated by the same driver before a core acceptance receipt can be issued; the existing Core/main/tag artifact uploads therefore retain selected-range read bytes/calls, seal/verify/storage amplification and real-process recovery/RSS/tail-latency evidence instead of leaving those curves only in test stdout. These are explicit repository regression envelopes, not claims of maximum supported production cardinality. Absolute latency/RSS/disk SLOs and a maintenance cadence remain target-host evidence under HOST-OPERATIONS-003.

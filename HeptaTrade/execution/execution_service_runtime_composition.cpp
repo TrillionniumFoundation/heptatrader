@@ -3,6 +3,7 @@
 #include "execution_decision_lease_authority.h"
 #include "execution_event_feed_server.h"
 #include "unix_execution_service_server.h"
+#include "../oms_generation_store.h"
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
@@ -430,8 +431,9 @@ public:
             output << "{\"source\":\"SIMULATOR\",\"authoritative\":true,"
                    << "\"mutation_blocked\":" << (blocked ? "true" : "false")
                    << ",\"reason\":\"" << EscapeJson(blockReason) << "\","
-                   << "\"gross_absolute_position\":"
-                   << grossAbsolutePosition << "}";
+                   << "\"gross_absolute_position\":" << grossAbsolutePosition
+                   << ",\"admitted_order_count\":" << m_venue.AdmittedOrderCount()
+                   << "}";
         }
         else
         {
@@ -599,10 +601,156 @@ bool ExecutionServiceRuntimeComposition::LoadFenceCredential(std::string& reason
 }
 bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reason)
 {
-    long maximumOrderId = 999999;
+    const long kInitialOrderId = 999999;
+    long maximumOrderId = kInitialOrderId;
+    std::uint64_t admittedOrderCount = 0;
+    std::map<std::string, double> positions;
+    std::map<long, OmsJournalEvent> tailAdmitted;
+    std::map<long, OmsJournalEvent> tailFills;
+    bool checkpointSeen = false;
+    bool checkpointReady = false;
+    bool valid = true;
+    long checkpointMaximumOrderId = kInitialOrderId;
+
+    const auto applyTail = [&](const OmsJournalEvent& event) {
+        if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
+        const bool fill = event.eventType == "status" && event.status == "Filled";
+        if (event.eventType != "place_sent" && !fill) return;
+        if (event.orderId < 0 || event.venue != "SIMULATOR" || event.account != "SIM" ||
+            event.instrument.empty() || (event.side != "BUY" && event.side != "SELL") ||
+            !std::isfinite(event.qty) || event.qty <= 0.0)
+        {
+            valid = false;
+            return;
+        }
+        if (event.eventType == "place_sent")
+        {
+            const auto prior = tailAdmitted.find(event.orderId);
+            if (prior != tailAdmitted.end())
+            {
+                if (prior->second.instrument != event.instrument || prior->second.side != event.side ||
+                    prior->second.qty != event.qty || prior->second.reqId != event.reqId ||
+                    prior->second.requestHash != event.requestHash)
+                    valid = false;
+                return;
+            }
+            if (event.orderId <= checkpointMaximumOrderId ||
+                admittedOrderCount == std::numeric_limits<std::uint64_t>::max())
+            {
+                valid = false;
+                return;
+            }
+            tailAdmitted[event.orderId] = event;
+            ++admittedOrderCount;
+            return;
+        }
+        const auto owner = tailAdmitted.find(event.orderId);
+        if (!std::isfinite(event.price) || event.price <= 0.0 ||
+            owner == tailAdmitted.end() || owner->second.instrument != event.instrument ||
+            owner->second.side != event.side || owner->second.qty != event.qty)
+        {
+            valid = false;
+            return;
+        }
+        const auto prior = tailFills.find(event.orderId);
+        if (prior != tailFills.end())
+        {
+            if (prior->second.instrument != event.instrument || prior->second.side != event.side ||
+                prior->second.qty != event.qty || prior->second.price != event.price)
+                valid = false;
+            return;
+        }
+        tailFills[event.orderId] = event;
+        positions[event.instrument] += event.side == "BUY" ? event.qty : -event.qty;
+        if (!std::isfinite(positions[event.instrument])) valid = false;
+    };
+
+    OmsGenerationStore generation(m_config.journalPath);
+    const bool generationPresent = generation.HasStore();
+    if (generationPresent)
+    {
+        const OmsJournalHealthSnapshot health = m_journal.GetHealthSnapshot();
+        std::string generationReason;
+        if (!generation.Recover(
+                health.replayMaxBytes, health.replayMaxRecords,
+                health.replayMaxRecordBytes,
+                [&](const OmsJournalEvent& event) {
+                    if (!checkpointReady && event.eventType == "simulator_state_checkpoint")
+                    {
+                        if (checkpointSeen || event.venue != "SIMULATOR" || event.account != "SIM" ||
+                            event.orderId < kInitialOrderId || event.brokerRequestId < 0)
+                        {
+                            valid = false;
+                            return;
+                        }
+                        checkpointSeen = true;
+                        maximumOrderId = event.orderId;
+                        checkpointMaximumOrderId = event.orderId;
+                        admittedOrderCount = static_cast<std::uint64_t>(event.brokerRequestId);
+                        positions.clear();
+                        return;
+                    }
+                    if (!checkpointReady && event.eventType == "simulator_position_checkpoint")
+                    {
+                        if (!checkpointSeen || event.venue != "SIMULATOR" || event.account != "SIM" ||
+                            event.instrument.empty() || positions.count(event.instrument) != 0 ||
+                            (event.side != "BUY" && event.side != "SELL") ||
+                            !std::isfinite(event.qty) || event.qty <= 0.0)
+                        {
+                            valid = false;
+                            return;
+                        }
+                        positions[event.instrument] = event.side == "BUY" ? event.qty : -event.qty;
+                        return;
+                    }
+                    if (!checkpointReady && event.eventType == "simulator_state_checkpoint_ready")
+                    {
+                        if (!checkpointSeen || event.venue != "SIMULATOR" || event.account != "SIM" ||
+                            event.orderId != maximumOrderId || event.brokerRequestId < 0 ||
+                            static_cast<std::uint64_t>(event.brokerRequestId) != admittedOrderCount)
+                        {
+                            valid = false;
+                            return;
+                        }
+                        checkpointReady = true;
+                        checkpointMaximumOrderId = maximumOrderId;
+                        return;
+                    }
+                    if (checkpointReady) applyTail(event);
+                }, generationReason))
+        {
+            reason = generationReason.empty() ?
+                "EXECUTION_SIMULATOR_GENERATION_RECOVERY_FAILED" : generationReason;
+            return false;
+        }
+        if (!valid)
+        {
+            reason = "EXECUTION_SIMULATOR_GENERATION_CHECKPOINT_CONFLICT";
+            return false;
+        }
+        if (checkpointReady)
+        {
+            if (maximumOrderId == std::numeric_limits<long>::max())
+            {
+                reason = "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+                return false;
+            }
+            if (!m_venue.RestoreRiskState(positions, admittedOrderCount, reason)) return false;
+            m_venue.RestoreNextOrderIdAtLeast(maximumOrderId + 1);
+            reason.clear();
+            return true;
+        }
+    }
+
+    // Legacy and V1 generations still retain a complete JSONL ledger. Reuse
+    // the original replay semantics exactly. A V2 generation without the new
+    // checkpoint fails here instead of silently discarding sealed history; a
+    // stopped-state `hepta_oms_lifecycle.py seal` upgrades that generation by
+    // reconstructing one checkpoint from its verified lineage.
+    maximumOrderId = kInitialOrderId;
     std::map<long, OmsJournalEvent> admitted;
     std::map<long, OmsJournalEvent> fills;
-    bool valid = true;
+    valid = true;
     const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
         if (event.orderId > maximumOrderId) maximumOrderId = event.orderId;
         const bool fill = event.eventType == "status" && event.status == "Filled";
@@ -614,7 +762,7 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
             valid = false;
             return;
         }
-        if (!fill)
+        if (event.eventType == "place_sent")
         {
             const auto prior = admitted.find(event.orderId);
             if (prior != admitted.end() &&
@@ -639,8 +787,10 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
     });
     if (replayed < 0 || maximumOrderId == std::numeric_limits<long>::max())
     {
-        reason = replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
-            "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED";
+        reason = replayed < 0 && generationPresent ?
+            "EXECUTION_SIMULATOR_GENERATION_CHECKPOINT_REQUIRED" :
+            (replayed < 0 ? "EXECUTION_OMS_REPLAY_FAILED" :
+             "EXECUTION_ORDER_ID_WATERMARK_EXHAUSTED");
         return false;
     }
     if (!valid)
@@ -648,7 +798,7 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
         reason = "EXECUTION_SIMULATOR_RISK_REPLAY_CONFLICT";
         return false;
     }
-    std::map<std::string, double> positions;
+    positions.clear();
     for (const auto& fill : fills)
     {
         const auto& event = fill.second;
@@ -659,7 +809,8 @@ bool ExecutionServiceRuntimeComposition::RestoreSimulatorState(std::string& reas
             return false;
         }
     }
-    if (!m_venue.RestoreRiskState(positions, static_cast<std::uint64_t>(admitted.size()), reason))
+    if (!m_venue.RestoreRiskState(
+            positions, static_cast<std::uint64_t>(admitted.size()), reason))
         return false;
     m_venue.RestoreNextOrderIdAtLeast(maximumOrderId + 1);
     reason.clear();
@@ -698,8 +849,6 @@ void ExecutionServiceRuntimeComposition::SimulatorQuoteFeedLoop()
             nextQuote = std::chrono::steady_clock::now() +
                 std::chrono::milliseconds(m_config.simulatorQuoteRefreshIntervalMs);
         }
-        // Process runs in production too. Reserved orders cannot emit events
-        // until their owner and place_sent marker have committed durably.
         if (m_lifecycleGate->ready.load()) m_venue.Process();
         lock.lock();
     }
@@ -749,6 +898,7 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         return false;
     }
     m_startAttempted = true;
+    const auto startupStarted = std::chrono::steady_clock::now();
     ExecutionServiceRuntimeConfig validationConfig = m_config;
     validationConfig.listenFd = m_ownedListenFd;
     validationConfig.eventListenFd = m_ownedEventListenFd;
@@ -772,8 +922,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     m_lifecycleGate.reset(new ExecutionServiceLifecycleGate());
     m_eventHub.reset(new ExecutionEventHub(1024, m_serviceIdentity.serviceEpoch));
     m_decisionLeases.reset(new ExecutionDecisionLeaseAuthority());
-    // A dedicated execution daemon must never inherit performance-oriented OMS
-    // buffering knobs from an interactive parent environment.
     ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1);
     ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
     ::setenv("HEPTA_OMS_BATCH_SIZE", "1", 1);
@@ -784,7 +932,16 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         CloseUnconsumedListenFd();
         return false;
     }
-    if (!RestoreSimulatorState(reason))
+    const auto simulatorRecoveryStarted = std::chrono::steady_clock::now();
+    const bool simulatorStateRestored = RestoreSimulatorState(reason);
+    const auto simulatorRecoveryFinished = std::chrono::steady_clock::now();
+    const auto simulatorRecoveryRaw =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            simulatorRecoveryFinished - simulatorRecoveryStarted).count();
+    m_simulatorStateRecoveryLatency.Observe(
+        simulatorRecoveryRaw > 0 ?
+            static_cast<std::uint64_t>(simulatorRecoveryRaw) : 0U);
+    if (!simulatorStateRestored)
     {
         CloseUnconsumedListenFd();
         return false;
@@ -818,8 +975,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         event.executionDomain = command.context.executionDomain;
         event.agentId = command.context.agentId;
         event.sessionId = command.context.sessionId;
-        // The owner projection precedes its durable commit and activation.
-        // This observation is a reservation, never accepted/fill evidence.
         event.type = "order.reserved";
         event.venue = "SIMULATOR";
         event.orderId = orderId;
@@ -908,11 +1063,6 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
     std::string recoveryReason;
     if (!m_coordinator->RecoverFromJournal(recoveryReason)) m_recoveryReason = recoveryReason;
     else m_recoveryReason.clear();
-    // The Simulator venue is process-local and deliberately restores no live
-    // orders. Its complete authoritative state after restart is therefore an
-    // empty active-order set. Persistently terminate replayed owners so the
-    // coordinator cannot retain ownership for orders absent from the venue.
-    // This does not reset any UNCERTAIN mutation block discovered by recovery.
     std::size_t removedOwners = 0;
     std::string reconcileReason;
     if (!m_coordinator->ReconcileOrderOwners(std::set<long>(), true,
@@ -959,6 +1109,12 @@ bool ExecutionServiceRuntimeComposition::Start(std::string& reason)
         return false;
     }
     m_lifecycleGate->ready.store(true);
+    const auto startupFinished = std::chrono::steady_clock::now();
+    const auto startupRaw =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            startupFinished - startupStarted).count();
+    m_startupReadyLatency.Observe(
+        startupRaw > 0 ? static_cast<std::uint64_t>(startupRaw) : 0U);
     m_started = true;
     reason.clear();
     return true;
@@ -1012,5 +1168,14 @@ ExecutionEventHub& ExecutionServiceRuntimeComposition::EventHub()
 
 ExecutionRuntimeObservation ExecutionServiceRuntimeComposition::CoordinatorObservation() const
 {
-    return m_coordinator ? m_coordinator->RuntimeObservation() : ExecutionRuntimeObservation();
+    if (!m_coordinator) return ExecutionRuntimeObservation();
+    ExecutionRuntimeObservation result = m_coordinator->RuntimeObservation();
+    if (m_simulatorStateRecoveryLatency.samples != 0 &&
+        m_startupReadyLatency.samples != 0)
+    {
+        result.startupTimingPresent = true;
+        result.simulatorStateRecoveryLatency = m_simulatorStateRecoveryLatency;
+        result.startupReadyLatency = m_startupReadyLatency;
+    }
+    return result;
 }

@@ -220,6 +220,49 @@ bool IbPaperExecutionRuntimeComposition::WaitForStartupUpstream(
     return false;
 }
 
+void IbPaperExecutionRuntimeComposition::BeginBrokerReconnectObservation(
+    std::chrono::steady_clock::time_point now) noexcept
+{
+    std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+    m_brokerReconnectStartedAt = now;
+    m_brokerReconnectRefreshStartedAt =
+        std::chrono::steady_clock::time_point();
+}
+
+void IbPaperExecutionRuntimeComposition::BeginBrokerReconnectRefreshObservation(
+    std::chrono::steady_clock::time_point now) noexcept
+{
+    std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+    if (m_brokerReconnectStartedAt !=
+            std::chrono::steady_clock::time_point() &&
+        m_brokerReconnectRefreshStartedAt ==
+            std::chrono::steady_clock::time_point())
+        m_brokerReconnectRefreshStartedAt = now;
+}
+
+void IbPaperExecutionRuntimeComposition::FinishBrokerReconnectObservation(
+    std::chrono::steady_clock::time_point now) noexcept
+{
+    std::lock_guard<std::mutex> lock(m_runtimeMetricsMutex);
+    const std::chrono::steady_clock::time_point empty;
+    if (m_brokerReconnectRefreshStartedAt != empty)
+    {
+        const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - m_brokerReconnectRefreshStartedAt).count();
+        m_brokerReconnectRefreshLatency.Observe(
+            raw > 0 ? static_cast<std::uint64_t>(raw) : 0U);
+    }
+    if (m_brokerReconnectStartedAt != empty)
+    {
+        const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now - m_brokerReconnectStartedAt).count();
+        m_brokerReconnectLatency.Observe(
+            raw > 0 ? static_cast<std::uint64_t>(raw) : 0U);
+    }
+    m_brokerReconnectStartedAt = empty;
+    m_brokerReconnectRefreshStartedAt = empty;
+}
+
 bool IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
     std::string& reason, bool recoveryAudit)
 {
@@ -285,6 +328,7 @@ bool IbPaperExecutionRuntimeComposition::BeginBrokerReconnect(
     m_reconnectDeadline = now +
         std::chrono::milliseconds(m_config.reconnectTimeoutMs);
     m_reconnectNextAttemptAt = now;
+    BeginBrokerReconnectObservation(now);
     m_reconnectPending.store(true);
     NotifyTestStage("broker_reconnect_scheduled");
     reason.clear();
@@ -361,6 +405,7 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnect(
     if (now >= m_reconnectDeadline)
     {
         reason = "IB_PAPER_BROKER_RECONNECT_EXHAUSTED";
+        FinishBrokerReconnectObservation(now);
         return false;
     }
     if (now < m_reconnectNextAttemptAt)
@@ -378,7 +423,10 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnect(
         observedBalances[it->first] = it->second.observedCashBalance;
     if (!m_adapter->PrepareReconnectCashAttestation(
             observedBalances, reason))
+    {
+        FinishBrokerReconnectObservation(std::chrono::steady_clock::now());
         return false;
+    }
     if (!m_adapter->Connect())
     {
         const int backoffMs = 100 +
@@ -416,6 +464,7 @@ bool IbPaperExecutionRuntimeComposition::FailBrokerReconnect(
         reason = cleanupReason;
     else
         reason = primaryReason;
+    FinishBrokerReconnectObservation(std::chrono::steady_clock::now());
     return false;
 }
 
@@ -536,6 +585,8 @@ bool IbPaperExecutionRuntimeComposition::DriveBrokerReconnectConnected(
                 m_reconnectPending.store(false);
                 m_lifecycleGate->ready.store(true);
             }
+            FinishBrokerReconnectObservation(
+                std::chrono::steady_clock::now());
             NotifyTestStage("broker_reconnect_complete");
             reason.clear();
             return true;
