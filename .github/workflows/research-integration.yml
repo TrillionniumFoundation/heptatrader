@@ -79,18 +79,25 @@ jobs:
           CXX: ${{ matrix.cxx }}
           BUILD_TYPE: ${{ matrix.build_type }}
           INSTRUMENTATION: ${{ matrix.flags }}
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
           cmake -S research -B build/research -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
             -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_FLAGS="$INSTRUMENTATION" \
             -DCMAKE_EXE_LINKER_FLAGS="$INSTRUMENTATION"
           cmake --build build/research --parallel 2
-          ctest --test-dir build/research --output-on-failure --output-log "$RUNNER_TEMP/research-tests.log"
+          ctest --test-dir build/research --verbose --output-on-failure --output-log "$RUNNER_TEMP/research-tests.log"
+          python3 tests/research/install_smoke.py --build-dir build/research \
+            --cxx "$CXX" --flags="$INSTRUMENTATION" --source-sha "$EXPECTED_SHA" \
+            --report "$RUNNER_TEMP/research-installed.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: research-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/research-tests.log
+          path: |
+            ${{ runner.temp }}/research-tests.log
+            ${{ runner.temp }}/research-installed.json
           if-no-files-found: error
           retention-days: 7
   core-integration:

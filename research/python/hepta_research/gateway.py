@@ -168,15 +168,25 @@ class Outbox:
         self.path = Path(directory)
         if not self.path.is_absolute():
             raise ValueError("absolute outbox directory required")
+        # Persist the directory entry as well as its eventual contents. Sync
+        # even on reopen: a previous initializer may have failed before syncing
+        # the parent. No client can prepare/send through a failed initializer.
+        parent = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        fd = None
         try:
-            self.path.mkdir(mode=0o700)
-        except FileExistsError:
-            pass
-        fd = os.open(self.path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        try:
+            try:
+                os.mkdir(self.path.name, mode=0o700, dir_fd=parent)
+            except FileExistsError:
+                pass
+            fd = os.open(self.path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                         dir_fd=parent)
             _private(fd, True)
+            os.fsync(fd)
+            os.fsync(parent)
         finally:
-            os.close(fd)
+            if fd is not None:
+                os.close(fd)
+            os.close(parent)
 
     @contextmanager
     def locked(self, key: str) -> Iterator[tuple[int, str]]:

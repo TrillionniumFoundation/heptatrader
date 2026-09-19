@@ -1,21 +1,28 @@
 cmake_minimum_required(VERSION 3.16)
+set(HEPTA_RESEARCH_STANDALONE OFF)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+    set(HEPTA_RESEARCH_STANDALONE ON)
     project(HeptaResearch LANGUAGES CXX)
     include(CTest)
 endif()
+include(GNUInstallDirs)
 set(CMAKE_CXX_STANDARD 11)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 add_library(hepta_research_data STATIC src/market_data.cpp)
 add_library(Hepta::ResearchData ALIAS hepta_research_data)
-target_include_directories(hepta_research_data PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
+target_include_directories(hepta_research_data PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(hepta_research_data PUBLIC cxx_std_11)
-set_target_properties(hepta_research_data PROPERTIES CXX_EXTENSIONS OFF POSITION_INDEPENDENT_CODE ON)
+set_target_properties(hepta_research_data PROPERTIES CXX_EXTENSIONS OFF
+    POSITION_INDEPENDENT_CODE ON EXPORT_NAME ResearchData)
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     target_compile_options(hepta_research_data PRIVATE -Wall -Wextra -Wpedantic -Werror)
 endif()
 add_executable(hepta_research_bars src/bars_main.cpp)
-set_target_properties(hepta_research_bars PROPERTIES OUTPUT_NAME hepta-research-bars)
+set_target_properties(hepta_research_bars PROPERTIES
+    OUTPUT_NAME hepta-research-bars EXPORT_NAME ResearchBars)
 target_link_libraries(hepta_research_bars PRIVATE Hepta::ResearchData)
 if(BUILD_TESTING)
     add_executable(hepta_research_data_tests ../tests/research/market_data_tests.cpp)
@@ -31,5 +38,35 @@ if(BUILD_TESTING)
         add_dependencies(hepta_core_test_binaries hepta_research_bars hepta_research_data_tests)
     endif()
 endif()
-# Deliberately not installed into the privileged core package. Consumers link
-# Hepta::ResearchData or use the source Python client; no second daemon exists.
+# A separate research SDK prefix only. Root runtime install/package ownership
+# remains unchanged; the Gateway and Execution never acquire these imports.
+if(HEPTA_RESEARCH_STANDALONE)
+    foreach(dir CMAKE_INSTALL_BINDIR CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_DATADIR)
+        if(IS_ABSOLUTE "${${dir}}")
+            message(FATAL_ERROR "Relocatable research SDK requires relative ${dir}")
+        endif()
+    endforeach()
+    include(CMakePackageConfigHelpers)
+    set(_hepta_research_config_dir "${CMAKE_INSTALL_LIBDIR}/cmake/HeptaResearch")
+    configure_package_config_file(cmake/HeptaResearchConfig.cmake.in
+        "${CMAKE_CURRENT_BINARY_DIR}/HeptaResearchConfig.cmake"
+        INSTALL_DESTINATION "${_hepta_research_config_dir}")
+    file(RELATIVE_PATH HEPTA_RESEARCH_PYTHON_RELATIVE
+        "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
+        "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/heptatrader/research/python")
+    configure_file(cmake/replay_main.py.in
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-replay" @ONLY)
+    install(TARGETS hepta_research_data hepta_research_bars EXPORT HeptaResearchTargets
+        ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(DIRECTORY include/ DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" FILES_MATCHING PATTERN "*.hpp")
+    install(EXPORT HeptaResearchTargets NAMESPACE Hepta:: DESTINATION "${_hepta_research_config_dir}")
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/HeptaResearchConfig.cmake"
+        DESTINATION "${_hepta_research_config_dir}")
+    install(DIRECTORY python/hepta_research
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research/python"
+        FILES_MATCHING PATTERN "*.py")
+    install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-replay"
+        DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(FILES INSTALL.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
+endif()
