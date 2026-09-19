@@ -78,12 +78,12 @@ void HeptaIBGatewayAdapter::InvalidateCorrelationSnapshot(const std::string& rea
 IBAuthoritativeCorrelationSnapshot HeptaIBGatewayAdapter::GetAuthoritativeCorrelationSnapshot() const {
     std::lock_guard<std::recursive_mutex> lk(m_apiMutex);
     return m_correlationSnapshot;
+}
+
 std::uint64_t CallbackMonotonicNs() {
     const auto raw = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
     return raw > 0 ? static_cast<std::uint64_t>(raw) : 1U;
-}
-
 }
 
 bool HeptaIBGatewayAdapter::MergeIncrementalActiveOrder(
