@@ -1133,6 +1133,13 @@ def _copy_generation_segment(source: Path, destination_fd: int,
     return records, written
 
 
+def _directory_identity(info: os.stat_result) -> tuple[int, ...]:
+    # Directory size and timestamps legitimately change as children are removed.
+    # Keep replacement detection on the stable object identity and ownership bits.
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+            info.st_uid, info.st_gid)
+
+
 def _prune_generation_chain(store: Path, generations: list[str]) -> None:
     store_fd = os.open(store, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -1156,7 +1163,7 @@ def _prune_generation_chain(store: Path, generations: list[str]) -> None:
                     os.unlink(name, dir_fd=generation_fd)
                 os.fsync(generation_fd)
                 named = os.stat(generation, dir_fd=store_fd, follow_symlinks=False)
-                if v1._identity(before) != v1._identity(named):
+                if _directory_identity(before) != _directory_identity(named):
                     raise v1.GenerationError("OMS_GENERATION_REBASE_PRUNE_CHANGED")
             finally:
                 os.close(generation_fd)
