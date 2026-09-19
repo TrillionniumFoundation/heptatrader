@@ -1,0 +1,46 @@
+name: Research Integration
+
+on:
+  push:
+    branches: ['integration/heptadll-modular-*']
+  pull_request:
+    branches: [main]
+    paths:
+      - 'research/**'
+      - '.github/workflows/research-integration.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: research-integration-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    name: integration-source-snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Retain only tracked public source, never workspace credentials
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/integration-source.tar.gz" HEAD
+          printf '%s\n' "$EXPECTED_SHA" > "$RUNNER_TEMP/source-sha.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: integration-source-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            ${{ runner.temp }}/integration-source.tar.gz
+            ${{ runner.temp }}/source-sha.txt
+          if-no-files-found: error
+          retention-days: 7
