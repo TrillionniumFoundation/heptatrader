@@ -1,5 +1,4 @@
 name: Research Integration
-
 on:
   push:
     branches: ['integration/heptadll-modular-*']
@@ -7,15 +6,17 @@ on:
     branches: [main]
     paths:
       - 'research/**'
+      - 'tests/research/**'
+      - 'docs/modules/research-*.md'
+      - 'docs/module-catalog.json'
+      - 'docs/build-targets.json'
+      - 'CMakeLists.txt'
       - '.github/workflows/research-integration.yml'
-
 permissions:
   contents: read
-
 concurrency:
   group: research-integration-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   source:
     name: integration-source-snapshot
@@ -42,5 +43,101 @@ jobs:
           path: |
             ${{ runner.temp }}/integration-source.tar.gz
             ${{ runner.temp }}/source-sha.txt
+          if-no-files-found: error
+          retention-days: 7
+  research:
+    name: research-${{ matrix.lane }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - lane: gcc-release
+            cxx: g++
+            build_type: Release
+            flags: ''
+          - lane: clang-release
+            cxx: clang++
+            build_type: Release
+            flags: ''
+          - lane: clang-asan-ubsan
+            cxx: clang++
+            build_type: Debug
+            flags: '-fsanitize=address,undefined -fno-omit-frame-pointer'
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Compile and run real behavior tests
+        env:
+          CXX: ${{ matrix.cxx }}
+          BUILD_TYPE: ${{ matrix.build_type }}
+          INSTRUMENTATION: ${{ matrix.flags }}
+        run: |
+          set -euo pipefail
+          cmake -S research -B build/research -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+            -DCMAKE_CXX_COMPILER="$CXX" -DCMAKE_CXX_FLAGS="$INSTRUMENTATION" \
+            -DCMAKE_EXE_LINKER_FLAGS="$INSTRUMENTATION"
+          cmake --build build/research --parallel 2
+          ctest --test-dir build/research --output-on-failure --output-log "$RUNNER_TEMP/research-tests.log"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: research-${{ matrix.lane }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/research-tests.log
+          if-no-files-found: error
+          retention-days: 7
+  core-integration:
+    name: research-canonical-runtime-integration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install SDK-free build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libssl-dev zlib1g-dev python3-yaml
+      - name: Canonical core and unchanged source ownership checks
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          HEPTA_BUILD_DIR="$GITHUB_WORKSPACE/build/core" HEPTA_JOBS=2 ./scripts/dev_core.sh
+          python3 scripts/verify_build_ownership.py
+          python3 scripts/check_component_coverage.py
+          python3 scripts/check_documentation.py
+      - name: Exact-revision installed multi-UID research client test
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/research-artifact"
+          mkdir "$out"
+          chmod 700 "$out"
+          python3 scripts/build_release_package.py --build-dir build/core \
+            --output "$out/core.tar.gz" --version "$(cat VERSION)" --profile core \
+            --source-sha "$EXPECTED_SHA" --source-date-epoch "$(git show -s --format=%ct HEAD)"
+          digest="$(sha256sum "$out/core.tar.gz" | cut -d' ' -f1)"
+          sudo env PYTHONDONTWRITEBYTECODE=1 python3 tests/research/process_smoke.py \
+            --artifact "$out/core.tar.gz" --sha256 "$digest" --source-sha "$EXPECTED_SHA" \
+            --report "$RUNNER_TEMP/research-process-report.json"
+          git diff --exit-code HEAD
+          test -z "$(git ls-files --others --exclude-standard)"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: research-process-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/research-process-report.json
           if-no-files-found: error
           retention-days: 7

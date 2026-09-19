@@ -381,6 +381,35 @@
       "production_authorized": false
     },
     {
+      "id": "research-compute",
+      "status": "EXPERIMENTAL",
+      "document": "docs/modules/research-compute.md",
+      "implementation": [
+        "research"
+      ],
+      "tests": [
+        "tests/research/market_data_tests.cpp",
+        "tests/research/test_csv.py",
+        "tests/research/test_model.py"
+      ],
+      "broker_mutation": "NONE",
+      "production_authorized": false
+    },
+    {
+      "id": "research-client",
+      "status": "QUALIFICATION_REQUIRED",
+      "document": "docs/modules/research-client.md",
+      "implementation": [
+        "research/python/hepta_research/gateway.py"
+      ],
+      "tests": [
+        "tests/research/test_gateway.py",
+        "tests/research/process_smoke.py"
+      ],
+      "broker_mutation": "FORWARD_ONLY",
+      "production_authorized": false
+    },
+    {
       "id": "legacy-runtime",
       "status": "LEGACY",
       "document": "docs/modules/legacy-runtime.md",

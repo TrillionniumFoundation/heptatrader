@@ -67,6 +67,9 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
+# Side-effect-free research and an unprivileged client, never a second runtime.
+add_subdirectory(research)
+
 # Install ownership is registered after optional test targets exist so a
 # canonical tested release can carry the installed simulator lifecycle smoke.
 include(cmake/HeptaInstall.cmake)
