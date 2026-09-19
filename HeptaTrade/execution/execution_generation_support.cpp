@@ -1032,13 +1032,17 @@ bool OmsGenerationStore::SummarizeMutationRecords(
         if (fields[0] != wantedAgent || fields[1] != wantedSession)
             break;
         std::string rowAgent, rowSession, rowAccount, rowDomain;
+        const bool durable = fields[12] == "1";
+        const bool validOperation = fields[4] == "place" ||
+            fields[4] == "cancel" || fields[4] == "flatten";
+        const bool nonMutationTerminal = fields[4].empty() &&
+            fields[5] == "unknown";
         if (!GenerationDecodeHex(fields[0], rowAgent) ||
             !GenerationDecodeHex(fields[1], rowSession) ||
             !GenerationDecodeHex(fields[10], rowAccount) ||
             !GenerationDecodeHex(fields[11], rowDomain) ||
             (fields[12] != "0" && fields[12] != "1") ||
-            (fields[4] != "place" && fields[4] != "cancel" &&
-             fields[4] != "flatten"))
+            (!validOperation && !(nonMutationTerminal && !durable)))
         {
             reason = "OMS_GENERATION_COMMAND_INDEX_INVALID";
             ok = false;
