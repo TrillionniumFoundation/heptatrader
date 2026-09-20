@@ -159,7 +159,10 @@ imports. It validates known fills/equity, source hashes and late-failure output
 preservation. These tests are discovered by the EXISTING remote research matrix;
 no workflow permission, ownership verifier or canonical test is weakened.
 
-This closes concrete input-consumer gaps, not all HeptaDLL functionality. Raw BIN
-ABI, DB/XML layouts, Pegasus queue/margin/settlement parity and proprietary strategy
-behavior still require verified contracts and fixtures. No unsupported capability
-is advertised as working. The old private repository and history remain intact.
+[BINARY-IMPORT.md](BINARY-IMPORT.md) adds one explicitly selected 424-byte native
+cache profile through this SAME Tick/bar/replay path; the CSV contracts above
+are unchanged. Other BIN ABIs, DB/XML layouts, Pegasus queue/margin/settlement
+parity and proprietary strategy behavior still require verified contracts and
+fixtures. These are specific input-consumer additions, not all HeptaDLL
+functionality. No unsupported capability is advertised as working. The old
+private repository and history remain intact.

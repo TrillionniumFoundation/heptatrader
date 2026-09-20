@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: integration/heptadll-modular-20260919
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`
 
 ## Responsibilities and dependencies
 
@@ -70,3 +70,19 @@ existing evaluator/ledger. Raw depth observations are retained but unqualified.
 `tests/research/format_install_smoke.py` installs, relocates and invokes all new
 formats without source imports and is registered in standalone CTest. No new
 compiled target, broker adapter, OMS owner or privileged install entry is added.
+
+## Explicit binary-cache consumer
+
+[The binary import contract](../../research/BINARY-IMPORT.md) specifies exactly
+one 424-byte little-endian, 8-byte-aligned depth-cache profile. The installed
+`hepta-research-binary` requires an explicit producing ABI, clock zone, tick grid
+and UTC sessions. It never infers ActionDay from TradingDay, deserializes native
+objects, exports memory padding or treats unused depth slots as valid quotes.
+Selected fields enter the SAME Tick normalization, compiled bar builder and
+replay/accounting pipeline; no alternate execution or matching core is added.
+Unique decimal-grid/binary64 round trips reject off-grid or ambiguous prices.
+The existing unittest discovery includes the new behavior tests; an additional
+standalone CTest installs, relocates and invokes the real command in isolation.
+All earlier tests and privileged-runtime acceptance remain required. Other BIN
+ABIs, XML consumers, full Pegasus semantics and external licensing/consumer
+closure remain outside this specific format addition.

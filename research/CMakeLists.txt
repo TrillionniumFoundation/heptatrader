@@ -60,6 +60,8 @@ if(HEPTA_RESEARCH_STANDALONE)
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-import" @ONLY)
     configure_file(cmake/ticks_main.py.in
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-ticks" @ONLY)
+    configure_file(cmake/binary_main.py.in
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-binary" @ONLY)
     install(TARGETS hepta_research_data hepta_research_bars EXPORT HeptaResearchTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -73,8 +75,9 @@ if(HEPTA_RESEARCH_STANDALONE)
     install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-replay"
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-import"
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-ticks"
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-binary"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
-    install(FILES INSTALL.md LEGACY-IMPORT.md DATA-FORMATS.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
+    install(FILES INSTALL.md LEGACY-IMPORT.md DATA-FORMATS.md BINARY-IMPORT.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
     if(BUILD_TESTING)
         add_test(NAME hepta_research_format_install_tests
             COMMAND ${Python3_EXECUTABLE} -B
@@ -82,6 +85,13 @@ if(HEPTA_RESEARCH_STANDALONE)
                 --build-dir ${CMAKE_CURRENT_BINARY_DIR} --config $<CONFIG>
                 --bindir ${CMAKE_INSTALL_BINDIR} --datadir ${CMAKE_INSTALL_DATADIR})
         set_tests_properties(hepta_research_format_install_tests PROPERTIES
+            LABELS "research;install" TIMEOUT 180)
+        add_test(NAME hepta_research_binary_install_tests
+            COMMAND ${Python3_EXECUTABLE} -B
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/binary_install_smoke.py
+                --build-dir ${CMAKE_CURRENT_BINARY_DIR} --config $<CONFIG>
+                --bindir ${CMAKE_INSTALL_BINDIR} --datadir ${CMAKE_INSTALL_DATADIR})
+        set_tests_properties(hepta_research_binary_install_tests PROPERTIES
             LABELS "research;install" TIMEOUT 180)
     endif()
 endif()

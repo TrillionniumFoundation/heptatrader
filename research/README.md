@@ -23,7 +23,7 @@ feature/differential equivalence. Legacy classes are not made an alternate runti
 | `heptaDate`, calendar arithmetic | `CivilDay` | Validated Gregorian arithmetic, not a current holiday calendar |
 | `heptaProductTradeTime`, `heptaMarketTime` | explicit `Session` input | No silently current hard-coded exchange hours; caller supplies UTC windows and trading days |
 | `heptaKindleStickSeries` | `BarBuilder`, `BarSeries` | Integer ticks, ordered bounded history, corrections/trims, OHLC queries, strict confirmed swings and aggregation; not old ABI equivalence |
-| data-file helpers | `hepta-research-bars`, `hepta-research-import` | Normalized ticks and explicit legacy one-minute 11/13-field CSV; BIN/DB/XML remain unsupported |
+| data-file helpers | `hepta-research-bars`, `hepta-research-import`, `hepta-research-ticks`, `hepta-research-binary` | Normalized ticks, futures/stock bars, four Tick CSV layouts and one explicit 424-byte binary profile; other BIN ABIs and DB/XML remain unsupported |
 | `heptaBasicCTAStrategy::SetStrategyPosition` | `TargetPolicy.delta` | Bounded close-first target planning; no local claim that a close filled |
 | `heptaBasicAgent` direct order methods | `StrategyGateway` | Existing heptactl/NativeToolClient only, Execution-issued identity and permit, durable uncertainty recovery |
 | Pegasus replay and settlement | `replay`, `ResearchLedger` | Offline next-bar-open model, explicit costs and multiplier; NOT full queue matching, margin or exchange settlement parity |
@@ -102,6 +102,17 @@ extrema, first threshold crossings, trading-day counts, aggregation and strict
 peaks/troughs with their actual confirmation time. Rejected mutations preserve
 state. A future comparison bar cannot turn a centered historical peak into an
 earlier signal. Existing normalized schemas and execution authority are unchanged.
+
+## Additional input consumers
+
+[DATA-FORMATS.md](DATA-FORMATS.md) specifies stock bars and four legacy Tick
+CSV layouts. [BINARY-IMPORT.md](BINARY-IMPORT.md) specifies the installed binary
+consumer for an explicitly selected 424-byte little-endian, 8-byte-aligned
+82-character-instrument depth cache. Its native padding is hashed but never
+exported. Dates and price-grid interpretation must be explicit; no ABI guessing,
+TradingDay-as-ActionDay fallback or epsilon price repair is performed.
+All routes reuse the existing compiled bar builder and offline accounting.
+No original SPI, SDK, private history or parallel execution core is imported.
 
 ## Strategy and replay contract
 
