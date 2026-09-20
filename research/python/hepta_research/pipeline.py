@@ -134,6 +134,27 @@ def run_report(bars_path: Path, *, tick_size: object, capital: object, quantity:
                multiplier: object = 1, slippage: object = 0, fee_per_unit: object = 0,
                periods_per_year: int | None = None, max_bars: int = 100000) -> dict:
     bars, metadata = read_bars(bars_path, tick_size, max_bars)
+    return evaluate_bars(bars, metadata, capital=capital, quantity=quantity,
+                         fast=fast, slow=slow, long_only=long_only, multiplier=multiplier,
+                         slippage=slippage, fee_per_unit=fee_per_unit,
+                         periods_per_year=periods_per_year)
+
+
+def evaluate_bars(bars: list[ReplayBar], metadata: dict, *, capital: object,
+                  quantity: object, fast: int = 5, slow: int = 20,
+                  long_only: bool = False, multiplier: object = 1,
+                  slippage: object = 0, fee_per_unit: object = 0,
+                  periods_per_year: int | None = None) -> dict:
+    """Shared consumer for validated normalized and explicit legacy imports.
+
+    Replay revalidates ordering/completeness/prices; metadata is provenance only,
+    never execution authority. A nonempty bounded list is required so metric
+    evaluation cannot silently consume an iterator twice or divide empty input.
+    """
+    if not isinstance(bars, list) or not 1 <= len(bars) <= MAX_ROWS:
+        raise ValueError("nonempty bounded bar list required")
+    if not isinstance(metadata, dict):
+        raise ValueError("input provenance dictionary required")
     strategy = MovingAverageTarget(fast, slow, quantity, long_only)
     initial = number(capital, positive=True)
     result = replay(bars, strategy, capital=initial, max_abs_target=quantity,

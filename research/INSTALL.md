@@ -65,3 +65,9 @@ a fresh external C++ project links it, the installed C++ converter feeds the
 installed Python launcher, and import resolution is checked without PYTHONPATH.
 CI runs this with the same compiler/sanitizer flags as the source behavior tests.
 These checks are not broker, external host/PID1, or live-trading qualification.
+
+The installed `hepta-research-import` consumes the explicitly qualified legacy
+one-minute CSV layout through the same offline evaluator. Its required epoch,
+clock-zone, volume-field, UTC session and completeness-watermark inputs, and the
+installed C++ `BarSeries` API are documented in [LEGACY-IMPORT.md](LEGACY-IMPORT.md).
+The installed smoke also exercises both new interfaces after relocating the SDK.

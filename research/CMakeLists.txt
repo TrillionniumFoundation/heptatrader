@@ -56,6 +56,8 @@ if(HEPTA_RESEARCH_STANDALONE)
         "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/heptatrader/research/python")
     configure_file(cmake/replay_main.py.in
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-replay" @ONLY)
+    configure_file(cmake/legacy_main.py.in
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-import" @ONLY)
     install(TARGETS hepta_research_data hepta_research_bars EXPORT HeptaResearchTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -67,6 +69,7 @@ if(HEPTA_RESEARCH_STANDALONE)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/research/python"
         FILES_MATCHING PATTERN "*.py")
     install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-replay"
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-import"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
-    install(FILES INSTALL.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
+    install(FILES INSTALL.md LEGACY-IMPORT.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
 endif()

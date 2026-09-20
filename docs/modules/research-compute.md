@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: integration/heptadll-modular-20260919
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`
 
 ## Responsibilities and dependencies
 
@@ -47,3 +47,14 @@ and Python launcher without PYTHONPATH. This is a selected responsibility port,
 not complete Pegasus matching or HeptaDLL ABI compatibility. No private
 history/SDK is imported and no legacy runtime switch is reopened. Research
 results confer neither PAPER nor LIVE authorization.
+
+## Legacy CSV and K-line series continuation
+
+[The legacy import/series contract](../../research/LEGACY-IMPORT.md) covers the
+installed `hepta-research-import` and `BarSeries`. Explicit epoch/timezone,
+UTC sessions, source completeness and volume semantics prevent silent legacy
+reinterpretation. The importer retains source fields and unknown tick counts,
+and reuses the existing offline evaluator rather than creating a second core.
+Series peak/trough results carry their right-neighbor confirmation time;
+corrections, trimming, threshold queries and aggregation remain research-only.
+The existing CTest discovery and installed smoke exercise these additions.

@@ -22,8 +22,8 @@ feature/differential equivalence. Legacy classes are not made an alternate runti
 |---|---|---|
 | `heptaDate`, calendar arithmetic | `CivilDay` | Validated Gregorian arithmetic, not a current holiday calendar |
 | `heptaProductTradeTime`, `heptaMarketTime` | explicit `Session` input | No silently current hard-coded exchange hours; caller supplies UTC windows and trading days |
-| `heptaKindleStickSeries` | `BarBuilder`, `Highest`, `Lowest` | Integer ticks, ordered input, explicit volume policy; only the documented aggregation/extrema subset is ported |
-| data-file helpers | `hepta-research-bars` CSV consumer | Strict normalized schema; legacy BIN/DB/XML formats are not silently interpreted |
+| `heptaKindleStickSeries` | `BarBuilder`, `BarSeries` | Integer ticks, ordered bounded history, corrections/trims, OHLC queries, strict confirmed swings and aggregation; not old ABI equivalence |
+| data-file helpers | `hepta-research-bars`, `hepta-research-import` | Normalized ticks and explicit legacy one-minute 11/13-field CSV; BIN/DB/XML remain unsupported |
 | `heptaBasicCTAStrategy::SetStrategyPosition` | `TargetPolicy.delta` | Bounded close-first target planning; no local claim that a close filled |
 | `heptaBasicAgent` direct order methods | `StrategyGateway` | Existing heptactl/NativeToolClient only, Execution-issued identity and permit, durable uncertainty recovery |
 | Pegasus replay and settlement | `replay`, `ResearchLedger` | Offline next-bar-open model, explicit costs and multiplier; NOT full queue matching, margin or exchange settlement parity |
@@ -87,6 +87,21 @@ is observed. Tick arrays are not retained in memory.
 Exit 0 means the entire input was accepted. A later error may occur after some
 CSV has been emitted; stage output and discard it on nonzero exit. Do not treat
 partial stdout as a successful import. No broker snapshot is produced here.
+
+## Legacy CSV and series extension
+
+[LEGACY-IMPORT.md](LEGACY-IMPORT.md) specifies the installed one-minute legacy
+CSV consumer and C++ `BarSeries` API. The importer requires a clock zone, explicit
+UTC sessions, volume-field choice and completeness watermark; it converts the
+legacy 1601 epoch rather than treating it as Unix time. Raw bytes are hashed and
+source fields retained. Unknown tick counts remain null. The importer reuses the
+same `evaluate_bars`/`replay` accounting path and has no Gateway import.
+
+`BarSeries` adds bounded ordered history, replacement/trimming, OHLC-selectable
+extrema, first threshold crossings, trading-day counts, aggregation and strict
+peaks/troughs with their actual confirmation time. Rejected mutations preserve
+state. A future comparison bar cannot turn a centered historical peak into an
+earlier signal. Existing normalized schemas and execution authority are unchanged.
 
 ## Strategy and replay contract
 

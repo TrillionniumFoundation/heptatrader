@@ -62,6 +62,7 @@ add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE Hepta::ResearchData)
 ''')
         (consumer / "main.cpp").write_text('''#include <hepta/research/market_data.hpp>
+#include <hepta/research/bar_series.hpp>
 #include <iostream>
 using namespace hepta::research;
 int main() {
@@ -73,6 +74,18 @@ int main() {
     if (builder.Push({"TEST","20260921",10,101,3,15},out)!=PushResult::ClosedBar) return 4;
     if (out.open!=100 || out.close!=102 || out.volume!=3 || !out.complete) return 5;
     if (!builder.Finish(out) || out.complete || out.volume!=2) return 6;
+    BarSeries series("TEST",3);
+    for (int i=0;i<3;++i) {
+        Bar b; b.instrument="TEST"; b.tradingDay="20260921";
+        b.beginUs=i*10; b.endUs=(i+1)*10;
+        b.open=b.high=b.low=b.close=(i==1 ? 5 : 1);
+        b.volume=2; b.ticks=1; b.complete=true;
+        series.Append(b);
+    }
+    if (!series.Peaks(0,2,1,29).empty()) return 7;
+    const auto peaks=series.Peaks(0,2,1,30);
+    if (peaks.size()!=1 || peaks[0].index!=1 || peaks[0].confirmedAtUs!=30) return 8;
+    if (series.Aggregate(0,2).volume!=6 || series.FromLatest().close!=1) return 9;
     std::cout << "external C++ consumer PASS\\n";
 }
 ''')
@@ -125,8 +138,43 @@ int main() {
         require("PASS" in run([sys.executable, "-I", "-c", probe, str(python_root)], cwd=root, env=env),
                 "Python import must resolve to relocated install")
         checks.append("installed_compute_and_gateway_modules_import_without_checkout")
+        importer = prefix / "bin/hepta-research-import"
+        require(importer.is_file(), "installed legacy import command missing")
+        legacy, legacy_sessions, legacy_report = (root / name for name in (
+            "legacy.csv", "legacy-sessions.csv", "legacy-report.json"))
+        # Synthetic wall-clock minutes at the Unix epoch, stored in the legacy
+        # 1601 epoch. This tests conversion without borrowing private market data.
+        epoch = 11644473600000000
+        legacy.write_text("TimeStamp,DateTime,Open,High,Low,Close,TotalVolume,LastVolume,"
+                          "TotalTurnOver,LastTurnOver,OpenInterest\n" + "".join(
+            f"{epoch+i*60000000},19700101_000{i}00,{price},{price},{price},{price},100,5,1000,50,7.5\n"
+            for i,price in enumerate((100,102,104,103))))
+        legacy_sessions.write_text("begin_us,end_us,trading_day\n0,240000000,19700101\n")
+        run([sys.executable, "-I", str(importer), "--bars", str(legacy),
+             "--sessions", str(legacy_sessions), "--output", str(legacy_report),
+             "--instrument", "TEST", "--clock-zone", "UTC", "--volume-field", "LastVolume",
+             "--complete-through-us", "180000000", "--tick-size", "1", "--capital", "1000",
+             "--quantity", "2", "--fast", "1", "--slow", "2", "--slippage", "1",
+             "--fee-per-unit", "0.5"], cwd=root, env=env)
+        imported = json.loads(legacy_report.read_text())
+        require(imported["input"]["bars_sha256"] == hashlib.sha256(legacy.read_bytes()).hexdigest(),
+                "legacy bytes digest mismatch")
+        require(imported["input"]["sessions_sha256"] == hashlib.sha256(legacy_sessions.read_bytes()).hexdigest(),
+                "session bytes digest mismatch")
+        require(imported["fills"] == [{"timestamp_us":120000000, "delta":"2", "price":"105", "fee":"1.0"}],
+                "legacy report did not preserve epoch/causality/costs")
+        require([r["value"] for r in imported["equity"]] == ["1000","1000","997.0","995.0"],
+                "imported and normalized reports disagree")
+        require(imported["pending_target"] is None and not imported["assumptions"]["broker_authorized"],
+                "incomplete bar generated a signal or import granted trading")
+        require(all(r["tick_count"] is None and r["volume"] == 5 and r["total_volume"] == 100
+                    for r in imported["input"]["source_fields"]), "legacy fields fabricated or lost")
+        require((prefix/"share/doc/hepta-research/LEGACY-IMPORT.md").is_file(), "import contract not installed")
+        checks.append("installed_legacy_import_preserves_fields_epoch_and_existing_replay")
         digests = {str(path.relative_to(prefix)): hashlib.sha256(path.read_bytes()).hexdigest()
-                   for path in (bars_tool, launcher, python_root / "hepta_research/pipeline.py")}
+                   for path in (bars_tool, launcher, importer, python_root / "hepta_research/pipeline.py",
+                                python_root / "hepta_research/legacy.py",
+                                prefix / "include/hepta/research/bar_series.hpp")}
     return {"schema": "hepta.research.install-validation.v1", "status": "PASS",
             "source_sha": source_sha, "compiler": cxx, "flags": flags,
             "checks": checks, "installed_sha256": digests,
