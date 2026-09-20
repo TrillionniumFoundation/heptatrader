@@ -37,8 +37,42 @@ public:
         result.reasonCode = "RESEARCH_FIXTURE_UNCERTAIN";
         return result;
     }
-    ExecutionCommandResult CancelOrder(const CancelOrderCommand&) override {
-        return ExecutionCommandResult();
+    ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++cancelCalls; cancelId = command.context.toolCallId; cancelOrderId = command.orderId;
+        cancelAny = command.context.allowCancelAny; cancelOwner = command.context.agentId;
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Uncertain;
+        result.commandId = cancelId;
+        result.reasonCode = "RESEARCH_FIXTURE_CANCEL_UNCERTAIN";
+        return result;
+    }
+    bool PreviewFlatten(const TradingToolSession&, const TradingToolCall&,
+                        std::string&, std::string& reason) {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++previewCalls; reason = "RESEARCH_FIXTURE_PREVIEW_DENIED";
+        return false; // No fixture issues a success-shaped risk permit.
+    }
+    ExecutionCommandResult Flatten(const TradingToolSession& session, const TradingToolCall& call) {
+        std::lock_guard<std::mutex> lock(mutex);
+        ++flattenCalls; flattenId = session.executionContext.toolCallId;
+        flattenInstrument = call.instrument; flattenPermit = call.previewPermit;
+        clientPositionAbsent = call.ibOrder.action.empty() && call.ibOrder.totalQuantity == 0 &&
+            call.ibOrder.lmtPrice == 0 && call.referencePrice == 0 && call.ibOrder.orderRef.empty();
+        ExecutionCommandResult result;
+        result.status = ExecutionCommandStatus::Uncertain;
+        result.commandId = flattenId;
+        result.reasonCode = "RESEARCH_FIXTURE_FLATTEN_UNCERTAIN";
+        return result;
+    }
+    void AssertExits(const std::string& expectedCancel, const std::string& expectedFlatten,
+                     const std::string& expectedPermit) {
+        std::lock_guard<std::mutex> lock(mutex);
+        Check(cancelCalls == 1 && cancelId == expectedCancel && cancelOrderId == 42 &&
+              !cancelAny && cancelOwner == "research-fixture-agent", "cancel authority or identity drift");
+        Check(previewCalls == 1 && flattenCalls == 1 && flattenId == expectedFlatten &&
+              flattenInstrument == "EUR.USD" && flattenPermit == expectedPermit && clientPositionAbsent,
+              "flatten retried, bypassed preview binding or supplied a local position");
     }
     void AssertSingleSubmission(const std::string& expected) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -48,12 +82,25 @@ private:
     std::mutex mutex;
     unsigned int calls = 0;
     std::string observedId;
+    unsigned int cancelCalls = 0, flattenCalls = 0, previewCalls = 0;
+    long cancelOrderId = -1;
+    bool cancelAny = false, clientPositionAbsent = false;
+    std::string cancelId, cancelOwner, flattenId, flattenInstrument, flattenPermit;
 };
 
 void TestGatewayForwarding() {
     TemporaryDirectory directory;
     UncertainFixtureAuthority authority;
-    TradingToolRegistry registry(authority);
+    TradingToolReadCallbacks reads;
+    reads.riskPreviewFlatten = [&](const TradingToolSession& session, const TradingToolCall& call,
+                                   std::string& json, std::string& why) {
+        return authority.PreviewFlatten(session, call, json, why);
+    };
+    TradingToolTradeCallbacks trades;
+    trades.flattenPosition = [&](const TradingToolSession& session, const TradingToolCall& call) {
+        return authority.Flatten(session, call);
+    };
+    TradingToolRegistry registry(authority, reads, trades);
     DecisionLeaseManager leases;
     TradingToolHost host(registry, leases,
         [](const TradingToolSession&, const TradingToolCall&, std::string&) { return true; });
@@ -71,6 +118,8 @@ void TestGatewayForwarding() {
     binding.session.environment = "PAPER";
     binding.session.capabilities.insert("system.read");
     binding.session.capabilities.insert("trade.place");
+    binding.session.capabilities.insert("trade.cancel");
+    binding.session.capabilities.insert("trade.flatten");
     binding.allowedInstruments.insert("EUR.USD");
     InstrumentRef contract;
     contract.symbol = "EUR"; contract.currency = "USD";
@@ -103,10 +152,54 @@ void TestGatewayForwarding() {
     Check(result.envelope.status == "uncertain", "adapter hid an uncertain outcome");
     Check(result.envelope.reasonCode == "RESEARCH_FIXTURE_UNCERTAIN", "adapter changed the execution reason");
     authority.AssertSingleSubmission(id);
+    PreparedCancellation cancellation(42);
+    PreparedFlatten flatten("EUR.USD");
+    const std::string cancelId = "research-fixture-cancel-0001";
+    const std::string flattenId = "execution-fixture-flatten-0001";
+    Check(client.Cancel(cancellation, cancelId, result, reason), "cancel response not transported");
+    Check(result.envelope.status == "uncertain" &&
+          result.envelope.reasonCode == "RESEARCH_FIXTURE_CANCEL_UNCERTAIN", "cancel outcome rewritten");
+    Check(client.PreviewFlatten(flatten, "research-fixture-flatten-preview", result, reason),
+          "flatten preview rejection not transported");
+    Check(result.envelope.status != "ok", "fixture preview fabricated approval");
+    // A syntactically valid dummy permit reaches only a negative fixture, never
+    // a broker. This verifies forwarding, not actual risk/permit authorization.
+    Check(client.Flatten(flatten, flattenId, permit, result, reason), "flatten response not transported");
+    Check(result.envelope.status == "uncertain" &&
+          result.envelope.reasonCode == "RESEARCH_FIXTURE_FLATTEN_UNCERTAIN", "flatten outcome rewritten");
+    authority.AssertExits(cancelId, flattenId, permit);
+
+    // Missing capability must not be bypassed merely because this is an exit.
+    auto restricted = binding;
+    restricted.token = "research-fixture-restricted-token-0001";
+    restricted.session.executionContext.agentId = "research-fixture-restricted-agent";
+    restricted.session.executionContext.sessionId = "research-fixture-restricted-session";
+    restricted.session.capabilities.erase("trade.cancel");
+    restricted.session.capabilities.erase("trade.flatten");
+    Check(host.RegisterSession(restricted, reason), "restricted registration failed");
+    auto restrictedConfig = config; restrictedConfig.sessionToken = restricted.token;
+    NativeToolClient restrictedNative(restrictedConfig);
+    NativeStrategyClient restrictedClient(restrictedNative);
+    const bool cancelDelivered = restrictedClient.Cancel(cancellation, "research-denied-cancel-0001", result, reason);
+    Check(!cancelDelivered || result.envelope.status == "permission_denied" ||
+          result.envelope.status == "invalid_tool", "missing cancel capability was accepted");
+    const bool flattenDelivered = restrictedClient.Flatten(flatten, "research-denied-flatten-0001", permit, result, reason);
+    Check(!flattenDelivered || result.envelope.status == "permission_denied" ||
+          result.envelope.status == "invalid_tool", "missing flatten capability was accepted");
+    authority.AssertExits(cancelId, flattenId, permit);
+    host.RevokeSession(restricted.token);
     host.RevokeSession(binding.token);
     Check(client.Submit(proposal, id, permit, result, reason), "revocation response not transported");
     Check(result.envelope.status == "permission_denied", "revoked identity reached execution");
     authority.AssertSingleSubmission(id);
+    Check(client.Cancel(cancellation, cancelId, result, reason), "cancel revocation not transported");
+    Check(result.envelope.status == "permission_denied", "revoked cancel reached execution");
+    Check(client.Flatten(flatten, flattenId, permit, result, reason), "flatten revocation not transported");
+    Check(result.envelope.status == "permission_denied", "revoked flatten reached execution");
+    Check(client.PreviewFlatten(flatten, "research-revoked-flatten-preview", result, reason),
+          "preview revocation not transported");
+    Check(result.envelope.status == "permission_denied", "revoked preview reached its callback");
+    authority.AssertExits(cancelId, flattenId, permit);
     server.Stop();
     std::cout << "local_fixture_gateway_roundtrip_us=" << elapsed
               << " (includes discovery; not broker latency)\n";

@@ -20,6 +20,31 @@ private:
     TradingToolCall call_;
 };
 
+// Select an order ID obtained from the canonical service, never a replay order
+// or locally invented broker ID. The service alone checks ownership and cancel
+// eligibility. Construction does not establish either. There is no cancel-any
+// flag, owner override, local order map or fallback to a broker transport.
+class PreparedCancellation {
+public:
+    explicit PreparedCancellation(long serverOrderId);
+    TradingToolHostRequest SubmissionRequest(const std::string& executionCommandId) const;
+private:
+    TradingToolCall call_;
+};
+
+// Select only a server-bound instrument. The Execution Service derives side,
+// quantity, price and snapshot binding from its authoritative state. Research
+// positions, marks and ledger balances cannot be attached to this proposal.
+class PreparedFlatten {
+public:
+    explicit PreparedFlatten(const std::string& instrument);
+    TradingToolHostRequest PreviewRequest(const std::string& previewCallId) const;
+    TradingToolHostRequest SubmissionRequest(const std::string& executionCommandId,
+                                             const std::string& previewPermit) const;
+private:
+    TradingToolCall call_;
+};
+
 // This forward-only library links only NativeToolClient and its wire closure.
 // The referenced NativeToolClient must outlive this object. No automatic retry,
 // no locally invented execution command IDs, no journal or broker networking.
@@ -36,6 +61,17 @@ public:
     bool Submit(const PreparedOrder& order, const std::string& executionCommandId,
                 const std::string& previewPermit, NativeToolClientResult& result,
                 std::string& reason) const;
+    // Cancel has no preview tool. Persist one caller-selected canonical command
+    // ID with the service order ID before sending; reuse both after uncertainty.
+    bool Cancel(const PreparedCancellation& cancellation, const std::string& executionCommandId,
+                NativeToolClientResult& result, std::string& reason) const;
+    bool PreviewFlatten(const PreparedFlatten& flatten, const std::string& previewCallId,
+                        NativeToolClientResult& result, std::string& reason) const;
+    // As for Submit, forward the ID and permit from the matching preview. This
+    // does not turn flatten into an unrestricted or automatically retried exit.
+    bool Flatten(const PreparedFlatten& flatten, const std::string& executionCommandId,
+                 const std::string& previewPermit, NativeToolClientResult& result,
+                 std::string& reason) const;
     bool Status(const std::string& executionCommandId, const std::string& queryCallId,
                 NativeToolClientResult& result, std::string& reason) const;
 private:

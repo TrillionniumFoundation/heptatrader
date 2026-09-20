@@ -55,6 +55,37 @@ TradingToolHostRequest PreparedOrder::SubmissionRequest(const std::string& id, c
     Validate(request.call);
     return request;
 }
+PreparedCancellation::PreparedCancellation(long serverOrderId) {
+    call_.name = "trade.cancel_order"; call_.orderId = serverOrderId;
+    Validate(call_);
+}
+TradingToolHostRequest PreparedCancellation::SubmissionRequest(const std::string& id) const {
+    CheckId(id);
+    TradingToolHostRequest request;
+    request.toolCallId = id; request.call = call_;
+    return request;
+}
+PreparedFlatten::PreparedFlatten(const std::string& instrument) {
+    call_.name = "risk.preview_flatten"; call_.instrument = instrument;
+    Validate(call_);
+}
+TradingToolHostRequest PreparedFlatten::PreviewRequest(const std::string& id) const {
+    CheckId(id);
+    TradingToolHostRequest request;
+    request.toolCallId = id; request.call = call_;
+    return request;
+}
+TradingToolHostRequest PreparedFlatten::SubmissionRequest(const std::string& id,
+                                                          const std::string& permit) const {
+    CheckId(id);
+    if (permit.empty() || permit.size() > 4096)
+        throw std::invalid_argument("RESEARCH_PREVIEW_PERMIT_REQUIRED");
+    TradingToolHostRequest request;
+    request.toolCallId = id; request.call = call_;
+    request.call.name = "trade.flatten_position"; request.call.previewPermit = permit;
+    Validate(request.call);
+    return request;
+}
 bool NativeStrategyClient::Forward(const TradingToolHostRequest& request, NativeToolClientResult& result,
                                    std::string& reason) const {
     // Never allow a previous success envelope to survive a failed transport.
@@ -74,6 +105,25 @@ bool NativeStrategyClient::Submit(const PreparedOrder& order, const std::string&
                                   std::string& reason) const {
     result = NativeToolClientResult(); reason.clear();
     try { return Forward(order.SubmissionRequest(id, permit), result, reason); }
+    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+}
+bool NativeStrategyClient::Cancel(const PreparedCancellation& cancellation, const std::string& id,
+                                  NativeToolClientResult& result, std::string& reason) const {
+    result = NativeToolClientResult(); reason.clear();
+    try { return Forward(cancellation.SubmissionRequest(id), result, reason); }
+    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+}
+bool NativeStrategyClient::PreviewFlatten(const PreparedFlatten& flatten, const std::string& id,
+                                          NativeToolClientResult& result, std::string& reason) const {
+    result = NativeToolClientResult(); reason.clear();
+    try { return Forward(flatten.PreviewRequest(id), result, reason); }
+    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+}
+bool NativeStrategyClient::Flatten(const PreparedFlatten& flatten, const std::string& id,
+                                   const std::string& permit, NativeToolClientResult& result,
+                                   std::string& reason) const {
+    result = NativeToolClientResult(); reason.clear();
+    try { return Forward(flatten.SubmissionRequest(id, permit), result, reason); }
     catch (const std::invalid_argument& e) { reason = e.what(); return false; }
 }
 bool NativeStrategyClient::Status(const std::string& id, const std::string& queryId,

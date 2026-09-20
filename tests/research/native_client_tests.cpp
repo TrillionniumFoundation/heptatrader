@@ -8,7 +8,93 @@
 using namespace hepta::research;
 
 namespace {
+
+std::string Wire(TradingToolHostRequest request) {
+    Check(request.sessionToken.empty(), "proposal must not assign the session");
+    request.sessionToken = "research-exit-codec-token";
+    std::string body, reason;
+    Check(TypedToolProtocol::EncodeRequest(request, body, reason), "exit encoding failed");
+    TradingToolHostRequest decoded;
+    Check(TypedToolProtocol::DecodeRequest(body, decoded, reason), "exit decoding failed");
+    std::string roundTrip;
+    Check(TypedToolProtocol::EncodeRequest(decoded, roundTrip, reason), "exit re-encoding failed");
+    Check(body == roundTrip, "exit wire round trip changed fields");
+    return body;
+}
+void ExitRequests() {
+    const std::string cancelId = "research-cancel-command-001";
+    // Exercise the actual wire's full nonnegative long domain, including zero.
+    for (long orderId : {0L, 42L, std::numeric_limits<long>::max()}) {
+        PreparedCancellation cancellation(orderId);
+        auto request = cancellation.SubmissionRequest(cancelId);
+        TradingToolHostRequest expected;
+        expected.toolCallId = cancelId; expected.call.name = "trade.cancel_order";
+        expected.call.orderId = orderId;
+        Check(Wire(request) == Wire(expected), "cancel added authority or changed order identity");
+        Check(Wire(request) == Wire(cancellation.SubmissionRequest(cancelId)), "cancel retry drifted");
+        request.call.orderId = 17; // Modifying a returned copy cannot change the proposal.
+        Check(cancellation.SubmissionRequest(cancelId).call.orderId == orderId, "cancel proposal mutated");
+        Throws([&] { cancellation.SubmissionRequest("short"); });
+    }
+    Throws([] { PreparedCancellation(-1); });
+    Throws([] { (void)PreparedCancellation(std::numeric_limits<long>::min()); });
+    Throws([] { PreparedFlatten(""); });
+    Throws([] { PreparedFlatten("EUR USD"); });
+    PreparedFlatten flatten("EUR.USD");
+    const std::string previewId = "research-flatten-preview-001";
+    const std::string flattenId = "execution-flatten-command-001";
+    const std::string permit = "sha256:" + std::string(64, 'b');
+    const auto preview = flatten.PreviewRequest(previewId);
+    const auto submit = flatten.SubmissionRequest(flattenId, permit);
+    TradingToolHostRequest expected;
+    expected.toolCallId = previewId; expected.call.name = "risk.preview_flatten";
+    expected.call.instrument = "EUR.USD";
+    Check(Wire(preview) == Wire(expected), "flatten preview carried client position or price");
+    expected.toolCallId = flattenId; expected.call.name = "trade.flatten_position";
+    expected.call.previewPermit = permit;
+    Check(Wire(submit) == Wire(expected), "flatten submission widened the proposal");
+    Check(Wire(submit) == Wire(flatten.SubmissionRequest(flattenId, permit)), "flatten retry drifted");
+    auto normalized = submit;
+    normalized.toolCallId = previewId; normalized.call.name = preview.call.name;
+    normalized.call.previewPermit.clear();
+    Check(Wire(normalized) == Wire(preview), "flatten preview/submission binding drift");
+    normalized.call.instrument = "OTHER.FUT";
+    Check(flatten.PreviewRequest(previewId).call.instrument == "EUR.USD", "flatten proposal mutated");
+    Throws([&] { flatten.PreviewRequest("short"); });
+    Throws([&] { flatten.SubmissionRequest("short", permit); });
+    Throws([&] { flatten.SubmissionRequest(flattenId, ""); });
+    Throws([&] { flatten.SubmissionRequest(flattenId, "not-an-execution-permit"); });
+    Throws([&] { flatten.SubmissionRequest(flattenId, std::string(4097, 'x')); });
+
+    NativeToolClientConfig config;
+    config.socketPath = "/dev/null/hepta-research-no-socket";
+    config.sessionToken = "research-test-session-token"; config.timeoutMs = 100;
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    PreparedCancellation cancellation(42);
+    // Every exit wrapper must clear prior success both on local validation
+    // failure and on real missing-socket transport failure. No test transport.
+    for (int which = 0; which != 6; ++which) {
+        NativeToolClientResult result;
+        result.envelope.status = "ok"; result.envelope.orderId = 42;
+        result.envelope.payloadJson = "old-payload"; result.responseJson = "old-success";
+        std::string reason = "old-reason";
+        bool transported = false;
+        switch (which) {
+        case 0: transported = client.Cancel(cancellation, cancelId, result, reason); break;
+        case 1: transported = client.Cancel(cancellation, "short", result, reason); break;
+        case 2: transported = client.PreviewFlatten(flatten, previewId, result, reason); break;
+        case 3: transported = client.PreviewFlatten(flatten, "short", result, reason); break;
+        case 4: transported = client.Flatten(flatten, flattenId, permit, result, reason); break;
+        default: transported = client.Flatten(flatten, flattenId, "", result, reason); break;
+        }
+        Check(!transported && !reason.empty() && reason != "old-reason", "exit failure lost its diagnostic");
+        Check(result.envelope.status.empty() && result.envelope.orderId == -1 &&
+              result.envelope.payloadJson.empty() && result.responseJson.empty(), "exit failure leaked old success");
+    }
+}
+
 void Tests() {
+    ExitRequests();
     InstrumentRef contract;
     contract.symbol = "EUR"; contract.secType = "CASH";
     contract.exchange = "SIM"; contract.currency = "USD";

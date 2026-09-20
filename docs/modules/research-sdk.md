@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: source-built research, offline developer SDK and forward-only client integration
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/sdk_package_behavior.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/sdk_package_behavior.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`
 
 ## Ownership and execution boundary
 
@@ -145,6 +145,44 @@ A `true` return means a response was transported, not that a mutation succeeded.
 Inspect the result envelope: rejection and uncertainty remain unchanged. A failed
 transport clears stale output and returns its diagnostic. Session tokens and
 schema discovery remain owned by NativeToolClient and the existing Gateway.
+
+### Guarded cancellation and flattening
+
+`PreparedCancellation(serverOrderId)` selects only a nonnegative order ID returned
+by the canonical service. `NativeStrategyClient::Cancel` forwards it to
+`trade.cancel_order`; it has no cancel-any flag, account/owner override or local
+order map. The service verifies ownership, recovery state and cancel eligibility.
+An offline replay order ID is not a production order ID and must not be converted
+or guessed. Cancel has no preview tool: the caller retains one canonical cancel
+command ID with the service order ID before sending and reuses both after an
+uncertain response. `Status` queries that cancel command, not its order number.
+
+`PreparedFlatten(instrument)` selects only a server-bound instrument.
+`PreviewFlatten` calls `risk.preview_flatten`; `Flatten` calls
+`trade.flatten_position` with the matching Execution-issued command ID and opaque
+preview permit. Quantity, side, price, local cost basis and research position
+snapshots cannot be provided through this proposal. The service alone derives
+and revalidates the position/snapshot plan. Missing or rejected previews do not
+authorize a fallback place order, locally synthesized opposite-side order or
+reuse of a permit for another instrument.
+
+Both are immutable request builders and ordinary clients of existing tools,
+not new tools or new Execution entry points. Capability discovery, session
+revocation, owner checks and all recovery/terminal gates still apply to exits.
+A composition without the optional flatten tools remains unsupported; the SDK
+does not install a handler. No method automatically retries a mutation, turns an
+uncertain outcome into success or clears a service fence. As for placement, false
+transport or validation results clear prior output and retain a diagnostic.
+
+The existing native tests cover byte-identical retry requests, zero/positive/maximum
+order-ID wire round trips, proposal immutability, absent client position fields,
+malformed inputs and stale-success clearing. The real local Gateway fixture
+extends its negative-only authority to cancellation/flattening and checks one
+forwarded call, missing capabilities and revoked sessions. Its denied preview
+and uncertain mutation callbacks have no venue and issue no risk-approval permit;
+these assertions are not production risk, durable recovery or broker acceptance.
+No offline SDK export, production target, vendor SDK or runtime capability state
+is changed by these source-built client APIs.
 
 ## Build and verification
 
