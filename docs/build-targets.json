@@ -269,6 +269,9 @@
             "hepta_paper_terminal_latch_committer",
             "hepta_portfolio_risk_snapshot_builder_tests",
             "hepta_pre_trade_risk_engine_tests",
+            "hepta_research",
+            "hepta_research_client_tests",
+            "hepta_research_core_tests",
             "hepta_session_supervisor_lease_store_migration_tests",
             "hepta_sessionctl",
             "hepta_simulator_risk_runtime_tests",
@@ -1324,6 +1327,148 @@
           ]
         },
         {
+          "name": "hepta_research",
+          "type": "EXECUTABLE",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data",
+            "hepta_research_replay",
+            "hepta_research_strategy"
+          ],
+          "translation_units": [
+            {
+              "path": "strategies/native/research_cli.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_native_tool_client",
+            "hepta_research_market_data",
+            "hepta_research_strategy",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/client/research_intent_client.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_client_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_native_tool_client",
+            "hepta_research_client",
+            "hepta_research_market_data",
+            "hepta_research_strategy",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/research_intent_client_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_research_client_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_core_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data",
+            "hepta_research_replay",
+            "hepta_research_strategy"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/research_core_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_research_core_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_market_data",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "strategies/native/market_data.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_replay",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data"
+          ],
+          "translation_units": [
+            {
+              "path": "strategies/native/replay.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_strategy",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data"
+          ],
+          "translation_units": [
+            {
+              "path": "strategies/native/strategy.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
           "name": "hepta_session_supervisor_core",
           "type": "STATIC_LIBRARY",
           "declared_in": "HeptaTrade/CMakeLists.txt",
@@ -2025,6 +2170,9 @@
             "hepta_paper_terminal_latch_committer",
             "hepta_portfolio_risk_snapshot_builder_tests",
             "hepta_pre_trade_risk_engine_tests",
+            "hepta_research",
+            "hepta_research_client_tests",
+            "hepta_research_core_tests",
             "hepta_session_supervisor_lease_store_migration_tests",
             "hepta_sessionctl",
             "hepta_simulator_risk_runtime_tests",
@@ -3263,6 +3411,148 @@
               "path": "tests/pre_trade_risk_engine_tests.cpp",
               "kind": "test",
               "owner": "hepta_pre_trade_risk_engine_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research",
+          "type": "EXECUTABLE",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data",
+            "hepta_research_replay",
+            "hepta_research_strategy"
+          ],
+          "translation_units": [
+            {
+              "path": "strategies/native/research_cli.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_client",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_native_tool_client",
+            "hepta_research_market_data",
+            "hepta_research_strategy",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "HeptaTrade/client/research_intent_client.cpp",
+              "kind": "implementation",
+              "owner": "agent-entry",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_client_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_agent_execution_support",
+            "hepta_agent_os_core",
+            "hepta_execution_client",
+            "hepta_execution_contract",
+            "hepta_execution_transport",
+            "hepta_native_tool_client",
+            "hepta_research_client",
+            "hepta_research_market_data",
+            "hepta_research_strategy",
+            "hepta_session_supervisor_core",
+            "hepta_trading_tool_core",
+            "hepta_typed_tool_protocol"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/research_intent_client_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_research_client_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_core_tests",
+          "type": "EXECUTABLE",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data",
+            "hepta_research_replay",
+            "hepta_research_strategy"
+          ],
+          "translation_units": [
+            {
+              "path": "tests/research_core_tests.cpp",
+              "kind": "test",
+              "owner": "hepta_research_core_tests",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_market_data",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [],
+          "translation_units": [
+            {
+              "path": "strategies/native/market_data.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_replay",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data"
+          ],
+          "translation_units": [
+            {
+              "path": "strategies/native/replay.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
+              "language": "CXX",
+              "standard": "11"
+            }
+          ]
+        },
+        {
+          "name": "hepta_research_strategy",
+          "type": "STATIC_LIBRARY",
+          "declared_in": "cmake/HeptaResearch.cmake",
+          "precompiled_headers": [],
+          "dependencies": [
+            "hepta_research_market_data"
+          ],
+          "translation_units": [
+            {
+              "path": "strategies/native/strategy.cpp",
+              "kind": "implementation",
+              "owner": "shadow-research",
               "language": "CXX",
               "standard": "11"
             }

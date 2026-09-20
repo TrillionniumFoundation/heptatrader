@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research_intent_client_tests.cpp`
 
 ## Responsibilities
 
@@ -63,3 +63,7 @@ real Python process against a fragmented local Unix responder, including an
 uncertain mutation followed by the same-ID duplicate retry. It also tests token
 file safety, catalog drift and strict JSON rejection. Native-client tests remain
 independent cross-language evidence; neither suite grants Broker authority.
+
+## Native research integration
+
+[HeptaDLL capability integration](../technical/heptadll-integration.md) defines the native research API, offline-only replay, durable unprivileged proposal client, test scope and retained source/venue boundaries. No broker capability or legacy runtime is restored.
