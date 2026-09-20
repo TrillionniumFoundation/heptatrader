@@ -177,6 +177,20 @@ def normalize_ticks(path: Path, sessions_path: Path, *, layout: str,
         return NormalizedTicks(ticks_csv, sessions_csv, metadata)
 
 
+def _builder_executable(bars_executable: Path, period_us: int, first_volume: str,
+                        timeout_seconds: int) -> Path:
+    if type(period_us) is not int or not 0 <= period_us <= I64_MAX:
+        raise ValueError("period_us must be a nonnegative signed 64-bit integer")
+    if first_volume not in ("baseline", "include"):
+        raise ValueError("explicit first-volume policy required")
+    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 600:
+        raise ValueError("bounded executable timeout required")
+    executable = Path(bars_executable)
+    if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
+        raise ValueError("absolute compiled hepta-research-bars executable required")
+    return executable
+
+
 def tick_report(path: Path, sessions_path: Path, *, bars_executable: Path,
                 period_us: int, first_volume: str, layout: str, instrument: str,
                 clock_zone: str, tick_size: object, action_day: str | None = None,
@@ -187,18 +201,23 @@ def tick_report(path: Path, sessions_path: Path, *, bars_executable: Path,
     File EOF never completes the final bar. All parsing/building/evaluation must
     succeed before the caller publishes a report. No fallback fill/bar engine.
     """
-    if type(period_us) is not int or not 0 <= period_us <= I64_MAX:
-        raise ValueError("period_us must be a nonnegative signed 64-bit integer")
-    if first_volume not in ("baseline", "include"):
-        raise ValueError("explicit first-volume policy required")
-    if type(timeout_seconds) is not int or not 1 <= timeout_seconds <= 600:
-        raise ValueError("bounded executable timeout required")
-    executable = Path(bars_executable)
-    if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
-        raise ValueError("absolute compiled hepta-research-bars executable required")
+    _builder_executable(bars_executable, period_us, first_volume, timeout_seconds)
     normalized = normalize_ticks(path, sessions_path, layout=layout, instrument=instrument,
         clock_zone=clock_zone, tick_size=tick_size, action_day=action_day,
         action_days_path=action_days_path, has_header=has_header, max_ticks=max_ticks)
+    return normalized_report(normalized, bars_executable=bars_executable,
+        period_us=period_us, first_volume=first_volume, tick_size=tick_size,
+        max_ticks=max_ticks, timeout_seconds=timeout_seconds, **evaluation)
+
+
+def normalized_report(normalized: NormalizedTicks, *, bars_executable: Path,
+                      period_us: int, first_volume: str, tick_size: object,
+                      max_ticks: int = MAX_TICKS, timeout_seconds: int = 120,
+                      **evaluation) -> dict:
+    """One compiled builder/evaluator for single files and captured XML bundles."""
+    executable = _builder_executable(bars_executable, period_us, first_volume, timeout_seconds)
+    if not isinstance(normalized, NormalizedTicks) or type(max_ticks) is not int or not 1 <= max_ticks <= MAX_TICKS:
+        raise ValueError("bounded normalized Tick input required")
     with tempfile.TemporaryDirectory(prefix="hepta-tick-import-") as temporary:
         directory = Path(temporary)
         ticks, sessions, bars = (directory/name for name in ("ticks.csv", "sessions.csv", "bars.csv"))

@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: integration/heptadll-modular-20260919
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`
 
 ## Responsibilities and dependencies
 
@@ -86,3 +86,26 @@ standalone CTest installs, relocates and invokes the real command in isolation.
 All earlier tests and privileged-runtime acceptance remain required. Other BIN
 ABIs, XML consumers, full Pegasus semantics and external licensing/consumer
 closure remain outside this specific format addition.
+
+## Explicit XML/catalog/list consumer
+
+[The XML input contract](../../research/XML-IMPORT.md) extends the input route
+with bounded inert configuration, instrument catalogs and indexed file lists.
+Every actual source is explicitly bound to a local path and digest; embedded
+paths, caches, broker credentials and old output settings are never executed.
+CSV/BIN single/list modes reuse the original normalizers and one extracted
+`normalized_report` compiled-builder entry. File boundaries do not reset bar,
+strategy or ledger state. Clock/session/date identity remains explicit.
+
+The installed `hepta-research-xml` takes tick size and research multiplier from
+the selected historical futures record, but requires caller-supplied capital
+and costs. That catalog is not authoritative broker state or a current-market
+rulebook. Duplicate references, malformed XML, unsupported DB/network/callback
+modes, digest mismatches and cross-file time/volume regressions reject.
+
+The existing CTest discovery includes behavior and actual converter tests.
+The additional standalone XML install test performs CMake installation,
+relocation and isolated CSV/BIN single/list command invocation. Original tests,
+canonical runtime CI and permissions are retained. This is not full XML-dialect,
+Pegasus matching/margin/settlement or legacy strategy equivalence; external
+consumer/licensing closure and old-repository retirement remain unresolved.
