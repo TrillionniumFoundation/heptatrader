@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: integration/heptadll-modular-20260919
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`, `tests/research/test_portfolio.py`, `tests/research/portfolio_install_smoke.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`, `tests/research/test_portfolio.py`, `tests/research/portfolio_install_smoke.py`, `tests/research/test_fifo.py`, `tests/research/test_matching.py`, `tests/research/test_order_flow.py`, `tests/research/order_flow_install_smoke.py`
 
 ## Responsibilities and dependencies
 
@@ -133,3 +133,27 @@ CTP deferral and XT priority are unchanged. This closes the normalized-bar,
 single-currency portfolio composition profile, not arbitrary mixed legacy Tick/
 BIN/XML ingestion or full Pegasus/strategy equivalence. The old repository and
 all original runtime acceptance remain intact.
+
+## Explicit order-flow matching and FIFO attribution
+
+[The order-flow contract](../../research/ORDER-FLOW.md) defines the installed
+`hepta-research-order-flow`, bounded mixed-instrument event stream and independent
+FIFO attribution over the SAME `ResearchLedger`. Explicit external/research
+orders share price/time queues; partial fills, FAK/IOC, all-or-none FOK, partial
+cancel priority, self-trade prevention and DAY expiry have executable behavior.
+A file boundary does not reset queues, order identities, capital or FIFO lots.
+
+This is an offline input profile, not a second Execution authority and not a
+claim to infer historical order queues from raw Tick/BIN/XML snapshots. Fees and
+marks remain explicit, stale held marks suppress valuation, and a FIFO basis
+rebase changes attribution only: no exchange cash settlement or margin is
+invented. The existing normalized-bar and portfolio consumers remain unchanged.
+
+The three new unittest files run under existing discovery; independent slow
+queue/per-unit FIFO references check results against the original cash ledger.
+Standalone CTest adds actual CMake installation, relocation and isolated CLI
+success/rejection through `order_flow_install_smoke.py`. The research-only SDK
+installs the new command, not the privileged runtime. Existing workflows,
+Gateway/Execution/OMS, CTP deferral, XT priority and licensing/consumer retirement
+requirements remain unchanged. Full Pegasus/strategy/exchange parity and exact
+revision remote acceptance are separate claims, not inferred from these tests.
