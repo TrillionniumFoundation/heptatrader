@@ -96,6 +96,31 @@ int main() {
     const auto extremeAccount = extremeLedger.Mark(maximum);
     Require(extremeAccount.quantity == 4096 && extremeAccount.averageEntry == maximum &&
             extremeAccount.unrealized == 0 && extremeAccount.equity == 1000);
+    // Exercise new accounting through the exported library after relocation.
+    ResearchLedger fifo("TEST.FUT", 1000, 10, 100, CostBasis::Fifo);
+    fill.fillId = "fifo-a"; fill.timestampUs = 1; fill.side = 1; fill.quantity = 1; fill.price = 100; fill.fee = 0;
+    fifo.Apply(fill); fill.fillId = "fifo-b"; fill.timestampUs = 2; fill.price = 120; fifo.Apply(fill);
+    fill.fillId = "fifo-c"; fill.timestampUs = 3; fill.side = -1; fill.price = 130; fifo.Apply(fill);
+    Require(fifo.Basis() == CostBasis::Fifo && fifo.Quantity() == 1 &&
+            fifo.Mark(140).averageEntry == 120 && fifo.Mark(140).realizedGross == 300 && fifo.Mark(140).equity == 1500);
+    ResearchInstrument a; a.instrument = "TEST.FUT"; a.currency = "USD"; a.multiplier = 10; a.costBasis = CostBasis::Fifo;
+    ResearchInstrument b = a; b.instrument = "OTHER.FUT"; b.multiplier = 5;
+    ResearchPortfolio portfolio(1000, "USD", {a, b});
+    fill.fillId = "portfolio-a"; fill.timestampUs = 1; fill.side = 1; fill.price = 100; portfolio.Apply(fill);
+    fill.fillId = "portfolio-b"; fill.instrument = "OTHER.FUT"; fill.side = -1; fill.price = 50; portfolio.Apply(fill);
+    bool missing = false;
+    try { portfolio.Snapshot(1, 0); } catch (const std::invalid_argument&) { missing = true; }
+    Require(missing);
+    tick.instrument = "TEST.FUT"; tick.timestampUs = 2; tick.sequence = 1; tick.price = 110; portfolio.Observe(tick);
+    tick.instrument = "OTHER.FUT"; tick.price = 40; portfolio.Observe(tick);
+    ResearchCashFlow flow; flow.flowId = "funding"; flow.timestampUs = 2; flow.amount = 500;
+    Require(portfolio.ApplyCashFlow(flow) && !portfolio.ApplyCashFlow(flow));
+    const auto portfolioValue = portfolio.Snapshot(2, 0);
+    Require(portfolioValue.positions.size() == 2 && portfolioValue.unrealized == 150 &&
+            portfolioValue.externalFlows == 500 && portfolioValue.equity == 1650);
+    bool stale = false;
+    try { portfolio.Snapshot(3, 0); } catch (const std::invalid_argument&) { stale = true; }
+    Require(stale);
     std::cout << "installed research contract passed\n";
 }
 '''
@@ -204,6 +229,10 @@ def main() -> None:
         summary = json.loads(output.splitlines()[-1])
         if summary.get("broker_authorized") is not False or summary.get("finalized") is not True or summary.get("active_orders") != 0:
             raise RuntimeError("installed replay did not retain its offline terminal contract")
+        fifo_output = run([str(replay[0]), str(ticks[0]), str(sessions[0]), "TEST.FUT", "10", "1", "2", "1", "fifo"])
+        fifo_summary = json.loads(fifo_output.splitlines()[-1])
+        if fifo_summary.get("cost_basis") != "fifo" or fifo_summary.get("equity") != summary.get("equity"):
+            raise RuntimeError("installed CLI lost its explicit FIFO accounting contract")
         # Missing capabilities and mismatching versions must not become stubs.
         for name, request, expected in (
             ("native", "find_package(HeptaResearch CONFIG REQUIRED COMPONENTS NativeClient)", "NativeClient"),

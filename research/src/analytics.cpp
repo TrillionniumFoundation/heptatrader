@@ -75,12 +75,13 @@ Performance EvaluateEquity(const std::vector<EquityPoint>& points,
     return result;
 }
 ResearchLedger::ResearchLedger(std::string instrument, double initial, double multiplier,
-                               std::size_t maxFillIds)
-    : instrument_(std::move(instrument)), initialEquity_(initial), multiplier_(multiplier), maxFillIds_(maxFillIds) {
+                               std::size_t maxFillIds, CostBasis costBasis)
+    : instrument_(std::move(instrument)), initialEquity_(initial), multiplier_(multiplier), maxFillIds_(maxFillIds), costBasis_(costBasis) {
     Tick validation; validation.instrument = instrument_; validation.sequence = 1; validation.price = 1;
     ValidateTick(validation);
     Require(std::isfinite(initial) && initial > 0 && std::isfinite(multiplier) && multiplier > 0 &&
-            maxFillIds > 0, "RESEARCH_LEDGER_CONFIG_INVALID");
+            maxFillIds > 0 && (costBasis == CostBasis::WeightedAverage || costBasis == CostBasis::Fifo),
+            "RESEARCH_LEDGER_CONFIG_INVALID");
 }
 bool ResearchLedger::Apply(const ResearchFill& fill) {
     Require(!fill.fillId.empty() && fill.fillId.size() <= 128 && !fill.orderId.empty() &&
@@ -103,7 +104,34 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
     const std::int64_t oldAbs = quantity_ < 0 ? -quantity_ : quantity_;
     const bool sameDirection = quantity_ == 0 || (quantity_ > 0) == (signedFill > 0);
     long double average = average_, realized = realized_, fees = fees_ + fill.fee;
-    if (sameDirection) {
+    std::deque<Lot> nextLots;
+    if (costBasis_ == CostBasis::Fifo) {
+        nextLots = lots_; // Allocation and numeric failure leave live lots intact.
+        std::int64_t remaining = fill.quantity;
+        if (!sameDirection) {
+            while (remaining > 0 && !nextLots.empty()) {
+                Lot& lot = nextLots.front();
+                const auto closed = std::min(remaining, lot.quantity);
+                realized += (static_cast<long double>(fill.price) - lot.price) *
+                            (quantity_ > 0 ? 1 : -1) * closed * multiplier_;
+                remaining -= closed; lot.quantity -= closed;
+                if (lot.quantity == 0) nextLots.pop_front();
+            }
+        }
+        if (remaining > 0) {
+            if (!nextLots.empty() && nextLots.back().price == fill.price)
+                nextLots.back().quantity += remaining;
+            else nextLots.push_back(Lot{remaining, fill.price});
+        }
+        std::int64_t count = 0;
+        average = 0;
+        for (const auto& lot : nextLots) {
+            const auto total = count + lot.quantity; // Bounded by position cap.
+            average = count == 0 ? lot.price :
+                average + (lot.price - average) * (static_cast<long double>(lot.quantity) / total);
+            count = total;
+        }
+    } else if (sameDirection) {
         // Interpolate within the two finite positive prices instead of
         // forming price*quantity sums. Identical fills preserve their exact
         // cost, even at DBL_MAX; true realized-P&L/fee overflow still rejects.
@@ -121,6 +149,7 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
     Finite(average); Finite(realized); Finite(fees);
     Finite(static_cast<long double>(initialEquity_) + realized - fees);
     fills_.emplace(fill.fillId, fill);
+    if (costBasis_ == CostBasis::Fifo) lots_.swap(nextLots);
     quantity_ = nextQuantity; average_ = average; realized_ = realized; fees_ = fees;
     lastTimestampUs_ = fill.timestampUs;
     return true;
@@ -130,9 +159,118 @@ ResearchAccount ResearchLedger::Mark(double mark) const {
     ResearchAccount out;
     out.quantity = quantity_; out.averageEntry = Finite(average_);
     out.realizedGross = Finite(realized_); out.fees = Finite(fees_);
-    const long double unrealized = (static_cast<long double>(mark) - average_) * quantity_ * multiplier_;
+    long double unrealized = 0;
+    if (costBasis_ == CostBasis::Fifo) {
+        // Mark each compressed lot, preserving exact zero P&L for equal prices.
+        for (const auto& lot : lots_)
+            unrealized += (static_cast<long double>(mark) - lot.price) * lot.quantity *
+                          (quantity_ > 0 ? 1 : -1) * multiplier_;
+    } else unrealized = (static_cast<long double>(mark) - average_) * quantity_ * multiplier_;
     out.unrealized = Finite(unrealized);
     out.equity = Finite(static_cast<long double>(initialEquity_) + realized_ + unrealized - fees_);
+    return out;
+}
+ResearchPortfolio::ResearchPortfolio(double initial, std::string currency,
+        const std::vector<ResearchInstrument>& instruments, std::size_t maxEventIds)
+    : initialEquity_(initial), currency_(std::move(currency)), maxEventIds_(maxEventIds) {
+    Require(std::isfinite(initial) && initial > 0 && maxEventIds > 0 &&
+            !instruments.empty() && instruments.size() <= 1024 &&
+            currency_.size() == 3, "RESEARCH_PORTFOLIO_CONFIG_INVALID");
+    for (char c : currency_)
+        Require(c >= 'A' && c <= 'Z', "RESEARCH_PORTFOLIO_CURRENCY_INVALID");
+    for (const auto& spec : instruments) {
+        Require(spec.currency == currency_, "RESEARCH_PORTFOLIO_FX_UNSUPPORTED");
+        Require(positions_.emplace(spec.instrument, Position(spec, initial, maxEventIds)).second,
+                "RESEARCH_PORTFOLIO_DUPLICATE_INSTRUMENT");
+    }
+}
+bool ResearchPortfolio::Apply(const ResearchFill& fill) {
+    const auto duplicate = fills_.find(fill.fillId);
+    if (duplicate != fills_.end()) {
+        Require(SameFill(duplicate->second, fill), "RESEARCH_FILL_ID_CONFLICT");
+        return false;
+    }
+    auto position = positions_.find(fill.instrument);
+    Require(position != positions_.end(), "RESEARCH_PORTFOLIO_INSTRUMENT_UNKNOWN");
+    Require(fill.timestampUs >= clockUs_, "RESEARCH_PORTFOLIO_CLOCK_REVERSED");
+    Require(eventCount_ < maxEventIds_, "RESEARCH_PORTFOLIO_EVENT_CAPACITY");
+    const auto receipt = fills_.emplace(fill.fillId, fill);
+    try {
+        // Ledger::Apply validates/stages before committing. A failed update
+        // must not consume the portfolio receipt or invalidate the old mark.
+        position->second.ledger.Apply(fill);
+    } catch (...) {
+        fills_.erase(receipt.first);
+        throw;
+    }
+    position->second.markCurrent = false;
+    clockUs_ = fill.timestampUs; ++eventCount_;
+    return true;
+}
+bool ResearchPortfolio::ApplyCashFlow(const ResearchCashFlow& flow) {
+    Require(!flow.flowId.empty() && flow.flowId.size() <= 128 && flow.timestampUs >= 0 &&
+            std::isfinite(flow.amount) && flow.amount != 0, "RESEARCH_CASH_FLOW_INVALID");
+    const auto duplicate = cashFlows_.find(flow.flowId);
+    if (duplicate != cashFlows_.end()) {
+        const auto& old = duplicate->second;
+        Require(old.timestampUs == flow.timestampUs && old.amount == flow.amount,
+                "RESEARCH_CASH_FLOW_ID_CONFLICT");
+        return false;
+    }
+    Require(flow.timestampUs >= clockUs_, "RESEARCH_PORTFOLIO_CLOCK_REVERSED");
+    Require(eventCount_ < maxEventIds_, "RESEARCH_PORTFOLIO_EVENT_CAPACITY");
+    const long double nextFlows = flows_ + flow.amount;
+    Finite(nextFlows); Finite(static_cast<long double>(initialEquity_) + nextFlows);
+    cashFlows_.emplace(flow.flowId, flow);
+    flows_ = nextFlows; clockUs_ = flow.timestampUs; ++eventCount_;
+    return true;
+}
+bool ResearchPortfolio::Observe(const Tick& tick) {
+    ValidateTick(tick);
+    auto found = positions_.find(tick.instrument);
+    Require(found != positions_.end(), "RESEARCH_PORTFOLIO_INSTRUMENT_UNKNOWN");
+    auto& position = found->second;
+    if (position.hasTick && tick.sequence == position.lastTick.sequence) {
+        const auto& old = position.lastTick;
+        Require(old.timestampUs == tick.timestampUs && old.price == tick.price &&
+                old.volume == tick.volume, "RESEARCH_SEQUENCE_CONFLICT");
+        return false; // In particular, cannot revalidate a pre-fill observation.
+    }
+    Require(tick.timestampUs >= clockUs_ &&
+            (!position.hasTick || tick.sequence > position.lastTick.sequence),
+            "RESEARCH_PORTFOLIO_TICK_OUT_OF_ORDER");
+    Tick staged = tick;
+    using std::swap;
+    swap(position.lastTick, staged);
+    position.hasTick = position.markCurrent = true;
+    clockUs_ = tick.timestampUs;
+    return true;
+}
+ResearchPortfolioSnapshot ResearchPortfolio::Snapshot(std::int64_t asOf,
+                                                       std::int64_t maxAge) const {
+    Require(asOf >= clockUs_ && maxAge >= 0, "RESEARCH_PORTFOLIO_SNAPSHOT_TIME_INVALID");
+    ResearchPortfolioSnapshot out;
+    out.currency = currency_; out.timestampUs = asOf; out.initialEquity = initialEquity_;
+    out.externalFlows = Finite(flows_);
+    long double realized = 0, unrealized = 0, fees = 0;
+    for (const auto& item : positions_) {
+        const auto& position = item.second;
+        const bool open = position.ledger.Quantity() != 0;
+        if (open) {
+            Require(position.hasTick && position.markCurrent, "RESEARCH_PORTFOLIO_MARK_MISSING");
+            Require(asOf - position.lastTick.timestampUs <= maxAge, "RESEARCH_PORTFOLIO_MARK_STALE");
+        }
+        const auto account = position.ledger.Mark(open ? position.lastTick.price : 1.0);
+        ResearchPositionSnapshot value;
+        value.quantity = account.quantity; value.averageEntry = account.averageEntry;
+        value.realizedGross = account.realizedGross; value.unrealized = account.unrealized;
+        value.fees = account.fees;
+        if (open) { value.markPrice = position.lastTick.price; value.markTimestampUs = position.lastTick.timestampUs; }
+        out.positions.emplace(item.first, value);
+        realized += account.realizedGross; unrealized += account.unrealized; fees += account.fees;
+    }
+    out.realizedGross = Finite(realized); out.unrealized = Finite(unrealized); out.fees = Finite(fees);
+    out.equity = Finite(static_cast<long double>(initialEquity_) + flows_ + realized + unrealized - fees);
     return out;
 }
 }} // namespace hepta::research

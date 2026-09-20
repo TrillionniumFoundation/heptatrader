@@ -43,7 +43,7 @@ unsupported required component fails configuration rather than silently
 providing a stub.
 
 The replay executable takes TICKS.csv SESSIONS.csv INSTRUMENT PERIOD_US FAST SLOW
-UNITS. Synthetic input examples are installed under share/HeptaResearch/examples
+UNITS [average|fifo]. The optional cost mode defaults to average. Synthetic input examples are installed under share/HeptaResearch/examples
 with the default data directory. The research account is not authoritative
 broker state, and EOF cancels remainders rather than inventing liquidation.
 
@@ -89,3 +89,54 @@ state uncommitted; exact successful fill retries remain idempotent. These are
 research numerical guarantees, not exchange settlement, risk approval or broker
 state. The integration PR records the executed configurations and keeps local
 standalone acceptance separate from canonical/root and remote qualification.
+
+## FIFO attribution and multi-instrument research accounts
+
+`ResearchLedger(instrument, initialEquity, multiplier, maxFillIds, CostBasis::Fifo)`
+selects FIFO cost allocation explicitly; existing source calls retain weighted
+average allocation. FIFO uses quantity-compressed lots, including partial closes
+and position reversals, rather than allocating one object per contract. Updates
+stage active lots before committing: invalid input, capacity and numeric failure
+leave lots, quantities, fees, fill identity and the event clock unchanged. Runtime
+work is proportional to active lots, not the absolute contract quantity. Both
+conventions must agree on total marked equity; their realized/unrealized split
+can differ. With multiplier 10, buying one at 100 and one at 120, then selling
+one at 130, realizes 300 under FIFO versus 200 under average cost. Marked at 140,
+both have total gross P&L of 500. This recovers a reviewed historical settlement
+capability; it is not a copy of the old runtime or proof of full settlement parity.
+
+`ResearchPortfolio` aggregates a fixed universe of at most 1,024 instruments with
+explicit multipliers and a common, caller-declared three-letter currency. Mixed
+currencies are rejected; FX is not inferred. Initial capital is counted once.
+`Apply(ResearchFill)` deduplicates fill IDs globally across instruments, while
+`ApplyCashFlow(ResearchCashFlow)` uses a separate immutable flow-ID namespace.
+A combined capacity bounds fill/flow receipts, and successful exact retries stay
+idempotent after the clock advances or the capacity is reached. Deposits and
+withdrawals change capital explicitly, not through trade P&L or an automatic top-up.
+
+`Observe(Tick)` uses the existing normalized incremental tick contract. New fills,
+flows and ticks share a monotonic delivery clock; equal timestamps retain caller
+order. Each position-changing fill invalidates that instrument's cached mark.
+An open position then needs a subsequent **new-sequence** tick, not an exact retry
+of an old observation. `Snapshot(asOfUs, maxMarkAgeUs)` rejects missing/stale marks
+or an as-of time before accepted events. It is a read-only current-state valuation,
+not a watermark, historical-state query, or bitemporal store. Flat positions need
+no quote and carry no invented mark. Negative equity is reportable research output,
+not margin approval. Snapshot reports the per-instrument split and the identity
+`equity = initialEquity + externalFlows + realizedGross + unrealized - fees`.
+
+The CLI reports `cost_basis`, `realized_gross` and `unrealized` alongside its existing
+terminal/equity fields. The mode only changes accounting; tick eligibility,
+orders, liquidity and fills are unchanged. Unknown modes fail before output.
+The installed SDK consumer exercises FIFO and a two-instrument portfolio after
+relocation, including missing/stale valuation rejection, explicit cash flow and
+the installed CLI's FIFO option.
+
+This extends existing Analytics source/header/test targets and existing exports;
+it creates no new trading runtime, authority, installed-header path or CMake
+target. Rebuild consumers: source defaults are preserved, **binary ABI is not**.
+Net positions/FIFO cost accounting do not implement hedge-mode long/short books,
+exchange variation settlement, margin, tax lots, broker reconciliation, historical
+cache decoding, or CTP close-today/close-yesterday order semantics. The source
+reference remains retained until those separately required capabilities and named
+external consumers have an explicit migration disposition.

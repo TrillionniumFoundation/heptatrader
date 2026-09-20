@@ -27,10 +27,14 @@ int main(int argc, char** argv) {
     try {
         // Deliberately small offline example. No gateway address or credentials
         // are accepted; neither native nor Execution libraries are linked.
-        if (argc != 8) {
-            std::cerr << "Usage: hepta-research-replay TICKS.csv SESSIONS.csv INSTRUMENT PERIOD_US FAST SLOW UNITS\n";
+        if (argc != 8 && argc != 9) {
+            std::cerr << "Usage: hepta-research-replay TICKS.csv SESSIONS.csv INSTRUMENT PERIOD_US FAST SLOW UNITS [average|fifo]\n";
             return 2;
         }
+        const std::string basisName = argc == 9 ? argv[8] : "average";
+        if (basisName != "average" && basisName != "fifo")
+            throw std::invalid_argument("cost basis must be average or fifo");
+        const auto basis = basisName == "fifo" ? CostBasis::Fifo : CostBasis::WeightedAverage;
         const auto period = Integer(argv[4]), fast = Integer(argv[5]), slow = Integer(argv[6]), units = Integer(argv[7]);
         if (fast <= 0 || slow <= fast || slow > 1000000 || units <= 0 || units > 1000000000)
             throw std::invalid_argument("invalid strategy or unit bounds");
@@ -42,7 +46,7 @@ int main(int argc, char** argv) {
         BarBuilder builder(argv[3], period, schedule);
         MovingAverageForecast strategy(static_cast<std::size_t>(fast), static_cast<std::size_t>(slow));
         ReplayMatcher matcher(argv[3], schedule, .01);
-        ResearchLedger ledger(argv[3], 100000, 1);
+        ResearchLedger ledger(argv[3], 100000, 1, 100000, basis);
         std::string pending;
         std::uint64_t orders = 0, fills = 0, forecasts = 0;
         std::cout.imbue(std::locale::classic());
@@ -84,6 +88,9 @@ int main(int argc, char** argv) {
         std::cout << "{\"model\":\"offline-last-trade-liquidity-v1\",\"forecasts\":" << forecasts
                   << ",\"orders\":" << orders << ",\"fills\":" << fills
                   << ",\"position\":" << account.quantity << ",\"fees\":" << account.fees
+                  << ",\"cost_basis\":\"" << basisName << "\""
+                  << ",\"realized_gross\":" << account.realizedGross
+                  << ",\"unrealized\":" << account.unrealized
                   << ",\"equity\":" << account.equity
                   << ",\"finalized\":true,\"active_orders\":" << matcher.ActiveOrders()
                   << ",\"eof_terminal_events\":" << finalEvents.size()

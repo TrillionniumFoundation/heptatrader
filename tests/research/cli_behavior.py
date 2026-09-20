@@ -35,6 +35,24 @@ def main() -> None:
     require([int(t["quantity"]) for t in trades] == [1, -2, 2], "fill volume drift")
     repeated = subprocess.run(args, capture_output=True, text=True, timeout=10)
     require(repeated.returncode == 0 and repeated.stdout == result.stdout, "replay is not deterministic")
+    require(summary["cost_basis"] == "average", "default cost basis changed")
+    for mode in ("average", "fifo"):
+        selected = subprocess.run([*args, mode], capture_output=True, text=True, timeout=10)
+        require(selected.returncode == 0, selected.stderr)
+        selected_lines = selected.stdout.splitlines()
+        selected_summary = json.loads(selected_lines[-1])
+        require(selected_summary["cost_basis"] == mode, "ignored cost selection")
+        require(selected_lines[:-1] == lines[:-1], "accounting changed execution path")
+        require(math.isclose(selected_summary["equity"], summary["equity"], rel_tol=0, abs_tol=1e-8),
+                "cost allocation changed total equity")
+        require(math.isclose(selected_summary["equity"], 100000 + selected_summary["realized_gross"] +
+                            selected_summary["unrealized"] - selected_summary["fees"], rel_tol=0, abs_tol=1e-8),
+                "accounting breakdown inconsistent")
+    for mode in ("", "FIFO", "broker", "fifo,live"):
+        rejected = subprocess.run([*args, mode], capture_output=True, text=True, timeout=10)
+        require(rejected.returncode != 0 and "RESEARCH_REPLAY_FAILED" in rejected.stderr,
+                "unknown cost mode accepted")
+        require(not rejected.stdout, "invalid cost mode emitted output")
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "truncated.csv"
         path.write_text("\n".join((examples / "ticks.csv").read_text().splitlines()[:4]) + "\n", encoding="utf-8")
