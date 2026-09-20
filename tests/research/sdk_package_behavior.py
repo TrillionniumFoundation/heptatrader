@@ -18,6 +18,7 @@ CONSUMER = r'''
 #include <hepta/research/strategy.h>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <sstream>
 #include <vector>
@@ -74,6 +75,27 @@ int main() {
     points[1].timestampUs = 1; points[1].equity = 1100;
     points[2].timestampUs = 2; points[2].equity = 1100; points[2].externalFlow = 100;
     Require(std::fabs(EvaluateEquity(points, 252).totalReturn) < 1e-12);
+    // Exercise the corrected Data and Analytics symbols after relocation,
+    // not a separately compiled fragment of their source implementation.
+    const double maximum = std::numeric_limits<double>::max();
+    BarSeries extremeSeries(7);
+    MovingAverageForecast extremeStrategy(3, 7);
+    for (int i = 0; i < 32; ++i) {
+        Bar bar = first; bar.beginUs = i * 10; bar.endUs = (i + 1) * 10;
+        bar.open = bar.high = bar.low = bar.close = maximum;
+        extremeSeries.Append(bar);
+        Require(extremeSeries.MeanClose(extremeSeries.Size()) == maximum);
+        Require(!extremeStrategy.OnCompletedBar(bar, forecast));
+    }
+    ResearchLedger extremeLedger("TEST.FUT", 1000, 1);
+    fill.quantity = 1; fill.price = maximum; fill.fee = 0;
+    for (int i = 1; i <= 4096; ++i) {
+        fill.fillId = "extreme-" + std::to_string(i); fill.timestampUs = i;
+        Require(extremeLedger.Apply(fill) && !extremeLedger.Apply(fill));
+    }
+    const auto extremeAccount = extremeLedger.Mark(maximum);
+    Require(extremeAccount.quantity == 4096 && extremeAccount.averageEntry == maximum &&
+            extremeAccount.unrealized == 0 && extremeAccount.equity == 1000);
     std::cout << "installed research contract passed\n";
 }
 '''

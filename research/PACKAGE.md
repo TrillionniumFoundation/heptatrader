@@ -73,3 +73,19 @@ The public integration workflow retains successful GCC SDK archives, SHA-256
 checksums and exact-source metadata as CI artifacts, not tagged production
 releases. A queued workflow or an existing artifact from a different commit is
 not acceptance of the current source.
+
+## Finite-price numerical boundaries
+
+Bar-series means and same-direction research entry costs use incremental convex
+updates, rather than summing divided prices or price/quantity products. Constant
+finite observations must remain constant, including the largest finite double;
+a representable mean must not be rejected merely because an intermediate sum
+rounded above that bound. The same behavior is exercised through the moving-
+average strategy and through the installed, relocated SDK's Data/Analytics APIs.
+
+This does not relax price validation, position capacity, fill identity or true
+realized-P&L/fee overflow checks. A rejected fill leaves its identity and account
+state uncommitted; exact successful fill retries remain idempotent. These are
+research numerical guarantees, not exchange settlement, risk approval or broker
+state. The integration PR records the executed configurations and keeps local
+standalone acceptance separate from canonical/root and remote qualification.

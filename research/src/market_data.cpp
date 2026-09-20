@@ -409,9 +409,15 @@ std::size_t BarSeries::RetainedBarsInLatestTradingDay() const {
 }
 double BarSeries::MeanClose(std::size_t count) const {
     Require(count > 0 && count <= bars_.size(), "RESEARCH_SERIES_RANGE_INVALID");
+    // Incremental convex mean: summing separately divided DBL_MAX terms can
+    // round above DBL_MAX even though the mathematical mean cannot overflow.
+    // Equal observations stay exactly equal, including positive subnormals.
     long double average = 0;
-    for (std::size_t i = bars_.size() - count; i < bars_.size(); ++i)
-        average += static_cast<long double>(bars_[i].close) / count;
+    std::size_t observed = 0;
+    for (std::size_t i = bars_.size() - count; i < bars_.size(); ++i) {
+        ++observed;
+        average += (static_cast<long double>(bars_[i].close) - average) / observed;
+    }
     Require(std::isfinite(average) && average <= std::numeric_limits<double>::max(), "RESEARCH_MEAN_OVERFLOW");
     return static_cast<double>(average);
 }

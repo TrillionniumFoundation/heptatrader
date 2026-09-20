@@ -40,6 +40,12 @@ void Strategy() {
     Check(strategy.OnCompletedBar(B(30, 11), f) && f.direction == -1, "bear forecast");
     auto partial = B(40, 12); partial.complete = false; Throws([&] { strategy.OnCompletedBar(partial, f); });
     Check(strategy.OnCompletedBar(B(40, 12), f) && f.direction == 1, "partial did not mutate strategy");
+    // Strategy warmup must not overflow on a valid constant seven-bar window
+    // or emit a false direction because means used different denominators.
+    MovingAverageForecast constant(3, 7);
+    for (int i = 0; i < 300; ++i)
+        Check(!constant.OnCompletedBar(B(i * 10, std::numeric_limits<double>::max()), f),
+              "bounded constant means remain a no-signal strategy");
     Throws([] { MovingAverageForecast wrong(2, 2); });
     Throws([&] { strategy.OnCompletedBar(B(40, 12), f); });
 }

@@ -104,8 +104,13 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
     const bool sameDirection = quantity_ == 0 || (quantity_ > 0) == (signedFill > 0);
     long double average = average_, realized = realized_, fees = fees_ + fill.fee;
     if (sameDirection) {
-        average = (average_ * oldAbs + static_cast<long double>(fill.price) * fill.quantity) /
-                  (oldAbs + fill.quantity);
+        // Interpolate within the two finite positive prices instead of
+        // forming price*quantity sums. Identical fills preserve their exact
+        // cost, even at DBL_MAX; true realized-P&L/fee overflow still rejects.
+        const long double weight = static_cast<long double>(fill.quantity) /
+                                   (oldAbs + fill.quantity);
+        average = oldAbs == 0 ? static_cast<long double>(fill.price) :
+            average_ + (static_cast<long double>(fill.price) - average_) * weight;
     } else {
         const auto closeQuantity = std::min(oldAbs, fill.quantity);
         realized += (static_cast<long double>(fill.price) - average_) *

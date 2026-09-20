@@ -306,5 +306,46 @@ void BarCsvContract() {
 }
 }
 
+namespace {
+void BoundedMeans() {
+    // A mean of finite positive observations is bounded by its inputs. In
+    // particular, seven DBL_MAX observations must not overflow from rounding
+    // separately divided terms. Constant subnormals must not become zero.
+    for (double price : {std::numeric_limits<double>::denorm_min(),
+                         std::numeric_limits<double>::min(), 0.1, 1.0,
+                         std::numeric_limits<double>::max()}) {
+        BarSeries series(257);
+        for (int i = 0; i < 513; ++i) {
+            series.Append(QueryBar(i, price, price, price, price));
+            Check(series.MeanClose(series.Size()) == price, "constant mean preserves value");
+            Check(series.MeanClose(1) == price, "single-observation mean");
+            if (series.Size() >= 7)
+                Check(series.MeanClose(7) == price, "constant suffix mean after retention");
+        }
+    }
+    // Independent integer-sum oracle, scaled over the finite double range.
+    // Include nonconstant suffixes so constant-value special-casing cannot pass.
+    for (int exponent : {-1000, -500, 0, 500, 1000}) {
+        const double scale = std::ldexp(1.0, exponent);
+        BarSeries series(257);
+        std::deque<unsigned> units;
+        for (int i = 0; i < 513; ++i) {
+            const unsigned value = 1 + static_cast<unsigned>((i * 17) % 23);
+            const double price = value * scale;
+            series.Append(QueryBar(i, price, price, price, price));
+            units.push_back(value);
+            if (units.size() > 257) units.pop_front();
+            for (std::size_t count : {std::size_t(1), std::min(std::size_t(7), units.size()), units.size()}) {
+                unsigned sum = 0;
+                for (std::size_t j = units.size() - count; j < units.size(); ++j) sum += units[j];
+                const long double expected = static_cast<long double>(sum) / count;
+                const long double actual = static_cast<long double>(series.MeanClose(count)) / scale;
+                Check(std::fabs(actual - expected) <= expected * 8 * std::numeric_limits<double>::epsilon(),
+                      "scaled suffix mean oracle");
+            }
+        }
+    }
+}
+}
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); }); }

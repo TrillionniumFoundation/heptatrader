@@ -49,4 +49,47 @@ void Ledger() {
     }
 }
 }
-int main() { return Run([] { Metrics(); Ledger(); }); }
+namespace {
+void BoundedCostAndAtomicRejection() {
+    const double max = std::numeric_limits<double>::max();
+    for (int side : {-1, 1}) {
+        ResearchLedger ledger("TEST.FUT", 1000, 1);
+        // Previously the 2049th identical fill produced an average slightly
+        // above DBL_MAX. The true average and mark-to-market P&L are unchanged.
+        for (int i = 1; i <= 4096; ++i) {
+            const auto fill = F("constant-" + std::to_string(i), i, side, 1, max);
+            Check(ledger.Apply(fill) && !ledger.Apply(fill), "constant fill identity");
+            const auto account = ledger.Mark(max);
+            Check(account.quantity == side * i && account.averageEntry == max &&
+                  account.unrealized == 0 && account.realizedGross == 0 && account.equity == 1000,
+                  "constant-price cost and equity invariants");
+        }
+        ledger.Apply(F("same-price-close", 4097, -side, 4096, max));
+        const auto account = ledger.Mark(max);
+        Check(account.quantity == 0 && account.averageEntry == 0 && account.equity == 1000,
+              "same-price round trip does not invent P&L");
+    }
+    // The same convex-mean contract holds with heavily unequal fill quantities.
+    ResearchLedger large("TEST.FUT", 1000, 1);
+    auto first = F("weighted-first", 0, 1, 1, max); first.quantity = 999999999999LL;
+    large.Apply(first); large.Apply(F("weighted-last", 1, 1, 1, max));
+    Check(large.Mark(max).quantity == 1000000000000LL && large.Mark(max).equity == 1000,
+          "bounded unequal-weight mean");
+    Throws([&] { large.Apply(F("too-large", 2, 1, 1, max)); });
+    Check(large.Mark(max).quantity == 1000000000000LL, "position-cap rejection unchanged");
+
+    // Do not fix harmless rounding by suppressing genuine overflow. A rejected
+    // fill must leave quantity, P&L, clock and fill identity available for retry.
+    ResearchLedger overflow("TEST.FUT", 1000, 1);
+    overflow.Apply(F("open", 0, 1, 2, 1));
+    auto close = F("close", 1, -1, 2, max);
+    Throws([&] { overflow.Apply(close); });
+    auto account = overflow.Mark(1);
+    Check(account.quantity == 2 && account.averageEntry == 1 && account.equity == 1000,
+          "true P&L overflow rolls back account");
+    close.price = 2;
+    Check(overflow.Apply(close) && !overflow.Apply(close), "rejected fill ID was not consumed");
+    Check(overflow.Mark(2).equity == 1002, "retry after true overflow");
+}
+}
+int main() { return Run([] { Metrics(); Ledger(); BoundedCostAndAtomicRejection(); }); }
