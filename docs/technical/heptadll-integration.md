@@ -57,6 +57,39 @@ cache and matching modes, applicable redistribution confirmation, and exact-head
 build/behavior/recovery/permission evidence. A source copy or green offline test
 alone does not satisfy those conditions.
 
+## Replay clock and terminal lifecycle
+
+`ReplayMatcher` has one monotonic clock shared by new submissions, ticks and
+watermarks. An exact retry does not rewind that clock or resurrect an order.
+`AdvanceWatermark(timestampUs)` expires orders without inventing a market tick,
+including during a session break. DAY orders expire at the final close of the
+explicit trading day, or their earlier explicit TTL; a midday break is not a
+trading-day boundary.
+
+`Finish(timestampUs)` expires due orders and cancels all other resting
+remainders. Repeating the same finish is idempotent; changing its timestamp or
+sending new ticks/orders afterward is rejected. Finalization does not invent
+liquidity, a closing price, a final bar, or a flat account. The CLI reports
+`finalized`, `active_orders` and `eof_terminal_events` and leaves positions marked
+at the last observed price. This is research state only, never a broker event.
+
+The lifecycle tests cover no-tick expiry, session breaks, clock reversal,
+terminal retries, fee-overflow rollback and 528 small-book conservation cases
+across both sides and all three supported time-in-force modes. The CLI test
+also truncates input immediately after a signal and requires terminal treatment
+of the unfilled order without a synthetic fill.
+
+## Build ownership
+
+The reviewed inventory includes the twelve research library/executable/test
+aggregate targets in both profiles and the existing core aggregate's dependency
+on `hepta_research_test_binaries`. No pre-existing target, translation unit,
+module owner or SDK boundary was removed. Records are serialized one target per
+line; JSON schema and strict fresh-model comparison are unchanged. The inventory
+is not runtime registration and does not grant trading or packaging authority.
+A review of source-declared targets is not a substitute for the exact-head fresh
+CMake comparison in CI, particularly the separately supplied IB SDK profile.
+
 ## Acceptance scope
 
 The public branch integrates real CMake targets and behavioural tests. The root
@@ -66,12 +99,13 @@ recovery, permission, installed-process and qualification checks are not weakene
 Remote CI must check the exact PR head with read-only credentials and retain
 logs; queued work is not a passed verification.
 
-Local pure-SDK verification covers Release and Clang AddressSanitizer plus
-UndefinedBehaviorSanitizer, five CTest entries each, including the executable's
-numeric/error-path checks. Those checks do not compile or qualify the native
-Gateway integration in isolation; that is a separate root-build test boundary.
-Detailed observed results and any remaining CI failures belong in the PR, not
-in a new approval authority or a hardcoded success file.
+Local pure-SDK verification covers GCC Release, Clang Release, and Clang
+AddressSanitizer plus UndefinedBehaviorSanitizer, five CTest entries each,
+including the executable's numeric/error-path and EOF checks. Those checks do
+not compile or qualify the native Gateway integration in isolation; that is a
+separate root-build test boundary. Detailed observed results and any remaining
+CI failures belong in the PR, not in a new approval authority or a hardcoded
+success file.
 
 Remaining full-parity, external-consumer, production packaging and optional CTP
 work stays explicit. This branch is a capability integration candidate, not a
