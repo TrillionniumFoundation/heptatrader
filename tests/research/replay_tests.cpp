@@ -1,6 +1,8 @@
 #include "hepta/research/replay.h"
 #include "hepta/research/strategy.h"
 #include "test_support.h"
+#include <algorithm>
+#include <limits>
 using namespace hepta::research;
 namespace {
 SessionSchedule Schedule() { SessionWindow a, b; a.openUs = 0; a.closeUs = 1000; a.tradingDay = "20260921"; b.openUs = 1000; b.closeUs = 2000; b.tradingDay = "20260922"; return SessionSchedule({a, b}); }
@@ -41,5 +43,82 @@ void Strategy() {
     Throws([] { MovingAverageForecast wrong(2, 2); });
     Throws([&] { strategy.OnCompletedBar(B(40, 12), f); });
 }
+void NoTickExpiryAndFinish() {
+    SessionWindow a, b; a.openUs = 0; a.closeUs = 100; a.tradingDay = "20260921";
+    b.openUs = 200; b.closeUs = 300; b.tradingDay = a.tradingDay;
+    ReplayMatcher m("TEST.FUT", SessionSchedule({a, b}));
+    auto normal = O("day", 3), ttl = O("ttl", 2); ttl.expiresAtUs = 150;
+    m.Submit(normal); m.Submit(ttl);
+    Check(m.AdvanceWatermark(100).empty() && m.ActiveOrders() == 2, "break is not end of trading day");
+    auto events = m.AdvanceWatermark(150);
+    Check(events.size() == 1 && events[0].orderId == "ttl" && events[0].kind == ReplayEventKind::Expired,
+          "TTL expires during a break without a tick");
+    Check(m.AdvanceWatermark(150).empty(), "repeated watermark is idempotent");
+    Throws([&] { m.AdvanceWatermark(149); });
+    Throws([&] { m.OnTick(T(90, 1, 99, 100)); });
+    Check(m.ClockUs() == 150 && m.ActiveOrders() == 1, "rejection does not consume liquidity or clock");
+    auto partial = m.OnTick(T(200, 1, 99, 1));
+    Check(partial.size() == 1 && partial[0].remaining == 2, "resumes next session same trading day");
+    events = m.AdvanceWatermark(300);
+    Check(events.size() == 1 && events[0].remaining == 2 && events[0].kind == ReplayEventKind::Expired,
+          "final session expires remainder without a next-day tick");
+    Check(m.ActiveOrders() == 0 && !m.Submit(normal), "retry does not resurrect expired order");
+    Check(m.Finish(300).empty() && m.Finished() && m.Finish(300).empty(), "empty finish is idempotent");
+    Throws([&] { m.Finish(301); }); Throws([&] { m.AdvanceWatermark(300); });
+    Throws([&] { m.OnTick(T(200, 1, 99, 1)); });
+    ReplayMatcher truncated("TEST.FUT", Schedule());
+    auto shortTtl = O("short", 1); shortTtl.expiresAtUs = 20;
+    truncated.Submit(shortTtl); truncated.Submit(O("long", 5));
+    events = truncated.Finish(20);
+    Check(events.size() == 2 && events[0].kind == ReplayEventKind::Expired &&
+          events[1].kind == ReplayEventKind::Cancelled && events[1].remaining == 5,
+          "EOF distinguishes expired and cancelled, never fabricates a fill");
+    Check(truncated.ActiveOrders() == 0 && truncated.Cancel("long").empty(), "terminal cancel idempotent");
+    Throws([&] { truncated.Submit(O("new", 1)); });
+    Check(!truncated.Submit(shortTtl), "terminal exact submit retry is still idempotent");
 }
-int main() { return Run([] { Matching(); Strategy(); }); }
+void ClockAndRollback() {
+    ReplayMatcher m("TEST.FUT", Schedule());
+    auto future = O("future", 1); future.submittedAtUs = 100;
+    m.Submit(future);
+    Throws([&] { m.Submit(O("retroactive", 1)); });
+    Throws([&] { m.OnTick(T(99, 1, 99, 1)); });
+    Check(m.OnTick(T(100, 1, 99, 10)).empty(), "same timestamp remains ineligible after submission");
+    Check(m.OnTick(T(101, 2, 99, 1)).size() == 1, "later event can fill");
+    m.AdvanceWatermark(200);
+    Check(m.OnTick(T(101, 2, 99, 1)).empty() && m.ClockUs() == 200, "exact tick retry never rewinds clock");
+    auto bad = O("bad", 1); bad.submittedAtUs = 250; bad.expiresAtUs = 300; bad.tradingDay = "20260922";
+    Throws([&] { m.Submit(bad); }); Check(m.ClockUs() == 200, "invalid new submission cannot advance clock");
+    ReplayMatcher overflow("TEST.FUT", Schedule(), std::numeric_limits<double>::max());
+    overflow.Submit(O("large-fee", 2));
+    Throws([&] { overflow.OnTick(T(20, 1, 99, 2)); });
+    Check(overflow.ClockUs() == 10 && overflow.ActiveOrders() == 1, "fee overflow rolls back the entire tick");
+    auto one = overflow.OnTick(T(20, 1, 99, 1));
+    Check(one.size() == 1 && one[0].fill.fillId == "large-fee:1" && one[0].remaining == 1,
+          "rejected tick did not consume sequence, quantity or fill ID");
+    Check(overflow.Finish(20).at(0).remaining == 1, "partial fill remainder is preserved at finish");
+}
+void ReplayConservation() {
+    // Exhaustive small books: both directions, all TIFs, quantity and liquidity.
+    std::size_t scenarios = 0;
+    for (int side : {-1, 1}) for (int kind = 0; kind < 3; ++kind)
+    for (long q = 1; q <= 8; ++q) for (long volume = 0; volume <= 10; ++volume) {
+        ReplayMatcher m("TEST.FUT", Schedule());
+        auto order = O("model", q, static_cast<ReplayTimeInForce>(kind)); order.side = side;
+        m.Submit(order);
+        const auto events = m.OnTick(T(20, 1, 100, volume));
+        long filled = 0, terminated = 0;
+        for (const auto& e : events) {
+            if (e.kind == ReplayEventKind::Fill) filled += static_cast<long>(e.fill.quantity);
+            else terminated += static_cast<long>(e.remaining);
+        }
+        for (const auto& e : m.Finish(20)) terminated += static_cast<long>(e.remaining);
+        const auto expected = kind == 2 && volume < q ? 0 : std::min(q, volume);
+        Check(filled == expected && filled <= volume && filled + terminated == q && m.ActiveOrders() == 0,
+              "filled plus terminal remainder must equal submitted quantity");
+        ++scenarios;
+    }
+    std::cout << "replay conservation scenarios=" << scenarios << '\n';
+}
+}
+int main() { return Run([] { Matching(); Strategy(); NoTickExpiryAndFinish(); ClockAndRollback(); ReplayConservation(); }); }

@@ -26,6 +26,8 @@ struct ReplayEvent {
 // Offline last-trade liquidity model, NOT an exchange queue-position model.
 // A signal never fills on its own timestamp. Available incremental volume is
 // shared across orders in submission order. No invented liquidity or fills.
+// All new input shares a monotonic clock, including submissions. Exact retries
+// do not advance that clock or revive terminal orders. Thread-affine.
 class ReplayMatcher {
 public:
     ReplayMatcher(std::string instrument, SessionSchedule schedule,
@@ -33,14 +35,29 @@ public:
     bool Submit(const ReplayOrder& order); // Exact duplicate is idempotent.
     std::vector<ReplayEvent> OnTick(const Tick& tick);
     std::vector<ReplayEvent> Cancel(const std::string& orderId);
+    // Expire without requiring a new market tick (including session breaks).
+    // Older input is forbidden afterward. No synthetic ticks or liquidity.
+    std::vector<ReplayEvent> AdvanceWatermark(std::int64_t timestampUs);
+    // End a run: expire due orders and cancel every other remainder, without
+    // closing positions at an invented price. Repeating the same end is a no-op.
+    // Different end times or new submissions/ticks after finalization fail.
+    std::vector<ReplayEvent> Finish(std::int64_t timestampUs);
+    bool Finished() const { return finished_; }
+    std::int64_t ClockUs() const { return clockUs_; }
     std::size_t ActiveOrders() const { return pending_.size(); }
 private:
-    struct Pending { ReplayOrder order; std::int64_t remaining = 0; std::uint64_t fills = 0; };
+    struct Pending {
+        ReplayOrder order;
+        std::int64_t remaining = 0, effectiveExpiryUs = 0;
+        std::uint64_t fills = 0;
+    };
+    std::vector<ReplayEvent> Advance(std::int64_t timestampUs, bool finish);
     std::string instrument_;
     SessionSchedule schedule_;
     double feePerUnit_;
     std::size_t maxOrderIds_;
-    bool hasTick_ = false;
+    bool hasTick_ = false, finished_ = false;
+    std::int64_t clockUs_ = 0;
     Tick last_;
     std::vector<Pending> pending_;
     std::map<std::string, ReplayOrder> identities_;

@@ -24,7 +24,8 @@ def main() -> None:
     lines = result.stdout.splitlines()
     summary = json.loads(lines[-1])
     expected = {"model": "offline-last-trade-liquidity-v1", "forecasts": 7,
-                "orders": 5, "fills": 3, "position": 1, "broker_authorized": False}
+                "orders": 5, "fills": 3, "position": 1, "broker_authorized": False,
+                "finalized": True, "active_orders": 0}
     for key, value in expected.items():
         require(summary.get(key) == value, f"unexpected {key}: {summary}")
     require(math.isclose(summary["fees"], .05, abs_tol=1e-10), "fees drift")
@@ -35,18 +36,29 @@ def main() -> None:
     repeated = subprocess.run(args, capture_output=True, text=True, timeout=10)
     require(repeated.returncode == 0 and repeated.stdout == result.stdout, "replay is not deterministic")
     with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "truncated.csv"
+        path.write_text("\n".join((examples / "ticks.csv").read_text().splitlines()[:4]) + "\n", encoding="utf-8")
+        truncated = args.copy()
+        truncated[1] = str(path)
+        end = subprocess.run(truncated, capture_output=True, text=True, timeout=10)
+        require(end.returncode == 0, end.stderr)
+        terminal = json.loads(end.stdout.splitlines()[-1])
+        require(terminal["orders"] == 1 and terminal["fills"] == 0 and terminal["position"] == 0,
+                "EOF must not fabricate a fill or position")
+        require(terminal["finalized"] and terminal["active_orders"] == 0 and terminal["eof_terminal_events"] == 1,
+                "EOF did not terminalize the pending order")
         bad = Path(directory) / "bad.csv"
         bad.write_text("instrument,timestamp_us,sequence,price,volume\nTEST.FUT,1,1,nan,3\n", encoding="utf-8")
         invalid = args.copy()
         invalid[1] = str(bad)
         failure = subprocess.run(invalid, capture_output=True, text=True, timeout=10)
         require(failure.returncode != 0 and "RESEARCH_REPLAY_FAILED" in failure.stderr, "bad input accepted")
-        require('"equity"' not in failure.stdout, "failed replay emitted a success summary")
+        require('\"equity\"' not in failure.stdout, "failed replay emitted a success summary")
     invalid = args.copy()
     invalid[-1] = "0"
     failure = subprocess.run(invalid, capture_output=True, text=True, timeout=10)
     require(failure.returncode != 0, "zero quantity accepted")
-    print("PASS: deterministic numeric output and fail-closed CLI inputs")
+    print("PASS: deterministic numeric output, EOF lifecycle and fail-closed CLI inputs")
 
 
 if __name__ == "__main__":

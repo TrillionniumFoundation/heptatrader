@@ -1,6 +1,7 @@
 #include "hepta/research/replay.h"
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -30,30 +31,39 @@ bool ReplayMatcher::Submit(const ReplayOrder& order) {
         Require(SameOrder(found->second, order), "RESEARCH_ORDER_ID_CONFLICT");
         return false;
     }
-    Require(!hasTick_ || order.submittedAtUs >= last_.timestampUs, "RESEARCH_ORDER_IN_PAST");
+    Require(!finished_, "RESEARCH_REPLAY_FINISHED");
+    Require(order.submittedAtUs >= clockUs_, "RESEARCH_ORDER_IN_PAST");
     Require(schedule_.At(order.submittedAtUs).tradingDay == order.tradingDay, "RESEARCH_ORDER_DAY_MISMATCH");
     Require(identities_.size() < maxOrderIds_, "RESEARCH_ORDER_ID_CAPACITY");
     auto next = pending_;
-    Pending p; p.order = order; p.remaining = order.quantity; next.push_back(p);
+    Pending p; p.order = order; p.remaining = order.quantity;
+    // Day orders expire at the supplied day's FINAL session close, not at a
+    // midday break and not on the next day's first tick. Earlier TTL still wins.
+    p.effectiveExpiryUs = std::min(order.expiresAtUs, schedule_.Day(order.tradingDay).closeUs);
+    next.push_back(p);
     identities_.emplace(order.orderId, order); pending_.swap(next);
+    clockUs_ = order.submittedAtUs;
     return true;
 }
 std::vector<ReplayEvent> ReplayMatcher::OnTick(const Tick& tick) {
+    Require(!finished_, "RESEARCH_REPLAY_FINISHED");
     ValidateTick(tick); Require(tick.instrument == instrument_, "RESEARCH_INSTRUMENT_MISMATCH");
     if (hasTick_ && tick.sequence == last_.sequence) {
         Require(tick.timestampUs == last_.timestampUs && tick.price == last_.price && tick.volume == last_.volume,
                 "RESEARCH_SEQUENCE_CONFLICT");
         return {};
     }
-    Require(!hasTick_ || (tick.timestampUs >= last_.timestampUs && tick.sequence > last_.sequence),
+    Require(tick.timestampUs >= clockUs_ && (!hasTick_ || tick.sequence > last_.sequence),
             "RESEARCH_REPLAY_TICK_OUT_OF_ORDER");
     const auto& session = schedule_.At(tick.timestampUs);
+    // Allocate/copy before committing any mutable state.
+    Tick nextLast = tick;
     auto next = pending_;
     std::vector<ReplayEvent> events;
     auto available = tick.volume;
     for (auto& p : next) {
         const auto& o = p.order;
-        if (tick.timestampUs >= o.expiresAtUs || session.tradingDay > o.tradingDay) {
+        if (tick.timestampUs >= p.effectiveExpiryUs || session.tradingDay > o.tradingDay) {
             ReplayEvent e; e.kind = ReplayEventKind::Expired; e.orderId = o.orderId; e.remaining = p.remaining;
             events.push_back(e); p.remaining = 0; continue;
         }
@@ -63,6 +73,7 @@ std::vector<ReplayEvent> ReplayMatcher::OnTick(const Tick& tick) {
         const bool enough = o.timeInForce != ReplayTimeInForce::FillOrKill || available >= p.remaining;
         const auto filled = crosses && enough ? std::min(p.remaining, available) : 0;
         if (filled > 0) {
+            Require(p.fills < std::numeric_limits<std::uint64_t>::max(), "RESEARCH_FILL_SEQUENCE_OVERFLOW");
             ReplayEvent e; e.kind = ReplayEventKind::Fill; e.orderId = o.orderId;
             e.fill.fillId = o.orderId + ":" + std::to_string(++p.fills);
             e.fill.orderId = o.orderId; e.fill.instrument = instrument_; e.fill.timestampUs = tick.timestampUs;
@@ -77,7 +88,7 @@ std::vector<ReplayEvent> ReplayMatcher::OnTick(const Tick& tick) {
         }
     }
     next.erase(std::remove_if(next.begin(), next.end(), [](const Pending& p) { return p.remaining == 0; }), next.end());
-    pending_.swap(next); last_ = tick; hasTick_ = true;
+    pending_.swap(next); last_ = std::move(nextLast); hasTick_ = true; clockUs_ = tick.timestampUs;
     return events;
 }
 std::vector<ReplayEvent> ReplayMatcher::Cancel(const std::string& id) {
@@ -88,4 +99,26 @@ std::vector<ReplayEvent> ReplayMatcher::Cancel(const std::string& id) {
     }
     return {};
 }
+std::vector<ReplayEvent> ReplayMatcher::Advance(std::int64_t time, bool finish) {
+    Require(time >= clockUs_, "RESEARCH_REPLAY_CLOCK_REVERSED");
+    if (finished_) {
+        Require(finish && time == clockUs_, "RESEARCH_REPLAY_FINISHED");
+        return {};
+    }
+    auto next = pending_;
+    std::vector<ReplayEvent> events;
+    for (auto& p : next) {
+        const bool due = time >= p.effectiveExpiryUs;
+        if (!due && !finish) continue;
+        ReplayEvent event;
+        event.kind = due ? ReplayEventKind::Expired : ReplayEventKind::Cancelled;
+        event.orderId = p.order.orderId; event.remaining = p.remaining;
+        events.push_back(event); p.remaining = 0;
+    }
+    next.erase(std::remove_if(next.begin(), next.end(), [](const Pending& p) { return p.remaining == 0; }), next.end());
+    pending_.swap(next); clockUs_ = time; finished_ = finish;
+    return events;
+}
+std::vector<ReplayEvent> ReplayMatcher::AdvanceWatermark(std::int64_t time) { return Advance(time, false); }
+std::vector<ReplayEvent> ReplayMatcher::Finish(std::int64_t time) { return Advance(time, true); }
 }} // namespace hepta::research

@@ -75,12 +75,19 @@ int main(int argc, char** argv) {
             order.limitPrice = tick.price;
             matcher.Submit(order); pending = order.orderId;
         }
-        if (!pending.empty()) matcher.Cancel(pending);
+        // EOF is a real boundary, not a fictional next-session tick. Positions
+        // remain marked, while ALL resting orders receive terminal treatment.
+        const auto finalEvents = matcher.Finish(ticks.back().timestampUs);
+        if (!matcher.Finished() || matcher.ActiveOrders() != 0)
+            throw std::logic_error("replay finalization left active orders");
         const auto account = ledger.Mark(ticks.back().price);
         std::cout << "{\"model\":\"offline-last-trade-liquidity-v1\",\"forecasts\":" << forecasts
                   << ",\"orders\":" << orders << ",\"fills\":" << fills
                   << ",\"position\":" << account.quantity << ",\"fees\":" << account.fees
-                  << ",\"equity\":" << account.equity << ",\"broker_authorized\":false}\n";
+                  << ",\"equity\":" << account.equity
+                  << ",\"finalized\":true,\"active_orders\":" << matcher.ActiveOrders()
+                  << ",\"eof_terminal_events\":" << finalEvents.size()
+                  << ",\"broker_authorized\":false}\n";
         if (!std::cout) throw std::runtime_error("research output failed");
         return 0;
     } catch (const std::exception& e) {
