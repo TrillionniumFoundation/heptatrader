@@ -71,3 +71,11 @@ one-minute CSV layout through the same offline evaluator. Its required epoch,
 clock-zone, volume-field, UTC session and completeness-watermark inputs, and the
 installed C++ `BarSeries` API are documented in [LEGACY-IMPORT.md](LEGACY-IMPORT.md).
 The installed smoke also exercises both new interfaces after relocating the SDK.
+
+The same installed importer additionally supports `--layout stock` with an
+explicit close-label period. The installed `hepta-research-ticks` consumes four
+reviewed legacy Tick layouts using this prefix's existing C++ bar executable.
+[DATA-FORMATS.md](DATA-FORMATS.md) owns those schemas and required date inputs.
+Standalone CTest exercises both after relocation via
+`tests/research/format_install_smoke.py`; the original install smoke remains
+unchanged and required.

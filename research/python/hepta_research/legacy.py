@@ -183,11 +183,15 @@ def read_legacy_bars(path: Path, sessions_path: Path, *, instrument: str,
             if len(fields) != columns:
                 raise ValueError("legacy field count differs from selected layout")
             if first and fields[0].casefold() == "timestamp":
-                expected = list(HEADER) + (["HighTime", "LowTime"] if columns == 13 else [])
-                # The label column has several names in historical exports;
-                # every other named position must match, never auto-reorder.
-                if (fields[1] not in ("DateTime", "Time", "StartTime", "szStartTime") or
-                        any(a.casefold() != b.casefold() for i, (a, b) in enumerate(zip(fields, expected)) if i != 1)):
+                expected = [{name.casefold()} for name in HEADER]
+                # Explicit names in the pinned data-helper header and reader.
+                # These are positional aliases, never automatic field reordering.
+                expected[1] = {"datetime", "time", "starttime", "szstarttime"}
+                expected[6].add("volume")
+                expected[8].add("turnover")
+                if columns == 13:
+                    expected += [{"hightime", "hightimestamp"}, {"lowtime", "lowtimestamp"}]
+                if any(name.casefold() not in allowed for name, allowed in zip(fields, expected)):
                     raise ValueError("legacy header names/order not qualified")
                 header, first = fields, False
                 continue
@@ -252,9 +256,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--instrument", required=True)
     parser.add_argument("--clock-zone", required=True)
-    parser.add_argument("--volume-field", choices=("LastVolume", "TotalVolume"), required=True)
+    parser.add_argument("--layout", choices=("future", "stock"), default="future")
+    parser.add_argument("--period-seconds", type=int)
+    parser.add_argument("--volume-field", choices=("LastVolume", "TotalVolume"))
     parser.add_argument("--complete-through-us", type=int, required=True)
-    parser.add_argument("--columns", type=int, choices=(11, 13), default=11)
+    parser.add_argument("--columns", type=int, choices=(11, 13))
     parser.add_argument("--tick-size", required=True)
     parser.add_argument("--max-bars", type=int, default=100000)
     parser.add_argument("--capital", required=True)
@@ -268,15 +274,25 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--periods-per-year", type=int)
     args = vars(parser.parse_args(argv))
     source, sessions, output = args.pop("bars"), args.pop("sessions"), args.pop("output")
+    layout, period = args.pop("layout"), args.pop("period_seconds")
     import_options = {key: args.pop(key) for key in ("instrument", "clock_zone", "volume_field",
                       "complete_through_us", "columns", "tick_size", "max_bars")}
     try:
         for input_path in (source, sessions):
             if output.resolve() == input_path.resolve() or (output.exists() and os.path.samefile(output, input_path)):
                 raise ValueError("output must not replace either input")
-        bars, metadata = read_legacy_bars(source, sessions, **import_options)
+        if layout == "stock":
+            if import_options.pop("columns") is not None or import_options.pop("volume_field") is not None:
+                raise ValueError("stock layout has fixed seven fields and per-bar volume")
+            from .stock import read_stock_bars
+            bars, metadata = read_stock_bars(source, sessions, period_seconds=period, **import_options)
+        else:
+            if period is not None:
+                raise ValueError("future layout is the reviewed one-minute format")
+            import_options["columns"] = import_options["columns"] or 11
+            bars, metadata = read_legacy_bars(source, sessions, **import_options)
         write_report(output, evaluate_bars(bars, metadata, **args))
-    except (ValueError, OSError, ArithmeticError) as exc:
+    except (ValueError, OSError, ArithmeticError, ZoneInfoNotFoundError) as exc:
         print("legacy research import rejected: "+str(exc), file=sys.stderr)
         return 2
     return 0

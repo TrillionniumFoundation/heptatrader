@@ -22,7 +22,9 @@ Neither imported data nor offline fills are accepted as execution truth.
 
 ## Supported legacy format
 
-Only the reviewed one-minute, start-labelled, positional CSV layout is supported:
+The default `--layout future` uses the reviewed one-minute, start-labelled CSV.
+[DATA-FORMATS.md](DATA-FORMATS.md) specifies the additional explicit stock/Tick
+layouts and historical header aliases. The futures layout remains:
 
 ```text
 TimeStamp,DateTime,Open,High,Low,Close,TotalVolume,LastVolume,TotalTurnOver,LastTurnOver,OpenInterest

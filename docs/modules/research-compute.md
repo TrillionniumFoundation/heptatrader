@@ -58,3 +58,15 @@ and reuses the existing offline evaluator rather than creating a second core.
 Series peak/trough results carry their right-neighbor confirmation time;
 corrections, trimming, threshold queries and aggregation remain research-only.
 The existing CTest discovery and installed smoke exercise these additions.
+
+## Stock and Tick data consumers
+
+[Additional data formats](../../research/DATA-FORMATS.md) define seven-field
+end-labelled stock bars and four explicit legacy Tick layouts. Missing actual
+civil dates require external input; they are never guessed from TradingDay.
+Ticks reuse the existing compiled BarBuilder, and every format reuses the
+existing evaluator/ledger. Raw depth observations are retained but unqualified.
+`tests/research/test_legacy_formats.py` adds behavior and real-converter tests.
+`tests/research/format_install_smoke.py` installs, relocates and invokes all new
+formats without source imports and is registered in standalone CTest. No new
+compiled target, broker adapter, OMS owner or privileged install entry is added.
