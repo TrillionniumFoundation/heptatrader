@@ -1,0 +1,48 @@
+name: HeptaDLL Modular Integration
+
+on:
+  push:
+    branches: [integration/heptadll-modular-20260920]
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/heptadll-integration.yml'
+      - 'research/**'
+      - 'docs/technical/heptadll-integration.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: heptadll-integration-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source-snapshot:
+    name: exact-source-snapshot
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Archive public tracked source for reproducible integration tests
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          mkdir -p "$RUNNER_TEMP/integration-source"
+          git archive --format=tar.gz --output="$RUNNER_TEMP/integration-source/heptatrader-source.tar.gz" HEAD
+          printf '%s\n' "$EXPECTED_SHA" > "$RUNNER_TEMP/integration-source/SOURCE_COMMIT"
+          cd "$RUNNER_TEMP/integration-source"
+          sha256sum heptatrader-source.tar.gz > heptatrader-source.tar.gz.sha256
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: integration-source-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/integration-source/
+          if-no-files-found: error
+          retention-days: 7
