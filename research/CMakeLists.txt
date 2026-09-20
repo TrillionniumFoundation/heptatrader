@@ -62,6 +62,9 @@ if(BUILD_TESTING)
         hepta_research_test(hepta_research_native_gateway_tests ../tests/research/native_gateway_tests.cpp)
         target_link_libraries(hepta_research_native_gateway_tests PRIVATE
             hepta_research_native_client hepta_agent_os_core)
+        hepta_research_test(hepta_research_native_execution_tests ../tests/research/native_execution_tests.cpp)
+        target_link_libraries(hepta_research_native_execution_tests PRIVATE
+            hepta_research_native_client hepta_agent_os_core hepta_execution_service_runtime)
     endif()
     add_test(NAME hepta_research_replay_example COMMAND hepta_research_replay_cli
         "${CMAKE_CURRENT_SOURCE_DIR}/examples/ticks.csv"

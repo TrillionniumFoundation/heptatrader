@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`, `tests/research/native_execution_tests.cpp`
 
 ## Responsibilities
 
@@ -78,3 +78,50 @@ than the surrounding LOCAL_ONLY [research SDK](research-sdk.md). Root-build wire
 and real local Gateway tests cover proposal identity, uncertain outcomes, no
 automatic retry and session revocation. The negative Gateway fixture has no
 venue and does not establish risk approval or broker qualification.
+
+## Real Execution lifecycle acceptance
+
+`hepta_research_native_execution_tests` complements, rather than replaces, the
+negative Gateway fixture. It runs the actual `NativeStrategyClient`,
+`NativeToolClient`, `ToolGatewayRuntimeComposition`, session supervisor and
+`ExecutionServiceRuntimeComposition` over local Unix sockets, using only the
+canonical deterministic simulator. The test links privileged service libraries;
+the production research native client still links only NativeToolClient and its
+wire dependency. The four offline SDK libraries remain unchanged.
+
+The fixture obtains real service-issued previews and opaque permits. It verifies
+accepted placement and fills, a resting order and guarded cancellation, stable
+command identity on exact retries, rejection of changed-payload ID reuse, and
+WATCH/revoked-session denial. A transparent proxy drops exactly one *accepted*
+placement reply: the client clears stale output and never retries automatically;
+an explicit retry with the same ID is a duplicate. The test then stops and
+restarts the Execution component with retained state, checks its changed epoch,
+restored positions and durable command identities, and independently replays the
+OMS to count exactly three place-send attempts and one cancel-send attempt. The
+Gateway's chained decision audit must verify.
+
+The current simulator does not implement authoritative flatten. Its real
+preview must remain rejected; neither this test nor the strategy client replaces
+that rejection with an opposite-side placement.
+
+Run from a complete checkout as an unprivileged user (root fails, not skips):
+
+```sh
+cmake -S . -B build/research-native -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF
+cmake --build build/research-native --target hepta_research_test_binaries --parallel 2
+ctest --test-dir build/research-native -R '^hepta_research_' --no-tests=error --output-on-failure
+python3 scripts/verify_build_ownership.py --profile core
+```
+
+The existing `core;research` CTest selection and research/core build aggregates
+include this target. Both reviewed build profiles record its real dependencies.
+The integration workflow therefore executes it through the maintained root
+build, with no separate acceptance harness or production source substitution.
+
+This is local simulator/component acceptance, not installed systemd, multi-UID
+isolation, SIGKILL crash recovery, broker qualification, production latency, or
+permission to trade. An existing C++ test-only custodian seam lets one
+unprivileged fixture UID provision the PAPER-template session; it is not exposed
+as a production configuration option. Keys/tokens and market data are synthetic
+and scoped to a private temporary directory. CTP stays deferred, XT retains its
+existing priority, and LIVE remains unavailable.

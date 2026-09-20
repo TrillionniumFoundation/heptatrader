@@ -22,7 +22,8 @@
         "tests/python/test_mcp_bridge.py",
         "tests/python/test_installed_runtime_processes.py",
         "tests/research/native_client_tests.cpp",
-        "tests/research/native_gateway_tests.cpp"
+        "tests/research/native_gateway_tests.cpp",
+        "tests/research/native_execution_tests.cpp"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
