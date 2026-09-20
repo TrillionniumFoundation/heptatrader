@@ -64,6 +64,8 @@ if(HEPTA_RESEARCH_STANDALONE)
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-binary" @ONLY)
     configure_file(cmake/xml_main.py.in
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-xml" @ONLY)
+    configure_file(cmake/portfolio_main.py.in
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-portfolio" @ONLY)
     install(TARGETS hepta_research_data hepta_research_bars EXPORT HeptaResearchTargets
         ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
         RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -79,8 +81,9 @@ if(HEPTA_RESEARCH_STANDALONE)
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-ticks"
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-binary"
         "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-xml"
+        "${CMAKE_CURRENT_BINARY_DIR}/hepta-research-portfolio"
         DESTINATION "${CMAKE_INSTALL_BINDIR}")
-    install(FILES INSTALL.md LEGACY-IMPORT.md DATA-FORMATS.md BINARY-IMPORT.md XML-IMPORT.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
+    install(FILES INSTALL.md LEGACY-IMPORT.md DATA-FORMATS.md BINARY-IMPORT.md XML-IMPORT.md PORTFOLIO.md DESTINATION "${CMAKE_INSTALL_DATADIR}/doc/hepta-research")
     if(BUILD_TESTING)
         add_test(NAME hepta_research_format_install_tests
             COMMAND ${Python3_EXECUTABLE} -B
@@ -102,6 +105,13 @@ if(HEPTA_RESEARCH_STANDALONE)
                 --build-dir ${CMAKE_CURRENT_BINARY_DIR} --config $<CONFIG>
                 --bindir ${CMAKE_INSTALL_BINDIR} --datadir ${CMAKE_INSTALL_DATADIR})
         set_tests_properties(hepta_research_xml_install_tests PROPERTIES
+            LABELS "research;install" TIMEOUT 180)
+        add_test(NAME hepta_research_portfolio_install_tests
+            COMMAND ${Python3_EXECUTABLE} -B
+                ${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/portfolio_install_smoke.py
+                --build-dir ${CMAKE_CURRENT_BINARY_DIR} --config $<CONFIG>
+                --bindir ${CMAKE_INSTALL_BINDIR} --datadir ${CMAKE_INSTALL_DATADIR})
+        set_tests_properties(hepta_research_portfolio_install_tests PROPERTIES
             LABELS "research;install" TIMEOUT 180)
     endif()
 endif()

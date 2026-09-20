@@ -23,10 +23,10 @@ feature/differential equivalence. Legacy classes are not made an alternate runti
 | `heptaDate`, calendar arithmetic | `CivilDay` | Validated Gregorian arithmetic, not a current holiday calendar |
 | `heptaProductTradeTime`, `heptaMarketTime` | explicit `Session` input | No silently current hard-coded exchange hours; caller supplies UTC windows and trading days |
 | `heptaKindleStickSeries` | `BarBuilder`, `BarSeries` | Integer ticks, ordered bounded history, corrections/trims, OHLC queries, strict confirmed swings and aggregation; not old ABI equivalence |
-| data-file helpers | `hepta-research-bars`, `hepta-research-import`, `hepta-research-ticks`, `hepta-research-binary` | Normalized ticks, futures/stock bars, four Tick CSV layouts and one explicit 424-byte binary profile; other BIN ABIs and DB/XML remain unsupported |
+| data-file helpers | `hepta-research-bars`, `hepta-research-import`, `hepta-research-ticks`, `hepta-research-binary`, `hepta-research-xml` | Normalized ticks, futures/stock bars, four Tick layouts, one explicit 424-byte binary profile and bounded XML/catalog/list inputs; other BIN/XML dialects and DB/network modes remain unsupported |
 | `heptaBasicCTAStrategy::SetStrategyPosition` | `TargetPolicy.delta` | Bounded close-first target planning; no local claim that a close filled |
 | `heptaBasicAgent` direct order methods | `StrategyGateway` | Existing heptactl/NativeToolClient only, Execution-issued identity and permit, durable uncertainty recovery |
-| Pegasus replay and settlement | `replay`, `ResearchLedger` | Offline next-bar-open model, explicit costs and multiplier; NOT full queue matching, margin or exchange settlement parity |
+| Pegasus replay and settlement | `replay`, `ResearchLedger`, `portfolio_replay` | Offline next-bar-open model, causal single-currency portfolio composition, explicit costs and multiplier; NOT full queue matching, margin or exchange settlement parity |
 | `heptaNetValueEvaluation` | `performance` | Explicit sampling frequency; undefined ratios are null, no automatic deposits |
 | Ftd/CTP SPI and SDK | retained at legacy source | Deferred; no CTP connection or trading enabled, XT priority unchanged |
 | monolith, old OMS/order references, threads, logging and process exit | no parallel production owner | Existing Execution/OMS/Gateway remain the owners; old ABI is not restored |
@@ -113,6 +113,23 @@ exported. Dates and price-grid interpretation must be explicit; no ABI guessing,
 TradingDay-as-ActionDay fallback or epsilon price repair is performed.
 All routes reuse the existing compiled bar builder and offline accounting.
 No original SPI, SDK, private history or parallel execution core is imported.
+
+[XML-IMPORT.md](XML-IMPORT.md) adds inert simulator configuration, instrument
+catalogs and indexed CSV/BIN file lists with explicit local byte-digest bindings.
+The old cache, balance, network and output settings do not acquire runtime authority.
+
+## Portfolio consumer
+
+[PORTFOLIO.md](PORTFOLIO.md) defines `hepta-research-portfolio`: independently
+validated normalized-bar streams, one accounting currency and one initial capital.
+The event merge reuses the existing normalized parser, reference moving average
+and ResearchLedger. Complete closes precede same-time next opens, future closes
+never affect earlier valuations, and incomplete closes remain explicitly untimed.
+Stale held-position marks produce null equity rather than silent extrapolation.
+Each instrument may span multiple files without resetting state. This is not a
+raw mixed-symbol BIN/XML parser, FX/margin model or a second execution authority.
+Standalone CTest installs, relocates and invokes the new command with `python -I`;
+the privileged runtime installation and existing client route remain unchanged.
 
 ## Strategy and replay contract
 

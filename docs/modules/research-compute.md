@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: integration/heptadll-modular-20260919
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`, `tests/research/test_portfolio.py`, `tests/research/portfolio_install_smoke.py`
 
 ## Responsibilities and dependencies
 
@@ -109,3 +109,27 @@ relocation and isolated CSV/BIN single/list command invocation. Original tests,
 canonical runtime CI and permissions are retained. This is not full XML-dialect,
 Pegasus matching/margin/settlement or legacy strategy equivalence; external
 consumer/licensing closure and old-repository retirement remain unresolved.
+
+## Causal multi-instrument portfolio consumer
+
+[The portfolio contract](../../research/PORTFOLIO.md) defines the installed
+`hepta-research-portfolio` and explicit normalized-bar manifest. The original
+single-file parser still rejects mixed symbols; bounded portfolio composition
+merges separately validated instrument streams using CLOSE/OPEN events.
+Per-instrument signals and accounting reuse `MovingAverageTarget` and
+`ResearchLedger`; portfolio capital is counted once, never once per symbol.
+
+Future closes cannot affect earlier cross-symbol valuations. An incomplete
+bar's untimed close is retained separately, not stamped with its nominal end.
+Stale held-position marks produce null equity and an explicit valuation gap.
+There is no silent FX, margin, settlement, financing or annualization model.
+File splits preserve strategy, position and fee state. Source digests and exact
+local bindings remain mandatory; rejected input preserves an earlier report.
+
+Behavior/differential tests run through existing unittest discovery. Standalone
+CTest adds actual CMake installation, relocation and isolated-command success/
+rejection tests. The root privileged installation, client/Gateway/Execution/OMS,
+CTP deferral and XT priority are unchanged. This closes the normalized-bar,
+single-currency portfolio composition profile, not arbitrary mixed legacy Tick/
+BIN/XML ingestion or full Pegasus/strategy equivalence. The old repository and
+all original runtime acceptance remain intact.
