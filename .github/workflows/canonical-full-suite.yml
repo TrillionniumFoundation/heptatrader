@@ -51,6 +51,15 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 1
           persist-credentials: false
+      - name: Assert and retain exact source identity
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          mkdir -p "$BUILD_DIR"
+          printf '%s\n' "$EXPECTED_SHA" > "$BUILD_DIR/SOURCE_COMMIT"
+          git rev-parse 'HEAD^{tree}' > "$BUILD_DIR/SOURCE_TREE"
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -66,7 +75,44 @@ jobs:
             -DHEPTA_ENABLE_LEGACY_0DTE_BRIDGE=OFF \
             -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
             -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF
-      - name: Build and run sanitizer tests
+      - name: Build the canonical sanitizer dependency closure
+        run: cmake --build "$BUILD_DIR" --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
+      - name: Run nonempty core suite and retain machine-readable results
         run: |
-          cmake --build "$BUILD_DIR" --target hepta_core_test_binaries --parallel "$BUILD_PARALLEL"
-          ctest --test-dir "$BUILD_DIR" --output-on-failure -L core --parallel "$BUILD_PARALLEL"
+          set -euo pipefail
+          ctest --test-dir "$BUILD_DIR" --show-only=json-v1 > "$BUILD_DIR/test-inventory.json"
+          ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \
+            -L core --parallel "$BUILD_PARALLEL" \
+            --output-junit "$PWD/$BUILD_DIR/core-results.xml" \
+            --output-log "$PWD/$BUILD_DIR/core-ctest.log"
+      - name: Repeat real research Execution crash and recovery acceptance
+        run: |
+          set -euo pipefail
+          ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \
+            -R '^hepta_research_native_execution_tests$' --repeat until-fail:5 \
+            --output-junit "$PWD/$BUILD_DIR/research-recovery-results.xml" \
+            --output-log "$PWD/$BUILD_DIR/research-recovery-ctest.log"
+      - name: Retain exact-head sanitizer and recovery diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: canonical-reliability-${{ matrix.build }}-${{ github.event.pull_request.head.sha || github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.BUILD_DIR }}/SOURCE_COMMIT
+            ${{ env.BUILD_DIR }}/SOURCE_TREE
+            ${{ env.BUILD_DIR }}/test-inventory.json
+            ${{ env.BUILD_DIR }}/*-results.xml
+            ${{ env.BUILD_DIR }}/*-ctest.log
+            ${{ env.BUILD_DIR }}/Testing/Temporary/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Reassert clean exact source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .

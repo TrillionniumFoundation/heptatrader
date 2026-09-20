@@ -4,10 +4,21 @@
 #include <tool_host/typed_tool_protocol.h>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 using namespace hepta::research;
 
 namespace {
+
+// Enforce the borrowed-client contract without executing undefined behaviour.
+static_assert(std::is_constructible<NativeStrategyClient, NativeToolClient&>::value,
+              "a borrowed mutable lvalue must remain supported");
+static_assert(std::is_constructible<NativeStrategyClient, const NativeToolClient&>::value,
+              "a borrowed const lvalue must remain supported");
+static_assert(!std::is_constructible<NativeStrategyClient, NativeToolClient&&>::value,
+              "must reject a temporary client that expires after construction");
+static_assert(!std::is_constructible<NativeStrategyClient, const NativeToolClient&&>::value,
+              "must also reject a const temporary client");
 
 std::string Wire(TradingToolHostRequest request) {
     Check(request.sessionToken.empty(), "proposal must not assign the session");

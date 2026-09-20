@@ -53,6 +53,10 @@ private:
 class NativeStrategyClient {
 public:
     explicit NativeStrategyClient(const NativeToolClient& client) : client_(client) {}
+    // Borrow only a named, longer-lived client. Binding a temporary would leave
+    // client_ dangling at the end of the constructing full expression.
+    NativeStrategyClient(NativeToolClient&&) = delete;
+    NativeStrategyClient(const NativeToolClient&&) = delete;
     bool Preview(const PreparedOrder& order, const std::string& previewCallId,
                  NativeToolClientResult& result, std::string& reason) const;
     // ID and permit MUST come from the matching successful preview response.

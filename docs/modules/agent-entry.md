@@ -73,6 +73,14 @@ It never allocates mutation IDs or retries automatically, and transport success
 is not execution success. Unsupported HTT1 contract identity fields are rejected
 rather than discarded. A failed call clears stale output.
 
+The wrapper borrows a named `NativeToolClient` that must outlive it. Construction
+from mutable or const temporaries is deleted: otherwise the stored reference
+would dangle as soon as the constructing expression ended. Mutable and const
+lvalue clients remain supported. This compile-time guard does not extend an
+lvalue's lifetime or make an externally destroyed client safe. The existing
+native-client test checks all four construction cases and retains its real
+wire-codec, request-identity and failed-transport assertions.
+
 The two native adapter source paths are owned by this module, more specifically
 than the surrounding LOCAL_ONLY [research SDK](research-sdk.md). Root-build wire
 and real local Gateway tests cover proposal identity, uncertain outcomes, no
@@ -178,3 +186,20 @@ This extends evidence to actual process death/re-exec in the local simulator.
 It does **not** establish host power-loss durability, an arbitrary instruction
 crash campaign, different-UID/systemd deployment, broker recovery, production
 latency, complete historical API/ABI migration or source-repository retirement.
+
+## Exact-head sanitizer evidence
+
+The existing `Canonical Full Suite` GCC and Clang sanitizer jobs build the real
+core aggregate and execute its nonempty `core` CTest selection. They also require
+five successful consecutive runs of `hepta_research_native_execution_tests`;
+a missing test or any failed repetition fails the job. This reuses the existing
+three SIGKILL/re-exec scenarios rather than adding a mock acceptance executable.
+The test's per-invocation timeout and unprivileged-user requirement are unchanged.
+
+Each job records the checked-out commit and tree, actual CTest inventory, JUnit
+results, separate core/recovery CTest logs and temporary test diagnostics. The
+artifact is identified by compiler build, source SHA, run and attempt. Source
+identity and tracked-file cleanliness are rechecked after execution. Uploading
+logs with `always()` preserves failures; neither an uploaded artifact nor a
+queued workflow establishes test success. The existing installed-process,
+SDK-package, ownership and broker-qualification checks remain separate claims.
