@@ -37,6 +37,7 @@ state their implemented behavior, evidence and remaining limits separately.
 | `ctp-adapter` | EXPERIMENTAL | [modules/ctp-adapter.md](modules/ctp-adapter.md) |
 | `xt-adapter` | EXPERIMENTAL | [modules/xt-adapter.md](modules/xt-adapter.md) |
 | `shadow-research` | EXPERIMENTAL | [modules/shadow-research.md](modules/shadow-research.md) |
+| `research-sdk` | EXPERIMENTAL | [modules/research-sdk.md](modules/research-sdk.md) |
 | `release-engineering` | CURRENT | [modules/release-engineering.md](modules/release-engineering.md) |
 | `deployment` | CURRENT | [modules/deployment.md](modules/deployment.md) |
 | `repository-control` | CURRENT | [modules/repository-control.md](modules/repository-control.md) |
@@ -53,7 +54,7 @@ state their implemented behavior, evidence and remaining limits separately.
 | Durable recovery | [OMS event schema](OMS-EVENT-SCHEMA.md), [lease format](technical/session-lease-format.md), [recovery capacity](technical/oms-recovery-capacity.md), [coordinator recovery memory](technical/coordinator-recovery-memory.md), [persistence support](technical/persistence-support-window.md), [lossless archive](technical/oms-archive-lifecycle.md) |
 | Lifecycle and development venue | [service lifecycle](technical/service-lifecycle.md), [simulator walkthrough](technical/simulator-operator-walkthrough.md), [systemd acceptance](technical/systemd-simulator-acceptance.md) |
 | Runtime observations | [metric inventory](OBSERVABILITY-METRICS.md), [cost boundaries](technical/runtime-cost-observations.md), [live OMS capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md), [OMS report](technical/oms-operational-report.md), [Gateway metrics](technical/gateway-runtime-observability.md), [collection](technical/telemetry-collection.md) |
-| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md) |
+| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md), [C++ research SDK](modules/research-sdk.md), [HeptaDLL integration](technical/heptadll-integration.md) |
 
 ## Operations and release
 

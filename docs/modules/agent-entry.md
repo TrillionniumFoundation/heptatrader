@@ -2,12 +2,12 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`
+Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`
 
 ## Responsibilities
 
-The Agent entry layer exposes the bounded HeptaTrader tool catalog to an Agent, CLI caller, or native client. It discovers tool descriptors, validates the advertised protocol and schema hashes, encodes typed requests, reads bounded responses, and preserves caller-generated mutation identities across uncertain retries.
+The Agent entry layer exposes the bounded HeptaTrader tool catalog to an Agent, CLI caller, or native client. It discovers tool descriptors, validates the advertised protocol and schema hashes, encodes typed requests, reads bounded responses, and preserves the required execution command identity across uncertain retries.
 
 It is not an execution authority. It does not own broker credentials, broker sockets, order state, final risk decisions, or reconciliation truth.
 
@@ -63,3 +63,18 @@ real Python process against a fragmented local Unix responder, including an
 uncertain mutation followed by the same-ID duplicate retry. It also tests token
 file safety, catalog drift and strict JSON rejection. Native-client tests remain
 independent cross-language evidence; neither suite grants Broker authority.
+
+## Research strategy adapter
+
+`hepta_research_native_client` is a forward-only wrapper around NativeToolClient.
+It accepts an immutable LMT/DAY proposal, requests the existing preview tool and
+submits only with the matching Execution-issued command ID and preview permit.
+It never allocates mutation IDs or retries automatically, and transport success
+is not execution success. Unsupported HTT1 contract identity fields are rejected
+rather than discarded. A failed call clears stale output.
+
+The two native adapter source paths are owned by this module, more specifically
+than the surrounding LOCAL_ONLY [research SDK](research-sdk.md). Root-build wire
+and real local Gateway tests cover proposal identity, uncertain outcomes, no
+automatic retry and session revocation. The negative Gateway fixture has no
+venue and does not establish risk approval or broker qualification.

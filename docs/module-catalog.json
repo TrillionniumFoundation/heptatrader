@@ -12,13 +12,17 @@
         "HeptaTrade/client",
         "plugins/heptatrader-agent-os",
         "scripts/hepta_agent_mcp_launcher.py",
-        "scripts/hepta_agent_trust_domain.py"
+        "scripts/hepta_agent_trust_domain.py",
+        "research/include/hepta/research/native_strategy_client.h",
+        "research/src/native_strategy_client.cpp"
       ],
       "tests": [
         "tests/native_tool_client_tests.cpp",
         "tests/unix_tool_server_tests.cpp",
         "tests/python/test_mcp_bridge.py",
-        "tests/python/test_installed_runtime_processes.py"
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/research/native_client_tests.cpp",
+        "tests/research/native_gateway_tests.cpp"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
@@ -280,6 +284,22 @@
         "tests/python/test_official_source_formats.py"
       ],
       "broker_mutation": "NONE",
+      "production_authorized": false
+    },
+    {
+      "id": "research-sdk",
+      "status": "EXPERIMENTAL",
+      "document": "docs/modules/research-sdk.md",
+      "implementation": [
+        "research"
+      ],
+      "tests": [
+        "tests/research/market_data_tests.cpp",
+        "tests/research/analytics_tests.cpp",
+        "tests/research/replay_tests.cpp",
+        "tests/research/cli_behavior.py"
+      ],
+      "broker_mutation": "LOCAL_ONLY",
       "production_authorized": false
     },
     {
