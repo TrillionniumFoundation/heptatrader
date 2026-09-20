@@ -45,13 +45,57 @@ callers must serialize access, rather than rely on legacy `volatile` flags.
 
 `BarSeries` keeps a bounded chronological window of complete bars. Range queries
 have inclusive endpoints; highest/lowest ties select the latest bar by default.
+The existing high/low overloads remain supported; typed overloads accept
+`BarPrice::Open`, `High`, `Low` or `Close`. `AtLatest(0)` is the last retained bar.
 Replacement requires an exact existing interval. Merging preserves OHLC, volume
 and observation count and rejects overlap or mixed instruments/trading days.
 
-CSV parsing bounds rows and line lengths, uses the classic numeric locale and
-rejects non-finite values, extra fields and overflow. It is not a decoder for
-legacy ABI-dependent binary dumps. Historical input must be explicitly converted
-and its provenance retained before use.
+`LatestHigher` and `LatestLower` search from the supplied end toward its begin,
+using strict comparisons. They return `found=false` when absent, not an unsigned
+minus-one index. The index is meaningful only when `found` is true. All indices
+are relative to the current retained window; do not cache them across mutations.
+`RetainedBarsInLatestTradingDay` counts only the resident tail sharing the latest
+trading-day label, not a full-day count certified after retention or erasure.
+
+### Confirmed extrema and signal availability
+
+`ConfirmedPeaks(begin, observedEnd, radius, field)` and `ConfirmedTroughs` only
+inspect the inclusive supplied range. A candidate needs `radius` complete bars
+on **each** side within it and must be strictly above/below all neighbours.
+Plateaus do not qualify. Radius zero returns every visible bar; a radius too
+large for the range returns an empty vector without overflowing index arithmetic.
+Results are in chronological order. Missing/invalid ranges, fields or non-finite
+thresholds fail explicitly.
+
+Each result separates the pivot's `beginUs` from `confirmedAtUs`, the end of its
+last required right-hand neighbour. A strategy must not act on the pivot before
+that confirmation time, and the caller must set `observedEnd` to the last actually
+observed complete bar. Passing the end of a future offline dataset is not causal
+merely because a confirmation timestamp is returned. Retention and interval
+replacement change the visible dataset; this API is not a bitemporal record of
+when corrections became known. Adjacent bars mean adjacent retained observations,
+not a guarantee of continuous wall-clock/session coverage.
+
+### Portable CSV
+
+Tick, session and completed-bar parsing bound rows and line lengths, use the
+classic numeric locale, and reject non-finite values, extra fields and overflow.
+`ReadBarsCsv`/`WriteBarsCsv` use this exact single-instrument schema:
+
+```text
+instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete
+```
+
+Times are UTC microseconds; days are Gregorian labels, not inferred calendars.
+OHLC consistency, interval ordering/non-overlap, positive tick counts and
+nonnegative volume are checked. The completed-bar interface requires `complete=1`;
+`0` is rejected rather than upgraded to a finished bar. Mixed instruments and
+reversed trading-day labels fail. Empty datasets have a header and zero rows.
+LF, CRLF and a final row without newline are accepted. Output validates all input
+bars before writing and uses `max_digits10` precision; stream failures are errors.
+Neither a successfully parsed row nor its completion flag authenticates market
+data provenance. These formats do not decode legacy ABI-dependent binary dumps;
+historical input must be deliberately converted and its provenance retained.
 
 ## Research accounting and matching
 
@@ -118,12 +162,18 @@ build/research/hepta-research-replay research/examples/ticks.csv research/exampl
 
 The tests use runtime assertions active in Release, independent numeric oracles,
 causality/volume conservation, conflict/error cases, deterministic CLI output,
-wire round trips and a real NativeToolClient/UnixToolServer boundary. The Gateway
-fixture's execution authority deliberately returns uncertainty and has no venue;
-it checks forwarding, lack of automatic retry and session revocation. It is not
-broker, deployed-process isolation or durable-recovery qualification. Existing
-canonical recovery, installed-process and broker-qualification suites remain
-required. Source-level compile/test evidence must not be relabelled LIVE readiness.
+wire round trips and a real NativeToolClient/UnixToolServer boundary. Market-data
+coverage includes independent field/query/extrema oracles over 24 synthetic
+17-bar sequences and every visible subrange; queries on a full dataset must agree
+with a separately constructed observed prefix. CSV coverage includes numeric
+round trips, extreme finite prices, integer overflow, partial bars, malformed
+fields, locale changes, ordering conflicts and input/output stream failure.
+
+The Gateway fixture's execution authority deliberately returns uncertainty and
+has no venue; it checks forwarding, lack of automatic retry and session revocation.
+It is not broker, deployed-process isolation or durable-recovery qualification.
+Existing canonical recovery, installed-process and broker-qualification suites
+remain required. Source-level evidence must not be relabelled LIVE readiness.
 
 ## Offline SDK installation
 
@@ -138,10 +188,11 @@ explicit dirty/unavailable state accompany it. A matching numeric version is
 not an ABI or source-equivalence guarantee.
 
 The sixth standalone CTest entry installs to a temporary prefix, moves it,
-builds/runs an external C++11 consumer, checks transitive links, executes the
-installed replay CLI and rejects unsupported native components/wrong versions.
-It inherits sanitizer flags. Successful GCC CI builds may publish the staged SDK
-and checksum as a developer artifact; queued CI does not certify that artifact.
-The root production install/package manifest and native Gateway test boundary
-are unchanged. See the [integration record](../technical/heptadll-integration.md)
-for source provenance, retained assets and the remaining migration boundary.
+builds/runs an external consumer with CXX_STANDARD explicitly set to 11, checks
+transitive links and the additional query/CSV symbols, executes the installed
+replay CLI and rejects unsupported native components/wrong versions. It inherits
+sanitizer flags. Successful GCC CI builds may publish the staged SDK and checksum
+as a developer artifact; queued CI does not certify that artifact. The root
+production install/package manifest and native Gateway test boundary are unchanged.
+See the [integration record](../technical/heptadll-integration.md) for source
+provenance, retained assets and the remaining migration boundary.

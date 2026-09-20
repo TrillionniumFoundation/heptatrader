@@ -299,19 +299,113 @@ void BarSeries::EraseAfter(std::int64_t begin) {
     while (!bars_.empty() && bars_.back().beginUs > begin) bars_.pop_back();
 }
 const Bar& BarSeries::At(std::size_t index) const { return bars_.at(index); }
-std::size_t BarSeries::Highest(std::size_t begin, std::size_t end, bool latest) const {
-    Require(begin <= end && end < bars_.size(), "RESEARCH_SERIES_RANGE_INVALID");
+const Bar& BarSeries::AtLatest(std::size_t offset) const {
+    Require(offset < bars_.size(), "RESEARCH_SERIES_RANGE_INVALID");
+    return bars_[bars_.size() - 1 - offset];
+}
+namespace {
+double PriceOf(const Bar& bar, BarPrice field) {
+    switch (field) {
+    case BarPrice::Open: return bar.open;
+    case BarPrice::High: return bar.high;
+    case BarPrice::Low: return bar.low;
+    case BarPrice::Close: return bar.close;
+    }
+    throw std::invalid_argument("RESEARCH_BAR_PRICE_FIELD_INVALID");
+}
+std::size_t ExtremeIndex(const std::deque<Bar>& bars, std::size_t begin,
+                         std::size_t end, BarPrice field, bool highest, bool latest) {
+    Require(begin <= end && end < bars.size(), "RESEARCH_SERIES_RANGE_INVALID");
     auto best = begin;
-    for (auto i = begin + 1; i <= end; ++i)
-        if (bars_[i].high > bars_[best].high || (latest && bars_[i].high == bars_[best].high)) best = i;
+    double value = PriceOf(bars[best], field);
+    for (auto i = begin + 1; i <= end; ++i) {
+        const double candidate = PriceOf(bars[i], field);
+        if ((highest ? candidate > value : candidate < value) ||
+            (latest && candidate == value)) {
+            best = i; value = candidate;
+        }
+    }
     return best;
 }
+BarSearchResult LatestCrossing(const std::deque<Bar>& bars, double threshold,
+                               std::size_t begin, std::size_t end,
+                               BarPrice field, bool higher) {
+    Require(begin <= end && end < bars.size(), "RESEARCH_SERIES_RANGE_INVALID");
+    Require(std::isfinite(threshold), "RESEARCH_THRESHOLD_INVALID");
+    for (auto i = end;; --i) {
+        const double value = PriceOf(bars[i], field);
+        if (higher ? value > threshold : value < threshold) {
+            BarSearchResult out;
+            out.found = true; out.index = i;
+            out.beginUs = bars[i].beginUs; out.price = value;
+            return out;
+        }
+        if (i == begin) break; // Do not underflow size_t at index zero.
+    }
+    return BarSearchResult();
+}
+std::vector<ConfirmedExtremum> ConfirmedExtrema(
+    const std::deque<Bar>& bars, std::size_t begin, std::size_t observedEnd,
+    std::size_t radius, BarPrice field, bool peaks) {
+    Require(begin <= observedEnd && observedEnd < bars.size(), "RESEARCH_SERIES_RANGE_INVALID");
+    (void)PriceOf(bars[begin], field); // Validate even when no candidate fits.
+    std::vector<ConfirmedExtremum> result;
+    if (radius > (observedEnd - begin) / 2) return result;
+    // Bounds above make both index arithmetic and 2*radius overflow-free.
+    for (auto i = begin + radius; i <= observedEnd - radius; ++i) {
+        const double value = PriceOf(bars[i], field);
+        bool strict = true;
+        for (auto j = i - radius; j <= i + radius; ++j) {
+            if (j == i) continue;
+            const double other = PriceOf(bars[j], field);
+            if (peaks ? value <= other : value >= other) { strict = false; break; }
+        }
+        if (strict) {
+            ConfirmedExtremum item;
+            item.index = i; item.beginUs = bars[i].beginUs;
+            item.confirmedAtUs = bars[i + radius].endUs; item.price = value;
+            result.push_back(item);
+        }
+    }
+    return result;
+}
+}
+std::size_t BarSeries::Highest(std::size_t begin, std::size_t end, bool latest) const {
+    return Highest(begin, end, BarPrice::High, latest);
+}
 std::size_t BarSeries::Lowest(std::size_t begin, std::size_t end, bool latest) const {
-    Require(begin <= end && end < bars_.size(), "RESEARCH_SERIES_RANGE_INVALID");
-    auto best = begin;
-    for (auto i = begin + 1; i <= end; ++i)
-        if (bars_[i].low < bars_[best].low || (latest && bars_[i].low == bars_[best].low)) best = i;
-    return best;
+    return Lowest(begin, end, BarPrice::Low, latest);
+}
+std::size_t BarSeries::Highest(std::size_t begin, std::size_t end, BarPrice field, bool latest) const {
+    return ExtremeIndex(bars_, begin, end, field, true, latest);
+}
+std::size_t BarSeries::Lowest(std::size_t begin, std::size_t end, BarPrice field, bool latest) const {
+    return ExtremeIndex(bars_, begin, end, field, false, latest);
+}
+BarSearchResult BarSeries::LatestHigher(double threshold, std::size_t begin,
+                                       std::size_t end, BarPrice field) const {
+    return LatestCrossing(bars_, threshold, begin, end, field, true);
+}
+BarSearchResult BarSeries::LatestLower(double threshold, std::size_t begin,
+                                      std::size_t end, BarPrice field) const {
+    return LatestCrossing(bars_, threshold, begin, end, field, false);
+}
+std::vector<ConfirmedExtremum> BarSeries::ConfirmedPeaks(
+    std::size_t begin, std::size_t end, std::size_t radius, BarPrice field) const {
+    return ConfirmedExtrema(bars_, begin, end, radius, field, true);
+}
+std::vector<ConfirmedExtremum> BarSeries::ConfirmedTroughs(
+    std::size_t begin, std::size_t end, std::size_t radius, BarPrice field) const {
+    return ConfirmedExtrema(bars_, begin, end, radius, field, false);
+}
+std::size_t BarSeries::RetainedBarsInLatestTradingDay() const {
+    if (bars_.empty()) return 0;
+    std::size_t count = 0;
+    for (auto it = bars_.rbegin(); it != bars_.rend(); ++it) {
+        if (it->tradingDay != bars_.back().tradingDay) break;
+        ++count;
+    }
+    return count;
 }
 double BarSeries::MeanClose(std::size_t count) const {
     Require(count > 0 && count <= bars_.size(), "RESEARCH_SERIES_RANGE_INVALID");
@@ -335,5 +429,76 @@ Bar MergeBars(const std::vector<Bar>& bars) {
         result.tickCount = AddCount(result.tickCount, b.tickCount);
     }
     return result;
+}
+
+namespace {
+const char* const BarCsvHeader =
+    "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete";
+std::vector<std::string> BarCells(const std::string& line) {
+    std::vector<std::string> cells;
+    std::size_t begin = 0;
+    for (;;) {
+        const auto end = line.find(',', begin);
+        cells.push_back(line.substr(begin, end == std::string::npos ? end : end - begin));
+        Require(cells.size() <= 11, "RESEARCH_CSV_FIELD_COUNT");
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    Require(cells.size() == 11, "RESEARCH_CSV_FIELD_COUNT");
+    return cells;
+}
+double BarCsvPrice(const std::string& cell) {
+    double value = 0;
+    std::istringstream number(cell); number.imbue(std::locale::classic());
+    number >> std::noskipws >> value;
+    Require(!number.fail() && number.peek() == std::char_traits<char>::eof() &&
+            std::isfinite(value) && value > 0, "RESEARCH_CSV_PRICE_INVALID");
+    return value;
+}
+void ValidateCsvBar(const Bar& bar, const Bar* previous) {
+    ValidateBar(bar); Require(bar.complete, "RESEARCH_PARTIAL_BAR");
+    if (previous) {
+        Require(bar.instrument == previous->instrument, "RESEARCH_INSTRUMENT_MISMATCH");
+        Require(bar.beginUs >= previous->endUs && bar.tradingDay >= previous->tradingDay,
+                "RESEARCH_BAR_OUT_OF_ORDER");
+    }
+}
+}
+std::vector<Bar> ReadBarsCsv(std::istream& input, std::size_t maxRows) {
+    Require(maxRows > 0, "RESEARCH_CSV_ROW_LIMIT_INVALID");
+    std::string line;
+    Require(ReadBoundedLine(input, line), "RESEARCH_CSV_HEADER_MISSING");
+    StripCR(line);
+    Require(line == BarCsvHeader, "RESEARCH_BAR_CSV_HEADER_INVALID");
+    std::vector<Bar> bars;
+    while (ReadBoundedLine(input, line)) {
+        StripCR(line);
+        Require(bars.size() < maxRows, "RESEARCH_CSV_ROW_LIMIT");
+        const auto cells = BarCells(line);
+        Bar bar;
+        bar.instrument = cells[0]; bar.tradingDay = cells[1];
+        bar.beginUs = SignedNonnegative(cells[2]); bar.endUs = SignedNonnegative(cells[3]);
+        bar.open = BarCsvPrice(cells[4]); bar.high = BarCsvPrice(cells[5]);
+        bar.low = BarCsvPrice(cells[6]); bar.close = BarCsvPrice(cells[7]);
+        bar.volume = SignedNonnegative(cells[8]); bar.tickCount = Unsigned(cells[9]);
+        Require(cells[10] == "0" || cells[10] == "1", "RESEARCH_CSV_BOOL_INVALID");
+        bar.complete = cells[10] == "1";
+        ValidateCsvBar(bar, bars.empty() ? nullptr : &bars.back());
+        bars.push_back(std::move(bar));
+    }
+    return bars;
+}
+void WriteBarsCsv(std::ostream& output, const std::vector<Bar>& bars) {
+    for (std::size_t i = 0; i < bars.size(); ++i)
+        ValidateCsvBar(bars[i], i == 0 ? nullptr : &bars[i - 1]);
+    std::ostringstream encoded; encoded.imbue(std::locale::classic());
+    encoded << BarCsvHeader << '\n' << std::setprecision(std::numeric_limits<double>::max_digits10);
+    for (const auto& bar : bars)
+        encoded << bar.instrument << ',' << bar.tradingDay << ','
+                << bar.beginUs << ',' << bar.endUs << ','
+                << bar.open << ',' << bar.high << ',' << bar.low << ',' << bar.close << ','
+                << bar.volume << ',' << bar.tickCount << ",1\n";
+    output << encoded.str();
+    if (!output) throw std::runtime_error("RESEARCH_CSV_WRITE_FAILED");
 }
 }} // namespace hepta::research

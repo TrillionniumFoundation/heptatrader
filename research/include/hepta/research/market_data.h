@@ -92,6 +92,26 @@ std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows = 100000
 void WriteTicksCsv(std::ostream& output, const std::vector<Tick>& ticks);
 SessionSchedule ReadSessionsCsv(std::istream& input, std::size_t maxRows = 100000);
 
+// Completed single-instrument bars only. The header and all rows are checked;
+// partial/overlapping/reversed rows are rejected rather than coerced to complete.
+// Header: instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete
+std::vector<Bar> ReadBarsCsv(std::istream& input, std::size_t maxRows = 1000000);
+void WriteBarsCsv(std::ostream& output, const std::vector<Bar>& bars);
+
+enum class BarPrice { Open, High, Low, Close };
+struct BarSearchResult {
+    bool found = false;
+    std::size_t index = 0; // Meaningful only when found; relative to retained data.
+    std::int64_t beginUs = 0;
+    double price = 0;
+};
+struct ConfirmedExtremum {
+    std::size_t index = 0; // Invalidated by retention, erasure or replacement.
+    std::int64_t beginUs = 0;
+    std::int64_t confirmedAtUs = 0; // End of the LAST required right-hand bar.
+    double price = 0;
+};
+
 class BarSeries {
 public:
     explicit BarSeries(std::size_t capacity);
@@ -101,11 +121,34 @@ public:
     void EraseAfter(std::int64_t beginUs);
     std::size_t Size() const { return bars_.size(); }
     const Bar& At(std::size_t index) const;
+    const Bar& AtLatest(std::size_t offset = 0) const;
     // Inclusive endpoints, as in the legacy series API.
     std::size_t Highest(std::size_t begin, std::size_t end,
                         bool latestOnTie = true) const;
     std::size_t Lowest(std::size_t begin, std::size_t end,
                        bool latestOnTie = true) const;
+    std::size_t Highest(std::size_t begin, std::size_t end, BarPrice field,
+                        bool latestOnTie = true) const;
+    std::size_t Lowest(std::size_t begin, std::size_t end, BarPrice field,
+                       bool latestOnTie = true) const;
+    // Search end -> begin, with a strict comparison; no unsigned -1 sentinel.
+    BarSearchResult LatestHigher(double threshold, std::size_t begin,
+                                 std::size_t end, BarPrice field = BarPrice::High) const;
+    BarSearchResult LatestLower(double threshold, std::size_t begin,
+                                std::size_t end, BarPrice field = BarPrice::Low) const;
+    // Only [begin, observedEnd] is visible. A candidate needs radius complete
+    // neighbours on EACH side inside that range. Equal neighbours are not strict
+    // extrema. radius==0 returns every visible bar. Results are chronological.
+    // Never treat beginUs as signal availability: use confirmedAtUs. Caller must
+    // pass the last actually observed bar, not the end of an offline dataset.
+    std::vector<ConfirmedExtremum> ConfirmedPeaks(
+        std::size_t begin, std::size_t observedEnd, std::size_t radius,
+        BarPrice field = BarPrice::High) const;
+    std::vector<ConfirmedExtremum> ConfirmedTroughs(
+        std::size_t begin, std::size_t observedEnd, std::size_t radius,
+        BarPrice field = BarPrice::Low) const;
+    // Counts retained bars only; bounded storage cannot certify a full-day count.
+    std::size_t RetainedBarsInLatestTradingDay() const;
     double MeanClose(std::size_t count) const;
 private:
     std::size_t capacity_;

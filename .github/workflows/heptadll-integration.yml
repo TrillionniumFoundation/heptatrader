@@ -64,7 +64,7 @@ jobs:
               "-DCMAKE_CXX_FLAGS=$flags"
           fi
           cmake --build build/research-ci --parallel 2
-          ctest --test-dir build/research-ci --output-on-failure \
+          ctest --test-dir build/research-ci --no-tests=error --output-on-failure \
             --output-junit results.xml
           git diff --exit-code
       - name: Stage the verified offline GCC SDK
@@ -126,7 +126,7 @@ jobs:
           printf '%s\n' "$EXPECTED_SHA" > build/research-native/SOURCE_COMMIT
           cmake --build build/research-native --target hepta_research_test_binaries --parallel 2
           ctest --test-dir build/research-native -R '^hepta_research_' \
-            --output-on-failure --output-junit results.xml
+            --no-tests=error --output-on-failure --output-junit results.xml
           python3 scripts/verify_build_ownership.py --profile core
           git diff --exit-code
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

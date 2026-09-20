@@ -19,6 +19,7 @@ CONSUMER = r'''
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
+#include <sstream>
 #include <vector>
 using namespace hepta::research;
 static void Require(bool value) {
@@ -35,8 +36,19 @@ int main() {
     Require(builder.Push(tick, first) == TickOutcome::ClosedPrevious);
     Require(first.complete && first.close == 100 && first.volume == 2);
     Require(builder.AdvanceWatermark(20, second));
-    BarSeries series(2); series.Append(first); series.Append(second);
+    BarSeries series(3); series.Append(first); series.Append(second);
     Require(series.MeanClose(2) == 101 && series.Highest(0, 1) == 1);
+    Require(series.ConfirmedPeaks(0, 1, 1).empty());
+    Bar third = second; third.beginUs = 20; third.endUs = 30;
+    third.open = third.high = third.low = third.close = 101; series.Append(third);
+    const auto peaks = series.ConfirmedPeaks(0, 2, 1, BarPrice::Close);
+    Require(peaks.size() == 1 && peaks[0].index == 1 && peaks[0].confirmedAtUs == 30);
+    Require(series.AtLatest().close == 101 && series.RetainedBarsInLatestTradingDay() == 3);
+    Require(series.Highest(0, 2, BarPrice::Open) == 1 && series.Lowest(0, 2, BarPrice::Close) == 0);
+    Require(series.LatestHigher(100, 0, 2).index == 2 && series.LatestLower(101, 0, 2).index == 0);
+    std::ostringstream barCsv; WriteBarsCsv(barCsv, {first, second, third});
+    std::istringstream barInput(barCsv.str()); const auto restored = ReadBarsCsv(barInput);
+    Require(restored.size() == 3 && restored[2].close == 101 && restored[2].endUs == 30);
     MovingAverageForecast strategy(1, 2); Forecast forecast;
     Require(!strategy.OnCompletedBar(first, forecast));
     Require(strategy.OnCompletedBar(second, forecast) && forecast.direction == 1);
@@ -73,7 +85,7 @@ if(TARGET HeptaResearch::NativeClient OR TARGET hepta_native_tool_client)
 endif()
 add_executable(consumer main.cpp)
 target_compile_features(consumer PRIVATE cxx_std_11)
-set_target_properties(consumer PROPERTIES CXX_EXTENSIONS OFF)
+set_target_properties(consumer PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
 target_link_libraries(consumer PRIVATE HeptaResearch::Replay HeptaResearch::Strategy)
 '''
 

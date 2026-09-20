@@ -28,9 +28,9 @@ invented by this integration.
 
 | Reference assets under `heptaHeptaDLL/` | Destination and present scope |
 |---|---|
-| `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, range queries and OHLCV merging under an explicit new contract. Additional historical indicator APIs are not claimed compatible. |
+| `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, OHLC-field extrema, latest strict threshold queries, confirmed peaks/troughs, reverse indexing, retained-day count and OHLCV merging. These are explicit new APIs, not compatibility aliases for historical signatures. |
 | `heptaDate`, `heptaTimeStamp`, `heptaProductTradeTime`, `heptaChinaTradingCalendar` | Explicit UTC session windows and Gregorian trading-day validation. Old exchange-rule tables and implicit local-time assumptions are not republished as current rules. |
-| CSV/data helpers | Strict portable tick/session CSV conversion. Proprietary binary cache layouts and historical datasets remain in the source repository. |
+| CSV/data helpers | Strict portable tick/session and completed-bar CSV conversion. Proprietary binary cache layouts and historical datasets remain in the source repository. |
 | `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees and fill identity. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
 | `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a forward-only NativeToolClient adapter. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
@@ -45,14 +45,16 @@ is replaced with an empty success-shaped library.
 ## Consumer and retirement boundary
 
 The visible organization search for `heptaBasicStrategy` found the reference
-library and the target repository's historical-retirement documentation. That
-search does not enumerate private installations, other organizations, binary
-consumers or all external applications. The reference README names the upstream
-Pegasus/HeptaTrader lineage; it is not evidence that all consumers are retired.
+library and the target repository's historical-retirement documentation. A follow-up
+search for `heptaHeptaDLL` also returned the reference project's build files and
+usage guide. Neither search enumerates private installations, other organizations,
+binary consumers, all non-default branches or all external applications. The
+reference README names the upstream Pegasus/HeptaTrader lineage; it is not evidence
+that all consumers are retired.
 
 Accordingly, the source repository is **not archived**, its release entry points
 are not deleted and no history is rewritten. Archive readiness requires a named
-consumer inventory, explicit disposition of unmigrated indicators/strategies/
+consumer inventory, explicit disposition of remaining historical APIs/strategies,
 cache and matching modes, applicable redistribution confirmation, and exact-head
 build/behavior/recovery/permission evidence. A source copy or green offline test
 alone does not satisfy those conditions.
@@ -79,6 +81,38 @@ across both sides and all three supported time-in-force modes. The CLI test
 also truncates input immediately after a signal and requires terminal treatment
 of the unfilled order without a synthetic fill.
 
+## Data-query and conversion continuation
+
+This continuation starts from `17e6fccc42d19d3988e4c4a80d2c2257b82b605c`,
+retaining the existing C++ modules, replay lifecycle fixes and relocatable SDK.
+No second research framework or production state authority is added.
+
+The additional range-query families correspond to capability categories in the
+reviewed `heptaKindleStickSeries.h`, but have explicit typed fields, strict tie
+rules and checked indices. Peak/trough output separates pivot time from the time
+its final right-hand observation closes. The caller supplies its observed range;
+a signal cannot honestly be backdated to a pivot because an offline dataset now
+contains later bars. Replacement and retention are visible data changes, not a
+reconstruction of historical information arrival.
+
+Completed-bar CSV has a strict single-instrument schema and rejects partial bars,
+OHLC inconsistencies, overlap, time/day reversal, invalid counts, non-finite
+numbers and malformed/oversized rows. Export validates the dataset before writing.
+No binary cache, historical market data or local-time calendar is guessed.
+
+The existing market-data executable now compares all OHLC fields, tie policies,
+latest threshold matches and causal extrema against independent oracles. Its
+24 synthetic 17-bar datasets exercise 29,376 range/tie cases and 146,880
+peak/trough cases; full-storage queries must agree with independently built
+observed prefixes. Existing bar/session/cumulative tests remain in the executable.
+Boundary tests include overflow, plateau/radius behavior, mutation/retention,
+locale-independent CSV, finite-double round trips and stream failures.
+
+The existing installed-consumer acceptance also calls the new public symbols
+and completed-bar codec through the exported SDK. It now requests CXX_STANDARD
+11 explicitly rather than only a minimum language feature, and retains its
+relocation, transitive linkage, replay CLI and negative-component/version checks.
+
 ## Build ownership
 
 The reviewed inventory includes the twelve research library/executable/test
@@ -87,27 +121,37 @@ on `hepta_research_test_binaries`. No pre-existing target, translation unit,
 module owner or SDK boundary was removed. Records are serialized one target per
 line; JSON schema and strict fresh-model comparison are unchanged. The inventory
 is not runtime registration and does not grant trading or packaging authority.
+The data-query continuation changes existing source/header/tests only; it adds
+no target, translation unit, public-header path or production package dependency.
 A review of source-declared targets is not a substitute for the exact-head fresh
 CMake comparison in CI, particularly the separately supplied IB SDK profile.
 
 ## Acceptance scope
 
 The public branch integrates real CMake targets and behavioural tests. The root
-core test aggregate must include the research binaries, and module/build ownership
+core test aggregate includes the research binaries, and module/build ownership
 must cover their real translation units. Existing strict ownership, source,
 recovery, permission, installed-process and qualification checks are not weakened.
 Remote CI must check the exact PR head with read-only credentials and retain
-logs; queued work is not a passed verification.
+logs; queued work is not a passed verification. Integration CTest invocations
+reject an empty selected suite rather than treating no executed tests as success.
 
-Local pure-SDK verification covers GCC Release, Clang Release, and Clang
-AddressSanitizer plus UndefinedBehaviorSanitizer, five CTest entries each,
-including the executable's numeric/error-path and EOF checks. Those checks do
-not compile or qualify the native Gateway integration in isolation; that is a
-separate root-build test boundary. Detailed observed results and any remaining
-CI failures belong in the PR, not in a new approval authority or a hardcoded
-success file.
+For this continuation, the modified data implementation and its expanded existing
+test executable were built and run locally with explicit C++11 and warnings as
+errors under GCC -O2, Clang -O2, Clang ASan/UBSan with leak checking, and GCC
+checked iterators/assertions. All passed. Original retrieved files were checked
+against Git blob identities before editing, and published code blobs were checked
+against tested local bytes. Python syntax and the exact added Data portion of
+the installed consumer were also checked; that Data portion was compiled and run.
 
-Remaining full-parity, external-consumer, production packaging and optional CTP
-work stays explicit. This branch is a capability integration candidate, not a
-claim that the historical library has been fully replaced or LIVE trading has
-been enabled.
+These are targeted tests of actual sources, not a complete repository clone,
+full four-library SDK installation, canonical native Gateway build, source/build
+ownership run, installed service campaign or broker qualification. Earlier full
+standalone-SDK results remain historical PR evidence, not results for a new head.
+Detailed observed results and current remote status belong in PR #107, not in a
+new approval authority or a hardcoded success file.
+
+Remaining exact historical API/ABI parity, external-consumer disposition,
+production packaging and optional CTP work stay explicit. This branch is a
+capability integration candidate, not a claim that the historical library has
+been fully replaced or LIVE trading has been enabled.
