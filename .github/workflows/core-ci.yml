@@ -1,6 +1,7 @@
 name: Core Runtime CI
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [main]
   push:
