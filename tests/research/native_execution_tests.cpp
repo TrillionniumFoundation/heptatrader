@@ -2,6 +2,7 @@
 // not a broker campaign or proof of installed, different-UID process isolation.
 #include "hepta/research/native_strategy_client.h"
 #include <execution/execution_service_runtime_composition.h>
+#include <execution/execution_coordinator.h>
 #include <tool_host/tool_gateway_runtime_composition.h>
 #include <tool_host/session_supervisor_audit_journal.h>
 #include <tool_host/session_supervisor_protocol.h>
@@ -14,6 +15,12 @@
 #include <dirent.h>
 #include <fcntl.h>
 #include <fstream>
+#include <functional>
+#include <locale>
+#include <signal.h>
+#include <spawn.h>
+#include <sstream>
+#include <sys/wait.h>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -93,14 +100,16 @@ int Listen(const std::string& path) {
             ::listen(fd.Get(), 16) == 0, "fixture listen failed");
     return fd.Release();
 }
-// Drop exactly one accepted placement reply between the real Native client and
+// Drop exactly one accepted mutation reply between the real Native client and
 // the real Gateway. All request/response bytes otherwise pass unchanged. No
 // synthetic authority, risk decision, order ID or callback is introduced.
 class DropReplyProxy {
 public:
     DropReplyProxy(const std::string& path, const std::string& upstream,
-                   const std::string& commandId)
-        : listener_(Listen(path)), upstream_(upstream), commandId_(commandId) {
+                   const std::string& commandId, const std::function<void()>& beforeDrop = {},
+                   const std::string& callName = "trade.place_order")
+        : listener_(Listen(path)), upstream_(upstream), commandId_(commandId),
+          beforeDrop_(beforeDrop), callName_(callName) {
         thread_ = std::thread([this]() { Pump(); });
     }
     ~DropReplyProxy() { stopped_.store(true); if (thread_.joinable()) thread_.join(); }
@@ -132,12 +141,13 @@ private:
                     reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "proxy connect failed");
                 Require(TypedToolProtocol::WriteFrame(upstream.Get(), body, 3000, reason), reason);
                 Require(TypedToolProtocol::ReadFrame(upstream.Get(), 1048576, 3000, response, reason), reason);
-                if (request.call.name == "trade.place_order" && request.toolCallId == commandId_) {
+                if (request.call.name == callName_ && request.toolCallId == commandId_) {
                     ++attempts_;
                     if (!dropped_.load()) {
                         TypedToolResultEnvelope result;
                         Require(TypedToolProtocol::DecodeResultEnvelope(response, result, reason), reason);
                         Require(result.status == "ok", "proxy target was not actually accepted");
+                        if (beforeDrop_) beforeDrop_();
                         dropped_.store(true);
                         continue; // RAII closes the client socket without its accepted response.
                     }
@@ -151,6 +161,8 @@ private:
     }
     Fd listener_;
     std::string upstream_, commandId_;
+    std::function<void()> beforeDrop_;
+    std::string callName_;
     std::atomic<bool> stopped_{false}, dropped_{false};
     std::atomic<unsigned int> attempts_{0};
     std::mutex mutex_;
@@ -214,7 +226,7 @@ public:
     const std::string agent = "research-e2e";
     const std::string session = "research-session";
     std::uint64_t leaseGeneration = 0;
-    Fixture() {
+    explicit Fixture(bool startRuntime = true) {
         // A skipped root test must not turn this acceptance claim green.
         Require(::geteuid() != 0, "native Execution acceptance must run as a non-root user");
         const std::string state = root.path + "/execution";
@@ -260,7 +272,10 @@ public:
             {"HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN", "1000"}};
         std::string reason;
         Require(ToolGatewaySessionPolicy::FromValues(values, gatewayConfig, agentConfig, policy, reason), reason);
-        StartExecution();
+        if (startRuntime) { StartExecution(); StartGateway(); }
+    }
+    void StartGateway() {
+        std::string reason;
         gateway.reset(new ToolGatewayRuntimeComposition(gatewayConfig, agentConfig, policy));
         // C++ test seam only: one unprivileged test identity provisions the
         // local PAPER-template session. No production/configuration bypass.
@@ -426,8 +441,344 @@ void TestNativeExecutionLifecycle() {
         << " orders=3 fills=2 cancels=1 lost_reply=1 durable_restart=1 revoked=1 audit_records=" << auditRecords
         << " (local simulator; not broker latency or process-isolation qualification)\n";
 }
+
+// The child is exec'd, not a forked copy of a multithreaded Gateway. Descriptor
+// 3 is a private test-only observation/control socket; every inherited descriptor
+// above it is closed before exec. This helper has no installed entry point and
+// exposes no new production mutation method. Order mutations still use HTT1.
+int RunExecutionChild(const std::string& root) {
+    Require(::geteuid() != 0, "Execution child must be unprivileged");
+    struct stat info;
+    Require(::lstat(root.c_str(), &info) == 0 && S_ISDIR(info.st_mode) &&
+            info.st_uid == ::geteuid() && (info.st_mode & 0777) == 0700,
+            "Execution child root is not a private owned directory");
+    Fd control(3), commands(Listen(root + "/execution.sock")), events(Listen(root + "/events.sock"));
+    ExecutionServiceRuntimeConfig config;
+    config.mode = ExecutionServiceRuntimeMode::Simulator;
+    config.allowedGatewayUids.insert(static_cast<std::uint32_t>(::geteuid()));
+    config.gatewayContextBinding.agentId = "research-e2e";
+    config.gatewayContextBinding.account = "SIM";
+    config.gatewayContextBinding.venue = "SIMULATOR";
+    config.gatewayContextBinding.executionDomain = "SIM:research-e2e";
+    config.stateDirectory = root + "/execution";
+    config.journalPath = config.stateDirectory + "/oms-journal.jsonl";
+    config.fenceCredentialPath = root + "/hepta-execution-fence";
+    config.simulatorQuoteRefreshIntervalMs = 20;
+    config.listenFd = commands.Get(); config.eventListenFd = events.Get();
+    ExecutionServiceRuntimeComposition runtime(config);
+    commands.Release(); events.Release();
+    std::string reason;
+    Require(runtime.Start(reason), "Execution child start: " + reason);
+    Require(TypedToolProtocol::WriteFrame(control.Get(), "READY " + runtime.ServiceEpoch(), 5000, reason), reason);
+    for (;;) {
+        std::string request;
+        Require(TypedToolProtocol::ReadFrame(control.Get(), 64, 15000, request, reason),
+                "Execution child control: " + reason);
+        if (request == "STOP") {
+            runtime.Stop();
+            Require(TypedToolProtocol::WriteFrame(control.Get(), "STOPPED", 5000, reason), reason);
+            return 0; // Normal child exit runs destructors and sanitizer leak checks.
+        }
+        Require(request == "OBSERVE", "unsupported test child control command");
+        std::size_t fills = 0, cancellations = 0;
+        for (const auto& terminal : runtime.Venue().TerminalOrderStatuses()) {
+            ExecutionOrderOwner owner;
+            // Owner removal happens only after the status and terminal owner
+            // records are durably appended. Merely observing a position is not
+            // a durable-fill barrier: the event sink runs outside the venue lock.
+            if (runtime.Coordinator().GetOrderOwner(terminal.first, owner)) continue;
+            if (terminal.second == "Filled") ++fills;
+            if (terminal.second == "Cancelled") ++cancellations;
+        }
+        std::ostringstream reply;
+        reply.imbue(std::locale::classic());
+        reply << runtime.Venue().AdmittedOrderCount() << ' '
+              << runtime.Venue().Position("EUR.USD") << ' '
+              << runtime.Venue().ActiveOrderIds().size() << ' ' << fills << ' ' << cancellations;
+        Require(TypedToolProtocol::WriteFrame(control.Get(), reply.str(), 5000, reason), reason);
+    }
 }
-int main() {
-    try { TestNativeExecutionLifecycle(); std::cout << "PASS real Native/Gateway/Execution lifecycle\n"; return 0; }
+class ExecutionProcess {
+public:
+    struct Observation {
+        std::size_t admitted = 0, active = 0, durableFills = 0, durableCancels = 0;
+        double position = 0.0;
+    };
+    explicit ExecutionProcess(const std::string& root) : root_(root) { Start(); }
+    ~ExecutionProcess() { AbortAndReap(); }
+    ExecutionProcess(const ExecutionProcess&) = delete;
+    ExecutionProcess& operator=(const ExecutionProcess&) = delete;
+    const std::string& Epoch() const { return epoch_; }
+    unsigned int Crashes() const { return crashes_; }
+    void Crash() {
+        Require(pid_ > 0 && ::kill(pid_, SIGKILL) == 0, "cannot SIGKILL owned Execution child");
+        const int status = Wait();
+        Require(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL,
+                "Execution did not die by SIGKILL");
+        control_.reset(); ++crashes_;
+    }
+    void Restart() {
+        Require(pid_ == -1, "cannot restart a live Execution child");
+        for (const auto& name : {"execution.sock", "events.sock"}) {
+            const auto path = root_ + "/" + name;
+            struct stat info;
+            Require(::lstat(path.c_str(), &info) == 0 && S_ISSOCK(info.st_mode) &&
+                    info.st_uid == ::geteuid() && ::unlink(path.c_str()) == 0,
+                    "cannot remove killed child's private socket");
+        }
+        const auto oldEpoch = epoch_;
+        Start();
+        Require(epoch_ != oldEpoch, "exec restart reused a service incarnation");
+    }
+    Observation Observe() {
+        std::string response = Exchange("OBSERVE");
+        std::istringstream input(response);
+        input.imbue(std::locale::classic());
+        Observation value;
+        Require(static_cast<bool>(input >> value.admitted >> value.position >> value.active >>
+                value.durableFills >> value.durableCancels),
+                "malformed child observation");
+        input >> std::ws;
+        Require(input.eof() && std::isfinite(value.position), "invalid child observation tail");
+        return value;
+    }
+    void Await(std::size_t admitted, double position, std::size_t active,
+               bool requireTerminals = false, std::size_t fills = 0, std::size_t cancels = 0) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        Observation last;
+        do {
+            const auto value = Observe();
+            last = value;
+            if (value.admitted == admitted && value.position == position && value.active == active &&
+                (!requireTerminals || (value.durableFills == fills && value.durableCancels == cancels))) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("crashed/recovered Execution state did not converge: expected " +
+            std::to_string(admitted) + "/" + std::to_string(position) + "/" + std::to_string(active) +
+            " observed " + std::to_string(last.admitted) + "/" + std::to_string(last.position) + "/" + std::to_string(last.active));
+    }
+    void Stop() {
+        Require(Exchange("STOP") == "STOPPED", "Execution child did not stop cleanly");
+        const int status = Wait();
+        control_.reset();
+        Require(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+                "Execution child/sanitizer reported a nonzero exit");
+    }
+private:
+    void AbortAndReap() noexcept {
+        if (pid_ > 0) {
+            ::kill(pid_, SIGKILL);
+            int status = 0;
+            while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
+            pid_ = -1;
+        }
+    }
+    int Wait() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            int status = 0;
+            const auto done = ::waitpid(pid_, &status, WNOHANG);
+            if (done == pid_) { pid_ = -1; return status; }
+            Require(done == 0 || (done < 0 && errno == EINTR), "Execution child wait failed");
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("Execution child exit timed out");
+    }
+    std::string Exchange(const std::string& request) {
+        Require(pid_ > 0 && control_.get(), "Execution child is not running");
+        std::string reason, response;
+        Require(TypedToolProtocol::WriteFrame(control_->Get(), request, 5000, reason), reason);
+        Require(TypedToolProtocol::ReadFrame(control_->Get(), 512, 5000, response, reason), reason);
+        return response;
+    }
+    void Start() {
+        int sockets[2];
+        Require(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0,
+                "Execution child socketpair failed");
+        Fd parent(sockets[0]), child(sockets[1]);
+        posix_spawn_file_actions_t actions;
+        Require(::posix_spawn_file_actions_init(&actions) == 0, "spawn actions init failed");
+        const int duplicate = ::posix_spawn_file_actions_adddup2(&actions, child.Get(), 3);
+        const int closeRest = ::posix_spawn_file_actions_addclosefrom_np(&actions, 4);
+        if (duplicate != 0 || closeRest != 0) {
+            ::posix_spawn_file_actions_destroy(&actions);
+            throw std::runtime_error("spawn descriptor isolation setup failed");
+        }
+        char executable[] = "/proc/self/exe";
+        char mode[] = "--execution-child";
+        char* arguments[] = {executable, mode, const_cast<char*>(root_.c_str()), nullptr};
+        const int error = ::posix_spawn(&pid_, executable, &actions, nullptr, arguments, ::environ);
+        ::posix_spawn_file_actions_destroy(&actions);
+        Require(error == 0, "Execution child exec failed: " + std::to_string(error));
+        ::close(child.Release()); // Parent must not keep the child endpoint alive.
+        // A constructor failure must not leave an unsupervised child behind.
+        try {
+            control_.reset(new Fd(parent.Release()));
+            std::string ready, reason;
+            Require(TypedToolProtocol::ReadFrame(control_->Get(), 512, 5000, ready, reason),
+                    "Execution child readiness: " + reason);
+            Require(ready.compare(0, 6, "READY ") == 0 && ready.size() > 6,
+                    "Execution child did not prove startup");
+            epoch_ = ready.substr(6);
+        } catch (...) { AbortAndReap(); throw; }
+    }
+    std::string root_, epoch_;
+    pid_t pid_ = -1;
+    std::unique_ptr<Fd> control_;
+    unsigned int crashes_ = 0;
+};
+void AwaitRecoveredStatus(const NativeStrategyClient& client, const std::string& commandId) {
+    NativeToolClientResult result; std::string reason;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    unsigned int query = 0;
+    do {
+        if (client.Status(commandId, "crash-status-" + std::to_string(++query), result, reason) &&
+            result.envelope.status == "ok" &&
+            result.envelope.payloadJson.find(commandId) != std::string::npos) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    } while (std::chrono::steady_clock::now() < deadline);
+    throw std::runtime_error("status not recovered after SIGKILL: " + reason + result.responseJson);
+}
+void TestNativeExecutionProcessCrashes() {
+    Fixture f(false);
+    ExecutionProcess execution(f.root.path);
+    f.StartGateway();
+    NativeToolClientConfig config;
+    config.socketPath = f.agentConfig.toolSocket;
+    config.sessionToken = f.token; config.timeoutMs = 5000;
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    const auto expiry = OmsJournal::NowEpochMs() + 120000;
+    PreparedOrder filled("EUR.USD", Contract(), "BUY", 10, 1.1002, 1.1001, expiry);
+    PreparedOrder unsent("EUR.USD", Contract(), "BUY", 9, 1.1002, 1.1001, expiry);
+    const auto auth = Preview(client, filled, "crash-placement-preview");
+    const auto unusedAuth = Preview(client, unsent, "crash-unused-preview");
+    NativeToolClientResult result; std::string reason;
+    {
+        DropReplyProxy proxy(f.root.path + "/crash-place.sock", config.socketPath,
+                             auth.commandId, [&]() {
+                                 execution.Await(1, 10, 0, true, 1, 0);
+                                 execution.Crash();
+                             });
+        auto droppedConfig = config; droppedConfig.socketPath = f.root.path + "/crash-place.sock";
+        NativeToolClient droppedNative(droppedConfig); NativeStrategyClient dropped(droppedNative);
+        result.envelope.status = "ok"; result.envelope.orderId = 12345;
+        Require(!dropped.Submit(filled, auth.commandId, auth.permit, result, reason),
+                "SIGKILL/lost placement reply was reported delivered");
+        Require(result.envelope.status.empty() && result.envelope.orderId == -1,
+                "stale placement success survived a crash");
+        proxy.CheckOneAttempt();
+        Require(execution.Crashes() == 1, "placement crash was not reaped");
+    }
+    // Gateway remains alive. A dead service cannot fabricate acceptance. This
+    // is one explicit same-ID attempt, not a client retry loop or a new order.
+    const bool deliveredWhileDown = client.Submit(filled, auth.commandId, auth.permit, result, reason);
+    Require(!deliveredWhileDown || (result.envelope.status != "ok" &&
+            result.envelope.status != "duplicate"), "dead Execution fabricated acceptance");
+    execution.Restart();
+    execution.Await(1, 10, 0);
+    AwaitRecoveredStatus(client, auth.commandId);
+    Require(client.Submit(filled, auth.commandId, auth.permit, result, reason) &&
+            result.envelope.status == "duplicate" && result.envelope.orderId >= 0,
+            "lost placement identity did not survive SIGKILL: " + reason + result.responseJson);
+    const long filledId = result.envelope.orderId;
+    PreparedOrder changed("EUR.USD", Contract(), "BUY", 11, 1.1002, 1.1001, expiry);
+    Require(client.Submit(changed, auth.commandId, auth.permit, result, reason) &&
+            result.envelope.status == "rejected", "crash allowed changed-payload ID reuse");
+    Require(client.Submit(unsent, unusedAuth.commandId, unusedAuth.permit, result, reason) &&
+            result.envelope.status == "rejected", "unused pre-crash permit survived its service epoch");
+    execution.Await(1, 10, 0);
+
+    PreparedOrder resting("EUR.USD", Contract(), "BUY", 7, 1.1000, 1.1001, expiry);
+    const auto restingAuth = Preview(client, resting, "crash-resting-preview");
+    Require(client.Submit(resting, restingAuth.commandId, restingAuth.permit, result, reason) &&
+            result.envelope.status == "ok", "post-crash resting order rejected: " + result.responseJson);
+    const long restingId = result.envelope.orderId;
+    Require(restingId >= 0 && restingId != filledId, "recovered venue reused an order ID");
+    execution.Await(2, 10, 1);
+    const std::string cancelId = "crash-cancel-command";
+    PreparedCancellation cancellation(restingId);
+    {
+        DropReplyProxy proxy(f.root.path + "/crash-cancel.sock", config.socketPath,
+                             cancelId, [&]() {
+                                 execution.Await(2, 10, 0, true, 0, 1);
+                                 execution.Crash();
+                             }, "trade.cancel_order");
+        auto droppedConfig = config; droppedConfig.socketPath = f.root.path + "/crash-cancel.sock";
+        NativeToolClient droppedNative(droppedConfig); NativeStrategyClient dropped(droppedNative);
+        result.envelope.status = "ok"; result.envelope.orderId = restingId;
+        Require(!dropped.Cancel(cancellation, cancelId, result, reason),
+                "SIGKILL/lost cancel reply was reported delivered");
+        Require(result.envelope.status.empty() && result.envelope.orderId == -1,
+                "stale cancel success survived a crash");
+        proxy.CheckOneAttempt();
+        Require(execution.Crashes() == 2, "cancel crash was not reaped");
+    }
+    execution.Restart();
+    execution.Await(2, 10, 0);
+    AwaitRecoveredStatus(client, cancelId);
+    Require(client.Cancel(cancellation, cancelId, result, reason) &&
+            result.envelope.status == "duplicate", "cancel identity did not survive SIGKILL");
+    Require(client.Submit(resting, restingAuth.commandId, restingAuth.permit, result, reason) &&
+            result.envelope.status == "duplicate" && result.envelope.orderId == restingId,
+            "crash/retry resurrected a cancelled order");
+    Require(client.Submit(filled, auth.commandId, auth.permit, result, reason) &&
+            result.envelope.status == "duplicate" && result.envelope.orderId == filledId,
+            "second crash forgot the filled order identity");
+    execution.Await(2, 10, 0);
+
+    // A distinct window: accepted, nonmarketable and NOT filled. The canonical
+    // simulator deliberately retires in-memory active orders on restart; it must
+    // neither invent a fill nor recreate a venue order on a same-ID retry.
+    PreparedOrder unfilled("EUR.USD", Contract(), "BUY", 4, 1.1000, 1.1001, expiry);
+    const auto unfilledAuth = Preview(client, unfilled, "crash-unfilled-preview");
+    {
+        DropReplyProxy proxy(f.root.path + "/crash-unfilled.sock", config.socketPath,
+                             unfilledAuth.commandId, [&]() {
+                                 execution.Await(3, 10, 1);
+                                 execution.Crash();
+                             });
+        auto droppedConfig = config; droppedConfig.socketPath = f.root.path + "/crash-unfilled.sock";
+        NativeToolClient droppedNative(droppedConfig); NativeStrategyClient dropped(droppedNative);
+        Require(!dropped.Submit(unfilled, unfilledAuth.commandId, unfilledAuth.permit, result, reason),
+                "lost unfilled-order reply was reported delivered");
+        proxy.CheckOneAttempt();
+        Require(execution.Crashes() == 3, "unfilled-order crash was not reaped");
+    }
+    execution.Restart();
+    execution.Await(3, 10, 0);
+    AwaitRecoveredStatus(client, unfilledAuth.commandId);
+    Require(client.Submit(unfilled, unfilledAuth.commandId, unfilledAuth.permit, result, reason) &&
+            result.envelope.status == "duplicate", "retry revived an unfilled pre-crash order");
+    execution.Await(3, 10, 0);
+    f.gateway->Stop(); f.gateway.reset();
+    execution.Stop();
+    std::map<std::string, unsigned int> placeAttempts, cancelAttempts;
+    OmsJournal journal;
+    Require(journal.Init(f.executionConfig.journalPath), "cannot open post-crash journal");
+    Require(journal.Replay([&](const OmsJournalEvent& event) {
+        if (event.eventType == "place_send_attempt") ++placeAttempts[event.reqId];
+        if (event.eventType == "cancel_send_attempt") ++cancelAttempts[event.reqId];
+    }) > 0, "post-crash journal replay failed");
+    Require(placeAttempts.size() == 3 && placeAttempts[unfilledAuth.commandId] == 1 &&
+            placeAttempts[auth.commandId] == 1 &&
+            placeAttempts[restingAuth.commandId] == 1 && cancelAttempts.size() == 1 &&
+            cancelAttempts[cancelId] == 1, "SIGKILL produced a duplicate/bypass venue send");
+    std::uint64_t records = 0;
+    Require(SessionSupervisorAuditJournal::Verify(f.agentConfig.supervisorAuditJournalPath, records, reason) &&
+            records > 0, "post-crash Gateway audit did not verify: " + reason);
+    std::cout << "native_execution_process_crashes=3 orders=3 fills=1 cancels=1"
+              << " lost_replies=3 unfilled_retired=1 unused_permit_rejected=1 audit_records=" << records
+              << " (SIGKILL/exec simulator; not power-loss, different-UID or broker qualification)\n";
+}
+}
+int main(int argc, char** argv) {
+    try {
+        if (argc == 3 && std::string(argv[1]) == "--execution-child") return RunExecutionChild(argv[2]);
+        Require(argc == 1, "unsupported native Execution test argument");
+        TestNativeExecutionLifecycle();
+        TestNativeExecutionProcessCrashes();
+        std::cout << "PASS real Native/Gateway/Execution lifecycle and SIGKILL recovery\n";
+        return 0;
+    }
     catch (const std::exception& error) { std::cerr << "FAIL: " << error.what() << '\n'; return 1; }
 }

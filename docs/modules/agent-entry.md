@@ -118,10 +118,63 @@ include this target. Both reviewed build profiles record its real dependencies.
 The integration workflow therefore executes it through the maintained root
 build, with no separate acceptance harness or production source substitution.
 
-This is local simulator/component acceptance, not installed systemd, multi-UID
-isolation, SIGKILL crash recovery, broker qualification, production latency, or
+This first scenario is simulator/component acceptance, not a process crash
+campaign. The additional SIGKILL cases below still do not establish installed
+systemd, multi-UID isolation, broker qualification, production latency, or
 permission to trade. An existing C++ test-only custodian seam lets one
 unprivileged fixture UID provision the PAPER-template session; it is not exposed
 as a production configuration option. Keys/tokens and market data are synthetic
 and scoped to a private temporary directory. CTP stays deferred, XT retains its
 existing priority, and LIVE remains unavailable.
+
+## SIGKILL and exec recovery acceptance
+
+The same test executable additionally starts the real Execution composition in
+an **exec'd child process**. The Gateway remains alive in the parent. A private
+read-only observation/control socket is passed as descriptor 3; spawn closes all
+other inherited descriptors above standard IO. This Linux/glibc fixture uses
+`posix_spawn`, not a forked copy of a multithreaded Gateway. Its child mode is a
+test helper, not an installed daemon or a new production control surface.
+
+The transparent proxy withholds each real accepted response while the fixture
+injects three SIGKILL crashes. Every killed PID is reaped and verified to have
+terminated by SIGKILL. Each restart execs a new process against the same private
+state, journal and fence credential, and must obtain a different service epoch.
+The fault windows are deliberately distinct:
+
+- **Durable fill, lost placement reply.** Before killing, the fixture observes
+  both the actual simulated fill and durable terminal-owner removal. Observing
+  the in-memory position alone is not a persistence barrier: the event sink runs
+  outside the venue lock. The client loses the accepted placement reply, clears
+  stale success and makes no automatic retry. After exec/recovery, positions and
+  command identity persist and an explicit exact retry is a duplicate.
+- **Durable cancellation, lost cancel reply.** The same barrier requires the
+  cancellation event and terminal-owner removal before SIGKILL. After recovery,
+  the original cancel ID deduplicates and replaying the old placement cannot
+  resurrect the cancelled order.
+- **Accepted but unfilled active order.** A nonmarketable order is killed while
+  active, with no fill barrier. The simulator's documented restart contract
+  retires its in-memory active orders. The recovered admission count persists,
+  position does not increase, and a same-ID retry neither revives the order nor
+  invents a fill. This is not a claim that broker orders disappear on restart.
+
+Additional assertions reject changed-payload ID reuse and an unused preview
+permit issued by the old service epoch. A live Gateway cannot fabricate success
+while Execution is dead. Independent final OMS replay must count exactly three
+unique place-send attempts and one cancel-send attempt for this separate crash
+fixture, and its chained Gateway decision audit must verify. No test-only mock
+approves risk, manufactures a broker ID, supplies a fill, or restores a position.
+
+The pre-existing component lifecycle, WATCH/revocation and unsupported-flatten
+checks remain intact. No CMake target, translation unit, production dependency,
+protocol, ownership inventory or installed artifact is added by these cases.
+The existing nonempty CTest selection and 30-second timeout remain enforced.
+Readiness, observation and wait/reap operations have bounded waits; RAII removes
+private fixtures and terminates children on ordinary assertion failures. The
+final child exits normally so sanitizer exit/leak checks can execute; SIGKILL'd
+children cannot perform exit-time leak checks.
+
+This extends evidence to actual process death/re-exec in the local simulator.
+It does **not** establish host power-loss durability, an arbitrary instruction
+crash campaign, different-UID/systemd deployment, broker recovery, production
+latency, complete historical API/ABI migration or source-repository retirement.
