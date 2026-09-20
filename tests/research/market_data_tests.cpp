@@ -14,6 +14,7 @@ Tick T(std::int64_t time,std::uint64_t seq,std::int64_t price,std::uint64_t volu
        std::string day="20260921") {return {"TEST",day,time,price,seq,volume};}
 }
 #include "series_cases.hpp"
+#include "watermark_cases.hpp"
 int main() {
  try {
     Check(CivilDay(1970,1,1).Serial()==0); Check(CivilDay(1970,1,1).Weekday()==4);
@@ -63,6 +64,7 @@ int main() {
     Check(Lowest(bars,0,2)==2 && Lowest(bars,0,2,true)==1);
     Reject([&]{Highest(bars,2,1);}); Reject([&]{Lowest(bars,0,3);});
     TestBarSeries();
+    TestWatermarks();
     std::cout<<"PASS "<<checks<<" checks (including exhaustive 1600..2400 date round trips)\n";
     return 0;
  } catch(const std::exception& e) { std::cerr<<e.what()<<'\n'; return 1; }

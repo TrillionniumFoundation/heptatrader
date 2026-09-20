@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: integration/heptadll-modular-20260919
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`, `tests/research/test_portfolio.py`, `tests/research/portfolio_install_smoke.py`, `tests/research/test_fifo.py`, `tests/research/test_matching.py`, `tests/research/test_order_flow.py`, `tests/research/order_flow_install_smoke.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/test_csv.py`, `tests/research/test_model.py`, `tests/research/test_pipeline.py`, `tests/research/install_smoke.py`, `tests/research/test_legacy.py`, `tests/research/series_cases.hpp`, `tests/research/test_legacy_binary.py`, `tests/research/binary_install_smoke.py`, `tests/research/test_legacy_xml.py`, `tests/research/xml_install_smoke.py`, `tests/research/test_portfolio.py`, `tests/research/portfolio_install_smoke.py`, `tests/research/test_fifo.py`, `tests/research/test_matching.py`, `tests/research/test_order_flow.py`, `tests/research/order_flow_install_smoke.py`, `tests/research/watermark_cases.hpp`, `tests/research/test_watermark.py`, `tests/research/watermark_install_smoke.py`
 
 ## Responsibilities and dependencies
 
@@ -157,3 +157,22 @@ installs the new command, not the privileged runtime. Existing workflows,
 Gateway/Execution/OMS, CTP deferral, XT priority and licensing/consumer retirement
 requirements remain unchanged. Full Pegasus/strategy/exchange parity and exact
 revision remote acceptance are separate claims, not inferred from these tests.
+
+## Explicit no-tick completion
+
+[The watermark contract](../../research/WATERMARK.md) adds
+`BarBuilder::AdvanceWatermark` and the optional converter `--watermark-us` flag.
+An explicit caller completeness promise can close an elapsed populated bar
+without inventing a tick, price, empty interval or fill. Daily bars span supplied
+session breaks; sequence and cumulative-volume baselines survive closure.
+Clock regression, late new/conflicting ticks and activity after EOF reject.
+Without the flag, existing converter/importer EOF semantics remain unchanged.
+
+The existing C++ executable includes boundary tests and an independent integer
+OHLC/volume oracle; existing Python discovery includes sixteen real-converter
+methods. Buffered stdout failure is checked at flush and returns a failure code.
+A new standalone CTest performs actual installation, prefix relocation, external
+CMake consumption and installed-converter checks. No compiled target, build
+ownership record, privileged installation, execution client or broker path is
+added or replaced. The alternative #107 branch remains a retained comparison,
+not a second linked implementation; further capability parity is not asserted.

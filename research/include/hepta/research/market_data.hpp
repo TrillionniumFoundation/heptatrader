@@ -46,7 +46,12 @@ public:
                std::int64_t periodUs, FirstVolume firstVolume);
     // A rejected tick leaves the builder and output unchanged.
     PushResult Push(const Tick& tick, Bar& closed);
-    // EOF is NOT evidence of an elapsed interval: the last bar is incomplete.
+    // Caller promise: no new tick earlier than timestampUs may arrive. It
+    // closes a populated elapsed bar without inventing a tick or an empty bar.
+    // The last exact tick retry stays idempotent. Rejects clock regression and
+    // calls after Finish; rejection/no output leave closed unchanged.
+    bool AdvanceWatermark(std::int64_t timestampUs, Bar& closed);
+    // EOF is NOT evidence of an elapsed interval: the remaining bar is incomplete.
     bool Finish(Bar& last);
 private:
     std::string instrument_;
@@ -54,6 +59,7 @@ private:
     std::int64_t period_;
     FirstVolume firstVolume_;
     bool hasTick_ = false, hasBar_ = false, finished_ = false;
+    std::int64_t watermarkUs_ = -1;
     Tick lastTick_;
     Bar current_;
 };

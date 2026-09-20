@@ -73,6 +73,8 @@ BarBuilder::BarBuilder(std::string instrument, std::vector<Session> sessions,
     : instrument_(std::move(instrument)), sessions_(std::move(sessions)),
       period_(periodUs), firstVolume_(firstVolume) {
     ValidateInstrument(instrument_);
+    if (firstVolume_ != FirstVolume::BaselineOnly && firstVolume_ != FirstVolume::IncludeCumulative)
+        throw std::invalid_argument("first-volume policy");
     if (period_ < 0 || sessions_.empty()) throw std::invalid_argument("period/sessions");
     for (std::size_t i=0; i<sessions_.size(); ++i) {
         const auto& s=sessions_[i]; CivilDay::Parse(s.tradingDay);
@@ -92,6 +94,8 @@ PushResult BarBuilder::Push(const Tick& tick, Bar& closed) {
             (tick.tradingDay == lastTick_.tradingDay && tick.sequence <= lastTick_.sequence))
             throw std::invalid_argument("out-of-order/conflicting tick");
     }
+    if (tick.timestampUs < watermarkUs_)
+        throw std::invalid_argument("tick before committed watermark");
     auto it=std::lower_bound(sessions_.begin(),sessions_.end(),tick.timestampUs,
         [](const Session& s, std::int64_t t){return s.endUs <= t;});
     if (it == sessions_.end() || tick.timestampUs < it->beginUs || tick.tradingDay != it->tradingDay)
@@ -128,6 +132,24 @@ PushResult BarBuilder::Push(const Tick& tick, Bar& closed) {
     if (boundary) { closed=current_; closed.complete=true; }
     current_=std::move(next); lastTick_=std::move(accepted); hasTick_=hasBar_=true;
     return boundary ? PushResult::ClosedBar : PushResult::Buffered;
+}
+bool BarBuilder::AdvanceWatermark(std::int64_t timestampUs, Bar& closed) {
+    if (finished_) throw std::logic_error("stream already finished");
+    if (timestampUs < 0 || timestampUs < watermarkUs_ ||
+        (hasTick_ && timestampUs < lastTick_.timestampUs))
+        throw std::invalid_argument("watermark regression");
+    if (hasBar_ && current_.endUs <= timestampUs) {
+        // Allocate the outgoing strings before publishing state. Retain the
+        // cumulative-volume/sequence baseline even when there is no open bar.
+        Bar accepted = current_;
+        accepted.complete = true;
+        closed = std::move(accepted);
+        hasBar_ = false;
+        watermarkUs_ = timestampUs;
+        return true;
+    }
+    watermarkUs_ = timestampUs;
+    return false;
 }
 bool BarBuilder::Finish(Bar& last) {
     if (finished_) return false;

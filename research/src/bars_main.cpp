@@ -42,8 +42,15 @@ void Print(const hepta::research::Bar& b) {
 }
 int main(int argc,char** argv) {
     try {
-        if(argc!=5) throw std::invalid_argument(
-            "usage: hepta-research-bars TICKS.csv SESSIONS.csv PERIOD_US baseline|include");
+        if(argc!=5 && argc!=7) throw std::invalid_argument(
+            "usage: hepta-research-bars TICKS.csv SESSIONS.csv PERIOD_US baseline|include [--watermark-us UTC_US]");
+        const bool hasWatermark=argc==7;
+        std::int64_t watermark=0;
+        if(hasWatermark) {
+            if(std::string(argv[5])!="--watermark-us") throw std::invalid_argument("unknown option");
+            watermark=Signed(argv[6]);
+            if(watermark<0) throw std::invalid_argument("negative watermark");
+        }
         const auto period=Signed(argv[3]);
         const std::string policy=argv[4];
         if(policy!="baseline" && policy!="include") throw std::invalid_argument("first-volume policy");
@@ -69,7 +76,11 @@ int main(int argc,char** argv) {
             hepta::research::Tick t{f[0],f[1],Signed(f[2]),Signed(f[4]),Unsigned(f[3]),Unsigned(f[5])};
             if(builder.Push(t,out)==hepta::research::PushResult::ClosedBar) Print(out);
         } while(Line(tickFile,row));
+        if(hasWatermark && builder.AdvanceWatermark(watermark,out)) Print(out);
         if(builder.Finish(out)) Print(out);
+        // Buffered writes may fail only at flush (for example a full disk).
+        std::cout.flush();
+        if(!std::cout) throw std::runtime_error("CSV write error");
         return 0;
     } catch(const std::exception& e) { std::cerr<<"research input rejected: "<<e.what()<<'\n'; return 2; }
 }
