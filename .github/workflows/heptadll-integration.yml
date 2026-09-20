@@ -67,6 +67,30 @@ jobs:
           ctest --test-dir build/research-ci --output-on-failure \
             --output-junit results.xml
           git diff --exit-code
+      - name: Stage the verified offline GCC SDK
+        if: success() && matrix.profile == 'gcc-release'
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(uname -m)" = x86_64
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          cmake --install build/research-ci --prefix "$PWD/build/research-sdk-stage" --component ResearchSDK
+          grep -Fx "source_sha=$EXPECTED_SHA" build/research-sdk-stage/share/HeptaResearch/sdk-build-info.txt
+          grep -Fx 'source_tree_state=clean' build/research-sdk-stage/share/HeptaResearch/sdk-build-info.txt
+          mkdir -p build/research-sdk-artifacts
+          archive="hepta-research-sdk-linux-x86_64-$EXPECTED_SHA.tar.gz"
+          tar -czf "build/research-sdk-artifacts/$archive" -C build/research-sdk-stage .
+          (cd build/research-sdk-artifacts && sha256sum "$archive" > "$archive.sha256")
+          cp build/research-ci/SOURCE_COMMIT build/research-sdk-artifacts/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: success() && matrix.profile == 'gcc-release'
+        with:
+          name: research-sdk-linux-x86_64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: build/research-sdk-artifacts/
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:

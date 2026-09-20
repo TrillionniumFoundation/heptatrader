@@ -1,9 +1,9 @@
 # Modular C++ research SDK
 
 Status: EXPERIMENTAL
-Applies to: source-built research and forward-only client integration
+Applies to: source-built research, offline developer SDK and forward-only client integration
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/sdk_package_behavior.py`
 
 ## Ownership and execution boundary
 
@@ -125,6 +125,23 @@ broker, deployed-process isolation or durable-recovery qualification. Existing
 canonical recovery, installed-process and broker-qualification suites remain
 required. Source-level compile/test evidence must not be relabelled LIVE readiness.
 
-The SDK is currently a source-built developer component, not added to the
-production install/package manifest. See the [integration record](../technical/heptadll-integration.md)
+## Offline SDK installation
+
+The standalone build installs a separate `ResearchSDK` component with the four
+portable libraries, four public headers, replay CLI, synthetic examples and a
+relocatable CMake package. See [package usage](../../research/PACKAGE.md).
+`HeptaResearch::Data`, `::Analytics`, `::Replay` and `::Strategy` are exported;
+NativeStrategyClient, the Gateway, Execution, vendor libraries and credentials
+are not. Unknown required components fail rather than resolve to placeholders.
+The repository VERSION supplies the label; exact-source/compiler metadata and
+explicit dirty/unavailable state accompany it. A matching numeric version is
+not an ABI or source-equivalence guarantee.
+
+The sixth standalone CTest entry installs to a temporary prefix, moves it,
+builds/runs an external C++11 consumer, checks transitive links, executes the
+installed replay CLI and rejects unsupported native components/wrong versions.
+It inherits sanitizer flags. Successful GCC CI builds may publish the staged SDK
+and checksum as a developer artifact; queued CI does not certify that artifact.
+The root production install/package manifest and native Gateway test boundary
+are unchanged. See the [integration record](../technical/heptadll-integration.md)
 for source provenance, retained assets and the remaining migration boundary.

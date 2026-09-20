@@ -78,3 +78,8 @@ if(BUILD_TESTING)
         add_dependencies(hepta_core_test_binaries hepta_research_test_binaries)
     endif()
 endif()
+
+# Standalone developer packaging must never extend the production install set.
+if(HEPTA_RESEARCH_STANDALONE)
+    include(cmake/HeptaResearchInstall.cmake)
+endif()
