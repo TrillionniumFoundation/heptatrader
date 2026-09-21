@@ -1,7 +1,7 @@
 # HeptaDLL modular integration record
 
 Status: EXPERIMENTAL
-Date: 2026-09-20
+Date: 2026-09-21
 Target baseline: `heptatrader@5615b3ddb6badb1967771724d53b89c7ad194ddc`
 Reference baseline: `HeptaDLL-main@5f3703258bc4cad8f96e513d8d989c2441b4729d`
 Branch: `integration/heptadll-modular-20260920`
@@ -33,7 +33,7 @@ invented by this integration.
 | CSV/data helpers | Strict portable tick/session and completed-bar CSV conversion. Proprietary binary cache layouts and historical datasets remain in the source repository. |
 | `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees and fill identity. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
-| `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a forward-only NativeToolClient adapter with a separate relocatable developer package. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
+| `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a NativeToolClient adapter with a separate relocatable developer package and private durable request recovery. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
 | `heptaFtdMdSpi`, `heptaFtdTradeSpi`, QDP and `Interface/` SDK trees | Retained at the reference commit only. CTP remains deferred; XT is still the selected next venue. No vendor library, broker transport or new production mutation capability is added. |
 | Old local position/order maps, threading/process control, XML composition, logging and build overlay | Not restored as a parallel runtime. Existing Execution Service, journal, identity/recovery and Gateway lifecycle continue to own production behavior. |
 
@@ -143,6 +143,40 @@ target, translation unit, vendor capability or alternate order path is added.
 CI stages this developer archive only after exact-head research acceptance and
 fresh build ownership, with its checksum and source commit; upload is not a
 release or a completed remote acceptance claim.
+
+## Client request durability continuation
+
+The continuation from `40f15c68cf6e1b172ffffc621c55122bf8e5a7cc` adds the missing
+on-disk restart path **inside** the existing NativeStrategyClient SDK. It does
+not import the alternate branch's `ResearchIntentClient` or introduce another
+client target, transport, OMS or research framework. The alternate public
+branches remain untouched; this is not a claim that their differing CSV/BIN/XML
+profiles or all historical strategy interfaces were mechanically combined.
+
+The three prepared mutation types now have immutable, checksummed, credential-
+bound persistence and exact-ID load/submission. File data and directory entries
+are synced; atomic no-replace publication avoids both overwrite and a stranded
+hard-link interval. A new NativeToolClient bound-call path snapshots the current
+credential once for discovery and forwarding, without persisting its bytes.
+The existing native SHA-256 implementation is shared rather than duplicated.
+See [client durability contract](../../research/CLIENT_PACKAGE.md) for permission,
+filesystem, token-rotation, crash and retained-record limits.
+
+The existing client behavioral executable and its actual installed/relocated
+external consumer now exercise persistence, concurrent publishers, unsafe-file
+and binding rejection. The actual Gateway/Execution fixture additionally kills
+and execs client processes before first send and after accepted placement/cancel,
+then checks same-ID replay across client and service restart against the real
+OMS send-attempt journal. Existing lost-reply, revoked-session, simulator and
+Execution SIGKILL tests are retained. These are synthetic local-service tests,
+not a broker campaign, power-loss qualification or full consumer migration.
+
+No build target, translation unit, exported-header path, production installation,
+privileged dependency, workflow permission, legacy-runtime flag or broker
+capability is added. Full retained-capability equivalence, external-consumer
+retirement and source archival conditions above remain separate from this
+implemented client recovery boundary. Exact-head validation belongs in the PR
+observations, not in an unconditional success declaration in this document.
 
 ## Build ownership
 

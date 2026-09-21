@@ -46,8 +46,8 @@ temporaries is rejected. Never place tokens in source or package metadata.
 
 `PreparedOrder` supports the existing LMT/DAY profile; unsupported contract
 fields and historical auto-open/close semantics are rejected, not translated
-into a different trade. Preview through the real Gateway. Persist the proposal,
-Execution-issued command ID and permit before submission; an uncertain reply
+into a different trade. Preview through the real Gateway. Use `NativeStrategyClient::Persist` to save the proposal,
+Execution-issued command ID and permit before `SubmitStored`; an uncertain reply
 requires status inspection or the exact same identity, not a new mutation ID.
 A true transport result is not an accepted order. Cancellation and authoritative
 flatten retain their existing ownership and preview rules. No package API makes
@@ -57,6 +57,89 @@ mutations automatically or connect to a broker.
 LIVE remains unavailable; CTP remains deferred, and XT retains its priority.
 This SDK is not a historical HeptaDLL source/ABI replacement, strategy migration
 certificate, host deployment or broker qualification.
+
+## Durable client requests and restart recovery
+
+The same SDK now offers three `Persist` overloads for `PreparedOrder`,
+`PreparedCancellation` and `PreparedFlatten`, plus `LoadStored` and `SubmitStored`.
+They add client request bookkeeping to the existing implementation, not an OMS,
+portfolio, local fill database, risk approver or second trading service. The
+older forward-only calls remain available to consumers that already own an
+appropriate durable request store; these calls do not silently opt into storage.
+
+A typical order flow, after decoding the actual matching successful preview:
+
+```cpp
+// directory was explicitly provisioned as an absolute, owned 0700 directory.
+// commandId and previewPermit are the ORIGINAL service-issued preview values.
+if (!client.Persist(directory, proposal, commandId, previewPermit, reason)) {
+    // Stop. A failed or ambiguous persistence result does not authorize sending.
+    return;
+}
+if (!client.SubmitStored(directory, commandId, result, reason)) {
+    // Retain the record. Inspect status or explicitly repeat this exact call;
+    // never generate a replacement command ID or refresh the old proposal.
+    return;
+}
+// Transport success is not execution success: inspect result.envelope.status.
+```
+
+A fresh process needs its normally provisioned `NativeToolClient` configuration,
+the outbox directory and the original command ID. `SubmitStored` rereads and
+validates the complete stored HTT1 request and makes one call through the normal
+NativeToolClient/Gateway boundary. It does not refresh expiry/quantity/price,
+obtain another permit, invent a fill, retry automatically or mark an uncertain
+result as successful. Cancellation preserves the caller's one stable command ID
+and server order ID; flatten preserves its server-issued ID and permit. Neither
+operation bypasses the existing service's ownership and risk rules.
+
+Each immutable `<commandId>.hsr` record contains `HSR1` framing, a recovery
+binding, a SHA-256 content checksum and the canonical request. Session-token
+bytes are replaced with a non-credential marker before encoding. The preview
+permit **is** retained and is sensitive: never upload records into Git, CI
+artifacts, logs or support bundles. `LoadStored` returns a diagnostic copy with
+an empty session token; modifying it cannot change subsequent stored submission.
+The checksum reuses the existing native discovery SHA-256 implementation, with
+no OpenSSL/vendor library added to the client package. It detects corruption;
+it is not a MAC or protection against the same UID/root editing files.
+
+Recovery binds the effective UID, exact configured Gateway socket string and
+credential value. Timeout changes and use of a token file versus the same token
+value do not change the binding. Token rotation, a different UID or endpoint
+fail closed rather than accidentally replaying a command into another session.
+`CallBound` resolves a token file once and pins that in-memory value for both
+fresh discovery and the one forwarded call, closing a token-rotation window.
+This is configuration binding, **not** server attestation or a credential. The
+Gateway/Execution service still verifies the real session, lease, preview and
+command identity. Configuration changes require explicit operator reconciliation;
+do not edit the stored binding to suppress a mismatch.
+
+The storage implementation requires Linux filesystem support for descriptor-
+relative no-symlink opens, directory `flock`, `renameat2(RENAME_NOREPLACE)` and
+file/directory `fsync`. It walks every path component, requires root/self-owned
+ancestors that are not group/world writable (except root-owned sticky temporary
+directories), and requires the final directory to be self-owned mode 0700.
+Records must be regular, self-owned, single-link mode 0600 files. Links, FIFOs,
+unsafe modes, missing/truncated/oversized/noncanonical data, conflicting IDs and
+checksum/binding failures are rejected. The API does not create the directory.
+
+Publication writes and syncs a private temporary file, atomically publishes it
+without replacing any existing name, verifies the final single-link file and
+syncs the directory. Cooperating readers/writers hold one directory lock, so
+identical concurrent stores succeed and differing requests cannot overwrite the
+winner. No hard-link publication interval can leave a two-link final record
+after a crash. Existing identical records are resynced; a visible record after
+an interrupted publication is validated and synced before recovery uses it.
+Errors never authorize a send. Unsupported filesystem operations are errors,
+not a downgrade to an unsafe overwrite. No power-loss or network-filesystem
+qualification is claimed by a successful local SIGKILL test.
+
+The record limit is 65,536 request bytes plus 149 framing bytes. Total retained
+disk usage remains caller-managed. There is no automatic garbage collection,
+acknowledgement file or identity expiry: deleting an uncertain record can lose
+its retry identity. A crash before publication can leave an ignored `.pending-`
+file; it is never treated as an executable request. Cleanup must be an explicit
+stopped-client maintenance decision, not recovery-time guessing.
 
 ## Packaging and source identity
 
@@ -88,5 +171,12 @@ and requires that no SDK file is installed. Canonical root install/package tests
 independently retain their complete production-namespace checks.
 
 The existing real Gateway/Execution and SIGKILL recovery tests remain separate
-and unchanged. Installed client linkage/behavior is not evidence of a broker
+and are preserved. The native unit/installed-consumer test additionally checks
+all three persisted operations, exact identity, corruption, unsafe modes/links,
+credential/endpoint changes, SHA-256 known-answer vectors and concurrent writers.
+The real-service test now execs a client that previews and persists, kills that
+process before any send, and recovers through new client processes. Further
+client kills after placement/cancellation and an Execution restart require exact
+same-ID results and independently verified single venue-send journal entries.
+A persisted forged flatten permit remains rejected by the service. Installed client linkage/behavior is not evidence of a broker
 connection, host isolation, remote CI completion or LIVE approval.

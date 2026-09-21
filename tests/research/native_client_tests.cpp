@@ -5,6 +5,14 @@
 #include <cmath>
 #include <limits>
 #include <type_traits>
+#include <cerrno>
+#include <dirent.h>
+#include <fstream>
+#include <iterator>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <vector>
 
 using namespace hepta::research;
 
@@ -104,7 +112,213 @@ void ExitRequests() {
     }
 }
 
+
+class OutboxTestRoot {
+public:
+    OutboxTestRoot() {
+        char name[] = "/tmp/hepta-outbox-XXXXXX";
+        const char* made = ::mkdtemp(name);
+        Check(made != nullptr, "outbox fixture directory"); path = made;
+    }
+    ~OutboxTestRoot() {
+        DIR* directory = ::opendir(path.c_str());
+        if (directory) {
+            while (dirent* entry = ::readdir(directory)) {
+                const std::string name(entry->d_name);
+                if (name != "." && name != "..") {
+                    ::unlink((path + "/" + name).c_str());
+                    ::rmdir((path + "/" + name).c_str());
+                }
+            }
+            ::closedir(directory);
+        }
+        ::rmdir(path.c_str());
+    }
+    std::string path;
+};
+std::string ReadBytes(const std::string& path) {
+    std::ifstream input(path, std::ios::binary);
+    Check(input.good(), "fixture read open");
+    return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+}
+void WriteBytes(const std::string& path, const std::string& bytes) {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(bytes.data(), static_cast<std::streamsize>(bytes.size())); output.close();
+    Check(output.good() && ::chmod(path.c_str(), 0600) == 0, "fixture write");
+}
+NativeToolClientConfig OutboxConfig() {
+    NativeToolClientConfig config;
+    config.socketPath = "/tmp/nonexistent-hepta-outbox-socket";
+    config.sessionToken = "outbox-synthetic-session-token-never-persist";
+    config.timeoutMs = 100;
+    return config;
+}
+void OutboxTests() {
+    Check(NativeToolDiscoveryContract::ContentDigest("") ==
+        "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA empty oracle");
+    Check(NativeToolDiscoveryContract::ContentDigest("abc") ==
+        "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA abc oracle");
+    Check(NativeToolDiscoveryContract::ContentDigest(std::string(1000000, 'a')) ==
+        "sha256:cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0", "SHA million-a oracle");
+    OutboxTestRoot root;
+    auto config = OutboxConfig();
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    InstrumentRef contract; contract.symbol = "EUR"; contract.secType = "CASH";
+    contract.exchange = "SIM"; contract.currency = "USD";
+    PreparedOrder order("EUR.USD", contract, "BUY", 10, 1.1, 1.09, 1900000000000LL);
+    const std::string id = "outbox-order-0001", permit = "sha256:" + std::string(64, 'a');
+    std::string reason;
+    Check(client.Persist(root.path, order, id, permit, reason) && reason.empty(), "durable order store");
+    const auto path = root.path + "/" + id + ".hsr", original = ReadBytes(path);
+    Check(original.find(config.sessionToken) == std::string::npos, "outbox leaked session credential");
+    Check(original.find(permit) != std::string::npos, "outbox lost preview credential");
+    Check(original.size() < 65536 + 149 && original.compare(0, 5, "HSR1\n") == 0, "outbox framing");
+    struct stat info;
+    Check(::stat(path.c_str(), &info) == 0 && (info.st_mode & 07777) == 0600 && info.st_nlink == 1,
+          "outbox publication mode/link count");
+    TradingToolHostRequest loaded;
+    loaded.sessionToken = "stale"; loaded.call.name = "stale";
+    Check(client.LoadStored(root.path, id, loaded, reason), "load original store");
+    Check(Wire(loaded) == Wire(order.SubmissionRequest(id, permit)), "durable request byte identity");
+    loaded.call.ibOrder.totalQuantity = 500;
+    Check(client.LoadStored(root.path, id, loaded, reason) && loaded.call.ibOrder.totalQuantity == 10,
+          "diagnostic request copy changed disk identity");
+    Check(client.Persist(root.path, order, id, permit, reason) && ReadBytes(path) == original,
+          "idempotent persistence changed bytes");
+    PreparedOrder changed("EUR.USD", contract, "BUY", 11, 1.1, 1.09, 1900000000000LL);
+    Check(!client.Persist(root.path, changed, id, permit, reason) && ReadBytes(path) == original,
+          "conflicting order overwrote identity");
+    Check(!client.Persist(root.path, order, id, "sha256:" + std::string(64, 'b'), reason) &&
+          ReadBytes(path) == original, "permit overwrite");
+    PreparedCancellation cancellation(42);
+    Check(client.Persist(root.path, cancellation, "outbox-cancel-001", reason), "cancel store");
+    Check(client.LoadStored(root.path, "outbox-cancel-001", loaded, reason) &&
+          Wire(loaded) == Wire(cancellation.SubmissionRequest("outbox-cancel-001")), "cancel load identity");
+    PreparedFlatten flatten("EUR.USD");
+    Check(client.Persist(root.path, flatten, "outbox-flatten-01", permit, reason), "flatten store");
+    Check(client.LoadStored(root.path, "outbox-flatten-01", loaded, reason) &&
+          Wire(loaded) == Wire(flatten.SubmissionRequest("outbox-flatten-01", permit)), "flatten load identity");
+    Check(!client.Persist(root.path, cancellation, id, reason) && ReadBytes(path) == original, "cross-operation overwrite");
+    // A missing socket must remain a transport failure; the record is retained
+    // for explicit status/retry handling. No sent/success bit is invented.
+    NativeToolClientResult result;
+    result.envelope.status = "ok"; result.envelope.orderId = 42; result.responseJson = "stale";
+    Check(!client.SubmitStored(root.path, id, result, reason) && !reason.empty() &&
+          result.envelope.status.empty() && result.envelope.orderId == -1 && result.responseJson.empty() &&
+          ReadBytes(path) == original, "failed stored submission left stale success");
+    auto otherConfig = config; otherConfig.sessionToken += "-different";
+    NativeToolClient other(otherConfig); NativeStrategyClient otherClient(other);
+    Check(!otherClient.LoadStored(root.path, id, loaded, reason) && loaded.call.name.empty() &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "cross-session load accepted");
+    Check(!otherClient.SubmitStored(root.path, id, result, reason) &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "cross-session send attempted");
+    otherConfig = config; otherConfig.socketPath += "-different";
+    NativeToolClient moved(otherConfig); NativeStrategyClient movedClient(moved);
+    Check(!movedClient.SubmitStored(root.path, id, result, reason) &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "cross-endpoint send attempted");
+    const auto tokenPath = root.path + "/session.token";
+    WriteBytes(tokenPath, config.sessionToken + "\n");
+    auto fileConfig = config; fileConfig.sessionToken.clear(); fileConfig.tokenFile = tokenPath;
+    NativeToolClient fileNative(fileConfig); NativeStrategyClient fileClient(fileNative);
+    Check(fileClient.LoadStored(root.path, id, loaded, reason), "same token-file credential changed binding");
+    WriteBytes(tokenPath, "rotated-synthetic-token");
+    Check(!fileClient.SubmitStored(root.path, id, result, reason) &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "rotated token replay");
+    Check(!client.Persist(root.path, order, "short", permit, reason), "bad ID store");
+    Check(!client.LoadStored(root.path, "../../bad-id", loaded, reason), "path traversal ID");
+    Check(!client.LoadStored(root.path, "outbox-missing-id", loaded, reason) && loaded.call.name.empty(), "missing record");
+    for (const auto& unsafe : {std::string("relative"), root.path + "/", root.path + "/.",
+                               root.path + "/../" + root.path.substr(5), root.path + std::string("\0tail", 5)})
+        Check(!client.Persist(unsafe, cancellation, "unsafe-path-id", reason), "unsafe directory accepted");
+    Check(::chmod(root.path.c_str(), 0750) == 0, "fixture directory chmod");
+    Check(!client.LoadStored(root.path, id, loaded, reason) && !client.Persist(root.path, order, id, permit, reason),
+          "nonprivate directory accepted");
+    Check(::chmod(root.path.c_str(), 0700) == 0, "restore directory");
+    for (mode_t mode : {mode_t(0640), mode_t(0400), mode_t(0666), mode_t(04600)}) {
+        Check(::chmod(path.c_str(), mode) == 0, "fixture chmod");
+        Check(!client.LoadStored(root.path, id, loaded, reason), "unsafe file mode accepted");
+        Check(::chmod(path.c_str(), 0600) == 0, "fixture restore mode");
+    }
+    const auto link = root.path + "/alias.hsr";
+    Check(::link(path.c_str(), link.c_str()) == 0, "fixture hardlink");
+    Check(!client.LoadStored(root.path, id, loaded, reason), "hardlinked record accepted");
+    Check(::unlink(link.c_str()) == 0, "fixture unlink hardlink");
+    const auto saved = root.path + "/saved.hsr";
+    Check(::rename(path.c_str(), saved.c_str()) == 0 && ::symlink(saved.c_str(), path.c_str()) == 0,
+          "fixture symlink");
+    Check(!client.LoadStored(root.path, id, loaded, reason) && !client.Persist(root.path, order, id, permit, reason),
+          "record symlink followed");
+    Check(::unlink(path.c_str()) == 0 && ::mkfifo(path.c_str(), 0600) == 0, "fixture fifo");
+    Check(!client.LoadStored(root.path, id, loaded, reason), "FIFO accepted or blocked");
+    Check(::unlink(path.c_str()) == 0 && ::rename(saved.c_str(), path.c_str()) == 0, "restore record");
+    OutboxTestRoot aliasRoot;
+    const auto dirAlias = aliasRoot.path + "/link";
+    Check(::symlink(root.path.c_str(), dirAlias.c_str()) == 0, "fixture directory link");
+    Check(!client.LoadStored(dirAlias, id, loaded, reason), "directory symlink followed");
+    Check(::mkdir((root.path + "/child").c_str(), 0700) == 0, "fixture child directory");
+    Check(!client.Persist(dirAlias + "/child", cancellation, "alias-parent-id", reason), "ancestor symlink followed");
+    Check(::unlink(dirAlias.c_str()) == 0, "remove directory link");
+    for (const auto& corrupt : {original.substr(0, 148), original + "x", std::string(70000, 'x')}) {
+        WriteBytes(path, corrupt);
+        Check(!client.LoadStored(root.path, id, loaded, reason) && loaded.call.name.empty(), "corrupt record accepted");
+    }
+    auto corrupt = original; corrupt[corrupt.size() - 1] ^= 1;
+    WriteBytes(path, corrupt);
+    Check(!client.LoadStored(root.path, id, loaded, reason) && reason == "RESEARCH_OUTBOX_DIGEST_MISMATCH",
+          "changed body passed checksum");
+    WriteBytes(path, original);
+    // A valid checksum is not authorization: still enforce tool allowlist and
+    // filename/command correlation when the complete wire itself is malformed.
+    auto unauthorized = order.PreviewRequest(id); unauthorized.sessionToken = "hepta-strategy-outbox-v1-not-a-session-token";
+    std::string unauthorizedWire;
+    Check(TypedToolProtocol::EncodeRequest(unauthorized, unauthorizedWire, reason), "fixture preview wire");
+    const auto binding = original.substr(5, 71);
+    WriteBytes(path, "HSR1\n" + binding + "\n" + NativeToolDiscoveryContract::ContentDigest(
+        "HSR1\n" + binding + "\n" + unauthorizedWire) + "\n" + unauthorizedWire);
+    Check(!client.LoadStored(root.path, id, loaded, reason) && reason == "RESEARCH_OUTBOX_REQUEST_BINDING_INVALID",
+          "nonmutation replay allowed");
+    WriteBytes(path, original);
+    // Cooperating processes serialize publication; exactly equal requests all
+    // succeed, while conflicting requests cannot replace the winning record.
+    for (bool conflict : {false, true}) {
+        const std::string concurrentId = conflict ? "concurrent-conflict" : "concurrent-identical";
+        std::vector<pid_t> children;
+        for (int index = 0; index < 6; ++index) {
+            const pid_t child = ::fork(); Check(child >= 0, "outbox publisher fork");
+            if (child == 0) {
+                NativeToolClient fresh(config); NativeStrategyClient writer(fresh);
+                PreparedCancellation candidate(conflict ? 100 + index : 100);
+                std::string why;
+                ::_exit(writer.Persist(root.path, candidate, concurrentId, why) ? 0 :
+                    (why == "RESEARCH_OUTBOX_CONFLICT_OR_UNSAFE" ? 2 : 3));
+            }
+            children.push_back(child);
+        }
+        unsigned int successes = 0, conflicts = 0;
+        for (const auto child : children) {
+            int status;
+            pid_t waited;
+            do { waited = ::waitpid(child, &status, 0); } while (waited < 0 && errno == EINTR);
+            Check(waited == child && WIFEXITED(status), "outbox publisher wait");
+            successes += WEXITSTATUS(status) == 0; conflicts += WEXITSTATUS(status) == 2;
+            Check(WEXITSTATUS(status) == 0 || WEXITSTATUS(status) == 2, "outbox publisher unexpected error");
+        }
+        Check(successes == (conflict ? 1U : 6U) && conflicts == (conflict ? 5U : 0U),
+              "atomic conflict/idempotence count");
+        Check(client.LoadStored(root.path, concurrentId, loaded, reason) &&
+              loaded.call.orderId >= 100 && loaded.call.orderId <= (conflict ? 105 : 100), "concurrent publication corrupted");
+    }
+    // Restrictive umask must not result in a success-shaped unreadable record.
+    const mode_t previousMask = ::umask(0777);
+    const bool stored = client.Persist(root.path, cancellation, "umask-request-001", reason);
+    ::umask(previousMask);
+    Check(stored && client.LoadStored(root.path, "umask-request-001", loaded, reason), "restrictive umask persistence");
+    std::cout << "outbox: immutable place/cancel/flatten, credential binding, unsafe-file rejection,"
+              << " checksum oracles and 12 concurrent publishers passed\n";
+}
+
 void Tests() {
+    OutboxTests();
     ExitRequests();
     InstrumentRef contract;
     contract.symbol = "EUR"; contract.secType = "CASH";

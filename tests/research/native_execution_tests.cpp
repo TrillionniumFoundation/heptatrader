@@ -770,13 +770,208 @@ void TestNativeExecutionProcessCrashes() {
               << " lost_replies=3 unfilled_retired=1 unused_permit_rejected=1 audit_records=" << records
               << " (SIGKILL/exec simulator; not power-loss, different-UID or broker qualification)\n";
 }
+int RunOutboxChild(const std::string& root, const std::string& socket,
+                   const std::string& tokenFile, const std::string& operation,
+                   const std::string& commandId) {
+    Fd control(3);
+    NativeToolClientConfig config; config.socketPath = socket;
+    config.tokenFile = tokenFile; config.timeoutMs = 5000;
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    const std::string directory = root + "/outbox";
+    std::string reply, reason;
+    if (operation == "prepare") {
+        PreparedOrder order("EUR.USD", Contract(), "BUY", 10, 1.1002, 1.1001,
+                            OmsJournal::NowEpochMs() + 120000);
+        const auto auth = Preview(client, order, "outbox-child-preview");
+        Require(client.Persist(directory, order, auth.commandId, auth.permit, reason),
+                "child persist: " + reason);
+        reply = auth.commandId;
+    } else {
+        Require(operation == "submit" || operation == "submit-hold", "outbox child mode invalid");
+        NativeToolClientResult result;
+        Require(client.SubmitStored(directory, commandId, result, reason),
+                "child stored call: " + reason);
+        reply = result.responseJson;
+    }
+    Require(TypedToolProtocol::WriteFrame(control.Get(), reply, 5000, reason), reason);
+    if (operation == "prepare" || operation == "submit-hold") {
+        // A test-owned pause after real durable preparation or delivery. No
+        // acknowledgement/sent marker is written; the parent SIGKILLs us.
+        for (;;) ::pause();
+    }
+    return 0;
+}
+class OutboxWorker {
+public:
+    OutboxWorker(const std::string& root, const std::string& socket,
+                 const std::string& token, const std::string& operation,
+                 const std::string& id = "-") {
+        int sockets[2];
+        Require(::socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, sockets) == 0,
+                "outbox child control pair");
+        Fd parent(sockets[0]), child(sockets[1]);
+        posix_spawn_file_actions_t actions;
+        Require(::posix_spawn_file_actions_init(&actions) == 0, "outbox spawn init");
+        const int dup = ::posix_spawn_file_actions_adddup2(&actions, child.Get(), 3);
+        const int closeRest = ::posix_spawn_file_actions_addclosefrom_np(&actions, 4);
+        if (dup != 0 || closeRest != 0) {
+            ::posix_spawn_file_actions_destroy(&actions);
+            throw std::runtime_error("outbox descriptor isolation");
+        }
+        char executable[] = "/proc/self/exe", mode[] = "--outbox-child";
+        char* args[] = {executable, mode, const_cast<char*>(root.c_str()),
+            const_cast<char*>(socket.c_str()), const_cast<char*>(token.c_str()),
+            const_cast<char*>(operation.c_str()), const_cast<char*>(id.c_str()), nullptr};
+        const int error = ::posix_spawn(&pid_, executable, &actions, nullptr, args, ::environ);
+        ::posix_spawn_file_actions_destroy(&actions);
+        Require(error == 0, "outbox child exec");
+        control_.reset(new Fd(parent.Release()));
+    }
+    ~OutboxWorker() {
+        if (pid_ > 0) {
+            ::kill(pid_, SIGKILL);
+            int status;
+            while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
+        }
+    }
+    std::string Read() {
+        std::string body, reason;
+        Require(TypedToolProtocol::ReadFrame(control_->Get(), 1048576, 6000, body, reason),
+                "outbox child reply: " + reason);
+        return body;
+    }
+    void Crash() {
+        Require(pid_ > 0 && ::kill(pid_, SIGKILL) == 0, "outbox child SIGKILL");
+        const int status = Wait();
+        Require(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL, "outbox child not killed");
+    }
+    void Finish() {
+        const int status = Wait();
+        Require(WIFEXITED(status) && WEXITSTATUS(status) == 0, "outbox child/sanitizer failure");
+    }
+private:
+    int Wait() {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        do {
+            int status = 0;
+            const auto observed = ::waitpid(pid_, &status, WNOHANG);
+            if (observed == pid_) { pid_ = -1; control_.reset(); return status; }
+            Require(observed == 0 || (observed < 0 && errno == EINTR), "outbox child wait failed");
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        } while (std::chrono::steady_clock::now() < deadline);
+        throw std::runtime_error("outbox child timeout");
+    }
+    pid_t pid_ = -1;
+    std::unique_ptr<Fd> control_;
+};
+TypedToolResultEnvelope ReadOutboxWorker(OutboxWorker& worker) {
+    TypedToolResultEnvelope result; std::string reason;
+    Require(TypedToolProtocol::DecodeResultEnvelope(worker.Read(), result, reason), reason);
+    return result;
+}
+void TestDurableClientProcessRecovery() {
+    Fixture f(false);
+    ExecutionProcess execution(f.root.path);
+    f.StartGateway();
+    const auto directory = f.root.path + "/outbox", tokenFile = f.root.path + "/client.token";
+    Require(::mkdir(directory.c_str(), 0700) == 0, "outbox directory setup");
+    WritePrivateFile(tokenFile, f.token, 0600);
+    std::string command;
+    {
+        OutboxWorker preparer(f.root.path, f.agentConfig.toolSocket, tokenFile, "prepare");
+        command = preparer.Read();
+        Require(TradingToolWireContract::IsCanonicalCommandId(command), "child did not return service command ID");
+        execution.Await(0, 0, 0);
+        preparer.Crash(); // The original proposal and permit die with this address space.
+    }
+    long filledId = -1;
+    {
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit-hold", command);
+        const auto result = ReadOutboxWorker(sender);
+        Require(result.status == "ok" && result.orderId >= 0, "fresh-process stored placement rejected");
+        filledId = result.orderId;
+        execution.Await(1, 10, 0, true, 1, 0);
+        sender.Crash(); // No application acknowledgement persisted after the fill.
+    }
+    {
+        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", command);
+        const auto result = ReadOutboxWorker(retry);
+        Require(result.status == "duplicate" && result.orderId == filledId, "client crash replay changed identity");
+        retry.Finish();
+    }
+    NativeToolClientConfig config; config.socketPath = f.agentConfig.toolSocket;
+    config.tokenFile = tokenFile; config.timeoutMs = 5000;
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    execution.Crash(); execution.Restart(); execution.Await(1, 10, 0);
+    AwaitRecoveredStatus(client, command);
+    {
+        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", command);
+        const auto result = ReadOutboxWorker(retry);
+        Require(result.status == "duplicate" && result.orderId == filledId, "service restart forgot stored identity");
+        retry.Finish();
+    }
+    const auto expiry = OmsJournal::NowEpochMs() + 120000;
+    PreparedOrder resting("EUR.USD", Contract(), "BUY", 3, 1.1000, 1.1001, expiry);
+    const auto auth = Preview(client, resting, "outbox-resting-preview");
+    std::string reason;
+    Require(client.Persist(directory, resting, auth.commandId, auth.permit, reason), reason);
+    long restingId = -1;
+    {
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", auth.commandId);
+        const auto result = ReadOutboxWorker(sender);
+        Require(result.status == "ok" && result.orderId >= 0, "stored resting placement rejected");
+        restingId = result.orderId; sender.Finish();
+    }
+    execution.Await(2, 10, 1);
+    const std::string cancelId = "outbox-runtime-cancel";
+    Require(client.Persist(directory, PreparedCancellation(restingId), cancelId, reason), reason);
+    {
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit-hold", cancelId);
+        const auto result = ReadOutboxWorker(sender);
+        Require(result.status == "ok", "stored cancellation rejected");
+        execution.Await(2, 10, 0); sender.Crash();
+    }
+    {
+        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", cancelId);
+        const auto result = ReadOutboxWorker(retry);
+        Require(result.status == "duplicate", "stored cancellation identity lost");
+        retry.Finish();
+    }
+    // A syntactically valid persisted permit is not a service authorization.
+    const std::string flattenId = "outbox-unauthorized-flatten";
+    Require(client.Persist(directory, PreparedFlatten("EUR.USD"), flattenId,
+                           "sha256:" + std::string(64, 'a'), reason), reason);
+    {
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", flattenId);
+        const auto result = ReadOutboxWorker(sender);
+        Require(result.status == "rejected", "outbox manufactured flatten authority");
+        sender.Finish();
+    }
+    execution.Await(2, 10, 0);
+    f.gateway->Stop(); f.gateway.reset(); execution.Stop();
+    OmsJournal journal;
+    Require(journal.Init(f.executionConfig.journalPath), "outbox journal verification open");
+    std::map<std::string, unsigned int> sends, cancels;
+    Require(journal.Replay([&](const OmsJournalEvent& event) {
+        if (event.eventType == "place_send_attempt") ++sends[event.reqId];
+        if (event.eventType == "cancel_send_attempt") ++cancels[event.reqId];
+    }) > 0, "outbox journal replay");
+    Require(sends.size() == 2 && sends[command] == 1 && sends[auth.commandId] == 1 &&
+            cancels.size() == 1 && cancels[cancelId] == 1, "durable client caused duplicate/unauthorized sends");
+    std::cout << "durable_client_recovery=PASS client_SIGKILL=3 execution_SIGKILL=1"
+              << " place_send_attempts=2 cancel_send_attempts=1 forged_flatten_rejected=1\n";
+}
+
 }
 int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string(argv[1]) == "--execution-child") return RunExecutionChild(argv[2]);
+        if (argc == 7 && std::string(argv[1]) == "--outbox-child")
+            return RunOutboxChild(argv[2], argv[3], argv[4], argv[5], argv[6]);
         Require(argc == 1, "unsupported native Execution test argument");
         TestNativeExecutionLifecycle();
         TestNativeExecutionProcessCrashes();
+        TestDurableClientProcessRecovery();
         std::cout << "PASS real Native/Gateway/Execution lifecycle and SIGKILL recovery\n";
         return 0;
     }

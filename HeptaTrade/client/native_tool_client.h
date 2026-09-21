@@ -32,11 +32,22 @@ public:
               NativeToolClientResult& result,
               std::string& reason) const;
 
+    // Fingerprint the configured socket, effective UID and current credential.
+    // It is not the credential and grants no authority. Token-file rotation or
+    // a different endpoint intentionally requires explicit recovery handling.
+    bool RecoveryBinding(std::string& binding, std::string& reason) const;
+    // Resolve the credential once, check the binding, then use that exact
+    // snapshot for discovery and this single call. Never retry the mutation.
+    bool CallBound(TradingToolHostRequest request, const std::string& binding,
+                   NativeToolClientResult& result, std::string& reason) const;
+
     static bool ReadSessionToken(const std::string& path,
                                  std::string& token,
                                  std::string& reason);
 
 private:
+    bool ResolveRecoveryConfig(NativeToolClientConfig& config,
+                               std::string& binding, std::string& reason) const;
     bool CallOnce(TradingToolHostRequest request,
                   NativeToolClientResult& result,
                   std::string& reason) const;

@@ -7,6 +7,10 @@ namespace NativeToolDiscoveryContract
 {
 static const unsigned int kSchemaVersion = 2;
 
+// Shared SHA-256 implementation already used for discovery. A content digest is
+// corruption detection, not a MAC, session credential or authorization proof.
+std::string ContentDigest(const std::string& bytes);
+
 struct CatalogSnapshot
 {
     std::string schemaHash;

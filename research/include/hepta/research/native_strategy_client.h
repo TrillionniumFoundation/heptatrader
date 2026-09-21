@@ -47,7 +47,7 @@ private:
 
 // This forward-only library links only NativeToolClient and its wire closure.
 // The referenced NativeToolClient must outlive this object. No automatic retry,
-// no locally invented execution command IDs, no journal or broker networking.
+// no locally invented execution command IDs, no execution journal or broker networking.
 // A true return means a response was transported, NOT that an order succeeded.
 // Always inspect the envelope status; rejected/uncertain are preserved unchanged.
 class NativeStrategyClient {
@@ -76,9 +76,31 @@ public:
     bool Flatten(const PreparedFlatten& flatten, const std::string& executionCommandId,
                  const std::string& previewPermit, NativeToolClientResult& result,
                  std::string& reason) const;
+    // Private POSIX outbox, not an OMS: caller creates an owned 0700 absolute
+    // directory. Persist fsyncs an immutable 0600 record before returning true.
+    // There is no send here, and no automatic retry, ID allocation or expiry
+    // refresh. Order/flatten IDs and permits must be from the matching preview.
+    bool Persist(const std::string& directory, const PreparedOrder& order,
+                 const std::string& executionCommandId, const std::string& previewPermit,
+                 std::string& reason) const;
+    bool Persist(const std::string& directory, const PreparedCancellation& cancellation,
+                 const std::string& executionCommandId, std::string& reason) const;
+    bool Persist(const std::string& directory, const PreparedFlatten& flatten,
+                 const std::string& executionCommandId, const std::string& previewPermit,
+                 std::string& reason) const;
+    // Diagnostic copy only, with an empty sessionToken. Failure clears output.
+    // SubmitStored always rereads the disk record; it never trusts this copy.
+    bool LoadStored(const std::string& directory, const std::string& executionCommandId,
+                    TradingToolHostRequest& request, std::string& reason) const;
+    // One bound call through NativeToolClient after verified durable load.
+    // Same UID/socket/credential, exact original ID/expiry/payload/permit.
+    bool SubmitStored(const std::string& directory, const std::string& executionCommandId,
+                      NativeToolClientResult& result, std::string& reason) const;
     bool Status(const std::string& executionCommandId, const std::string& queryCallId,
                 NativeToolClientResult& result, std::string& reason) const;
 private:
+    bool PersistRequest(const std::string& directory, TradingToolHostRequest request,
+                        std::string& reason) const;
     bool Forward(const TradingToolHostRequest& request, NativeToolClientResult& result,
                  std::string& reason) const;
     const NativeToolClient& client_;
