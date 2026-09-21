@@ -1,0 +1,74 @@
+name: Pinned integration object upload
+on:
+  push:
+    branches: [integration/heptadll-upload-20260921]
+permissions:
+  contents: write
+jobs:
+  upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 5ba71a660e44fe59371a903fb7d2aaab59417362
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Upload only five tested blobs and their exact tree; never move a ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PYCODE'
+          import base64, hashlib, json, os, subprocess, urllib.request, zlib
+          from pathlib import Path
+          repo = "TrillionniumFoundation/heptatrader"
+          assert os.environ["GITHUB_REPOSITORY"] == repo
+          assert os.environ["GITHUB_REF"] == "refs/heads/integration/heptadll-upload-20260921"
+          base = "5ba71a660e44fe59371a903fb7d2aaab59417362"
+          base_tree = "47aab2d079f04cfe6c3bc0174e88933138f43445"
+          expected_tree = "2473f4bffc755db66e16e99c2cec1b56cc7fa581"
+          def git(*args):
+              return subprocess.check_output(["git", *args], text=True).strip()
+          assert git("rev-parse", "HEAD") == base
+          assert git("rev-parse", "HEAD^{tree}") == base_tree
+          assert not git("status", "--porcelain")
+          patch = zlib.decompress(base64.b64decode("eNrNWm1z2zYS/q5fgWG/UGeJlpT4Jer5JqqtazX120lKpx2PB4FIyEJMEiwB2tY1+e+3C5Ai9Wrlkrk5zcR8wy4WwO6zDxYJxHRKms0HoQk7DKSvDiMZZCFXhylXnKX+rKmCRy8KyGTn55qIA/5CjidHJxPW8bzgqHPy9viEtFut47dva81m8xX9tYODg9f6eP+eNN80TsgB/nn/vkZGmulMdUn/99v+cHDVvx73LmuklySh4Ipo2SVKZqnPm5NMhJoU+hpETqehiDkJ+BMPZcJTMrr4lbA4IFOZPrM0aMo4nBMf9MSaiFjzh5RpIeMaGURJyCN4bZ675GOh9WOtOeZKgzkfNV4X5h9GLH3kmgZMM2o+eX6SfGystWMxC+da+Gpnq5QnIZvvbAJ20wmfsSchUy+Zb2gBM0oT5j+yB/5KyxjG+cSpnYqdveYtH5jmz0sG1g7+XyemRmrkhx/IzXPMUzUTiXEB/sL9DBeXTGQWByydQ7OgGijKT0UCemc8ActlpGgoptyf+yEHreDGuxvkwXLyNuiwYwiWd/7k+Kh1uhwsr6iw4fJKIwyY9lEbQwYv7SOIGvD5KaFpFmsRcZrKZxcjoUsmc5irOmn+g+gMPPzO/lU6bZDiz32DBMLX9mUvnsNzKFSNFL8v9pa/+GAOcX9jYcb7aSqh9c0TT6ehfDaPdcIU4XjXLYVTJhQnT23vZw6LYYLLNHadm6sR/bl/3R/2xoObazr8cD2GWKeD64v+73TYP78ZXsDDb73LwYVTJ9NURlZ5rYl6xRTi3pdpcOdgoBvFzj2JJcY1+csBn/G50yCOz2Kfh3g3DZnWPHa+EJkuhJXBmqok83GcPECRlH/ifn6fgZ5UMwEKurUDtCHKLFqQM+JuMuZ1Q8Avrarqb820fc2qW10/kPEMp5wkqcR2MFoWKgl6sZkivgT1AsJapk0JIRIQzdMIXoSHUw7aiAgAE4QGsPUqGucEAozDPJXjXgwWZ1Rm2pcRN7F29WE0hv4i6A8E4maQpWwCzluou8XQTUGbnsENmQkFxgifhQQ8V5FPmdLoTPCVWPhZ9NlUWQT4MgftLOBpoTCQXP1I7LyI+AElIxKxR54r4S+aAFiEZMpESNgURkwY6gjBdNBDoO9wAsiZmxjBXCF+bVvaszPiOGaoa6uFn7L4MYapdTYvMLpaIZbPDC3GRzErxdq5zxcT/BybL6YcuzQvcgO/f6jVcifUWRoTdyp4GKi7FoBCftsubzv39UY+kuLdKqZapE7meiZj8wADhKkKQx4s0Ar81OdKgbsZlP1akQJ3/dOJzyee1+l0/DenrWXc/WqlFom/Wgyx+eQIoRn+tlsFMrMgEhDzAVWh1C5LtZgyX3fJLdMzhN8HUN21iPws00f7oQLbRTtf33cxu/khU4oMCluG1pTcGRzHuQEWlKTiCZI2AbdVEGBIeZSIshAD/zBP5wTdlv9IJhD+KbKrCN75MxY/cA/UWKw1qQUGLjSlruLhFBZdytz6eg6GOxs1yN8aRKcQsRQDTVGwiQLkZBpSFHg8hNlxq9CUu72eJ9zdLFMnQuWArRF68LZN/n62pQv8As4Av+5yMNqIKROa64j4iYUiAP0S5gmgcSpeIBC41dxEzWSSBQ9cO/VSFw7X29L3NqPKuDXSOFfQFi+ViIYnL3oMROoCeeZnLXlydFRfkVy4XxfTti4yfDbJP3i3AFwxkOMJgmMjXw/M+4BV5O7e0omTd4ZOnHYMB9/tX5t+zi/923GPjm9uLumoPxohzoz7V7eXvXF/5HSJ88w0UPSEwQw4jf30nN9cj4e98zH9CZBqcP2z0dP/MPQ+jC4+w/XzeW/0y+fBRb93eTu8+Qxv99V81fudAuj1h/Rf4z9QK7gHyDb3lQWzLvr0vHd5OaKwR6FXg2vUcoxKDr5NCSyMu8Of6nuO8KJ/PjCLcNnvjfp0PIY+R9bGlhnrRg1fgFBoKUNSwANm2TkxzjcaXH2A1bwZYop4DeSRsz4s0lABkdvwfWvrHNo7Rzzwj995HjsKpq3W9DVo365vG6pvlzDR8ebURAdc2u0yPG4iVabaRazcWlmzN3KzGGFfaQ8fz5ni9ZUYAqBLICA9oehUhNyt4+SSAlCNbRW7fAnPfgbMicK2SKZawRX6TTWNeCTTOcVsDKR8TpHtUGALNBDq0XgUdL1w8Dx3AQBMwChvNdDdEpMOgW7al03svWl6r4IfkkOAY0xboWQB2B2KCRrMYatt8p4i7c6p5VmKTLh+5jwmud3KI79ynlTVIWEr7EM/JDxGihSQZ6FnQIBgJ5KEwgfPm2K64QuMtsD8Iyqo6rNsFyjjcesQgoioSD5idpQ44UUmYWhj03JBHEYTp75o5JXqvnXiduDD6m8zAJx1jo5XUwALgvOQszhL3LxLDwh1UmlWvoY5t0YiE9nQAob8JBQ4m1s3vt85fds4Jged09NqZvgeru/YKg5VM4a4hzZFLIaNLiSx6rf7FbByCvqEX2E2QFgqj8dPIpXxXQ6CkBDOIQ0BvELquIAkREe/9LDxmrZEAotQoMTerCyQ48t4Kh7AvQK6eUFAspi7zQ1WO0w5ug6Nsc/F/Xoj3KxxG77U7OLphE9lipGPMiC89LyPArPvKeWrjw1bhmsf42K/6bQbndb3XW38wTL5oVTcBUZjNqZzOg0qPgiMNdbuJyVjL8iiRLlygttE0y1QFsA7+sjn6mycZtwA5cESUJbU3C4EYpCpW1G7FVU0R5ICDr8tqlF9E9V/h6Bur7LJrSF98GpIH+wK6fWPWJ9wnZ8+/OE0SBvyf9szDKGO0IkgDftq2PMDMYYNhCHEYVhqsS6IxLWwhkPK8SU8uWtDApKa6v6fGQtdKwcdVhoZeK+0HCI7V0P+wF/cnnlT7GjByh7sZ8c5hRpieF8OrgZjp77K8F8b5Q4bNw2pkY94H7lEKqHNrDdICwRW0jpOJMU1tam6yONJXhpR1GzNaF6MmZtcbvITBSrNUyyyFn5MvsWPnb2zyR6cb1GnpKm0FYtdnG9j65zzHbHjDnvHgPO1guOTt/4+nG+zvl2cb7OE4XydE4RCvBwdLUHhZSEzzEX2QMCKk1wCZtqF+AQ5LmYhRjC4FlyoEv+GoFjO8GXpF3idmM4rfDCPem1CKdd2VlW9jpGKJ8zgYlHzKx1MAUERxvHQH/PO0OtshrDOhiWJaxnz7jIB5LaWViktEm6YHyNFj5YANot+m9cg8meGLGtw0ahqQzqGHNDELB7JQAOSKcCeydx88GWUQPrHa4T2cYQmVdDACll7wp29gmhYbunaoiyWT7EsgH+rOGSl7prt+zvIon/CBGFVjzgr9oOQs1koP1T5r2TzOaEzpmZWdEtDGEkGiUSmKQ/zymGwJrDkZs8pkGXLBFwe+7Cnc63CemXwU5EqLESUXme8YdXncp0NUvVARImEBzY97wBI0wdMU74otoCogJmRTkXs2/x+eUBAglIYVCkG+JdbUWp17lelTDH6zJRV3NIcKpA25dU1iscsyi17WaL9ZoBNA2ieVk9OdaYLZ4AOsDztQmd4TIkVcKz4lxZsJxewefRn3H80zNWjM0iUmzyt7uXLXUfFoLJiBS0LuHRp2ZfOkgp1u1Z1U528sVYe30mVXi+KN4jr2FMPW2BvkH+yUPH6mmHgiHHgrsY9TjTIdPKo7yzLAdUPvq/rfycfXptra+vGEHpT5Xh7++/yqizFSdFXNVD29/KK6YN44UcNY1rdntwYwA9SmdhzOQNT1SOhIkFtmtZ8//TVa7QnY09gkJziwR3qUP+75c0JvZ8BvMe4s4G5pflMK7de32X/X2V624QG8NaEwZeKBfwFi0k8KDCyoIgLQdvAw61Z6GyaANuAhvyB+fMdi1D0tGv4RRsPq495woLIX8pZ5IC8HtxIupfpTwFqxfEZtafaprbGYnBECjRPRJQtsGcr7QHkLBakgQ8In1U0zk9f6Uxq9255uYzFOVRTPIJNTQTHvjCb13zScaWq9/DPSojgDBnLfTXSDQAUqQQDvMA+5dkJc+tLaR4PbAucbhCLzg2SAy+mCXcVaI3vb/A7265yPG0RGZF6cfa9Ctcb1RRbzK3qyhP0SlNbC1jZ9pVbSZVNkI+7i8GerQ37bGX0Z/l1VanJuPn50Jk5i3OL1LmH9lcBZ0vSW1izrmDXhrniiSvHwV9RrLCVpN3Hxd3N6rYQiWqAFO8tuGEecvPpra/vlsGVq/Cq6CPnCYVdAP7fJM1ESM3/6oHwMfvkMCj3NUZ/UfQpA3lhakUrrGu7U34pypHKHpT9B3R5mS4=", validate=True))
+          assert hashlib.sha256(patch).hexdigest() == "e807bb7f7b1131a19d77df99a022d0fe32c9bd652ae6c00de0ea04abc001f664"
+          subprocess.run(["git", "apply", "--check", "--index", "-"], input=patch, check=True)
+          subprocess.run(["git", "apply", "--index", "-"], input=patch, check=True)
+          assert git("write-tree") == expected_tree
+          paths = ["docs/modules/research-sdk.md", "scripts/hepta_oms_lifecycle.py",
+                   "tests/python/test_installed_runtime_processes.py",
+                   "tests/python/test_oms_generation_process.py",
+                   "tests/python/test_oms_lifecycle_rotation.py"]
+          assert git("diff", "--cached", "--name-only").splitlines() == paths
+          def post(endpoint, payload):
+              request = urllib.request.Request(
+                  "https://api.github.com/repos/" + repo + "/git/" + endpoint,
+                  data=json.dumps(payload).encode(), method="POST",
+                  headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                           "Accept": "application/vnd.github+json",
+                           "Content-Type": "application/json",
+                           "X-GitHub-Api-Version": "2022-11-28"})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          entries = []
+          for path in paths:
+              data = Path(path).read_bytes()
+              blob = post("blobs", {"content": base64.b64encode(data).decode(), "encoding": "base64"})
+              assert blob["sha"] == git("hash-object", path)
+              mode = git("ls-files", "--stage", "--", path).split()[0]
+              entries.append({"path": path, "mode": mode, "type": "blob", "sha": blob["sha"]})
+          tree = post("trees", {"base_tree": base_tree, "tree": entries})
+          assert tree["sha"] == expected_tree
+          receipt = {"base": base, "tree": tree["sha"], "files": entries, "refs_changed": False}
+          output = Path(os.environ["RUNNER_TEMP"]) / "integration-object-upload.json"
+          output.write_text(json.dumps(receipt, indent=2) + "\n")
+          print("UPLOAD_RESULT " + json.dumps(receipt, sort_keys=True))
+          PYCODE
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: integration-object-upload
+          path: ${{ runner.temp }}/integration-object-upload.json
+          if-no-files-found: error
+          retention-days: 1
