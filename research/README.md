@@ -107,3 +107,70 @@ parity, malformed rows, failure permanence and non-seekable EOF. The existing
 installed/relocated C++11 consumer reads this API and passes its output to the
 existing observation-aware strategy. These extend existing test entries and
 link targets; no production installation or privileged dependency is added.
+
+
+## Bounded multi-instrument historical merge
+
+`MergedTickCsvReader` supplies the missing multi-input boundary within the
+existing Data SDK. It composes `TickCsvReader`; it does not replace its schema,
+change the single-file reader, or add another replay engine. A caller can route
+each returned instrument to its existing `BarBuilder`, `BarStrategy` and
+`ReplayMatcher`, with fills/observations accumulated in `ResearchPortfolio`.
+The same offline libraries remain the only link dependencies.
+
+```cpp
+std::ifstream first("instrument-a.csv"), second("instrument-b.csv");
+hepta::research::MergedTickCsvReader input({&first, &second}, 1000000);
+hepta::research::Tick tick;
+while (input.Next(tick)) {
+    // Route by tick.instrument to existing, application-owned research objects.
+    // Use globally distinct order IDs when sharing a ResearchPortfolio.
+}
+```
+
+Supply 1 through 1,024 distinct, exclusively borrowed input streams; they must
+outlive the noncopyable, nonmovable, thread-affine cursor. The pointer vector is
+not retained. Each source uses the existing tick CSV header and incremental
+volume convention. Header-only sources are allowed. Every nonempty source must
+have its own instrument and nondecreasing timestamps with increasing sequences;
+exact adjacent duplicate rows are emitted unchanged for downstream idempotency.
+Instrument switches, conflicting/reversed sequences and reversed timestamps
+are rejected, not silently repaired. Two files for the same instrument cannot
+be merged as if they shared a trustworthy sequence namespace.
+
+Construction reads headers only. The first `Next` obtains one head or checked
+EOF from every source. Later calls refill only the previously emitted source,
+then select the smallest timestamp, breaking ties by the original numeric input
+index while retaining each source's row order. There is no seek, background
+thread, sort-all vector, synthetic tick or deduplication. Storage is proportional
+to source count and heap selection is logarithmic in source count per row. The
+global `maxRows` bounds emitted records including duplicates; reading ahead is
+bounded by one head per source, not an unbounded suffix. Invalid configuration
+is rejected before any header is consumed; header/row parsing does not rewind
+streams on failure.
+
+This is a synchronous **offline event-time ordering convention**, not proof of
+historical cross-feed receipt times, actual information availability, live-feed
+watermarks, latency tolerance or exchange queue position. Equal timestamps do
+not establish a real causal order. A backtest requiring arrival-time fidelity
+must supply and validate that separate data/ordering contract instead of treating
+this merger as evidence. Buffered heads are private and never exposed as early
+signals. Observation-aware strategies still require explicit availability time.
+
+EOF repeatedly returns false without changing output or `RowsRead`. Any source
+validation, quota, allocation or I/O failure leaves that call's output/count
+unchanged and permanently fails the cursor. Clearing or seeking an input cannot
+resume it or skip a rejected row. A later error does not roll back an already
+emitted prefix or mutations in caller-owned research objects: discard the failed
+run rather than publish a success summary.
+
+The existing Data test covers independent stable-sort oracles, same-time ties,
+exact duplicates, immutable output/validation state, bad initial/refill records,
+global quota and permanent failure, plus 100,000 lazily generated rows with
+measured per-source read-ahead and the full 1,024-source boundary. The existing
+installed/relocated external C++11 consumer runs two actual ReplayMatchers and
+one ResearchPortfolio from the merged stream. It checks no same-time fills,
+duplicate idempotency, both positions, fees, marked equity and EOF finalization
+without liquidation. No new target, translation unit, installed-header path,
+production installation, broker permission or execution mutation path is added.
+The single-instrument replay CLI and canonical execution simulator are unchanged.

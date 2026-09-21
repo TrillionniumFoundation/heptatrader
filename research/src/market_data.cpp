@@ -8,6 +8,8 @@
 #include <locale>
 #include <ostream>
 #include <sstream>
+#include <set>
+#include <type_traits>
 #include <stdexcept>
 #include <utility>
 
@@ -252,6 +254,100 @@ bool TickCsvReader::Next(Tick& output) {
         throw;
     }
 }
+
+struct MergedTickCsvReader::Impl {
+    struct Source {
+        Source(std::istream& input, std::size_t quota) : reader(input, quota) {}
+        TickCsvReader reader;
+        Tick last;
+        bool initialized = false;
+    };
+    struct Head { std::int64_t timestamp; std::size_t source; };
+    struct Later {
+        bool operator()(const Head& a, const Head& b) const noexcept {
+            return a.timestamp != b.timestamp ? a.timestamp > b.timestamp : a.source > b.source;
+        }
+    };
+    std::vector<std::unique_ptr<Source>> sources;
+    std::vector<Head> heads;
+    std::set<std::string> instruments;
+    std::size_t maxRows, rows = 0, refill;
+    bool initialized = false, finished = false, failed = false;
+
+    Impl(const std::vector<std::istream*>& inputs, std::size_t quota)
+        : maxRows(quota), refill(inputs.size()) {
+        Require(!inputs.empty() && inputs.size() <= 1024, "RESEARCH_MERGE_SOURCE_LIMIT");
+        Require(quota > 0, "RESEARCH_CSV_ROW_LIMIT_INVALID");
+        // Validate the entire handle list before consuming even the first header.
+        std::set<std::istream*> unique;
+        for (auto* input : inputs)
+            Require(input != nullptr && unique.insert(input).second, "RESEARCH_MERGE_SOURCE_INVALID");
+        sources.reserve(inputs.size()); heads.reserve(inputs.size());
+        for (auto* input : inputs) {
+            std::unique_ptr<Source> source(new Source(*input, quota));
+            sources.push_back(std::move(source));
+        }
+    }
+    void ReadHead(std::size_t index) {
+        auto& source = *sources[index];
+        Tick tick;
+        if (!source.reader.Next(tick)) return;
+        if (source.initialized) {
+            Require(tick.instrument == source.last.instrument, "RESEARCH_MERGE_INSTRUMENT_CHANGED");
+            if (tick.sequence == source.last.sequence)
+                Require(SameTick(tick, source.last), "RESEARCH_SEQUENCE_CONFLICT");
+            else
+                Require(tick.sequence > source.last.sequence && tick.timestampUs >= source.last.timestampUs,
+                        "RESEARCH_TICK_OUT_OF_ORDER");
+        } else {
+            Require(instruments.insert(tick.instrument).second, "RESEARCH_MERGE_INSTRUMENT_DUPLICATE");
+        }
+        // Retain one private value per source, independent of caller output.
+        // Reserved heap storage contains only timestamps and source indices.
+        using std::swap;
+        swap(source.last, tick); source.initialized = true;
+        heads.push_back({source.last.timestampUs, index});
+        std::push_heap(heads.begin(), heads.end(), Later());
+    }
+    bool Next(Tick& output) {
+        static_assert(std::is_nothrow_move_constructible<Tick>::value &&
+                      std::is_nothrow_move_assignable<Tick>::value,
+                      "merged Tick publication must not throw");
+        Require(!failed, "RESEARCH_MERGED_CSV_READER_FAILED");
+        if (finished) return false;
+        try {
+            if (!initialized) {
+                // A minimum cannot be selected until every source has a head
+                // or checked EOF. Invalid initial sources publish no prefix.
+                for (std::size_t i = 0; i < sources.size(); ++i) ReadHead(i);
+                initialized = true;
+            } else if (refill != sources.size()) {
+                // Never read this source's suffix in the call that publishes
+                // its current row. Refill before selecting the next minimum.
+                ReadHead(refill); refill = sources.size();
+            }
+            if (heads.empty()) { finished = true; return false; }
+            Require(rows < maxRows, "RESEARCH_CSV_ROW_LIMIT");
+            const auto index = heads.front().source;
+            Tick next = sources[index]->last; // Allocate before output/state publication.
+            std::pop_heap(heads.begin(), heads.end(), Later()); heads.pop_back();
+            refill = index;
+            using std::swap;
+            swap(output, next); // Default-allocator string/scalar swaps allocate nothing.
+            ++rows;
+            return true;
+        } catch (...) {
+            failed = true;
+            throw;
+        }
+    }
+};
+MergedTickCsvReader::MergedTickCsvReader(const std::vector<std::istream*>& inputs, std::size_t maxRows)
+    : impl_(new Impl(inputs, maxRows)) {}
+MergedTickCsvReader::~MergedTickCsvReader() = default;
+bool MergedTickCsvReader::Next(Tick& output) { return impl_->Next(output); }
+std::size_t MergedTickCsvReader::RowsRead() const { return impl_->rows; }
+
 std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows) {
     TickCsvReader reader(input, maxRows);
     std::vector<Tick> ticks;

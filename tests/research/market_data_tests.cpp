@@ -55,7 +55,9 @@ void SessionsAndBars() {
 // has a vector of historical ticks. Underflow exposes at most one row.
 class GeneratedTickBuffer : public std::streambuf {
 public:
-    explicit GeneratedTickBuffer(std::size_t rows) : rows_(rows) {
+    explicit GeneratedTickBuffer(std::size_t rows, std::string instrument = "TEST.FUT",
+                                 std::size_t stride = 1, std::size_t offset = 0)
+        : rows_(rows), instrument_(std::move(instrument)), stride_(stride), offset_(offset) {
         line_ = "instrument,timestamp_us,sequence,price,volume\n";
         setg(&line_[0], &line_[0], &line_[0] + line_.size());
     }
@@ -65,13 +67,15 @@ protected:
         if (gptr() < egptr()) return traits_type::to_int_type(*gptr());
         if (produced_ == rows_) return traits_type::eof();
         ++produced_;
-        line_ = "TEST.FUT," + std::to_string(produced_ - 1) + "," +
+        line_ = instrument_ + "," + std::to_string(offset_ + (produced_ - 1) * stride_) + "," +
                 std::to_string(produced_) + ",100,1\n";
         setg(&line_[0], &line_[0], &line_[0] + line_.size());
         return traits_type::to_int_type(*gptr());
     }
 private:
     std::size_t rows_, produced_ = 0;
+    std::string instrument_;
+    std::size_t stride_, offset_;
     std::string line_;
 };
 void StreamingCsv() {
@@ -566,6 +570,203 @@ void StreamingBarsCsv() {
     std::cout << "streaming completed-bar oracle rows=50000\n";
 }
 
+// The offline merge uses an explicit synthetic event-time order. It does not
+// infer cross-feed historical availability. The independent oracle below sorts
+// only test data; the production cursor must not retain the historical rows.
+void MergedCsv() {
+    static_assert(!std::is_copy_constructible<MergedTickCsvReader>::value,
+                  "a merged cursor must exclusively own its source cursors");
+    static_assert(!std::is_move_constructible<MergedTickCsvReader>::value,
+                  "moving must not leave another cursor over the same inputs");
+    const std::string header = "instrument,timestamp_us,sequence,price,volume\n";
+    Tick output = T(900, 900, 999, 7);
+    const auto same = [](const Tick& a, const Tick& b) {
+        return a.instrument == b.instrument && a.timestampUs == b.timestampUs &&
+            a.sequence == b.sequence && a.price == b.price && a.volume == b.volume;
+    };
+    std::istringstream a(header + "A,0,1,100,1\nA,2,2,101,2\nA,2,2,101,2\nA,2,3,102,3\n");
+    std::istringstream b(header + "B,0,1,200,1\nB,1,2,201,2\nB,2,3,202,3");
+    std::istringstream empty(header);
+    std::vector<std::istream*> inputs{&a, &empty, &b};
+    MergedTickCsvReader reader(inputs, 7);
+    Check(a.tellg() == static_cast<std::streamoff>(header.size()) &&
+          b.tellg() == static_cast<std::streamoff>(header.size()), "merge construction consumes only headers");
+    inputs.assign(1, nullptr); // Original vector storage is not a live dependency.
+    const char* names[] = {"A", "B", "B", "A", "A", "A", "B"};
+    const std::int64_t times[] = {0, 0, 1, 2, 2, 2, 2};
+    const std::uint64_t sequences[] = {1, 1, 2, 2, 2, 3, 3};
+    for (std::size_t i = 0; i < 7; ++i) {
+        Check(reader.Next(output) && output.instrument == names[i] &&
+              output.timestampUs == times[i] && output.sequence == sequences[i] &&
+              reader.RowsRead() == i + 1, "stable source-index ties and exact duplicates");
+        output.instrument = "CALLER-CHANGED"; output.timestampUs = -1;
+        output.sequence = 0; output.price = 0; output.volume = -1;
+    }
+    const Tick atEof = output;
+    Check(!reader.Next(output) && !reader.Next(output) && same(output, atEof) &&
+          reader.RowsRead() == 7, "clean merged EOF leaves output unchanged");
+    std::istringstream e1(header), e2(header);
+    MergedTickCsvReader allEmpty({&e1, &e2}, 1);
+    Check(!allEmpty.Next(output) && !allEmpty.Next(output) && same(output, atEof) &&
+          allEmpty.RowsRead() == 0, "all header-only sources end without invented records");
+
+    std::istringstream untouched(header + "A,0,1,100,1\n");
+    Throws([&] { MergedTickCsvReader invalid({}, 1); });
+    Throws([&] { MergedTickCsvReader invalid({nullptr}, 1); });
+    Throws([&] { MergedTickCsvReader invalid({&untouched, &untouched}, 1); });
+    Throws([&] { MergedTickCsvReader invalid({&untouched}, 0); });
+    Throws([&] { MergedTickCsvReader invalid(std::vector<std::istream*>(1025, &untouched), 1); });
+    Check(untouched.tellg() == 0, "invalid merge configuration must consume no input");
+    Throws([&] { std::istringstream wrong("bad header\n"); MergedTickCsvReader invalid({&wrong}); });
+    std::istringstream repeatedA(header + "A,0,1,100,1\n"), repeatedB(header + "A,1,1,101,1\n");
+    MergedTickCsvReader repeated({&repeatedA, &repeatedB});
+    const Tick beforeRepeated = output;
+    Throws([&] { repeated.Next(output); });
+    Check(repeated.RowsRead() == 0 && same(output, beforeRepeated),
+          "two sources may not share an instrument/sequence namespace");
+    Throws([&] { repeated.Next(output); });
+
+    // Read one valid prefix. A bad refill must fail before any later cached
+    // source head can be emitted, and clearing the stream cannot resume it.
+    for (const std::string& bad : {
+            std::string("A,0,2,100,1\n"), // reversed time
+            std::string("A,2,1,100,1\n"), // reused sequence with changed time
+            std::string("A,1,1,101,1\n"), // conflicting duplicate
+            std::string("B,2,2,100,1\n"), // instrument switch
+            std::string("A,2,0,100,1\n"),
+            std::string("A,2,2,nan,1\n"),
+            std::string(4097, 'x') + "\n", std::string("\n")}) {
+        std::istringstream first(header + "A,1,1,100,1\n" + bad + "A,3,3,100,1\n");
+        std::istringstream later(header + "B,10,1,200,1\n");
+        MergedTickCsvReader failed({&first, &later});
+        Check(failed.Next(output) && output.instrument == "A", "valid prefix is available before suffix read");
+        const Tick prefix = output;
+        Throws([&] { failed.Next(output); });
+        Check(failed.RowsRead() == 1 && same(output, prefix), "failed merge cannot publish or count a partial tick");
+        first.clear(); later.clear(); const auto where = first.tellg(), other = later.tellg();
+        bool poisoned = false;
+        try { failed.Next(output); }
+        catch (const std::invalid_argument& error) {
+            poisoned = std::string(error.what()) == "RESEARCH_MERGED_CSV_READER_FAILED";
+        }
+        Check(poisoned && first.tellg() == where && later.tellg() == other &&
+              same(output, prefix) && failed.RowsRead() == 1, "merged failure is permanent and consumes no more input");
+    }
+    std::istringstream decreasing(header + "A,1,2,100,1\nA,2,1,100,1\n");
+    MergedTickCsvReader reversedSequence({&decreasing});
+    Check(reversedSequence.Next(output), "sequence reversal prefix");
+    Throws([&] { reversedSequence.Next(output); });
+    Check(output.sequence == 2 && reversedSequence.RowsRead() == 1, "strict per-source sequence order");
+
+    std::istringstream q1(header + "A,0,1,100,1\n"), q2(header + "B,1,1,100,1\n");
+    MergedTickCsvReader quota({&q1, &q2}, 1);
+    Check(quota.Next(output), "global merge quota prefix"); const Tick beforeQuota = output;
+    Throws([&] { quota.Next(output); }); Throws([&] { quota.Next(output); });
+    Check(quota.RowsRead() == 1 && same(output, beforeQuota), "row limit is global, not per file");
+    std::istringstream broken(header + "A,0,1,100,1\nA,1,2,100,1\n");
+    MergedTickCsvReader io({&broken}); Check(io.Next(output), "I/O prefix"); const Tick beforeIo = output;
+    broken.setstate(std::ios::badbit); Throws([&] { io.Next(output); });
+    broken.clear(); Throws([&] { io.Next(output); });
+    Check(io.RowsRead() == 1 && same(output, beforeIo), "I/O failure is not merged EOF");
+    const auto lastTime = std::to_string(std::numeric_limits<std::int64_t>::max());
+    const auto lastSequence = std::to_string(std::numeric_limits<std::uint64_t>::max());
+    const std::string edgeRow = "A," + lastTime + "," + lastSequence + ",100,0\n";
+    std::istringstream edgeA(header + edgeRow + edgeRow), edgeB(header + "B,0,1,100,0\n");
+    MergedTickCsvReader edges({&edgeA, &edgeB}, std::numeric_limits<std::size_t>::max());
+    Check(edges.Next(output) && output.instrument == "B" && output.timestampUs == 0,
+          "merge compares extreme timestamps without subtraction overflow");
+    Check(edges.Next(output) && output.timestampUs == std::numeric_limits<std::int64_t>::max() &&
+          output.sequence == std::numeric_limits<std::uint64_t>::max(), "full-width tick identity is preserved");
+    Check(edges.Next(output) && !edges.Next(output) && edges.RowsRead() == 3,
+          "maximum sequence exact retry and maximum quota terminate normally");
+    std::istringstream goodHead(header + "A,0,1,100,1\n"), badHead(header + "B,1,1,nan,1\n");
+    MergedTickCsvReader prime({&goodHead, &badHead}); const Tick beforePrime = output;
+    Throws([&] { prime.Next(output); });
+    Check(prime.RowsRead() == 0 && same(output, beforePrime), "initial source validation precedes first publication");
+}
+
+void MergedCsvOracle() {
+    std::size_t oracleRows = 0;
+    for (std::size_t trial = 0; trial < 64; ++trial) {
+        struct Expected { Tick tick; std::size_t source; };
+        std::vector<Expected> expected;
+        std::vector<std::unique_ptr<std::istringstream>> streams;
+        std::vector<std::istream*> inputs;
+        const auto count = trial % 7 + 1;
+        for (std::size_t source = 0; source < count; ++source) {
+            std::vector<Tick> ticks;
+            std::int64_t timestamp = static_cast<std::int64_t>((source * 7 + trial) % 4);
+            for (std::size_t row = 0; row < (trial + source * 3) % 14; ++row) {
+                timestamp += static_cast<std::int64_t>((row * 3 + source + trial) % 4);
+                Tick tick = T(timestamp, row + 1, 100 + source + row,
+                              static_cast<std::int64_t>((row + trial) % 5));
+                tick.instrument = "S" + std::to_string(source);
+                ticks.push_back(tick); expected.push_back({tick, source});
+                if (row % 5 == 0) { ticks.push_back(tick); expected.push_back({tick, source}); }
+            }
+            std::ostringstream csv; WriteTicksCsv(csv, ticks);
+            streams.emplace_back(new std::istringstream(csv.str()));
+            inputs.push_back(streams.back().get());
+        }
+        std::stable_sort(expected.begin(), expected.end(), [](const Expected& a, const Expected& b) {
+            if (a.tick.timestampUs != b.tick.timestampUs) return a.tick.timestampUs < b.tick.timestampUs;
+            return a.source < b.source;
+        });
+        MergedTickCsvReader merged(inputs, std::max(std::size_t(1), expected.size()));
+        Tick output;
+        for (const auto& item : expected) {
+            const auto& tick = item.tick;
+            Check(merged.Next(output) && output.instrument == tick.instrument &&
+                  output.timestampUs == tick.timestampUs && output.sequence == tick.sequence &&
+                  output.price == tick.price && output.volume == tick.volume,
+                  "merge agrees with independently stable-sorted heterogeneous oracle");
+            ++oracleRows;
+        }
+        Check(!merged.Next(output) && merged.RowsRead() == expected.size(), "oracle exact-limit terminal state");
+    }
+    // Actual non-seekable large sources. At most one private current record per
+    // source, not a concatenation sorted after materializing the entire input.
+    std::vector<std::unique_ptr<GeneratedTickBuffer>> buffers;
+    std::vector<std::unique_ptr<std::istream>> streams;
+    std::vector<std::istream*> inputs;
+    for (std::size_t source = 0; source < 4; ++source) {
+        buffers.emplace_back(new GeneratedTickBuffer(25000, "S" + std::to_string(source), 4, source));
+        streams.emplace_back(new std::istream(buffers.back().get())); inputs.push_back(streams.back().get());
+    }
+    MergedTickCsvReader merged(inputs, 100000);
+    for (const auto& buffer : buffers) Check(buffer->Produced() == 0, "merged construction does not prime data rows");
+    Tick output;
+    for (std::size_t row = 0; row < 100000; ++row) {
+        Check(merged.Next(output) && output.instrument == "S" + std::to_string(row % 4) &&
+              output.timestampUs == static_cast<std::int64_t>(row) && output.sequence == row / 4 + 1 &&
+              output.price == 100 && output.volume == 1 && merged.RowsRead() == row + 1,
+              "non-seekable interleave follows independently computed field oracle");
+        std::size_t produced = 0;
+        for (std::size_t source = 0; source < 4; ++source) {
+            const auto delivered = row / 4 + (source <= row % 4 ? 1 : 0);
+            Check(buffers[source]->Produced() >= delivered && buffers[source]->Produced() <= delivered + 1,
+                  "a source is read ahead by at most one row");
+            produced += buffers[source]->Produced();
+        }
+        Check(produced <= row + 4, "global lookahead is bounded by source count");
+    }
+    Check(!merged.Next(output) && !merged.Next(output) && output.timestampUs == 99999,
+          "all large non-seekable inputs reach stable EOF");
+    std::vector<std::unique_ptr<std::istringstream>> many;
+    inputs.clear();
+    for (std::size_t source = 0; source < 1024; ++source) {
+        many.emplace_back(new std::istringstream("instrument,timestamp_us,sequence,price,volume\nS" +
+                                                std::to_string(source) + ",0,1,100,1\n"));
+        inputs.push_back(many.back().get());
+    }
+    MergedTickCsvReader maximum(inputs, 1024);
+    for (std::size_t source = 0; source < 1024; ++source)
+        Check(maximum.Next(output) && output.instrument == "S" + std::to_string(source),
+              "maximum supported fan-in retains numeric source-index tie order");
+    Check(!maximum.Next(output), "maximum fan-in exact quota EOF");
+    std::cout << "merged CSV oracle rows=" << oracleRows << ", lazy rows=100000, maximum sources=1024\n";
+}
+
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); }); }

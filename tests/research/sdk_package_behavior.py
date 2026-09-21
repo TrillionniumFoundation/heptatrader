@@ -160,6 +160,53 @@ int main() {
     stale = false;
     try { portfolio.Snapshot(4, 0); } catch (const std::invalid_argument&) { stale = true; }
     Require(stale);
+
+    // Multi-instrument replay is composition of the EXISTING offline matchers
+    // and portfolio, not another runtime or a broker-capable implementation.
+    {
+        const std::string header = "instrument,timestamp_us,sequence,price,volume\n";
+        std::istringstream aTicks(header + "MERGE.A,0,1,100,1\nMERGE.A,2,2,101,1\n"
+                                         "MERGE.A,2,2,101,1\nMERGE.A,4,3,103,1\n");
+        std::istringstream bTicks(header + "MERGE.B,0,1,50,1\nMERGE.B,1,2,50,2\nMERGE.B,3,3,49,1\n");
+        MergedTickCsvReader merged({&aTicks, &bTicks}, 7);
+        ResearchInstrument aSpec; aSpec.instrument = "MERGE.A"; aSpec.currency = "USD"; aSpec.multiplier = 10;
+        ResearchInstrument bSpec = aSpec; bSpec.instrument = "MERGE.B"; bSpec.multiplier = 5;
+        ResearchPortfolio combined(1000, "USD", {aSpec, bSpec});
+        ReplayMatcher aMatch("MERGE.A", schedule, .5), bMatch("MERGE.B", schedule, .5);
+        ReplayOrder buy; buy.orderId = "merge-buy"; buy.instrument = "MERGE.A";
+        buy.tradingDay = window.tradingDay; buy.submittedAtUs = 0; buy.expiresAtUs = 80;
+        buy.side = 1; buy.quantity = 1; buy.limitPrice = 110;
+        ReplayOrder sell = buy; sell.orderId = "merge-sell"; sell.instrument = "MERGE.B";
+        sell.side = -1; sell.quantity = 2; sell.limitPrice = 49;
+        Require(aMatch.Submit(buy) && bMatch.Submit(sell));
+        Tick current; std::size_t observations = 0, matchedFills = 0;
+        std::int64_t priorTime = 0;
+        while (merged.Next(current)) {
+            Require(current.timestampUs >= priorTime); priorTime = current.timestampUs;
+            auto& matcher = current.instrument == "MERGE.A" ? aMatch : bMatch;
+            for (const auto& event : matcher.OnTick(current)) {
+                Require(event.kind == ReplayEventKind::Fill && event.fill.timestampUs > 0);
+                Require(combined.Apply(event.fill) && !combined.Apply(event.fill)); ++matchedFills;
+            }
+            if (combined.Observe(current)) ++observations;
+        }
+        Require(merged.RowsRead() == 7 && observations == 6 && matchedFills == 2);
+        Require(aMatch.Finish(4).empty() && bMatch.Finish(4).empty() &&
+                aMatch.Finished() && bMatch.Finished() && !aMatch.ActiveOrders() && !bMatch.ActiveOrders());
+        const auto account = combined.Snapshot(4, 1);
+        Require(account.positions.at("MERGE.A").quantity == 1 &&
+                account.positions.at("MERGE.B").quantity == -2);
+        Require(account.initialEquity == 1000 && account.externalFlows == 0 &&
+                account.realizedGross == 0 && account.unrealized == 30 &&
+                account.fees == 1.5 && account.equity == 1028.5);
+        // Equal sequence namespaces may NOT be silently fused into one symbol.
+        std::istringstream repeatA(header + "DUP,0,1,100,1\n"), repeatB(header + "DUP,1,1,101,1\n");
+        MergedTickCsvReader invalid({&repeatA, &repeatB});
+        const Tick before = current; bool rejected = false;
+        try { invalid.Next(current); } catch (const std::invalid_argument&) { rejected = true; }
+        Require(rejected && invalid.RowsRead() == 0 && current.instrument == before.instrument &&
+                current.timestampUs == before.timestampUs && current.sequence == before.sequence);
+    }
     std::cout << "installed research contract passed\n";
 }
 '''

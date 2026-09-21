@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <deque>
 #include <iosfwd>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -107,6 +108,36 @@ private:
     std::size_t maxRows_, rowsRead_ = 0;
     bool finished_ = false, failed_ = false;
 };
+
+// Synchronous OFFLINE merge of 1..1024 single-instrument CSV streams using the
+// existing TickCsvReader schema. Each nonempty source has a distinct instrument,
+// nondecreasing timestamps and increasing sequences (exact adjacent retries are
+// emitted unchanged). Inputs are borrowed exclusively and must outlive this
+// noncopyable, nonmovable, thread-affine cursor; their vector need not outlive it.
+// Construction reads only headers. Next orders by timestamp, then input index,
+// preserving each source's row order. This deterministic simulation convention
+// is NOT evidence of historical cross-feed arrival/availability or live ordering.
+// Storage is O(sources), merge work O(log sources) per row. At most one unread
+// head per source is prefetched; maxRows bounds GLOBAL published rows, including
+// duplicates, with at most one source-head lookahead per input. No seek/sort-all.
+// Clean EOF leaves output/count unchanged. Malformed/unsorted/conflicting rows,
+// quota or I/O errors leave that call's output/count unchanged and permanently
+// fail the cursor. Already emitted prefixes are not complete valid runs after
+// a later failure. No input rewind, deduplication or synthetic tick is performed.
+class MergedTickCsvReader {
+public:
+    explicit MergedTickCsvReader(const std::vector<std::istream*>& inputs,
+                                 std::size_t maxRows = 1000000);
+    ~MergedTickCsvReader();
+    MergedTickCsvReader(const MergedTickCsvReader&) = delete;
+    MergedTickCsvReader& operator=(const MergedTickCsvReader&) = delete;
+    bool Next(Tick& output);
+    std::size_t RowsRead() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // Eager compatibility helper, implemented using the same incremental decoder.
 std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows = 1000000);
 void WriteTicksCsv(std::ostream& output, const std::vector<Tick>& ticks);
