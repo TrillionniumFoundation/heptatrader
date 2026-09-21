@@ -192,6 +192,65 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
+// Historical completed-bar inputs. Futures11/Futures13 are start-labelled
+// one-minute rows; Stock7 is an end-labelled three-minute row. The caller must
+// select the profile; column counts never select it implicitly. Futures numeric
+// timestamps use the reviewed Hepta civil FILETIME-microsecond epoch (1601),
+// NOT Unix time. Zero StartTime means use the required civil text; a nonzero
+// value must agree with that text to the displayed second. No host TZ is used.
+enum class LegacyBarCsvLayout { Futures11, Futures13, Stock7 };
+struct LegacyBarEvidence {
+    int utcOffsetMinutes = 0; // Local-minus-UTC offset for this exact source row.
+    std::uint64_t tickCount = 0; // Not recorded in these files: independently supplied.
+    std::int64_t observedAtUs = 0; // Actual research availability, at/after bar end.
+    bool complete = false; // Explicit caller evidence; EOF does not complete a bar.
+};
+// Arguments: one-based data row, bound instrument, civil date from source text.
+// No default tick count, availability, completion or exchange calendar is invented.
+using LegacyBarEvidenceResolver = std::function<LegacyBarEvidence(
+    std::size_t, const std::string&, const std::string&)>;
+struct LegacyBarRecord {
+    Bar bar;
+    std::string sourceCivilDay;
+    std::int64_t observedAtUs = 0;
+    int utcOffsetMinutes = 0;
+    double turnover = 0; // Per-bar turnover, not cumulative total.
+    bool hasCumulativeTotals = false, hasOpenInterest = false;
+    std::int64_t cumulativeVolume = 0;
+    double cumulativeTurnover = 0, openInterest = 0;
+    bool hasHighTime = false, hasLowTime = false;
+    std::int64_t highTimeUs = 0, lowTimeUs = 0;
+    std::vector<std::string> sourceFields; // Bounded, retained source columns.
+};
+// OFFLINE, single bound instrument. Futures LastVolume/LastTurnOver are the bar
+// amounts; Volume/TurnOver remain cumulative metadata. Stock7 amounts are per
+// bar. Missing OHLC is rejected, never copied from a preceding row. Each bar must
+// lie in ONE supplied session; its trading-day label comes from that session.
+// Evidence controls completion/count/availability; delivery time, bar intervals,
+// trading day and same-day futures totals cannot reverse. Gaps are allowed.
+// expectedHeader empty means headerless; otherwise the caller supplies the exact
+// header line for the selected positional profile (no automatic header guessing).
+// Construction validates configuration before consuming that optional header.
+// One bounded row plus one prior record: no seek/history-sized state. The input
+// and resolver captures must outlive their use; serialize calls, never re-enter
+// from the resolver. EOF/error preserves output and RowsRead; ANY Next error
+// permanently fails the cursor. Callback side effects cannot be rolled back.
+class LegacyBarCsvReader {
+public:
+    LegacyBarCsvReader(std::istream& input, LegacyBarCsvLayout layout,
+        std::string instrument, SessionSchedule schedule,
+        LegacyBarEvidenceResolver evidenceResolver,
+        std::string expectedHeader = "", std::size_t maxRows = 1000000);
+    ~LegacyBarCsvReader();
+    LegacyBarCsvReader(const LegacyBarCsvReader&) = delete;
+    LegacyBarCsvReader& operator=(const LegacyBarCsvReader&) = delete;
+    bool Next(LegacyBarRecord& output);
+    std::size_t RowsRead() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
 // Eager compatibility helper, implemented using the same incremental decoder.
 std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows = 1000000);
 void WriteTicksCsv(std::ostream& output, const std::vector<Tick>& ticks);

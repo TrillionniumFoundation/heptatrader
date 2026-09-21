@@ -533,6 +533,181 @@ LegacyTickCsvReader::~LegacyTickCsvReader() = default;
 bool LegacyTickCsvReader::Next(LegacyTickRecord& output) { return impl_->Next(output); }
 std::size_t LegacyTickCsvReader::RowsRead() const { return impl_->rows; }
 
+namespace {
+std::size_t LegacyBarColumns(LegacyBarCsvLayout layout) {
+    switch (layout) {
+    case LegacyBarCsvLayout::Futures11: return 11;
+    case LegacyBarCsvLayout::Futures13: return 13;
+    case LegacyBarCsvLayout::Stock7: return 7;
+    }
+    throw std::invalid_argument("RESEARCH_LEGACY_BAR_LAYOUT_INVALID");
+}
+std::int64_t LegacyBarCivilTime(const std::string& text, bool stock, std::string& day) {
+    Require(text.size() == (stock ? 19u : 15u), "RESEARCH_LEGACY_BAR_TIME_INVALID");
+    std::string time;
+    if (stock) {
+        Require(text[4] == '-' && text[7] == '-' && text[10] == ' ',
+                "RESEARCH_LEGACY_BAR_TIME_INVALID");
+        day = text.substr(0,4) + text.substr(5,2) + text.substr(8,2);
+        time = text.substr(11);
+    } else {
+        Require(text[8] == '_', "RESEARCH_LEGACY_BAR_TIME_INVALID");
+        day = text.substr(0,8); time = text.substr(9);
+    }
+    LegacyTickClock civil; civil.actionDay = day;
+    return LegacyUtc(civil, LegacyTimeOfDay(time, "0", !stock));
+}
+std::int64_t LegacyBarFileTime(const std::string& cell) {
+    // Unit conversion only, not a copy of the historical platform time code.
+    const std::uint64_t epoch = 11644473600000000ULL;
+    const auto value = Unsigned(cell);
+    Require(value >= epoch && value - epoch <=
+            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()),
+            "RESEARCH_LEGACY_BAR_EPOCH_INVALID");
+    return static_cast<std::int64_t>(value - epoch);
+}
+std::int64_t LegacyBarUtc(std::int64_t civil, int offsetMinutes) {
+    Require(offsetMinutes >= -840 && offsetMinutes <= 840,
+            "RESEARCH_LEGACY_UTC_OFFSET_INVALID");
+    const auto offset = static_cast<std::int64_t>(offsetMinutes) * 60000000LL;
+    Require((offset <= 0 || civil >= offset) &&
+            (offset >= 0 || civil <= std::numeric_limits<std::int64_t>::max() + offset),
+            "RESEARCH_LEGACY_BAR_UTC_RANGE");
+    return civil - offset;
+}
+}
+struct LegacyBarCsvReader::Impl {
+    std::istream& input;
+    LegacyBarCsvLayout layout;
+    std::size_t columns;
+    std::string instrument;
+    SessionSchedule schedule;
+    LegacyBarEvidenceResolver resolver;
+    std::size_t maxRows, rows = 0;
+    bool finished = false, failed = false;
+    LegacyBarRecord previous;
+    Impl(std::istream& stream, LegacyBarCsvLayout profile, std::string symbol,
+         SessionSchedule windows, LegacyBarEvidenceResolver evidence,
+         const std::string& header, std::size_t quota)
+        : input(stream), layout(profile), columns(LegacyBarColumns(profile)),
+          instrument(std::move(symbol)), schedule(std::move(windows)),
+          resolver(std::move(evidence)), maxRows(quota) {
+        Require(InstrumentValid(instrument), "RESEARCH_INSTRUMENT_INVALID");
+        Require(static_cast<bool>(resolver), "RESEARCH_LEGACY_BAR_EVIDENCE_REQUIRED");
+        Require(quota > 0, "RESEARCH_CSV_ROW_LIMIT_INVALID");
+        if (!header.empty()) {
+            Require(header.size() <= 4096, "RESEARCH_CSV_LINE_TOO_LONG");
+            LegacyFields(header, columns);
+            std::string line;
+            Require(ReadBoundedLine(input, line), "RESEARCH_CSV_HEADER_MISSING");
+            StripCR(line);
+            Require(line == header, "RESEARCH_LEGACY_HEADER_INVALID");
+        }
+    }
+    bool Next(LegacyBarRecord& output) {
+        static_assert(std::is_nothrow_move_constructible<LegacyBarRecord>::value &&
+                      std::is_nothrow_move_assignable<LegacyBarRecord>::value,
+                      "legacy bar publication must not throw");
+        Require(!failed, "RESEARCH_LEGACY_BAR_READER_FAILED");
+        if (finished) return false;
+        try {
+            std::string line;
+            if (!ReadBoundedLine(input, line)) { finished = true; return false; }
+            StripCR(line); Require(rows < maxRows, "RESEARCH_CSV_ROW_LIMIT");
+            LegacyBarRecord next; next.sourceFields = LegacyFields(line, columns);
+            const auto& f = next.sourceFields;
+            const bool stock = layout == LegacyBarCsvLayout::Stock7;
+            const std::size_t p = stock ? 1 : 2;
+            auto civil = LegacyBarCivilTime(f[stock ? 0 : 1], stock, next.sourceCivilDay);
+            if (!stock && Unsigned(f[0]) != 0) {
+                const auto numeric = LegacyBarFileTime(f[0]);
+                Require(numeric >= civil && numeric - civil < 1000000,
+                        "RESEARCH_LEGACY_BAR_TIME_CONFLICT");
+                civil = numeric;
+            }
+            auto& bar = next.bar; bar.instrument = instrument;
+            bar.open = LegacyNumber(f[p]); bar.high = LegacyNumber(f[p+1]);
+            bar.low = LegacyNumber(f[p+2]); bar.close = LegacyNumber(f[p+3]);
+            Require(bar.low > 0 && bar.low <= bar.open && bar.low <= bar.close &&
+                    bar.high >= bar.open && bar.high >= bar.close,
+                    "RESEARCH_BAR_OHLC_INVALID");
+            bar.volume = SignedNonnegative(f[stock ? 5 : 7]);
+            next.turnover = LegacyNumber(f[stock ? 6 : 9]);
+            Require(next.turnover >= 0, "RESEARCH_LEGACY_NUMBER_NEGATIVE");
+            if (!stock) {
+                next.hasCumulativeTotals = next.hasOpenInterest = true;
+                next.cumulativeVolume = SignedNonnegative(f[6]);
+                next.cumulativeTurnover = LegacyNumber(f[8]);
+                next.openInterest = LegacyNumber(f[10]);
+                Require(next.cumulativeVolume >= bar.volume &&
+                        next.cumulativeTurnover >= next.turnover && next.openInterest >= 0,
+                        "RESEARCH_LEGACY_BAR_TOTAL_INVALID");
+                if (columns == 13) {
+                    next.hasHighTime = Unsigned(f[11]) != 0;
+                    next.hasLowTime = Unsigned(f[12]) != 0;
+                    if (next.hasHighTime) next.highTimeUs = LegacyBarFileTime(f[11]);
+                    if (next.hasLowTime) next.lowTimeUs = LegacyBarFileTime(f[12]);
+                }
+            }
+            const auto evidence = resolver(rows + 1, instrument, next.sourceCivilDay);
+            Require(evidence.complete && evidence.tickCount > 0,
+                    "RESEARCH_LEGACY_BAR_COMPLETION_UNPROVEN");
+            next.utcOffsetMinutes = evidence.utcOffsetMinutes;
+            const auto label = LegacyBarUtc(civil, evidence.utcOffsetMinutes);
+            const std::int64_t duration = stock ? 180000000LL : 60000000LL;
+            Require(stock ? label >= duration :
+                    label <= std::numeric_limits<std::int64_t>::max() - duration,
+                    "RESEARCH_LEGACY_BAR_INTERVAL_RANGE");
+            bar.beginUs = stock ? label - duration : label;
+            bar.endUs = stock ? label : label + duration;
+            const auto& beginSession = schedule.At(bar.beginUs);
+            const auto& endSession = schedule.At(bar.endUs - 1);
+            Require(beginSession.openUs == endSession.openUs,
+                    "RESEARCH_LEGACY_BAR_CROSSES_SESSION");
+            bar.tradingDay = beginSession.tradingDay;
+            bar.tickCount = evidence.tickCount; bar.complete = true;
+            next.observedAtUs = evidence.observedAtUs;
+            Require(next.observedAtUs >= bar.endUs, "RESEARCH_LEGACY_BAR_NOT_YET_OBSERVED");
+            if (next.hasHighTime) {
+                next.highTimeUs = LegacyBarUtc(next.highTimeUs, evidence.utcOffsetMinutes);
+                Require(next.highTimeUs >= bar.beginUs && next.highTimeUs < bar.endUs,
+                        "RESEARCH_LEGACY_BAR_EXTREMUM_OUTSIDE");
+            }
+            if (next.hasLowTime) {
+                next.lowTimeUs = LegacyBarUtc(next.lowTimeUs, evidence.utcOffsetMinutes);
+                Require(next.lowTimeUs >= bar.beginUs && next.lowTimeUs < bar.endUs,
+                        "RESEARCH_LEGACY_BAR_EXTREMUM_OUTSIDE");
+            }
+            ValidateBar(bar);
+            if (rows > 0) {
+                Require(bar.beginUs >= previous.bar.endUs &&
+                        bar.tradingDay >= previous.bar.tradingDay &&
+                        next.observedAtUs >= previous.observedAtUs,
+                        "RESEARCH_LEGACY_BAR_ORDER_INVALID");
+                if (!stock && bar.tradingDay == previous.bar.tradingDay) {
+                    Require(next.cumulativeVolume >= previous.cumulativeVolume &&
+                            next.cumulativeTurnover >= previous.cumulativeTurnover &&
+                            next.cumulativeVolume - previous.cumulativeVolume >= bar.volume,
+                            "RESEARCH_LEGACY_BAR_TOTAL_REVERSED");
+                }
+            }
+            // Allocate the private validation snapshot BEFORE publishing output.
+            // Caller mutations cannot alter the next row's validation state.
+            LegacyBarRecord retained = next;
+            using std::swap; swap(output, next); swap(previous, retained); ++rows;
+            return true;
+        } catch (...) { failed = true; throw; }
+    }
+};
+LegacyBarCsvReader::LegacyBarCsvReader(std::istream& input, LegacyBarCsvLayout layout,
+    std::string instrument, SessionSchedule schedule, LegacyBarEvidenceResolver resolver,
+    std::string expectedHeader, std::size_t maxRows)
+    : impl_(new Impl(input, layout, std::move(instrument), std::move(schedule),
+                     std::move(resolver), expectedHeader, maxRows)) {}
+LegacyBarCsvReader::~LegacyBarCsvReader() = default;
+bool LegacyBarCsvReader::Next(LegacyBarRecord& output) { return impl_->Next(output); }
+std::size_t LegacyBarCsvReader::RowsRead() const { return impl_->rows; }
+
 std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows) {
     TickCsvReader reader(input, maxRows);
     std::vector<Tick> ticks;

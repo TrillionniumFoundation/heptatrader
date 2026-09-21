@@ -274,6 +274,75 @@ int main() {
         Require(barsA.Current(tailA) && barsB.Current(tailB) &&
                 !tailA.complete && !tailB.complete && tailA.volume == 0 && tailB.volume == 0);
     }
+    // Consume each legacy completed-bar profile through the relocated Data
+    // archive and the SAME observation-aware Strategy implementation. Bars do
+    // not invent ticks or exchange fills. Actual availability is supplied by
+    // an independent caller fixture, not inferred from the CSV period label.
+    for (const auto layout : {LegacyBarCsvLayout::Futures11,
+                             LegacyBarCsvLayout::Futures13,
+                             LegacyBarCsvLayout::Stock7}) {
+        const std::int64_t civilDay = 1789948800000000LL;
+        const std::int64_t utcDay = civilDay - 480LL * 60000000;
+        const std::uint64_t fileEpoch = 11644473600000000ULL;
+        const bool stock = layout == LegacyBarCsvLayout::Stock7;
+        const std::int64_t period = stock ? 180000000LL : 60000000LL;
+        SessionWindow session; session.openUs = utcDay;
+        session.closeUs = utcDay + 86400000000LL; session.tradingDay = "20260922";
+        std::ostringstream raw;
+        for (int row = 0; row < 3; ++row) {
+            const auto price = row == 1 ? 102 : 100;
+            if (stock) {
+                raw << "2026-09-21 00:0" << (row+1)*3 << ":00,"
+                    << price << ',' << price << ',' << price << ',' << price
+                    << ",12,1200\n";
+            } else {
+                const auto stamp = fileEpoch + static_cast<std::uint64_t>(civilDay + row*period);
+                raw << stamp << ",20260921_000" << row << "00,"
+                    << price << ',' << price << ',' << price << ',' << price
+                    << ',' << 1000+12*row << ",12," << 100000+1200*row << ",1200,77";
+                if (layout == LegacyBarCsvLayout::Futures13) raw << ',' << stamp << ',' << stamp;
+                raw << '\n';
+            }
+        }
+        auto evidence = [period](std::size_t row, const std::string& instrument,
+                                       const std::string& sourceDay) {
+            Require(instrument == "BAR.FUT" && sourceDay == "20260921");
+            LegacyBarEvidence supplied; supplied.complete = true;
+            supplied.tickCount = 6; supplied.utcOffsetMinutes = 480;
+            supplied.observedAtUs = utcDay + static_cast<std::int64_t>(row)*period + 5000000;
+            return supplied;
+        };
+        std::istringstream rawInput(raw.str());
+        LegacyBarCsvReader rawBars(rawInput, layout, "BAR.FUT", SessionSchedule({session}), evidence, "", 3);
+        MovingAverageForecast rawSignal(1,2); Forecast rawForecast;
+        BarSeries rawHistory(3); LegacyBarRecord record;
+        for (int row = 0; row < 3; ++row) {
+            Require(rawBars.Next(record) && record.bar.volume == 12 && record.bar.tickCount == 6 &&
+                    record.bar.complete && record.bar.tradingDay == "20260922" &&
+                    record.bar.beginUs == utcDay + row*period &&
+                    record.observedAtUs == record.bar.endUs + 5000000);
+            Require(record.hasCumulativeTotals == !stock && record.hasOpenInterest == !stock);
+            if (!stock) Require(record.cumulativeVolume == 1000+12*row && record.openInterest == 77);
+            rawHistory.Append(record.bar);
+            const bool signal = rawSignal.ObserveCompletedBar(record.bar, record.observedAtUs, rawForecast);
+            Require(signal == (row != 0));
+            if (signal) Require(rawForecast.observedAtUs == record.observedAtUs &&
+                                rawForecast.direction == (row == 1 ? 1 : -1));
+        }
+        Require(!rawBars.Next(record) && rawBars.RowsRead() == 3 && rawHistory.Size() == 3);
+        const auto combinedBar = MergeBars({rawHistory.At(0), rawHistory.At(1), rawHistory.At(2)});
+        Require(combinedBar.volume == 36 && combinedBar.tickCount == 18);
+        std::ostringstream portable; WriteBarsCsv(portable, {combinedBar});
+        std::istringstream converted(portable.str());
+        Require(ReadBarsCsv(converted).at(0).volume == 36);
+        // A CSV row alone never proves that a completed bar was delivered.
+        std::istringstream unproven(raw.str());
+        LegacyBarCsvReader missingEvidence(unproven, layout, "BAR.FUT", SessionSchedule({session}),
+            [](std::size_t, const std::string&, const std::string&) { return LegacyBarEvidence(); });
+        bool rejected = false;
+        try { missingEvidence.Next(record); } catch (const std::invalid_argument&) { rejected = true; }
+        Require(rejected && missingEvidence.RowsRead() == 0);
+    }
     std::cout << "installed research contract passed\n";
 }
 '''

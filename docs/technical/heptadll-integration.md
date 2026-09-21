@@ -30,7 +30,7 @@ invented by this integration.
 |---|---|
 | `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, OHLC-field extrema, latest strict threshold queries, confirmed peaks/troughs, reverse indexing, retained-day count and OHLCV merging. These are explicit new APIs, not compatibility aliases for historical signatures. |
 | `heptaDate`, `heptaTimeStamp`, `heptaProductTradeTime`, `heptaChinaTradingCalendar` | Explicit UTC session windows and Gregorian trading-day validation. Old exchange-rule tables and implicit local-time assumptions are not republished as current rules. |
-| CSV/data helpers | Strict portable tick/session/completed-bar CSV plus four explicitly selected legacy Tick layouts, including mixed instruments, verified row clocks and original-column retention through the SAME Data/Replay SDK. Proprietary binary cache layouts and historical datasets remain in the source repository. |
+| CSV/data helpers | Strict portable tick/session/completed-bar CSV, four selected legacy Tick layouts and three selected completed-bar layouts through the SAME Data SDK. Mixed Tick instruments, explicit source clocks, correct per-bar amounts, original-column retention and independent completion/observation evidence are supported. Proprietary binary cache layouts and historical datasets remain in the source repository. |
 | `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees, fill identity and offline variation-settlement events. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
 | `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a NativeToolClient adapter with a separate relocatable developer package and private durable request recovery. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
@@ -330,3 +330,43 @@ archival still require independent evidence. The reference repository remains
 private, retained and unchanged; CTP remains deferred behind XT and LIVE remains
 unavailable. Exact new-commit local/remote validation is reported on PR #107;
 its predecessor's passing CI is not presented as acceptance of the new delta.
+
+
+## Legacy completed-bar input continuation
+
+Continuation from `a63aa10714886872221f523dc35cb76f19b0d202` extends the existing
+Data source/header, its current behavioral executable and its real installed
+SDK consumer. It does not create a new target, translation unit, public-header
+path, parser framework, simulator, strategy engine or execution authority.
+
+Three explicit profiles cover the reviewed futures 11/13-column start-labelled
+one-minute bars and stock seven-column end-labelled three-minute bars. Numeric
+futures timestamps are interpreted only in their declared civil-1601
+microsecond basis and checked against the civil string. Source cumulative
+volume is retained separately; **LastVolume is the futures bar volume**.
+Sessions/UTC offsets, completion, tick count and actual observation time are
+supplied independently. Missing evidence or OHLC, conflicting clocks, session
+crossings, reversed ordering/counters, quota and I/O failures reject atomically
+and permanently fail the cursor. No forward-filled price, fake tick count,
+completion at EOF or bar-to-fill conversion is introduced. Detailed fields,
+evidence responsibilities and limitations are in the
+[input contract](../../research/README.md#explicit-legacy-completed-bar-csv-input).
+
+The installed/relocated consumer drives all three profiles through the exported
+Data archive and the existing observation-aware MovingAverageForecast, proving
+per-bar volume, trading-day binding, delayed signal time, merging and portable
+bar round trips. The Data executable retains previous tests and adds profile,
+clock, corruption, evidence and failure boundaries plus a 10,000-row lazy
+non-seekable oracle. The workload is records inside existing tests, not 10,000
+independent test cases. Current-tree local and exact-head remote observations
+belong in PR #107; the previous head's green CI does not qualify this delta.
+
+No historical implementation, Wine-derived time conversion, SDK/binary, market
+history or private Git ancestry is imported. Original notices stay with their
+retained sources; this is not a clean-room or blanket licensing certificate.
+Other period/epoch variants, BIN/XML/database/live feeds, exchange queue and
+clearing fidelity, historical strategy/API parity and all external consumers
+remain unverified rather than declared migrated. Source/archive/release-entry
+retirement conditions above still apply. CTP remains deferred behind XT, LIVE
+remains unavailable, and Gateway/Execution/OMS/risk code and existing workflow
+permissions and required checks are unchanged.

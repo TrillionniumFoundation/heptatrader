@@ -1,6 +1,7 @@
 #include "hepta/research/market_data.h"
 #include "test_support.h"
 #include <algorithm>
+#include <iomanip>
 #include <locale>
 #include <utility>
 #include <limits>
@@ -1025,6 +1026,242 @@ void LegacyCsvStreamingOracle() {
     Check(!reader.Next(record) && !reader.Next(record) && SameLegacyRecord(record,before),"streaming legacy EOF");
 }
 
+const std::int64_t kLegacyBarDay = 1789948800000000LL; // 2026-09-21 00:00 UTC, independent fixture.
+const std::uint64_t kFileEpoch = 11644473600000000ULL;
+std::vector<std::string> LegacyBarCells(LegacyBarCsvLayout layout, int minute = 0) {
+    const bool stock = layout == LegacyBarCsvLayout::Stock7;
+    std::ostringstream clock; clock << std::setfill('0');
+    if (stock) clock << "2026-09-21 00:" << std::setw(2) << minute+3 << ":00";
+    else clock << "20260921_00" << std::setw(2) << minute << "00";
+    if (stock) return {clock.str(),"100","104","99","102","12","1200"};
+    const auto start = kFileEpoch + static_cast<std::uint64_t>(kLegacyBarDay) + minute*60000000ULL;
+    std::vector<std::string> fields = {std::to_string(start),clock.str(),"100","104","99","102",
+        std::to_string(1000+minute*12),"12",std::to_string(100000+minute*1200),"1200","77"};
+    if (layout == LegacyBarCsvLayout::Futures13) {
+        fields.push_back(std::to_string(start+1000000)); fields.push_back(std::to_string(start+59000000));
+    }
+    return fields;
+}
+std::string LegacyBarHeader(LegacyBarCsvLayout layout) {
+    if (layout == LegacyBarCsvLayout::Stock7) return "datetime,open,high,low,close,volume,turnover";
+    const std::string basic = "TimeStamp,time,Open,High,Low,Close,Volume,LastVolume,TurnOver,LastTurnOver,OpenInterest";
+    return layout == LegacyBarCsvLayout::Futures13 ? basic+",HighTimeStamp,LowTimeStamp" : basic;
+}
+LegacyBarEvidenceResolver BarEvidence(int offset = 0) {
+    return [offset](std::size_t row, const std::string& instrument, const std::string& civilDay) {
+        Check(instrument=="TEST.FUT" && civilDay=="20260921", "bar resolver source identity");
+        LegacyBarEvidence e; e.utcOffsetMinutes=offset; e.tickCount=7+row;
+        e.observedAtUs=kLegacyBarDay+86400000000LL; e.complete=true; return e;
+    };
+}
+bool SameLegacyBarRecord(const LegacyBarRecord& a, const LegacyBarRecord& b) {
+    return a.bar.instrument==b.bar.instrument && a.bar.tradingDay==b.bar.tradingDay &&
+        a.bar.beginUs==b.bar.beginUs && a.bar.endUs==b.bar.endUs && a.bar.open==b.bar.open &&
+        a.bar.high==b.bar.high && a.bar.low==b.bar.low && a.bar.close==b.bar.close &&
+        a.bar.volume==b.bar.volume && a.bar.tickCount==b.bar.tickCount && a.bar.complete==b.bar.complete &&
+        a.sourceCivilDay==b.sourceCivilDay && a.observedAtUs==b.observedAtUs &&
+        a.utcOffsetMinutes==b.utcOffsetMinutes && a.turnover==b.turnover &&
+        a.hasCumulativeTotals==b.hasCumulativeTotals && a.hasOpenInterest==b.hasOpenInterest &&
+        a.cumulativeVolume==b.cumulativeVolume && a.cumulativeTurnover==b.cumulativeTurnover &&
+        a.openInterest==b.openInterest && a.hasHighTime==b.hasHighTime && a.hasLowTime==b.hasLowTime &&
+        a.highTimeUs==b.highTimeUs && a.lowTimeUs==b.lowTimeUs && a.sourceFields==b.sourceFields;
+}
+void LegacyBarProfiles() {
+    static_assert(!std::is_copy_constructible<LegacyBarCsvReader>::value &&
+                  !std::is_move_constructible<LegacyBarCsvReader>::value, "bar cursor borrows input");
+    const LegacyBarCsvLayout layouts[] = {LegacyBarCsvLayout::Futures11,LegacyBarCsvLayout::Futures13,LegacyBarCsvLayout::Stock7};
+    for (auto layout:layouts) for (int offset:{-840,-480,0,480,840}) for (bool header:{false,true}) {
+        const bool stock=layout==LegacyBarCsvLayout::Stock7;
+        const auto fields=LegacyBarCells(layout); auto second=LegacyBarCells(layout,stock?3:1);
+        std::istringstream input((header?LegacyBarHeader(layout)+"\r\n":"")+LegacyLine(fields)+LegacyLine(second));
+        SessionSchedule schedule({Window(kLegacyBarDay-86400000000LL,kLegacyBarDay+86400000000LL,"20260922")});
+        LegacyBarCsvReader reader(input,layout,"TEST.FUT",schedule,BarEvidence(offset),header?LegacyBarHeader(layout):"",2);
+        LegacyBarRecord out; Check(reader.RowsRead()==0 && reader.Next(out),"first legacy bar");
+        const auto begin=kLegacyBarDay-static_cast<std::int64_t>(offset)*60000000LL;
+        Check(out.bar.beginUs==begin && out.bar.endUs==begin+(stock?180000000:60000000) &&
+              out.bar.tradingDay=="20260922" && out.sourceCivilDay=="20260921", "source label vs UTC vs trading day");
+        Check(out.bar.volume==12 && out.turnover==1200 && out.bar.tickCount==8 && out.bar.complete &&
+              out.observedAtUs==kLegacyBarDay+86400000000LL && out.sourceFields==fields,"explicit bar values and evidence");
+        Check(out.bar.open==100 && out.bar.high==104 && out.bar.low==99 && out.bar.close==102,"legacy OHLC");
+        Check(out.hasCumulativeTotals==!stock && out.hasOpenInterest==!stock &&
+              out.cumulativeVolume==(stock?0:1000) && out.cumulativeTurnover==(stock?0:100000) &&
+              out.openInterest==(stock?0:77),"bar amounts are NOT daily totals");
+        Check(out.hasHighTime==(layout==LegacyBarCsvLayout::Futures13) && out.hasLowTime==out.hasHighTime,"optional extrema");
+        if (out.hasHighTime) Check(out.highTimeUs==begin+1000000 && out.lowTimeUs==begin+59000000,"extremum epoch and offset");
+        out.bar.endUs=std::numeric_limits<std::int64_t>::max(); out.cumulativeVolume=99999999; out.observedAtUs=0;
+        Check(reader.Next(out) && out.bar.beginUs==begin+(stock?180000000:60000000) && out.bar.tickCount==9,
+              "private previous record does not borrow output");
+        const auto before=out;
+        Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==2 && SameLegacyBarRecord(before,out),"bar immutable EOF");
+    }
+    // Numeric zero is the reviewed text fallback. Optional zero extrema stay unknown.
+    auto fallback=LegacyBarCells(LegacyBarCsvLayout::Futures13);fallback[0]="0";fallback[11]="0";fallback[12]="0";
+    std::istringstream input(LegacyLine(fallback));
+    LegacyBarCsvReader reader(input,LegacyBarCsvLayout::Futures13,"TEST.FUT",
+        SessionSchedule({Window(kLegacyBarDay,kLegacyBarDay+60000000,"20260921")}),BarEvidence());
+    LegacyBarRecord out;Check(reader.Next(out) && out.bar.beginUs==kLegacyBarDay && !out.hasHighTime && !out.hasLowTime,"zero is unknown, not epoch");
+    // Subsecond numeric precision is retained, but must agree with civil text.
+    auto precise=LegacyBarCells(LegacyBarCsvLayout::Futures13);
+    precise[0]=std::to_string(kFileEpoch+static_cast<std::uint64_t>(kLegacyBarDay)+999999);
+    std::istringstream p(LegacyLine(precise));LegacyBarCsvReader pr(p,LegacyBarCsvLayout::Futures13,"TEST.FUT",
+        SessionSchedule({Window(kLegacyBarDay,kLegacyBarDay+120000000,"20260921")}),BarEvidence());
+    Check(pr.Next(out) && out.bar.beginUs==kLegacyBarDay+999999 && out.bar.endUs==kLegacyBarDay+60999999,"numeric microseconds preserved");
+}
+void LegacyBarRejections() {
+    const auto layout=LegacyBarCsvLayout::Futures13;
+    const auto good=LegacyBarCells(layout);
+    SessionSchedule schedule({Window(kLegacyBarDay-86400000000LL,kLegacyBarDay+86400000000LL,"20260921")});
+    auto reject=[&](const std::vector<std::string>& fields,LegacyBarEvidenceResolver evidence) {
+        std::istringstream input(LegacyLine(fields));LegacyBarCsvReader r(input,layout,"TEST.FUT",schedule,evidence);
+        LegacyBarRecord out;out.bar.instrument="KEEP";out.sourceFields={"unchanged"};const auto before=out;
+        Throws([&]{r.Next(out);});Check(r.RowsRead()==0 && SameLegacyBarRecord(out,before),"bad bar atomic publication");
+        input.clear();input.str(LegacyLine(good));Throws([&]{r.Next(out);});
+        Check(r.RowsRead()==0 && SameLegacyBarRecord(out,before),"bad bar cannot be skipped by stream repair");
+    };
+    for (std::size_t i:{0u,2u,3u,4u,5u,6u,7u,8u,9u,10u,11u,12u})
+        for (const std::string invalid:{"","NaN","inf","-1","1x"," 1","1 ","\"1\""}) {
+            auto f=good;f[i]=invalid;reject(f,BarEvidence());
+        }
+    for (const std::string invalid:{"20260229_000000","20260921_240000","20260921_006000","20260921_000060",
+                                   "20260921 000000","2026-09-21 00:00:00","00000101_000000","20260921_00000"}) {
+        auto f=good;f[1]=invalid;reject(f,BarEvidence());
+    }
+    for (const std::string& invalid:std::vector<std::string>{std::to_string(kLegacyBarDay),std::to_string(kFileEpoch-1),
+                                   "18446744073709551615","18446744073709551616",
+                                   std::to_string(kFileEpoch+static_cast<std::uint64_t>(kLegacyBarDay)+1000000)}) {
+        auto f=good;f[0]=invalid;reject(f,BarEvidence());
+    }
+    for (const auto& pair:std::vector<std::pair<std::size_t,std::string>>{{3,"98"},{4,"103"},{6,"11"},{8,"1199"},
+            {11,std::to_string(kFileEpoch+static_cast<std::uint64_t>(kLegacyBarDay)-1)},
+            {12,std::to_string(kFileEpoch+static_cast<std::uint64_t>(kLegacyBarDay)+60000000)}}) {
+        auto f=good;f[pair.first]=pair.second;reject(f,BarEvidence());
+    }
+    auto extra=good;extra.push_back("unexpected");reject(extra,BarEvidence());
+    auto shortRow=good;shortRow.pop_back();reject(shortRow,BarEvidence());
+    auto oversized=good;oversized[1]=std::string(4097,'x');reject(oversized,BarEvidence());
+    for (int mode=0;mode<6;++mode) reject(good,[mode](std::size_t,const std::string&,const std::string&) {
+        LegacyBarEvidence e;e.complete=true;e.tickCount=1;e.observedAtUs=kLegacyBarDay+60000000;
+        if (mode == 0) e.complete = false;
+        if (mode == 1) e.tickCount = 0;
+        if (mode == 2) --e.observedAtUs;
+        if (mode == 3) e.utcOffsetMinutes = 841;
+        if (mode == 4) e.utcOffsetMinutes = -841;
+        if (mode == 5) throw std::runtime_error("evidence unavailable");
+        return e;
+    });
+    // Missing data on the second row must not inherit OHLC from the first.
+    for (int mode=0;mode<6;++mode) {
+        auto next=LegacyBarCells(layout,1);
+        if (mode == 0) next[2] = "";
+        if (mode == 1) next = good;
+        if (mode == 2) next[6] = "999";
+        if (mode == 3) next[6] = "1001";
+        if (mode == 4) next[8] = "99999";
+        std::istringstream input(LegacyLine(good)+LegacyLine(next));
+        auto resolver=[mode](std::size_t row,const std::string& i,const std::string& d){
+            auto e=BarEvidence()(row,i,d);if(mode==5 && row==2)--e.observedAtUs;return e;};
+        LegacyBarCsvReader r(input,layout,"TEST.FUT",schedule,resolver);LegacyBarRecord out;
+        Check(r.Next(out),"valid bar before failure");const auto before=out;
+        Throws([&]{r.Next(out);});Check(r.RowsRead()==1 && SameLegacyBarRecord(out,before),"failed continuation unchanged");
+    }
+    std::istringstream configInput(LegacyLine(good));const auto pos=configInput.tellg();
+    Throws([&]{LegacyBarCsvReader r(configInput,static_cast<LegacyBarCsvLayout>(99),"TEST.FUT",schedule,BarEvidence());});
+    Throws([&]{LegacyBarCsvReader r(configInput,layout,"",schedule,BarEvidence());});
+    Throws([&]{LegacyBarCsvReader r(configInput,layout,"TEST.FUT",schedule,{});});
+    Throws([&]{LegacyBarCsvReader r(configInput,layout,"TEST.FUT",schedule,BarEvidence(),"",0);});
+    Throws([&]{LegacyBarCsvReader r(configInput,layout,"TEST.FUT",schedule,BarEvidence(),"wrong,header");});
+    Check(configInput.tellg()==pos,"configuration errors do not read input");
+    std::istringstream header("wrong\n"+LegacyLine(good));
+    Throws([&]{LegacyBarCsvReader r(header,layout,"TEST.FUT",schedule,BarEvidence(),LegacyBarHeader(layout));});
+    std::istringstream empty;LegacyBarCsvReader emptyReader(empty,layout,"TEST.FUT",schedule,BarEvidence());LegacyBarRecord out;
+    Check(!emptyReader.Next(out) && emptyReader.RowsRead()==0,"empty headerless stream");
+    std::istringstream headerOnly(LegacyBarHeader(layout));LegacyBarCsvReader headerReader(headerOnly,layout,"TEST.FUT",schedule,BarEvidence(),LegacyBarHeader(layout));
+    Check(!headerReader.Next(out),"header-only stream");
+    std::istringstream quota(LegacyLine(good)+LegacyLine(LegacyBarCells(layout,1)));
+    LegacyBarCsvReader limited(quota,layout,"TEST.FUT",schedule,BarEvidence(),"",1);
+    Check(limited.Next(out),"quota first bar");const auto before=out;Throws([&]{limited.Next(out);});
+    Check(limited.RowsRead()==1 && SameLegacyBarRecord(out,before),"bar quota is global published count");
+    for (bool gap:{false,true}) {
+        std::istringstream input(LegacyLine(good));
+        SessionSchedule split({Window(kLegacyBarDay,kLegacyBarDay+30000000,"20260921"),
+            Window(kLegacyBarDay+(gap?40000000:30000000),kLegacyBarDay+60000000,"20260921")});
+        LegacyBarCsvReader r(input,layout,"TEST.FUT",split,BarEvidence());Throws([&]{r.Next(out);});
+    }
+    std::istringstream badIo(LegacyLine(good));LegacyBarCsvReader io(badIo,layout,"TEST.FUT",schedule,BarEvidence());
+    badIo.setstate(std::ios::badbit);Throws([&]{io.Next(out);});badIo.clear();Throws([&]{io.Next(out);});
+    // The stock profile has a distinct end label and no cumulative fields.
+    const auto stockGood = LegacyBarCells(LegacyBarCsvLayout::Stock7);
+    auto rejectStock = [&](const std::vector<std::string>& cells) {
+        std::istringstream source(LegacyLine(cells));
+        LegacyBarCsvReader reader(source, LegacyBarCsvLayout::Stock7,
+                                  "TEST.FUT", schedule, BarEvidence());
+        LegacyBarRecord record; record.sourceFields = {"unchanged"};
+        const auto saved = record;
+        Throws([&] { reader.Next(record); });
+        Check(reader.RowsRead() == 0 && SameLegacyBarRecord(record, saved),
+              "stock rejection preserves output and emitted count");
+        Throws([&] { reader.Next(record); });
+    };
+    for (std::size_t column = 1; column < 7; ++column) {
+        for (const std::string invalid : {"", "NaN", "inf", "-1", "1x", " 1", "1 ", "\"1\""}) {
+            auto cells = stockGood; cells[column] = invalid; rejectStock(cells);
+        }
+    }
+    for (const std::string invalid : {"2026-02-29 00:03:00", "2026-09-21 24:03:00",
+            "2026-09-21 00:03:60", "2026/09/21 00:03:00", "20260921_000300"}) {
+        auto cells = stockGood; cells[0] = invalid; rejectStock(cells);
+    }
+    auto stockExtra = stockGood; stockExtra.push_back("unexpected"); rejectStock(stockExtra);
+    auto stockShort = stockGood; stockShort.pop_back(); rejectStock(stockShort);
+    auto stockOhlc = stockGood; stockOhlc[2] = "98"; rejectStock(stockOhlc);
+    auto stock=LegacyBarCells(LegacyBarCsvLayout::Stock7);stock[0]="1970-01-01 00:02:59";
+    std::istringstream negativeStart(LegacyLine(stock));
+    LegacyBarCsvReader negative(negativeStart,LegacyBarCsvLayout::Stock7,"TEST.FUT",
+        SessionSchedule({Window(0,86400000000LL,"19700101")}),
+        [](std::size_t,const std::string&,const std::string&){LegacyBarEvidence e;e.complete=true;e.tickCount=1;e.observedAtUs=86400000000LL;return e;});
+    Throws([&]{negative.Next(out);});
+}
+class LegacyBarGeneratedBuffer : public std::streambuf {
+public:
+    explicit LegacyBarGeneratedBuffer(std::size_t count):count_(count) {}
+    std::size_t Generated() const {return generated_;}
+protected:
+    int_type underflow() override {
+        if(gptr()!=egptr())return traits_type::to_int_type(*gptr());
+        if(generated_==count_)return traits_type::eof();
+        const auto n=generated_++;const auto minute=n%1440;
+        std::ostringstream clock;clock<<"202609"<<std::setfill('0')<<std::setw(2)<<21+n/1440<<'_'
+            <<std::setw(2)<<minute/60<<std::setw(2)<<minute%60<<"00";
+        const auto price=std::to_string(100+n%17);
+        line_=LegacyLine({std::to_string(kFileEpoch+static_cast<std::uint64_t>(kLegacyBarDay)+n*60000000ULL),
+            clock.str(),price,price,price,price,std::to_string(2*(minute+1)),"2",
+            std::to_string(200*(minute+1)),"200","10"});
+        setg(&line_[0],&line_[0],&line_[0]+line_.size());return traits_type::to_int_type(*gptr());
+    }
+private:
+    std::size_t count_,generated_=0;std::string line_;
+};
+void LegacyBarStreamingOracle() {
+    const std::size_t count=10000;
+    std::vector<SessionWindow> windows;
+    for(int day=0;day<7;++day)windows.push_back(Window(kLegacyBarDay+day*86400000000LL,
+        kLegacyBarDay+(day+1)*86400000000LL,"202609"+std::to_string(21+day)));
+    LegacyBarGeneratedBuffer buffer(count);std::istream input(&buffer);
+    LegacyBarCsvReader reader(input,LegacyBarCsvLayout::Futures11,"TEST.FUT",SessionSchedule(windows),
+        [](std::size_t row,const std::string&,const std::string&){LegacyBarEvidence e;e.complete=true;e.tickCount=3;
+            e.observedAtUs=kLegacyBarDay+static_cast<std::int64_t>(row)*60000000LL+123;return e;},"",count);
+    Check(buffer.Generated()==0,"bar constructor has no prefetch");LegacyBarRecord out;
+    for(std::size_t n=0;n<count;++n) {
+        Check(reader.Next(out) && buffer.Generated()==n+1 && reader.RowsRead()==n+1,"bounded one-row streaming bars");
+        Check(out.bar.beginUs==kLegacyBarDay+static_cast<std::int64_t>(n)*60000000LL &&
+              out.bar.endUs==out.bar.beginUs+60000000 && out.bar.volume==2 && out.bar.tickCount==3 &&
+              out.bar.close==static_cast<double>(100+n%17) && out.cumulativeVolume==static_cast<std::int64_t>(2*(n%1440+1)) &&
+              out.observedAtUs==out.bar.endUs+123 && out.bar.tradingDay=="202609"+std::to_string(21+n/1440),
+              "independent bar clock/counter/price oracle across trading-day resets");
+    }
+    const auto before=out;Check(!reader.Next(out) && !reader.Next(out) && SameLegacyBarRecord(out,before),"nonseekable bar EOF");
+}
+
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); }); }

@@ -296,3 +296,134 @@ nonfills, zero repeat volume, once-only fees, explicit forecast availability,
 partial tails and no EOF liquidation. Its synthetic final equity is 1028.5
 from 1000 initial capital, not investment or strategy-performance evidence.
 EOF does not invent a completed bar, fill, credential or production permission.
+
+
+## Explicit legacy completed-bar CSV input
+
+`LegacyBarCsvReader` is an additional **Data** input boundary, not another
+strategy, simulator or execution runtime. It emits the existing `Bar` with an
+explicit observation record. The positional contracts were checked against
+`ReadheptaFutureKindleFile`, `ParseheptaFutureKindleRow`, and the non-optional
+`ReadheptaStockKindleFile` path of `heptaDataFileHelper.cpp`, plus
+`heptaKindleStick.h` and `heptaTimeStamp.{h,cpp}`, at retained source
+`HeptaDLL-main@5f3703258bc4cad8f96e513d8d989c2441b4729d`. This is a new
+implementation of selected data contracts, not literal source import or a
+certificate of legacy output/API/ABI parity.
+
+### Select the actual layout, never autodetect it
+
+The constructor requires one bound instrument, a `SessionSchedule`, a layout
+and an evidence callback. These files do not contain instrument identity or a
+reliable trading-day/UTC/arrival-time/completion declaration. The caller must
+bind those independently; a filename is not an authenticated identity.
+
+| Layout | Columns, in source order | Period label |
+|---|---|---|
+| `Futures11` | `TimeStamp,time,Open,High,Low,Close,Volume,LastVolume,TurnOver,LastTurnOver,OpenInterest` | Start of a 60-second bar |
+| `Futures13` | The same 11 columns, then `HighTimeStamp,LowTimeStamp` | Start of a 60-second bar |
+| `Stock7` | Civil end time, open, high, low, close, bar volume, bar turnover | End of a 180-second bar |
+
+These are positional profiles, not a claim that every stock publisher uses a
+particular header spelling. An empty `expectedHeader` selects headerless input;
+otherwise the first line must exactly equal the caller-supplied bounded header
+(after an optional CR). A header with the wrong field count is rejected before
+reading the stream. There is no automatic header skipping, column permutation,
+quoted-field grammar or guessing from a row's length.
+
+**The futures column `LastVolume`, not `Volume`, becomes `Bar::volume`.**
+Likewise, `LastTurnOver` becomes the record's per-bar `turnover`. The other two
+counters are retained as `cumulativeVolume` and `cumulativeTurnover`, with
+`hasCumulativeTotals=true`; open interest has a separate availability flag.
+Stock volume/turnover are already per-bar; no cumulative totals or open interest
+are invented. Source columns remain bounded text in `sourceFields`, not
+additional qualified measurements. This differs intentionally from filling a
+missing OHLC value using the preceding row: missing prices are rejected.
+
+### Explicit clocks and completion evidence
+
+Futures civil text is exactly `YYYYMMDD_HHMMSS`; stock text is exactly
+`YYYY-MM-DD HH:MM:SS`. Dates are Gregorian, clocks reject leap-second/overflow
+spellings, and the reviewed scope is nonnegative civil/UTC Unix microseconds.
+No host timezone, DST, holiday table or trading-day-as-calendar-day fallback is
+used. The caller provides the actual per-row offset in minutes east of UTC,
+bounded to [-840,840], and explicit UTC session windows. The entire bar must
+fit in one window, even if another adjacent window has the same trading day.
+The window supplies `Bar::tradingDay`; it can differ from `sourceCivilDay`.
+Session crossings and clipped/partial bars are rejected, not stretched.
+
+The nonzero futures numeric `TimeStamp` uses **microseconds since the civil
+1601-01-01 epoch** of the reviewed `heptaTimeStamp` representation, not Unix
+microseconds or 100-nanosecond FILETIME ticks. Its Unix-epoch offset is
+11,644,473,600,000,000 microseconds. It must agree with the source civil text
+within that exact second; the numeric subsecond part is preserved. Zero selects
+the required civil text. Nonzero high/low timestamps use the same explicit
+basis, convert with the same supplied UTC offset and must lie in the half-open
+bar interval. Zero means unknown, not the bar's start. Other epoch/timezone
+variants need a separately reviewed profile rather than silent inference.
+
+These columns do **not** prove tick count, completion or when the completed
+bar became available. The required `LegacyBarEvidenceResolver` receives the
+1-based data-row number, bound instrument and source civil day. It must supply
+independently established `complete=true`, a positive `tickCount`, the UTC
+offset, and the actual `observedAtUs >= bar.endUs`. Unknown evidence rejects
+the row. A dataset row is not permission to invent tick count 1, infer tick
+count from volume, declare completion at EOF or backdate a signal to bar close.
+For delayed/offline data, supply the actual declared research availability
+scenario; it is not evidence of historical feed arrival or live qualification.
+
+```cpp
+// `evidenceByRow` is independently prepared and matches this exact input;
+// it is not derived from OHLC, volume, a wall-clock guess or row presence.
+LegacyBarCsvReader reader(input, LegacyBarCsvLayout::Futures13,
+    instrument, schedule,
+    [&](std::size_t row, const std::string& symbol, const std::string& civilDay) {
+        return evidenceByRow.lookup(row, symbol, civilDay);
+    }, expectedHeader);
+LegacyBarRecord record;
+Forecast forecast;
+while (reader.Next(record)) {
+    if (strategy.ObserveCompletedBar(record.bar, record.observedAtUs, forecast)) {
+        // Forecast only. Any selected order must still use the existing
+        // NativeStrategyClient -> Tool Gateway -> Execution Service path.
+        consumeForecast(forecast);
+    }
+}
+```
+
+`BarSeries`, `MergeBars` and the existing portable bar CSV codec can consume
+these bars. `WriteBarsCsv` serializes only its existing bar schema: it does not
+retain the record's arrival evidence, turnover, original columns or extremum
+timestamps. Preserve that evidence separately when converting archives and
+supply it again at strategy observation. There is no automatic OHLC-to-tick
+expansion, implied liquidity, fill generation or authoritative account state.
+
+### Bounded streaming, ordering and failure
+
+The cursor reads one non-seekable row at a time, retains only its previous
+validation record, and does not cache history. Existing limits apply: 4096 bytes
+per physical line, 128 printable unquoted ASCII bytes per nonempty field,
+exact field count, and a positive global emitted-row quota (default 1,000,000).
+Finite numeric values, checked integer ranges and consistent positive OHLC
+are mandatory. Intervals cannot overlap, and trading days and actual observation
+times cannot reverse. Futures totals cannot reverse within a trading day;
+volume increase must cover that row's `LastVolume`. Missing intervals may
+contain other volume; gaps are not silently filled or declared data-complete.
+Totals may reset at a supplied new trading day; an intraday counter reset requires
+an explicit new input segment, not automatic counter repair.
+
+Each successful row publishes a fully validated independent value. A parse,
+clock, evidence, quota, session, allocation or I/O error leaves the output and
+emitted count unchanged and permanently fails the reader. The stream and
+caller callback are not rolled back: callers must not catch an error and skip
+to a later row. EOF is repeatable and leaves output unchanged; it does not
+complete a bar. Reader/callback use is thread-affine and non-reentrant.
+
+The existing Data executable covers all three layouts, header/headerless input,
+five offsets, numeric/text epochs, microseconds, independent cumulative/bar
+amounts, unknown/invalid completion evidence, OHLC/calendar errors, corrupt
+continuations, quota/I/O failure and single-window semantics. A generated
+10,000-row non-seekable fixture compares every emitted bar with an independent
+clock/counter/price oracle across daily resets. The installed/relocated external
+C++11 consumer calls all three profiles through the exported Data library,
+passes actual delayed observations to the existing Strategy library, then
+merges and round-trips portable bars. No previous test or assertion is removed.
