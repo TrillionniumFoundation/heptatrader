@@ -3,6 +3,8 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -45,13 +47,50 @@ class ResearchContractSmokeTests(unittest.TestCase):
                 paths.append(path)
         return paths
 
+    def native_dependencies(self, path: Path) -> set[Path]:
+        compiler = shutil.which("c++")
+        self.assertIsNotNone(compiler, "native research validation requires a real C++ compiler")
+        with tempfile.TemporaryDirectory(prefix="hepta-research-deps-") as directory:
+            depfile = Path(directory) / "source.d"
+            result = subprocess.run(
+                [compiler, "-std=c++11", "-x", "c++", "-fsyntax-only",
+                 "-MD", "-MF", str(depfile), "-MT", "research", str(path)],
+                cwd=ROOT, capture_output=True, text=True, timeout=30,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            text = depfile.read_text().replace("\\\n", "")
+            target, separator, dependencies = text.partition(":")
+            self.assertEqual((target, separator), ("research", ":"))
+            return {Path(value).resolve() for value in shlex.split(dependencies)}
+
+    def test_native_research_dependency_boundary_detects_execution_include(self) -> None:
+        # Prove this check follows real preprocessor dependencies, not only the
+        # source suffix or literal include spelling in the research directory.
+        with tempfile.TemporaryDirectory(prefix="hepta-research-negative-") as directory:
+            source = Path(directory) / "forbidden.cpp"
+            authority = ROOT / "HeptaTrade/execution/execution_authority.h"
+            source.write_text('#include "' + str(authority) + '"\n')
+            dependencies = self.native_dependencies(source)
+            allowed = set(self.research_paths())
+            violations = {path for path in dependencies if ROOT in path.parents and path not in allowed}
+            self.assertIn(authority, violations)
+
     def test_catalogued_research_modules_compile_and_do_not_import_broker_sdks(self) -> None:
+        allowed = set(self.research_paths())
         for path in self.research_paths():
             with self.subTest(path=path):
                 self.assertTrue(path.is_file())
                 if path.suffix == ".json":
                     value = json.loads(path.read_text(encoding="utf-8"))
                     self.assertIsInstance(value, dict)
+                    continue
+                if path.suffix in {".cpp", ".h"}:
+                    dependencies = self.native_dependencies(path)
+                    self.assertIn(path.resolve(), dependencies)
+                    # Pure research may depend on standard-library headers and
+                    # catalogued research code, never Execution or venue code.
+                    self.assertEqual({dependency for dependency in dependencies
+                                      if ROOT in dependency.parents and dependency not in allowed}, set())
                     continue
                 self.assertEqual(path.suffix, ".py", f"unsupported research asset: {path}")
                 with tempfile.TemporaryDirectory() as directory:

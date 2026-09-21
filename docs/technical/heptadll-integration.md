@@ -197,8 +197,13 @@ reversal, fees, slippage and transactional numeric rejection.
 The client test uses the real native discovery, typed Unix socket, Gateway host
 and private filesystem. Its preview issuer and RecordingAuthority are explicitly
 synthetic fixtures. It proves no send before durable preparation, identical
-restart/retry IDs, uncertainty preservation, unreachable-Gateway failure, no
-stored session token, and unsafe outbox/receipt rejection. It is not an IB/CTP
+restart/retry IDs, cached uncertainty preservation, unreachable-Gateway failure,
+no stored session token, and unsafe outbox/receipt rejection. A fresh executable
+is stopped after durable preparation and killed with SIGKILL; another executable
+loads the same outbox and sends without another preview. A cold Gateway fixture
+forwards the original request after the test authority resolves uncertainty.
+The in-memory authority and Gateway-local lease cache are fixtures, not evidence
+that a real broker/session fencing recovery campaign has completed. It is not an IB/CTP
 broker experiment or a replacement for canonical coordinator, installed-process
 and host acceptance tests.
 
@@ -207,25 +212,50 @@ behavior equivalence, external consumers, licensing evidence and broker
 qualification are separate claims. Final source archival remains conditional on
 consumer migration and explicit acceptance; preserving the source is deliberate.
 
-## Integration branch acceptance and baseline failure
+## Integration branch acceptance and baseline repair
 
-The temporary `integration-workbench.yml` workflow is bound to
-`integration/heptadll-modular-20260921` in this repository, not main or arbitrary
-pull requests. It refreshes four existing documentation/catalog files from the
-actual CMake core graph, refuses removal or changes to existing targets other
-than additive research-test dependencies, and dispatches the existing read-only
-acceptance workflows. It does not change protection, qualification or test
-criteria. The same SDK-independent target definitions are projected into the
-retained IB inventory; that additive metadata projection is not an executed IB
-SDK build. The helper must be retired after projections have landed and ordinary
-exact-head CI has accepted the migration.
+The four existing module/build projections were refreshed from the actual CMake
+core graph in commit `9b66b921906689059341c52ae8e51b5abb1deb29`. The temporary
+metadata-writing Integration Workbench and its helper are now removed; ordinary
+read-only PR core, source/monitoring and GCC/Clang sanitizer workflows own
+acceptance. Their criteria and required checks are unchanged. The retained IB
+inventory's additive SDK-independent target projection is not an executed IB
+SDK build. Manual workflow dispatch remains available.
 
-The starting main revision already has a failing Core Runtime CI run
-`35439003534` (2026-09-19). Its native core tests passed 26/26, its Python core lane
-passed 459 tests, and its installed-process lane failed in
-`test_generation_cost_curve_reports_restart_memory_recovery_seal_and_disk`
-with `OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID`. This predates this
-integration. The assertion and release acceptance driver are preserved; no
-expected-failure marker, skipped test or enlarged admission rule is introduced.
-Source integration cannot be called release-accepted until both new regressions
-and the inherited acceptance failure are resolved on an exact resulting SHA.
+Three different defects are distinguished:
+
+- The integration client fixture previously expected a cached uncertain result
+  to become duplicate. The production Gateway deliberately preserves uncertainty.
+  The corrected test requires uncertainty until an explicit authoritative status
+  resolution, and covers warm-cache and cold-Gateway paths using the original
+  command ID, expiry and payload. No production permission or replay check was
+  weakened to satisfy the test.
+- The existing research smoke check assumed every implementation was Python.
+  Native research sources and standalone headers now undergo real C++ syntax
+  compilation and compiler-emitted dependency inspection. Repository dependencies
+  must remain inside the catalogued pure research module; a negative fixture
+  proves an Execution header is detected. Existing Python compile/import checks
+  remain active. Native link/behavior tests remain in the canonical CMake suite.
+- Main Core Runtime CI run `35439003534` (2026-09-19) already failed its installed
+  generation cost-curve test with `OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID`.
+  The Python checkpoint projector indexed owner/fence/control IDs as mutation
+  commands, unlike native `ApplyRecoveredOwnershipEventLocked`. In particular,
+  `order-terminal-N` produced an empty-operation/unknown-status row. The repair
+  excludes those exact control event types from command indexing while retaining
+  ledger bytes and hot owner/fence state. Ordinary pre-intent `reject` events
+  still retain command identity and default to the place operation, as in native
+  recovery. The wire/index format and strict V2 reader remain unchanged.
+
+The regression uses production-shaped independent terminal IDs, repeated seals,
+control-state retention, byte-identical legacy export, rebase and pre-intent
+rejections. Its failures were reproduced before the projector repair. Corrupt
+or previously malformed generations are still rejected, not silently adopted;
+this change does not repair or migrate a deployed host's existing generation.
+
+Local targeted and full-suite outcomes are reported on the PR for the tested
+revision. Source integration must not be called release-accepted until the
+ordinary exact-head CI, installed-process and PID1 acceptance succeed. No
+expected-failure marker, skipped assertion or relaxed admission rule is added.
+External consumer migration, all legacy format/output parity, vendor licensing
+and real venue qualification are not certified by these tests. The source
+repository remains retained and unchanged pending those independent decisions.

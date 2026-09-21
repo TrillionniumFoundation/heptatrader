@@ -140,7 +140,7 @@ def _operation(event: dict[str, Any], prior: str = "") -> str:
     if kind.startswith("cancel_") or kind == "cancel":
         return "cancel"
     if kind in {"order_intent", "place_send_attempt", "place_sent", "place_activated",
-                "place_outcome_uncertain", "execution_command_resolved"}:
+                "place_outcome_uncertain", "execution_command_resolved", "reject"}:
         return prior or "place"
     return prior
 
@@ -172,6 +172,17 @@ def _durable_intent(event: dict[str, Any]) -> bool:
 
 def _update_command(commands: dict[tuple[str, str, str], dict[str, Any]],
                     event: dict[str, Any], sequence: int) -> None:
+    # Match ExecutionCoordinator::ApplyRecoveredOwnershipEventLocked and its
+    # projection-resolution fast path. These journal entries carry command-like
+    # control IDs (e.g. order-terminal-101) but never create mutation records.
+    # _project_hot still projects their owner/fence state and retains all ledger
+    # bytes; filtering them here is not pruning historical command identity.
+    if event.get("event") in {
+        "session_owner_fenced", "session_owner_recovery_only",
+        "session_owner_fence_release", "order_owner_reconciled_terminal",
+        "paper_terminal_fence", "execution_projection_resolved",
+    }:
+        return
     key = _key(event)
     if not all(key):
         return
