@@ -85,4 +85,6 @@ endif()
 # Standalone developer packaging must never extend the production install set.
 if(HEPTA_RESEARCH_STANDALONE)
     include(cmake/HeptaResearchInstall.cmake)
+else()
+    include("${PROJECT_SOURCE_DIR}/cmake/HeptaStrategyClientSDK.cmake")
 endif()

@@ -33,7 +33,7 @@ invented by this integration.
 | CSV/data helpers | Strict portable tick/session and completed-bar CSV conversion. Proprietary binary cache layouts and historical datasets remain in the source repository. |
 | `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees and fill identity. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
-| `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a forward-only NativeToolClient adapter. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
+| `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a forward-only NativeToolClient adapter with a separate relocatable developer package. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
 | `heptaFtdMdSpi`, `heptaFtdTradeSpi`, QDP and `Interface/` SDK trees | Retained at the reference commit only. CTP remains deferred; XT is still the selected next venue. No vendor library, broker transport or new production mutation capability is added. |
 | Old local position/order maps, threading/process control, XML composition, logging and build overlay | Not restored as a parallel runtime. Existing Execution Service, journal, identity/recovery and Gateway lifecycle continue to own production behavior. |
 
@@ -113,6 +113,37 @@ and completed-bar codec through the exported SDK. It now requests CXX_STANDARD
 11 explicitly rather than only a minimum language feature, and retains its
 relocation, transitive linkage, replay CLI and negative-component/version checks.
 
+## Separate forward-only strategy-client package
+
+The continuation from `19dac90912a3c59fbc59ab6e39bd7691a994c6eb` closes the
+source-tree-only delivery boundary of the native strategy client. The new
+`HeptaStrategyClient` developer package exports the existing client, native
+transport and typed protocol archives; it does not create another implementation
+or link the offline research computation into a privileged runtime. Its install
+component is explicit and excluded from ordinary production installation.
+The four-library offline SDK remains independently installable and client-free.
+See [client package](../../research/CLIENT_PACKAGE.md).
+
+Existing request/result and wire-value declarations are moved without changing
+fields or defaults into two public headers. Public client headers no longer
+transitively declare the host, registry, session binding or execution authority.
+Private host code keeps those dependencies; supported wire requests, preview
+permits, command identities, risk policy and recovery behavior are unchanged.
+The optional package has exactly eight headers and three archives, and discovers
+its platform thread dependency through CMake. It carries source/build metadata,
+not broker credentials or trading permission.
+
+The new root `core;research;install` CTest actually installs and relocates this
+component, removes its old prefix, and compiles the existing native-client
+behavioral test unchanged as an external C++11 consumer. It checks the installed
+include/link/symbol boundary, default-install exclusion and rejected privileged
+classes/components. The existing full Gateway/Execution and SIGKILL tests remain
+separate acceptance of the same canonical client implementation. No compiled
+target, translation unit, vendor capability or alternate order path is added.
+CI stages this developer archive only after exact-head research acceptance and
+fresh build ownership, with its checksum and source commit; upload is not a
+release or a completed remote acceptance claim.
+
 ## Build ownership
 
 The reviewed inventory includes the twelve research library/executable/test
@@ -136,22 +167,15 @@ Remote CI must check the exact PR head with read-only credentials and retain
 logs; queued work is not a passed verification. Integration CTest invocations
 reject an empty selected suite rather than treating no executed tests as success.
 
-For this continuation, the modified data implementation and its expanded existing
-test executable were built and run locally with explicit C++11 and warnings as
-errors under GCC -O2, Clang -O2, Clang ASan/UBSan with leak checking, and GCC
-checked iterators/assertions. All passed. Original retrieved files were checked
-against Git blob identities before editing, and published code blobs were checked
-against tested local bytes. Python syntax and the exact added Data portion of
-the installed consumer were also checked; that Data portion was compiled and run.
-
-These are targeted tests of actual sources, not a complete repository clone,
-full four-library SDK installation, canonical native Gateway build, source/build
-ownership run, installed service campaign or broker qualification. Earlier full
-standalone-SDK results remain historical PR evidence, not results for a new head.
-Detailed observed results and current remote status belong in PR #107, not in a
-new approval authority or a hardcoded success file.
+The current integration additionally requires the separate installed-client
+consumer and unchanged default production installation to pass. GCC/Clang and
+sanitizer results, exact tested tree identity and observed remote run status are
+recorded in PR #107 for each continuation, not hardcoded here as a success file.
+A previous head's acceptance does not automatically qualify a later source tree.
 
 Remaining exact historical API/ABI parity, external-consumer disposition,
-production packaging and optional CTP work stay explicit. This branch is a
-capability integration candidate, not a claim that the historical library has
-been fully replaced or LIVE trading has been enabled.
+exchange-specific cache/matching/settlement behavior, production deployment and
+optional CTP work stay explicit. This branch is a capability integration
+candidate, not a claim that the historical library has been fully replaced or
+LIVE trading has been enabled. The original repository and release history
+remain retained until actual consumer and retirement conditions are satisfied.

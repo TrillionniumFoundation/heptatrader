@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`, `tests/research/native_execution_tests.cpp`
+Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`, `research/CLIENT_PACKAGE.md`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`, `tests/research/native_execution_tests.cpp`, `tests/research/native_sdk_package_behavior.py`
 
 ## Responsibilities
 
@@ -203,3 +203,29 @@ identity and tracked-file cleanliness are rechecked after execution. Uploading
 logs with `always()` preserves failures; neither an uploaded artifact nor a
 queued workflow establishes test success. The existing installed-process,
 SDK-package, ownership and broker-qualification checks remain separate claims.
+
+## Installable forward-only developer SDK
+
+The existing native strategy adapter can now be installed as the separate
+`HeptaStrategyClient` package. [Build and consumer instructions](../../research/CLIENT_PACKAGE.md)
+use the actual root-built `hepta_research_native_client`, `hepta_native_tool_client`
+and `hepta_typed_tool_protocol` archives; there is no alternate implementation.
+All `StrategyClientSDK` install rules are excluded from ordinary installation.
+The offline research package and production runtime manifest are not widened.
+
+Public request/result declarations were moved unchanged into
+`tools/trading_tool_types.h` and `tool_host/trading_tool_request.h`. The protocol
+and Unix client no longer include the privileged host/registry declarations
+transitively. Source callers that used those accidental private declarations
+must include the relevant host header explicitly; the installed client package
+intentionally does not provide that API. Wire fields, names, defaults and codecs
+are unchanged. Thread linkage is part of the canonical native-client target.
+
+`tests/research/native_sdk_package_behavior.py` installs and relocates the eight-header,
+three-archive SDK, then compiles/runs the existing `native_client_tests.cpp` as a
+separate C++11 consumer without copying any production source. It verifies the
+actual defined-symbol/dependency closure, default-install exclusion, unavailable
+components/versions and rejection of privileged class declarations. These tests
+join the existing core/research CTest lane. Real Gateway/Execution lifecycle and
+SIGKILL recovery tests still execute independently; package acceptance does not
+replace deployment or broker qualification.

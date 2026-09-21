@@ -309,7 +309,7 @@ target_include_directories(hepta_native_tool_client PUBLIC
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(hepta_native_tool_client PUBLIC cxx_std_11)
 target_link_libraries(hepta_native_tool_client
-    PUBLIC hepta_typed_tool_protocol)
+    PUBLIC hepta_typed_tool_protocol Threads::Threads)
 set_target_properties(hepta_native_tool_client PROPERTIES
     EXPORT_NAME NativeToolClient)
 

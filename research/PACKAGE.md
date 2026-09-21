@@ -4,7 +4,10 @@ This is an experimental developer artifact, not an installed HeptaTrader
 trading service, a broker qualification, or a HeptaDLL ABI replacement. It
 contains the four portable research libraries and the offline replay example.
 The canonical NativeStrategyClient remains a separate root-build boundary;
-its header and library are intentionally absent from this package.
+its header and library are intentionally absent from this package. The separate
+HeptaStrategyClient package (documented in the checkout at
+`research/CLIENT_PACKAGE.md`) now exports that existing
+forward-only boundary without changing this offline package.
 
 ## Build and install
 

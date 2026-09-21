@@ -1,6 +1,6 @@
 #pragma once
 
-#include "trading_tool_host.h"
+#include "trading_tool_request.h"
 
 #include <cstddef>
 #include <string>

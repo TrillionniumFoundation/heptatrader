@@ -251,3 +251,12 @@ as a developer artifact; queued CI does not certify that artifact. The root
 production install/package manifest and native Gateway test boundary are unchanged.
 See the [integration record](../technical/heptadll-integration.md) for source
 provenance, retained assets and the remaining migration boundary.
+
+## Separate installable strategy client
+
+The offline four-library package remains unchanged. The root build now exports
+the existing forward-only adapter through a separate `StrategyClientSDK`
+component; see [client package](../../research/CLIENT_PACKAGE.md). It is excluded
+from default production installation. Its headers carry only transport values
+and the existing client APIs, not host/session or execution-authority classes.
+The [Agent entry module](agent-entry.md) owns that consumer and its tests.

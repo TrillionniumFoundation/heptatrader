@@ -14,7 +14,8 @@
         "scripts/hepta_agent_mcp_launcher.py",
         "scripts/hepta_agent_trust_domain.py",
         "research/include/hepta/research/native_strategy_client.h",
-        "research/src/native_strategy_client.cpp"
+        "research/src/native_strategy_client.cpp",
+        "research/CLIENT_PACKAGE.md"
       ],
       "tests": [
         "tests/native_tool_client_tests.cpp",
@@ -23,7 +24,8 @@
         "tests/python/test_installed_runtime_processes.py",
         "tests/research/native_client_tests.cpp",
         "tests/research/native_gateway_tests.cpp",
-        "tests/research/native_execution_tests.cpp"
+        "tests/research/native_execution_tests.cpp",
+        "tests/research/native_sdk_package_behavior.py"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false

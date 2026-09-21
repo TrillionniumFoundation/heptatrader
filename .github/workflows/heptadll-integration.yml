@@ -8,6 +8,8 @@ on:
     paths:
       - '.github/workflows/heptadll-integration.yml'
       - 'CMakeLists.txt'
+      - 'cmake/HeptaStrategyClient*'
+      - 'cmake/strategy-client-build-info.txt.in'
       - 'HeptaTrade/**'
       - 'research/**'
       - 'tests/research/**'
@@ -160,6 +162,28 @@ jobs:
             --no-tests=error --output-on-failure --output-junit results.xml
           python3 scripts/verify_build_ownership.py --profile core
           git diff --exit-code
+      - name: Stage the verified forward-only client SDK
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test "$(uname -m)" = x86_64
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          cmake --install build/research-native --prefix "$PWD/build/client-sdk-stage" --component StrategyClientSDK
+          grep -Fx "source_sha=$EXPECTED_SHA" build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
+          grep -Fx 'source_tree_state=clean' build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
+          mkdir -p build/client-sdk-artifacts
+          archive="hepta-strategy-client-sdk-linux-x86_64-$EXPECTED_SHA.tar.gz"
+          tar -czf "build/client-sdk-artifacts/$archive" -C build/client-sdk-stage .
+          (cd build/client-sdk-artifacts && sha256sum "$archive" > "$archive.sha256")
+          cp build/research-native/SOURCE_COMMIT build/client-sdk-artifacts/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: strategy-client-sdk-linux-x86_64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: build/client-sdk-artifacts/
+          if-no-files-found: error
+          retention-days: 7
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
