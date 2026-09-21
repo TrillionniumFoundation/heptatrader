@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: source-built research, offline developer SDK and forward-only client integration
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/sdk_package_behavior.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`
 
 ## Ownership and execution boundary
 

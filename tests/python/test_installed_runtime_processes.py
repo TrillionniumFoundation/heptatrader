@@ -75,7 +75,10 @@ def admitted_slot(artifact: Path, digest: str, work: Path) -> tuple[Path, dict]:
 
 class InstalledRuntime:
     """One private persistent simulator/gateway state; binaries may change."""
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, *, trade_calls_per_minute: int = 60):
+        if type(trade_calls_per_minute) is not int or not 1 <= trade_calls_per_minute <= 100000:
+            raise ValueError("invalid isolated fixture trade-call budget")
+        self.trade_calls_per_minute = trade_calls_per_minute
         self.root = root
         root.mkdir(mode=0o755)
         self.processes: list[tuple[subprocess.Popen, object, Path, str]] = []
@@ -179,7 +182,7 @@ class InstalledRuntime:
                         "HEPTA_TOOL_SESSION_TEMPLATES": "watch,paper",
                         "HEPTA_TOOL_CONTRACT_BINDINGS": "EUR.USD|EUR|CASH|IDEALPRO|USD",
                         "HEPTA_TOOL_MAX_ORDER_QTY": "100",
-                        "HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN": "60",
+                        "HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN": str(self.trade_calls_per_minute),
                         "HEPTA_TOOL_DECISION_LEASE_TTL_MS": "60000",
                     }, "tool gateway ready mode=SIMULATOR")
 

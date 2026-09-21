@@ -127,6 +127,55 @@ class OmsLifecycleRotationTests(unittest.TestCase):
         self.assertLess(self.journal.stat().st_size, 256)
         lifecycle.verify_generation(self.store, journal=self.journal)
 
+    def test_separate_terminal_identity_survives_seal_verify_and_rebase(self) -> None:
+        # The real coordinator emits a separate order-terminal-N request ID,
+        # not the placement ID used by the compact command_events fixture.
+        values = command_events("placed", 1000, 101)
+        values[-1]["req_id"] = "order-terminal-101"
+        values[-1]["client_req_id"] = "order-terminal-101"
+        values[-1]["request_hash"] = ""
+        values[-1]["venue_correlation_id"] = ""
+        self.journal.write_bytes(encode(values))
+        first = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(first["command_records"], 2)
+        lifecycle.verify_generation(self.store, journal=self.journal)
+        first_dir = self.store / first["generation"]
+        first_rows = list(lifecycle._iter_private_lines(first_dir / "runtime-command-index.tsv"))
+        terminal = next(row for row in first_rows
+                        if checkpoint._hex("order-terminal-101").encode() in row)
+        _, record, _ = lifecycle._runtime_row(terminal)
+        self.assertEqual((record["operation"], record["status"],
+                          record["durable_mutation_intent"]), ("", "unknown", False))
+        self.append(command_events("next", 2000, 102))
+        second = lifecycle.seal_generation(self.journal, self.store, stopped=True)
+        lifecycle.verify_generation(self.store, journal=self.journal)
+        self.assertEqual(second["command_records"], 3)
+        rows = list(lifecycle._iter_private_lines(
+            self.store / second["generation"] / "runtime-command-index.tsv"))
+        self.assertIn(terminal, rows)  # do not drop or rewrite historical identity
+        lifecycle.rebase_generation(self.journal, self.store, stopped=True,
+                                    prune_ancestors=True)
+        lifecycle.verify_generation(self.store, journal=self.journal)
+        self.assertEqual(set(self.current_index_commands()),
+                         {"placed", "order-terminal-101", "next"})
+        exported = self.root / "terminal-export.jsonl"
+        lifecycle.export_legacy(self.journal, self.store, exported)
+        self.assertEqual(exported.read_bytes(), encode(values + command_events("next", 2000, 102)))
+
+    def test_runtime_metadata_exception_cannot_claim_a_mutation(self) -> None:
+        _, commands, _, _ = checkpoint._project_hot([
+            event("order_owner_reconciled_terminal", "terminal", "", order_id=101)])
+        record = next(iter(commands.values()))
+        for operation, status, durable in (("", "unknown", True),
+                ("", "accepted", False), ("place", "unknown", False),
+                ("invented", "accepted", False), ("cancel", "invented", True)):
+            with self.subTest(operation=operation, status=status, durable=durable):
+                invalid = dict(record, operation=operation, status=status,
+                               durable_mutation_intent=durable)
+                with self.assertRaisesRegex(checkpoint.GenerationError,
+                                             "RUNTIME_INDEX_RECORD_INVALID"):
+                    lifecycle._runtime_row(checkpoint._runtime_index_line(invalid))
+
     def test_many_generations_keep_active_tail_bounded_and_old_identity_indexed(self) -> None:
         generations = 12
         manifests = []

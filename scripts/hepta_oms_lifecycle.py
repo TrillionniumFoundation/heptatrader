@@ -151,7 +151,15 @@ def _runtime_row(line: bytes) -> tuple[tuple[str, str, str], dict[str, Any], lis
         }
     except (ValueError, OverflowError) as error:
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID") from error
-    if record["operation"] not in {"place", "cancel", "flatten"} or record["status"] not in {"accepted", "rejected", "uncertain"}:
+    mutation = (record["operation"] in {"place", "cancel", "flatten"} and
+                record["status"] in {"accepted", "rejected", "uncertain"})
+    # The v1 projector also retains coordinator-owned terminal/fence identities.
+    # They have no mutation operation or outcome and MUST remain non-durable.
+    # Preserve these historical rows just as the native mutation-summary reader
+    # does; rejecting them makes the next seal fail after a real order callback.
+    metadata = (record["operation"] == "" and record["status"] == "unknown" and
+                not record["durable_mutation_intent"])
+    if not mutation and not metadata:
         raise v1.GenerationError("OMS_GENERATION_RUNTIME_INDEX_RECORD_INVALID")
     return (fields[0], fields[1], fields[2]), record, fields
 
