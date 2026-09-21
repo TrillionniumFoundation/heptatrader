@@ -115,6 +115,27 @@ SessionSchedule ReadSessionsCsv(std::istream& input, std::size_t maxRows = 10000
 // Completed single-instrument bars only. The header and all rows are checked;
 // partial/overlapping/reversed rows are rejected rather than coerced to complete.
 // Header: instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete
+// Incremental decoder for the SAME completed-bar schema. Retains only the last
+// validated bar for cross-row instrument/day/interval checks, never a history.
+// Construction reads only the header; the borrowed stream must outlive this
+// noncopyable, thread-affine cursor. Row quota and 4096-byte line bound apply.
+// Next returns false only at clean EOF. EOF/error leaves output unchanged;
+// malformed rows, quota breaches and I/O failures permanently poison the cursor.
+// Mutating a returned bar cannot change the cursor's private validation state.
+class BarCsvReader {
+public:
+    explicit BarCsvReader(std::istream& input, std::size_t maxRows = 1000000);
+    BarCsvReader(const BarCsvReader&) = delete;
+    BarCsvReader& operator=(const BarCsvReader&) = delete;
+    bool Next(Bar& output);
+    std::size_t RowsRead() const { return rowsRead_; }
+private:
+    std::istream& input_;
+    std::size_t maxRows_, rowsRead_ = 0;
+    bool finished_ = false, failed_ = false;
+    Bar previous_;
+};
+// Eager compatibility helper, sharing exactly the same incremental decoder.
 std::vector<Bar> ReadBarsCsv(std::istream& input, std::size_t maxRows = 1000000);
 void WriteBarsCsv(std::ostream& output, const std::vector<Bar>& bars);
 

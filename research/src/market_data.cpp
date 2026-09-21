@@ -490,16 +490,22 @@ void ValidateCsvBar(const Bar& bar, const Bar* previous) {
     }
 }
 }
-std::vector<Bar> ReadBarsCsv(std::istream& input, std::size_t maxRows) {
+BarCsvReader::BarCsvReader(std::istream& input, std::size_t maxRows)
+    : input_(input), maxRows_(maxRows) {
     Require(maxRows > 0, "RESEARCH_CSV_ROW_LIMIT_INVALID");
     std::string line;
-    Require(ReadBoundedLine(input, line), "RESEARCH_CSV_HEADER_MISSING");
+    Require(ReadBoundedLine(input_, line), "RESEARCH_CSV_HEADER_MISSING");
     StripCR(line);
     Require(line == BarCsvHeader, "RESEARCH_BAR_CSV_HEADER_INVALID");
-    std::vector<Bar> bars;
-    while (ReadBoundedLine(input, line)) {
+}
+bool BarCsvReader::Next(Bar& output) {
+    Require(!failed_, "RESEARCH_BAR_CSV_READER_FAILED");
+    if (finished_) return false;
+    try {
+        std::string line;
+        if (!ReadBoundedLine(input_, line)) { finished_ = true; return false; }
         StripCR(line);
-        Require(bars.size() < maxRows, "RESEARCH_CSV_ROW_LIMIT");
+        Require(rowsRead_ < maxRows_, "RESEARCH_CSV_ROW_LIMIT");
         const auto cells = BarCells(line);
         Bar bar;
         bar.instrument = cells[0]; bar.tradingDay = cells[1];
@@ -509,9 +515,26 @@ std::vector<Bar> ReadBarsCsv(std::istream& input, std::size_t maxRows) {
         bar.volume = SignedNonnegative(cells[8]); bar.tickCount = Unsigned(cells[9]);
         Require(cells[10] == "0" || cells[10] == "1", "RESEARCH_CSV_BOOL_INVALID");
         bar.complete = cells[10] == "1";
-        ValidateCsvBar(bar, bars.empty() ? nullptr : &bars.back());
-        bars.push_back(std::move(bar));
+        ValidateCsvBar(bar, rowsRead_ == 0 ? nullptr : &previous_);
+        // Allocate both owned copies before publishing either. Caller output is
+        // never the next row's validation authority. Default-allocator strings
+        // and scalar fields move/swap without allocation.
+        Bar previous = bar;
+        using std::swap;
+        swap(previous_, previous);
+        swap(output, bar);
+        ++rowsRead_;
+        return true;
+    } catch (...) {
+        failed_ = true;
+        throw;
     }
+}
+std::vector<Bar> ReadBarsCsv(std::istream& input, std::size_t maxRows) {
+    BarCsvReader reader(input, maxRows);
+    std::vector<Bar> bars;
+    Bar bar;
+    while (reader.Next(bar)) bars.push_back(std::move(bar));
     return bars;
 }
 void WriteBarsCsv(std::ostream& output, const std::vector<Bar>& bars) {

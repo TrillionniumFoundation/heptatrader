@@ -427,6 +427,145 @@ void BoundedMeans() {
         }
     }
 }
+// The fixture produces one completed candle at a time on a non-seekable stream.
+// A reader must neither prefetch the following row nor retain a history vector.
+class GeneratedBarBuffer : public std::streambuf {
+public:
+    explicit GeneratedBarBuffer(std::size_t rows) : rows_(rows) {
+        line_ = "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete\n";
+        setg(&line_[0], &line_[0], &line_[0] + line_.size());
+    }
+    std::size_t Produced() const { return produced_; }
+protected:
+    int_type underflow() override {
+        if (gptr() < egptr()) return traits_type::to_int_type(*gptr());
+        if (produced_ == rows_) return traits_type::eof();
+        const auto i = produced_++;
+        const auto price = 100 + i % 19;
+        line_ = "TEST.FUT,20260921," + std::to_string(i * 10) + "," +
+            std::to_string((i + 1) * 10) + "," + std::to_string(price) + "," +
+            std::to_string(price + 2) + "," + std::to_string(price - 1) + "," +
+            std::to_string(price + 1) + "," + std::to_string(i % 7) + ",2,1\n";
+        setg(&line_[0], &line_[0], &line_[0] + line_.size());
+        return traits_type::to_int_type(*gptr());
+    }
+private:
+    std::size_t rows_, produced_ = 0;
+    std::string line_;
+};
+bool SameBar(const Bar& a, const Bar& b) {
+    return a.instrument == b.instrument && a.tradingDay == b.tradingDay &&
+        a.beginUs == b.beginUs && a.endUs == b.endUs && a.open == b.open &&
+        a.high == b.high && a.low == b.low && a.close == b.close &&
+        a.volume == b.volume && a.tickCount == b.tickCount && a.complete == b.complete;
+}
+void StreamingBarsCsv() {
+    static_assert(!std::is_copy_constructible<BarCsvReader>::value, "one bar cursor cannot be copied");
+    static_assert(!std::is_move_constructible<BarCsvReader>::value, "one bar cursor cannot be moved");
+    const std::string header = "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete\n";
+    const std::string first = "TEST.FUT,20260921,0,10,100,102,99,101,3,2,1\n";
+    const std::string second = "TEST.FUT,20260921,10,20,101,103,100,102,0,1,1";
+    Bar output; output.instrument = "sentinel"; output.beginUs = 91; output.endUs = 99;
+    const Bar sentinel = output;
+    std::istringstream empty(header); BarCsvReader noRows(empty, 1);
+    Check(!noRows.Next(output) && !noRows.Next(output) && noRows.RowsRead() == 0 &&
+          SameBar(output, sentinel), "empty bar EOF preserves every output field");
+    std::istringstream input(header + first + second); BarCsvReader reader(input, 2);
+    Check(reader.Next(output) && output.complete && output.volume == 3 && output.tickCount == 2,
+          "first completed bar is parsed");
+    // Output is caller-owned. Mutating it must not rewrite the cursor's previous
+    // instrument/day/interval authority used for validation of the next row.
+    output.instrument = "OTHER"; output.tradingDay = "99991231"; output.endUs = 999;
+    Check(reader.Next(output) && output.instrument == "TEST.FUT" && output.endUs == 20 &&
+          output.volume == 0 && reader.RowsRead() == 2, "bar history is independent of output");
+    const Bar last = output;
+    Check(!reader.Next(output) && !reader.Next(output) && SameBar(last, output),
+          "unterminated final row and exact row quota permit stable EOF");
+    std::string crlf = header + first + second + "\n";
+    std::string converted; for (char c : crlf) { if (c == '\n') converted += '\r'; converted += c; }
+    std::istringstream crInput(converted); BarCsvReader cr(crInput);
+    Check(cr.Next(output) && cr.Next(output) && !cr.Next(output), "completed bar CRLF input");
+    const std::vector<std::string> invalid = {
+        "OTHER,20260921,10,20,101,103,100,102,0,1,1\n",
+        "TEST.FUT,20260920,10,20,101,103,100,102,0,1,1\n",
+        "TEST.FUT,20260921,9,20,101,103,100,102,0,1,1\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,0,1,0\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,0,1,true\n",
+        "TEST.FUT,20260229,10,20,101,103,100,102,0,1,1\n",
+        "TEST.FUT,20260921,10,20,101,100,99,102,0,1,1\n",
+        "TEST.FUT,20260921,10,20,101,103,100,nan,0,1,1\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,-1,1,1\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,0,0,1\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,0,18446744073709551616,1\n",
+        "TEST.FUT,20260921,10,9223372036854775808,101,103,100,102,0,1,1\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,0,1,1,extra\n",
+        "TEST.FUT,20260921,10,20,101,103,100,102,0,1\n",
+        "\n", std::string(4097, 'x') + "\n"
+    };
+    for (const auto& row : invalid) {
+        std::istringstream bad(header + first + row + second); BarCsvReader cursor(bad);
+        Check(cursor.Next(output), "valid bar prefix remains streamable");
+        const Bar before = output;
+        Throws([&] { cursor.Next(output); });
+        Check(SameBar(before, output) && cursor.RowsRead() == 1,
+              "invalid bar cannot publish output or increment successful count");
+        bad.clear(); const auto position = bad.tellg();
+        bool poisoned = false;
+        try { cursor.Next(output); } catch (const std::invalid_argument& e) {
+            poisoned = std::string(e.what()) == "RESEARCH_BAR_CSV_READER_FAILED";
+        }
+        Check(poisoned && bad.tellg() == position && SameBar(before, output) && cursor.RowsRead() == 1,
+              "clearing input cannot skip a rejected completed bar");
+        Throws([&] { std::istringstream eager(header + first + row + second); ReadBarsCsv(eager); });
+    }
+    std::istringstream overlap(header + first + first); BarCsvReader separate(overlap);
+    Check(separate.Next(output), "overlap fixture prefix"); output.endUs = 0;
+    Throws([&] { separate.Next(output); });
+    Check(output.endUs == 0, "caller cannot lower the previous interval via output mutation");
+    std::istringstream limited(header + first + second); BarCsvReader quota(limited, 1);
+    Check(quota.Next(output), "quota prefix"); const Bar beforeQuota = output;
+    Throws([&] { quota.Next(output); }); Throws([&] { quota.Next(output); });
+    Check(quota.RowsRead() == 1 && SameBar(beforeQuota, output), "bar row quota poisons without publication");
+    std::istringstream broken(header + first + second); BarCsvReader io(broken);
+    Check(io.Next(output), "I/O prefix"); const Bar beforeIo = output;
+    broken.setstate(std::ios::badbit); Throws([&] { io.Next(output); });
+    broken.clear(); Throws([&] { io.Next(output); });
+    Check(io.RowsRead() == 1 && SameBar(beforeIo, output), "bar I/O failure is not clean EOF");
+    std::istringstream untouched(header);
+    Throws([&] { BarCsvReader zero(untouched, 0); });
+    Check(untouched.tellg() == 0, "invalid bar quota must not consume header");
+    for (const std::string& h : {std::string(), std::string("bad header\n"), std::string(4097, 'x')})
+        Throws([&] { std::istringstream bad(h); BarCsvReader wrong(bad); });
+
+    GeneratedBarBuffer generated(50000); std::istream stream(&generated);
+    BarCsvReader streaming(stream, 50000);
+    Check(generated.Produced() == 0, "bar construction reads no future row");
+    BarSeries bounded(7);
+    for (std::size_t i = 0; i < 50000; ++i) {
+        Check(streaming.Next(output) && generated.Produced() == i + 1 && streaming.RowsRead() == i + 1,
+              "one call consumes exactly one generated bar");
+        Check(output.instrument == "TEST.FUT" && output.tradingDay == "20260921" &&
+              output.beginUs == static_cast<std::int64_t>(i * 10) &&
+              output.endUs == static_cast<std::int64_t>((i + 1) * 10) &&
+              output.open == 100 + i % 19 && output.high == 102 + i % 19 &&
+              output.low == 99 + i % 19 && output.close == 101 + i % 19 &&
+              output.volume == static_cast<std::int64_t>(i % 7) && output.tickCount == 2 && output.complete,
+              "independent generated OHLCV/identity oracle");
+        bounded.Append(output);
+        Check(bounded.Size() == std::min(i + 1, std::size_t(7)), "consumer history remains bounded");
+    }
+    Check(!streaming.Next(output) && !streaming.Next(output) && output.endUs == 500000,
+          "non-seekable bar EOF does not replace last observed value");
+    GeneratedBarBuffer eagerSource(31); std::istream eagerInput(&eagerSource);
+    const auto eager = ReadBarsCsv(eagerInput, 31);
+    GeneratedBarBuffer cursorSource(31); std::istream cursorInput(&cursorSource);
+    BarCsvReader cursor(cursorInput, 31);
+    for (const auto& expected : eager) Check(cursor.Next(output) && SameBar(expected, output),
+                                           "eager and incremental contracts agree");
+    Check(!cursor.Next(output), "eager-equivalence terminal state");
+    std::cout << "streaming completed-bar oracle rows=50000\n";
+}
+
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); }); }

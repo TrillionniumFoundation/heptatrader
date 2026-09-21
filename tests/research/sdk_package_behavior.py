@@ -50,6 +50,19 @@ int main() {
     std::ostringstream barCsv; WriteBarsCsv(barCsv, {first, second, third});
     std::istringstream barInput(barCsv.str()); const auto restored = ReadBarsCsv(barInput);
     Require(restored.size() == 3 && restored[2].close == 101 && restored[2].endUs == 30);
+    // Read the installed data API incrementally and consume it through the
+    // installed strategy API, not through a source-tree include fallback.
+    std::istringstream completedInput(barCsv.str()); BarCsvReader completedReader(completedInput, 3);
+    MovingAverageForecast streamedStrategy(1, 2); Forecast streamedForecast;
+    Bar completed;
+    Require(completedReader.Next(completed) && !streamedStrategy.ObserveCompletedBar(completed, 100, streamedForecast));
+    Require(completedReader.Next(completed) && streamedStrategy.ObserveCompletedBar(completed, 110, streamedForecast) &&
+            streamedForecast.direction == 1 && streamedForecast.observedAtUs == 110);
+    completed.endUs = 999; // The cursor's validation state cannot borrow output.
+    Require(completedReader.Next(completed) && streamedStrategy.ObserveCompletedBar(completed, 120, streamedForecast) &&
+            streamedForecast.direction == -1 && streamedForecast.observedAtUs == 120);
+    Require(!completedReader.Next(completed) && !completedReader.Next(completed) &&
+            completedReader.RowsRead() == 3 && completed.endUs == 30);
     std::istringstream tickInput("instrument,timestamp_us,sequence,price,volume\nTEST.FUT,0,1,100,0\nTEST.FUT,1,2,101,1");
     TickCsvReader streamReader(tickInput, 2); Tick streamed;
     Require(streamReader.Next(streamed) && streamed.sequence == 1 && streamed.volume == 0);
