@@ -210,21 +210,28 @@ Tick CumulativeVolumeDecoder::Decode(const Tick& tick, const std::string& day) {
     lastInput_ = tick; lastOutput_ = result; day_ = day; initialized_ = true;
     return result;
 }
-std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows) {
+TickCsvReader::TickCsvReader(std::istream& input, std::size_t maxRows)
+    : input_(input), maxRows_(maxRows) {
     Require(maxRows > 0, "RESEARCH_CSV_ROW_LIMIT_INVALID");
     std::string line;
-    Require(ReadBoundedLine(input, line), "RESEARCH_CSV_HEADER_MISSING");
+    Require(ReadBoundedLine(input_, line), "RESEARCH_CSV_HEADER_MISSING");
     StripCR(line);
     Require(line == "instrument,timestamp_us,sequence,price,volume", "RESEARCH_CSV_HEADER_INVALID");
-    std::vector<Tick> ticks;
-    while (ReadBoundedLine(input, line)) {
+}
+bool TickCsvReader::Next(Tick& output) {
+    Require(!failed_, "RESEARCH_CSV_READER_FAILED");
+    if (finished_) return false;
+    try {
+        std::string line;
+        if (!ReadBoundedLine(input_, line)) { finished_ = true; return false; }
         StripCR(line);
-        Require(ticks.size() < maxRows, "RESEARCH_CSV_ROW_LIMIT");
+        Require(rowsRead_ < maxRows_, "RESEARCH_CSV_ROW_LIMIT");
         std::vector<std::string> cells;
         std::size_t begin = 0;
         for (;;) {
             const auto end = line.find(',', begin);
             cells.push_back(line.substr(begin, end == std::string::npos ? end : end - begin));
+            Require(cells.size() <= 5, "RESEARCH_CSV_FIELD_COUNT");
             if (end == std::string::npos) break;
             begin = end + 1;
         }
@@ -235,8 +242,21 @@ std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows) {
         std::istringstream number(cells[3]); number.imbue(std::locale::classic());
         number >> std::noskipws >> tick.price;
         Require(!number.fail() && number.peek() == std::char_traits<char>::eof(), "RESEARCH_CSV_PRICE_INVALID");
-        ValidateTick(tick); ticks.push_back(tick);
+        ValidateTick(tick);
+        using std::swap;
+        swap(output, tick);
+        ++rowsRead_;
+        return true;
+    } catch (...) {
+        failed_ = true;
+        throw;
     }
+}
+std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows) {
+    TickCsvReader reader(input, maxRows);
+    std::vector<Tick> ticks;
+    Tick tick;
+    while (reader.Next(tick)) ticks.push_back(std::move(tick));
     return ticks;
 }
 void WriteTicksCsv(std::ostream& output, const std::vector<Tick>& ticks) {

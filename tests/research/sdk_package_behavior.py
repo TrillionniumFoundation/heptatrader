@@ -50,6 +50,12 @@ int main() {
     std::ostringstream barCsv; WriteBarsCsv(barCsv, {first, second, third});
     std::istringstream barInput(barCsv.str()); const auto restored = ReadBarsCsv(barInput);
     Require(restored.size() == 3 && restored[2].close == 101 && restored[2].endUs == 30);
+    std::istringstream tickInput("instrument,timestamp_us,sequence,price,volume\nTEST.FUT,0,1,100,0\nTEST.FUT,1,2,101,1");
+    TickCsvReader streamReader(tickInput, 2); Tick streamed;
+    Require(streamReader.Next(streamed) && streamed.sequence == 1 && streamed.volume == 0);
+    Require(streamReader.Next(streamed) && streamed.sequence == 2 && streamed.price == 101);
+    Require(!streamReader.Next(streamed) && !streamReader.Next(streamed) &&
+            streamReader.RowsRead() == 2 && streamed.sequence == 2);
     MovingAverageForecast strategy(1, 2); Forecast forecast;
     Require(!strategy.OnCompletedBar(first, forecast));
     Require(strategy.OnCompletedBar(second, forecast) && forecast.direction == 1);

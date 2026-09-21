@@ -47,6 +47,34 @@ UNITS [average|fifo]. The optional cost mode defaults to average. Synthetic inpu
 with the default data directory. The research account is not authoritative
 broker state, and EOF cancels remainders rather than inventing liquidation.
 
+## Incremental historical input
+
+The Data export also provides `TickCsvReader(std::istream&, maxRows)`. Use it
+when a historical stream should not be materialized as a vector:
+
+```cpp
+hepta::research::TickCsvReader reader(input, 1000000);
+hepta::research::Tick tick;
+while (reader.Next(tick)) {
+    // Deliver this row to the existing bar/replay pipeline in arrival order.
+}
+```
+
+The caller owns `input` and must keep it alive; the cursor is non-copyable and
+thread-affine. The parser keeps at most one bounded row, not the input history.
+The quota limits total rows, not just simultaneous storage. EOF leaves `tick`
+unchanged; malformed data, quota exhaustion and I/O errors throw and permanently
+fail that cursor, even when the caller clears the underlying stream. Successful
+row counts and prior output are unchanged on a rejected row. `ReadTicksCsv` stays
+available for callers that explicitly need a complete vector.
+
+The installed CLI uses this streaming path with the existing million-row quota.
+Its valid-input numeric output, duplicate handling, execution causality and EOF
+order treatment are unchanged. A late error cannot produce a successful summary;
+nonzero exit means the invocation's partial stdout must be discarded. This API
+does not add a broker feed, recovery store, background thread or trading authority.
+The relocated external C++11 consumer calls the installed streaming symbols.
+
 ## Version, source identity and compatibility
 
 The repository VERSION is the sole release-label source. CMake's numeric package

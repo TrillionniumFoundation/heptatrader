@@ -40,8 +40,9 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("invalid strategy or unit bounds");
         std::ifstream tickFile(argv[1]), sessionFile(argv[2]);
         if (!tickFile || !sessionFile) throw std::runtime_error("cannot open research input");
-        const auto ticks = ReadTicksCsv(tickFile);
-        if (ticks.empty()) throw std::invalid_argument("empty tick dataset");
+        TickCsvReader input(tickFile);
+        Tick tick;
+        if (!input.Next(tick)) throw std::invalid_argument("empty tick dataset");
         const auto schedule = ReadSessionsCsv(sessionFile);
         BarBuilder builder(argv[3], period, schedule);
         MovingAverageForecast strategy(static_cast<std::size_t>(fast), static_cast<std::size_t>(slow));
@@ -51,7 +52,9 @@ int main(int argc, char** argv) {
         std::uint64_t orders = 0, fills = 0, forecasts = 0;
         std::cout.imbue(std::locale::classic());
         std::cout << std::setprecision(17) << "timestamp_us,order_id,quantity,price,fee\n";
-        for (const auto& tick : ticks) {
+        // Consume one checked row at a time. Historical input size does not
+        // become a retained vector; match/strategy/ledger bounds remain intact.
+        do {
             // Match previously submitted orders first. A newly closed-bar
             // forecast cannot consume this tick, including same-timestamp data.
             for (const auto& event : matcher.OnTick(tick)) {
@@ -78,13 +81,15 @@ int main(int argc, char** argv) {
             order.side = delta > 0 ? 1 : -1; order.quantity = delta > 0 ? delta : -delta;
             order.limitPrice = tick.price;
             matcher.Submit(order); pending = order.orderId;
-        }
+        } while (input.Next(tick));
         // EOF is a real boundary, not a fictional next-session tick. Positions
         // remain marked, while ALL resting orders receive terminal treatment.
-        const auto finalEvents = matcher.Finish(ticks.back().timestampUs);
+        // Next leaves tick unchanged at clean EOF. Any late parse/I/O failure
+        // exits without this success summary; partial output is not a result.
+        const auto finalEvents = matcher.Finish(tick.timestampUs);
         if (!matcher.Finished() || matcher.ActiveOrders() != 0)
             throw std::logic_error("replay finalization left active orders");
-        const auto account = ledger.Mark(ticks.back().price);
+        const auto account = ledger.Mark(tick.price);
         std::cout << "{\"model\":\"offline-last-trade-liquidity-v1\",\"forecasts\":" << forecasts
                   << ",\"orders\":" << orders << ",\"fills\":" << fills
                   << ",\"position\":" << account.quantity << ",\"fees\":" << account.fees

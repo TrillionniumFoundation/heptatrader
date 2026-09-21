@@ -80,6 +80,23 @@ not a guarantee of continuous wall-clock/session coverage.
 
 Tick, session and completed-bar parsing bound rows and line lengths, use the
 classic numeric locale, and reject non-finite values, extra fields and overflow.
+`TickCsvReader` consumes the header once and exposes one validated row per
+`Next(Tick&)`. It retains no tick history, requires no seekable input, and defaults
+to the existing 1,000,000-row work quota with a 4,096-byte line bound. A caller may
+supply another positive row quota explicitly. The borrowed stream must outlive
+the non-copyable, thread-affine cursor. `RowsRead()` counts successful rows only.
+Clean EOF returns false repeatedly without changing the output tick. Parse,
+quota and I/O failures leave output/count unchanged and permanently fail that
+cursor; clearing or seeking the underlying stream cannot resume it after an error.
+`ReadTicksCsv` remains the eager vector API and delegates to this same decoder.
+
+The replay CLI now processes rows incrementally, retaining only its existing
+bounded bar/strategy/order/fill state rather than the entire tick input. It still
+requires at least one valid tick and retains the same row quota and matching
+semantics. A late input error returns a nonzero exit without an EOF success
+summary: consumers must discard partial stdout from any failed invocation.
+Streaming does not make an incomplete run successful or authenticate feed data.
+
 `ReadBarsCsv`/`WriteBarsCsv` use this exact single-instrument schema:
 
 ```text

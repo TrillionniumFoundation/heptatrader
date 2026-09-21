@@ -6,6 +6,7 @@
 #include <limits>
 #include <map>
 #include <sstream>
+#include <type_traits>
 using namespace hepta::research;
 namespace {
 SessionWindow Window(std::int64_t a, std::int64_t b, const std::string& day) {
@@ -49,6 +50,86 @@ void SessionsAndBars() {
     Throws([&] { vol.Push(T(2, 2, 1, 1), out); });
     Check(vol.Current(partial) && partial.volume == max && partial.tickCount == 1, "overflow atomicity");
     vol.Push(T(2, 2, 1, 0), out); Check(vol.Current(partial) && partial.tickCount == 2, "rejected input did not consume sequence");
+}
+// Generates a non-seekable stream lazily; neither the fixture nor the reader
+// has a vector of historical ticks. Underflow exposes at most one row.
+class GeneratedTickBuffer : public std::streambuf {
+public:
+    explicit GeneratedTickBuffer(std::size_t rows) : rows_(rows) {
+        line_ = "instrument,timestamp_us,sequence,price,volume\n";
+        setg(&line_[0], &line_[0], &line_[0] + line_.size());
+    }
+    std::size_t Produced() const { return produced_; }
+protected:
+    int_type underflow() override {
+        if (gptr() < egptr()) return traits_type::to_int_type(*gptr());
+        if (produced_ == rows_) return traits_type::eof();
+        ++produced_;
+        line_ = "TEST.FUT," + std::to_string(produced_ - 1) + "," +
+                std::to_string(produced_) + ",100,1\n";
+        setg(&line_[0], &line_[0], &line_[0] + line_.size());
+        return traits_type::to_int_type(*gptr());
+    }
+private:
+    std::size_t rows_, produced_ = 0;
+    std::string line_;
+};
+void StreamingCsv() {
+    static_assert(!std::is_copy_constructible<TickCsvReader>::value,
+                  "one stream cursor cannot be copied");
+    static_assert(!std::is_move_constructible<TickCsvReader>::value,
+                  "moving a borrowed cursor must not leave a second live cursor");
+    const std::string header = "instrument,timestamp_us,sequence,price,volume\n";
+    Tick output = T(900, 900, 999, 7);
+    std::istringstream empty(header); TickCsvReader noRows(empty, 1);
+    Check(!noRows.Next(output) && !noRows.Next(output) && noRows.RowsRead() == 0 &&
+          output.sequence == 900, "empty EOF is stable and leaves output unchanged");
+    std::istringstream good("instrument,timestamp_us,sequence,price,volume\r\nA,0,1,100,0\r\nA,1,2,101,2");
+    TickCsvReader exact(good, 2);
+    Check(exact.Next(output) && output.sequence == 1 && output.volume == 0, "CRLF streaming row");
+    Check(exact.Next(output) && output.sequence == 2 && output.price == 101, "unterminated final row");
+    Check(!exact.Next(output) && exact.RowsRead() == 2 && output.sequence == 2,
+          "exact row quota allows clean EOF, not an extra row");
+    for (const auto& bad : {std::string("A,1,2,nan,1\n"), std::string(4097, 'x') + "\n",
+                            std::string("A,1,2,100,-1\n"), std::string("\n")}) {
+        std::istringstream input(header + "A,0,1,100,1\n" + bad + "A,2,3,102,1\n");
+        TickCsvReader reader(input);
+        Check(reader.Next(output), "valid prefix is readable without parsing the suffix");
+        Throws([&] { reader.Next(output); });
+        Check(output.sequence == 1 && output.price == 100 && reader.RowsRead() == 1,
+              "malformed/oversized input cannot publish a partial tick or advance row count");
+        input.clear(); const auto position = input.tellg();
+        bool poisoned = false;
+        try { reader.Next(output); }
+        catch (const std::invalid_argument& e) {
+            poisoned = std::string(e.what()) == "RESEARCH_CSV_READER_FAILED";
+        }
+        Check(poisoned && input.tellg() == position && reader.RowsRead() == 1,
+              "clearing a stream cannot skip a failed row and resume the cursor");
+    }
+    std::istringstream over(header + "A,0,1,100,1\nA,1,2,101,1\n");
+    TickCsvReader quota(over, 1); Check(quota.Next(output), "first quota row");
+    Throws([&] { quota.Next(output); }); Throws([&] { quota.Next(output); });
+    Check(quota.RowsRead() == 1 && output.sequence == 1, "quota rejection is atomic and permanent");
+    std::istringstream broken(header + "A,0,1,100,1\n"); TickCsvReader io(broken);
+    Check(io.Next(output), "I/O prefix");
+    broken.setstate(std::ios::badbit); Throws([&] { io.Next(output); });
+    broken.clear(); Throws([&] { io.Next(output); });
+    Check(io.RowsRead() == 1 && output.sequence == 1, "I/O error is not successful EOF");
+    std::istringstream wrong(header);
+    Throws([&] { TickCsvReader invalid(wrong, 0); });
+    Check(wrong.tellg() == 0, "invalid quota does not consume the header");
+    GeneratedTickBuffer source(50000); std::istream stream(&source);
+    TickCsvReader incremental(stream, 50000);
+    Check(source.Produced() == 0, "constructor reads only the header");
+    for (std::size_t i = 1; i <= 50000; ++i) {
+        Check(incremental.Next(output) && output.sequence == i &&
+              output.timestampUs == static_cast<std::int64_t>(i - 1) && output.price == 100 &&
+              incremental.RowsRead() == i && source.Produced() == i,
+              "incremental read must not consume a future row or retain the input history");
+    }
+    Check(!incremental.Next(output) && !incremental.Next(output) && output.sequence == 50000,
+          "non-seekable stream completes exactly once");
 }
 void CsvAndCumulative() {
     std::vector<Tick> input{T(0, 1, 1.1000000000000001, 0), T(10, 2, 2.7, 5)};
@@ -348,4 +429,4 @@ void BoundedMeans() {
 }
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); }); }

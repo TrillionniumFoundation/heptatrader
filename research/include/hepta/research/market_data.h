@@ -88,6 +88,26 @@ private:
 
 // Strict portable CSV, not a decoder for ABI-dependent legacy binary dumps.
 // Header: instrument,timestamp_us,sequence,price,volume
+// Incremental reader: retains no tick history and needs no seekable stream.
+// The input must outlive the reader; a cursor cannot be copied or shared between
+// threads. The row quota bounds total work; the existing 4096-byte line limit
+// bounds parser storage. Construction consumes only the header.
+// Next returns false only at clean EOF, leaving output unchanged. A malformed
+// row, quota breach or I/O error leaves output/RowsRead unchanged and poisons
+// this cursor: clearing the underlying stream cannot silently skip bad input.
+class TickCsvReader {
+public:
+    explicit TickCsvReader(std::istream& input, std::size_t maxRows = 1000000);
+    TickCsvReader(const TickCsvReader&) = delete;
+    TickCsvReader& operator=(const TickCsvReader&) = delete;
+    bool Next(Tick& output);
+    std::size_t RowsRead() const { return rowsRead_; }
+private:
+    std::istream& input_;
+    std::size_t maxRows_, rowsRead_ = 0;
+    bool finished_ = false, failed_ = false;
+};
+// Eager compatibility helper, implemented using the same incremental decoder.
 std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows = 1000000);
 void WriteTicksCsv(std::ostream& output, const std::vector<Tick>& ticks);
 SessionSchedule ReadSessionsCsv(std::istream& input, std::size_t maxRows = 100000);
