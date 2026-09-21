@@ -244,11 +244,19 @@ Three different defects are distinguished:
   excludes those exact control event types from command indexing while retaining
   ledger bytes and hot owner/fence state. Ordinary pre-intent `reject` events
   still retain command identity and default to the place operation, as in native
-  recovery. The wire/index format and strict V2 reader remain unchanged.
+  recovery. Installed-process validation then exposed a second independent
+  producer: simulator `agent:<owner>` status callbacks carry `sim-status-*`
+  IDs, not mutation IDs. Those receipts remain in the ledger and simulator
+  position/order-watermark checkpoint, but are not indexed as new commands.
+  Historical `agent:` mutation events remain supported. A `place_sent` receipt
+  marked `activation_pending` also remains uncertain until explicit activation,
+  matching native recovery rather than prematurely acknowledging the command.
+  The wire/index format and strict V2 reader remain unchanged.
 
-The regression uses production-shaped independent terminal IDs, repeated seals,
-control-state retention, byte-identical legacy export, rebase and pre-intent
-rejections. Its failures were reproduced before the projector repair. Corrupt
+The regression uses production-shaped independent terminal and simulator status
+IDs, pending activation, repeated seals, preserved simulator positions and order
+watermarks, control-state retention, byte-identical legacy export, rebase and
+pre-intent rejections. The failures were reproduced before their repairs. Corrupt
 or previously malformed generations are still rejected, not silently adopted;
 this change does not repair or migrate a deployed host's existing generation.
 

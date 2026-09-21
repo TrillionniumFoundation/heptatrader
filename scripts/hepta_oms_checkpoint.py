@@ -156,6 +156,10 @@ def _status(event: dict[str, Any], operation: str, prior: str = "unknown") -> st
         return "uncertain"
     if kind == "cancel" and state == "cancel_sent":
         return "accepted"
+    # A simulator placement is not accepted until the explicit activation
+    # receipt, matching ApplyRecoveredPlaceReceiptLocked in native recovery.
+    if kind == "place_sent" and state == "activation_pending":
+        return "uncertain"
     if kind in {"place_sent", "place_activated", "flatten_sent", "flatten_noop"}:
         return "accepted"
     if kind in {"execution_command_resolved", "cancel_command_resolved"}:
@@ -182,6 +186,13 @@ def _update_command(commands: dict[tuple[str, str, str], dict[str, Any]],
         "session_owner_fence_release", "order_owner_reconciled_terminal",
         "paper_terminal_fence", "execution_projection_resolved",
     }:
+        return
+    # Current simulator callbacks use agent:<owner> with independent
+    # sim-status-* IDs. Native command recovery accepts agent.tool: only;
+    # these status receipts belong to the simulator state projection, not
+    # the mutation index. Retain historical agent: mutation-event support.
+    if (event.get("event") == "status" and
+            event.get("source", "").startswith("agent:")):
         return
     key = _key(event)
     if not all(key):

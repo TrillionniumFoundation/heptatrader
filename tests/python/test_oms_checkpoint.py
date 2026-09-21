@@ -191,6 +191,67 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertTrue(all(not record["durable_mutation_intent"] for record in records.values()))
         rotation.verify_generation(self.store, journal=self.journal)
 
+    def test_simulator_status_receipts_preserve_state_but_not_command_identity(self) -> None:
+        import hepta_oms_lifecycle as rotation
+        self.store = Path(str(self.journal) + ".generations")
+        values = [
+            event("order_intent", "placed", "hash-place", correlation="corr-place"),
+            event("place_send_attempt", "placed", "hash-place", correlation="corr-place"),
+            event("place_sent", "placed", "hash-place", order_id=1000000, status="activation_pending"),
+            event("place_activated", "placed", "hash-place", order_id=1000000, status="submitted"),
+            event("status", "sim-status-1000000-Submitted", "", order_id=1000000,
+                  status="Submitted", source="agent:agent-a"),
+            event("status", "sim-status-1000000-Filled", "", order_id=1000000,
+                  status="Filled", source="agent:agent-a"),
+            event("order_owner_reconciled_terminal", "order-terminal-1000000", "",
+                  status="terminal", order_id=1000000),
+        ]
+        for value in values:
+            value["venue"], value["account"] = "SIMULATOR", "SIM"
+        values[4]["qty"] = 0.0
+        self.write_events(values)
+        expected_ledger = self.journal.read_bytes()
+        first = rotation.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(first["command_records"], 1)
+        generation = self.store / first["generation"]
+        rows = (generation / "runtime-command-index.tsv").read_bytes().splitlines(True)
+        self.assertEqual([rotation._runtime_row(row)[1]["command_id"] for row in rows], ["placed"])
+        hot = rotation._read_hot(generation, 1024 * 1024, 1024, 262144)
+        state = rotation._simulator_checkpoint_from_hot(hot)
+        self.assertEqual(state["positions"], {"EUR.USD": 10.0})
+        self.assertEqual(state["admitted_orders"], 1)
+        self.assertEqual(state["max_order_id"], 1000000)
+        # Re-reading the parent must not encounter empty-operation status rows.
+        second = rotation.seal_generation(self.journal, self.store, stopped=True)
+        self.assertEqual(second["command_records"], 1)
+        output = self.root / "simulator-export.jsonl"
+        rotation.export_legacy(self.journal, self.store, output)
+        self.assertEqual(output.read_bytes(), expected_ledger)
+        rotation.verify_generation(self.store, journal=self.journal)
+
+    def test_pending_activation_stays_uncertain_until_explicit_activation(self) -> None:
+        import hepta_oms_lifecycle as rotation
+        self.store = Path(str(self.journal) + ".generations")
+        values = [event("order_intent", "pending", "hash-pending"),
+                  event("place_send_attempt", "pending", "hash-pending"),
+                  event("place_sent", "pending", "hash-pending", order_id=101,
+                        status="activation_pending")]
+        self.write_events(values)
+        manifest = lifecycle.build_generation(self.journal, self.store, stopped=True)
+        generation = self.store / manifest["generation"]
+        checkpoint = json.loads((generation / "checkpoint.json").read_text())
+        self.assertEqual([record["status"] for record in checkpoint["hot_commands"]], ["uncertain"])
+        self.assertEqual(lifecycle.lookup_command(
+            self.store, "agent-a", "session-a", "pending", "hash-pending")["command_status"], "uncertain")
+        with self.journal.open("a") as stream:
+            stream.write(json.dumps(event("place_activated", "pending", "hash-pending",
+                                          order_id=101, status="submitted"),
+                                    sort_keys=True, separators=(",", ":")) + "\n")
+        sealed = rotation.seal_generation(self.journal, self.store, stopped=True)
+        rows = (self.store / sealed["generation"] / "runtime-command-index.tsv").read_bytes().splitlines(True)
+        self.assertEqual([rotation._runtime_row(row)[1]["status"] for row in rows], ["accepted"])
+        rotation.verify_generation(self.store, journal=self.journal)
+
     def test_current_and_historical_agent_source_namespaces_are_indexed(self) -> None:
         values = [
             event("order_intent", "current", "hash-current"),
