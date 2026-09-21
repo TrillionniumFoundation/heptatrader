@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 
@@ -455,6 +456,10 @@ def main() -> None:
         fifo_summary = json.loads(fifo_output.splitlines()[-1])
         if fifo_summary.get("cost_basis") != "fifo" or fifo_summary.get("equity") != summary.get("equity"):
             raise RuntimeError("installed CLI lost its explicit FIFO accounting contract")
+        # Run the same complete input/failure matrix against the relocated
+        # installed executable; no source-tree executable or fallback is used.
+        run([sys.executable, str(source.parent / "tests/research/cli_behavior.py"),
+             str(replay[0]), str(ticks[0].parent)])
         # Missing capabilities and mismatching versions must not become stubs.
         for name, request, expected in (
             ("native", "find_package(HeptaResearch CONFIG REQUIRED COMPONENTS NativeClient)", "NativeClient"),

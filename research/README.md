@@ -203,7 +203,7 @@ Select ONE layout explicitly. Column indices are zero-based:
 
 IMMSG column 1 must be `IMMSG`; its local receipt column 0 is preserved, not used
 as the exchange clock. Clock syntax is exactly `HH:MM:SS`, or `HHMMSS` for ZS.
-Milliseconds are 0..999 and microseconds 0..999999. ZS fractions remain full
+Milliseconds are 0..999 and microseconds are 0..999999. ZS fractions remain full
 microseconds: they are not truncated to the old millisecond representation.
 The ZS schema requires all 58 columns, including index 57; it does not inherit
 the original reader's shorter length guard. Unknown layouts and extra fields
@@ -427,3 +427,141 @@ clock/counter/price oracle across daily resets. The installed/relocated external
 C++11 consumer calls all three profiles through the exported Data library,
 passes actual delayed observations to the existing Strategy library, then
 merges and round-trips portable bars. No previous test or assertion is removed.
+
+## Runnable legacy import and completed-bar forecasts
+
+The existing installed `hepta-research-replay` executable now exposes the seven
+selected legacy layouts through the SAME Data and Strategy libraries. Its
+original positional normalized-tick replay and output remain unchanged. There
+is no second importer library, matching engine, native transport or live-order
+path, and no source-tree-only replacement for the installed executable.
+
+### Tick import into the existing replay
+
+```sh
+hepta-research-replay --import-legacy-ticks \
+  Immsg35 raw-ticks.csv row-clocks.csv sessions.csv TEST.FUT \
+  baseline headerless 1000000 > normalized.candidate.csv && \
+  mv normalized.candidate.csv normalized.csv
+
+hepta-research-replay normalized.csv sessions.csv TEST.FUT 60000000 5 20 1 fifo
+```
+
+Select exactly `Hepta32`, `Immsg34`, `Immsg35` or `Zs58`, and exactly one bound
+instrument per invocation. `baseline` assigns zero incremental volume to the
+first cumulative observation; `day-start` counts that first value and requires
+the caller's guarantee of complete day-start capture. Select `headerless` or
+`header` explicitly; the latter uses the existing reader's positional header
+checks. No column count, filename or trading-day label selects a clock/layout.
+The SDK's mixed-instrument API remains available separately.
+
+`row-clocks.csv` has this exact header and one entry per source DATA row:
+
+```csv
+row,instrument,trading_day,action_day,utc_offset_minutes
+1,TEST.FUT,20260921,20260920,540
+```
+
+The example is an explicitly declared synthetic night-session clock, not an
+exchange-calendar assertion. Supply the independently verified civil date and
+local-minus-UTC offset for EVERY row, together with the existing UTC session
+CSV. The row, instrument and trading-day bindings must match the source. A
+source ActionDay in `Immsg35` must agree as well. Other layouts cannot obtain
+ActionDay from their TradingDay or from the machine timezone. Repeated source
+rows retain distinct source-row sequences with zero repeated cumulative-volume
+increase; these sequences are not authenticated exchange event identifiers.
+ZS microseconds are retained without millisecond truncation.
+
+Success emits only the existing portable five-column Tick CSV. Turnover,
+open interest, depth and original source columns are not in that portable
+schema: retain the source, clock evidence and session files separately. This is
+an explicit projection for research, not a lossless legacy archive migration.
+The unchanged replay consumes that output with its existing next-tick and
+terminal-order semantics; importing never constitutes broker authorization.
+
+### Bar forecasts without fabricated ticks or fills
+
+```sh
+hepta-research-replay --forecast-legacy-bars \
+  Futures13 raw-bars.csv bar-evidence.csv sessions.csv TEST.FUT 5 20 1000000 \
+  > forecasts.candidate.csv && mv forecasts.candidate.csv forecasts.csv
+```
+
+Select `Futures11`, `Futures13` or `Stock7`. This CLI accepts **headerless** source
+bars only; explicit custom-header selection remains available in the Data SDK.
+The existing 60-second start-labelled futures and 180-second end-labelled stock
+profiles, civil-1601 futures timestamps, and per-bar versus cumulative amounts
+are unchanged. Arbitrary periods/epochs are not inferred or silently rescaled.
+`FAST` and `SLOW` select the existing illustrative moving-average calculation;
+this is not a port of every historical strategy or a performance recommendation.
+
+`bar-evidence.csv` has this exact header:
+
+```csv
+row,instrument,source_civil_day,utc_offset_minutes,tick_count,observed_at_us,complete
+```
+
+Each entry binds the corresponding one-based source DATA row and instrument,
+its actual civil day, explicit signed UTC offset, positive independently known
+tick count, actual declared research availability in UTC microseconds, and
+completion `1`. A false/unknown completion or missing evidence rejects the row.
+The SDK checks availability at or after the bar end and preserves its monotonic
+sequence. Tick count is a checked unsigned 64-bit value; it is not inferred from
+volume, and it does not determine liquidity. The metadata file is a caller
+assertion, not a cryptographic certificate of real historical arrival times.
+
+Output is a research forecast CSV with exactly:
+
+```csv
+instrument,trading_day,bar_begin_us,bar_end_us,observed_at_us,direction
+```
+
+Only changed directions from the existing strategy are emitted, including a
+transition to zero. The strategy uses `ObserveCompletedBar` at the supplied
+availability time, not an earlier period boundary. A valid warm-up-only dataset
+may produce just the header. An empty source is an error. Bars are not expanded
+into fictional ticks, fills, equity or authoritative positions. Any downstream
+trading intent must independently use the existing NativeStrategyClient -> Tool
+Gateway -> Execution Service boundary and its ordinary authorization rules.
+
+### Validation, output storage and acceptance
+
+Both modes require an exact metadata header and exactly one matching metadata
+row per source row: missing, extra, reordered, conflicting or malformed evidence
+fails the whole invocation. Sidecar lines are bounded to 4096 bytes and fields
+to 128 printable unquoted ASCII bytes; CRLF and a final line without LF are
+accepted. Offsets are integer minutes in [-840,840]; there is no DST/calendar
+fallback. `MAX_ROWS` defaults to 1,000,000 and must be 1..10,000,000. Session,
+source-field and SDK state validation remain in the existing Data library.
+
+These two new modes validate ALL input and evidence before publishing any
+stdout. Parsed rows are incremental; output is spooled to a temporary file,
+using bounded RAM plus disk proportional to the encoded output. A late source,
+evidence, quota, session, parsing or spool-write/flush failure returns nonzero
+without publishing even a CSV header. No unbounded history vector is added.
+
+This is not a durable artifact transaction. After validation, a write failure,
+broken output pipe or process crash during final stdout delivery can leave a
+prefix; callers MUST require exit zero. Stage output to a distinct candidate
+file and publish it only after success, as above, preserving the original
+inputs. The example rename does not certify fsync/power-loss behavior. Never
+interpret a file's presence, a CSV prefix or a research forecast as execution
+success. These offline commands do not stream live signals or persist a
+strategy execution outbox.
+
+The existing CLI behavior test now exercises all seven layouts with independent
+clock/quantity/forecast oracles, header and first-volume choices, actual
+normalized replay, subsecond and night-session semantics, 10,000 streamed raw
+rows, missing/late-corrupt evidence and input, quota failures, and real Linux
+output/spool-storage failures. The existing SDK installation test runs that SAME
+matrix against the relocated installed executable, retaining the original
+external C++11 consumer, component/version rejections and default CLI checks.
+No existing test, target, installed-header path, production installation set,
+Gateway/Execution permission or venue status is removed or weakened.
+
+These commands close selected runnable-consumer gaps, not all historical
+API/ABI, BIN/XML/database, queue-position or external-user-strategy equivalence.
+The retained HeptaDLL source and alternate integration branches remain intact;
+CTP remains deferred behind XT and source archival still requires actual
+consumer/authorization disposition. Exact-head CI observations belong on PR #107,
+not in an unconditional source-code success declaration.
