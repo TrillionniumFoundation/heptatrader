@@ -6,6 +6,7 @@
 #include <cassert>
 #include <chrono>
 #include <condition_variable>
+#include <fcntl.h>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -416,6 +417,52 @@ void TestUnixFeedIsolationGapIdentityAndWorkers()
     ::unlink(socketPath.c_str());
 }
 
+// Exercise both immediate shutdown and the return-to-idle path on the same
+// server object. The condition-variable stop predicate must be published under
+// the queue mutex; an atomic flag plus notification alone can strand a worker.
+// This is behavioral stress, not proof that every scheduler interleaving ran.
+void TestRepeatedIdleWorkerShutdown()
+{
+    const std::string socketPath = "/tmp/hepta-events-idle-stop-" +
+        std::to_string(::getpid()) + ".sock";
+    const ExecutionServiceIdentity identity = Identity("idle-stop-epoch", 31);
+    CountingSource source(8, identity.serviceEpoch);
+    source.Publish(Event("unconsumed-idle-stop", 1002));
+    const auto gate = ReadyGate();
+    UnixExecutionEventFeedServer server(source, identity, gate);
+    const std::set<std::uint32_t> uid{
+        static_cast<std::uint32_t>(::geteuid())};
+    std::string reason;
+    for (unsigned int cycle = 0; cycle < 24; ++cycle)
+    {
+        const std::size_t workers = static_cast<std::size_t>(1) << (cycle % 4);
+        const bool ready = cycle % 3 != 0;
+        gate->ready.store(ready);
+        const int ownedFd = ActivatedSocket(socketPath);
+        assert(server.StartFromFd(ownedFd, uid, reason, 8192, 500,
+            workers, workers + 2));
+        assert(server.IsRunning() == ready);
+        if (cycle % 3 == 2)
+        {
+            UnixExecutionEventFeedClient client(socketPath, 500, 32768, uid);
+            const auto result = client.GetServiceIdentity();
+            assert(result.status == ExecutionEventReadStatus::ServiceIdentity);
+            assert(SameIdentity(result.serviceIdentity, identity));
+        }
+        // Starting Stop on another thread also exercises publication while
+        // newly created workers are acquiring their queue lock for the first time.
+        std::thread stopper([&]() { server.Stop(); });
+        stopper.join();
+        assert(!gate->ready.load() && !server.IsRunning());
+        server.Stop(); // Repeated Stop must not leave joinable workers or an FD.
+        errno = 0;
+        assert(::fcntl(ownedFd, F_GETFD) == -1 && errno == EBADF);
+        assert(source.ReadsFor("unconsumed-idle-stop") == 0);
+        assert(source.Pending("unconsumed-idle-stop") == 1);
+        assert(::unlink(socketPath.c_str()) == 0);
+    }
+}
+
 void TestEventFeedPeerCredentialRejection()
 {
     const std::uint32_t currentUid = static_cast<std::uint32_t>(::geteuid());
@@ -702,6 +749,7 @@ int main()
 {
     TestProtocolV2Strictness();
     TestUnixFeedIsolationGapIdentityAndWorkers();
+    TestRepeatedIdleWorkerShutdown();
     TestEventFeedPeerCredentialRejection();
     TestActivatedBacklogAndNotReadyNeverReadSource();
     TestStopRejectsAcceptedWorkerBacklog();
@@ -713,6 +761,7 @@ int main()
               << " relay_gap_resync_latch=verified"
               << " relay_identity_reset=verified"
               << " peer_rejection_no_consume=verified"
+              << " idle_worker_stop_restart_24_cycles=verified"
               << " stale_event_identity_no_read=verified"
               << " identity_reject_no_cursor_publish=verified"
               << std::endl;
