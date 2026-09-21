@@ -49,6 +49,104 @@ void Strategy() {
     Throws([] { MovingAverageForecast wrong(2, 2); });
     Throws([&] { strategy.OnCompletedBar(B(40, 12), f); });
 }
+// Existing user calculations still implement only the original callback.
+// Observation is a checked entry on that same object, not a replacement ABI.
+struct ObservationProbe : BarStrategy {
+    int calls = 0, direction = 1;
+    bool emit = true, fail = false, wrongInstrument = false;
+    bool OnCompletedBar(const Bar& bar, Forecast& forecast) override {
+        ++calls;
+        forecast.instrument = wrongInstrument ? "OTHER.FUT" : bar.instrument;
+        forecast.observedAtUs = -123; // Callback cannot backdate published output.
+        forecast.direction = direction;
+        if (fail) throw std::runtime_error("probe failure");
+        return emit;
+    }
+};
+void StrategyObservation() {
+    ObservationProbe probe; BarStrategy& entry = probe;
+    Forecast out; out.instrument = "sentinel"; out.observedAtUs = 7; out.direction = -1;
+    const auto unchanged = [&] { Check(out.instrument == "sentinel" && out.observedAtUs == 7 &&
+                                      out.direction == -1, "no partial forecast publication"); };
+    auto bar = B(10, 12);
+    Throws([&] { entry.ObserveCompletedBar(bar, 19, out); });
+    Throws([&] { entry.ObserveCompletedBar(bar, -1, out); });
+    auto partial = bar; partial.complete = false;
+    Throws([&] { entry.ObserveCompletedBar(partial, 125, out); });
+    auto invalid = bar; invalid.high = 0;
+    Throws([&] { entry.ObserveCompletedBar(invalid, 125, out); });
+    Check(probe.calls == 0, "invalid observation rejected before user callback"); unchanged();
+    probe.emit = false; Check(!entry.ObserveCompletedBar(bar, 125, out), "suppressed output"); unchanged();
+    probe.emit = true; probe.fail = true;
+    Throws([&] { entry.ObserveCompletedBar(bar, 125, out); }); unchanged(); probe.fail = false;
+    probe.direction = 2; Throws([&] { entry.ObserveCompletedBar(bar, 125, out); }); unchanged();
+    probe.direction = -2; Throws([&] { entry.ObserveCompletedBar(bar, 125, out); }); unchanged();
+    probe.direction = 1; probe.wrongInstrument = true;
+    Throws([&] { entry.ObserveCompletedBar(bar, 125, out); }); unchanged(); probe.wrongInstrument = false;
+    Check(entry.ObserveCompletedBar(bar, 125, out) && out.observedAtUs == 125 &&
+          out.instrument == bar.instrument && out.direction == 1, "explicit delivery not bar close");
+    probe.direction = 0;
+    Check(entry.ObserveCompletedBar(bar, std::numeric_limits<std::int64_t>::max(), out) &&
+          out.observedAtUs == std::numeric_limits<std::int64_t>::max() && out.direction == 0,
+          "observation keeps exact signed-64-bit boundary without arithmetic");
+
+    MovingAverageForecast delayed(1, 2); BarStrategy& callback = delayed;
+    Check(!callback.ObserveCompletedBar(B(0, 10), 100, out), "delayed warmup");
+    Throws([&] { callback.ObserveCompletedBar(B(10, 12), 19, out); });
+    Check(callback.ObserveCompletedBar(B(10, 12), 125, out) && out.observedAtUs == 125,
+          "invalid future observation did not consume strategy bar");
+    ReplayMatcher matcher("TEST.FUT", Schedule());
+    matcher.OnTick(T(125, 1, 100, 10));
+    auto order = O("delayed-signal", 1); order.submittedAtUs = out.observedAtUs;
+    matcher.Submit(order);
+    Check(matcher.OnTick(T(125, 2, 100, 10)).empty(), "no fill on any same-observation timestamp");
+    Throws([&] { matcher.OnTick(T(124, 3, 100, 10)); });
+    auto events = matcher.OnTick(T(126, 3, 100, 1));
+    Check(events.size() == 1 && events[0].fill.timestampUs == 126, "first later tick may fill");
+    Throws([&] { callback.ObserveCompletedBar(B(10, 12), 130, out); });
+    Check(!callback.ObserveCompletedBar(B(20, 13), 140, out), "existing unchanged-signal behavior");
+    Check(callback.ObserveCompletedBar(B(30, 11), 150, out) && out.direction == -1 &&
+          out.observedAtUs == 150, "delayed reversal remains causal");
+}
+void StrategyObservationOracle() {
+    // Integer-valued prices allow an independent cross-multiplied mean oracle.
+    // Every run has late delivery, suppressed signals, warmup and invalid calls.
+    std::size_t observations = 0;
+    for (int seed = 0; seed < 32; ++seed) for (int fast = 1; fast <= 3; ++fast)
+    for (int slow = fast + 1; slow <= 7; ++slow) {
+        MovingAverageForecast strategy(static_cast<std::size_t>(fast), static_cast<std::size_t>(slow));
+        int lastDirection = 0;
+        std::vector<int> closes;
+        for (int i = 0; i < 64; ++i) {
+            const int price = 10 + (seed * 17 + i * 11) % 19;
+            const auto bar = B(i * 10, price);
+            const std::int64_t observed = 5000 + i * 30 + (seed + i) % 7;
+            Forecast actual; actual.instrument = "unchanged"; actual.observedAtUs = 3; actual.direction = 0;
+            if (i % 11 == 0) Throws([&] { strategy.ObserveCompletedBar(bar, bar.endUs - 1, actual); });
+            closes.push_back(price);
+            bool expected = false; int direction = lastDirection;
+            if (closes.size() >= static_cast<std::size_t>(slow)) {
+                long fastSum = 0, slowSum = 0;
+                for (int j = 0; j < slow; ++j) {
+                    const int value = closes[closes.size() - 1 - static_cast<std::size_t>(j)];
+                    slowSum += value; if (j < fast) fastSum += value;
+                }
+                const long difference = fastSum * slow - slowSum * fast;
+                direction = difference > 0 ? 1 : (difference < 0 ? -1 : 0);
+                expected = direction != lastDirection;
+                lastDirection = direction;
+            }
+            const bool emitted = strategy.ObserveCompletedBar(bar, observed, actual);
+            Check(emitted == expected, "delivery time cannot alter the forecast calculation");
+            if (emitted) Check(actual.instrument == bar.instrument && actual.direction == direction &&
+                               actual.observedAtUs == observed, "forecast uses actual availability");
+            else Check(actual.instrument == "unchanged" && actual.observedAtUs == 3 &&
+                       actual.direction == 0, "warmup/suppression does not publish stale output");
+            ++observations;
+        }
+    }
+    std::cout << "strategy observation oracle cases=" << observations << '\n';
+}
 void NoTickExpiryAndFinish() {
     SessionWindow a, b; a.openUs = 0; a.closeUs = 100; a.tradingDay = "20260921";
     b.openUs = 200; b.closeUs = 300; b.tradingDay = a.tradingDay;
@@ -127,4 +225,4 @@ void ReplayConservation() {
     std::cout << "replay conservation scenarios=" << scenarios << '\n';
 }
 }
-int main() { return Run([] { Matching(); Strategy(); NoTickExpiryAndFinish(); ClockAndRollback(); ReplayConservation(); }); }
+int main() { return Run([] { Matching(); Strategy(); StrategyObservation(); StrategyObservationOracle(); NoTickExpiryAndFinish(); ClockAndRollback(); ReplayConservation(); }); }

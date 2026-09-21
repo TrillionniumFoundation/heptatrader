@@ -67,7 +67,10 @@ int main(int argc, char** argv) {
             Bar completed;
             if (builder.Push(tick, completed) != TickOutcome::ClosedPrevious) continue;
             Forecast forecast;
-            if (!strategy.OnCompletedBar(completed, forecast)) continue;
+            // The closing tick may arrive well after completed.endUs. The
+            // existing matcher owns the monotonic clock; do not backdate the
+            // newly observed signal to the historical candle boundary.
+            if (!strategy.ObserveCompletedBar(completed, tick.timestampUs, forecast)) continue;
             ++forecasts;
             if (!pending.empty()) matcher.Cancel(pending);
             const auto position = ledger.Mark(tick.price).quantity;
@@ -76,7 +79,7 @@ int main(int argc, char** argv) {
             ReplayOrder order;
             order.orderId = "research-" + std::to_string(++orders);
             order.instrument = tick.instrument; order.tradingDay = schedule.At(tick.timestampUs).tradingDay;
-            order.submittedAtUs = tick.timestampUs;
+            order.submittedAtUs = forecast.observedAtUs;
             order.expiresAtUs = schedule.Day(order.tradingDay).closeUs;
             order.side = delta > 0 ? 1 : -1; order.quantity = delta > 0 ? delta : -delta;
             order.limitPrice = tick.price;

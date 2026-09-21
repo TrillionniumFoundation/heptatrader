@@ -59,6 +59,12 @@ int main() {
     MovingAverageForecast strategy(1, 2); Forecast forecast;
     Require(!strategy.OnCompletedBar(first, forecast));
     Require(strategy.OnCompletedBar(second, forecast) && forecast.direction == 1);
+    // New symbol is called through the installed public base type after the
+    // original install prefix is removed; do not compile SDK source here.
+    MovingAverageForecast delayedStrategy(1, 2); BarStrategy& observedStrategy = delayedStrategy;
+    Require(!observedStrategy.ObserveCompletedBar(first, 50, forecast));
+    Require(observedStrategy.ObserveCompletedBar(second, 60, forecast) &&
+            forecast.direction == 1 && forecast.observedAtUs == 60);
     ResearchLedger ledger("TEST.FUT", 1000, 10);
     ResearchFill fill; fill.fillId = "fill-1"; fill.orderId = "order-1"; fill.instrument = "TEST.FUT";
     fill.timestampUs = 12; fill.side = 1; fill.quantity = 2; fill.price = 100; fill.fee = 1;
