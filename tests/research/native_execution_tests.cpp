@@ -206,10 +206,18 @@ InstrumentRef Contract() {
 struct Authorization { std::string commandId, permit; };
 Authorization Preview(const NativeStrategyClient& client, const PreparedOrder& order, const std::string& id) {
     NativeToolClientResult result; std::string reason;
-    Require(client.Preview(order, id, result, reason), "preview transport: " + reason);
+    TypedPreviewAuthorization decoded;
+    Require(client.PreviewAuthorized(order, id, decoded, result, reason), "typed preview: " + reason);
     Require(result.envelope.status == "ok", "preview rejected: " + result.responseJson);
-    Authorization auth{ServiceString(result.envelope.payloadJson, "command_id"),
-                       ServiceString(result.envelope.payloadJson, "preview_permit")};
+    // Independently compare the typed SDK values with the real service payload.
+    // The fixture extractor is an oracle only, no longer a client requirement.
+    Require(decoded.toolName == "risk.preview_order" &&
+            decoded.commandId == ServiceString(result.envelope.payloadJson, "command_id") &&
+            decoded.previewPermit == ServiceString(result.envelope.payloadJson, "preview_permit") &&
+            decoded.serviceEpoch == ServiceString(result.envelope.payloadJson, "service_epoch") &&
+            decoded.permitExpiresAtMs > 0 && decoded.serviceFencingGeneration > 0,
+            "typed preview differs from the real Execution response");
+    Authorization auth{decoded.commandId, decoded.previewPermit};
     Require(TradingToolWireContract::IsCanonicalCommandId(auth.commandId), "service ID is not canonical");
     return auth;
 }
@@ -356,6 +364,12 @@ void TestNativeExecutionLifecycle() {
     PreparedFlatten flatten("EUR.USD");
     Require(client.PreviewFlatten(flatten, "research-actual-preview-flatten", result, reason), reason);
     Require(result.envelope.status != "ok", "unsupported simulator flatten advertised approval");
+    TypedPreviewAuthorization unsupported;
+    unsupported.commandId = auth.commandId; unsupported.previewPermit = auth.permit;
+    Require(!client.PreviewAuthorized(flatten, "research-actual-typed-flatten", unsupported, result, reason) &&
+            unsupported.commandId.empty() && unsupported.previewPermit.empty() &&
+            !result.responseJson.empty() && result.envelope.status != "ok" && !reason.empty(),
+            "typed unsupported flatten retained authority or lost its rejection");
     Require(f.execution->Venue().AdmittedOrderCount() == 2, "unsupported flatten sent an order");
 
     // A normal WATCH session cannot inherit the PAPER proposal or permit.

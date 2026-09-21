@@ -110,6 +110,26 @@ bool NativeStrategyClient::Preview(const PreparedOrder& order, const std::string
         result = NativeToolClientResult(); reason = e.what(); return false;
     }
 }
+bool NativeStrategyClient::PreviewAuthorized(
+    const PreparedOrder& order, const std::string& previewCallId,
+    TypedPreviewAuthorization& authorization, NativeToolClientResult& result,
+    std::string& reason) const {
+    const std::string id = previewCallId;
+    authorization = TypedPreviewAuthorization();
+    if (!Preview(order, id, result, reason)) return false;
+    return TypedToolProtocol::DecodePreviewAuthorization(
+        result.responseJson, "risk.preview_order", authorization, reason);
+}
+bool NativeStrategyClient::PreviewAuthorized(
+    const PreparedFlatten& flatten, const std::string& previewCallId,
+    TypedPreviewAuthorization& authorization, NativeToolClientResult& result,
+    std::string& reason) const {
+    const std::string id = previewCallId;
+    authorization = TypedPreviewAuthorization();
+    if (!PreviewFlatten(flatten, id, result, reason)) return false;
+    return TypedToolProtocol::DecodePreviewAuthorization(
+        result.responseJson, "risk.preview_flatten", authorization, reason);
+}
 bool NativeStrategyClient::Submit(const PreparedOrder& order, const std::string& id,
                                   const std::string& permit, NativeToolClientResult& result,
                                   std::string& reason) const {

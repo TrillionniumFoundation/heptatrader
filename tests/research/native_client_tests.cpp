@@ -3,6 +3,8 @@
 #include <tools/trading_tool_wire_contract.h>
 #include <tool_host/typed_tool_protocol.h>
 #include <cmath>
+#include <algorithm>
+#include <utility>
 #include <limits>
 #include <type_traits>
 #include <cerrno>
@@ -441,7 +443,128 @@ void BorrowedInputTests() {
     std::cout << "borrowed_inputs=PASS direct=24 persisted_operations=3 immutable_records=3 bound_call=3 token_path=2\n";
 }
 
+
+// Synthetic codec fixtures only: these bytes do not authorize an actual service.
+// The real simulator/Gateway fixture separately consumes service-issued values.
+std::string PreviewPayload(const std::vector<std::pair<std::string, std::string>>& fields) {
+    std::string payload = "{";
+    for (const auto& field : fields) {
+        if (payload.size() > 1) payload += ',';
+        payload += '"' + field.first + "\":" + field.second;
+    }
+    return payload + '}';
+}
+std::string PreviewEnvelope(const std::string& payload, const std::string& tool = "risk.preview_order",
+                            TradingToolCallStatus status = TradingToolCallStatus::Ok, long orderId = -1) {
+    TradingToolResult result;
+    result.toolName = tool; result.status = status; result.payloadJson = payload; result.orderId = orderId;
+    return TypedToolProtocol::EncodeResultJson(result);
+}
+void TypedPreviews() {
+    const std::string permit = "sha256:" + std::string(64, 'b');
+    const std::vector<std::pair<std::string, std::string>> fields{
+        {"approved", "true"}, {"preview_permit", '"' + permit + '"'},
+        {"command_id", "\"execution-preview-command-001\""},
+        {"permit_expires_at_ms", "9007199254740993"}, {"single_use", "true"},
+        {"service_epoch", "\"service-epoch-001\""},
+        {"service_fencing_generation", "18446744073709551615"},
+        {"authoritative_preview", "{\"note\":\"\\uD83D\\uDE80\",\"values\":[true,false,null,1.25]}"}};
+    const auto payload = PreviewPayload(fields), json = PreviewEnvelope(payload);
+    TypedPreviewAuthorization authorization; std::string reason;
+    auto Decode = [&](const std::string& raw, const std::string& expected = "risk.preview_order") {
+        return TypedToolProtocol::DecodePreviewAuthorization(raw, expected, authorization, reason);
+    };
+    Check(Decode(json) && reason.empty(), "approved preview decoding");
+    Check(authorization.toolName == "risk.preview_order" && authorization.commandId == "execution-preview-command-001" &&
+          authorization.previewPermit == permit && authorization.permitExpiresAtMs == 9007199254740993LL &&
+          authorization.serviceEpoch == "service-epoch-001" &&
+          authorization.serviceFencingGeneration == std::numeric_limits<std::uint64_t>::max(),
+          "preview integer or identity rounded/discarded");
+    auto Reject = [&](const std::string& raw, const std::string& expected = "risk.preview_order") {
+        Check(Decode(json), "reseed stale authorization");
+        Check(!Decode(raw, expected) && !reason.empty() && authorization.toolName.empty() &&
+              authorization.commandId.empty() && authorization.previewPermit.empty() &&
+              authorization.permitExpiresAtMs == 0 && authorization.serviceEpoch.empty() &&
+              authorization.serviceFencingGeneration == 0, "rejected preview retained authorization");
+    };
+    for (const auto& tool : {std::string("risk.preview_order"), std::string("risk.preview_flatten")}) {
+        Check(Decode(PreviewEnvelope(payload, tool), tool) && authorization.toolName == tool,
+              "both canonical preview operations decode");
+    }
+    Reject(json, "risk.preview_flatten"); Reject(json, "trade.place_order");
+    Reject(PreviewEnvelope(payload, "trade.place_order")); Reject(PreviewEnvelope(payload, "risk.preview_order", TradingToolCallStatus::Ok, 0));
+    for (auto status : {TradingToolCallStatus::Rejected, TradingToolCallStatus::Uncertain,
+                       TradingToolCallStatus::Duplicate, TradingToolCallStatus::PermissionDenied,
+                       TradingToolCallStatus::InvalidTool, TradingToolCallStatus::Error})
+        Reject(PreviewEnvelope(payload, "risk.preview_order", status));
+    for (std::size_t i = 0; i < fields.size(); ++i) {
+        auto missing = fields; missing.erase(missing.begin() + i); Reject(PreviewEnvelope(PreviewPayload(missing)));
+        auto duplicate = fields; duplicate.push_back(fields[i]); Reject(PreviewEnvelope(PreviewPayload(duplicate)));
+    }
+    auto extra = fields; extra.push_back({"future_field", "true"}); Reject(PreviewEnvelope(PreviewPayload(extra)));
+    extra = fields; extra.push_back({"\\u0061pproved", "true"}); Reject(PreviewEnvelope(PreviewPayload(extra)));
+    const std::vector<std::pair<std::size_t, std::string>> invalid{
+        {0,"false"}, {0,"\"true\""}, {0,"1"}, {4,"false"}, {4,"null"},
+        {1,"\"sha256:" + std::string(64, 'g') + "\""}, {1,"\"sha256:" + std::string(64, 'A') + "\""},
+        {1,"\"sha256:" + std::string(63, 'b') + "\""}, {1,"null"},
+        {2,"\"short\""}, {2,"\"execution/command\""}, {2,"\"execution\\u0000command\""},
+        {3,"0"}, {3,"-1"}, {3,"1.0"}, {3,"1e3"}, {3,"01"}, {3,"\"123\""}, {3,"9223372036854775808"},
+        {5,"\"\""}, {5,"\"" + std::string(129,'x') + "\""}, {5,"\"bad\\nservice\""}, {5,"\"bad\\u0000service\""},
+        {6,"0"}, {6,"-1"}, {6,"1.0"}, {6,"1e3"}, {6,"\"1\""}, {6,"18446744073709551616"},
+        {7,"[]"}, {7,"true"}, {7,"\"opaque\""}, {7,"{\"x\":1,\"\\u0078\":2}"}};
+    for (const auto& bad : invalid) {
+        auto changed = fields; changed.at(bad.first).second = bad.second;
+        Reject(PreviewEnvelope(PreviewPayload(changed)));
+    }
+    for (const auto expiry : {1LL, 9007199254740993LL, std::numeric_limits<long long>::max()}) {
+        auto changed = fields; changed[3].second = std::to_string(expiry); changed[6].second = "1";
+        changed[7].second = "null";
+        Check(Decode(PreviewEnvelope(PreviewPayload(changed))) && authorization.permitExpiresAtMs == expiry &&
+              authorization.serviceFencingGeneration == 1, "exact signed expiry/unsigned generation bounds");
+    }
+    auto reversed = fields; std::reverse(reversed.begin(), reversed.end());
+    Check(Decode(" \n\t" + PreviewEnvelope(PreviewPayload(reversed)) + "\r\n"), "JSON field order/whitespace");
+    reversed[5].first = "\\u0063ommand_id"; // Index 5 is original command_id after reversal.
+    Check(Decode(PreviewEnvelope(PreviewPayload(reversed))), "escaped canonical key decoding");
+    for (std::size_t i = 0; i < json.size(); ++i) Reject(json.substr(0, i));
+    Reject(json + "garbage"); Reject(PreviewEnvelope("null")); Reject(PreviewEnvelope("{}"));
+    Reject(std::string(TradingToolWireLimits::MaximumResultEnvelopeBytes() + 1, ' '));
+    auto deep = fields; std::string nested = "null";
+    for (int i = 0; i < 70; ++i) nested = "{\"x\":" + nested + '}';
+    deep[7].second = nested; Reject(PreviewEnvelope(PreviewPayload(deep)));
+    // Borrowed input must be captured before clearing the same output object.
+    authorization.commandId = json; authorization.toolName = "risk.preview_order";
+    Check(TypedToolProtocol::DecodePreviewAuthorization(authorization.commandId, authorization.toolName,
+          authorization, reason) && authorization.previewPermit == permit, "borrowed decoder inputs");
+    reason = json;
+    Check(TypedToolProtocol::DecodePreviewAuthorization(reason, "risk.preview_order", authorization, reason) && reason.empty(),
+          "borrowed diagnostic JSON");
+    reason = "risk.preview_order";
+    Check(TypedToolProtocol::DecodePreviewAuthorization(json, reason, authorization, reason) && reason.empty(),
+          "borrowed expected tool");
+
+    auto config = OutboxConfig(); NativeToolClient native(config); NativeStrategyClient client(native);
+    InstrumentRef contract; contract.symbol = "EUR"; contract.secType = "CASH";
+    contract.exchange = "SIM"; contract.currency = "USD";
+    PreparedOrder order("EUR.USD", contract, "BUY", 1, 1.1, 1.09, 1900000000000LL);
+    PreparedFlatten flatten("EUR.USD"); NativeToolClientResult result;
+    authorization.commandId = "typed-preview-read-001"; authorization.previewPermit = permit;
+    Check(!client.PreviewAuthorized(order, authorization.commandId, authorization, result, reason) &&
+          authorization.commandId.empty() && authorization.previewPermit.empty() && result.responseJson.empty() &&
+          !reason.empty() && reason != "RESEARCH_TOOL_CALL_ID_INVALID", "typed order transport failure/input alias");
+    authorization.commandId = "typed-flatten-read-001"; authorization.previewPermit = permit;
+    Check(!client.PreviewAuthorized(flatten, authorization.commandId, authorization, result, reason) &&
+          authorization.commandId.empty() && result.responseJson.empty() &&
+          !reason.empty() && reason != "RESEARCH_TOOL_CALL_ID_INVALID", "typed flatten transport failure/input alias");
+    authorization.previewPermit = permit; result.responseJson = "stale";
+    Check(!client.PreviewAuthorized(order, "short", authorization, result, reason) &&
+          authorization.previewPermit.empty() && result.responseJson.empty() &&
+          reason == "RESEARCH_TOOL_CALL_ID_INVALID", "typed local rejection clears prior outputs");
+    std::cout << "typed preview codec: exact 64-bit identities, strict schema, truncations, stale-output and alias rejection\n";
+}
+
 void Tests() {
+    TypedPreviews();
     OutboxTests();
     BorrowedInputTests();
     ExitRequests();

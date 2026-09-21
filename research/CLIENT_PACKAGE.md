@@ -198,3 +198,64 @@ client kills after placement/cancellation and an Execution restart require exact
 same-ID results and independently verified single venue-send journal entries.
 A persisted forged flatten permit remains rejected by the service. Installed client linkage/behavior is not evidence of a broker
 connection, host isolation, remote CI completion or LIVE approval.
+
+
+## Typed preview approval, without caller JSON scraping
+
+Both `NativeStrategyClient::PreviewAuthorized` overloads issue exactly one
+ordinary preview call, for `PreparedOrder` or `PreparedFlatten`, then use the
+existing shared result codec to populate `TypedPreviewAuthorization`. Unlike
+raw `Preview` / `PreviewFlatten`, a true return means that an approved, matching,
+structurally valid preview was received. It does **not** mean a mutation was
+sent, an order succeeded, or a stored permit is still usable. False clears the
+typed approval; a transported denial/uncertainty remains in the original result
+for diagnosis. No fallback, automatic retry or mutation is performed.
+
+```cpp
+TypedPreviewAuthorization approval;
+NativeToolClientResult result;
+std::string reason;
+if (!client.PreviewAuthorized(proposal, "strategy-preview-0001",
+                              approval, result, reason)) {
+    // Handle the diagnostic and original result; do not submit or invent an ID.
+    return;
+}
+if (!client.Persist(privateOutbox, proposal, approval.commandId,
+                    approval.previewPermit, reason)) {
+    return; // Persistence failed; nothing has been sent.
+}
+// Persist and submit the SAME immutable proposal with the service-issued ID.
+// A true transport result still requires inspecting result.envelope.status.
+client.SubmitStored(privateOutbox, approval.commandId, result, reason);
+```
+
+The example assumes an existing longer-lived client, immutable proposal and
+owned private outbox directory. It is not a complete trading program. Cancellation
+has no preview operation and keeps its existing caller-retained command identity.
+
+`TypedToolProtocol::DecodePreviewAuthorization(json, expectedTool, approval,
+reason)` is also available for an already received full result envelope. It uses
+the existing bounded, duplicate-key-rejecting JSON parser, not a second parser or
+substring extraction. It requires the exact current eight-field preview schema,
+`approved=true`, `single_use=true`, a canonical command ID, a lowercase SHA-256
+permit, positive exact 64-bit expiry/generation and a nonempty bounded service
+epoch. Unknown/missing/duplicate fields, cross-tool responses, non-ok statuses,
+malformed nested preview data, invalid integer forms and overflow are rejected.
+The nested authoritative preview is structurally checked, never converted into
+client-supplied authoritative quote, position or risk state.
+
+The codec reports the service's original expiry and identity without refreshing
+or locally certifying them. It is a decoder, not an authenticator: parsing copied
+or constructed JSON cannot create permission. Credentials, proposal binding,
+expiration, owner/generation checks and final execution remain exclusively
+service-owned. Use the result of the matching call with the same proposal and
+client; never pair an approval from another preview with a changed proposal.
+
+Input strings may borrow prior approval fields or diagnostics; they are captured
+before outputs are cleared. Output-to-output aliases are unsupported. Existing
+raw APIs, HSR1 records, wire requests, execution paths and eight-header/three-
+archive package boundaries are unchanged. The installed/relocated consumer tests
+both exported overloads and the shared codec. The real Gateway/Execution crash
+fixture now obtains its service-issued values through the typed path and retains
+all original durable retry, lost-reply, revocation and SIGKILL checks. Simulator
+flatten rejection is retained, not promoted to a qualified flatten capability.

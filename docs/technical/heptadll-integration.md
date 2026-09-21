@@ -262,3 +262,28 @@ optional CTP work stay explicit. This branch is a capability integration
 candidate, not a claim that the historical library has been fully replaced or
 LIVE trading has been enabled. The original repository and release history
 remain retained until actual consumer and retirement conditions are satisfied.
+
+
+## Typed preview-to-durable-client continuation
+
+The continuation from `dc9463c71ae019ca5f6605aff75a8248de59c652` closes a client
+consumption gap: extracting Execution-issued preview command IDs and permits no
+longer requires application-side JSON scraping. A typed value and strict decoder
+extend the existing `TypedToolProtocol` result codec; two `PreviewAuthorized`
+overloads extend the existing NativeStrategyClient. No additional parser,
+transport, target, installed-header path, production authority, persistence format
+or venue is introduced. See [typed client usage](../../research/CLIENT_PACKAGE.md#typed-preview-approval-without-caller-json-scraping).
+
+The existing installed-client behavior test covers exact 64-bit values, both
+preview tools, malformed/truncated/deep/oversized payloads, duplicate/unknown
+fields, non-approved responses and borrowed inputs. The existing real
+Gateway/Execution fixture compares typed IDs/permits with independently inspected
+service payloads and retains its original place/cancel, uncertain/lost reply,
+restart, revocation and SIGKILL assertions. Unsupported simulator flatten still
+returns no typed approval. These are concrete codec/client behavior checks, not
+new broker qualification, a locally issued permit or historical ABI parity.
+
+The source reference, external-consumer and archival limitations above remain.
+Exact-head CI outcomes are recorded on PR #107, not inferred from the preceding
+commit's completed CI. Existing required checks, production installation,
+module/build ownership and read-only workflow permissions are unchanged.

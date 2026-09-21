@@ -59,6 +59,17 @@ public:
     NativeStrategyClient(const NativeToolClient&&) = delete;
     bool Preview(const PreparedOrder& order, const std::string& previewCallId,
                  NativeToolClientResult& result, std::string& reason) const;
+    // One ordinary preview call followed by strict typed response decoding.
+    // Unlike raw Preview, true means a structurally approved matching preview
+    // was received, NOT that a mutation ran or the permit remains usable. False
+    // clears authorization, preserves a transported rejection/uncertainty in
+    // result, and returns a diagnostic. No mutation, persistence or retry here.
+    bool PreviewAuthorized(const PreparedOrder& order, const std::string& previewCallId,
+                           TypedPreviewAuthorization& authorization,
+                           NativeToolClientResult& result, std::string& reason) const;
+    bool PreviewAuthorized(const PreparedFlatten& flatten, const std::string& previewCallId,
+                           TypedPreviewAuthorization& authorization,
+                           NativeToolClientResult& result, std::string& reason) const;
     // ID and permit MUST come from the matching successful preview response.
     // Persist that response and proposal before sending. Reuse the exact ID and
     // proposal on retry; an uncertain response is not permission for a new ID.

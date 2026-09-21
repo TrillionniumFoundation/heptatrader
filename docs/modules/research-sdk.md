@@ -283,3 +283,24 @@ component; see [client package](../../research/CLIENT_PACKAGE.md). It is exclude
 from default production installation. Its headers carry only transport values
 and the existing client APIs, not host/session or execution-authority classes.
 The [Agent entry module](agent-entry.md) owns that consumer and its tests.
+
+
+## Typed preview response consumption
+
+The exported client now offers `PreviewAuthorized` for both order and flatten
+proposals. It calls the same native preview path and decodes the complete service
+response through the existing `TypedToolProtocol` parser. The typed record keeps
+the exact command ID, permit, expiry, service epoch and fencing generation;
+unknown/duplicate/missing fields, malformed values, mismatched tools and
+non-approved statuses yield no authorization. Raw transported errors remain
+available for diagnosis. This removes caller JSON scraping, not service-side
+validation or final execution checks. No client method mints a permit, refreshes
+expiry, retries a mutation, infers a flatten side/quantity or changes HSR1.
+
+See the [typed SDK example](../../research/CLIENT_PACKAGE.md#typed-preview-approval-without-caller-json-scraping).
+The existing installed/relocated consumer exercises the exported codec and both
+overloads. Existing real Gateway/Execution and process-crash tests now extract
+their actual preview values through that path while retaining their original
+journal and permission assertions. New codec fixtures are explicitly synthetic;
+only the existing service issues usable test permits. No new target, public
+header path, privileged dependency or production capability is added.

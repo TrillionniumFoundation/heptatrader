@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <limits>
+#include <utility>
 
 namespace {
 bool ParseLong(const std::string& value, long& out)
@@ -108,7 +110,100 @@ public:
         return true;
     }
 
+
+    bool ParsePreview(TypedPreviewAuthorization& authorization)
+    {
+        if (m_json.empty() ||
+            m_json.size() > TradingToolWireLimits::MaximumResultEnvelopeBytes())
+            return false;
+        SkipWhitespace();
+        if (!Consume('{')) return false;
+        SkipWhitespace();
+        std::set<std::string> seen;
+        while (true)
+        {
+            std::string key;
+            if (!ParseString(key) || !seen.insert(key).second) return false;
+            SkipWhitespace();
+            if (!Consume(':')) return false;
+            SkipWhitespace();
+            if (key == "approved" || key == "single_use")
+            {
+                if (!ParseLiteral("true")) return false;
+            }
+            else if (key == "command_id")
+            {
+                if (!ParseString(authorization.commandId) ||
+                    !TradingToolWireContract::IsCanonicalCommandId(authorization.commandId))
+                    return false;
+            }
+            else if (key == "preview_permit")
+            {
+                if (!ParseString(authorization.previewPermit) ||
+                    authorization.previewPermit.size() != 71 ||
+                    authorization.previewPermit.compare(0, 7, "sha256:") != 0)
+                    return false;
+                for (std::size_t i = 7; i < authorization.previewPermit.size(); ++i)
+                {
+                    const char c = authorization.previewPermit[i];
+                    if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                        return false;
+                }
+            }
+            else if (key == "permit_expires_at_ms")
+            {
+                std::uint64_t value = 0;
+                if (!ParsePositiveInteger(
+                        static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()), value))
+                    return false;
+                authorization.permitExpiresAtMs = static_cast<std::int64_t>(value);
+            }
+            else if (key == "service_epoch")
+            {
+                if (!ParseString(authorization.serviceEpoch) ||
+                    authorization.serviceEpoch.empty() || authorization.serviceEpoch.size() > 128)
+                    return false;
+                for (unsigned char c : authorization.serviceEpoch)
+                    if (c < 0x20 || c == 0x7f) return false;
+            }
+            else if (key == "service_fencing_generation")
+            {
+                if (!ParsePositiveInteger(std::numeric_limits<std::uint64_t>::max(),
+                                          authorization.serviceFencingGeneration))
+                    return false;
+            }
+            else if (key == "authoritative_preview")
+            {
+                // Validate recursively, but do not convert research/caller data
+                // into an authoritative position, quote or risk approval object.
+                if (!ParseLiteral("null") && !ParseObject(1)) return false;
+            }
+            else return false;
+            SkipWhitespace();
+            if (Consume('}')) break;
+            if (!Consume(',')) return false;
+            SkipWhitespace();
+        }
+        SkipWhitespace();
+        return m_offset == m_json.size() && seen.size() == 8;
+    }
+
 private:
+    bool ParsePositiveInteger(std::uint64_t maximum, std::uint64_t& value)
+    {
+        // Never round a 64-bit expiry/generation through double or platform long.
+        if (m_offset >= m_json.size() || m_json[m_offset] < '1' || m_json[m_offset] > '9')
+            return false;
+        value = 0;
+        while (m_offset < m_json.size() && m_json[m_offset] >= '0' && m_json[m_offset] <= '9')
+        {
+            const unsigned int digit = static_cast<unsigned int>(m_json[m_offset++] - '0');
+            if (value > (maximum - digit) / 10) return false;
+            value = value * 10 + digit;
+        }
+        return true;
+    }
+
     void SkipWhitespace()
     {
         while (m_offset < m_json.size())
@@ -428,5 +523,53 @@ bool TypedToolProtocol::DecodeResultEnvelope(const std::string& json,
         return false;
     }
     reason.clear();
+    return true;
+}
+
+
+bool TypedToolProtocol::DecodePreviewAuthorization(
+    const std::string& json, const std::string& expectedTool,
+    TypedPreviewAuthorization& authorization, std::string& reason)
+{
+    // Reject unbounded input before allocating a second copy. On these paths
+    // no input is accessed again after outputs are cleared.
+    if (expectedTool != "risk.preview_order" && expectedTool != "risk.preview_flatten")
+    {
+        authorization = TypedPreviewAuthorization();
+        reason = "PREVIEW_TOOL_INVALID";
+        return false;
+    }
+    if (json.size() > TradingToolWireLimits::MaximumResultEnvelopeBytes())
+    {
+        authorization = TypedPreviewAuthorization();
+        reason = "INVALID_RESULT_ENVELOPE";
+        return false;
+    }
+    // Capture inputs before clearing outputs: callers may reuse a previous
+    // authorization field or diagnostic as either borrowed input string.
+    const std::string input = json, expected = expectedTool;
+    authorization = TypedPreviewAuthorization();
+    reason.clear();
+    TypedToolResultEnvelope envelope;
+    if (!DecodeResultEnvelope(input, envelope, reason)) return false;
+    if (envelope.toolName != expected)
+    {
+        reason = "PREVIEW_TOOL_MISMATCH";
+        return false;
+    }
+    if (envelope.status != "ok")
+    {
+        reason = "PREVIEW_NOT_APPROVED";
+        return false;
+    }
+    TypedPreviewAuthorization decoded;
+    ResultJsonParser parser(envelope.payloadJson);
+    if (envelope.orderId != -1 || !parser.ParsePreview(decoded))
+    {
+        reason = "INVALID_PREVIEW_AUTHORIZATION";
+        return false;
+    }
+    decoded.toolName = expected;
+    authorization = std::move(decoded);
     return true;
 }
