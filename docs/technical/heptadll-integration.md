@@ -260,6 +260,14 @@ pre-intent rejections. The failures were reproduced before their repairs. Corrup
 or previously malformed generations are still rejected, not silently adopted;
 this change does not repair or migrate a deployed host's existing generation.
 
+The installed generation cost experiment retains its 8/40/168 admitted-order
+samples and the unchanged 60-entry-calls/minute Gateway policy. New orders are
+paced before preview, with headroom for cold-Gateway duplicate lookups. This is
+not a maximum-throughput experiment; its server-side latency samples exclude
+the test's pacing delay. The preceding unpaced fixture hit the real policy once
+it progressed beyond the original seal failure. No permission, quota, journal
+reader or sample-count assertion was relaxed to make the experiment pass.
+
 Local targeted and full-suite outcomes are reported on the PR for the tested
 revision. Source integration must not be called release-accepted until the
 ordinary exact-head CI, installed-process and PID1 acceptance succeed. No

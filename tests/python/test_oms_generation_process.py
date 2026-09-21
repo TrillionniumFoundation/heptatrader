@@ -146,6 +146,21 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         store = Path(str(journal) + ".generations")
         helper = self.slot / "libexec/heptatrader/hepta_oms_lifecycle.py"
 
+        # This is a history/recovery cost experiment, not a rate-limit bypass.
+        # InstalledRuntime deliberately keeps its 60 entry calls/minute policy.
+        # Pace new entries below it (including headroom for cold-Gateway replay)
+        # instead of raising that policy or reducing the 8/40/168-order samples.
+        # Waiting occurs before preview, outside server-side placement metrics.
+        next_entry_at = 0.0
+
+        def paced_place(side: str, price: str):
+            nonlocal next_entry_at
+            remaining = next_entry_at - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
+            next_entry_at = time.monotonic() + 1.1
+            return runtime.place(side, 1, price, ttl_ms=600000)
+
         first_command = None
         first_fields = None
         first_order = None
@@ -153,10 +168,10 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         points = []
         for stage, pairs in enumerate((4, 16, 64), start=1):
             for _ in range(pairs):
-                command, fields, order_id = runtime.place("BUY", 1, "1.1002", ttl_ms=600000)
+                command, fields, order_id = paced_place("BUY", "1.1002")
                 runtime.wait_position(1)
                 runtime.wait_no_orders()
-                runtime.place("SELL", 1, "1.1000", ttl_ms=600000)
+                paced_place("SELL", "1.1000")
                 runtime.wait_position(0)
                 runtime.wait_no_orders()
                 expected_admitted += 2
@@ -188,7 +203,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             startup = self._execution_startup_timings(runtime)
             recovery_ns = startup["coordinator_recovery_ns"]
             peak_rss_kib = self._execution_peak_rss_kib(runtime)
-            risk = runtime.call("risk.get_limits", [])["payload"]
+            risk = runtime.call("risk.get_limits", []) ["payload"]
             self.assertEqual(risk["admitted_order_count"], expected_admitted)
 
             tail_before_duplicate = journal.read_bytes()
@@ -324,7 +339,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         command, fields, first_order = runtime.place("BUY", 25, "1.1002")
         runtime.wait_position(25)
         runtime.wait_no_orders()
-        risk_before = runtime.call("risk.get_limits", [])["payload"]
+        risk_before = runtime.call("risk.get_limits", []) ["payload"]
         self.assertEqual(risk_before["admitted_order_count"], 1)
         runtime.stop()
 
@@ -350,7 +365,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
 
         runtime.start(self.slot)
         runtime.wait_position(25)
-        risk_after = runtime.call("risk.get_limits", [])["payload"]
+        risk_after = runtime.call("risk.get_limits", []) ["payload"]
         self.assertEqual(risk_after["admitted_order_count"], 1,
                          "daily admission state must survive generation rotation")
         status = runtime.call("execution.get_command_status",
@@ -368,12 +383,12 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                            "order-id watermark must survive generation rotation")
         runtime.wait_position(20)
         runtime.wait_no_orders()
-        self.assertEqual(runtime.call("risk.get_limits", [])["payload"]
+        self.assertEqual(runtime.call("risk.get_limits", []) ["payload"]
                          ["admitted_order_count"], 2)
         runtime.place("SELL", 20, "1.1000")
         runtime.wait_position(0)
         runtime.wait_no_orders()
-        self.assertEqual(runtime.call("risk.get_limits", [])["payload"]
+        self.assertEqual(runtime.call("risk.get_limits", []) ["payload"]
                          ["admitted_order_count"], 3)
         runtime.stop()
 
@@ -384,6 +399,6 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         status = runtime.call("execution.get_command_status",
                               [f"command_id={command}"])["payload"]
         self.assertEqual(status["order_id"], first_order)
-        self.assertEqual(runtime.call("risk.get_limits", [])["payload"]
+        self.assertEqual(runtime.call("risk.get_limits", []) ["payload"]
                          ["admitted_order_count"], 3)
         runtime.wait_no_orders()
