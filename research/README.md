@@ -174,3 +174,125 @@ duplicate idempotency, both positions, fees, marked equity and EOF finalization
 without liquidation. No new target, translation unit, installed-header path,
 production installation, broker permission or execution mutation path is added.
 The single-instrument replay CLI and canonical execution simulator are unchanged.
+
+## Explicit legacy Tick CSV input
+
+`LegacyTickCsvReader` adds a bounded mixed-instrument source adapter to **Data**.
+It produces the existing incremental-volume `Tick`; BarBuilder, completed-bar
+strategies, ReplayMatcher and ResearchPortfolio are unchanged. This is not a
+second simulator, gateway, OMS or live feed. The installed SDK exposes the same
+API as the source build; the single-instrument normalized replay CLI is unchanged.
+
+The positional schemas were checked against `heptaDataFileHelper.cpp`, functions
+`ParseheptaTickDataRow` and `ParseZS_CZCE_TickDataRow`, in retained reference
+`HeptaDLL-main@5f3703258bc4cad8f96e513d8d989c2441b4729d` (blob
+`dfeb7f9093f84b76a4fc7601326ab187c1418f67`). The reference's Wu Chang Sheng notices
+remain there. This is a new implementation of explicit data contracts, not a
+copy of that parser, private Git history, SDK or dataset, and not a clean-room or
+redistribution-clearance certificate. It does not merge the separate Python
+research implementation in PR #106 or create another integration branch.
+
+Select ONE layout explicitly. Column indices are zero-based:
+
+| Layout enum | Exact field count | Instrument / TradingDay | ActionDay | Clock / fraction | LastPrice / cumulative Volume | Turnover / OpenInterest |
+|---|---:|---|---|---|---|---|
+| `Hepta32` | 32 | 0 / 1 | supplied independently | 2 / 3 (milliseconds) | 4 / 5 | 7 / 29 |
+| `Immsg34` | 34 | 2 / 3 | supplied independently | 4 / 5 (milliseconds) | 6 / 7 | 9 / 31 |
+| `Immsg35` | 35 | 2 / 3 | 4 | 5 / 6 (milliseconds) | 7 / 8 | 10 / 32 |
+| `Zs58` | 58 | 3 / 0 | supplied independently | 1 / 2 (microseconds) | 37 / 38 | 46 / 39 |
+
+IMMSG column 1 must be `IMMSG`; its local receipt column 0 is preserved, not used
+as the exchange clock. Clock syntax is exactly `HH:MM:SS`, or `HHMMSS` for ZS.
+Milliseconds are 0..999 and microseconds 0..999999. ZS fractions remain full
+microseconds: they are not truncated to the old millisecond representation.
+The ZS schema requires all 58 columns, including index 57; it does not inherit
+the original reader's shorter length guard. Unknown layouts and extra fields
+are not guessed. This API covers these four Tick layouts, not every old bar,
+BIN-cache, XML, database or custom-callback input format.
+
+The constructor requires 1..64 explicitly bound instruments with validated
+`SessionSchedule` values, a row-clock resolver, and an explicit first-volume
+policy. It copies/owns the schedule values and resolver function object; the
+input stream and anything captured by the callback must outlive their use.
+The reader is thread-affine. The caller must not concurrently read/reposition
+the stream or re-enter the cursor through its resolver.
+
+The resolver receives the one-based DATA row number, instrument, TradingDay and
+source ActionDay (empty except in `Immsg35`). It must return the verified actual
+civil date and the local-minus-UTC offset in minutes for THAT row. Missing
+ActionDay is never replaced with TradingDay; night sessions and midnight
+crossings require the correct per-row civil-date mapping. An explicit source
+ActionDay cannot be overridden. Gregorian dates are validated, offsets are
+bounded to -840..840, and converted UTC timestamps must be nonnegative. There
+is no host timezone, `mktime`, daylight-saving inference or holiday service.
+The caller resolves ambiguous/nonexistent local times and supplies the correct
+offset; bounds alone do not certify a timezone mapping. Every converted tick
+must belong to the bound instrument's half-open UTC session with exactly the
+supplied TradingDay label.
+
+For example, after independently validating the session and civil-clock input:
+
+```cpp
+std::map<std::string, SessionSchedule> sessions = verifiedSessions;
+LegacyTickCsvReader reader(input, LegacyTickCsvLayout::Immsg35, sessions,
+    [&verifiedClockByRow](std::size_t row, const std::string&,
+                         const std::string&, const std::string&) {
+        return verifiedClockByRow.at(row); // actual ActionDay + explicit UTC offset
+    }, false); // false: first cumulative observation is the baseline, not new volume
+LegacyTickRecord record;
+while (reader.Next(record)) {
+    // Feed record.tick to the EXISTING per-instrument Data/Replay consumers.
+    // Preserve sourceFields when an audit of unqualified columns is required.
+}
+// Only clean EOF establishes complete input; publish no success after failure.
+```
+
+`true` for the first-volume policy instead includes the first cumulative count
+of EACH instrument/trading day. Cumulative volume is an unsigned-in-practice
+int64 count; a decrease within one trading day rejects, including across a
+session break. A later trading day resets the baseline. Interleaved instruments
+have independent counter state. Global UTC time cannot reverse; equal-time
+rows retain physical input order. No sorting or lookahead creates artificial
+historical information availability.
+
+The emitted sequence is the one-based source DATA row, not a broker event ID.
+Repeated raw rows are preserved with new sequence IDs; an unchanged cumulative
+counter contributes zero extra volume. There is no evidence to deduplicate
+historical rows as exchange retries. Downstream normalized readers/matchers
+retain their existing exact-Tick retry behavior. The record keeps TradingDay,
+ActionDay, offset, original cumulative count, finite nonnegative turnover/open
+interest, and all source columns. Raw depth columns are bounded text only, not
+validated books, quote authority, execution liquidity or current market rules.
+The current positive finite `Tick.price` contract is retained; negative-price
+futures histories are explicitly unsupported by this reader and are not repaired.
+
+Headerless input is the default. `hasHeader=true` validates selected positional
+names case-insensitively: InstrumentID, TradingDay, UpdateTime, UpdateMillisec
+(or UpdateMicrosec), LastPrice, Volume, Turnover, OpenInterest, ActionDay when
+present, and Localtime/MsgType for IMMSG. Other header names are retained only
+as unqualified schema positions. Rows use unquoted printable ASCII, nonempty
+fields of at most 128 bytes and the existing 4096-byte line bound. CRLF is
+accepted. Whitespace in numeric/identifier/date/clock fields, nonfinite values,
+invalid times, signs/overflow in counters and malformed field counts reject.
+
+The cursor retains one decoder per allowed instrument and one bounded row,
+not the history. `maxRows` is a global emitted-row quota. EOF and every failure
+leave the output and emitted count unchanged. A failed row permanently disables
+this cursor, even after clearing/seeking the borrowed stream. It never skips,
+retries or consumes the resolver again after failure. The selected cumulative
+decoder is staged before publication. Caller callback side effects and previously
+consumed research outputs cannot be rolled back: discard a later-failed run.
+
+The existing Data test covers all four schemas, both first-volume policies,
+header/no-header, interleaved counters, same-row repeats, night/midnight/day
+rollover, precise ZS microseconds, Gregorian/offset oracles, malformed input,
+wrong sessions, callback/I/O failure, immutable output and permanent failure.
+A non-seekable lazy 100,000-row source checks independent values and one-row
+read-ahead with the full 64-instrument binding limit. These are cases within
+existing tests, not 100,000 separate test methods. The installed/relocated C++11
+consumer sends raw mixed-instrument input through two existing BarBuilders,
+strategies and ReplayMatchers plus one ResearchPortfolio. It checks same-time
+nonfills, zero repeat volume, once-only fees, explicit forecast availability,
+partial tails and no EOF liquidation. Its synthetic final equity is 1028.5
+from 1000 initial capital, not investment or strategy-performance evidence.
+EOF does not invent a completed bar, fill, credential or production permission.

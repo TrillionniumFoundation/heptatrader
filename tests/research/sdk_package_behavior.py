@@ -207,6 +207,73 @@ int main() {
         Require(rejected && invalid.RowsRead() == 0 && current.instrument == before.instrument &&
                 current.timestampUs == before.timestampUs && current.sequence == before.sequence);
     }
+    // Raw legacy records enter the SAME installed Data/Strategy/Replay/Analytics
+    // libraries. No source-tree implementation or alternative matcher is linked.
+    {
+        SessionWindow rawWindow; rawWindow.openUs = 0; rawWindow.closeUs = 1000000;
+        rawWindow.tradingDay = "19700101";
+        SessionSchedule rawSchedule({rawWindow});
+        const auto rawRow = [](const std::string& instrument, int ms, int price, int volume) {
+            std::vector<std::string> fields(32, "0");
+            fields[0] = instrument; fields[1] = "19700101"; fields[2] = "00:00:00";
+            fields[3] = std::to_string(ms); fields[4] = std::to_string(price);
+            fields[5] = std::to_string(volume); fields[29] = "10";
+            std::ostringstream text;
+            for (std::size_t i = 0; i < fields.size(); ++i) { if (i) text << ','; text << fields[i]; }
+            return text.str() + "\n";
+        };
+        std::istringstream rawInput(
+            rawRow("RAW.A", 0, 100, 100) + rawRow("RAW.B", 0, 50, 200) +
+            rawRow("RAW.A", 1, 101, 101) + rawRow("RAW.A", 1, 101, 101) +
+            rawRow("RAW.B", 1, 50, 202) + rawRow("RAW.A", 2, 103, 101) +
+            rawRow("RAW.B", 2, 49, 202));
+        LegacyTickCsvReader rawReader(rawInput, LegacyTickCsvLayout::Hepta32,
+            {{"RAW.A", rawSchedule}, {"RAW.B", rawSchedule}},
+            [](std::size_t, const std::string&, const std::string&, const std::string& sourceDay) {
+                Require(sourceDay.empty()); LegacyTickClock clock;
+                clock.actionDay = "19700101"; clock.utcOffsetMinutes = 0; return clock;
+            }, false);
+        ReplayMatcher rawA("RAW.A", rawSchedule, 0.5), rawB("RAW.B", rawSchedule, 0.5);
+        BarBuilder barsA("RAW.A", 1000, rawSchedule), barsB("RAW.B", 1000, rawSchedule);
+        MovingAverageForecast signalA(1, 2), signalB(1, 2);
+        ResearchInstrument specA; specA.instrument = "RAW.A"; specA.currency = "USD"; specA.multiplier = 10;
+        ResearchInstrument specB = specA; specB.instrument = "RAW.B"; specB.multiplier = 5;
+        ResearchPortfolio rawPortfolio(1000, "USD", {specA, specB});
+        ReplayOrder buy; buy.orderId = "legacy-buy"; buy.instrument = "RAW.A";
+        buy.tradingDay = "19700101"; buy.submittedAtUs = 0; buy.expiresAtUs = 50000;
+        buy.side = 1; buy.quantity = 1; buy.limitPrice = 110;
+        ReplayOrder sell = buy; sell.orderId = "legacy-sell"; sell.instrument = "RAW.B";
+        sell.side = -1; sell.quantity = 2; sell.limitPrice = 49;
+        Require(rawA.Submit(buy) && rawB.Submit(sell));
+        LegacyTickRecord rawRecord; std::size_t rawFills = 0, closedBars = 0, signals = 0;
+        while (rawReader.Next(rawRecord)) {
+            const bool isA = rawRecord.tick.instrument == "RAW.A";
+            Require(rawRecord.sourceFields.size() == 32 && rawRecord.actionDay == "19700101");
+            const auto rawEvents = (isA ? rawA : rawB).OnTick(rawRecord.tick);
+            for (const auto& rawEvent : rawEvents) {
+                Require(rawEvent.kind == ReplayEventKind::Fill && rawEvent.fill.timestampUs == 1000);
+                Require(rawPortfolio.Apply(rawEvent.fill) && !rawPortfolio.Apply(rawEvent.fill));
+                ++rawFills;
+            }
+            Require(rawPortfolio.Observe(rawRecord.tick));
+            Bar closed; Forecast rawForecast;
+            if ((isA ? barsA : barsB).Push(rawRecord.tick, closed) == TickOutcome::ClosedPrevious) {
+                ++closedBars;
+                if ((isA ? signalA : signalB).ObserveCompletedBar(closed, rawRecord.tick.timestampUs, rawForecast)) {
+                    Require(isA && rawForecast.direction == 1 && rawForecast.observedAtUs == 2000);
+                    ++signals; // Research output, not permission to submit another order.
+                }
+            }
+        }
+        Require(rawReader.RowsRead() == 7 && rawFills == 2 && closedBars == 4 && signals == 1);
+        const auto rawValue = rawPortfolio.Snapshot(2000, 0);
+        Require(rawValue.positions.at("RAW.A").quantity == 1 && rawValue.positions.at("RAW.B").quantity == -2);
+        Require(rawValue.fees == 1.5 && rawValue.unrealized == 30 && rawValue.equity == 1028.5);
+        Require(rawA.Finish(2000).empty() && rawB.Finish(2000).empty());
+        Bar tailA, tailB;
+        Require(barsA.Current(tailA) && barsB.Current(tailB) &&
+                !tailA.complete && !tailB.complete && tailA.volume == 0 && tailB.volume == 0);
+    }
     std::cout << "installed research contract passed\n";
 }
 '''

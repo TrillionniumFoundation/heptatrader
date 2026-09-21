@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
+#include <map>
 #include <iosfwd>
 #include <memory>
 #include <string>
@@ -132,6 +134,58 @@ public:
     MergedTickCsvReader(const MergedTickCsvReader&) = delete;
     MergedTickCsvReader& operator=(const MergedTickCsvReader&) = delete;
     bool Next(Tick& output);
+    std::size_t RowsRead() const;
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+// Explicit historical positional CSV profiles from the retained HeptaDLL data
+// helpers. This is an OFFLINE schema adapter, not a vendor SDK, depth book or
+// an exchange event-identity decoder. It publishes the SAME incremental Tick.
+enum class LegacyTickCsvLayout { Hepta32, Immsg34, Immsg35, Zs58 };
+struct LegacyTickClock {
+    std::string actionDay; // Actual Gregorian civil date, never inferred from TradingDay.
+    int utcOffsetMinutes = 0; // Explicit local-minus-UTC offset for this exact row.
+};
+// Arguments: one-based DATA row, instrument, TradingDay, source ActionDay (empty
+// except in Immsg35). Must supply independently verified civil date/offset. The
+// source ActionDay, when present, cannot be overridden. No host timezone/DST,
+// holiday lookup or trading-day-to-civil-day inference occurs in this library.
+using LegacyTickClockResolver = std::function<LegacyTickClock(
+    std::size_t, const std::string&, const std::string&, const std::string&)>;
+struct LegacyTickRecord {
+    Tick tick;
+    std::string tradingDay, actionDay;
+    int utcOffsetMinutes = 0;
+    std::int64_t cumulativeVolume = 0;
+    double turnover = 0, openInterest = 0;
+    // Retained, bounded, unqualified source columns. Unselected depth fields
+    // are NOT interpreted, repaired or promoted to authoritative quotes.
+    std::vector<std::string> sourceFields;
+};
+// One serialized, possibly mixed-instrument stream. Callers explicitly supply
+// 1..64 instrument/session bindings, layout, clock resolver and first-volume
+// policy. Headerless by default; hasHeader validates selected positional names.
+// Global UTC time and each instrument's trading day/counter must not reverse.
+// Source row numbers become sequence IDs, NOT exchange identities: repeated
+// rows are preserved; equal cumulative counters contribute zero extra volume.
+// No history-sized storage: one decoder per allowed instrument, a bounded row,
+// and owned schedule/resolver values. Input and callback captures must outlive
+// their use. Thread-affine; no concurrent input mutation or resolver re-entry.
+// EOF/error leaves output/count unchanged; ANY Next failure permanently poisons
+// this reader. A later failure invalidates a run's previously emitted prefix.
+// Resolver side effects cannot be rolled back. No automatic retry/skip/reorder.
+class LegacyTickCsvReader {
+public:
+    LegacyTickCsvReader(std::istream& input, LegacyTickCsvLayout layout,
+        std::map<std::string, SessionSchedule> schedules,
+        LegacyTickClockResolver clockResolver, bool countFirstObservation,
+        bool hasHeader = false, std::size_t maxRows = 1000000);
+    ~LegacyTickCsvReader();
+    LegacyTickCsvReader(const LegacyTickCsvReader&) = delete;
+    LegacyTickCsvReader& operator=(const LegacyTickCsvReader&) = delete;
+    bool Next(LegacyTickRecord& output);
     std::size_t RowsRead() const;
 private:
     struct Impl;

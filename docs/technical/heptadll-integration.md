@@ -30,7 +30,7 @@ invented by this integration.
 |---|---|
 | `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, OHLC-field extrema, latest strict threshold queries, confirmed peaks/troughs, reverse indexing, retained-day count and OHLCV merging. These are explicit new APIs, not compatibility aliases for historical signatures. |
 | `heptaDate`, `heptaTimeStamp`, `heptaProductTradeTime`, `heptaChinaTradingCalendar` | Explicit UTC session windows and Gregorian trading-day validation. Old exchange-rule tables and implicit local-time assumptions are not republished as current rules. |
-| CSV/data helpers | Strict portable tick/session and completed-bar CSV conversion. Proprietary binary cache layouts and historical datasets remain in the source repository. |
+| CSV/data helpers | Strict portable tick/session/completed-bar CSV plus four explicitly selected legacy Tick layouts, including mixed instruments, verified row clocks and original-column retention through the SAME Data/Replay SDK. Proprietary binary cache layouts and historical datasets remain in the source repository. |
 | `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees, fill identity and offline variation-settlement events. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
 | `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a NativeToolClient adapter with a separate relocatable developer package and private durable request recovery. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
@@ -298,3 +298,35 @@ installed interface or weakened risk limit. Independent journal/audit assertions
 remain mandatory; observations are not broker, HFT or historical-consumer parity
 claims. Source archival and the remaining qualification boundaries above are
 unchanged. Exact-head results belong to the PR and its run artifacts.
+
+## Mixed-instrument legacy Tick CSV continuation
+
+Continuation parent: `98d30a37164f1620900fb52689ce91695320c5a9`; full parent
+tree: `cfc522560e9169b3982d99645a6f668e4381a1dd`. This work extends the existing
+public PR #107 branch, not PR #106/#108 or another parallel framework.
+
+`LegacyTickCsvReader` implements the four reviewed HeptaDLL positional Tick
+schemas in the existing Data target. It normalizes explicitly bound mixed
+instruments into the same incremental-volume Tick. The caller supplies the
+actual civil date and UTC offset for each row; TradingDay is never substituted
+for ActionDay. ZS microseconds are preserved. Independent instrument counters,
+source-row identities, finite bounds and permanent-failure publication semantics
+are explicit. Unselected source fields remain unqualified text, never live quote
+or fill authority. See the complete [input contract](../../research/README.md#explicit-legacy-tick-csv-input).
+
+The existing relocated SDK consumer proves this input can drive the maintained
+BarBuilder, observation-aware strategy, ReplayMatcher and ResearchPortfolio
+without a second bar/matching/ledger implementation. The original positive-price
+contract, single-instrument normalized CLI, native strategy-client path and all
+Execution/OMS/risk/venue interfaces are unchanged. No target, translation unit,
+installed-header path, privileged installation component or workflow permission
+is introduced. No original test is removed or relaxed.
+
+This closes these four raw Tick-schema input boundaries on this branch, not all
+legacy BIN/XML/database/strategy behavior or source/ABI parity. It does not
+merge the separate Python framework merely because it also has format readers.
+External-consumer migration, applicable literal-source redistribution and source
+archival still require independent evidence. The reference repository remains
+private, retained and unchanged; CTP remains deferred behind XT and LIVE remains
+unavailable. Exact new-commit local/remote validation is reported on PR #107;
+its predecessor's passing CI is not presented as acceptance of the new delta.

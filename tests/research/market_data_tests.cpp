@@ -767,6 +767,264 @@ void MergedCsvOracle() {
     std::cout << "merged CSV oracle rows=" << oracleRows << ", lazy rows=100000, maximum sources=1024\n";
 }
 
+struct LegacyTestColumns {
+    LegacyTickCsvLayout layout;
+    std::size_t count, instrument, day, time, fraction, price, volume, turnover, interest;
+    int action;
+};
+const LegacyTestColumns legacyProfiles[] = {
+    {LegacyTickCsvLayout::Hepta32,32,0,1,2,3,4,5,7,29,-1},
+    {LegacyTickCsvLayout::Immsg34,34,2,3,4,5,6,7,9,31,-1},
+    {LegacyTickCsvLayout::Immsg35,35,2,3,5,6,7,8,10,32,4},
+    {LegacyTickCsvLayout::Zs58,58,3,0,1,2,37,38,46,39,-1}
+};
+std::vector<std::string> LegacyCells(const LegacyTestColumns& c, const std::string& instrument = "A",
+    const std::string& day = "20260921", const std::string& action = "20260921",
+    const std::string& time = "00:00:00", const std::string& fraction = "0",
+    const std::string& price = "100", const std::string& volume = "100") {
+    std::vector<std::string> cells(c.count, "0");
+    cells[c.instrument] = instrument; cells[c.day] = day;
+    cells[c.time] = time;
+    if(c.layout == LegacyTickCsvLayout::Zs58) {
+        cells[c.time].erase(std::remove(cells[c.time].begin(), cells[c.time].end(), ':'), cells[c.time].end());
+    }
+    cells[c.fraction] = fraction; cells[c.price] = price; cells[c.volume] = volume;
+    cells[c.turnover] = "1000.25"; cells[c.interest] = "25.5";
+    if(c.action >= 0) cells[static_cast<std::size_t>(c.action)] = action;
+    if(c.layout == LegacyTickCsvLayout::Immsg34 || c.layout == LegacyTickCsvLayout::Immsg35) {
+        cells[0] = "2026-09-21 00:00:00"; cells[1] = "IMMSG";
+    }
+    return cells;
+}
+std::string LegacyLine(const std::vector<std::string>& cells, const std::string& ending = "\n") {
+    std::string out;
+    for (std::size_t i = 0; i < cells.size(); ++i) { if(i) out += ','; out += cells[i]; }
+    return out + ending;
+}
+std::string LegacyTestHeader(const LegacyTestColumns& c) {
+    std::vector<std::string> cells(c.count, "raw");
+    cells[c.instrument] = "InstrumentID"; cells[c.day] = "TradingDay"; cells[c.time] = "UpdateTime";
+    cells[c.fraction] = c.layout == LegacyTickCsvLayout::Zs58 ? "UpdateMicrosec" : "UpdateMillisec";
+    cells[c.price] = "LastPrice"; cells[c.volume] = "Volume"; cells[c.turnover] = "TurnOver";
+    cells[c.interest] = "OpenInterest";
+    if(c.action >= 0) cells[static_cast<std::size_t>(c.action)] = "ActionDay";
+    if(c.layout == LegacyTickCsvLayout::Immsg34 || c.layout == LegacyTickCsvLayout::Immsg35) {
+        cells[0] = "Localtime"; cells[1] = "MsgType";
+    }
+    return LegacyLine(cells, "\r\n");
+}
+LegacyTickClock Clock(const std::string& day, int offset = 0) {
+    LegacyTickClock c; c.actionDay = day; c.utcOffsetMinutes = offset; return c;
+}
+using LegacyBindings = std::map<std::string, SessionSchedule>;
+LegacyBindings AnyLegacyTime(const std::string& day = "20260921") {
+    const SessionSchedule s({Window(0, 400000000000000000LL, day)});
+    return {{"A",s},{"B",s}};
+}
+LegacyTickClockResolver FixedLegacyClock(const std::string& day = "20260921", int offset = 0) {
+    return [day,offset](std::size_t, const std::string&, const std::string&, const std::string&) {
+        return Clock(day, offset);
+    };
+}
+bool SameLegacyRecord(const LegacyTickRecord& a, const LegacyTickRecord& b) {
+    return a.tick.instrument == b.tick.instrument && a.tick.timestampUs == b.tick.timestampUs &&
+        a.tick.sequence == b.tick.sequence && a.tick.price == b.tick.price && a.tick.volume == b.tick.volume &&
+        a.tradingDay == b.tradingDay && a.actionDay == b.actionDay && a.utcOffsetMinutes == b.utcOffsetMinutes &&
+        a.cumulativeVolume == b.cumulativeVolume && a.turnover == b.turnover && a.openInterest == b.openInterest &&
+        a.sourceFields == b.sourceFields;
+}
+void LegacyCsvProfiles() {
+    static_assert(!std::is_copy_constructible<LegacyTickCsvReader>::value, "legacy cursor must not copy");
+    static_assert(!std::is_move_constructible<LegacyTickCsvReader>::value, "legacy cursor must not move");
+    // 2026-09-20 15:59:59 UTC, independently calculated using a Gregorian UTC fixture.
+    const std::int64_t begin = 1789919999000000LL;
+    const SessionSchedule calendar({Window(begin,begin+86400000000LL,"20260921"),
+                                    Window(begin+86400000000LL,begin+172800000000LL,"20260922")});
+    for(const auto& c : legacyProfiles) for(bool first : {false,true}) for(bool header : {false,true}) {
+        const bool micro = c.layout == LegacyTickCsvLayout::Zs58;
+        std::vector<std::vector<std::string>> rows{
+            LegacyCells(c,"A","20260921","20260920","23:59:59","0","100","100"),
+            LegacyCells(c,"B","20260921","20260920","23:59:59","0","50","200"),
+            LegacyCells(c,"A","20260921","20260921","00:00:00",micro?"125001":"125","101","103"),
+            LegacyCells(c,"B","20260921","20260921","00:00:00",micro?"125001":"125","51","205"),
+            LegacyCells(c,"A","20260921","20260921","00:00:00",micro?"125001":"125","101","103"),
+            LegacyCells(c,"A","20260922","20260921","23:59:59","0","102","4"),
+            LegacyCells(c,"B","20260922","20260921","23:59:59","0","52","2"),
+            LegacyCells(c,"A","20260922","20260922","00:00:00","0","103","6")};
+        std::string data = header ? LegacyTestHeader(c) : "";
+        for (const auto& row : rows) data += LegacyLine(row,"\r\n");
+        std::istringstream input(data); std::size_t resolutions = 0;
+        const std::vector<std::string> dates{"20260920","20260920","20260921","20260921",
+                                             "20260921","20260921","20260921","20260922"};
+        LegacyTickCsvReader reader(input,c.layout,{{"A",calendar},{"B",calendar}},
+            [&](std::size_t row,const std::string& instrument,const std::string& day,const std::string& supplied) {
+                Check(row == ++resolutions && instrument == rows[row-1][c.instrument] && day == rows[row-1][c.day],"clock binding");
+                Check(supplied == (c.action >= 0 ? dates[row-1] : ""),"source civil day identity");
+                return Clock(dates[row-1],480);
+            },first,header,rows.size());
+        Check(resolutions==0 && reader.RowsRead()==0,"constructor invokes no clock");
+        const std::int64_t delta[] = {first?100:0,first?200:0,3,5,0,first?4:0,first?2:0,2};
+        const std::int64_t times[] = {begin,begin,begin+1125000+(micro?1:0),begin+1125000+(micro?1:0),
+            begin+1125000+(micro?1:0),begin+86400000000LL,begin+86400000000LL,begin+86401000000LL};
+        LegacyTickRecord record;
+        for(std::size_t i=0;i<rows.size();++i) {
+            Check(reader.Next(record),"legacy row missing");
+            Check(record.tick.instrument==rows[i][c.instrument] && record.tick.sequence==i+1 &&
+                  record.tick.volume==delta[i] && record.tick.timestampUs==times[i] &&
+                  record.sourceFields==rows[i] && record.actionDay==dates[i] && record.utcOffsetMinutes==480,
+                  "legacy independent conversion oracle");
+            Near(record.turnover,1000.25); Near(record.openInterest,25.5);
+            // Caller edits cannot alter future cumulative state or session bindings.
+            if(i==0) { record.tick.volume=-100; record.cumulativeVolume=999999; record.sourceFields.clear(); }
+        }
+        const auto before=record;
+        Check(!reader.Next(record) && !reader.Next(record) && SameLegacyRecord(record,before) &&
+              reader.RowsRead()==8 && resolutions==8,"legacy stable checked EOF");
+    }
+}
+void LegacyCsvRejection() {
+    for (const auto& c : legacyProfiles) {
+        const auto valid=LegacyCells(c);
+        std::vector<std::vector<std::string>> bad;
+        auto add=[&](std::size_t column,const std::string& value) { auto row=valid; row[column]=value; bad.push_back(row); };
+        auto shortRow=valid; shortRow.pop_back(); bad.push_back(shortRow);
+        auto extra=valid; extra.push_back("0"); bad.push_back(extra);
+        for(const auto& price : {"0","-1","nan","inf","1e9999"," 10","10 ","10x",""}) add(c.price,price);
+        for(const auto& volume : {"-1","+1","1.0","9223372036854775808","18446744073709551616"}) add(c.volume,volume);
+        for(const auto& day : {"20260229","19000229","20261301","00000101","20260900","2026092X"}) add(c.day,day);
+        add(c.instrument,"FOREIGN"); add(c.turnover,"-1"); add(c.interest,"NaN");
+        add(c.fraction,c.layout==LegacyTickCsvLayout::Zs58?"1000000":"1000"); add(c.fraction,"-1");
+        add(c.time,c.layout==LegacyTickCsvLayout::Zs58?"240000":"24:00:00");
+        add(c.time,c.layout==LegacyTickCsvLayout::Zs58?"236000":"23:60:00");
+        add(c.time,c.layout==LegacyTickCsvLayout::Zs58?"235960":"23:59:60");
+        add(c.time,"0:00:00");
+        const std::size_t raw=c.count-1;
+        add(raw,std::string(129,'x')); add(raw,"\"quoted\""); add(raw,std::string("a\0b",3));
+        add(raw,"\t"); add(raw,std::string(1,static_cast<char>(0x80)));
+        if(c.action>=0) add(static_cast<std::size_t>(c.action),"20260229");
+        if(c.layout==LegacyTickCsvLayout::Immsg34 || c.layout==LegacyTickCsvLayout::Immsg35) add(1,"OTHER");
+        for(const auto& row : bad) {
+            std::istringstream input(LegacyLine(valid)+LegacyLine(row)+LegacyLine(valid));
+            std::size_t calls=0;
+            LegacyTickCsvReader reader(input,c.layout,AnyLegacyTime(),
+                [&](std::size_t,const std::string&,const std::string&,const std::string&) { ++calls; return Clock("20260921"); },false);
+            LegacyTickRecord record; Check(reader.Next(record),"valid prefix"); const auto before=record;
+            Throws([&] { reader.Next(record); }); const auto callsAfter=calls;
+            input.clear(); Throws([&] { reader.Next(record); });
+            Check(SameLegacyRecord(record,before) && reader.RowsRead()==1 && calls==callsAfter,"fail-stop output and callback isolation");
+        }
+        std::string wrongHeader=LegacyTestHeader(c); auto at=wrongHeader.find("LastPrice");
+        wrongHeader.replace(at,9,"Price"); std::istringstream input(wrongHeader+LegacyLine(valid));
+        Throws([&] { LegacyTickCsvReader reader(input,c.layout,AnyLegacyTime(),FixedLegacyClock(),false,true); });
+        std::istringstream quota(LegacyLine(valid)+LegacyLine(valid));
+        LegacyTickCsvReader bounded(quota,c.layout,AnyLegacyTime(),FixedLegacyClock(),false,false,1);
+        LegacyTickRecord record; Check(bounded.Next(record),"quota first"); const auto before=record;
+        Throws([&] { bounded.Next(record); }); Throws([&] { bounded.Next(record); });
+        Check(bounded.RowsRead()==1 && SameLegacyRecord(record,before),"global row quota includes duplicates");
+        std::istringstream empty; LegacyTickCsvReader noRows(empty,c.layout,AnyLegacyTime(),FixedLegacyClock(),false);
+        Check(!noRows.Next(record) && SameLegacyRecord(record,before),"headerless empty EOF");
+        std::istringstream headerOnly(LegacyTestHeader(c));
+        LegacyTickCsvReader noData(headerOnly,c.layout,AnyLegacyTime(),FixedLegacyClock(),false,true);
+        Check(!noData.Next(record),"checked header-only EOF");
+    }
+    const auto& c=legacyProfiles[0]; const auto valid=LegacyCells(c);
+    std::istringstream input(LegacyLine(valid)); const auto pos=input.tellg();
+    Throws([&] { LegacyTickCsvReader bad(input,static_cast<LegacyTickCsvLayout>(100),AnyLegacyTime(),FixedLegacyClock(),false); });
+    Throws([&] { LegacyTickCsvReader bad(input,c.layout,{},FixedLegacyClock(),false); });
+    Throws([&] { LegacyTickCsvReader bad(input,c.layout,AnyLegacyTime(),{},false); });
+    Throws([&] { LegacyTickCsvReader bad(input,c.layout,AnyLegacyTime(),FixedLegacyClock(),false,false,0); });
+    auto many=AnyLegacyTime(); for(int i=0;i<63;++i) many.emplace("K"+std::to_string(i),many.begin()->second);
+    Throws([&] { LegacyTickCsvReader bad(input,c.layout,many,FixedLegacyClock(),false); });
+    auto invalid=AnyLegacyTime(); invalid.emplace("bad id",invalid.begin()->second);
+    Throws([&] { LegacyTickCsvReader bad(input,c.layout,invalid,FixedLegacyClock(),false); });
+    Check(input.tellg()==pos,"invalid configuration consumes nothing");
+    auto fails=[&](std::string data,LegacyBindings bindings,LegacyTickClockResolver resolver) {
+        std::istringstream stream(data); LegacyTickCsvReader reader(stream,c.layout,bindings,resolver,false);
+        LegacyTickRecord out; out.tick.instrument="sentinel"; const auto before=out;
+        Throws([&] {reader.Next(out);}); Throws([&] {reader.Next(out);});
+        Check(reader.RowsRead()==0 && SameLegacyRecord(out,before),"clock or session failure is atomic");
+    };
+    fails(LegacyLine(valid),AnyLegacyTime(),FixedLegacyClock(""));
+    fails(LegacyLine(valid),AnyLegacyTime(),FixedLegacyClock("20260229"));
+    fails(LegacyLine(valid),AnyLegacyTime(),FixedLegacyClock("20260921",841));
+    fails(LegacyLine(valid),AnyLegacyTime(),FixedLegacyClock("20260921",-841));
+    fails(LegacyLine(valid),AnyLegacyTime(),FixedLegacyClock("19700101",1));
+    fails(LegacyLine(valid),AnyLegacyTime("20260922"),FixedLegacyClock());
+    fails(LegacyLine(valid),{{"A",SessionSchedule({Window(0,1,"20260921")})}},FixedLegacyClock());
+    fails(LegacyLine(valid),AnyLegacyTime(),[](std::size_t,const std::string&,const std::string&,const std::string&)->LegacyTickClock { throw std::runtime_error("clock mapping absent"); });
+    auto changed=valid; changed[c.volume]="99";
+    std::istringstream decreasing(LegacyLine(valid)+LegacyLine(changed));
+    LegacyTickCsvReader decrease(decreasing,c.layout,AnyLegacyTime(),FixedLegacyClock(),false);
+    LegacyTickRecord out; Check(decrease.Next(out),"counter baseline"); const auto before=out;
+    Throws([&] {decrease.Next(out);}); Check(SameLegacyRecord(out,before),"no same-day counter reset");
+    auto later=LegacyCells(c,"A","20260921","20260921","00:00:01");
+    auto early=LegacyCells(c,"B");
+    std::istringstream reversed(LegacyLine(later)+LegacyLine(early));
+    LegacyTickCsvReader reverse(reversed,c.layout,AnyLegacyTime(),FixedLegacyClock(),false);
+    Check(reverse.Next(out),"global first time"); Throws([&] {reverse.Next(out);});
+    std::istringstream overrideDay(LegacyLine(LegacyCells(legacyProfiles[2])));
+    LegacyTickCsvReader overriding(overrideDay,LegacyTickCsvLayout::Immsg35,AnyLegacyTime(),FixedLegacyClock("20260920"),false);
+    Throws([&] {overriding.Next(out);});
+    // Calendar arithmetic table is independent of the parser's day algorithm.
+    struct CivilCase { const char* day; const char* time; int offset; std::int64_t utc; };
+    const CivilCase cases[] = {
+        {"19700101","00:00:00",0,0}, {"19691231","23:00:00",-60,0},
+        {"20000229","12:34:56",0,951827696000000LL},
+        {"20260921","00:00:00",480,1789920000000000LL},
+        {"20260921","00:00:00",840,1789898400000000LL},
+        {"20260921","00:00:00",-840,1789999200000000LL},
+        {"99991231","23:59:59",0,253402300799000000LL}
+    };
+    for(const auto& x : cases) {
+        std::istringstream stream(LegacyLine(LegacyCells(c,"A","20260921",x.day,x.time)));
+        LegacyTickCsvReader reader(stream,c.layout,AnyLegacyTime(),FixedLegacyClock(x.day,x.offset),true);
+        Check(reader.Next(out) && out.tick.timestampUs==x.utc && out.tick.volume==100,"civil-to-UTC independent table");
+    }
+    // Real I/O error is not clean EOF, and cannot be cleared to resume.
+    std::istringstream broken(LegacyLine(valid)); LegacyTickCsvReader brokenReader(broken,c.layout,AnyLegacyTime(),FixedLegacyClock(),false);
+    broken.setstate(std::ios::badbit); Throws([&] {brokenReader.Next(out);}); broken.clear(); Throws([&] {brokenReader.Next(out);});
+}
+class LegacyGeneratedBuffer : public std::streambuf {
+public:
+    explicit LegacyGeneratedBuffer(std::size_t count):count_(count) {}
+    std::size_t Generated() const {return generated_;}
+protected:
+    int_type underflow() override {
+        if(gptr() && gptr()<egptr()) return traits_type::to_int_type(*gptr());
+        if(generated_==count_) return traits_type::eof();
+        const auto n=generated_++; const auto seconds=n/1000;
+        const auto part=n%1000;
+        const auto digits=[](std::size_t value) {return (value<10?"0":"")+std::to_string(value);};
+        const std::string time=digits(seconds/3600)+":"+digits(seconds/60%60)+":"+digits(seconds%60);
+        line_=LegacyLine(LegacyCells(legacyProfiles[0],n%2?"B":"A","20260921","20260921",time,
+                                    std::to_string(part),std::to_string(100+n%17),std::to_string(100+n/2)));
+        char* p=&line_[0]; setg(p,p,p+line_.size()); return traits_type::to_int_type(*gptr());
+    }
+    pos_type seekoff(off_type,std::ios_base::seekdir,std::ios_base::openmode) override {throw std::runtime_error("must not seek");}
+    pos_type seekpos(pos_type,std::ios_base::openmode) override {throw std::runtime_error("must not seek");}
+private:
+    std::size_t count_,generated_=0; std::string line_;
+};
+void LegacyCsvStreamingOracle() {
+    const std::size_t count=100000;
+    LegacyGeneratedBuffer buffer(count); std::istream input(&buffer);
+    auto bindings=AnyLegacyTime();
+    // Exercise all 64 allowed bindings without retaining rows per binding.
+    for(int i=0;i<62;++i) bindings.emplace("UNUSED"+std::to_string(i),bindings.begin()->second);
+    LegacyTickCsvReader reader(input,LegacyTickCsvLayout::Hepta32,bindings,FixedLegacyClock(),false,false,count);
+    Check(buffer.Generated()==0,"headerless reader has no prefetch"); LegacyTickRecord record;
+    for(std::size_t n=0;n<count;++n) {
+        Check(reader.Next(record) && buffer.Generated()==n+1 && reader.RowsRead()==n+1,
+              "bounded non-seekable one-row read-ahead");
+        Check(record.tick.timestampUs==1789948800000000LL+static_cast<std::int64_t>(n)*1000 &&
+              record.tick.instrument==(n%2?"B":"A") && record.tick.sequence==n+1 &&
+              record.tick.volume==(n<2?0:1) && record.cumulativeVolume==static_cast<std::int64_t>(100+n/2) &&
+              record.tick.price==static_cast<double>(100+n%17),"large mixed legacy independent oracle");
+    }
+    const auto before=record;
+    Check(!reader.Next(record) && !reader.Next(record) && SameLegacyRecord(record,before),"streaming legacy EOF");
+}
+
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); }); }

@@ -348,6 +348,191 @@ MergedTickCsvReader::~MergedTickCsvReader() = default;
 bool MergedTickCsvReader::Next(Tick& output) { return impl_->Next(output); }
 std::size_t MergedTickCsvReader::RowsRead() const { return impl_->rows; }
 
+namespace {
+struct LegacyColumns {
+    std::size_t count, instrument, day, time, fraction, price, volume, turnover, interest;
+    int actionDay; // -1: absent; NEVER substitute TradingDay.
+    bool immsg, compactTime;
+};
+LegacyColumns LegacyProfile(LegacyTickCsvLayout layout) {
+    switch (layout) {
+    case LegacyTickCsvLayout::Hepta32: return {32,0,1,2,3,4,5,7,29,-1,false,false};
+    case LegacyTickCsvLayout::Immsg34: return {34,2,3,4,5,6,7,9,31,-1,true,false};
+    case LegacyTickCsvLayout::Immsg35: return {35,2,3,5,6,7,8,10,32,4,true,false};
+    case LegacyTickCsvLayout::Zs58: return {58,3,0,1,2,37,38,46,39,-1,false,true};
+    }
+    throw std::invalid_argument("RESEARCH_LEGACY_LAYOUT_INVALID");
+}
+std::vector<std::string> LegacyFields(const std::string& line, std::size_t count) {
+    std::vector<std::string> cells;
+    cells.reserve(count);
+    std::size_t begin = 0;
+    for (;;) {
+        const auto end = line.find(',', begin);
+        const auto length = (end == std::string::npos ? line.size() : end) - begin;
+        Require(cells.size() < count && length > 0 && length <= 128,
+                "RESEARCH_LEGACY_FIELD_INVALID");
+        std::string cell = line.substr(begin, length);
+        for (unsigned char c : cell)
+            Require(c >= 32 && c <= 126 && c != '"', "RESEARCH_LEGACY_FIELD_INVALID");
+        cells.push_back(std::move(cell));
+        if (end == std::string::npos) break;
+        begin = end + 1;
+    }
+    Require(cells.size() == count, "RESEARCH_LEGACY_FIELD_COUNT");
+    return cells;
+}
+void LegacyHeaderName(const std::string& name, const char* expected) {
+    std::string lower = name;
+    for (char& c : lower) if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+    Require(lower == expected, "RESEARCH_LEGACY_HEADER_INVALID");
+}
+void LegacyHeader(const std::string& line, const LegacyColumns& c) {
+    const auto cells = LegacyFields(line, c.count);
+    LegacyHeaderName(cells[c.instrument], "instrumentid");
+    LegacyHeaderName(cells[c.day], "tradingday");
+    LegacyHeaderName(cells[c.time], "updatetime");
+    LegacyHeaderName(cells[c.fraction], c.compactTime ? "updatemicrosec" : "updatemillisec");
+    LegacyHeaderName(cells[c.price], "lastprice");
+    LegacyHeaderName(cells[c.volume], "volume");
+    LegacyHeaderName(cells[c.turnover], "turnover");
+    LegacyHeaderName(cells[c.interest], "openinterest");
+    if (c.actionDay >= 0) LegacyHeaderName(cells[static_cast<std::size_t>(c.actionDay)], "actionday");
+    if (c.immsg) {
+        LegacyHeaderName(cells[0], "localtime");
+        LegacyHeaderName(cells[1], "msgtype");
+    }
+}
+double LegacyNumber(const std::string& field) {
+    double result = 0;
+    std::istringstream input(field); input.imbue(std::locale::classic());
+    input >> std::noskipws >> result;
+    Require(!input.fail() && input.peek() == std::char_traits<char>::eof() &&
+            std::isfinite(result), "RESEARCH_LEGACY_NUMBER_INVALID");
+    return result;
+}
+std::int64_t LegacyTimeOfDay(const std::string& time, const std::string& fraction, bool compact) {
+    Require(time.size() == (compact ? 6u : 8u), "RESEARCH_LEGACY_CLOCK_INVALID");
+    if (!compact) Require(time[2] == ':' && time[5] == ':', "RESEARCH_LEGACY_CLOCK_INVALID");
+    const auto hour = Unsigned(time.substr(0, 2));
+    const auto minute = Unsigned(time.substr(compact ? 2 : 3, 2));
+    const auto second = Unsigned(time.substr(compact ? 4 : 6, 2));
+    const auto part = Unsigned(fraction);
+    Require(hour < 24 && minute < 60 && second < 60 && part < (compact ? 1000000u : 1000u),
+            "RESEARCH_LEGACY_CLOCK_INVALID");
+    return static_cast<std::int64_t>((hour * 3600 + minute * 60 + second) * 1000000 +
+                                     part * (compact ? 1 : 1000));
+}
+std::int64_t LegacyUtc(const LegacyTickClock& clock, std::int64_t timeOfDay) {
+    ValidateTradingDay(clock.actionDay);
+    Require(clock.utcOffsetMinutes >= -840 && clock.utcOffsetMinutes <= 840,
+            "RESEARCH_LEGACY_UTC_OFFSET_INVALID");
+    const std::int64_t y = static_cast<std::int64_t>(Unsigned(clock.actionDay.substr(0,4))) - 1;
+    const auto month = Unsigned(clock.actionDay.substr(4,2));
+    const auto day = Unsigned(clock.actionDay.substr(6,2));
+    // Gregorian days before this year minus days before 1970. Four-digit years
+    // bound all arithmetic well inside int64; no mktime/host timezone is used.
+    std::int64_t days = 365*y + y/4 - y/100 + y/400 - 719162;
+    const int monthDays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    const auto year = y + 1;
+    const bool leap = year%4 == 0 && (year%100 != 0 || year%400 == 0);
+    for (std::size_t m = 1; m < month; ++m) days += monthDays[m-1] + (m == 2 && leap);
+    days += static_cast<std::int64_t>(day) - 1;
+    const auto utc = days*86400000000LL + timeOfDay -
+                     static_cast<std::int64_t>(clock.utcOffsetMinutes)*60000000LL;
+    Require(utc >= 0, "RESEARCH_LEGACY_UTC_BEFORE_EPOCH");
+    return utc;
+}
+}
+
+struct LegacyTickCsvReader::Impl {
+    std::istream& input;
+    LegacyColumns columns;
+    std::map<std::string, SessionSchedule> schedules;
+    std::map<std::string, CumulativeVolumeDecoder> decoders;
+    LegacyTickClockResolver resolver;
+    std::size_t maxRows, rows = 0;
+    std::int64_t lastTime = 0;
+    bool finished = false, failed = false;
+    Impl(std::istream& stream, LegacyTickCsvLayout layout,
+         std::map<std::string, SessionSchedule> bindings, LegacyTickClockResolver clock,
+         bool countFirst, bool hasHeader, std::size_t quota)
+        : input(stream), columns(LegacyProfile(layout)), schedules(std::move(bindings)),
+          resolver(std::move(clock)), maxRows(quota) {
+        Require(!schedules.empty() && schedules.size() <= 64, "RESEARCH_LEGACY_INSTRUMENT_LIMIT");
+        Require(static_cast<bool>(resolver), "RESEARCH_LEGACY_CLOCK_REQUIRED");
+        Require(quota > 0 && quota <= std::numeric_limits<std::uint64_t>::max(),
+                "RESEARCH_CSV_ROW_LIMIT_INVALID");
+        for (const auto& binding : schedules)
+            decoders.emplace(binding.first, CumulativeVolumeDecoder(binding.first, countFirst));
+        // Validate ALL configuration before reading any header. Input and
+        // resolver are borrowed/external capabilities; neither is invoked later
+        // after a row failure. Headerless construction does not consume input.
+        if (hasHeader) {
+            std::string line;
+            Require(ReadBoundedLine(input, line), "RESEARCH_CSV_HEADER_MISSING");
+            StripCR(line); LegacyHeader(line, columns);
+        }
+    }
+    bool Next(LegacyTickRecord& output) {
+        static_assert(std::is_nothrow_move_constructible<LegacyTickRecord>::value &&
+                      std::is_nothrow_move_assignable<LegacyTickRecord>::value &&
+                      std::is_nothrow_move_constructible<CumulativeVolumeDecoder>::value &&
+                      std::is_nothrow_move_assignable<CumulativeVolumeDecoder>::value,
+                      "legacy reader publication must not throw");
+        Require(!failed, "RESEARCH_LEGACY_CSV_READER_FAILED");
+        if (finished) return false;
+        try {
+            std::string line;
+            if (!ReadBoundedLine(input, line)) { finished = true; return false; }
+            StripCR(line);
+            Require(rows < maxRows, "RESEARCH_CSV_ROW_LIMIT");
+            LegacyTickRecord next;
+            next.sourceFields = LegacyFields(line, columns.count);
+            const auto& cells = next.sourceFields;
+            if (columns.immsg) Require(cells[1] == "IMMSG", "RESEARCH_LEGACY_MESSAGE_INVALID");
+            Tick cumulative;
+            cumulative.instrument = cells[columns.instrument];
+            auto decoder = decoders.find(cumulative.instrument);
+            Require(decoder != decoders.end(), "RESEARCH_LEGACY_INSTRUMENT_UNBOUND");
+            next.tradingDay = cells[columns.day]; ValidateTradingDay(next.tradingDay);
+            const auto timeOfDay = LegacyTimeOfDay(cells[columns.time], cells[columns.fraction], columns.compactTime);
+            const auto sourceDay = columns.actionDay < 0 ? std::string() : cells[static_cast<std::size_t>(columns.actionDay)];
+            if (!sourceDay.empty()) ValidateTradingDay(sourceDay);
+            cumulative.sequence = static_cast<std::uint64_t>(rows) + 1;
+            cumulative.price = LegacyNumber(cells[columns.price]);
+            next.cumulativeVolume = cumulative.volume = SignedNonnegative(cells[columns.volume]);
+            next.turnover = LegacyNumber(cells[columns.turnover]);
+            next.openInterest = LegacyNumber(cells[columns.interest]);
+            Require(next.turnover >= 0 && next.openInterest >= 0, "RESEARCH_LEGACY_NUMBER_NEGATIVE");
+            // Do not invoke user code for already-invalid prices or identity.
+            ValidateTick(cumulative);
+            const auto clock = resolver(rows + 1, cumulative.instrument, next.tradingDay, sourceDay);
+            Require(sourceDay.empty() || clock.actionDay == sourceDay, "RESEARCH_LEGACY_ACTION_DAY_CONFLICT");
+            cumulative.timestampUs = LegacyUtc(clock, timeOfDay);
+            Require(rows == 0 || cumulative.timestampUs >= lastTime, "RESEARCH_LEGACY_TIME_REVERSED");
+            const auto& session = schedules.at(cumulative.instrument).At(cumulative.timestampUs);
+            Require(session.tradingDay == next.tradingDay, "RESEARCH_LEGACY_SESSION_DAY_MISMATCH");
+            next.actionDay = clock.actionDay; next.utcOffsetMinutes = clock.utcOffsetMinutes;
+            // Decode a private candidate: a bad row cannot partially advance
+            // even the selected instrument's cumulative-volume state.
+            auto candidate = decoder->second;
+            next.tick = candidate.Decode(cumulative, next.tradingDay);
+            using std::swap;
+            swap(output, next); swap(decoder->second, candidate);
+            lastTime = cumulative.timestampUs; ++rows;
+            return true;
+        } catch (...) { failed = true; throw; }
+    }
+};
+LegacyTickCsvReader::LegacyTickCsvReader(std::istream& input, LegacyTickCsvLayout layout,
+    std::map<std::string, SessionSchedule> schedules, LegacyTickClockResolver resolver,
+    bool countFirst, bool hasHeader, std::size_t quota)
+    : impl_(new Impl(input, layout, std::move(schedules), std::move(resolver), countFirst, hasHeader, quota)) {}
+LegacyTickCsvReader::~LegacyTickCsvReader() = default;
+bool LegacyTickCsvReader::Next(LegacyTickRecord& output) { return impl_->Next(output); }
+std::size_t LegacyTickCsvReader::RowsRead() const { return impl_->rows; }
+
 std::vector<Tick> ReadTicksCsv(std::istream& input, std::size_t maxRows) {
     TickCsvReader reader(input, maxRows);
     std::vector<Tick> ticks;
