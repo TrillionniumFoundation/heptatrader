@@ -304,3 +304,59 @@ their actual preview values through that path while retaining their original
 journal and permission assertions. New codec fixtures are explicitly synthetic;
 only the existing service issues usable test permits. No new target, public
 header path, privileged dependency or production capability is added.
+
+
+## Reproducible native-path latency observations
+
+The existing `hepta_research_native_execution_tests` now measures the actual
+NativeStrategyClient -> Tool Gateway -> separately exec-launched Execution
+Service path. It uses eight independent, freshly initialized synthetic fixtures,
+each with one warmup and three measured serial place/cancel cycles. This respects
+the unchanged four-cancel/session/minute limit. It is **not** session rotation for
+production trading, a sustained-load measurement or a rate-limit bypass.
+
+The single `NATIVE_EXECUTION_LATENCY_JSON` record retains all 24 measured rows
+with fixture/cycle identities and integer `steady_clock` nanoseconds:
+
+| Field | Measured interval |
+|---|---|
+| `preview_ns` | Ordinary typed preview call, including transport and decoding |
+| `place_persist_ns` | Immutable request persistence, including required syncs |
+| `submit_stored_ns` | Stored-request read/validation through accepted response |
+| `place_pipeline_ns` | Preview start through submit response; includes intervening caller checks |
+| `status_ns` | Same-command status request/response |
+| `cancel_persist_ns` | Immutable cancellation persistence |
+| `cancel_stored_ns` | Stored cancellation through accepted response |
+| `cancel_terminal_observed_ns` | Cancellation start through durable terminal observation; **includes fixture IPC and 2ms polling** |
+| `duplicate_ns` | Exact-ID resubmission after cancellation; must remain a duplicate |
+
+No raw sample is emitted until all fixtures have shut down normally and their
+journals and Gateway audit chains have been verified. The test requires exactly
+32 placement and 32 cancellation send attempts including warmups, one send per
+command, no resurrected orders, and final zero position/active orders. Existing
+SIGKILL, lost-reply, revocation, forged-permit and installed-client checks remain.
+There is no new CMake target, installed API, broker connection or authority path.
+
+`tests/research/native_latency_report.py` requires matching successful CTest
+JUnit and full log records, rejects missing/duplicate/malformed samples and
+inconsistent counters, and computes integer nearest-rank p50/p95/p99. It retains
+raw observations, input hashes, clean local Git commit/tree identity, compiler,
+build flags and host context. Its behavioral self-tests run in the existing
+modular-integration CI; the resulting `native-latency.json` joins the existing
+`research-canonical-<head>` artifact. Missing evidence fails report generation;
+there is no invented duration or relaxed timing threshold.
+
+These are small-sample observations across independent fixtures. p99 is the
+largest of just 24 observed values, not a confident tail estimate. Startup and
+warmup are excluded; no CPU pinning or resource exclusivity is asserted. The
+Gateway uses threads in the client process, the Execution service is a separate
+process, and all use the same test UID. This does **not** qualify different-UID
+host isolation, LIVE/CTP, broker latency, exchange callbacks, HFT performance or an
+SLO. Build instrumentation and host contention can materially change results.
+
+For targeted reproduction, the same executable accepts `--latency-only`; a raw
+standalone run is diagnostic and cannot replace the complete CTest/JUnit input
+required by the report exporter. Local reconstructed Git commits must not be
+relabelled as remote source identities. The original source and external-consumer
+retirement boundaries in the [integration record](../technical/heptadll-integration.md)
+remain unchanged.

@@ -8,6 +8,8 @@
 #include <tool_host/session_supervisor_protocol.h>
 #include <tools/trading_tool_wire_contract.h>
 #include <atomic>
+#include <array>
+#include <vector>
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -976,16 +978,170 @@ void TestDurableClientProcessRecovery() {
               << " place_send_attempts=2 cancel_send_attempts=1 forged_flatten_rejected=1\n";
 }
 
+
+// Bounded SERIAL observations of the real HTT1 client/Gateway/exec-child path.
+// This is not a broker/HFT benchmark, a different-UID isolation claim or a timing
+// pass threshold. Keep setup, warmup, journal inspection and output outside the
+// measured calls. All sampled commands still undergo normal service checks.
+void TestNativeExecutionLatency() {
+    using Clock = std::chrono::steady_clock;
+    static_assert(Clock::is_steady, "latency observations require a monotonic clock");
+    // The unchanged Gateway permits four cancellations per session/minute.
+    // Separate, freshly initialized synthetic fixtures are independent trials,
+    // NOT a sustained-throughputput test or a way to rotate a production session.
+    const std::size_t fixtures = 8, warmup = 1, measured = 3, total = warmup + measured;
+    std::uint64_t totalAuditRecords = 0;
+    const std::array<const char*, 9> phases{{
+        "preview_ns", "place_persist_ns", "submit_stored_ns", "place_pipeline_ns",
+        "status_ns", "cancel_persist_ns", "cancel_stored_ns",
+        "cancel_terminal_observed_ns", "duplicate_ns"}};
+    std::vector<std::array<std::int64_t, 9>> samples;
+    samples.reserve(fixtures * measured);
+    auto Elapsed = [](Clock::time_point first, Clock::time_point last) {
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(last - first).count();
+        Require(ns >= 0, "monotonic latency clock reversed");
+        return static_cast<std::int64_t>(ns);
+    };
+    for (std::size_t trial = 0; trial < fixtures; ++trial) {
+        Fixture f(false);
+        ExecutionProcess execution(f.root.path);
+        f.StartGateway();
+        const std::string directory = f.root.path + "/latency-outbox";
+        Require(::mkdir(directory.c_str(), 0700) == 0, "latency outbox creation failed");
+        NativeToolClientConfig config;
+        config.socketPath = f.agentConfig.toolSocket;
+        config.sessionToken = f.token; config.timeoutMs = 5000;
+        NativeToolClient native(config); NativeStrategyClient client(native);
+        std::set<std::string> expectedPlaces, expectedCancels;
+        for (std::size_t cycle = 0; cycle < total; ++cycle) {
+            const auto suffix = std::to_string(cycle);
+            const std::string previewId = "latency-preview-" + suffix;
+            const std::string statusId = "latency-status-" + suffix;
+            const std::string cancelId = "latency-cancel-" + suffix;
+            // Nonmarketable fixed synthetic quote. No position is supplied by the
+            // client. Each cycle waits for the real cancellation to become durable.
+            PreparedOrder order("EUR.USD", Contract(), "BUY", 1, 1.1000, 1.1001,
+                                OmsJournal::NowEpochMs() + 120000);
+            TypedPreviewAuthorization approval;
+            NativeToolClientResult result; std::string reason;
+            std::array<std::int64_t, 9> row{};
+            const auto pipelineBegin = Clock::now();
+            const bool approved = client.PreviewAuthorized(order, previewId, approval, result, reason);
+            const auto previewEnd = Clock::now();
+            Require(approved && result.envelope.status == "ok", "latency preview: " + reason);
+            Require(expectedPlaces.insert(approval.commandId).second, "latency preview reused an identity");
+            const auto persistBegin = Clock::now();
+            const bool persisted = client.Persist(directory, order, approval.commandId, approval.previewPermit, reason);
+            const auto persistEnd = Clock::now();
+            Require(persisted, "latency placement persistence: " + reason);
+            const auto submitBegin = Clock::now();
+            const bool submitted = client.SubmitStored(directory, approval.commandId, result, reason);
+            const auto submitEnd = Clock::now();
+            Require(submitted && result.envelope.status == "ok" && result.envelope.orderId >= 0,
+                    "latency placement not accepted: " + reason + result.responseJson);
+            const long serverOrderId = result.envelope.orderId;
+            row[0] = Elapsed(pipelineBegin, previewEnd);
+            row[1] = Elapsed(persistBegin, persistEnd);
+            row[2] = Elapsed(submitBegin, submitEnd);
+            row[3] = Elapsed(pipelineBegin, submitEnd); // Includes client validation/bookkeeping between calls.
+            execution.Await(cycle + 1, 0, 1);
+            const auto statusBegin = Clock::now();
+            const bool known = client.Status(approval.commandId, statusId, result, reason);
+            const auto statusEnd = Clock::now();
+            Require(known && result.envelope.status == "ok" &&
+                    result.envelope.payloadJson.find(approval.commandId) != std::string::npos,
+                    "latency status lost the submitted command");
+            row[4] = Elapsed(statusBegin, statusEnd);
+            const PreparedCancellation cancellation(serverOrderId);
+            const auto cancelPersistBegin = Clock::now();
+            const bool cancelPersisted = client.Persist(directory, cancellation, cancelId, reason);
+            const auto cancelPersistEnd = Clock::now();
+            Require(cancelPersisted, "latency cancellation persistence: " + reason);
+            const auto cancelBegin = Clock::now();
+            const bool cancelled = client.SubmitStored(directory, cancelId, result, reason);
+            const auto cancelEnd = Clock::now();
+            Require(cancelled && result.envelope.status == "ok", "latency cancel: " + reason + result.responseJson);
+            execution.Await(cycle + 1, 0, 0, true, 0, cycle + 1);
+            const auto terminalEnd = Clock::now();
+            Require(expectedCancels.insert(cancelId).second, "duplicate latency cancel identity");
+            row[5] = Elapsed(cancelPersistBegin, cancelPersistEnd);
+            row[6] = Elapsed(cancelBegin, cancelEnd);
+            // Includes the test-only observation IPC and 2ms polling, NOT a venue
+            // callback latency or an authoritative application event-feed benchmark.
+            row[7] = Elapsed(cancelBegin, terminalEnd);
+            const auto retryBegin = Clock::now();
+            const bool duplicate = client.SubmitStored(directory, approval.commandId, result, reason);
+            const auto retryEnd = Clock::now();
+            Require(duplicate && result.envelope.status == "duplicate" && result.envelope.orderId == serverOrderId,
+                    "latency same-ID retry resurrected a cancelled order");
+            row[8] = Elapsed(retryBegin, retryEnd);
+            execution.Await(cycle + 1, 0, 0, true, 0, cycle + 1);
+            if (cycle >= warmup) samples.push_back(row);
+        }
+        // Do not publish success-shaped timing output before independently proving
+        // the actual authority path. Warmup sends are included in these counts.
+        f.gateway->Stop(); f.gateway.reset(); execution.Stop();
+        OmsJournal journal;
+        Require(journal.Init(f.executionConfig.journalPath), "latency journal verification open");
+        std::map<std::string, unsigned int> sends, cancels;
+        Require(journal.Replay([&](const OmsJournalEvent& event) {
+            if (event.eventType == "place_send_attempt") ++sends[event.reqId];
+            if (event.eventType == "cancel_send_attempt") ++cancels[event.reqId];
+        }) > 0, "latency journal empty/invalid");
+        Require(sends.size() == total && cancels.size() == total, "latency unexpected/missing venue sends");
+        for (const auto& id : expectedPlaces)
+            Require(sends.at(id) == 1, "latency placement sent more than once");
+        for (const auto& id : expectedCancels)
+            Require(cancels.at(id) == 1, "latency cancellation sent more than once");
+        std::uint64_t auditRecords = 0; std::string reason;
+        Require(SessionSupervisorAuditJournal::Verify(f.agentConfig.supervisorAuditJournalPath, auditRecords, reason) &&
+                auditRecords > 0, "latency Gateway audit invalid: " + reason);
+        totalAuditRecords += auditRecords;
+    }
+    Require(samples.size() == fixtures * measured, "latency sample count changed");
+    std::ostringstream output;
+    output.imbue(std::locale::classic());
+    output << "NATIVE_EXECUTION_LATENCY_JSON={\"schema\":\"heptatrader.native-execution-latency.v1\","
+           << "\"unit\":\"ns\",\"clock\":\"steady_clock\",\"concurrency\":1,"
+           << "\"venue\":\"SIMULATOR\",\"execution_process\":\"separate_exec\","
+           << "\"gateway_process\":\"client_process_threads\",\"broker_authorized\":false,"
+           << "\"different_uid_isolation\":false,\"cold_start_included\":false,"
+           << "\"fixture_count\":" << fixtures
+           << ",\"warmup_per_fixture\":" << warmup << ",\"measured_per_fixture\":" << measured
+           << ",\"warmup_cycles\":" << fixtures * warmup << ",\"measured_cycles\":" << fixtures * measured
+           << ",\"place_send_attempts\":" << fixtures * total << ",\"cancel_send_attempts\":" << fixtures * total
+           << ",\"max_send_attempts_per_command\":1,\"final_position\":0,\"final_active_orders\":0"
+           << ",\"audit_records\":" << totalAuditRecords << ",\"samples\":[";
+    for (std::size_t row = 0; row < samples.size(); ++row) {
+        if (row) output << ',';
+        output << "{\"fixture_index\":" << row / measured
+               << ",\"cycle_index\":" << warmup + row % measured;
+        for (std::size_t phase = 0; phase < phases.size(); ++phase) {
+            output << ',';
+            output << '"' << phases[phase] << "\":" << samples[row][phase];
+        }
+        output << '}';
+    }
+    output << "]}";
+    std::cout << output.str() << '\n';
+    Require(static_cast<bool>(std::cout), "latency output failed");
+}
+
 }
 int main(int argc, char** argv) {
     try {
         if (argc == 3 && std::string(argv[1]) == "--execution-child") return RunExecutionChild(argv[2]);
         if (argc == 7 && std::string(argv[1]) == "--outbox-child")
             return RunOutboxChild(argv[2], argv[3], argv[4], argv[5], argv[6]);
+        if (argc == 2 && std::string(argv[1]) == "--latency-only") {
+            TestNativeExecutionLatency();
+            return 0;
+        }
         Require(argc == 1, "unsupported native Execution test argument");
         TestNativeExecutionLifecycle();
         TestNativeExecutionProcessCrashes();
         TestDurableClientProcessRecovery();
+        TestNativeExecutionLatency();
         std::cout << "PASS real Native/Gateway/Execution lifecycle and SIGKILL recovery\n";
         return 0;
     }

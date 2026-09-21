@@ -159,7 +159,13 @@ jobs:
           printf '%s\n' "$EXPECTED_SHA" > build/research-native/SOURCE_COMMIT
           cmake --build build/research-native --target hepta_research_test_binaries --parallel 2
           ctest --test-dir build/research-native -R '^hepta_research_' \
-            --no-tests=error --output-on-failure --output-junit results.xml
+            --no-tests=error --output-on-failure --test-output-size-passed 65536 --output-junit results.xml
+          python3 tests/research/native_latency_report.py --self-test
+          python3 tests/research/native_latency_report.py \
+            --log build/research-native/Testing/Temporary/LastTest.log \
+            --junit build/research-native/results.xml \
+            --build-dir build/research-native --source-sha "$EXPECTED_SHA" \
+            --output build/research-native/native-latency.json
           python3 scripts/verify_build_ownership.py --profile core
           git diff --exit-code
       - name: Stage the verified forward-only client SDK
@@ -191,6 +197,7 @@ jobs:
           path: |
             build/research-native/SOURCE_COMMIT
             build/research-native/results.xml
+            build/research-native/native-latency.json
             build/research-native/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 7

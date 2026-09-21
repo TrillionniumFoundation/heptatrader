@@ -287,3 +287,14 @@ The source reference, external-consumer and archival limitations above remain.
 Exact-head CI outcomes are recorded on PR #107, not inferred from the preceding
 commit's completed CI. Existing required checks, production installation,
 module/build ownership and read-only workflow permissions are unchanged.
+
+
+## Native-path timing continuation
+
+Continuation from `7956c596234a3f0e459039aa98822ffa03dc5013` adds reproducible
+[phase-level latency observations](../modules/research-sdk.md#reproducible-native-path-latency-observations)
+to the existing real-service test and public CI artifact, without a new runtime,
+installed interface or weakened risk limit. Independent journal/audit assertions
+remain mandatory; observations are not broker, HFT or historical-consumer parity
+claims. Source archival and the remaining qualification boundaries above are
+unchanged. Exact-head results belong to the PR and its run artifacts.
