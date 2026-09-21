@@ -63,6 +63,22 @@ integer-sum forecasts and tests delayed/no-signal/invalid callbacks. The existin
 installed/relocated C++11 consumer also links and executes this public method.
 These are synthetic research tests, not a broker or latency qualification.
 
+## CSV input stream exception policy
+
+Every CSV entry point accepts caller-enabled `eofbit`, `failbit` and `badbit`
+exception masks without disabling them or clearing the borrowed stream's state.
+A clean end of input completes a valid final row even without a line terminator;
+a subsequent cursor call returns `false` with unchanged output and row count.
+A valid header-only tick/bar input is an empty dataset, not a missing header.
+
+An actual source failure remains an error, including a stream-buffer exception
+or `badbit` combined with `eofbit`. A syntactically complete row cut off by an
+I/O fault is not salvaged as a valid final record. The existing bounded line,
+row quota, schema validation and permanent cursor-failure rules still apply.
+The same contract covers portable ticks, bars, sessions, merged tick streams
+and the explicitly supported legacy tick/bar profiles. It grants no additional
+completion evidence or authority to raw legacy data.
+
 ## Incremental completed-bar ingestion
 
 `BarCsvReader` extends the existing Data SDK's completed-bar CSV boundary, not
@@ -490,8 +506,9 @@ hepta-research-replay --forecast-legacy-bars \
 Select `Futures11`, `Futures13` or `Stock7`. This CLI accepts **headerless** source
 bars only; explicit custom-header selection remains available in the Data SDK.
 The existing 60-second start-labelled futures and 180-second end-labelled stock
-profiles, civil-1601 futures timestamps, and per-bar versus cumulative amounts
-are unchanged. Arbitrary periods/epochs are not inferred or silently rescaled.
+default profiles, civil-1601 futures timestamps, and per-bar versus cumulative
+amounts are unchanged. An explicit `--period-us` may select a positive duration;
+no period or epoch is inferred or silently rescaled.
 `FAST` and `SLOW` select the existing illustrative moving-average calculation;
 this is not a port of every historical strategy or a performance recommendation.
 
@@ -565,3 +582,51 @@ The retained HeptaDLL source and alternate integration branches remain intact;
 CTP remains deferred behind XT and source archival still requires actual
 consumer/authorization disposition. Exact-head CI observations belong on PR #107,
 not in an unconditional source-code success declaration.
+
+## Explicit duration for already formed legacy bars
+
+The existing `LegacyBarCsvReader` now has a second constructor accepting a
+positive `std::int64_t periodUs` immediately after the evidence resolver. The
+original constructor remains defined, with its original 60-second futures and
+180-second stock defaults. Both use the same Data implementation; no extra
+reader library, price transformation, matcher, or trading authority is introduced.
+
+```cpp
+LegacyBarCsvReader bars(raw, LegacyBarCsvLayout::Futures13, "TEST.FUT",
+                        sessions, independentEvidence, 300000000LL);
+```
+
+The value declares the duration of bars ALREADY in the input. It does not
+aggregate one-minute OHLC into five-minute OHLC. Futures remain start-labelled;
+Stock7 remains end-labelled, regardless of the chosen duration. Subsecond
+futures labels retain their numeric microseconds; the stock text label retains
+its source second precision. Gaps remain gaps. Quantity, turnover, tick count,
+completion and actual availability keep their existing independent contracts.
+
+The installed CLI exposes the same choice only in completed-bar forecast mode:
+
+```sh
+hepta-research-replay --forecast-legacy-bars \
+  Futures13 actual-five-minute-bars.csv bar-evidence.csv sessions.csv TEST.FUT \
+  5 20 1000000 --period-us 300000000 > forecasts.candidate.csv && \
+  mv forecasts.candidate.csv forecasts.csv
+```
+
+`[MAX_ROWS] [--period-us POSITIVE_MICROSECONDS]` are trailing optional arguments
+in that order. Omitting the option retains the original profile duration. Zero,
+negative, fractional/scientific notation, overflow, a missing value, an unknown
+option or use in Tick import mode fails. The SDK rejects nonpositive durations
+before consuming an optional header. Positive durations still undergo checked
+start/end arithmetic, same-session, non-overlap, extremum-time and observation
+time validation. Neither adjacent sessions nor their breaks are silently joined.
+Daily bars spanning breaks require a separate explicit contract; this option
+does not turn them into a one-session bar or infer their exchange calendar.
+
+The existing Data test covers explicit durations from one microsecond to one
+hour, signed UTC offsets, optional headers, preserved source fields and actual
+observation times, original/default-overload parity, extreme arithmetic,
+end-exclusive extrema, pre-epoch underflow, overlap, session boundaries, quota,
+poisoned cursors and a 1,000-row non-seekable sparse stream. The existing CLI
+and relocated-SDK tests consume the new interface, compare clocks/forecasts
+with independent fixtures, and reject late-invalid input before stdout release.
+All earlier input, replay, client and installation assertions remain active.

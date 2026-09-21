@@ -217,3 +217,19 @@ age bound as before. External flows remain unchanged. Source calls are additive;
 rebuild consumers because class layout/binary ABI equivalence is not promised.
 The existing installed/relocated C++11 SDK consumer executes both new methods.
 This is not a CTP clearing, margin, tax or brokerage settlement implementation.
+
+## Explicit completed-bar durations
+
+`HeptaResearch::Data` exports both `LegacyBarCsvReader` constructor overloads.
+The original retains its profile defaults; the second takes a positive UTC
+microsecond duration after `LegacyBarEvidenceResolver`. Existing constructor
+symbols and defaults are retained. New clients using that overload must link
+the matching current archive rather than an older archive with newer headers.
+The object still holds only its private implementation pointer.
+
+Duration declares the already formed input interval, not a resampling request.
+The profile's start/end label, epoch, fields and independent evidence contract
+remain unchanged. See [input and CLI semantics](README.md#explicit-duration-for-already-formed-legacy-bars).
+The relocated external C++11 consumer exercises both overloads, the new Data
+symbol, observation-aware Strategy calls and portable bar round trips. No new
+installed header, archive, package component or production dependency is added.

@@ -70,6 +70,29 @@ int main() {
     Require(streamReader.Next(streamed) && streamed.sequence == 2 && streamed.price == 101);
     Require(!streamReader.Next(streamed) && !streamReader.Next(streamed) &&
             streamReader.RowsRead() == 2 && streamed.sequence == 2);
+    // The installed Data archive must support callers that enable stream
+    // exceptions, not only the default-mask istringstreams used above.
+    for (unsigned bits=0; bits!=8; ++bits) {
+        std::ios::iostate mask=std::ios::goodbit;
+        if(bits&1) mask|=std::ios::eofbit;
+        if(bits&2) mask|=std::ios::failbit;
+        if(bits&4) mask|=std::ios::badbit;
+        std::istringstream throwingTicks("instrument,timestamp_us,sequence,price,volume\nTEST.FUT,1,1,100,2");
+        throwingTicks.exceptions(mask); TickCsvReader throwingReader(throwingTicks,1); Tick item;
+        Require(throwingReader.Next(item) && item.volume==2 && !throwingReader.Next(item) &&
+                !throwingReader.Next(item) && throwingReader.RowsRead()==1 && item.volume==2 &&
+                throwingTicks.exceptions()==mask && throwingTicks.eof() && !throwingTicks.bad());
+        std::string text=barCsv.str(); text.pop_back(); // Valid final row, no newline.
+        std::istringstream throwingBars(text); throwingBars.exceptions(mask);
+        BarCsvReader throwingBarReader(throwingBars,3); Bar itemBar;
+        MovingAverageForecast observed(1,2); Forecast observedForecast;
+        Require(throwingBarReader.Next(itemBar) && !observed.ObserveCompletedBar(itemBar,100,observedForecast));
+        Require(throwingBarReader.Next(itemBar) && observed.ObserveCompletedBar(itemBar,110,observedForecast));
+        Require(throwingBarReader.Next(itemBar) && observed.ObserveCompletedBar(itemBar,120,observedForecast) &&
+                observedForecast.direction==-1 && observedForecast.observedAtUs==120);
+        Require(!throwingBarReader.Next(itemBar) && throwingBarReader.RowsRead()==3 && itemBar.close==101 &&
+                throwingBars.exceptions()==mask && throwingBars.eof() && !throwingBars.bad());
+    }
     MovingAverageForecast strategy(1, 2); Forecast forecast;
     Require(!strategy.OnCompletedBar(first, forecast));
     Require(strategy.OnCompletedBar(second, forecast) && forecast.direction == 1);
@@ -336,6 +359,33 @@ int main() {
         std::ostringstream portable; WriteBarsCsv(portable, {combinedBar});
         std::istringstream converted(portable.str());
         Require(ReadBarsCsv(converted).at(0).volume == 36);
+        // Independently declared SHORTER intervals preserve the original
+        // profile's labels and quantities. Gaps are not filled or resampled.
+        const std::int64_t explicitPeriod = stock ? 60000000LL : 30000000LL;
+        std::istringstream timedInput(raw.str());
+        timedInput.exceptions(std::ios::badbit|std::ios::failbit|std::ios::eofbit);
+        LegacyBarCsvReader timedBars(timedInput,layout,"BAR.FUT",SessionSchedule({session}),
+                                     evidence,explicitPeriod,"",3);
+        MovingAverageForecast timedSignal(1,2); Forecast timedForecast;
+        std::vector<Bar> timedHistory;
+        for(int row=0;row<3;++row) {
+            Require(timedBars.Next(record) && record.bar.endUs-record.bar.beginUs==explicitPeriod &&
+                    record.bar.beginUs==utcDay+row*period+(stock?period-explicitPeriod:0) &&
+                    record.bar.volume==12 && record.bar.tickCount==6);
+            const bool signal=timedSignal.ObserveCompletedBar(record.bar,record.observedAtUs,timedForecast);
+            Require(signal==(row!=0));
+            if(signal) Require(timedForecast.observedAtUs==utcDay+(row+1)*period+5000000 &&
+                               timedForecast.direction==(row==1?1:-1));
+            timedHistory.push_back(record.bar);
+        }
+        Require(!timedBars.Next(record) && timedBars.RowsRead()==3);
+        std::ostringstream timedCsv;WriteBarsCsv(timedCsv,timedHistory);
+        std::istringstream timedRoundtrip(timedCsv.str());
+        Require(ReadBarsCsv(timedRoundtrip).at(2).endUs-timedHistory.at(2).beginUs==explicitPeriod);
+        std::istringstream invalidPeriod(raw.str());bool badPeriod=false;
+        try {LegacyBarCsvReader invalid(invalidPeriod,layout,"BAR.FUT",SessionSchedule({session}),evidence,0);}
+        catch(const std::invalid_argument&){badPeriod=true;}
+        Require(badPeriod && invalidPeriod.tellg()==0);
         // A CSV row alone never proves that a completed bar was delivered.
         std::istringstream unproven(raw.str());
         LegacyBarCsvReader missingEvidence(unproven, layout, "BAR.FUT", SessionSchedule({session}),

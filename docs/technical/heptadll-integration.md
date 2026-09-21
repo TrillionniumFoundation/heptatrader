@@ -30,7 +30,7 @@ invented by this integration.
 |---|---|
 | `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, OHLC-field extrema, latest strict threshold queries, confirmed peaks/troughs, reverse indexing, retained-day count and OHLCV merging. These are explicit new APIs, not compatibility aliases for historical signatures. |
 | `heptaDate`, `heptaTimeStamp`, `heptaProductTradeTime`, `heptaChinaTradingCalendar` | Explicit UTC session windows and Gregorian trading-day validation. Old exchange-rule tables and implicit local-time assumptions are not republished as current rules. |
-| CSV/data helpers | Strict portable tick/session/completed-bar CSV, four selected legacy Tick layouts and three selected completed-bar layouts through the SAME Data SDK. Mixed Tick instruments, explicit source clocks, correct per-bar amounts, original-column retention and independent completion/observation evidence are supported. Proprietary binary cache layouts and historical datasets remain in the source repository. |
+| CSV/data helpers | Strict portable tick/session/completed-bar CSV, four selected legacy Tick layouts and three selected completed-bar layouts with default or explicitly declared positive duration through the SAME Data SDK. Mixed Tick instruments, explicit source clocks, correct per-bar amounts, original-column retention and independent completion/observation evidence are supported. Proprietary binary cache layouts and historical datasets remain in the source repository. |
 | `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees, fill identity and offline variation-settlement events. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
 | `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a NativeToolClient adapter with a separate relocatable developer package and private durable request recovery. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
@@ -370,3 +370,57 @@ remain unverified rather than declared migrated. Source/archive/release-entry
 retirement conditions above still apply. CTP remains deferred behind XT, LIVE
 remains unavailable, and Gateway/Execution/OMS/risk code and existing workflow
 permissions and required checks are unchanged.
+
+
+## Shared CSV stream exception boundary
+
+Continuation input: `26f47d11983999dd42fbb4a59fe98c3ff9c37ef6`, tree
+`fa268dd4b0a87ff1583a0adb406b3ec840573cda`. The common Data SDK line reader
+now distinguishes a caller-requested EOF exception from an actual input failure.
+Valid unterminated rows and header-only datasets no longer poison the cursor
+under enabled stream exceptions. Actual source faults, corruption, size/quota
+limits and permanent failure remain enforced; the caller's exception mask and
+stream state are never rewritten.
+
+The existing Data executable covers all eight exception masks, three line-ending
+forms, the portable/merged/session APIs and all seven supported legacy layouts,
+including actual throwing non-seekable source failures. The existing relocated
+C++11 consumer reads exception-enabled input through the exported Data archive
+and delivers completed bars to the observation-aware Strategy API. This adds no
+runtime, target, source file, dependency, production install, broker path or new
+workflow. Exact-tree local results and exact-commit remote results must be
+reported separately; the prior head's green CI does not accept this delta.
+
+## Explicit-duration input continuation
+
+Continues public head `bf973c1a653ec197b15a9ff2d25a4782ee87788e` on the existing
+PR #107. The previous unpublished EOF-exception correction is reapplied to that
+head and independently re-tested; its prior local success is not treated as
+acceptance of this candidate. The shared bounded CSV reader distinguishes clean
+EOF with exception masks from genuine I/O failure, without clearing stream
+state, weakening quotas, skipping records or reviving failed cursors.
+
+The SAME Data SDK adds an explicit positive-duration overload for its selected
+legacy bar layouts. The existing overload/symbol and fixed defaults remain.
+The existing offline executable exposes it as trailing `--period-us`; all
+original invocations remain supported. Actual bars are interpreted, not
+resampled: the profile's label, numeric epoch, source quantities, clock evidence,
+completion and actual observation time stay authoritative for this research
+input. Source fields are retained; no synthetic ticks, fills or completion are
+created. Cross-session/daily-with-break profiles and all other cache/epoch modes
+are not silently claimed implemented.
+
+The existing behavioral tests add independent duration/clock/forecast cases,
+exact default parity, exception-enabled EOF, checked interval arithmetic,
+future/extremum/session/overlap rejection, preserved output/counters after
+failure, a non-seekable sparse reader and a relocated external C++11 consumer.
+The CLI's all-input-before-output rule and failure-on-late-evidence remain.
+No test assertion is removed or relaxed. No target, translation unit, installed
+header path, production installation, workflow permission, venue capability,
+Gateway/Execution/journal/risk implementation or private-source import changes.
+
+Exact-tree local validation and exact-head remote CI observations are recorded
+on the PR. Consumer inventory, external strategies, other historical formats,
+matching/clearing equivalence and source-archive readiness remain separate,
+explicit conditions. The retained source/history and alternate branches are
+untouched; CTP remains deferred behind XT and LIVE remains unavailable.

@@ -273,6 +273,96 @@ def legacy_input_modes(binary: str, examples: Path) -> None:
     print("PASS: seven explicit legacy layouts, evidence-bound clocks, actual replay/forecasts and validation-before-output")
 
 
+
+def explicit_bar_period_modes(binary: str) -> None:
+    """Real source/installed executable, independent period/clock/forecast oracle."""
+    from datetime import datetime, timezone
+    day_us = 1789948800000000  # 2026-09-21 UTC fixture; no machine timezone.
+    file_epoch = 11644473600000000
+    closes = [100, 102, 102, 99, 99, 104]
+    header = "row,instrument,source_civil_day,utc_offset_minutes,tick_count,observed_at_us,complete\n"
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, capture_output=True, text=True, timeout=10)
+
+    def rejected(command: list[str]) -> None:
+        value = run(command)
+        require(value.returncode != 0 and not value.stdout,
+                "invalid explicit-period invocation released a forecast")
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        raw, proof, sessions = (root / name for name in ("bars.csv", "proof.csv", "sessions.csv"))
+        for layout in ("Futures11", "Futures13", "Stock7"):
+            stock = layout == "Stock7"
+            for period in (999999, 7000000, 60000000, 180000000, 300000000, 3600000000):
+                stride = ((period + 999999) // 1000000) * 1000000
+                origin = 3600000000 + (0 if stock else 123456)
+                for offset in (-60, 480):
+                    utc_day = day_us - offset * 60000000
+                    sessions.write_text(f"open_us,close_us,trading_day\n{utc_day},{utc_day + 86400000000},20260922\n",
+                                        encoding="ascii")
+                    rows, proofs, expected = [], [], []
+                    last_direction = 0
+                    for i, price in enumerate(closes):
+                        label = day_us + origin + i * stride
+                        civil = datetime.fromtimestamp(label // 1000000, timezone.utc)
+                        if stock:
+                            fields = [civil.strftime("%Y-%m-%d %H:%M:%S"), *([str(price)] * 4), "12", "1200"]
+                        else:
+                            fields = [str(file_epoch + label), civil.strftime("%Y%m%d_%H%M%S"),
+                                      *([str(price)] * 4), str(1000 + i * 12), "12",
+                                      str(100000 + i * 1200), "1200", "77"]
+                            if layout == "Futures13":
+                                fields += [str(file_epoch + label), str(file_epoch + label + period - 1)]
+                        begin = label - offset * 60000000 - (period if stock else 0)
+                        end = begin + period
+                        observed = end + 19000001
+                        rows.append(",".join(fields))
+                        proofs.append(f"{i+1},TEST.FUT,20260921,{offset},8,{observed},1")
+                        if i:
+                            direction = (price > closes[i-1]) - (price < closes[i-1])
+                            if direction != last_direction:
+                                expected.append(["TEST.FUT", "20260922", str(begin), str(end), str(observed), str(direction)])
+                                last_direction = direction
+                    # Neither source nor evidence requires a final newline.
+                    raw.write_text("\n".join(rows), encoding="ascii")
+                    proof.write_text(header + "\n".join(proofs), encoding="ascii")
+                    base = [binary, "--forecast-legacy-bars", layout, str(raw), str(proof), str(sessions),
+                            "TEST.FUT", "1", "2"]
+                    expected_csv = "instrument,trading_day,bar_begin_us,bar_end_us,observed_at_us,direction\n" + "".join(
+                        ",".join(row) + "\n" for row in expected)
+                    for quota in ([], [str(len(rows))]):
+                        command = [*base, *quota, "--period-us", str(period)]
+                        value = run(command)
+                        require(value.returncode == 0 and value.stdout == expected_csv and not value.stderr,
+                                f"{layout} explicit-period consumer mismatch: {value.stderr}")
+                    if period == (180000000 if stock else 60000000):
+                        original = run(base)
+                        require(original.returncode == 0 and original.stdout == expected_csv,
+                                "explicit default changed original profile behavior")
+                    # A late error after earlier signals were spooled must
+                    # publish no header, prefix, or apparent successful result.
+                    broken = proofs.copy()
+                    last = broken[-1].split(","); last[-2] = str(end - 1); broken[-1] = ",".join(last)
+                    proof.write_text(header + "\n".join(broken), encoding="ascii")
+                    rejected(command)
+                    proof.write_text(header + "\n".join(proofs), encoding="ascii")
+                    rejected([*base, "1", "--period-us", str(period)])
+            for bad in ("", "0", "-1", "+1", "1.0", "1e6", "9223372036854775807",
+                        "9223372036854775808", "18446744073709551616"):
+                rejected([*base, "--period-us", bad])
+            for tail in (["--period-us"], ["--duration", "7000000"],
+                         ["--period-us", "7000000", "6"],
+                         ["6", "--period-us", "7000000", "--period-us", "60000000"]):
+                rejected([*base, *tail])
+            # This flag cannot turn the Tick mode into a new input contract.
+            tick_command = base.copy(); tick_command[1] = "--import-legacy-ticks"
+            tick_command[2] = "Hepta32"; tick_command[7:9] = ["baseline", "headerless"]
+            rejected([*tick_command, "--period-us", "7000000"])
+    print("PASS: explicit bar periods, independent clock/forecast oracle, default parity and atomic rejection")
+
+
 def main() -> None:
     binary, examples = sys.argv[1], Path(sys.argv[2])
     args = [binary, str(examples / "ticks.csv"), str(examples / "sessions.csv"),
@@ -373,6 +463,7 @@ def main() -> None:
     failure = subprocess.run(invalid, capture_output=True, text=True, timeout=10)
     require(failure.returncode != 0, "zero quantity accepted")
     legacy_input_modes(binary, examples)
+    explicit_bar_period_modes(binary)
     print("PASS: deterministic streamed output, duplicates, large input, EOF and late-error rejection")
 
 

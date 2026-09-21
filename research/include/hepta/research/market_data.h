@@ -89,6 +89,11 @@ private:
     Tick lastInput_, lastOutput_;
 };
 
+// Shared CSV stream contract: caller-enabled eofbit/failbit/badbit exception
+// masks are supported without changing them or clearing the stream state.
+// A clean EOF can terminate the final unterminated row. badbit, non-EOF failbit
+// and backing-source exceptions are errors, never salvaged final rows. Cursor
+// error/poisoning rules below remain in force across every CSV input profile.
 // Strict portable CSV, not a decoder for ABI-dependent legacy binary dumps.
 // Header: instrument,timestamp_us,sequence,price,volume
 // Incremental reader: retains no tick history and needs no seekable stream.
@@ -192,8 +197,10 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-// Historical completed-bar inputs. Futures11/Futures13 are start-labelled
-// one-minute rows; Stock7 is an end-labelled three-minute row. The caller must
+// Historical completed-bar inputs. Defaults: Futures11/Futures13 are start-
+// labelled one-minute rows; Stock7 is an end-labelled three-minute row. The
+// explicit-period overload changes only duration, not the label convention,
+// numeric epoch, columns or evidence requirements. The caller must
 // select the profile; column counts never select it implicitly. Futures numeric
 // timestamps use the reviewed Hepta civil FILETIME-microsecond epoch (1601),
 // NOT Unix time. Zero StartTime means use the required civil text; a nonzero
@@ -240,6 +247,18 @@ public:
     LegacyBarCsvReader(std::istream& input, LegacyBarCsvLayout layout,
         std::string instrument, SessionSchedule schedule,
         LegacyBarEvidenceResolver evidenceResolver,
+        std::string expectedHeader = "", std::size_t maxRows = 1000000);
+    // Explicit positive duration in UTC microseconds, fixed for this cursor.
+    // No duration inference from filenames, adjacent rows, volume or EOF.
+    // This interprets already formed bars; it does NOT aggregate/resample them.
+    // Start/end labels retain the selected profile's convention. Each interval
+    // must still fit one supplied session and satisfy independently supplied
+    // completion/availability evidence. Zero/negative durations are rejected
+    // before consuming input; checked interval arithmetic rejects overflow.
+    // The original overload and its default-duration ABI remain available.
+    LegacyBarCsvReader(std::istream& input, LegacyBarCsvLayout layout,
+        std::string instrument, SessionSchedule schedule,
+        LegacyBarEvidenceResolver evidenceResolver, std::int64_t periodUs,
         std::string expectedHeader = "", std::size_t maxRows = 1000000);
     ~LegacyBarCsvReader();
     LegacyBarCsvReader(const LegacyBarCsvReader&) = delete;

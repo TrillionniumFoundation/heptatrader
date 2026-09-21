@@ -134,15 +134,25 @@ private:
 void LegacyUsage(std::ostream& out) {
     out << "Offline legacy input modes (one explicitly bound instrument):\n"
         << "  hepta-research-replay --import-legacy-ticks LAYOUT RAW.csv CLOCKS.csv SESSIONS.csv INSTRUMENT baseline|day-start headerless|header [MAX_ROWS]\n"
-        << "  hepta-research-replay --forecast-legacy-bars LAYOUT RAW.csv EVIDENCE.csv SESSIONS.csv INSTRUMENT FAST SLOW [MAX_ROWS]\n"
+        << "  hepta-research-replay --forecast-legacy-bars LAYOUT RAW.csv EVIDENCE.csv SESSIONS.csv INSTRUMENT FAST SLOW [MAX_ROWS] [--period-us POSITIVE_MICROSECONDS]\n"
         << "Tick layouts: Hepta32 Immsg34 Immsg35 Zs58. Bar layouts: Futures11 Futures13 Stock7 (headerless).\n"
         << "Tick evidence header: row,instrument,trading_day,action_day,utc_offset_minutes\n"
         << "Bar evidence header: row,instrument,source_civil_day,utc_offset_minutes,tick_count,observed_at_us,complete\n"
         << "MAX_ROWS: 1..10000000; default 1000000. No clock/completion evidence is inferred. No broker access.\n";
 }
 int LegacyInput(int argc, char** argv, bool ticks) {
-    if (argc != 9 && argc != 10) { LegacyUsage(std::cerr); return 2; }
-    const auto quota = argc == 10 ? Integer(argv[9]) : 1000000LL;
+    // The optional duration belongs ONLY to completed-bar input. Its position
+    // is unambiguous and leaves every original positional invocation intact.
+    int positionalCount = argc;
+    std::int64_t periodUs = 0;
+    if (!ticks && (argc == 11 || argc == 12)) {
+        Check(std::string(argv[argc - 2]) == "--period-us", "explicit --period-us option required");
+        periodUs = Integer(argv[argc - 1]);
+        Check(periodUs > 0, "research bar period must be positive");
+        positionalCount -= 2;
+    }
+    if (positionalCount != 9 && positionalCount != 10) { LegacyUsage(std::cerr); return 2; }
+    const auto quota = positionalCount == 10 ? Integer(argv[9]) : 1000000LL;
     Check(quota > 0 && quota <= 10000000, "research row quota must be 1..10000000");
     const std::string layoutName = argv[2];
     const std::map<std::string, LegacyTickCsvLayout> tickLayouts = {
@@ -195,7 +205,7 @@ int LegacyInput(int argc, char** argv, bool ticks) {
     } else {
         RowEvidence evidence(evidenceFile,
             "row,instrument,source_civil_day,utc_offset_minutes,tick_count,observed_at_us,complete");
-        LegacyBarCsvReader input(raw, barLayouts.at(layoutName), instrument, schedule,
+        LegacyBarEvidenceResolver resolve =
             [&evidence](std::size_t row, const std::string& symbol, const std::string& day) {
                 const auto cells = evidence.Next(row, symbol, day, 7);
                 Check(cells[6] == "0" || cells[6] == "1", "bar completion must be explicit 0 or 1");
@@ -204,11 +214,18 @@ int LegacyInput(int argc, char** argv, bool ticks) {
                 value.tickCount = UnsignedInteger(cells[4]);
                 value.observedAtUs = Integer(cells[5]); value.complete = cells[6] == "1";
                 return value;
-            }, "", static_cast<std::size_t>(quota));
+            };
+        // Keep profile defaults in the Data SDK's original overload rather
+        // than maintaining another table of durations in the executable.
+        std::unique_ptr<LegacyBarCsvReader> input(periodUs > 0
+            ? new LegacyBarCsvReader(raw, barLayouts.at(layoutName), instrument, schedule,
+                                     resolve, periodUs, "", static_cast<std::size_t>(quota))
+            : new LegacyBarCsvReader(raw, barLayouts.at(layoutName), instrument, schedule,
+                                     resolve, "", static_cast<std::size_t>(quota)));
         MovingAverageForecast strategy(static_cast<std::size_t>(fast), static_cast<std::size_t>(slow));
         output.Append("instrument,trading_day,bar_begin_us,bar_end_us,observed_at_us,direction\n");
         LegacyBarRecord record;
-        while (input.Next(record)) {
+        while (input->Next(record)) {
             Forecast forecast;
             if (!strategy.ObserveCompletedBar(record.bar, record.observedAtUs, forecast)) continue;
             std::ostringstream encoded; encoded.imbue(std::locale::classic());
@@ -217,7 +234,7 @@ int LegacyInput(int argc, char** argv, bool ticks) {
                     << forecast.observedAtUs << ',' << forecast.direction << '\n';
             output.Append(encoded.str());
         }
-        Check(input.RowsRead() > 0, "empty legacy bar dataset");
+        Check(input->RowsRead() > 0, "empty legacy bar dataset");
         evidence.Finish();
     }
     output.Publish(std::cout);

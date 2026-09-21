@@ -62,10 +62,19 @@ std::int64_t SignedNonnegative(const std::string& s) {
 bool ReadBoundedLine(std::istream& input, std::string& line) {
     line.clear();
     char c;
-    while (input.get(c)) {
-        if (c == '\n') return true;
-        Require(line.size() < 4096, "RESEARCH_CSV_LINE_TOO_LONG");
-        line.push_back(c);
+    try {
+        while (input.get(c)) {
+            if (c == '\n') return true;
+            Require(line.size() < 4096, "RESEARCH_CSV_LINE_TOO_LONG");
+            line.push_back(c);
+        }
+    } catch (const std::ios_base::failure&) {
+        // get() may throw when setting eofbit/failbit under a caller-supplied
+        // exception mask. A clean EOF still terminates a valid final line.
+        // Actual streambuf failures set badbit (possibly together with EOF)
+        // and must propagate. Never clear the state or change the borrowed
+        // stream's exception policy to make an error look like success.
+        if (input.bad() || !input.eof()) throw;
     }
     if (input.bad() || (input.fail() && !input.eof()))
         throw std::runtime_error("RESEARCH_CSV_READ_FAILED");
@@ -583,15 +592,17 @@ struct LegacyBarCsvReader::Impl {
     std::string instrument;
     SessionSchedule schedule;
     LegacyBarEvidenceResolver resolver;
+    std::int64_t periodUs;
     std::size_t maxRows, rows = 0;
     bool finished = false, failed = false;
     LegacyBarRecord previous;
     Impl(std::istream& stream, LegacyBarCsvLayout profile, std::string symbol,
          SessionSchedule windows, LegacyBarEvidenceResolver evidence,
-         const std::string& header, std::size_t quota)
+         std::int64_t duration, const std::string& header, std::size_t quota)
         : input(stream), layout(profile), columns(LegacyBarColumns(profile)),
           instrument(std::move(symbol)), schedule(std::move(windows)),
-          resolver(std::move(evidence)), maxRows(quota) {
+          resolver(std::move(evidence)), periodUs(duration), maxRows(quota) {
+        Require(periodUs > 0, "RESEARCH_PERIOD_INVALID");
         Require(InstrumentValid(instrument), "RESEARCH_INSTRUMENT_INVALID");
         Require(static_cast<bool>(resolver), "RESEARCH_LEGACY_BAR_EVIDENCE_REQUIRED");
         Require(quota > 0, "RESEARCH_CSV_ROW_LIMIT_INVALID");
@@ -654,12 +665,11 @@ struct LegacyBarCsvReader::Impl {
                     "RESEARCH_LEGACY_BAR_COMPLETION_UNPROVEN");
             next.utcOffsetMinutes = evidence.utcOffsetMinutes;
             const auto label = LegacyBarUtc(civil, evidence.utcOffsetMinutes);
-            const std::int64_t duration = stock ? 180000000LL : 60000000LL;
-            Require(stock ? label >= duration :
-                    label <= std::numeric_limits<std::int64_t>::max() - duration,
+            Require(stock ? label >= periodUs :
+                    label <= std::numeric_limits<std::int64_t>::max() - periodUs,
                     "RESEARCH_LEGACY_BAR_INTERVAL_RANGE");
-            bar.beginUs = stock ? label - duration : label;
-            bar.endUs = stock ? label : label + duration;
+            bar.beginUs = stock ? label - periodUs : label;
+            bar.endUs = stock ? label : label + periodUs;
             const auto& beginSession = schedule.At(bar.beginUs);
             const auto& endSession = schedule.At(bar.endUs - 1);
             Require(beginSession.openUs == endSession.openUs,
@@ -702,8 +712,15 @@ struct LegacyBarCsvReader::Impl {
 LegacyBarCsvReader::LegacyBarCsvReader(std::istream& input, LegacyBarCsvLayout layout,
     std::string instrument, SessionSchedule schedule, LegacyBarEvidenceResolver resolver,
     std::string expectedHeader, std::size_t maxRows)
+    : LegacyBarCsvReader(input, layout, std::move(instrument), std::move(schedule),
+                         std::move(resolver),
+                         layout == LegacyBarCsvLayout::Stock7 ? 180000000LL : 60000000LL,
+                         std::move(expectedHeader), maxRows) {}
+LegacyBarCsvReader::LegacyBarCsvReader(std::istream& input, LegacyBarCsvLayout layout,
+    std::string instrument, SessionSchedule schedule, LegacyBarEvidenceResolver resolver,
+    std::int64_t periodUs, std::string expectedHeader, std::size_t maxRows)
     : impl_(new Impl(input, layout, std::move(instrument), std::move(schedule),
-                     std::move(resolver), expectedHeader, maxRows)) {}
+                     std::move(resolver), periodUs, expectedHeader, maxRows)) {}
 LegacyBarCsvReader::~LegacyBarCsvReader() = default;
 bool LegacyBarCsvReader::Next(LegacyBarRecord& output) { return impl_->Next(output); }
 std::size_t LegacyBarCsvReader::RowsRead() const { return impl_->rows; }

@@ -1262,6 +1262,319 @@ void LegacyBarStreamingOracle() {
     const auto before=out;Check(!reader.Next(out) && !reader.Next(out) && SameLegacyBarRecord(out,before),"nonseekable bar EOF");
 }
 
+// CSV consumers commonly enable stream exceptions. An EOF signal from get()
+// must not turn a valid final row (or an exhausted cursor) into a poisoned run.
+// All schemas call the same bounded reader; exercise each public entry point.
+void CsvExceptionMasks() {
+    const std::string tickHeader = "instrument,timestamp_us,sequence,price,volume";
+    const std::string barHeader = "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,tick_count,complete";
+    const SessionSchedule schedule({Window(kLegacyBarDay, kLegacyBarDay+86400000000LL,"20260921")});
+    std::size_t cases = 0;
+    for (unsigned bits = 0; bits != 8; ++bits) {
+        std::ios::iostate mask = std::ios::goodbit;
+        if (bits & 1) mask |= std::ios::eofbit;
+        if (bits & 2) mask |= std::ios::failbit;
+        if (bits & 4) mask |= std::ios::badbit;
+        for (const std::string& ending : {std::string(""), std::string("\n"), std::string("\r\n")}) {
+            {
+                std::istringstream input(tickHeader+"\nA,1,1,100,2"+ending); input.exceptions(mask);
+                TickCsvReader reader(input,1); Tick out;
+                Check(reader.Next(out) && out.price==100 && out.volume==2,"throwing Tick final record");
+                const auto saved=out;
+                Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==1 &&
+                      out.instrument==saved.instrument && out.sequence==saved.sequence &&
+                      out.price==saved.price && out.volume==saved.volume,"throwing Tick stable EOF");
+                Check(input.exceptions()==mask && input.eof() && !input.bad(),"Tick stream state is not cleared");
+                ++cases;
+            }
+            {
+                std::istringstream input(barHeader+"\nA,20260921,0,10,100,100,100,100,2,1,1"+ending);
+                input.exceptions(mask); BarCsvReader reader(input,1); Bar out;
+                Check(reader.Next(out) && out.complete && out.volume==2,"throwing Bar final record");
+                const auto saved=out;
+                Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==1 && SameBar(out,saved),
+                      "throwing Bar stable EOF");
+                Check(input.exceptions()==mask && input.eof() && !input.bad(),"Bar stream state is not cleared");
+                ++cases;
+            }
+            {
+                std::istringstream first(tickHeader+"\nA,1,1,100,2"+ending);
+                std::istringstream second(tickHeader+"\nB,2,1,101,3"+ending);
+                std::istringstream empty(tickHeader+ending);
+                first.exceptions(mask); second.exceptions(mask); empty.exceptions(mask);
+                MergedTickCsvReader reader({&first,&empty,&second},2); Tick out;
+                Check(reader.Next(out) && out.instrument=="A","throwing merge first source");
+                Check(reader.Next(out) && out.instrument=="B","throwing merge final source");
+                Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==2 && out.instrument=="B",
+                      "throwing merge preserves terminal output");
+                Check(first.exceptions()==mask && second.exceptions()==mask && empty.exceptions()==mask,
+                      "merge preserves borrowed input exception policies");
+                ++cases;
+            }
+            {
+                std::istringstream input("open_us,close_us,trading_day\n0,100,20260921"+ending);
+                input.exceptions(mask); const auto windows=ReadSessionsCsv(input,1);
+                Check(windows.At(99).closeUs==100 && input.exceptions()==mask && input.eof() && !input.bad(),
+                      "throwing session final record"); ++cases;
+            }
+            // Header-only and completely empty files remain distinct. A valid
+            // header at EOF is accepted; a missing header is still rejected.
+            for (const bool bars : {false,true}) {
+                std::istringstream empty((bars?barHeader:tickHeader)+ending); empty.exceptions(mask);
+                if (bars) {
+                    BarCsvReader reader(empty); Bar out; out.instrument="unchanged";
+                    Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==0 && out.instrument=="unchanged",
+                          "header-only Bar dataset");
+                } else {
+                    TickCsvReader reader(empty); Tick out; out.instrument="unchanged";
+                    Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==0 && out.instrument=="unchanged",
+                          "header-only Tick dataset");
+                }
+                Check(empty.exceptions()==mask && empty.eof() && !empty.bad(),"header-only stream policy retained");
+                ++cases;
+            }
+            for (const auto& profile : legacyProfiles) for (const bool withHeader : {false,true}) {
+                std::istringstream input((withHeader?LegacyTestHeader(profile):"")+
+                    LegacyLine(LegacyCells(profile),ending)); input.exceptions(mask);
+                LegacyTickCsvReader reader(input,profile.layout,AnyLegacyTime(),FixedLegacyClock(),true,withHeader,1);
+                LegacyTickRecord out; Check(reader.Next(out) && out.tick.volume==100,"throwing legacy Tick final row");
+                const auto saved=out;
+                Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==1 && SameLegacyRecord(out,saved),
+                      "throwing legacy Tick stable EOF");
+                Check(input.exceptions()==mask && input.eof() && !input.bad(),"legacy Tick policy retained");
+                ++cases;
+            }
+            for (const auto layout : {LegacyBarCsvLayout::Futures11,LegacyBarCsvLayout::Futures13,LegacyBarCsvLayout::Stock7})
+                for (const bool withHeader : {false,true}) {
+                    const auto header=withHeader?LegacyBarHeader(layout):"";
+                    std::istringstream input((withHeader?header+"\n":"")+LegacyLine(LegacyBarCells(layout),ending));
+                    input.exceptions(mask);
+                    LegacyBarCsvReader reader(input,layout,"TEST.FUT",schedule,BarEvidence(),header,1);
+                    LegacyBarRecord out; Check(reader.Next(out) && out.bar.volume==12,"throwing legacy Bar final row");
+                    const auto saved=out;
+                    Check(!reader.Next(out) && !reader.Next(out) && reader.RowsRead()==1 && SameLegacyBarRecord(out,saved),
+                          "throwing legacy Bar stable EOF");
+                    Check(input.exceptions()==mask && input.eof() && !input.bad(),"legacy Bar policy retained");
+                    ++cases;
+                }
+        }
+        {
+            std::istringstream empty; empty.exceptions(mask);
+            Throws([&]{TickCsvReader reader(empty);});
+        }
+        {
+            std::istringstream input(tickHeader+"\nA,1,1,100,2"); input.exceptions(mask);
+            Check(ReadTicksCsv(input,1).size()==1,"eager Tick delegates clean EOF semantics");
+            std::istringstream bars(barHeader+"\nA,20260921,0,10,100,100,100,100,2,1,1"); bars.exceptions(mask);
+            Check(ReadBarsCsv(bars,1).size()==1,"eager Bar delegates clean EOF semantics");
+        }
+        // Invalid final data remains invalid, regardless of whether get() also
+        // raises the caller-requested EOF exception. No malformed row is skipped.
+        for (const std::string& suffix : {std::string("A,2,2,NaN,1"),std::string(4097,'x'),
+                                          std::string("A,2,2,100,1\nA,3,3,101,1")}) {
+            std::istringstream input(tickHeader+"\nA,1,1,100,2\n"+suffix); input.exceptions(mask);
+            TickCsvReader reader(input,suffix.find('\n')==std::string::npos?2:1); Tick out; Check(reader.Next(out),"exception policy valid prefix");
+            Throws([&]{reader.Next(out);});
+            Check(out.sequence==1 && out.volume==2 && reader.RowsRead()==1 && input.exceptions()==mask,
+                  "corruption/line bound/quota rejects without output publication");
+            input.clear(); Throws([&]{reader.Next(out);});
+        }
+    }
+    std::cout << "CSV clean-EOF schema/exception-mask/line-ending cases=" << cases << '\n';
+}
+
+// Non-seekable input that throws after a selected prefix, rather than ending.
+// Even a syntactically complete but unterminated row must NOT be published when
+// the backing source fails. Test both ios_base::failure and other exceptions.
+class FaultingCsvBuffer : public std::streambuf {
+public:
+    FaultingCsvBuffer(std::string prefix,bool iosFailure):prefix_(std::move(prefix)),iosFailure_(iosFailure) {
+        setg(&prefix_[0],&prefix_[0],&prefix_[0]+prefix_.size());
+    }
+protected:
+    int_type underflow() override {
+        if (iosFailure_) throw std::ios_base::failure("injected CSV source failure");
+        throw std::runtime_error("injected CSV source failure");
+    }
+private:
+    std::string prefix_;
+    bool iosFailure_;
+};
+void CsvThrowingSourceFailures() {
+    const std::string header="instrument,timestamp_us,sequence,price,volume\n";
+    for(unsigned bits=0;bits!=8;++bits) for(bool iosFailure:{false,true}) {
+        std::ios::iostate mask=std::ios::goodbit;
+        if(bits&1) mask|=std::ios::eofbit;
+        if(bits&2) mask|=std::ios::failbit;
+        if(bits&4) mask|=std::ios::badbit;
+        for(const std::string& suffix:{std::string(""),std::string("A,2,2,100"),std::string("A,2,2,100,1")}) {
+            FaultingCsvBuffer buffer(header+"A,1,1,100,1\n"+suffix,iosFailure);
+            std::istream input(&buffer); input.exceptions(mask); TickCsvReader reader(input); Tick out;
+            Check(reader.Next(out),"fault input valid prefix"); Throws([&]{reader.Next(out);});
+            Check(reader.RowsRead()==1 && out.sequence==1 && input.bad() && input.exceptions()==mask,
+                  "real source failure is never successful EOF or a salvaged final row");
+            input.clear(); Throws([&]{reader.Next(out);});
+        }
+        FaultingCsvBuffer barBuffer(LegacyLine(LegacyBarCells(LegacyBarCsvLayout::Futures11),""),iosFailure);
+        std::istream barInput(&barBuffer); barInput.exceptions(mask);
+        LegacyBarCsvReader barReader(barInput,LegacyBarCsvLayout::Futures11,"TEST.FUT",
+            SessionSchedule({Window(kLegacyBarDay,kLegacyBarDay+86400000000LL,"20260921")}),BarEvidence());
+        LegacyBarRecord out; out.sourceCivilDay="unchanged"; const auto saved=out;
+        Throws([&]{barReader.Next(out);});
+        Check(barInput.bad() && SameLegacyBarRecord(out,saved) && barReader.RowsRead()==0,
+              "legacy source error cannot publish syntactically complete row");
+        barInput.clear(); Throws([&]{barReader.Next(out);});
+    }
+    // A previously set badbit may coexist with eofbit; EOF must not mask it.
+    std::istringstream input(header); TickCsvReader reader(input); Tick out; out.instrument="unchanged";
+    input.setstate(std::ios::eofbit|std::ios::badbit);
+    try {input.exceptions(std::ios::eofbit|std::ios::badbit|std::ios::failbit);} catch(const std::ios_base::failure&) {}
+    Throws([&]{reader.Next(out);});
+    Check(out.instrument=="unchanged" && reader.RowsRead()==0 && input.bad(),"badbit plus EOF remains an error");
+}
+
+// Independent, explicitly timed fixtures; the parser never derives duration
+// from these labels or from spacing. All clocks stay within this civil day.
+std::vector<std::string> TimedLegacyBarCells(LegacyBarCsvLayout layout,
+    std::int64_t labelOffsetUs, std::int64_t periodUs, std::size_t row) {
+    auto cells = LegacyBarCells(layout);
+    const bool stock = layout == LegacyBarCsvLayout::Stock7;
+    const auto seconds = labelOffsetUs / 1000000;
+    std::ostringstream time; time.imbue(std::locale::classic()); time << std::setfill('0');
+    time << (stock ? "2026-09-21 " : "20260921_") << std::setw(2) << seconds/3600;
+    if (stock) time << ':';
+    time << std::setw(2) << seconds/60%60;
+    if (stock) time << ':';
+    time << std::setw(2) << seconds%60;
+    cells[stock ? 0 : 1] = time.str();
+    if (!stock) {
+        const auto stamp = kFileEpoch + static_cast<std::uint64_t>(kLegacyBarDay + labelOffsetUs);
+        cells[0] = std::to_string(stamp);
+        cells[6] = std::to_string(1000+12*row); cells[8] = std::to_string(100000+1200*row);
+        if (layout == LegacyBarCsvLayout::Futures13) {
+            cells[11] = std::to_string(stamp);
+            cells[12] = std::to_string(stamp+static_cast<std::uint64_t>(periodUs)-1);
+        }
+    }
+    return cells;
+}
+void LegacyExplicitBarPeriods() {
+    const std::int64_t periods[] = {1,999999,1000000,7000000,30000000,60000000,
+                                   180000000,300000000,3600000000LL};
+    for (const auto layout : {LegacyBarCsvLayout::Futures11,LegacyBarCsvLayout::Futures13,
+                              LegacyBarCsvLayout::Stock7})
+      for (const auto period : periods) for (int offset : {-840,0,840}) for (bool header : {false,true}) {
+        const bool stock = layout == LegacyBarCsvLayout::Stock7;
+        const auto stride = ((period+999999)/1000000)*1000000;
+        // Futures keep numeric subsecond precision. Stock text ends are second
+        // labelled; a shorter explicit interval creates a gap, not fake ticks.
+        const std::int64_t origin = 3600000000LL + (stock ? 0 : 123456);
+        const auto utcOrigin = kLegacyBarDay+origin-static_cast<std::int64_t>(offset)*60000000;
+        std::vector<std::vector<std::string>> rows;
+        std::string data = header ? LegacyBarHeader(layout)+"\r\n" : "";
+        for (std::size_t n=0; n<4; ++n) {
+            rows.push_back(TimedLegacyBarCells(layout,origin+static_cast<std::int64_t>(n)*stride,period,n));
+            data += LegacyLine(rows.back(), n==3 ? "" : "\r\n");
+        }
+        std::istringstream input(data); input.exceptions(std::ios::badbit|std::ios::failbit|std::ios::eofbit);
+        const SessionSchedule schedule({Window(kLegacyBarDay-86400000000LL,
+            kLegacyBarDay+172800000000LL,"20260922")});
+        std::size_t calls=0;
+        LegacyBarEvidenceResolver evidence = [&](std::size_t row,const std::string& symbol,const std::string& day) {
+            Check(row==++calls && symbol=="TEST.FUT" && day=="20260921","explicit-period evidence identity");
+            LegacyBarEvidence e; e.complete=true; e.tickCount=7+row; e.utcOffsetMinutes=offset;
+            e.observedAtUs=utcOrigin+static_cast<std::int64_t>(row-1)*stride+(stock?0:period)+1000000;
+            return e;
+        };
+        LegacyBarCsvReader reader(input,layout,"TEST.FUT",schedule,evidence,period,
+                                   header?LegacyBarHeader(layout):"",4);
+        Check(calls==0 && reader.RowsRead()==0,"duration configuration consumes no data row");
+        LegacyBarRecord out;
+        for (std::size_t n=0;n<4;++n) {
+            const auto label=utcOrigin+static_cast<std::int64_t>(n)*stride;
+            Check(reader.Next(out) && out.bar.beginUs==label-(stock?period:0) &&
+                  out.bar.endUs==label+(stock?0:period) && out.bar.endUs-out.bar.beginUs==period,
+                  "explicit duration and unchanged label convention");
+            Check(out.bar.volume==12 && out.bar.tickCount==8+n && out.bar.complete && out.turnover==1200 &&
+                  out.bar.tradingDay=="20260922" && out.sourceCivilDay=="20260921" && out.sourceFields==rows[n] &&
+                  out.observedAtUs==out.bar.endUs+1000000,"duration invents neither quantity nor availability");
+            if (layout==LegacyBarCsvLayout::Futures13)
+                Check(out.highTimeUs==out.bar.beginUs && out.lowTimeUs==out.bar.endUs-1,"exact extremum interval");
+        }
+        const auto saved=out;
+        Check(!reader.Next(out) && !reader.Next(out) && calls==4 && reader.RowsRead()==4 &&
+              SameLegacyBarRecord(saved,out),"explicit-period throwing-stream EOF is stable");
+        // Both constructor symbols remain usable; an explicit default must
+        // agree field-for-field with the retained original SDK overload.
+        if (period==(stock?180000000:60000000)) {
+            std::istringstream oldInput(data); calls=0;
+            LegacyBarCsvReader original(oldInput,layout,"TEST.FUT",schedule,evidence,
+                                         header?LegacyBarHeader(layout):"",4);
+            for (std::size_t n=0;n<4;++n) Check(original.Next(out),"old duration overload remains available");
+            Check(SameLegacyBarRecord(saved,out),"explicit default and original overload disagree");
+        }
+      }
+}
+void LegacyExplicitBarPeriodFailures() {
+    const auto layout=LegacyBarCsvLayout::Futures13;
+    const SessionSchedule full({Window(kLegacyBarDay,kLegacyBarDay+86400000000LL,"20260921")});
+    const auto valid=TimedLegacyBarCells(layout,0,7000000,0);
+    const std::int64_t invalidPeriods[]={0,-1,std::numeric_limits<std::int64_t>::min()};
+    for (const auto period:invalidPeriods) {
+        std::istringstream input(LegacyBarHeader(layout)+"\n"+LegacyLine(valid));
+        Throws([&]{LegacyBarCsvReader reader(input,layout,"TEST.FUT",full,BarEvidence(),period,LegacyBarHeader(layout));});
+        Check(input.tellg()==0,"invalid duration consumed borrowed input/header");
+    }
+    auto rejects=[&](const std::vector<std::string>& fields, std::int64_t period,
+                     const SessionSchedule& schedule, const LegacyBarEvidenceResolver& evidence) {
+        std::istringstream input(LegacyLine(fields));
+        LegacyBarCsvReader reader(input,layout,"TEST.FUT",schedule,evidence,period);
+        LegacyBarRecord out; out.sourceFields={"UNCHANGED"}; const auto saved=out;
+        Throws([&]{reader.Next(out);});
+        Check(reader.RowsRead()==0 && SameLegacyBarRecord(saved,out),"invalid explicit interval published state");
+        input.clear(); input.str(LegacyLine(valid)); Throws([&]{reader.Next(out);});
+        Check(reader.RowsRead()==0 && SameLegacyBarRecord(saved,out),"failed period cursor resumed");
+    };
+    rejects(valid,std::numeric_limits<std::int64_t>::max(),full,BarEvidence());
+    auto outside=valid; outside[12]=std::to_string(kFileEpoch+static_cast<std::uint64_t>(kLegacyBarDay)+7000000);
+    rejects(outside,7000000,full,BarEvidence());
+    rejects(valid,7000000,full,[](std::size_t,const std::string&,const std::string&){
+        LegacyBarEvidence e;e.complete=true;e.tickCount=1;e.observedAtUs=kLegacyBarDay+6999999;return e;});
+    for (bool gap:{false,true}) {
+        const SessionSchedule split({Window(kLegacyBarDay,kLegacyBarDay+3000000,"20260921"),
+            Window(kLegacyBarDay+(gap?4000000:3000000),kLegacyBarDay+7000000,"20260921")});
+        rejects(valid,7000000,split,BarEvidence());
+    }
+    // Positive duration cannot underflow a stock end label at the Unix epoch.
+    auto stock=LegacyBarCells(LegacyBarCsvLayout::Stock7);stock[0]="1970-01-01 00:00:00";
+    std::istringstream early(LegacyLine(stock));
+    LegacyBarCsvReader underflow(early,LegacyBarCsvLayout::Stock7,"TEST.FUT",
+        SessionSchedule({Window(0,1000000,"19700101")}),
+        [](std::size_t,const std::string&,const std::string&){LegacyBarEvidence e;e.complete=true;e.tickCount=1;e.observedAtUs=1;return e;},1);
+    LegacyBarRecord out;Throws([&]{underflow.Next(out);});Check(underflow.RowsRead()==0,"stock interval underflow");
+    // An extended duration may overlap the next labelled row: never infer a
+    // replacement interval from spacing or quietly truncate the first bar.
+    std::istringstream overlap(LegacyLine(LegacyBarCells(layout))+LegacyLine(LegacyBarCells(layout,1)));
+    LegacyBarCsvReader overlapping(overlap,layout,"TEST.FUT",full,BarEvidence(),90000000);
+    Check(overlapping.Next(out) && out.bar.endUs==kLegacyBarDay+90000000,"explicit longer first interval");
+    const auto saved=out;Throws([&]{overlapping.Next(out);});
+    Check(overlapping.RowsRead()==1 && SameLegacyBarRecord(saved,out),"overlap changed previous output");
+    std::istringstream quota(LegacyLine(valid)+LegacyLine(TimedLegacyBarCells(layout,7000000,7000000,1)));
+    LegacyBarCsvReader limited(quota,layout,"TEST.FUT",full,BarEvidence(),7000000,"",1);
+    Check(limited.Next(out),"explicit-period quota first row");const auto first=out;
+    Throws([&]{limited.Next(out);});Check(limited.RowsRead()==1 && SameLegacyBarRecord(first,out),"explicit-period quota bypass");
+    // Existing non-seekable generator with deliberately spaced 30-second bars.
+    // The reader retains one prior record, not a history or a resampling queue.
+    LegacyBarGeneratedBuffer buffer(1000); std::istream stream(&buffer);
+    LegacyBarCsvReader sparse(stream,LegacyBarCsvLayout::Futures11,"TEST.FUT",full,BarEvidence(),30000000,"",1000);
+    Check(buffer.Generated()==0,"explicit-period constructor prefetched data");
+    for(std::size_t n=0;n<1000;++n) {
+        Check(sparse.Next(out) && buffer.Generated()==n+1 && out.bar.beginUs==kLegacyBarDay+static_cast<std::int64_t>(n)*60000000 &&
+              out.bar.endUs-out.bar.beginUs==30000000,"explicit-period bounded sparse stream");
+    }
+    Check(!sparse.Next(out) && sparse.RowsRead()==1000,"sparse stream EOF");
+}
+
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); }); }
