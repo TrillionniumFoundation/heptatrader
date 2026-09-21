@@ -31,7 +31,7 @@ invented by this integration.
 | `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, OHLC-field extrema, latest strict threshold queries, confirmed peaks/troughs, reverse indexing, retained-day count and OHLCV merging. These are explicit new APIs, not compatibility aliases for historical signatures. |
 | `heptaDate`, `heptaTimeStamp`, `heptaProductTradeTime`, `heptaChinaTradingCalendar` | Explicit UTC session windows and Gregorian trading-day validation. Old exchange-rule tables and implicit local-time assumptions are not republished as current rules. |
 | CSV/data helpers | Strict portable tick/session and completed-bar CSV conversion. Proprietary binary cache layouts and historical datasets remain in the source repository. |
-| `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees and fill identity. No full exchange settlement/margin equivalence is asserted. |
+| `heptaNetValueEvaluation`, `heptaSettlement` | Research-only cash-flow-adjusted metrics and multiplier-aware P&L ledger with explicit undefined ratios, fees, fill identity and offline variation-settlement events. No full exchange settlement/margin equivalence is asserted. |
 | `heptaPegasusSimulator`, `heptaSimMdSpi`, `heptaSimTradeSpi`, `heptaTickTradeManager`, `heptaOrderBook` | Bounded offline replay/matching model and executable consumer. Legacy queue-position, live-feed and binary-cache modes are retained for later explicit evaluation, not silently emulated. The canonical deterministic execution simulator is unchanged. |
 | `heptaBasicAgent`, `heptaAgentManager`, `heptaBasicStrategy`, CTA/Kindle strategy bases | Completed-bar forecast contract, an example strategy and a NativeToolClient adapter with a separate relocatable developer package and private durable request recovery. Historical direct-order APIs and all user strategy implementations are not source-compatible or certified migrated. |
 | `heptaFtdMdSpi`, `heptaFtdTradeSpi`, QDP and `Interface/` SDK trees | Retained at the reference commit only. CTP remains deferred; XT is still the selected next venue. No vendor library, broker transport or new production mutation capability is added. |
@@ -194,6 +194,38 @@ placement, cancellation, flatten, uncertain-result and revoked-session checks.
 The same behavioral source is also compiled as the installed/relocated external
 C++11 SDK consumer. No target, dependency or additional runtime is introduced;
 red/green observations and exact-head acceptance are recorded in the PR.
+
+## Offline settlement continuation
+
+This continuation starts from `808ffd0aa0f9ae241a323a7645fed0daac5fff6c`
+and closes the explicit settlement-event gap inside the existing Analytics SDK.
+It does not import the alternate native research framework or the old settlement
+class, order maps, process lifecycle or SDK dependencies. The source reference's
+`heptaSettlement` responsibilities are mapped to a distinct public accounting
+contract, not certified historical output/API/ABI equivalence.
+
+The single-instrument ledger and same-currency portfolio now accept bounded,
+immutable variation-settlement events. Both cost modes rebase remaining inventory
+without changing quantity, fees, external flows or quote freshness. New events
+share the existing delivery clock; exact retries preserve later account state.
+Validation, capacity, arithmetic and destructive-precision failures are atomic.
+The [SDK contract](../../research/PACKAGE.md#explicit-offline-variation-settlement)
+defines the accounting and remaining exchange-specific limitations.
+
+The existing Analytics executable adds 4,608 independently checked fill/cash
+states with 1,152 settlement events, plus identity, capacity, timestamp, overflow,
+precision-loss and stale/missing-quote fixtures. Existing FIFO, portfolio, data,
+replay and client tests remain active. The installed/relocated external C++11
+consumer calls both exported methods. No build inventory, runtime target,
+production install set, required test, workflow permission or capability is
+changed. Exact-tree local results and exact-head remote outcomes belong on the
+existing PR, not in a hardcoded source success declaration.
+
+The organization default-branch consumer search was repeated for this
+continuation. It again identifies reference-library uses and the target's retired
+consumer documentation; it does not certify unindexed or external installations.
+Consequently the original repository/history/releases and alternate integration
+branches remain retained, and CTP remains deferred behind the selected XT work.
 
 ## Build ownership
 

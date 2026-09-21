@@ -303,7 +303,188 @@ void PortfolioCashConservationOracle() {
     std::cout << "portfolio_cash_oracle_states=1200\n";
 }
 }
+namespace {
+ResearchSettlement S(const std::string& id, std::int64_t time, double price,
+                     const std::string& instrument = "TEST.FUT") {
+    ResearchSettlement s; s.settlementId = id; s.instrument = instrument;
+    s.timestampUs = time; s.price = price; return s;
+}
+void SameAccount(const ResearchAccount& a, const ResearchAccount& b) {
+    Check(a.quantity == b.quantity, "settlement quantity unchanged");
+    Near(a.averageEntry, b.averageEntry); Near(a.realizedGross, b.realizedGross);
+    Near(a.unrealized, b.unrealized); Near(a.fees, b.fees); Near(a.equity, b.equity);
+}
+void SettlementAttributionAndIdentity() {
+    for (auto basis : {CostBasis::WeightedAverage, CostBasis::Fifo}) {
+        for (int side : {-1, 1}) {
+            ResearchLedger ledger("TEST.FUT", 10000, 10, 20, basis);
+            const auto first = F("first", 1, side, 2, 100, 2);
+            ledger.Apply(first); ledger.Apply(F("second", 2, side, 2, 120, 2));
+            ledger.Apply(F("partial", 3, -side, 1, 130, 1));
+            const auto atSettlement = ledger.Mark(115);
+            const auto low = ledger.Mark(90), high = ledger.Mark(140);
+            const auto settlement = S("day-one", 4, 115);
+            Check(ledger.Settle(settlement), "first settlement accepted");
+            auto value = ledger.Mark(115);
+            Check(value.quantity == side * 3, "settlement is not liquidation");
+            Near(value.averageEntry, 115); Near(value.unrealized, 0);
+            Near(value.realizedGross, atSettlement.realizedGross + atSettlement.unrealized);
+            Near(value.fees, atSettlement.fees); Near(value.equity, atSettlement.equity);
+            Near(ledger.Mark(90).equity, low.equity); Near(ledger.Mark(140).equity, high.equity);
+            Check(!ledger.Settle(settlement) && !ledger.Apply(first), "independent exact event retries");
+            for (int field = 0; field != 3; ++field) {
+                auto bad = settlement;
+                if (field == 0) ++bad.timestampUs;
+                if (field == 1) bad.price = 114;
+                if (field == 2) bad.instrument = "OTHER.FUT";
+                Throws([&] { ledger.Settle(bad); });
+                SameAccount(value, ledger.Mark(115));
+            }
+            Throws([&] { ledger.Settle(S("late", 3, 110)); });
+            Throws([&] { ledger.Apply(F("late-fill", 3, side, 1, 100)); });
+            // Closing after settlement realizes only the variation from the new
+            // basis. A reversal establishes the actual new fill's entry price.
+            ledger.Apply(F("reverse", 5, -side, 4, 125, 4));
+            auto reversed = ledger.Mark(125);
+            Check(reversed.quantity == -side, "post-settlement reversal");
+            Near(reversed.averageEntry, 125);
+            Near(reversed.realizedGross, value.realizedGross + side * 3 * 10 * 10);
+            Check(!ledger.Settle(settlement), "old settlement cannot rebase newer fills");
+            SameAccount(reversed, ledger.Mark(125));
+            ledger.Settle(S("day-two", 6, 110));
+            Near(ledger.Mark(125).equity, reversed.equity);
+            ledger.Apply(F("flat", 7, side, 1, 110));
+            const auto flat = ledger.Mark(1);
+            Check(ledger.Settle(S("flat-settlement", 8, std::numeric_limits<double>::max())), "flat receipt");
+            SameAccount(flat, ledger.Mark(1));
+        }
+    }
+}
+void SettlementFailureAtomicity() {
+    for (auto basis : {CostBasis::WeightedAverage, CostBasis::Fifo}) {
+        ResearchLedger ledger("TEST.FUT", 1000, 2, 3, basis);
+        ledger.Apply(F("open", 1, 1, 2, 1));
+        const auto before = ledger.Mark(2);
+        for (double price : {0.0, -1.0, std::numeric_limits<double>::quiet_NaN(),
+                             std::numeric_limits<double>::infinity(), std::numeric_limits<double>::max()}) {
+            Throws([&] { ledger.Settle(S("reusable", 100, price)); });
+            SameAccount(before, ledger.Mark(2));
+        }
+        Throws([&] { ledger.Settle(S("", 100, 1)); });
+        Throws([&] { ledger.Settle(S(std::string(129, 'x'), 100, 1)); });
+        Throws([&] { ledger.Settle(S("reusable", -1, 1)); });
+        Throws([&] { ledger.Settle(S("reusable", 100, 1, "OTHER.FUT")); });
+        // Numeric/validation rejection did not advance time or consume the ID.
+        const auto settlement = S("reusable", 2, 2);
+        Check(ledger.Settle(settlement), "failed settlement left ID/clock reusable");
+        Near(ledger.Mark(3).equity, 1008);
+        // Namespaces differ, but both kinds consume the same finite budget.
+        auto last = F("reusable", 3, -1, 1, 2); ledger.Apply(last);
+        Check(!ledger.Settle(settlement) && !ledger.Apply(last), "duplicate at full capacity");
+        Throws([&] { ledger.Settle(S("capacity", 4, 2)); });
+        Throws([&] { ledger.Apply(F("capacity", 4, -1, 1, 2)); });
+        ResearchLedger flat("TEST.FUT", 100, 1, 1, basis);
+        auto flatReceipt = S("flat", 10, 5);
+        Check(flat.Settle(flatReceipt) && !flat.Settle(flatReceipt), "flat event bounded and idempotent");
+        Throws([&] { flat.Apply(F("before", 9, 1, 1, 5)); });
+        Throws([&] { flat.Apply(F("after", 11, 1, 1, 5)); });
+        Near(flat.Mark(1).equity, 100);
+        // Equal finite prices, including DBL_MAX, must not invent overflow.
+        // A finite but vastly separated rebase must not erase a representable
+        // entry-price difference and manufacture a different marked equity.
+        ResearchLedger precision("TEST.FUT", 1000, 1, 4, basis);
+        precision.Apply(F("precision", 1, 1, 1, 1));
+        Throws([&] { precision.Settle(S("precision", 100, 1e200)); });
+        Near(precision.Mark(2).equity, 1001);
+        Check(precision.Settle(S("precision", 2, 2)), "precision rejection rolls back ID and clock");
+        Near(precision.Mark(3).equity, 1002);
+        ResearchLedger extreme("TEST.FUT", 100, 1, 10, basis);
+        auto f = F("extreme", 1, -1, 1, std::numeric_limits<double>::max());
+        f.quantity = 1000000000000LL; extreme.Apply(f);
+        extreme.Settle(S("extreme", 2, f.price));
+        Check(extreme.Mark(f.price).averageEntry == f.price, "finite extreme settlement basis");
+        Near(extreme.Mark(f.price).equity, 100);
+    }
+}
+void SettlementCashOracle() {
+    std::size_t states = 0, settlements = 0;
+    for (auto basis : {CostBasis::WeightedAverage, CostBasis::Fifo})
+        for (int multiplier : {1, 3, 10}) for (int seed = 0; seed != 8; ++seed) {
+            ResearchLedger ledger("TEST.FUT", 100000, multiplier, 200, basis);
+            double cash = 100000; std::int64_t quantity = 0;
+            for (int i = 1; i <= 96; ++i) {
+                int side = (i * 7 + seed) % 5 < 2 ? -1 : 1;
+                auto f = F("f-" + std::to_string(i), i * 2, side, 1 + (i + seed) % 4,
+                           90 + (i * 13 + seed) % 21, .25);
+                ledger.Apply(f); cash -= side * f.quantity * f.price * multiplier + f.fee;
+                quantity += side * f.quantity;
+                if (i % 4 == 0) {
+                    auto s = S("s-" + std::to_string(i), i * 2 + 1, 85 + (i * 11 + seed) % 31);
+                    const auto before = ledger.Mark(s.price);
+                    Check(ledger.Settle(s) && !ledger.Settle(s), "oracle settlement retry");
+                    Near(ledger.Mark(s.price).equity, before.equity, 1e-7);
+                    Near(ledger.Mark(s.price).unrealized, 0); ++settlements;
+                }
+                for (double mark : {83.0, 100.0, 127.0}) {
+                    const auto value = ledger.Mark(mark);
+                    Check(value.quantity == quantity, "cash oracle unchanged position");
+                    Near(value.equity, cash + quantity * mark * multiplier, 1e-7);
+                }
+                ++states;
+            }
+        }
+    Check(states == 4608 && settlements == 1152, "settlement oracle coverage");
+    std::cout << "settlement_cash_oracle_states=" << states << " settlements=" << settlements << '\n';
+}
+void PortfolioSettlementBoundaries() {
+    ResearchPortfolio p(10000, "USD", {Spec("TEST.FUT", 10, CostBasis::Fifo),
+                                       Spec("OTHER.FUT", 5, CostBasis::WeightedAverage)});
+    auto a = F("a", 1, 1, 2, 100, 1); p.Apply(a);
+    auto b = F("b", 2, -1, 2, 40, 1); b.instrument = "OTHER.FUT"; p.Apply(b);
+    p.Observe(Q("TEST.FUT", 3, 1, 105)); p.Observe(Q("OTHER.FUT", 3, 1, 35));
+    p.ApplyCashFlow(Flow("cash", 3, 500));
+    auto before = p.Snapshot(3, 0);
+    auto sa = S("global", 4, 110);
+    Check(p.Settle(sa) && !p.Settle(sa), "portfolio settlement receipt");
+    auto after = p.Snapshot(4, 1);
+    Near(after.equity, before.equity); Near(after.fees, before.fees); Near(after.externalFlows, 500);
+    Near(after.positions.at("TEST.FUT").averageEntry, 110);
+    Near(after.positions.at("TEST.FUT").markPrice, 105);
+    Check(after.positions.at("TEST.FUT").markTimestampUs == 3, "settlement is not a market tick");
+    Throws([&] { p.Snapshot(4, 0); }); // Accounting must not refresh an old quote.
+    Throws([&] { p.Settle(S("global", 4, 45, "OTHER.FUT")); });
+    Throws([&] { p.Settle(S("bad", 100, 0)); });
+    Throws([&] { p.Settle(S("unknown", 100, 5, "NO.FUT")); });
+    p.Settle(S("second", 5, 45, "OTHER.FUT"));
+    Near(p.Snapshot(5, 2).equity, before.equity);
+    Throws([&] { p.Observe(Q("TEST.FUT", 4, 2, 105)); });
+    Throws([&] { p.ApplyCashFlow(Flow("late", 4, 1)); });
+    p.Apply(F("new-fill", 6, 1, 1, 120));
+    p.Settle(S("no-quote", 6, 115));
+    Throws([&] { p.Snapshot(6, 3); }); // An invalidated mark stays invalidated.
+    Check(!p.Observe(Q("TEST.FUT", 3, 1, 105)), "old quote retry remains a retry");
+    Throws([&] { p.Snapshot(6, 3); });
+    p.Observe(Q("TEST.FUT", 6, 2, 115));
+    const auto current = p.Snapshot(6, 3);
+    Check(!p.Settle(sa), "old portfolio receipt cannot rebase newer fills");
+    Near(p.Snapshot(6, 3).equity, current.equity);
+
+    ResearchPortfolio bounded(1000, "USD", {Spec("TEST.FUT", 2)}, 3);
+    bounded.Apply(F("shared", 1, 1, 2, 1)); bounded.Observe(Q("TEST.FUT", 1, 1, 1));
+    Throws([&] { bounded.Settle(S("shared", 100, std::numeric_limits<double>::max())); });
+    auto receipt = S("shared", 2, 2); bounded.Settle(receipt);
+    bounded.ApplyCashFlow(Flow("shared", 3, 1)); // Three independent namespaces.
+    Check(!bounded.Settle(receipt), "portfolio settlement retry at capacity");
+    Throws([&] { bounded.Apply(F("limit", 4, -1, 1, 1)); });
+    Throws([&] { bounded.ApplyCashFlow(Flow("limit", 4, 1)); });
+    Throws([&] { bounded.Settle(S("limit", 4, 1)); });
+    Near(bounded.Snapshot(3, 2).equity, 1001);
+}
+}
+
 int main() { return Run([] {
+    SettlementAttributionAndIdentity(); SettlementFailureAtomicity();
+    SettlementCashOracle(); PortfolioSettlementBoundaries();
     Metrics(); Ledger(); BoundedCostAndAtomicRejection();
     FifoAttributionAndBounds(); ExhaustiveFifoOracle();
     PortfolioValuationAndIdentity(); PortfolioFailureAtomicity(); PortfolioCashConservationOracle();

@@ -37,6 +37,13 @@ struct ResearchFill {
     std::int64_t quantity = 0;
     double price = 0, fee = 0;
 };
+// Explicit OFFLINE variation settlement. The supplied price is an accounting
+// input, not a market observation, fill, cash deposit or broker instruction.
+struct ResearchSettlement {
+    std::string settlementId, instrument;
+    std::int64_t timestampUs = 0;
+    double price = 0;
+};
 struct ResearchAccount {
     std::int64_t quantity = 0;
     double averageEntry = 0, realizedGross = 0, unrealized = 0, fees = 0, equity = 0;
@@ -55,13 +62,19 @@ public:
                    double multiplier, std::size_t maxFillIds = 100000,
                    CostBasis costBasis = CostBasis::WeightedAverage);
     bool Apply(const ResearchFill& fill); // false for an exact duplicate.
+    // Realize marked P&L and reset the remaining basis without changing quantity,
+    // fees or marked equity (subject to checked floating-point arithmetic).
+    // Destructive precision loss is rejected; exact settlement retries are no-ops.
+    // The historical maxFillIds argument bounds combined fill/settlement IDs;
+    // the two ID namespaces are distinct. Failed events do not consume an ID.
+    bool Settle(const ResearchSettlement& settlement);
     ResearchAccount Mark(double markPrice) const;
     std::int64_t Quantity() const { return quantity_; }
     CostBasis Basis() const { return costBasis_; }
 private:
     std::string instrument_;
     double initialEquity_, multiplier_;
-    std::size_t maxFillIds_;
+    std::size_t maxEventIds_;
     CostBasis costBasis_;
     struct Lot { std::int64_t quantity; long double price; };
     // Quantity-compressed lots, not one allocation per contract. FIFO updates
@@ -70,6 +83,7 @@ private:
     std::int64_t quantity_ = 0, lastTimestampUs_ = 0;
     long double average_ = 0, realized_ = 0, fees_ = 0;
     std::map<std::string, ResearchFill> fills_;
+    std::map<std::string, ResearchSettlement> settlements_;
 };
 
 struct ResearchInstrument {
@@ -97,8 +111,8 @@ struct ResearchPortfolioSnapshot {
 };
 
 // Thread-affine OFFLINE portfolio. A fixed same-currency universe prevents
-// implicit FX conversions. One monotonic delivery clock spans fills, flows
-// and ticks (equal timestamps retain caller delivery order). Fill identities
+// implicit FX conversions. One monotonic delivery clock spans fills, flows,
+// settlements and ticks (equal timestamps retain caller delivery order). Fill identities
 // are portfolio-global; flow identities have their own namespace. Exact retries
 // do not advance time, consume capacity or revalidate a stale mark.
 //
@@ -107,13 +121,17 @@ struct ResearchPortfolioSnapshot {
 // caller-supplied maximum age; the fill price is not substituted for a quote.
 // Snapshot is read-only, not a watermark or a historical/bitemporal query.
 // Zero/negative equity is reported, never treated as permission to trade.
-// No margin, FX, exchange settlement, persistence or execution authority.
+// Explicit variation settlement only; no margin, FX, venue clearing calendar,
+// persistence or execution authority. Settlement never refreshes a quote.
 class ResearchPortfolio {
 public:
     ResearchPortfolio(double initialEquity, std::string currency,
                       const std::vector<ResearchInstrument>& instruments,
                       std::size_t maxEventIds = 100000);
     bool Apply(const ResearchFill& fill);
+    // Settlement IDs are portfolio-global and separate from fill/flow IDs, but
+    // share their finite event budget. Existing mark age/validity is unchanged.
+    bool Settle(const ResearchSettlement& settlement);
     bool ApplyCashFlow(const ResearchCashFlow& flow);
     bool Observe(const Tick& tick);
     ResearchPortfolioSnapshot Snapshot(std::int64_t asOfUs,
@@ -133,6 +151,7 @@ private:
     long double flows_ = 0;
     std::map<std::string, Position> positions_;
     std::map<std::string, ResearchFill> fills_;
+    std::map<std::string, ResearchSettlement> settlements_;
     std::map<std::string, ResearchCashFlow> cashFlows_;
 };
 

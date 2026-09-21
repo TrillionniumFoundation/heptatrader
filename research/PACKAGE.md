@@ -141,12 +141,12 @@ explicit multipliers and a common, caller-declared three-letter currency. Mixed
 currencies are rejected; FX is not inferred. Initial capital is counted once.
 `Apply(ResearchFill)` deduplicates fill IDs globally across instruments, while
 `ApplyCashFlow(ResearchCashFlow)` uses a separate immutable flow-ID namespace.
-A combined capacity bounds fill/flow receipts, and successful exact retries stay
+A combined capacity bounds fill/flow/settlement receipts, and successful exact retries stay
 idempotent after the clock advances or the capacity is reached. Deposits and
 withdrawals change capital explicitly, not through trade P&L or an automatic top-up.
 
 `Observe(Tick)` uses the existing normalized incremental tick contract. New fills,
-flows and ticks share a monotonic delivery clock; equal timestamps retain caller
+flows, settlements and ticks share a monotonic delivery clock; equal timestamps retain caller
 order. Each position-changing fill invalidates that instrument's cached mark.
 An open position then needs a subsequent **new-sequence** tick, not an exact retry
 of an old observation. `Snapshot(asOfUs, maxMarkAgeUs)` rejects missing/stale marks
@@ -167,7 +167,53 @@ This extends existing Analytics source/header/test targets and existing exports;
 it creates no new trading runtime, authority, installed-header path or CMake
 target. Rebuild consumers: source defaults are preserved, **binary ABI is not**.
 Net positions/FIFO cost accounting do not implement hedge-mode long/short books,
-exchange variation settlement, margin, tax lots, broker reconciliation, historical
+exchange-specific clearing calendars, margin, tax lots, broker reconciliation, historical
 cache decoding, or CTP close-today/close-yesterday order semantics. The source
 reference remains retained until those separately required capabilities and named
 external consumers have an explicit migration disposition.
+
+## Explicit offline variation settlement
+
+`ResearchSettlement` supplies an immutable `settlementId`, `instrument`,
+`timestampUs` and finite positive `price`. Both `ResearchLedger::Settle` and
+`ResearchPortfolio::Settle` return true only for a newly applied event. This is
+an explicit caller-delivered accounting operation, not a timer, inferred exchange
+close, order, fill, deposit, quote update or broker instruction.
+
+```cpp
+hepta::research::ResearchSettlement settlement;
+settlement.settlementId = "research-day-001";
+settlement.instrument = "TEST.FUT";
+settlement.timestampUs = 200;
+settlement.price = 105.0;
+ledger.Settle(settlement); // ledger is an existing ResearchLedger
+```
+
+The operation realizes the marked P&L at that supplied price and rebases the
+remaining inventory. FIFO realizes each old compressed lot before combining the
+now-equal-cost remainder; weighted-average cost uses its retained internal basis.
+Quantity and fees do not change. At the settlement price, unrealized P&L becomes
+zero; marked equity at a fixed price is conserved within checked floating-point
+arithmetic. A flat account stays flat with zero basis and no invented P&L.
+Finite prices are not enough: arithmetic overflow or a rebase that loses nearby
+representable entry-price distinctions or existing realized P&L is rejected with
+no receipt/account/clock mutation. Precision rejection is explicit, not a silently
+rounded success or a new production risk policy.
+
+Settlement IDs are separate from fill IDs (and portfolio cash-flow IDs), but are
+immutable within their namespace. Portfolio settlement IDs are global across its
+instrument universe. Changed payloads, wrong instruments, reversed new events and
+exhausted event budgets fail. An exact successful retry remains a no-op after
+newer events or capacity exhaustion, without rebasing later trades. The historical
+ledger constructor argument `maxFillIds` now bounds combined fill/settlement
+receipts; calls that do not use settlement keep their existing behavior. Portfolio
+fills, flows and settlements share its existing `maxEventIds` limit. Equal event
+timestamps retain caller delivery order, not a fabricated historical order.
+
+A portfolio settlement preserves the previous quote's value, timestamp and
+validity. It neither refreshes a stale mark nor repairs a mark invalidated by a
+fill. `Snapshot` still requires the same subsequent new-sequence observations and
+age bound as before. External flows remain unchanged. Source calls are additive;
+rebuild consumers because class layout/binary ABI equivalence is not promised.
+The existing installed/relocated C++11 SDK consumer executes both new methods.
+This is not a CTP clearing, margin, tax or brokerage settlement implementation.

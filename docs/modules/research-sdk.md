@@ -252,6 +252,29 @@ production install/package manifest and native Gateway test boundary are unchang
 See the [integration record](../technical/heptadll-integration.md) for source
 provenance, retained assets and the remaining migration boundary.
 
+## Explicit offline settlement
+
+`ResearchLedger::Settle(ResearchSettlement)` and `ResearchPortfolio::Settle`
+realize variation at a caller-supplied accounting price and rebase the remaining
+cost, without a fill, quantity change, fee, deposit or market observation. FIFO
+and weighted-average accounting retain their separate cost policies. Settlement
+receipts are immutable, bounded and idempotent, with a separate ID namespace and
+the same monotonic event clock. The ledger's historical `maxFillIds` argument now
+bounds combined fill/settlement receipts; portfolio events share `maxEventIds`.
+
+Input, capacity, clock, arithmetic and destructive-precision failures leave
+accounting, event identity and time unchanged. Existing quote value, age and
+validity are preserved: settlement cannot revive a missing/stale/invalidated
+portfolio mark. Exact retries do not rebase trades that arrived later. See the
+[SDK settlement contract](../../research/PACKAGE.md#explicit-offline-variation-settlement).
+
+The existing Analytics test and installed/relocated C++11 consumer exercise the
+public methods. Independent fill-cash oracles cover both bases, multiple
+multipliers, partial closes and reversals. This adds no translation unit, target,
+installed-header path, privileged dependency, production install or venue status.
+Exchange-specific clearing calendars, margin and broker reconciliation are not
+inferred from this offline operation.
+
 ## Separate installable strategy client
 
 The offline four-library package remains unchanged. The root build now exports

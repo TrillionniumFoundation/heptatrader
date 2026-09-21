@@ -23,6 +23,24 @@ Metric Optional(long double value) {
     }
     return m;
 }
+void CheckSettlementPrecision(long double entry, double price) {
+    // Reject a destructive finite rebase rather than rounding distinct nearby
+    // representable entry prices into the same value. This is a representation
+    // check, not a hard-coded market price-band or a broker risk decision.
+    const double rounded = Finite(entry);
+    const double neighbors[] = {rounded, std::nextafter(rounded, 0.0),
+        std::nextafter(rounded, std::numeric_limits<double>::infinity())};
+    for (double sample : neighbors) {
+        if (!std::isfinite(sample) || sample <= 0) continue;
+        const long double delta = static_cast<long double>(price) - sample;
+        Require(static_cast<double>(static_cast<long double>(price) - delta) == sample,
+                "RESEARCH_SETTLEMENT_PRECISION_LOSS");
+    }
+}
+bool SameSettlement(const ResearchSettlement& a, const ResearchSettlement& b) {
+    return a.settlementId == b.settlementId && a.instrument == b.instrument &&
+           a.timestampUs == b.timestampUs && a.price == b.price;
+}
 bool SameFill(const ResearchFill& a, const ResearchFill& b) {
     return a.fillId == b.fillId && a.orderId == b.orderId && a.instrument == b.instrument &&
            a.timestampUs == b.timestampUs && a.side == b.side && a.quantity == b.quantity &&
@@ -76,7 +94,7 @@ Performance EvaluateEquity(const std::vector<EquityPoint>& points,
 }
 ResearchLedger::ResearchLedger(std::string instrument, double initial, double multiplier,
                                std::size_t maxFillIds, CostBasis costBasis)
-    : instrument_(std::move(instrument)), initialEquity_(initial), multiplier_(multiplier), maxFillIds_(maxFillIds), costBasis_(costBasis) {
+    : instrument_(std::move(instrument)), initialEquity_(initial), multiplier_(multiplier), maxEventIds_(maxFillIds), costBasis_(costBasis) {
     Tick validation; validation.instrument = instrument_; validation.sequence = 1; validation.price = 1;
     ValidateTick(validation);
     Require(std::isfinite(initial) && initial > 0 && std::isfinite(multiplier) && multiplier > 0 &&
@@ -96,7 +114,8 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
         return false;
     }
     Require(fill.timestampUs >= lastTimestampUs_, "RESEARCH_FILL_OUT_OF_ORDER");
-    Require(fills_.size() < maxFillIds_, "RESEARCH_FILL_ID_CAPACITY");
+    Require(settlements_.size() < maxEventIds_ &&
+            fills_.size() < maxEventIds_ - settlements_.size(), "RESEARCH_FILL_ID_CAPACITY");
     const std::int64_t signedFill = fill.side * fill.quantity;
     const std::int64_t nextQuantity = quantity_ + signedFill; // Both are bounded to 1e12.
     Require(nextQuantity >= -1000000000000LL && nextQuantity <= 1000000000000LL,
@@ -154,6 +173,50 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
     lastTimestampUs_ = fill.timestampUs;
     return true;
 }
+bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
+    Require(!settlement.settlementId.empty() && settlement.settlementId.size() <= 128 &&
+            settlement.instrument == instrument_ && settlement.timestampUs >= 0 &&
+            std::isfinite(settlement.price) && settlement.price > 0,
+            "RESEARCH_SETTLEMENT_INVALID");
+    const auto found = settlements_.find(settlement.settlementId);
+    if (found != settlements_.end()) {
+        Require(SameSettlement(found->second, settlement), "RESEARCH_SETTLEMENT_ID_CONFLICT");
+        return false;
+    }
+    Require(settlement.timestampUs >= lastTimestampUs_, "RESEARCH_SETTLEMENT_OUT_OF_ORDER");
+    Require(settlements_.size() < maxEventIds_ &&
+            fills_.size() < maxEventIds_ - settlements_.size(), "RESEARCH_SETTLEMENT_ID_CAPACITY");
+    // Stage both accounting and allocations before publishing the receipt. In
+    // FIFO, realize each old lot, then combine equal rebased lots; never use the
+    // rounded public average to compute settlement P&L.
+    long double variation = 0;
+    std::deque<Lot> nextLots;
+    if (costBasis_ == CostBasis::Fifo) {
+        for (const auto& lot : lots_)
+            variation += (static_cast<long double>(settlement.price) - lot.price) *
+                         lot.quantity * (quantity_ > 0 ? 1 : -1) * multiplier_;
+        if (quantity_ != 0)
+            nextLots.push_back(Lot{quantity_ > 0 ? quantity_ : -quantity_, settlement.price});
+    } else {
+        variation = (static_cast<long double>(settlement.price) - average_) * quantity_ * multiplier_;
+    }
+    const long double realized = realized_ + variation;
+    Finite(variation); Finite(realized);
+    if (quantity_ != 0) {
+        if (costBasis_ == CostBasis::Fifo) {
+            for (const auto& lot : lots_) CheckSettlementPrecision(lot.price, settlement.price);
+        } else CheckSettlementPrecision(average_, settlement.price);
+    }
+    Require(static_cast<double>(realized - variation) == static_cast<double>(realized_),
+            "RESEARCH_SETTLEMENT_PRECISION_LOSS");
+    Finite(static_cast<long double>(initialEquity_) + realized - fees_);
+    settlements_.emplace(settlement.settlementId, settlement);
+    if (costBasis_ == CostBasis::Fifo) lots_.swap(nextLots);
+    realized_ = realized;
+    average_ = quantity_ == 0 ? 0 : settlement.price;
+    lastTimestampUs_ = settlement.timestampUs;
+    return true;
+}
 ResearchAccount ResearchLedger::Mark(double mark) const {
     Require(std::isfinite(mark) && mark > 0, "RESEARCH_MARK_INVALID");
     ResearchAccount out;
@@ -205,6 +268,28 @@ bool ResearchPortfolio::Apply(const ResearchFill& fill) {
     }
     position->second.markCurrent = false;
     clockUs_ = fill.timestampUs; ++eventCount_;
+    return true;
+}
+bool ResearchPortfolio::Settle(const ResearchSettlement& settlement) {
+    const auto duplicate = settlements_.find(settlement.settlementId);
+    if (duplicate != settlements_.end()) {
+        Require(SameSettlement(duplicate->second, settlement), "RESEARCH_SETTLEMENT_ID_CONFLICT");
+        return false;
+    }
+    auto position = positions_.find(settlement.instrument);
+    Require(position != positions_.end(), "RESEARCH_PORTFOLIO_INSTRUMENT_UNKNOWN");
+    Require(settlement.timestampUs >= clockUs_, "RESEARCH_PORTFOLIO_CLOCK_REVERSED");
+    Require(eventCount_ < maxEventIds_, "RESEARCH_PORTFOLIO_EVENT_CAPACITY");
+    const auto receipt = settlements_.emplace(settlement.settlementId, settlement);
+    try {
+        position->second.ledger.Settle(settlement);
+    } catch (...) {
+        settlements_.erase(receipt.first);
+        throw;
+    }
+    // A rebased cost does not supply a new market price, revive an invalidated
+    // mark or extend its age. Snapshot still requires the ordinary fresh tick.
+    clockUs_ = settlement.timestampUs; ++eventCount_;
     return true;
 }
 bool ResearchPortfolio::ApplyCashFlow(const ResearchCashFlow& flow) {

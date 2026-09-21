@@ -127,6 +127,20 @@ int main() {
     bool stale = false;
     try { portfolio.Snapshot(3, 0); } catch (const std::invalid_argument&) { stale = true; }
     Require(stale);
+    ResearchSettlement settlement; settlement.settlementId = "installed-settlement";
+    settlement.instrument = "TEST.FUT"; settlement.timestampUs = 4; settlement.price = 125;
+    Require(fifo.Settle(settlement) && !fifo.Settle(settlement));
+    Require(fifo.Mark(140).equity == 1500 && fifo.Mark(125).unrealized == 0 &&
+            fifo.Mark(125).averageEntry == 125 && fifo.Mark(125).realizedGross == 350);
+    settlement.price = 120;
+    Require(portfolio.Settle(settlement) && !portfolio.Settle(settlement));
+    const auto settled = portfolio.Snapshot(4, 2);
+    Require(settled.equity == portfolioValue.equity && settled.externalFlows == 500 &&
+            settled.positions.at("TEST.FUT").markPrice == 110 &&
+            settled.positions.at("TEST.FUT").markTimestampUs == 2);
+    stale = false;
+    try { portfolio.Snapshot(4, 0); } catch (const std::invalid_argument&) { stale = true; }
+    Require(stale);
     std::cout << "installed research contract passed\n";
 }
 '''
