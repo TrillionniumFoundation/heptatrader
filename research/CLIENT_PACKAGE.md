@@ -58,6 +58,24 @@ LIVE remains unavailable; CTP remains deferred, and XT retains its priority.
 This SDK is not a historical HeptaDLL source/ABI replacement, strategy migration
 certificate, host deployment or broker qualification.
 
+## Borrowed inputs and output reuse
+
+Input strings may refer to a field in the previous result/request or to the
+previous diagnostic string. The SDK captures an owned request (or directory,
+command ID, binding and token-file path) before clearing outputs. This applies
+to direct preview/submit/cancel/flatten/status calls and durable persistence,
+load and submission. For example, loading with `request.toolCallId` as the ID
+and `request` as the output preserves that original ID rather than erasing it.
+The `NativeToolClient` bound-call and token-file reader follow the same rule.
+
+The output arguments themselves must be distinct: do not use a field inside
+`result`/`request` as the output `reason`, or the same string as both token and
+reason outputs. Callers must not concurrently mutate referenced inputs/outputs.
+Local validation and transport failures still clear a previous success result;
+invalid input is not repaired. This capture changes neither HTT1/HSR1 bytes nor
+the original command, permit, expiry, session binding or execution authority.
+There is still no automatic retry or regenerated preview permit.
+
 ## Durable client requests and restart recovery
 
 The same SDK now offers three `Persist` overloads for `PreparedOrder`,

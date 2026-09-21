@@ -101,48 +101,56 @@ bool NativeStrategyClient::Forward(const TradingToolHostRequest& request, Native
     if (!transported) result = NativeToolClientResult();
     return transported;
 }
+// Build an owned request before Forward clears outputs. IDs and permits may
+// refer to fields in the previous result or to the diagnostic string.
 bool NativeStrategyClient::Preview(const PreparedOrder& order, const std::string& id,
                                    NativeToolClientResult& result, std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
     try { return Forward(order.PreviewRequest(id), result, reason); }
-    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+    catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
 }
 bool NativeStrategyClient::Submit(const PreparedOrder& order, const std::string& id,
                                   const std::string& permit, NativeToolClientResult& result,
                                   std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
     try { return Forward(order.SubmissionRequest(id, permit), result, reason); }
-    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+    catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
 }
 bool NativeStrategyClient::Cancel(const PreparedCancellation& cancellation, const std::string& id,
                                   NativeToolClientResult& result, std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
     try { return Forward(cancellation.SubmissionRequest(id), result, reason); }
-    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+    catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
 }
 bool NativeStrategyClient::PreviewFlatten(const PreparedFlatten& flatten, const std::string& id,
                                           NativeToolClientResult& result, std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
     try { return Forward(flatten.PreviewRequest(id), result, reason); }
-    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+    catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
 }
 bool NativeStrategyClient::Flatten(const PreparedFlatten& flatten, const std::string& id,
                                    const std::string& permit, NativeToolClientResult& result,
                                    std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
     try { return Forward(flatten.SubmissionRequest(id, permit), result, reason); }
-    catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+    catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
 }
 bool NativeStrategyClient::Status(const std::string& id, const std::string& queryId,
                                   NativeToolClientResult& result, std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
     try {
         CheckId(id); CheckId(queryId);
         TradingToolHostRequest request;
         request.toolCallId = queryId; request.call.name = "execution.get_command_status";
         request.call.targetCommandId = id; Validate(request.call);
         return Forward(request, result, reason);
-    } catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+    } catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
 }
 
 namespace {
@@ -331,6 +339,7 @@ bool WriteOutbox(int directory, const std::string& name, const std::string& byte
 
 bool NativeStrategyClient::PersistRequest(const std::string& directory, TradingToolHostRequest request,
                                           std::string& reason) const {
+    const std::string capturedDirectory = directory;
     reason.clear();
     std::string binding, wire;
     if (!client_.RecoveryBinding(binding, reason)) return false;
@@ -340,11 +349,11 @@ bool NativeStrategyClient::PersistRequest(const std::string& directory, TradingT
     if (!TypedToolProtocol::EncodeRequest(request, wire, reason)) return false;
     const std::string bytes = "HSR1\n" + binding + "\n" +
         NativeToolDiscoveryContract::ContentDigest("HSR1\n" + binding + "\n" + wire) + "\n" + wire;
-    OutboxFd dir(OpenOutbox(directory));
+    OutboxFd dir(OpenOutbox(capturedDirectory));
     if (dir.Get() < 0) return OutboxFail(reason, "RESEARCH_OUTBOX_DIRECTORY_UNSAFE");
     if (!LockOutbox(dir.Get())) return OutboxFail(reason, "RESEARCH_OUTBOX_LOCK_FAILED");
     if (!WriteOutbox(dir.Get(), request.toolCallId + ".hsr", bytes, reason)) return false;
-    if (!SyncOutbox(dir.Get()) || !SameOutboxPath(dir.Get(), directory))
+    if (!SyncOutbox(dir.Get()) || !SameOutboxPath(dir.Get(), capturedDirectory))
         return OutboxFail(reason, "RESEARCH_OUTBOX_SYNC_OR_PATH_FAILED");
     reason.clear(); return true;
 }
@@ -365,19 +374,21 @@ bool NativeStrategyClient::Persist(const std::string& directory, const PreparedF
 }
 bool NativeStrategyClient::LoadStored(const std::string& directory, const std::string& id,
     TradingToolHostRequest& request, std::string& reason) const {
+    const std::string capturedDirectory = directory, capturedId = id;
     request = TradingToolHostRequest();
     TradingToolHostRequest candidate;
     std::string binding, current;
-    if (!LoadOutbox(directory, id, candidate, binding, reason) || !client_.RecoveryBinding(current, reason)) return false;
+    if (!LoadOutbox(capturedDirectory, capturedId, candidate, binding, reason) || !client_.RecoveryBinding(current, reason)) return false;
     if (current != binding) return OutboxFail(reason, "NATIVE_RECOVERY_BINDING_MISMATCH");
     request = candidate; reason.clear(); return true;
 }
 bool NativeStrategyClient::SubmitStored(const std::string& directory, const std::string& id,
     NativeToolClientResult& result, std::string& reason) const {
+    const std::string capturedDirectory = directory, capturedId = id;
     result = NativeToolClientResult(); reason.clear();
     TradingToolHostRequest request;
     std::string binding;
-    if (!LoadOutbox(directory, id, request, binding, reason)) return false;
+    if (!LoadOutbox(capturedDirectory, capturedId, request, binding, reason)) return false;
     return client_.CallBound(request, binding, result, reason);
 }
 

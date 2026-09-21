@@ -88,7 +88,7 @@ private:
     std::string cancelId, cancelOwner, flattenId, flattenInstrument, flattenPermit;
 };
 
-void TestGatewayForwarding() {
+void TestGatewayForwarding(bool borrowedInputs) {
     TemporaryDirectory directory;
     UncertainFixtureAuthority authority;
     TradingToolReadCallbacks reads;
@@ -146,7 +146,13 @@ void TestGatewayForwarding() {
     const std::string permit = "sha256:" + std::string(64, 'a');
     NativeToolClientResult result;
     const auto start = std::chrono::steady_clock::now();
-    Check(client.Submit(proposal, id, permit, result, reason), "real Gateway response not transported");
+    if (borrowedInputs) {
+        result.envelope.detail = id; result.envelope.payloadJson = permit;
+        Check(client.Submit(proposal, result.envelope.detail, result.envelope.payloadJson, result, reason),
+              "borrowed placement inputs did not reach the real Gateway");
+    } else {
+        Check(client.Submit(proposal, id, permit, result, reason), "real Gateway response not transported");
+    }
     const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
         std::chrono::steady_clock::now() - start).count();
     Check(result.envelope.status == "uncertain", "adapter hid an uncertain outcome");
@@ -156,15 +162,31 @@ void TestGatewayForwarding() {
     PreparedFlatten flatten("EUR.USD");
     const std::string cancelId = "research-fixture-cancel-0001";
     const std::string flattenId = "execution-fixture-flatten-0001";
-    Check(client.Cancel(cancellation, cancelId, result, reason), "cancel response not transported");
+    if (borrowedInputs) {
+        result.envelope.detail = cancelId;
+        Check(client.Cancel(cancellation, result.envelope.detail, result, reason), "borrowed cancel ID lost");
+    } else {
+        Check(client.Cancel(cancellation, cancelId, result, reason), "cancel response not transported");
+    }
     Check(result.envelope.status == "uncertain" &&
           result.envelope.reasonCode == "RESEARCH_FIXTURE_CANCEL_UNCERTAIN", "cancel outcome rewritten");
-    Check(client.PreviewFlatten(flatten, "research-fixture-flatten-preview", result, reason),
-          "flatten preview rejection not transported");
+    if (borrowedInputs) {
+        reason = "research-fixture-flatten-preview";
+        Check(client.PreviewFlatten(flatten, reason, result, reason), "borrowed preview ID lost");
+    } else {
+        Check(client.PreviewFlatten(flatten, "research-fixture-flatten-preview", result, reason),
+              "flatten preview rejection not transported");
+    }
     Check(result.envelope.status != "ok", "fixture preview fabricated approval");
     // A syntactically valid dummy permit reaches only a negative fixture, never
     // a broker. This verifies forwarding, not actual risk/permit authorization.
-    Check(client.Flatten(flatten, flattenId, permit, result, reason), "flatten response not transported");
+    if (borrowedInputs) {
+        result.envelope.detail = flattenId; result.envelope.payloadJson = permit;
+        Check(client.Flatten(flatten, result.envelope.detail, result.envelope.payloadJson, result, reason),
+              "borrowed flatten binding lost");
+    } else {
+        Check(client.Flatten(flatten, flattenId, permit, result, reason), "flatten response not transported");
+    }
     Check(result.envelope.status == "uncertain" &&
           result.envelope.reasonCode == "RESEARCH_FIXTURE_FLATTEN_UNCERTAIN", "flatten outcome rewritten");
     authority.AssertExits(cancelId, flattenId, permit);
@@ -205,4 +227,4 @@ void TestGatewayForwarding() {
               << " (includes discovery; not broker latency)\n";
 }
 }
-int main() { return Run(TestGatewayForwarding); }
+int main() { return Run([] { TestGatewayForwarding(false); TestGatewayForwarding(true); }); }

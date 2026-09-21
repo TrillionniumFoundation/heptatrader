@@ -178,6 +178,23 @@ retirement and source archival conditions above remain separate from this
 implemented client recovery boundary. Exact-head validation belongs in the PR
 observations, not in an unconditional success declaration in this document.
 
+## Borrowed-input client continuation
+
+The existing native/strategy client captures borrowed input strings before
+clearing result, request or diagnostic outputs. Direct operations, persisted
+request recovery, bound calls and token-file reads now support input values
+borrowed from their prior outputs without erasing command IDs or permits. The
+storage schema, exact request bytes, retry policy, permissions and execution
+boundary are unchanged. Output-to-output aliases are not supported.
+
+The existing native behavioral test adds alias/non-alias comparisons and
+immutable-record checks for all three stored operations. The existing real
+Gateway fixture runs both original and borrowed-input variants, preserving
+placement, cancellation, flatten, uncertain-result and revoked-session checks.
+The same behavioral source is also compiled as the installed/relocated external
+C++11 SDK consumer. No target, dependency or additional runtime is introduced;
+red/green observations and exact-head acceptance are recorded in the PR.
+
 ## Build ownership
 
 The reviewed inventory includes the twelve research library/executable/test

@@ -317,8 +317,133 @@ void OutboxTests() {
               << " checksum oracles and 12 concurrent publishers passed\n";
 }
 
+// Inputs may be borrowed from the previous result/request or error string.
+// Output objects themselves remain distinct. Compare missing-socket failures
+// with the nonaliased call so validation cannot silently eat the original ID.
+void BorrowedInputTests() {
+    OutboxTestRoot root;
+    const auto config = OutboxConfig();
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    InstrumentRef contract; contract.symbol = "EUR"; contract.secType = "CASH";
+    contract.exchange = "SIM"; contract.currency = "USD";
+    PreparedOrder order("EUR.USD", contract, "BUY", 10, 1.1, 1.09, 1900000000000LL);
+    PreparedCancellation cancellation(42); PreparedFlatten flatten("EUR.USD");
+    const std::string id = "borrowed-command-001", query = "borrowed-query-001";
+    const std::string permit = "sha256:" + std::string(64, 'c');
+    auto direct = [&](int operation, const std::string& callId, const std::string& credential,
+                      const std::string& queryId, NativeToolClientResult& result, std::string& why) {
+        switch (operation) {
+        case 0: return client.Preview(order, callId, result, why);
+        case 1: return client.Submit(order, callId, credential, result, why);
+        case 2: return client.Cancel(cancellation, callId, result, why);
+        case 3: return client.PreviewFlatten(flatten, callId, result, why);
+        case 4: return client.Flatten(flatten, callId, credential, result, why);
+        default: return client.Status(callId, queryId, result, why);
+        }
+    };
+    auto cleared = [](const NativeToolClientResult& result) {
+        return result.envelope.status.empty() && result.envelope.orderId == -1 &&
+            result.envelope.detail.empty() && result.envelope.payloadJson.empty() && result.responseJson.empty();
+    };
+    for (int operation = 0; operation < 6; ++operation) {
+        NativeToolClientResult baseline;
+        std::string expected;
+        Check(!direct(operation, id, permit, query, baseline, expected) && !expected.empty(),
+              "borrowed fixture requires real missing-socket failure");
+        for (int mode = 0; mode < 4; ++mode) {
+            NativeToolClientResult result;
+            result.envelope.status = "ok"; result.envelope.orderId = 42;
+            result.envelope.detail = id; result.envelope.payloadJson = permit; result.responseJson = query;
+            std::string reason = mode == 1 ? id : (mode == 2 ? permit : query);
+            const std::string& borrowedId = mode == 1 ? reason : result.envelope.detail;
+            const std::string& borrowedPermit = mode == 2 ? reason : result.envelope.payloadJson;
+            const std::string& borrowedQuery = mode == 3 ? reason : result.responseJson;
+            Check(!direct(operation, borrowedId, borrowedPermit, borrowedQuery, result, reason) &&
+                  reason == expected && cleared(result), "borrowed direct inputs changed failure or leaked success");
+        }
+        NativeToolClientResult invalid;
+        invalid.envelope.status = "ok"; invalid.envelope.detail = "short";
+        std::string reason;
+        Check(!direct(operation, invalid.envelope.detail, permit, query, invalid, reason) &&
+              reason == "RESEARCH_TOOL_CALL_ID_INVALID" && cleared(invalid), "invalid borrowed ID retained success");
+    }
+    auto persist = [&](int operation, const std::string& directory, const std::string& callId,
+                       const std::string& credential, std::string& why) {
+        if (operation == 0) return client.Persist(directory, order, callId, credential, why);
+        if (operation == 1) return client.Persist(directory, cancellation, callId, why);
+        return client.Persist(directory, flatten, callId, credential, why);
+    };
+    for (int operation = 0; operation < 3; ++operation) {
+        const auto command = id + "-" + std::to_string(operation);
+        std::string reason;
+        Check(persist(operation, root.path, command, permit, reason), "borrowed fixture seed");
+        const auto file = root.path + "/" + command + ".hsr", original = ReadBytes(file);
+        reason = root.path;
+        Check(persist(operation, reason, command, permit, reason), "persist cleared its directory input");
+        reason = command;
+        Check(persist(operation, root.path, reason, permit, reason), "persist cleared its ID input");
+        reason = permit;
+        Check(persist(operation, root.path, command, reason, reason), "persist cleared its permit input");
+        TradingToolHostRequest loaded;
+        Check(client.LoadStored(root.path, command, loaded, reason), "borrowed load baseline");
+        const auto expectedWire = Wire(loaded);
+        loaded.call.instrument = root.path;
+        Check(client.LoadStored(loaded.call.instrument, loaded.toolCallId, loaded, reason) &&
+              Wire(loaded) == expectedWire, "load cleared borrowed request inputs");
+        reason = command;
+        Check(client.LoadStored(root.path, reason, loaded, reason) && Wire(loaded) == expectedWire,
+              "load cleared borrowed error/ID input");
+        reason = root.path;
+        Check(client.LoadStored(reason, command, loaded, reason) && Wire(loaded) == expectedWire,
+              "load cleared borrowed error/directory input");
+        NativeToolClientResult baseline;
+        std::string expected;
+        Check(!client.SubmitStored(root.path, command, baseline, expected), "missing socket submitted stored request");
+        for (int mode = 0; mode < 3; ++mode) {
+            NativeToolClientResult result;
+            result.envelope.status = "ok"; result.envelope.orderId = 42;
+            result.envelope.detail = command; result.responseJson = root.path;
+            reason = mode == 1 ? command : root.path;
+            const std::string& borrowedId = mode == 1 ? reason : result.envelope.detail;
+            const std::string& directory = mode == 2 ? reason : result.responseJson;
+            Check(!client.SubmitStored(directory, borrowedId, result, reason) &&
+                  reason == expected && cleared(result), "stored submit lost borrowed inputs");
+        }
+        loaded.toolCallId = "short";
+        Check(!client.LoadStored(root.path, loaded.toolCallId, loaded, reason) &&
+              reason == "RESEARCH_OUTBOX_ID_INVALID" && loaded.call.name.empty(), "invalid borrowed stored ID");
+        Check(ReadBytes(file) == original, "borrowed calls rewrote immutable request bytes");
+    }
+    std::string binding, reason;
+    Check(native.RecoveryBinding(binding, reason), "borrowed binding baseline");
+    const auto request = order.SubmissionRequest(id, permit);
+    NativeToolClientResult baseline;
+    std::string expected;
+    Check(!native.CallBound(request, binding, baseline, expected), "bound fixture needs absent socket");
+    NativeToolClientResult result;
+    result.responseJson = binding;
+    Check(!native.CallBound(request, result.responseJson, result, reason) && reason == expected && cleared(result),
+          "bound call cleared result-borrowed binding");
+    reason = binding;
+    Check(!native.CallBound(request, reason, result, reason) && reason == expected && cleared(result),
+          "bound call cleared error-borrowed binding");
+    reason = "invalid-binding";
+    Check(!native.CallBound(request, reason, result, reason) &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH" && cleared(result), "borrowed binding widened authority");
+    const auto tokenPath = root.path + "/session.token";
+    WriteBytes(tokenPath, config.sessionToken + "\n");
+    std::string token = tokenPath;
+    Check(NativeToolClient::ReadSessionToken(token, token, reason) && token == config.sessionToken && reason.empty(),
+          "token reader cleared its borrowed path");
+    token = tokenPath + ".absent";
+    Check(!NativeToolClient::ReadSessionToken(token, token, reason) && token.empty() && reason == "TOKEN_FILE_UNSAFE",
+          "token read failure changed borrowed-path semantics");
+    std::cout << "borrowed_inputs=PASS direct=24 persisted_operations=3 immutable_records=3 bound_call=3 token_path=2\n";
+}
+
 void Tests() {
     OutboxTests();
+    BorrowedInputTests();
     ExitRequests();
     InstrumentRef contract;
     contract.symbol = "EUR"; contract.secType = "CASH";

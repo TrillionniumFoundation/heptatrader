@@ -46,14 +46,16 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
                                         std::string& token,
                                         std::string& reason)
 {
+    // The path may be borrowed from the token/diagnostic output.
+    const std::string capturedPath = path;
     token.clear();
-    if (path.empty())
+    if (capturedPath.empty())
     {
         reason = "TOKEN_FILE_REQUIRED";
         return false;
     }
     struct stat before;
-    if (::lstat(path.c_str(), &before) != 0 || !S_ISREG(before.st_mode) ||
+    if (::lstat(capturedPath.c_str(), &before) != 0 || !S_ISREG(before.st_mode) ||
         S_ISLNK(before.st_mode) || (before.st_uid != 0 && before.st_uid != ::geteuid()) ||
         before.st_nlink != 1 || (before.st_mode & 07777) != 0600 ||
         before.st_size < 1 || before.st_size > 514)
@@ -61,7 +63,7 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
         reason = "TOKEN_FILE_UNSAFE";
         return false;
     }
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int fd = ::open(capturedPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0)
     {
         reason = "TOKEN_FILE_OPEN_FAILED";
@@ -92,7 +94,7 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
         ? ::read(fd, &extra, 1) : -1;
     const bool stable = openedSafe &&
         total == static_cast<std::size_t>(opened.st_size) && extraCount == 0 &&
-        ::fstat(fd, &after) == 0 && ::lstat(path.c_str(), &pathAfter) == 0 &&
+        ::fstat(fd, &after) == 0 && ::lstat(capturedPath.c_str(), &pathAfter) == 0 &&
         SameFile(opened, after) && SameFile(after, pathAfter);
     const int closeResult = ::close(fd);
     if (!stable || closeResult != 0)
@@ -295,11 +297,12 @@ bool NativeToolClient::CallBound(TradingToolHostRequest request,
                                 NativeToolClientResult& result,
                                 std::string& reason) const
 {
+    const std::string capturedBinding = binding;
     result = NativeToolClientResult(); reason.clear();
     NativeToolClientConfig snapshot;
     std::string current;
     if (!ResolveRecoveryConfig(snapshot, current, reason)) return false;
-    if (binding != current)
+    if (capturedBinding != current)
     {
         reason = "NATIVE_RECOVERY_BINDING_MISMATCH";
         return false;
