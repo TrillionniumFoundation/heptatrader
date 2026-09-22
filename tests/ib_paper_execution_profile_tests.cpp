@@ -208,6 +208,13 @@ void TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath()
     entryRisk.complete = true;
     entryRisk.activeOrderCount = 0;
     entryRisk.grossAbsolutePosition = 0.0;
+    IbPlaceOrderCommand unsupportedOffset =
+        QualificationOrder(config, "BUY", 1.0);
+    unsupportedOffset.order.positionEffect = "OPEN";
+    assert(!admission.AllowPlaceAtAuthoritativePrice(
+        unsupportedOffset, entryRisk, 1.11, 999, reason));
+    assert(reason == "IB_PAPER_ORDER_INTENT_INVALID");
+
     const IbPlaceOrderCommand first =
         QualificationOrder(config, "BUY", 125000.0);
     assert(admission.AllowPlaceAtAuthoritativePrice(

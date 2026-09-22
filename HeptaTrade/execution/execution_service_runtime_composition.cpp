@@ -456,6 +456,7 @@ private:
             command.instrument != (command.contract.currency.empty() ?
                 command.contract.symbol : command.contract.symbol + "." + command.contract.currency) ||
             command.timeInForce != "DAY" ||
+            !command.order.positionEffect.empty() ||
             (command.order.action != "BUY" && command.order.action != "SELL") ||
             (command.order.orderType != "MKT" &&
              command.order.orderType != "LMT") ||
