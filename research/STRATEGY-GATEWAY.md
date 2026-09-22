@@ -155,3 +155,40 @@ consumer decisions and support boundary are in
 The original HeptaDLL repository, releases/history and alternate references are
 retained. Source integration proceeds without claiming that unknown deployments
 were migrated; original-repository archival is not part of this delivery.
+
+## Post-merge initialization and numeric normalization
+
+The #113 application consumer and #114 independent packages are merged in main;
+this continuation starts from `82048dd7fe2c8905b36040bfd991d6bd2cbfcc57` on the
+same integration line. No new client, target, transport or state format is added.
+
+Concurrent first-use constructors now acquire the existing initialization flock
+before reading the format marker. Immutable link/unlink publication briefly
+creates two names for the same inode while the publisher still owns that lock;
+this transient must not be mistaken for a hostile hard link by another valid
+constructor. Unmarked legacy directories are screened without adding files.
+Once the lock is held, all previous format, ownership, mode and single-link
+checks apply. An orphaned link or publication temporary left after a crash is
+not automatically repaired or deleted; uncertainty still rejects initialization.
+
+Accepted small exponent inputs retain a shortest decimal spelling when their
+fixed-point expansion exceeds 128 characters. Revalidating normalized fields
+therefore preserves both their value and their spelling within the same bound.
+Previously valid fixed-point spellings and HSA1 record bytes are unchanged.
+The old round-trip, positivity, finiteness and upper-bound checks remain; this
+normalization repair does not change native HTT1 numeric acceptance, service
+risk policy or instrument qualification. In particular, a normalized subnormal
+value is not evidence that the wire/service accepts it. An already-written old
+oversized PREPARING record remains retained and rejected, not converted or
+used to obtain a replacement command ID.
+
+The existing policy executable adds deterministic two-process initialization
+at the actual link/unlink boundary, orphan-link and locked-legacy refusal,
+normalization closure/value preservation, retained oversized-record refusal,
+and an actual native `validate` call reaching the existing empty-record error.
+The native validation fixture performs no preview, socket call or mutation.
+The same cases run against the relocated installed module and executable via
+the existing SDK consumer, alongside every previous concurrency, uncertainty,
+SIGKILL, request-binding and real Gateway/Execution send-count assertion.
+Exact candidate and merge-SHA outcomes are recorded in their PR/run evidence,
+not inferred from the previous green baseline.
