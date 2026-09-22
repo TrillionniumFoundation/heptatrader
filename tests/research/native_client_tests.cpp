@@ -471,27 +471,29 @@ void TypedPreviews() {
         {"authoritative_preview", "{\"note\":\"\\uD83D\\uDE80\",\"values\":[true,false,null,1.25]}"}};
     const auto payload = PreviewPayload(fields), json = PreviewEnvelope(payload);
     TypedPreviewAuthorization authorization; std::string reason;
-    auto Decode = [&](const std::string& raw, const std::string& expected = "risk.preview_order") {
+    auto DecodeFor = [&](const std::string& raw, const std::string& expected) {
         return TypedToolProtocol::DecodePreviewAuthorization(raw, expected, authorization, reason);
     };
+    auto Decode = [&](const std::string& raw) { return DecodeFor(raw, "risk.preview_order"); };
     Check(Decode(json) && reason.empty(), "approved preview decoding");
     Check(authorization.toolName == "risk.preview_order" && authorization.commandId == "execution-preview-command-001" &&
           authorization.previewPermit == permit && authorization.permitExpiresAtMs == 9007199254740993LL &&
           authorization.serviceEpoch == "service-epoch-001" &&
           authorization.serviceFencingGeneration == std::numeric_limits<std::uint64_t>::max(),
           "preview integer or identity rounded/discarded");
-    auto Reject = [&](const std::string& raw, const std::string& expected = "risk.preview_order") {
+    auto RejectFor = [&](const std::string& raw, const std::string& expected) {
         Check(Decode(json), "reseed stale authorization");
-        Check(!Decode(raw, expected) && !reason.empty() && authorization.toolName.empty() &&
+        Check(!DecodeFor(raw, expected) && !reason.empty() && authorization.toolName.empty() &&
               authorization.commandId.empty() && authorization.previewPermit.empty() &&
               authorization.permitExpiresAtMs == 0 && authorization.serviceEpoch.empty() &&
               authorization.serviceFencingGeneration == 0, "rejected preview retained authorization");
     };
+    auto Reject = [&](const std::string& raw) { RejectFor(raw, "risk.preview_order"); };
     for (const auto& tool : {std::string("risk.preview_order"), std::string("risk.preview_flatten")}) {
-        Check(Decode(PreviewEnvelope(payload, tool), tool) && authorization.toolName == tool,
+        Check(DecodeFor(PreviewEnvelope(payload, tool), tool) && authorization.toolName == tool,
               "both canonical preview operations decode");
     }
-    Reject(json, "risk.preview_flatten"); Reject(json, "trade.place_order");
+    RejectFor(json, "risk.preview_flatten"); RejectFor(json, "trade.place_order");
     Reject(PreviewEnvelope(payload, "trade.place_order")); Reject(PreviewEnvelope(payload, "risk.preview_order", TradingToolCallStatus::Ok, 0));
     for (auto status : {TradingToolCallStatus::Rejected, TradingToolCallStatus::Uncertain,
                        TradingToolCallStatus::Duplicate, TradingToolCallStatus::PermissionDenied,

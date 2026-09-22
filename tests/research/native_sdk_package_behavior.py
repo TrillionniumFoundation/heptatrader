@@ -36,6 +36,11 @@ foreach(name Client NativeToolClient ToolProtocol)
 endforeach()
 add_executable(consumer main.cpp)
 set_target_properties(consumer PROPERTIES CXX_STANDARD 11 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF)
+# CXX_STANDARD alone permits compiler extensions. Make the external C++11
+# consumer reject newer-language constructs instead of accepting them silently.
+if(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+    target_compile_options(consumer PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
 target_link_libraries(consumer PRIVATE HeptaStrategyClient::Client)
 '''
 HEADERS = {
