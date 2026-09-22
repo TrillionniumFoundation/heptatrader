@@ -211,8 +211,8 @@ int main() {
         std::int64_t priorTime = 0;
         while (merged.Next(current)) {
             Require(current.timestampUs >= priorTime); priorTime = current.timestampUs;
-            auto& matcher = current.instrument == "MERGE.A" ? aMatch : bMatch;
-            for (const auto& event : matcher.OnTick(current)) {
+            auto& selectedMatcher = current.instrument == "MERGE.A" ? aMatch : bMatch;
+            for (const auto& event : selectedMatcher.OnTick(current)) {
                 Require(event.kind == ReplayEventKind::Fill && event.fill.timestampUs > 0);
                 Require(combined.Apply(event.fill) && !combined.Apply(event.fill)); ++matchedFills;
             }
