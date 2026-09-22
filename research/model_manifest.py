@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from decimal import Decimal, localcontext
+import hashlib
 import importlib.machinery
 import importlib.util
 import json
@@ -160,6 +161,48 @@ def _publish(output, report, inputs):
         temporary.unlink(missing_ok=True)
 
 
+def _single_context(args, native):
+    """One captured normalized source, passed to the existing portfolio parser.
+
+    This is a source-migration convenience, not the old Python replay/report
+    implementation. It never infers a currency, annualization or final close.
+    """
+    if args.manifest is not None or args.source:
+        raise ValueError("single mode uses --bars, not --manifest/--source")
+    if args.bars is None or any(getattr(args, key) is None for key in
+                               ("tick_size", "capital", "quantity", "currency")):
+        raise ValueError("single mode requires --bars, --tick-size, --capital, --quantity and --currency")
+    inputs = [args.bars, native, Path(__file__).absolute(), Path(B.__file__).absolute()]
+    B._alias(args.output, inputs)
+    raw, digest = B._capture(args.bars, args.max_input_bytes)
+    if args.bars_sha256 is not None:
+        if not B.SHA256.fullmatch(args.bars_sha256) or args.bars_sha256 != digest:
+            raise ValueError("single source digest mismatch")
+    # Inspect only the header and first record to identify the sole instrument.
+    # The SAME captured bytes undergo all normal CSV/core validation below.
+    head = raw.split(b"\n", 2)
+    if len(head) < 2 or head[0].removesuffix(b"\r") != BAR_HEADER.encode("ascii"):
+        raise ValueError("nonempty normalized integer-bar CSV required")
+    try:
+        instrument = _identity(head[1].split(b",", 1)[0].decode("ascii"), 64)
+    except UnicodeError as exc:
+        raise ValueError("ASCII normalized instrument required") from exc
+    def value(key, default):
+        supplied = getattr(args, key)
+        return default if supplied is None else supplied
+    document = {"schema": "hepta.research.portfolio-input.v1", "currency": args.currency,
+                "capital": args.capital, "max_mark_age_us": value("max_mark_age_us", 0),
+                "instruments": [{"instrument": instrument, "currency": args.currency,
+                    "tick_size": args.tick_size, "quantity": args.quantity,
+                    "multiplier": value("multiplier", "1"), "lot": value("lot", "1"),
+                    "slippage": value("slippage", "0"), "fee_per_unit": value("fee_per_unit", "0"),
+                    "fast": value("fast", 5), "slow": value("slow", 20),
+                    "long_only": value("long_only", False),
+                    "sources": [{"ref": "bars", "sha256": digest}]}]}
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return native, {"bars": args.bars}, inputs, document, hashlib.sha256(encoded).hexdigest(), {"bars": (raw, digest)}
+
+
 def _input_context(args):
     _integer(args.max_events, 1, 1000000)
     _integer(args.max_active_orders, 1, 100000)
@@ -168,6 +211,15 @@ def _input_context(args):
     native = args.native_executable.absolute()
     if not native.is_file():
         raise ValueError("canonical native executable is missing")
+    if args.mode == "single":
+        return _single_context(args, native)
+    single_options = ("bars", "bars_sha256", "tick_size", "capital", "quantity", "currency",
+                      "multiplier", "lot", "slippage", "fee_per_unit", "fast", "slow",
+                      "long_only", "max_mark_age_us")
+    if any(getattr(args, key) is not None for key in single_options):
+        raise ValueError("single-input options require explicit single mode")
+    if args.manifest is None:
+        raise ValueError("--manifest is required outside single mode")
     bindings = {}
     for binding in args.source:
         ref, sep, path = binding.partition("=")
@@ -180,7 +232,7 @@ def _input_context(args):
     B._alias(args.output, inputs)
     manifest_bytes, manifest_digest = B._capture(args.manifest, 1024 * 1024)
     document = _json(manifest_bytes)
-    return native, bindings, inputs, document, manifest_digest
+    return native, bindings, inputs, document, manifest_digest, {}
 
 
 def _native_report(native, flag, protocol, result_file, timeout, schema, model, count):
@@ -199,7 +251,7 @@ def _native_report(native, flag, protocol, result_file, timeout, schema, model, 
 
 
 def replay_manifest(args):
-    native, bindings, inputs, document, manifest_digest = _input_context(args)
+    native, bindings, inputs, document, manifest_digest, captured_sources = _input_context(args)
     flow = args.mode == "order-flow"
     _fields(document, "schema capital currency max_mark_age_us instruments sources" +
             ("" if flow else " slippage_ticks"))
@@ -319,7 +371,7 @@ def replay_portfolio(args):
     Parsing/provenance only. CLOSE/OPEN scheduling, exact integer-grid signal,
     matching, accounting, stale valuation and all report metrics run in C++.
     """
-    native, bindings, inputs, document, manifest_digest = _input_context(args)
+    native, bindings, inputs, document, manifest_digest, captured_sources = _input_context(args)
     limit = _integer(args.max_total_bars, 1, 250000)
     _fields(document, "schema currency capital max_mark_age_us instruments")
     if document["schema"] != "hepta.research.portfolio-input.v1":
@@ -378,7 +430,12 @@ def replay_portfolio(args):
             for name, (item, factor, grid) in sorted(specs.items()):
                 records = []
                 for entry in item["sources"]:
-                    raw, digest = B._capture(bindings[entry["ref"]], budget)
+                    if entry["ref"] in captured_sources:
+                        raw, digest = captured_sources[entry["ref"]]
+                        if len(raw) > budget:
+                            raise ValueError("source byte bound")
+                    else:
+                        raw, digest = B._capture(bindings[entry["ref"]], budget)
                     budget -= len(raw)
                     if digest != entry["sha256"]:
                         raise ValueError("portfolio source digest mismatch")
@@ -423,17 +480,27 @@ def replay_portfolio(args):
         report = _native_report(native, "--portfolio-stream", protocol, result_file, args.timeout,
                                 "hepta.research.native-portfolio-report.v1", model, count)
         report["input"] = {"manifest_sha256": manifest_digest, "instruments": provenance}
+        if args.mode == "single":
+            report["input"]["configuration_origin"] = "single-cli-generated-manifest"
         _publish(args.output, report, inputs)
     return {"schema": report["schema"], "model": model, "input_rows": count, "broker_authorized": False}
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("order-flow", "next-open", "portfolio"))
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("mode", choices=("order-flow", "next-open", "portfolio", "single"))
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--bars", type=Path)
+    parser.add_argument("--bars-sha256")
+    for option in ("tick-size", "capital", "quantity", "currency", "multiplier", "lot", "slippage", "fee-per-unit"):
+        parser.add_argument("--" + option)
+    parser.add_argument("--fast", type=int)
+    parser.add_argument("--slow", type=int)
+    parser.add_argument("--long-only", action="store_true", default=None)
+    parser.add_argument("--max-mark-age-us", type=int)
     parser.add_argument("--source", action="append", default=[], metavar="REF=PATH")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-events", type=int, default=100000)
-    parser.add_argument("--max-total-bars", type=int, default=100000)
+    parser.add_argument("--max-total-bars", "--max-bars", type=int, default=100000)
     parser.add_argument("--max-active-orders", type=int, default=4096)
     parser.add_argument("--max-input-bytes", type=int, default=MAX_BYTES)
     parser.add_argument("--timeout", type=int, default=120)
@@ -441,7 +508,7 @@ def main(argv=None):
                         default=Path(__file__).absolute().with_name("hepta-research-replay"))
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(replay_portfolio(args) if args.mode == "portfolio" else replay_manifest(args), sort_keys=True), flush=True)
+        print(json.dumps(replay_portfolio(args) if args.mode in ("portfolio", "single") else replay_manifest(args), sort_keys=True), flush=True)
     except (OSError, ValueError, TypeError, ArithmeticError, subprocess.SubprocessError) as exc:
         print("RESEARCH_MODEL_IMPORT_FAILED: " +
               (str(exc) if isinstance(exc, ValueError) else "input/process/output failure"), file=sys.stderr)

@@ -426,6 +426,135 @@ def portfolio_check(adapter, binary, *, installed=False):
     print("PASS portfolio: 10 source splits, 24 independent 3-instrument Decimal oracles, stale/null and rejection boundaries")
 
 
+def single_check(adapter, binary, *, installed=False):
+    """The direct --bars consumer must use the existing portfolio model once."""
+    import contextlib
+    import hashlib
+    import importlib.util
+    import importlib.machinery
+    import io
+    import sys
+    header = "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,ticks,complete"
+    with tempfile.TemporaryDirectory(prefix="hepta-single-consumer-") as directory:
+        root = Path(directory); source = root / "one instrument.csv"
+        output = root / "single.json"; manifest = root / "portfolio.json"
+        comparison = root / "portfolio-report.json"
+        base = [sys.executable, "-I", "-S", str(adapter)]
+        override = [] if installed else ["--native-executable", str(binary)]
+        options = ["--tick-size", "0.5", "--capital", "1000", "--quantity", "2",
+                   "--currency", "USD", "--multiplier", "3", "--slippage", "0.25",
+                   "--fee-per-unit", "0.1", "--fast", "1", "--slow", "2"]
+        rows = [["A", "20260922", i*10, (i+1)*10, p, p, p, p, 1, 1, int(i != 5)]
+                for i, p in enumerate((20, 22, 24, 18, 16, 14))]
+        def encoded(values=rows):
+            return (header + "\n" + "\n".join(",".join(map(str, row)) for row in values) + "\n").encode()
+        raw = encoded(); source.write_bytes(raw)
+        def call(*extra, ok=False, chosen=None):
+            command = [*base, "single", "--bars", str(source), "--output", str(output),
+                       *(options if chosen is None else chosen), *override, *extra]
+            result = subprocess.run(command, cwd=root, capture_output=True, timeout=20)
+            if ok:
+                assert result.returncode == 0, result.stderr
+                value = json.loads(output.read_text())
+                assert value["broker_authorized"] is False
+                assert value["schema"] == "hepta.research.native-portfolio-report.v1"
+                assert value["input"]["configuration_origin"] == "single-cli-generated-manifest"
+                assert str(root) not in output.read_text()
+                return value
+            assert result.returncode != 0 and output.read_bytes() == b"previous report", result
+        def reference(content=raw, *, defaults=False, long_only=False):
+            instrument = dict(instrument="A", currency="USD", tick_size="0.5", quantity="2",
+                multiplier="1" if defaults else "3", lot="1", slippage="0" if defaults else "0.25",
+                fee_per_unit="0" if defaults else "0.1", fast=5 if defaults else 1,
+                slow=20 if defaults else 2, long_only=long_only,
+                sources=[dict(ref="bars", sha256=hashlib.sha256(content).hexdigest())])
+            document = dict(schema="hepta.research.portfolio-input.v1", capital="1000", currency="USD",
+                            max_mark_age_us=0, instruments=[instrument])
+            manifest.write_text(json.dumps(document))
+            result = subprocess.run([*base, "portfolio", "--manifest", str(manifest),
+                    "--source", "bars="+str(source), "--output", str(comparison), *override],
+                    cwd=root, capture_output=True, timeout=20)
+            assert result.returncode == 0, result.stderr
+            return json.loads(comparison.read_text())
+        def comparable(value):
+            return {k: v for k, v in value.items() if k != "input"}
+        expected = reference()
+        accepted = call("--bars-sha256", hashlib.sha256(raw).hexdigest(), ok=True)
+        assert comparable(accepted) == comparable(expected)
+        assert accepted["input_rows"] == 6
+        assert accepted["snapshot"]["timestamp_us"] == 50
+        assert accepted["untimed_incomplete_closes"] == {"A": 7}
+        assert accepted["annualized"] is None and accepted["automatic_funding"] is False
+        for content in (raw.rstrip(b"\n"), raw.replace(b"\n", b"\r\n")):
+            source.write_bytes(content)
+            assert comparable(call(ok=True)) == comparable(expected)
+        source.write_bytes(raw)
+        assert comparable(call("--long-only", ok=True)) == comparable(reference(long_only=True))
+        default_options = options[:8]  # Other parameters deliberately use defaults.
+        assert comparable(call(chosen=default_options, ok=True)) == comparable(reference(defaults=True))
+        # Signed data are supported by the already selected portfolio model.
+        signed = encoded([[*row[:4], *([-i]*4), *row[8:]] for i, row in enumerate(rows)])
+        source.write_bytes(signed)
+        assert comparable(call(ok=True)) == comparable(reference(signed))
+        source.write_bytes(raw); output.write_bytes(b"previous report")
+        rejected = (("--bars-sha256", "0"*64), ("--bars-sha256", "bad"),
+                    ("--manifest", str(manifest)), ("--source", "bars="+str(source)),
+                    ("--quantity", "0.5"), ("--quantity", "3", "--lot", "2"),
+                    ("--tick-size", "0.123456789123456789"), ("--capital", "NaN"),
+                    ("--currency", "usd"), ("--slippage", "-1"), ("--slow", "1"),
+                    ("--max-bars", "5"), ("--max-bars", "250001"), ("--max-input-bytes", "1"),
+                    ("--periods-per-year", "252"))
+        for extra in rejected:
+            call(*extra)
+        # Required scalar inputs may not be silently defaulted or ignored.
+        for name in ("--tick-size", "--capital", "--quantity", "--currency"):
+            chosen = options.copy(); at = chosen.index(name); del chosen[at:at+2]
+            call(chosen=chosen)
+        for content in (b"", (header+"\n").encode(), b"bad\n", raw+b"bad later row\n",
+                        raw.replace(b"A,20260922,10", b"B,20260922,10", 1),
+                        raw.replace(b",1,1,1\n", b",1,1,0\n", 1)):
+            source.write_bytes(content); call()
+        source.write_bytes(raw)
+        result = subprocess.run([*base, "portfolio", "--manifest", str(manifest), "--source", "bars="+str(source),
+                                 "--output", str(output), "--quantity", "2", *override],
+                                capture_output=True, timeout=20)
+        assert result.returncode != 0 and output.read_bytes() == b"previous report"
+        # Capture the original bytes once, then change the path. Model input must
+        # still be the original captured/digested bytes, not a later reopen.
+        loader = importlib.machinery.SourceFileLoader("_hepta_single_acceptance", str(adapter))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec); loader.exec_module(module)
+        original_capture = module.B._capture; original_run = module.subprocess.run
+        captures = []; native_calls = []
+        def capture(path, bound):
+            value = original_capture(path, bound)
+            if Path(path) == source:
+                captures.append(path); source.write_bytes(b"changed after capture\n")
+            return value
+        def invoke(command, **kwargs):
+            native_calls.append(command); return original_run(command, **kwargs)
+        module.B._capture = capture; module.subprocess.run = invoke
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                status = module.main(["single", "--bars", str(source), "--output", str(output), *options,
+                                      "--native-executable", str(binary)])
+            assert status == 0 and len(captures) == 1 and native_calls == [[str(binary), "--portfolio-stream"]]
+            value = json.loads(output.read_text())
+            assert comparable(value) == comparable(expected)
+            assert value["input"]["instruments"]["A"]["sources"][0]["sha256"] == hashlib.sha256(raw).hexdigest()
+        finally:
+            module.B._capture = original_capture; module.subprocess.run = original_run
+            source.write_bytes(raw)
+        output.write_bytes(b"previous report")
+        regular = root / "original.csv"; source.rename(regular); source.symlink_to(regular)
+        call(); source.unlink(); os.mkfifo(source); call(); source.unlink(); regular.rename(source)
+        output.unlink(); os.link(source, output)
+        result = subprocess.run([*base, "single", "--bars", str(source), "--output", str(output), *options, *override],
+                                capture_output=True, timeout=20)
+        assert result.returncode != 0 and source.read_bytes() == raw and output.read_bytes() == raw
+    print("PASS single consumer: canonical equivalence, signed/default/partial input, one capture/invocation, rejection and atomic output")
+
+
 def portfolio_stream_check(binary):
     text="""HPR1,100,0,1000,USD
 I,A,1,1,1,0,1,2,1,0,0
@@ -472,6 +601,7 @@ def main():
         if args.manifest_adapter:
             manifest_check(args.manifest_adapter, args.binary)
             portfolio_check(args.manifest_adapter, args.binary)
+            single_check(args.manifest_adapter, args.binary)
     elif args.build_dir:
         with tempfile.TemporaryDirectory(prefix="hepta-model-sdk-") as directory:
             root = Path(directory); prefix = root / "original prefix"; moved = root / "relocated sdk"
@@ -488,6 +618,7 @@ def main():
                 assert (binaries[0].parent / "hepta-research-import").is_file(), "installed capture helper missing"
                 manifest_check(binaries[0].parent / "hepta-research-models", binaries[0], installed=True)
                 portfolio_check(binaries[0].parent / "hepta-research-models", binaries[0], installed=True)
+                single_check(binaries[0].parent / "hepta-research-models", binaries[0], installed=True)
     else:
         parser.error("--binary or --build-dir required")
 
