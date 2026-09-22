@@ -795,22 +795,42 @@ int RunOutboxChild(const std::string& root, const std::string& socket,
     NativeToolClient native(config); NativeStrategyClient client(native);
     const std::string directory = root + "/outbox";
     std::string reply, reason;
-    if (operation == "prepare") {
+    const bool preparedMode = operation.compare(0, 9, "prepared-") == 0;
+    const std::string mode = preparedMode ? operation.substr(9) : operation;
+    if (mode == "prepare") {
         PreparedOrder order("EUR.USD", Contract(), "BUY", 10, 1.1002, 1.1001,
                             OmsJournal::NowEpochMs() + 120000);
-        const auto auth = Preview(client, order, "outbox-child-preview");
-        Require(client.Persist(directory, order, auth.commandId, auth.permit, reason),
-                "child persist: " + reason);
-        reply = auth.commandId;
+        if (preparedMode) {
+            PreparedStrategyCommand prepared; NativeToolClientResult result;
+            Require(client.Prepare(order, "outbox-child-preview", prepared, result, reason), reason);
+            Require(prepared.Ready() && !prepared.Durable() &&
+                    prepared.CommandId() == ServiceString(result.envelope.payloadJson, "command_id"),
+                    "prepared facade changed the actual service ID");
+            Require(!client.Submit(prepared, result, reason) && reason == "RESEARCH_OUTBOX_NOT_DURABLE",
+                    "prepared facade sent before durable storage");
+            Require(client.Persist(directory, prepared, reason) && prepared.Durable(), reason);
+            reply = prepared.CommandId();
+        } else {
+            const auto auth = Preview(client, order, "outbox-child-preview");
+            Require(client.Persist(directory, order, auth.commandId, auth.permit, reason),
+                    "child persist: " + reason);
+            reply = auth.commandId;
+        }
     } else {
-        Require(operation == "submit" || operation == "submit-hold", "outbox child mode invalid");
+        Require(mode == "submit" || mode == "submit-hold", "outbox child mode invalid");
         NativeToolClientResult result;
-        Require(client.SubmitStored(directory, commandId, result, reason),
-                "child stored call: " + reason);
+        if (preparedMode) {
+            PreparedStrategyCommand prepared;
+            Require(client.Restore(directory, commandId, prepared, reason) && prepared.Durable(), reason);
+            Require(client.Submit(prepared, result, reason), "child prepared call: " + reason);
+        } else {
+            Require(client.SubmitStored(directory, commandId, result, reason),
+                    "child stored call: " + reason);
+        }
         reply = result.responseJson;
     }
     Require(TypedToolProtocol::WriteFrame(control.Get(), reply, 5000, reason), reason);
-    if (operation == "prepare" || operation == "submit-hold") {
+    if (mode == "prepare" || mode == "submit-hold") {
         // A test-owned pause after real durable preparation or delivery. No
         // acknowledgement/sent marker is written; the parent SIGKILLs us.
         for (;;) ::pause();
@@ -885,7 +905,8 @@ TypedToolResultEnvelope ReadOutboxWorker(OutboxWorker& worker) {
     Require(TypedToolProtocol::DecodeResultEnvelope(worker.Read(), result, reason), reason);
     return result;
 }
-void TestDurableClientProcessRecovery() {
+void TestDurableClientProcessRecovery(bool preparedMode = false) {
+    const std::string prefix = preparedMode ? "prepared-" : "";
     Fixture f(false);
     ExecutionProcess execution(f.root.path);
     f.StartGateway();
@@ -894,7 +915,7 @@ void TestDurableClientProcessRecovery() {
     WritePrivateFile(tokenFile, f.token, 0600);
     std::string command;
     {
-        OutboxWorker preparer(f.root.path, f.agentConfig.toolSocket, tokenFile, "prepare");
+        OutboxWorker preparer(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "prepare");
         command = preparer.Read();
         Require(TradingToolWireContract::IsCanonicalCommandId(command), "child did not return service command ID");
         execution.Await(0, 0, 0);
@@ -902,7 +923,7 @@ void TestDurableClientProcessRecovery() {
     }
     long filledId = -1;
     {
-        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit-hold", command);
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit-hold", command);
         const auto result = ReadOutboxWorker(sender);
         Require(result.status == "ok" && result.orderId >= 0, "fresh-process stored placement rejected");
         filledId = result.orderId;
@@ -910,7 +931,7 @@ void TestDurableClientProcessRecovery() {
         sender.Crash(); // No application acknowledgement persisted after the fill.
     }
     {
-        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", command);
+        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", command);
         const auto result = ReadOutboxWorker(retry);
         Require(result.status == "duplicate" && result.orderId == filledId, "client crash replay changed identity");
         retry.Finish();
@@ -921,7 +942,7 @@ void TestDurableClientProcessRecovery() {
     execution.Crash(); execution.Restart(); execution.Await(1, 10, 0);
     AwaitRecoveredStatus(client, command);
     {
-        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", command);
+        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", command);
         const auto result = ReadOutboxWorker(retry);
         Require(result.status == "duplicate" && result.orderId == filledId, "service restart forgot stored identity");
         retry.Finish();
@@ -933,22 +954,28 @@ void TestDurableClientProcessRecovery() {
     Require(client.Persist(directory, resting, auth.commandId, auth.permit, reason), reason);
     long restingId = -1;
     {
-        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", auth.commandId);
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", auth.commandId);
         const auto result = ReadOutboxWorker(sender);
         Require(result.status == "ok" && result.orderId >= 0, "stored resting placement rejected");
         restingId = result.orderId; sender.Finish();
     }
     execution.Await(2, 10, 1);
     const std::string cancelId = "outbox-runtime-cancel";
-    Require(client.Persist(directory, PreparedCancellation(restingId), cancelId, reason), reason);
+    if (preparedMode) {
+        PreparedStrategyCommand prepared;
+        Require(client.Prepare(PreparedCancellation(restingId), cancelId, prepared, reason), reason);
+        Require(!prepared.Durable() && client.Persist(directory, prepared, reason), reason);
+    } else {
+        Require(client.Persist(directory, PreparedCancellation(restingId), cancelId, reason), reason);
+    }
     {
-        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit-hold", cancelId);
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit-hold", cancelId);
         const auto result = ReadOutboxWorker(sender);
         Require(result.status == "ok", "stored cancellation rejected");
         execution.Await(2, 10, 0); sender.Crash();
     }
     {
-        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", cancelId);
+        OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", cancelId);
         const auto result = ReadOutboxWorker(retry);
         Require(result.status == "duplicate", "stored cancellation identity lost");
         retry.Finish();
@@ -958,7 +985,7 @@ void TestDurableClientProcessRecovery() {
     Require(client.Persist(directory, PreparedFlatten("EUR.USD"), flattenId,
                            "sha256:" + std::string(64, 'a'), reason), reason);
     {
-        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, "submit", flattenId);
+        OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", flattenId);
         const auto result = ReadOutboxWorker(sender);
         Require(result.status == "rejected", "outbox manufactured flatten authority");
         sender.Finish();
@@ -974,7 +1001,8 @@ void TestDurableClientProcessRecovery() {
     }) > 0, "outbox journal replay");
     Require(sends.size() == 2 && sends[command] == 1 && sends[auth.commandId] == 1 &&
             cancels.size() == 1 && cancels[cancelId] == 1, "durable client caused duplicate/unauthorized sends");
-    std::cout << "durable_client_recovery=PASS client_SIGKILL=3 execution_SIGKILL=1"
+    std::cout << "durable_client_recovery=PASS prepared_facade=" << preparedMode
+              << " client_SIGKILL=3 execution_SIGKILL=1"
               << " place_send_attempts=2 cancel_send_attempts=1 forged_flatten_rejected=1\n";
 }
 
@@ -1141,6 +1169,7 @@ int main(int argc, char** argv) {
         TestNativeExecutionLifecycle();
         TestNativeExecutionProcessCrashes();
         TestDurableClientProcessRecovery();
+        TestDurableClientProcessRecovery(true);
         TestNativeExecutionLatency();
         std::cout << "PASS real Native/Gateway/Execution lifecycle and SIGKILL recovery\n";
         return 0;
