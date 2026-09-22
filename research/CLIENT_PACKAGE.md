@@ -259,3 +259,95 @@ both exported overloads and the shared codec. The real Gateway/Execution crash
 fixture now obtains its service-issued values through the typed path and retains
 all original durable retry, lost-reply, revocation and SIGKILL checks. Simulator
 flatten rejection is retained, not promoted to a qualified flatten capability.
+
+
+## Opaque prepared-command lifecycle and consumer migration
+
+`PreparedStrategyCommand` provides an explicit `Prepare -> Persist -> Submit`
+lifecycle inside the same `NativeStrategyClient`. It adds no transport, parser,
+record schema, account ledger, executable or installed header. Existing direct
+and durable APIs remain supported; this is an additive source API, not an old
+HeptaDLL/ResearchIntentClient ABI alias. Rebuild consumers against the package.
+
+For a supported order or flatten proposal, `Prepare` captures the current
+recovery binding, makes exactly one credential-bound preview call and decodes
+the matching approval with the existing typed codec. The opaque value retains
+the original request, command ID, permit and binding, but no token bytes. It is
+`Ready()` but not `Durable()`. Cancellation preparation instead validates its
+caller-selected canonical command ID and captures the binding without a network
+call; it cannot establish order ownership or cancel eligibility.
+
+```cpp
+hepta::research::PreparedStrategyCommand prepared;
+NativeToolClientResult result;
+std::string reason;
+if (!client.Prepare(proposal, "strategy-preview-0001", prepared, result, reason)) {
+    return; // No mutation; preserve/inspect any transported rejection.
+}
+// Keep this original identity. Failure here must not trigger another preview.
+const std::string originalId = prepared.CommandId();
+if (!client.Persist(privateOutbox, prepared, reason)) {
+    return; // No send; a synced/publication attempt may already have left a record.
+}
+if (!client.Submit(prepared, result, reason)) {
+    return; // Uncertainty is not permission to create a new identity.
+}
+// Examine result.envelope.status; transport success is not execution success.
+```
+
+A new process can use `Restore(privateOutbox, originalId, prepared, reason)`.
+Restore validates and resyncs only the existing canonical HSR1 record, checks
+its credential/UID/socket binding, and clears its output on failure. Successful
+restoration sets Ready and Durable, not accepted/sent/filled. `Submit(prepared)`
+requires durability, rereads and validates the file on every call, compares its
+canonical request bytes to the prepared snapshot, then sends that same loaded
+request once through `CallBound`. A cached durable flag cannot bypass missing
+files, permissions, a changed binding or replaced request bytes. Copying an
+opaque object does not bypass this reread or confer additional permission.
+
+Persist failure keeps the original prepared request and ID for explicit
+recovery, but clears Durable and the cached directory. A failure after atomic
+publication can leave a valid file: retry persistence with the same object or
+explicitly restore the original ID after resolving the error. Never obtain a
+new preview merely to repair storage. Token rotation between preparation and
+persistence fails rather than rebinding the old permit to a new credential.
+The preparation preview itself uses `CallBound`, not separate before/after token
+checks that could miss an A/B/A rotation. All existing filesystem, quota,
+same-UID trust, power-loss and uncertain-result limitations still apply.
+
+The service remains the authorization authority. Preparation does not promise
+that a permit will remain unexpired or survive an Execution restart. An unused
+old-epoch permit may be rejected; an already accepted command is reconciled by
+its original ID. An application retaining #106's status-only-after-uncertainty
+policy must continue to call `Status` in that state, rather than replacing it
+with unconditional Submit. There is no new automatic retry/state machine here.
+
+### Explicit legacy-client disposition
+
+| Caller / record | Migration decision | Remaining requirement |
+|---|---|---|
+| Existing #107 direct and HSR1 callers | Supported unchanged; existing HSR1 place/cancel/flatten records can be restored by the opaque API | Same original credential/endpoint and normal service reconciliation |
+| Installed C++11 SDK consumer | Exercises the opaque lifecycle in its existing behavioral executable | Exact-head actual installation/relocation and compiler checks |
+| Actual Execution recovery test consumer | Runs both original and opaque lifecycle, including fresh client processes, SIGKILL before first send and after accepted place/cancel, and service restart | Keep the original assertions and inspect the real send-attempt journal |
+| #108 Prepare/Persist/Load/Submit application workflow | Source-migration destination is PreparedOrder/PreparedStrategyCommand and NativeStrategyClient Prepare/Persist/Restore/Submit | Adapt proposal limits and application types explicitly; this is not an automatic migration of a deployed application |
+| #108 HRO1 `.hro` records | Retain original records and original client at `56fd92bc94fd36e064d18c383ffeef9994d85fea` | Reconcile original IDs using the old caller/service; no HRO1-to-HSR1 conversion or regenerated permit |
+| #106 Python StrategyGateway / JSON outbox | Retain at `acffe4ae84a8e4377fd92b0ac536a865c6f6b6f5` | Preserve application-key mapping, Decimal validation and status-only uncertain-state policy; no automatic Python API or record conversion |
+| Historical HeptaDLL or unknown private/binary users | Retain original repository, releases and notices | Named deployment/consumer and publication-scope disposition before archival |
+
+Do not run old and new applications as independent mutation owners for the same
+unreconciled intent. Preserve the old record, stop its automatic processing,
+inspect its original command status through the appropriate original session,
+and record the application's disposition before moving new work to the new
+client. An unknown result, revoked credential or unavailable service remains
+unresolved; it is not evidence that the old command never executed. No public
+API or green test can certify the absence of unknown external installations.
+
+The existing client behavioral test adds invalid/undurable preparation, token
+rotation, record replacement with a valid checksum, old-format rejection,
+borrowed inputs and old/new HSR1 identity checks. The same source runs as the
+actual installed/relocated external C++11 consumer. The existing real Execution
+fixture executes both lifecycle variants and independently verifies one send
+per original command. No historical assertion, timeout, sample count, default
+production installation, permission or trading capability is relaxed. Exact
+source and observed local/remote outcomes belong in the PR evidence, not an
+unconditional success statement in this contract.

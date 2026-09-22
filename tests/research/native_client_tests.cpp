@@ -563,7 +563,92 @@ void TypedPreviews() {
     std::cout << "typed preview codec: exact 64-bit identities, strict schema, truncations, stale-output and alias rejection\n";
 }
 
+void PreparedCommandLifecycle() {
+    OutboxTestRoot root;
+    const auto config = OutboxConfig();
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    const std::string id = "prepared-cancel-command-001";
+    PreparedCancellation cancel(42);
+    PreparedStrategyCommand prepared;
+    NativeToolClientResult result; std::string reason;
+    Check(!prepared.Ready() && !prepared.Durable() && prepared.CommandId().empty(), "fresh prepared state");
+    result.envelope.status = "ok"; result.responseJson = "stale";
+    Check(!client.Submit(prepared, result, reason) && reason == "RESEARCH_OUTBOX_NOT_DURABLE" &&
+          result.envelope.status.empty() && result.responseJson.empty(), "unprepared submission");
+    // The nonexistent socket proves cancellation preparation performs no call.
+    Check(client.Prepare(cancel, id, prepared, reason) && prepared.Ready() && !prepared.Durable() &&
+          prepared.CommandId() == id && prepared.ToolName() == "trade.cancel_order", "cancel preparation");
+    Check(!client.Submit(prepared, result, reason) && reason == "RESEARCH_OUTBOX_NOT_DURABLE", "prepare sent before persist");
+    Check(!client.Persist("relative", prepared, reason) && prepared.Ready() && !prepared.Durable() &&
+          prepared.CommandId() == id, "failed persistence erased original command");
+    reason = root.path;
+    Check(client.Persist(reason, prepared, reason) && prepared.Durable() && reason.empty(), "borrowed persist path");
+    const std::string path = root.path + "/" + id + ".hsr", bytes = ReadBytes(path);
+    Check(client.Persist(root.path, cancel, id, reason) && ReadBytes(path) == bytes,
+          "prepared facade introduced a different outbox encoding");
+    Check(client.Persist(root.path, prepared, reason) && ReadBytes(path) == bytes, "repeated prepared persistence drift");
+    Check(client.Restore(root.path, prepared.CommandId(), prepared, reason) && prepared.Durable() &&
+          prepared.CommandId() == id, "borrowed restore identity");
+    PreparedStrategyCommand copied = prepared;
+    result.envelope.status = "ok"; result.envelope.orderId = 42; result.responseJson = "stale";
+    Check(!client.Submit(copied, result, reason) && !reason.empty() && result.envelope.status.empty() &&
+          result.envelope.orderId == -1 && result.responseJson.empty() && ReadBytes(path) == bytes,
+          "prepared transport failure changed record or retained success");
+    auto different = config; different.sessionToken += "-rotated";
+    NativeToolClient otherNative(different); NativeStrategyClient other(otherNative);
+    Check(!other.Submit(copied, result, reason) && reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "prepared cross-token send");
+    Check(!other.Persist(root.path, copied, reason) && reason == "NATIVE_RECOVERY_BINDING_MISMATCH" &&
+          copied.Ready() && !copied.Durable() && copied.CommandId() == id && ReadBytes(path) == bytes,
+          "prepare/persist token rotation rebound the request");
+    Check(!other.Restore(root.path, id, copied, reason) && !copied.Ready() && !copied.Durable(), "failed restore leaked prior state");
+    Check(client.Restore(root.path, id, copied, reason), "restore after binding failure");
+    Check(::chmod(path.c_str(), 0640) == 0, "prepared unsafe fixture mode");
+    Check(!client.Submit(copied, result, reason), "cached durable bit bypassed disk permissions");
+    Check(::chmod(path.c_str(), 0600) == 0, "prepared restore fixture mode");
+    // An owner can replace a file with another VALID checksummed record. A
+    // cached object must still refuse changed request bytes, not silently send.
+    Check(::unlink(path.c_str()) == 0, "prepared replacement fixture unlink");
+    Check(client.Persist(root.path, PreparedCancellation(43), id, reason), "prepared replacement fixture store");
+    Check(!client.Submit(copied, result, reason) && reason == "RESEARCH_OUTBOX_PREPARED_MISMATCH", "prepared snapshot silently changed");
+    WriteBytes(path, bytes);
+    Check(client.Restore(root.path, id, copied, reason), "restore original prepared bytes");
+    Check(::unlink(path.c_str()) == 0, "prepared missing file fixture");
+    Check(!client.Submit(copied, result, reason) && result.responseJson.empty(), "deleted durable record still sent");
+    for (const auto& legacy : {std::string("HRO1not-a-canonical-record"),
+                              std::string("{\"schema\":\"hepta.research.outbox.v1\"}")}) {
+        WriteBytes(path, legacy);
+        Check(!client.Restore(root.path, id, copied, reason) && !copied.Ready(), "legacy outbox silently converted");
+    }
+    WriteBytes(path, bytes);
+    Check(client.Prepare(cancel, prepared.CommandId(), prepared, reason) && prepared.CommandId() == id &&
+          !prepared.Durable(), "borrowed prepare identity or implicit durability");
+    Check(!client.Prepare(cancel, "short", prepared, reason) && !prepared.Ready(), "invalid prepared cancel identity");
+    InstrumentRef contract; contract.symbol = "EUR"; contract.secType = "CASH";
+    contract.exchange = "SIM"; contract.currency = "USD";
+    PreparedOrder order("EUR.USD", contract, "BUY", 10, 1.1, 1.09, 1900000000000LL);
+    PreparedFlatten flatten("EUR.USD");
+    for (int which = 0; which != 4; ++which) {
+        Check(client.Prepare(cancel, id, prepared, reason), "prepare stale-output fixture");
+        result.envelope.status = "ok"; result.responseJson = "stale";
+        const std::string preview = which < 2 ? "prepared-preview-001" : "short";
+        const bool ok = which % 2 ? client.Prepare(flatten, preview, prepared, result, reason)
+                                  : client.Prepare(order, preview, prepared, result, reason);
+        Check(!ok && !prepared.Ready() && !prepared.Durable() && result.envelope.status.empty() &&
+              result.responseJson.empty() && !reason.empty(), "prepared preview failure leaked authority");
+    }
+    // Existing direct API records for all operations are restorable without
+    // inventing their permits, changing their schema or gaining trading rights.
+    const std::string permit = "sha256:" + std::string(64, 'a');
+    Check(client.Persist(root.path, order, "prepared-order-001", permit, reason), "prepared order fixture");
+    Check(client.Restore(root.path, "prepared-order-001", prepared, reason) &&
+          prepared.ToolName() == "trade.place_order", "existing order not restorable");
+    Check(client.Persist(root.path, flatten, "prepared-flatten-001", permit, reason), "prepared flatten fixture");
+    Check(client.Restore(root.path, "prepared-flatten-001", prepared, reason) &&
+          prepared.ToolName() == "trade.flatten_position", "existing flatten not restorable");
+}
+
 void Tests() {
+    PreparedCommandLifecycle();
     TypedPreviews();
     OutboxTests();
     BorrowedInputTests();

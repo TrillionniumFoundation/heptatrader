@@ -228,3 +228,49 @@ test oracles, incomplete tails and failed-input/output preservation. Reports
 record real local/remote outcomes; neither this document nor an older green
 head substitutes for acceptance of the resulting source. Contract details are
 `research/MODELS.md` and `research/MODEL-CLI.md`.
+
+
+## Post-#110 prepared-client continuation
+
+Baseline: main `e61dfcced6d95e9f81469f1e5c4eaf164cfb90d9`, tree
+`562e58f4fd0cc4213b2960ab154a426dd6620457`. #107 and #110 are already
+merged; the existing `integration/heptadll-modular-20260920` branch continues
+from that real main parent. This is not another research framework or a claim
+that a prior candidate's CI qualifies a new commit.
+
+The remaining #108-style prepared-client workflow is now represented by
+`PreparedStrategyCommand` and additive Prepare/Persist/Restore/Submit overloads
+inside the existing NativeStrategyClient. Bound typed previews, HSR1 storage,
+filesystem validation and NativeToolClient forwarding are reused rather than
+copying the alternate client's JSON slicer, HRO1 store or transport. Supported
+order/cancel/flatten proposals retain their original identities, payloads,
+expiry and permits. Preparing is not sending, and an unpersisted object cannot
+submit. A failed persistence retains the request but clears durability. Each
+submission rereads the immutable record and rejects changed request bytes or
+credential binding before forwarding. The complete method/failure and consumer
+contract is in [the installed client SDK contract](../../research/CLIENT_PACKAGE.md#opaque-prepared-command-lifecycle-and-consumer-migration).
+
+This migrates concrete checked-in consumers: the SDK behavioral executable and
+its installed/relocated external C++11 copy exercise the new public methods;
+the actual Gateway/Execution fixture additionally runs the same crash/restart
+scenario through the opaque lifecycle. Its original scenario is retained, not
+replaced. The real OMS journal is the send-count oracle, not a locally asserted
+success flag. No new target, translation unit, archive, installed-header path,
+production installation entry, command schema, OMS or broker authority is added.
+
+The new API provides a destination for source-adapting #108 callers, not binary
+or old-record compatibility. HRO1 records lack the canonical binding and remain
+with the original client. #106's Python application-key/Decimal/outbox state
+machine and its status-only handling of uncertain submissions remain on their
+pinned reference. Those policies cannot be replaced by unconditional same-ID
+Submit without an application decision. No historical record is converted,
+credentialed anew, deleted or marked successfully migrated by this change.
+Existing #107 HSR1 records remain usable under their original binding.
+
+The previous model/portfolio/CSV/BIN/XML migrations and all of their tests remain
+in the merged baseline. Full legacy ABI and arbitrary Decimal equivalence,
+actual external/private/binary deployments, remaining original strategies,
+publication/redistribution scope and broker/host qualification remain explicit
+retained conditions. Original HeptaDLL-main source/history/releases and alternate
+branches are preserved. Archival is still conditional on genuine named consumer
+and publication evidence, not this engineering continuation or a green CI run.
