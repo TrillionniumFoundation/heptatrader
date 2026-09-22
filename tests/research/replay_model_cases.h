@@ -339,6 +339,69 @@ inline void ClosePhaseConsumer() {
     Near(capped.Snapshot(1,0).equity,1000);
 }
 
+// A quote receipt has one semantic kind. A valuation-only observation cannot
+// be reused as opening evidence, even when every Tick field is identical.
+inline void QuoteKindIdentity() {
+    std::size_t cases = 0;
+    for (auto timing : {NextOpenTiming::StrictlyLater, NextOpenTiming::AfterClosePhase})
+    for (const auto price : {-10.0, 0.0, 10.0})
+    for (const auto desired : {-2LL, 0LL, 2LL}) {
+        auto spec = Spec(); spec.feePerUnit = .5;
+        NextBarPolicy policy; policy.timing = timing;
+        // Three accepted events: target, mark, and one fresh open. Rejected
+        // cross-kind calls and exact retries must not consume that budget.
+        NextBarReplay replay(1000, "USD", {spec}, policy, 3);
+        replay.SetTarget(Target("kind-target", 10, desired, price));
+        const auto when = timing == NextOpenTiming::StrictlyLater ? 11 : 10;
+        const auto mark = Open(when, 1, price);
+        Check(replay.ObserveMark(mark), "accept valuation-only quote");
+        const auto before = replay.Valuation(when, 0);
+        for (int retry = 0; retry < 3; ++retry) {
+            Throws([&] { replay.ObserveOpen(mark); });
+            Check(!replay.ObserveMark(mark), "same-kind mark retry stays inert");
+            const auto after = replay.Valuation(when, 0);
+            Check(after.complete && replay.PendingTargets().at("A") == desired,
+                  "kind conflict preserves pending target and mark validity");
+            Near(after.snapshot.positions.at("A").quantity, 0);
+            Near(after.snapshot.fees, before.snapshot.fees);
+            Near(after.cash, before.cash); Near(after.snapshot.equity, before.snapshot.equity);
+        }
+        auto changed = mark; changed.price += 1;
+        Throws([&] { replay.ObserveOpen(changed); });
+        Throws([&] { replay.ObserveMark(changed); });
+        const auto opening = Open(when + 1, 2, price);
+        const auto fills = replay.ObserveOpen(opening);
+        Check(fills.size() == static_cast<std::size_t>(desired != 0),
+              "fresh open consumes target exactly once after rejected reclassification");
+        Check(replay.PendingTargets().empty(), "fresh open consumes even a zero target");
+        Near(replay.Snapshot(when + 1, 0).positions.at("A").quantity, desired);
+        Near(replay.Snapshot(when + 1, 0).fees, desired == 0 ? 0 : 1);
+        Check(replay.ObserveOpen(opening).empty(), "same-kind open retry stays inert");
+        Throws([&] { replay.ObserveMark(opening); });
+        Throws([&] { replay.ObserveMark(Open(when + 2, 3, price)); });
+        Near(replay.Snapshot(when + 1, 0).positions.at("A").quantity, desired);
+        ++cases;
+    }
+    // A historical last-open retry remains inert after a newer mark and target.
+    // Instrument-local sequence identity must not reject another instrument.
+    NextBarPolicy policy; policy.timing = NextOpenTiming::AfterClosePhase;
+    NextBarReplay replay(1000, "USD", {Spec(), Spec("B")}, policy);
+    const auto opening = Open(10, 1, 10);
+    Check(replay.ObserveOpen(opening).empty(), "initial opening without target");
+    replay.ObserveMark(Open(11, 2, 11));
+    replay.SetTarget(Target("later-target", 11, 2, 11));
+    Check(replay.ObserveOpen(opening).empty() && replay.PendingTargets().at("A") == 2,
+          "historical last-open retry does not consume a newer target");
+    Throws([&] { replay.ObserveMark(opening); });
+    Check(replay.ObserveOpen(Open(11, 2, 20, "B")).empty(),
+          "receipt sequence is instrument-local");
+    Throws([&] { replay.ObserveMark(Open(11, 2, 20, "B")); });
+    Near(replay.Valuation(11, 0).snapshot.positions.at("A").quantity, 0);
+    Check(replay.PendingTargets().at("A") == 2, "other instrument cannot consume target");
+    Check(replay.ObserveOpen(Open(12, 3, 12)).size() == 1, "subsequent real open is eligible");
+    std::cout << "quote-kind identity cases=" << cases << '\n';
+}
+
 inline void RunAll() { SignedAccounting(); Slippage(); OrderFlow(); FlowConservation(); NextBar();
-    IntegerSignal(); PartialValuation(); ClosePhaseConsumer(); }
+    IntegerSignal(); PartialValuation(); ClosePhaseConsumer(); QuoteKindIdentity(); }
 } // namespace replay_model_cases

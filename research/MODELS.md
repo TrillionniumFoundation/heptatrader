@@ -176,9 +176,14 @@ instruments, invalid policies and out-of-range slippage reject at construction.
 
 `ObserveMark` supplies an explicit observed quote WITHOUT consuming any target
 or making a fill. Marks and opens share each instrument's increasing quote
-sequence and the model delivery clock. An exact current quote retry is inert;
-changed/reversed quotes and quota failures leave the model unchanged. This is
-not a promise that arbitrary historical marks may be replayed after newer ones.
+sequence and the model delivery clock. An exact current same-kind quote retry
+is inert; a MARK receipt cannot be reused as an OPEN, nor an OPEN as a MARK,
+even when all Tick fields are identical. Cross-kind reuse rejects with
+`RESEARCH_NEXT_BAR_QUOTE_KIND_CONFLICT` rather than producing a fill or
+consuming a target. Changed/reversed quotes and quota failures leave the model
+unchanged. This is not a promise that arbitrary historical marks may be replayed
+after newer ones. Existing exact last-open retries remain inert after newer marks
+or targets; a genuinely new open must still carry a new observation sequence.
 `PendingTargets` is a read-only offline view, not an active-order projection.
 
 `ResearchPortfolio::Valuation` and `NextBarReplay::Valuation` are opt-in partial
@@ -215,3 +220,19 @@ slippage, stale recovery and strict-snapshot compatibility are covered. The
 installed CLI additionally exercises signed normalized bars, causal phase order,
 source splitting and null valuations. Exact-head execution outcomes belong in
 the PR, not unconditional success claims in this contract.
+
+
+## Observation-kind regression boundary
+
+The open path commits staged account/target changes only when the canonical
+portfolio accepts a fresh open quote. The mark path rejects reuse of the last
+open sequence before changing the account. There is no new quote store, ledger,
+public type layout, transport or persistence schema. The default StrictlyLater
+and opt-in AfterClosePhase eligibility rules are unchanged.
+
+The existing replay and installed external-SDK test hosts exercise both timing
+policies, signed/zero/positive prices, short/flat/long targets, both cross-kind
+directions, exact retries, independent instruments, event-capacity rollback and
+historical last-open retries after newer marks/targets. A no-fill target is not
+an exemption from quote identity. A failed request does not reserve an event,
+charge a fee, invalidate a mark or remove the pending target.

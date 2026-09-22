@@ -490,7 +490,11 @@ std::vector<ResearchFill> NextBarReplay::ObserveOpen(const Tick& open) {
     }
     // This is the explicit observed OPEN, not a fabricated post-trade quote.
     // The canonical portfolio invalidates a filled position until Observe.
-    staged.account_.Observe(open); staged.opens_[open.instrument] = open;
+    // A duplicate portfolio quote may be a previously accepted MARK, not an
+    // OPEN. It cannot become fresh execution evidence. Any staged fills, fees
+    // or target changes must roll back when no new observation was accepted.
+    Require(staged.account_.Observe(open), "RESEARCH_NEXT_BAR_QUOTE_KIND_CONFLICT");
+    staged.opens_[open.instrument] = open;
     staged.clockUs_ = open.timestampUs; ++staged.eventCount_;
     *this = std::move(staged);
     return fills;
@@ -500,6 +504,9 @@ bool NextBarReplay::ObserveMark(const Tick& mark) {
     Require(found != specs_.end(), "RESEARCH_MODEL_INSTRUMENT_UNKNOWN");
     ModelTick(mark, found->second.account.priceDomain);
     ResearchPriceGrid(found->second.tickSize, found->second.account.priceDomain).Index(mark.price);
+    const auto opening = opens_.find(mark.instrument);
+    Require(opening == opens_.end() || opening->second.sequence != mark.sequence,
+            "RESEARCH_NEXT_BAR_QUOTE_KIND_CONFLICT");
     NextBarReplay staged = *this;
     if (!staged.account_.Observe(mark)) return false;
     Require(mark.timestampUs >= clockUs_ && eventCount_ < maxEvents_, "RESEARCH_NEXT_BAR_MARK_INVALID");
