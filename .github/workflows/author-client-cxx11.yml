@@ -1,0 +1,77 @@
+name: Author CXX11 consumer objects
+on:
+  push:
+    branches: [integration/heptadll-modular-20260920]
+    paths: [.github/workflows/author-client-cxx11.yml]
+permissions:
+  contents: read
+jobs:
+  author:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 61a1056654c24fc1c0a0c8fda0958661f13bdbfc
+          persist-credentials: false
+      - name: Verify all inert input before object upload; no code execution or ref writes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request
+          base = '61a1056654c24fc1c0a0c8fda0958661f13bdbfc'
+          base_tree = '7b3ea95c33c49ff130c831d69f1b89f71e6ec4e4'
+          expected_tree = '45c2902cbc353fb968c16b6cd48ac8b41517f5e9'
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          if git('rev-parse', 'HEAD') != base or git('rev-parse', 'HEAD^{tree}') != base_tree or git('status', '--porcelain'):
+              raise RuntimeError('wrong base or dirty source')
+          def blob(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+          files = [
+              ('tests/research/native_client_tests.cpp', 'a0710a0a94f90e0ec7bf52d91919ecd8862c1135', 'c6effa0694397d0927e9b7b32fef9092d339520a', [
+                  ('auto Decode = [&](const std::string& raw, const std::string& expected = "risk.preview_order") {', 'auto DecodeFor = [&](const std::string& raw, const std::string& expected) {'),
+                  ('    Check(Decode(json) && reason.empty(), "approved preview decoding");', '    auto Decode = [&](const std::string& raw) { return DecodeFor(raw, "risk.preview_order"); };\n    Check(Decode(json) && reason.empty(), "approved preview decoding");'),
+                  ('auto Reject = [&](const std::string& raw, const std::string& expected = "risk.preview_order") {', 'auto RejectFor = [&](const std::string& raw, const std::string& expected) {'),
+                  ('Check(!Decode(raw, expected)', 'Check(!DecodeFor(raw, expected)'),
+                  ('    for (const auto& tool : {std::string("risk.preview_order"), std::string("risk.preview_flatten")}) {', '    auto Reject = [&](const std::string& raw) { RejectFor(raw, "risk.preview_order"); };\n    for (const auto& tool : {std::string("risk.preview_order"), std::string("risk.preview_flatten")}) {'),
+                  ('Check(Decode(PreviewEnvelope(payload, tool), tool)', 'Check(DecodeFor(PreviewEnvelope(payload, tool), tool)'),
+                  ('Reject(json, "risk.preview_flatten"); Reject(json, "trade.place_order");', 'RejectFor(json, "risk.preview_flatten"); RejectFor(json, "trade.place_order");'),
+              ]),
+              ('tests/research/native_sdk_package_behavior.py', '9add04f309979e8146b25399d3bf76e74ff708d9', '0de8c0cdd14dba7a597bc468a8ae11567b442c80', [
+                  ('target_link_libraries(consumer PRIVATE HeptaStrategyClient::Client)\n', '# CXX_STANDARD alone permits compiler extensions. Make the external C++11\n# consumer reject newer-language constructs instead of accepting them silently.\nif(CMAKE_CXX_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")\n    target_compile_options(consumer PRIVATE -Wall -Wextra -Wpedantic -Werror)\nendif()\ntarget_link_libraries(consumer PRIVATE HeptaStrategyClient::Client)\n'),
+              ]),
+          ]
+          prepared = []
+          for name, old_sha, new_sha, replacements in files:
+              data = pathlib.Path(name).read_bytes()
+              if blob(data) != old_sha:
+                  raise RuntimeError('wrong original blob')
+              for old, new in replacements:
+                  if data.count(old.encode()) != 1:
+                      raise RuntimeError('wrong replacement count')
+                  data = data.replace(old.encode(), new.encode())
+              if blob(data) != new_sha:
+                  raise RuntimeError('wrong candidate blob')
+              prepared.append((name, data, new_sha))
+          def api(route, payload=None):
+              request = urllib.request.Request('https://api.github.com/repos/TrillionniumFoundation/heptatrader' + route, data=None if payload is None else json.dumps(payload).encode(), headers={'Authorization':'Bearer ' + os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json', 'Content-Type':'application/json', 'X-GitHub-Api-Version':'2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          if api('/git/ref/heads/integration/heptadll-modular-20260920')['object']['sha'] != os.environ['GITHUB_SHA']:
+              raise RuntimeError('remote head moved')
+          if [p['sha'] for p in api('/git/commits/' + os.environ['GITHUB_SHA'])['parents']] != [base]:
+              raise RuntimeError('concurrent change preceded authoring')
+          entries = []
+          for name, data, wanted in prepared:
+              if api('/git/blobs', {'encoding':'base64', 'content':base64.b64encode(data).decode()})['sha'] != wanted:
+                  raise RuntimeError('uploaded blob mismatch')
+              entries.append({'path':name, 'mode':'100644', 'type':'blob', 'sha':wanted})
+          result = api('/git/trees', {'base_tree':base_tree, 'tree':entries})
+          if result['sha'] != expected_tree:
+              raise RuntimeError('uploaded tree mismatch')
+          print(json.dumps({'source':base, 'authoring_parent':os.environ['GITHUB_SHA'], 'tree':expected_tree, 'files':entries}))
