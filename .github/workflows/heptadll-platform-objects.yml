@@ -15,16 +15,20 @@ jobs:
           ref: a982b4c40bf93a6de02c5516320a7bb3a2a34997
           persist-credentials: false
           fetch-depth: 1
-      - name: Upload verified Git objects only; never execute candidate code or update refs
+      - name: Upload verified non-workflow blobs only; never execute candidate code or update refs
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           python3 - <<'PY'
-          import base64, hashlib, json, os, re, subprocess, urllib.request, zlib
+          import base64, hashlib, json, os, re, subprocess, urllib.request, urllib.error, zlib
           def request(kind, payload=None):
               req = urllib.request.Request('https://api.github.com/repos/TrillionniumFoundation/heptatrader/git/'+kind, data=None if payload is None else json.dumps(payload).encode(), headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','Content-Type':'application/json','X-GitHub-Api-Version':'2022-11-28'}, method='GET' if payload is None else 'POST')
-              with urllib.request.urlopen(req, timeout=30) as response: return json.load(response)
-          # Read the previously published payload as DATA, never execute its YAML/Python.
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as response: return json.load(response)
+              except urllib.error.HTTPError as error:
+                  print('Git object API refusal:', error.code, error.read().decode(), flush=True)
+                  raise
+          # Read the prior payload as data, never execute downloaded code.
           original_sha = '0113d31ac8675800ee0fe8b588f8e55df964a35d'
           original = request('blobs/'+original_sha)
           data = base64.b64decode(original['content'])
@@ -32,7 +36,6 @@ jobs:
           matches = re.findall(rb"packed = '''([A-Za-z0-9+/=]+)'''", data)
           assert len(matches) == 1
           packed = matches[0]
-          # The first upload contained exactly one duplicated GC in the base64 data.
           assert packed.count(b'B5ELJPOGCGC09lCxiUl') == 1
           packed = packed.replace(b'B5ELJPOGCGC09lCxiUl', b'B5ELJPOGC09lCxiUl')
           patch = zlib.decompress(base64.b64decode(packed, validate=True))
@@ -44,15 +47,17 @@ jobs:
           subprocess.run(['git','apply','--index','--binary','-'], input=patch, check=True)
           assert set(git('diff','--cached','--name-only').splitlines()) == set(expected)
           assert git('write-tree') == '8c9be5a14981911e780119f0a9e4febb783a9995'
-          elements=[]
+          uploaded={}
           for path, sha in sorted(expected.items()):
               assert git('rev-parse',':'+path) == sha
               entry=git('ls-files','-s','--',path).split()
               assert entry[0]=='100644' and entry[2]=='0'
+              if path.startswith('.github/'):
+                  continue  # Authorized connector publishes workflow objects separately.
+              print('Upload verified source blob:', path, sha, flush=True)
               content=subprocess.check_output(['git','show',':'+path])
               assert request('blobs',{'encoding':'base64','content':base64.b64encode(content).decode()})['sha']==sha
-              elements.append({'path':path,'mode':'100644','type':'blob','sha':sha})
-          result=request('trees',{'base_tree':'6a77df2c741c109932a4731c0cde597d1a798f6a','tree':elements})
-          assert result['sha']=='8c9be5a14981911e780119f0a9e4febb783a9995'
-          print(json.dumps({'tree':result['sha'],'blobs':expected,'executed_candidate_code':False,'updated_refs':False},sort_keys=True))
+              uploaded[path]=sha
+          assert len(uploaded)==6
+          print(json.dumps({'blobs':uploaded,'executed_candidate_code':False,'updated_refs':False},sort_keys=True))
           PY
