@@ -226,6 +226,12 @@ bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
     lastTimestampUs_ = settlement.timestampUs;
     return true;
 }
+ResearchAccountState ResearchLedger::State() const {
+    ResearchAccountState out;
+    out.quantity = quantity_; out.averageEntry = Finite(average_);
+    out.realizedGross = Finite(realized_); out.fees = Finite(fees_);
+    return out;
+}
 ResearchAccount ResearchLedger::Mark(double mark) const {
     Require(ValidPrice(mark, priceDomain_), "RESEARCH_MARK_INVALID");
     ResearchAccount out;
@@ -345,29 +351,60 @@ bool ResearchPortfolio::Observe(const Tick& tick) {
 }
 ResearchPortfolioSnapshot ResearchPortfolio::Snapshot(std::int64_t asOf,
                                                        std::int64_t maxAge) const {
+    return Value(asOf, maxAge, true).snapshot;
+}
+ResearchPortfolioValuation ResearchPortfolio::Valuation(std::int64_t asOf,
+                                                        std::int64_t maxAge) const {
+    return Value(asOf, maxAge, false);
+}
+ResearchPortfolioValuation ResearchPortfolio::Value(std::int64_t asOf,
+        std::int64_t maxAge, bool strict) const {
     Require(asOf >= clockUs_ && maxAge >= 0, "RESEARCH_PORTFOLIO_SNAPSHOT_TIME_INVALID");
-    ResearchPortfolioSnapshot out;
+    ResearchPortfolioValuation result;
+    auto& out = result.snapshot;
     out.currency = currency_; out.timestampUs = asOf; out.initialEquity = initialEquity_;
     out.externalFlows = Finite(flows_);
-    long double realized = 0, unrealized = 0, fees = 0;
+    long double realized = 0, unrealized = 0, fees = 0, basis = 0, gross = 0;
     for (const auto& item : positions_) {
         const auto& position = item.second;
         const bool open = position.ledger.Quantity() != 0;
-        if (open) {
-            Require(position.hasTick && position.markCurrent, "RESEARCH_PORTFOLIO_MARK_MISSING");
-            Require(asOf - position.lastTick.timestampUs <= maxAge, "RESEARCH_PORTFOLIO_MARK_STALE");
+        const bool missing = open && (!position.hasTick || !position.markCurrent);
+        const bool stale = open && !missing && asOf - position.lastTick.timestampUs > maxAge;
+        if (strict) {
+            Require(!missing, "RESEARCH_PORTFOLIO_MARK_MISSING");
+            Require(!stale, "RESEARCH_PORTFOLIO_MARK_STALE");
         }
-        const auto account = position.ledger.Mark(open ? position.lastTick.price : 1.0);
+        if (!position.hasTick) result.unobservedMarks.push_back(item.first);
+        if (missing) result.missingMarks.push_back(item.first);
+        if (stale) result.staleMarks.push_back(item.first);
+        const auto state = position.ledger.State();
         ResearchPositionSnapshot value;
-        value.quantity = account.quantity; value.averageEntry = account.averageEntry;
-        value.realizedGross = account.realizedGross; value.unrealized = account.unrealized;
-        value.fees = account.fees;
-        if (open) { value.markPrice = position.lastTick.price; value.markTimestampUs = position.lastTick.timestampUs; }
+        value.quantity = state.quantity; value.averageEntry = state.averageEntry;
+        value.realizedGross = state.realizedGross; value.fees = state.fees;
+        if (!missing && !stale) {
+            const auto account = position.ledger.Mark(open ? position.lastTick.price : 1.0);
+            value.unrealized = account.unrealized; unrealized += account.unrealized;
+        } else result.complete = false;
+        if (position.hasTick && (open || !strict)) {
+            value.markPrice = position.lastTick.price; value.markTimestampUs = position.lastTick.timestampUs;
+        }
         out.positions.emplace(item.first, value);
-        realized += account.realizedGross; unrealized += account.unrealized; fees += account.fees;
+        realized += state.realizedGross; fees += state.fees;
+        // Partial reporting is opt-in: do not add new overflow conditions to
+        // the existing strict Snapshot/SDK contract.
+        if (!strict) {
+            basis += static_cast<long double>(state.quantity) * state.averageEntry * position.multiplier;
+            if (open && !missing && !stale)
+                gross += std::fabs(static_cast<long double>(state.quantity) * position.lastTick.price * position.multiplier);
+        }
     }
-    out.realizedGross = Finite(realized); out.unrealized = Finite(unrealized); out.fees = Finite(fees);
-    out.equity = Finite(static_cast<long double>(initialEquity_) + flows_ + realized + unrealized - fees);
-    return out;
+    out.realizedGross = Finite(realized); out.fees = Finite(fees);
+    if (result.complete) {
+        out.unrealized = Finite(unrealized);
+        out.equity = Finite(static_cast<long double>(initialEquity_) + flows_ + realized + unrealized - fees);
+        if (!strict) result.grossNotional = Finite(gross);
+    }
+    if (!strict) result.cash = Finite(static_cast<long double>(initialEquity_) + flows_ + realized - fees - basis);
+    return result;
 }
 }} // namespace hepta::research

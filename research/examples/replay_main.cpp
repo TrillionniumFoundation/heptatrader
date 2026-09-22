@@ -107,10 +107,13 @@ private:
 // strategy state nor an execution outbox. Disk space scales with output size.
 class ValidatedOutput {
 public:
-    ValidatedOutput() : file_(std::tmpfile(), &std::fclose) {
+    explicit ValidatedOutput(std::size_t limit = 0) : file_(std::tmpfile(), &std::fclose), limit_(limit) {
         if (!file_) throw std::runtime_error("cannot create research output spool");
     }
     void Append(const std::string& text) {
+        if (limit_ && text.size() > limit_ - bytes_)
+            throw std::runtime_error("research output byte bound");
+        bytes_ += text.size();
         if (std::fwrite(text.data(), 1, text.size(), file_.get()) != text.size())
             throw std::runtime_error("research output spool write failed");
     }
@@ -132,6 +135,7 @@ public:
     }
 private:
     std::unique_ptr<std::FILE, int(*)(std::FILE*)> file_;
+    std::size_t limit_, bytes_ = 0;
 };
 #include "model_cli.h"
 
@@ -247,6 +251,8 @@ int LegacyInput(int argc, char** argv, bool ticks) {
 }
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "--portfolio-stream")
+            return PortfolioInput(argc);
         if (argc > 1 && std::string(argv[1]) == "--model-stream")
             return ModelInput(argc);
         if (argc > 1 && std::string(argv[1]) == "--import-legacy-ticks")

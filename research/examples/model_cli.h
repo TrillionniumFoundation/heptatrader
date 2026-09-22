@@ -125,7 +125,7 @@ int ModelInput(int argc) {
     std::unique_ptr<NextBarReplay> next;
     if (flowMode) flow.reset(new OrderFlowReplay(initial, currency, instruments, static_cast<std::size_t>(capacity)));
     else next.reset(new NextBarReplay(initial, currency, instruments, slippage, static_cast<std::size_t>(capacity)));
-    ValidatedOutput output;
+    ValidatedOutput output(64U * 1024U * 1024U);
     output.Append(std::string("{\"schema\":\"hepta.research.native-model-report.v1\",\"model\":\"") +
         (flowMode ? "explicit-price-time-flow-v1" : "observed-next-distinct-open-v1") +
         "\",\"broker_authorized\":false,\"fills\":[");
@@ -205,4 +205,205 @@ int ModelInput(int argc) {
     }
     output.Append("],\"active_orders\":" + (flowMode ? std::to_string(flow->ActiveOrders()) : std::string("null")) + "}\n");
     output.Publish(std::cout); return 0;
+}
+
+// Normalized-bar consumer: orchestrates the SAME NextBarReplay/ResearchPortfolio.
+// P rows are explicit hypothetical bars, not authoritative timestamped quotes.
+struct PortfolioBarRow { Bar bar; std::int64_t closeTicks = 0; };
+struct PortfolioSignalConfig {
+    std::size_t fast = 0, slow = 0;
+    std::int64_t quantity = 0;
+    bool longOnly = false;
+};
+std::string ModelValuation(const ResearchPortfolioValuation& value) {
+    const auto& s = value.snapshot;
+    std::ostringstream out; out.imbue(std::locale::classic()); out << std::setprecision(17);
+    out << "{\"timestamp_us\":" << s.timestampUs << ",\"cash\":" << value.cash
+        << ",\"fees\":" << s.fees << ",\"valuation_complete\":" << (value.complete ? "true" : "false")
+        << ",\"equity\":";
+    if (value.complete) out << s.equity; else out << "null";
+    out << ",\"gross_notional\":";
+    if (value.complete) out << value.grossNotional; else out << "null";
+    out << ",\"unavailable_instruments\":[";
+    bool first = true;
+    for (const auto* names : {&value.missingMarks, &value.staleMarks})
+        for (const auto& name : *names) { if (!first) out << ','; first = false; out << '"' << name << '"'; }
+    out << "],\"positions\":{"; first = true;
+    for (const auto& entry : s.positions) {
+        if (!first) out << ',';
+        first = false;
+        const auto& p = entry.second;
+        const bool observed = std::find(value.unobservedMarks.begin(), value.unobservedMarks.end(), entry.first) == value.unobservedMarks.end();
+        const bool missing = std::find(value.missingMarks.begin(), value.missingMarks.end(), entry.first) != value.missingMarks.end();
+        const bool stale = std::find(value.staleMarks.begin(), value.staleMarks.end(), entry.first) != value.staleMarks.end();
+        out << '"' << entry.first << "\":{\"quantity\":" << p.quantity << ",\"average_entry\":" << p.averageEntry
+            << ",\"realized_gross\":" << p.realizedGross << ",\"fees\":" << p.fees << ",\"unrealized\":";
+        if (missing || stale) out << "null"; else out << p.unrealized;
+        out << ",\"mark_observed\":" << (observed ? "true" : "false") << ",\"mark_price\":";
+        if (observed) out << p.markPrice; else out << "null";
+        out << ",\"mark_timestamp_us\":";
+        if (observed) out << p.markTimestampUs; else out << "null";
+        out << '}';
+    }
+    out << "}}"; return out.str();
+}
+int PortfolioInput(int argc) {
+    Check(argc == 2, "--portfolio-stream accepts only bounded stdin");
+    ModelRows input; std::vector<std::string> row;
+    Check(input.Next(row) && row.size() == 5 && row[0] == "HPR1", "portfolio header");
+    const auto capacity = Integer(row[1]), maxAge = Integer(row[2]);
+    const double initial = ModelReal(row[3]); const auto currency = row[4];
+    Check(capacity > 0 && capacity <= 250000, "portfolio bar bound (1..250000)");
+    ModelIdentity(currency, 3); Check(currency.size() == 3, "portfolio currency length");
+    std::vector<FlowInstrument> instruments;
+    std::map<std::string, ResearchPriceGrid> grids;
+    std::map<std::string, PortfolioSignalConfig> signals;
+    std::map<std::string, std::vector<PortfolioBarRow>> streams;
+    NextBarPolicy policy; policy.timing = NextOpenTiming::AfterClosePhase;
+    bool began = false;
+    while (input.Next(row)) {
+        if (row.size() == 1 && row[0] == "BEGIN") { began = true; break; }
+        Check(row.size() == 11 && row[0] == "I" && instruments.size() < 64, "portfolio instrument row");
+        const auto& name = row[1]; ModelIdentity(name, 64);
+        Check(grids.count(name) == 0, "duplicate portfolio instrument");
+        FlowInstrument spec; spec.account.instrument = name; spec.account.currency = currency;
+        spec.tickSize = ModelReal(row[2]); spec.account.multiplier = ModelReal(row[3]);
+        spec.lot = Integer(row[4]); spec.feePerUnit = ModelReal(row[5]);
+        spec.account.priceDomain = ResearchPriceDomain::SignedFinite;
+        PortfolioSignalConfig signal; signal.fast = Integer(row[6]); signal.slow = Integer(row[7]);
+        signal.quantity = Integer(row[8]);
+        Check((row[9] == "0" || row[9] == "1") && signal.quantity > 0 && signal.quantity <= 1000000000000LL &&
+              spec.lot > 0 && spec.lot <= 1000000000000LL && signal.quantity % spec.lot == 0,
+              "portfolio target/lot/long-only bounds");
+        signal.longOnly = row[9] == "1";
+        IntegerGridMovingAverage validation(signal.fast, signal.slow);
+        policy.instrumentSlippageTicks[name] = Integer(row[10]);
+        grids.emplace(name, ResearchPriceGrid(spec.tickSize, spec.account.priceDomain));
+        signals.emplace(name, signal); streams.emplace(name, std::vector<PortfolioBarRow>());
+        instruments.push_back(spec);
+    }
+    Check(began && !instruments.empty(), "portfolio universe and BEGIN required");
+    std::size_t count = 0;
+    while (input.Next(row)) {
+        Check(row.size() == 12 && row[0] == "P" && ++count <= static_cast<std::size_t>(capacity),
+              "portfolio bar row/budget");
+        Check(streams.count(row[1]) != 0, "undeclared portfolio bar instrument");
+        PortfolioBarRow value; auto& bar = value.bar; bar.instrument = row[1]; bar.tradingDay = row[2];
+        bar.beginUs = Integer(row[3]); bar.endUs = Integer(row[4]);
+        const auto& grid = grids.at(bar.instrument);
+        bar.open = grid.Price(ModelInteger(row[5])); bar.high = grid.Price(ModelInteger(row[6]));
+        bar.low = grid.Price(ModelInteger(row[7])); value.closeTicks = ModelInteger(row[8]);
+        bar.close = grid.Price(value.closeTicks); bar.volume = UnsignedInteger(row[9]);
+        bar.tickCount = UnsignedInteger(row[10]);
+        Check(row[11] == "0" || row[11] == "1", "portfolio completeness"); bar.complete = row[11] == "1";
+        // Reuse canonical structural/day validation while declaring signed prices
+        // through this model, never silently changing the Data SDK default.
+        Bar structural = bar; structural.open = structural.high = structural.low = structural.close = 1;
+        ValidateBar(structural);
+        Check(bar.low <= std::min(bar.open, bar.close) && bar.high >= std::max(bar.open, bar.close),
+              "portfolio OHLC inconsistency");
+        auto& stream = streams.at(bar.instrument);
+        Check(stream.empty() || (stream.back().bar.complete && bar.beginUs >= stream.back().bar.endUs &&
+              bar.tradingDay >= stream.back().bar.tradingDay), "portfolio overlap/day order/incomplete tail");
+        stream.push_back(value);
+    }
+    Check(count > 0, "empty portfolio bars");
+    struct Event { std::int64_t time; int phase; std::string instrument; std::size_t index; };
+    std::vector<Event> events; events.reserve(count * 2);
+    std::map<std::string, IntegerGridMovingAverage> calculators;
+    std::map<std::string, std::uint64_t> sequences;
+    for (const auto& item : streams) {
+        Check(!item.second.empty(), "empty declared portfolio instrument");
+        const auto& signal = signals.at(item.first);
+        calculators.emplace(item.first, IntegerGridMovingAverage(signal.fast, signal.slow));
+        sequences[item.first] = 0;
+        for (std::size_t i = 0; i < item.second.size(); ++i) {
+            const auto& bar = item.second[i].bar;
+            events.push_back(Event{bar.beginUs, 1, item.first, i});
+            if (bar.complete) events.push_back(Event{bar.endUs, 0, item.first, i});
+        }
+    }
+    std::sort(events.begin(), events.end(), [](const Event& a, const Event& b) {
+        if (a.time != b.time) return a.time < b.time;
+        if (a.phase != b.phase) return a.phase < b.phase;
+        if (a.instrument != b.instrument) return a.instrument < b.instrument;
+        return a.index < b.index;
+    });
+    // At most OPEN+MARK+TARGET per bar, and at most two reversal fills per OPEN.
+    // The existing model/account budgets remain bounded and are not weakened.
+    NextBarReplay replay(initial, currency, instruments, policy, count * 3);
+    std::vector<ResearchFill> fills;
+    std::vector<std::string> observations;
+    std::size_t observationBytes = 0, gaps = 0;
+    long double peak = initial, drawdown = 0;
+    ResearchPortfolioValuation finalValue;
+    for (std::size_t at = 0; at < events.size();) {
+        const auto time = events[at].time;
+        do {
+            const auto& event = events[at]; const auto& value = streams.at(event.instrument)[event.index];
+            const auto& bar = value.bar;
+            Tick mark; mark.instrument = event.instrument; mark.timestampUs = time;
+            mark.sequence = ++sequences[event.instrument];
+            // Bar total volume does not prove opening liquidity. This explicit
+            // hypothetical model does not turn it into a partial-fill budget.
+            mark.volume = 0;
+            if (event.phase == 0) {
+                mark.price = bar.close; replay.ObserveMark(mark);
+                const auto& signal = signals.at(event.instrument);
+                auto direction = calculators.at(event.instrument).ObserveClose(value.closeTicks);
+                if (signal.longOnly && direction < 0) direction = 0;
+                NextBarTarget target; target.targetId = "portfolio:" + event.instrument + ":" + std::to_string(event.index);
+                target.sourceBar = bar; target.observedAtUs = time; target.targetQuantity = direction * signal.quantity;
+                replay.SetTarget(target);
+            } else {
+                mark.price = bar.open;
+                const auto result = replay.ObserveOpen(mark);
+                fills.insert(fills.end(), result.begin(), result.end());
+                Check(fills.size() <= count * 2, "portfolio fill bound");
+            }
+            ++at;
+        } while (at < events.size() && events[at].time == time);
+        finalValue = replay.Valuation(time, maxAge);
+        if (!finalValue.complete) ++gaps;
+        else {
+            peak = std::max(peak, static_cast<long double>(finalValue.snapshot.equity));
+            drawdown = std::max(drawdown, (peak - finalValue.snapshot.equity) / peak);
+            Check(std::isfinite(drawdown) && drawdown <= std::numeric_limits<double>::max(), "portfolio metric overflow");
+        }
+        observations.push_back(ModelValuation(finalValue)); observationBytes += observations.back().size();
+        Check(observationBytes <= 64U * 1024U * 1024U, "portfolio observation byte bound");
+    }
+    ValidatedOutput output(64U * 1024U * 1024U);
+    output.Append("{\"schema\":\"hepta.research.native-portfolio-report.v1\",\"model\":\"normalized-close-then-open-v1\","
+                  "\"broker_authorized\":false,\"automatic_funding\":false,\"annualized\":null,\"input_rows\":" + std::to_string(count) + ",\"fills\":[");
+    bool first = true;
+    for (const auto& fill : fills) { if (!first) output.Append(","); first = false; output.Append(ModelFill(fill)); }
+    output.Append("],\"equity\":["); first = true;
+    for (const auto& value : observations) { if (!first) output.Append(","); first = false; output.Append(value); }
+    output.Append("],\"snapshot\":" + ModelValuation(finalValue) + ",\"valuation_gap_count\":" + std::to_string(gaps));
+    std::ostringstream metrics; metrics.imbue(std::locale::classic()); metrics << std::setprecision(17);
+    metrics << ",\"max_drawdown\":";
+    if (gaps) metrics << "null"; else metrics << static_cast<double>(drawdown);
+    metrics << ",\"total_return\":";
+    if (!finalValue.complete) metrics << "null";
+    else {
+        const double result = finalValue.snapshot.equity / initial - 1;
+        Check(std::isfinite(result), "portfolio return overflow"); metrics << result;
+    }
+    output.Append(metrics.str() + ",\"pending_targets\":{"); first = true;
+    const auto pending = replay.PendingTargets();
+    for (const auto& item : streams) {
+        if (!first) output.Append(",");
+        first = false;
+        const auto value = pending.find(item.first);
+        output.Append("\"" + item.first + "\":" + (value == pending.end() ? std::string("null") : std::to_string(value->second)));
+    }
+    output.Append("},\"untimed_incomplete_closes\":{"); first = true;
+    for (const auto& item : streams) if (!item.second.back().bar.complete) {
+        if (!first) output.Append(",");
+        first = false;
+        std::ostringstream price; price.imbue(std::locale::classic()); price << std::setprecision(17) << item.second.back().bar.close;
+        output.Append("\"" + item.first + "\":" + price.str());
+    }
+    output.Append("}}\n"); output.Publish(std::cout); return 0;
 }

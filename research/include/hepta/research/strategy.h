@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <deque>
 
 namespace hepta { namespace research {
 struct Forecast {
@@ -37,5 +38,19 @@ private:
     std::size_t fast_, slow_;
     BarSeries history_;
     int lastDirection_ = 0;
+};
+// Exact integer-grid reference signal used by the migrated normalized-bar
+// portfolio consumer. Distinct from the binary64 BarSeries forecast convention.
+// Returns a target direction on EVERY complete close (zero during warm-up).
+// Input clock/completeness validation belongs to the bar consumer; this class
+// is a pure bounded calculator, not a strategy runtime or an order interface.
+class IntegerGridMovingAverage {
+public:
+    IntegerGridMovingAverage(std::size_t fast, std::size_t slow);
+    int ObserveClose(std::int64_t closeTicks);
+private:
+    std::size_t fast_, slow_;
+    std::deque<std::int64_t> values_;
+    std::int64_t fastSum_ = 0, slowSum_ = 0;
 };
 }} // namespace hepta::research

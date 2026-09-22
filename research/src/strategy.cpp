@@ -37,4 +37,27 @@ bool MovingAverageForecast::OnCompletedBar(const Bar& bar, Forecast& forecast) {
     lastDirection_ = direction;
     return true;
 }
+IntegerGridMovingAverage::IntegerGridMovingAverage(std::size_t fast, std::size_t slow)
+    : fast_(fast), slow_(slow) {
+    if (fast == 0 || fast >= slow || slow > 100000)
+        throw std::invalid_argument("RESEARCH_STRATEGY_WINDOW_INVALID");
+}
+int IntegerGridMovingAverage::ObserveClose(std::int64_t ticks) {
+    if (ticks < -(1LL << 40) || ticks > (1LL << 40))
+        throw std::invalid_argument("RESEARCH_STRATEGY_GRID_BOUND");
+    // At most 100000 values of magnitude 2^40: each sum fits in signed 64 bits.
+    // Publish allocation before changing sums, retaining failed-input atomicity.
+    values_.push_back(ticks); fastSum_ += ticks; slowSum_ += ticks;
+    if (values_.size() > fast_) fastSum_ -= values_[values_.size() - fast_ - 1];
+    if (values_.size() > slow_) { slowSum_ -= values_.front(); values_.pop_front(); }
+    if (values_.size() < slow_) return 0;
+    // Compare rational means without binary64 rounding or overflowing products.
+    auto fq = fastSum_ / static_cast<std::int64_t>(fast_), fr = fastSum_ % static_cast<std::int64_t>(fast_);
+    auto sq = slowSum_ / static_cast<std::int64_t>(slow_), sr = slowSum_ % static_cast<std::int64_t>(slow_);
+    if (fr < 0) { --fq; fr += static_cast<std::int64_t>(fast_); }
+    if (sr < 0) { --sq; sr += static_cast<std::int64_t>(slow_); }
+    if (fq != sq) return fq > sq ? 1 : -1;
+    const auto left = fr * static_cast<std::int64_t>(slow_), right = sr * static_cast<std::int64_t>(fast_);
+    return left > right ? 1 : (left < right ? -1 : 0);
+}
 }} // namespace hepta::research

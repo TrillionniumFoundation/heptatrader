@@ -119,7 +119,7 @@ fails. Multiple instruments share one global delivery clock and one capital.
 from the close of a future completed bar. Each instrument's open sequence and
 timestamp must increase; exact last-open retries are inert.
 
-An open at the target observation timestamp is ineligible. The first strictly
+With the original/default StrictlyLater policy, an open at the target observation timestamp is ineligible. The first strictly
 later open consumes its target. A sign reversal produces an explicit closing
 fill followed by an opening fill; unchanged exposure creates no order. The
 configured adverse slippage and fees apply to both legs. The open's volume is
@@ -145,8 +145,9 @@ Capability provenance is #106's explicit order flow/next-bar concepts and #108's
 explicit slippage convention. Their source branches remain references, not linked
 alternative runtimes. The current migration supplies new native SDK APIs and
 exercises them through installed consumers. It does NOT replace #106's full
-JSON manifest/JSONL commands, Decimal magnitude domain, all null-valued reports,
-or source-compatible Python APIs. It does not turn #108's ResearchIntentClient
+Decimal magnitude domain, original report/ID schemas, custom Python callables,
+or source-compatible Python APIs. The separately documented MODEL-CLI.md
+consumer ports order-flow and normalized-portfolio inputs in the bounded domain. It does not turn #108's ResearchIntentClient
 records into NativeStrategyClient records. Those callers must be explicitly
 adapted or remain on their pinned reference versions; never relabel them migrated
 because a native model test passes.
@@ -156,3 +157,61 @@ platform ABI validation, historical proprietary strategies and redistribution
 scope remain separate decisions. Keep the original repository/history/releases
 and alternate source branches until those decisions and consumer checks exist.
 See `docs/technical/heptadll-consolidation.md` for the retained consumer register.
+
+## Normalized-portfolio continuation: explicit phase policy, not a new engine
+
+`NextBarPolicy` adds an opt-in `AfterClosePhase` timing policy. Existing
+constructors retain `StrictlyLater`; existing HMR1 NEXT and `next-open` remain
+unchanged. The new normalized-bar consumer uses `AfterClosePhase` only after it
+has scheduled **all complete CLOSE(t) before OPEN(t)**. This deliberately models
+the #106 hypothetical next-contiguous-open assumption, not real zero-latency
+execution or a claim that a real close was delivered by that timestamp. A caller
+with actual delayed observations must use the stricter target/open contract.
+
+The same `NextBarReplay::ObserveOpen` performs target deltas and close-first
+reversals, and the same `ResearchPortfolio` accounts for all instruments with
+capital counted once. `NextBarPolicy::instrumentSlippageTicks` allows declared
+per-instrument integer slippage; absent entries use `slippageTicks`. Undeclared
+instruments, invalid policies and out-of-range slippage reject at construction.
+
+`ObserveMark` supplies an explicit observed quote WITHOUT consuming any target
+or making a fill. Marks and opens share each instrument's increasing quote
+sequence and the model delivery clock. An exact current quote retry is inert;
+changed/reversed quotes and quota failures leave the model unchanged. This is
+not a promise that arbitrary historical marks may be replayed after newer ones.
+`PendingTargets` is a read-only offline view, not an active-order projection.
+
+`ResearchPortfolio::Valuation` and `NextBarReplay::Valuation` are opt-in partial
+reporting APIs. Missing/invalidated and stale HELD marks set `complete=false`,
+identify their instruments separately, and leave aggregate equity/unrealized
+and gross notional **undefined**. C++ stores zero in those undefined fields;
+callers MUST check `complete` and must not present those zeros as valuations.
+The JSON portfolio consumer serializes undefined values as null. Flat positions
+do not require a mark. `unobservedMarks` additionally distinguishes never-seen
+quotes from genuine signed zero prices, including for flat instruments.
+
+Known quantity, basis, realized P&L and fees use `ResearchLedger::State`, without
+inventing a quote. Reported cash is the offline identity
+`initial + external_flows + realized_gross - fees - inventory_basis`; it is not
+a broker cash or margin assertion. A settlement basis change changes attribution
+but preserves this identity. Partial cash/gross arithmetic failures reject rather
+than emit infinities. The original strict `Snapshot` still throws on missing or
+stale held marks; it does not acquire partial-report cash/gross overflow checks.
+
+The existing Strategy library now exports `IntegerGridMovingAverage(fast,slow)`.
+It takes already-observed completed closes as integer grid indices in
+[-2^40,2^40], returns zero during warmup and equal means, and thereafter returns
+the exact sign of the fast/slow mean difference on every observation. It accepts
+1 <= fast < slow <= 100000. Bounded integer sums and quotient/remainder comparison
+avoid binary64 tie drift and overflowing cross-products. Clock/completeness
+validation belongs to the caller. The earlier binary64 `MovingAverageForecast`
+remains unchanged; the integer adapter is an explicit data-contract variant in
+the same Strategy library, not a second lifecycle or accounting framework.
+
+Existing replay and relocated external-SDK tests execute these APIs alongside
+all older assertions. Independent direct-sum integer oracles, maximum-window
+boundary cases, failed-mark/quota atomicity, strict-vs-phase timing, per-instrument
+slippage, stale recovery and strict-snapshot compatibility are covered. The
+installed CLI additionally exercises signed normalized bars, causal phase order,
+source splitting and null valuations. Exact-head execution outcomes belong in
+the PR, not unconditional success claims in this contract.
