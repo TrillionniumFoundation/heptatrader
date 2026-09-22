@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Relocatable launcher. Re-exec isolated Python before importing the SDK."""
+import os
+import sys
+if not sys.flags.isolated:
+    os.execv(sys.executable, [sys.executable, "-I", "-B", __file__, *sys.argv[1:]])
+from pathlib import Path
+import runpy
+module = Path(__file__).resolve().parent / "@HEPTA_APP_MODULE_FROM_BIN@"
+arguments = sys.argv[1:]
+if not any(value == "--native" or value.startswith("--native=") for value in arguments):
+    arguments += ["--native", str(Path(__file__).resolve().with_name("hepta-strategy-native"))]
+sys.argv = [str(module), *arguments]
+runpy.run_path(str(module), run_name="__main__")

@@ -413,3 +413,20 @@ JSON outbox records, or #108 HRO1 records. Those actual records/callers remain
 retained until explicitly adapted; never relabel them as HSR1, synthesize missing
 binding data, or delete them to claim retirement. No production host, power-loss,
 external deployment, broker or complete historical ABI qualification is implied.
+
+## Application-key Python consumer
+
+The opt-in client component additionally ships `hepta-strategy-native`,
+`hepta-strategy-gateway` and its Python module. They reuse the SAME canonical
+three archives and eight public headers, not a second transport or OMS.
+`NativeStrategyClient::MatchesOrder` validates the original HSR1 opaque snapshot
+against a declared limit intent and binding before the process adapter forwards.
+
+The Python application policy durably marks a possible send, then attempts at
+most one placement; subsequent calls select record-bound Inspect, even after
+timeout, SIGKILL or unknown status. Its HSA1 metadata contains application keys,
+normalized intents and command IDs, never a replacement request serialization.
+Old JSON/HRO1 records remain with their original caller.
+See [full operations, numeric domain, failure and installation contract](STRATEGY-GATEWAY.md)
+and [consumer/support decisions](../docs/technical/heptadll-consumers.md).
+The default production install remains unchanged.

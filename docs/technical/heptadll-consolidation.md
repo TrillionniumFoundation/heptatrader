@@ -314,3 +314,33 @@ repository is not archived; no branch/history/release deletion, visibility or
 protection change, credential migration, broker path or trading authorization
 occurs in this patch. Retaining an unresolved consumer is an explicit decision,
 not a statement that its migration has completed.
+
+
+## PR #113 application-key continuation
+
+The continuation from 211166aed4ff6f6ae4b3661ec3a279b324bc7ce3 implements the
+previously contract-only Python application policy. It adds a developer-only
+process adapter to existing NativeStrategyClient and an isolated Python caller.
+Data, Analytics, Replay, Strategy, HSR1, NativeToolClient and the authoritative
+Execution Service remain the sole selected implementations of their roles.
+
+The implementation preserves application-key conflicts and durable possibly-sent
+status-only recovery. Source and relocated-installed clients exercise a real
+Gateway and exec-child Execution with four concurrent clients, lost responses,
+SIGKILL and credential rotation; the OMS journal is the send oracle. No old
+JSON/HRO1 conversion or source/ABI-wide equivalence is claimed.
+
+The [consumer register](heptadll-consumers.md) identifies concrete maintained
+callers, source adaptations and explicit retained consumers, with version,
+platform, interface/state format and owner-evidence boundaries. Unknown external
+users do not block new canonical features, but are not certified migrated.
+HeptaDLL-main remains the historical compatibility repository, not an active
+parallel core and not a newly archived/deleted repository.
+
+The added executable is an unprivileged SDK command, not a fourth framework.
+Client package allowlists are extended only for its explicit executable/module/
+launcher/contract; original header/archive/symbol and default-install assertions
+remain. The build inventory's core graph is regenerated from actual CMake; the
+IB profile receives only the identical SDK-independent target delta. This does
+not claim an executed external-IB-SDK build or broker campaign. Actual exact-head
+CI/SDK outcomes are recorded in PR #113, not inferred from a previous green run.

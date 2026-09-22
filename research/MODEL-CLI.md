@@ -274,3 +274,62 @@ source-compatible Python APIs, arbitrary Decimal range, fractional quantities,
 old report schemas, custom target functions and old client/outbox records remain
 explicitly retained. This port does not certify every historical strategy,
 platform, dataset or binary application and does not authorize source retirement.
+
+## Single-input command migration
+
+The same installed `hepta-research-models` adapter accepts `single` for callers
+migrating from #106's `pipeline.py` / `--bars` command. No manifest file or source
+binding list is needed for this one-file mode:
+
+```sh
+python3 -I -S /sdk/bin/hepta-research-models single \
+  --bars /data/normalized-bars.csv --output /reports/single.json \
+  --tick-size 0.5 --capital 1000 --quantity 2 --currency USD \
+  --fast 5 --slow 20 --multiplier 1 --lot 1 \
+  --slippage 0 --fee-per-unit 0
+```
+
+`--bars`, `--output`, `--tick-size`, `--capital`, `--quantity`, and `--currency`
+are required. Currency is never guessed from an instrument or the old report.
+Optional defaults are fast=5, slow=20, multiplier=1, lot=1, slippage=0,
+fee-per-unit=0, long-only=false and max-mark-age-us=0. `--long-only` selects
+long-only targets. `--max-bars` is an alias for the existing `--max-total-bars`:
+100000 by default, bounded by 250000. All existing numeric, bar, input-byte,
+process-time and output bounds still apply. `--bars-sha256` optionally requires
+an exact lowercase SHA-256 digest; without it the source is still captured and
+hashed, but no independent expected digest is claimed.
+
+The source is captured exactly once using the existing safe-file reader. Only
+its first normalized row is inspected to identify the sole instrument. The same
+captured bytes then pass through the existing portfolio CSV validator, price-grid
+conversion and ONE native `--portfolio-stream` invocation. Mixed instruments,
+malformed later rows, data after an incomplete tail, precision loss, nonintegral
+quantities, unsafe files and output aliases reject without replacing an old
+report. Changing the input path after capture does not change the model's
+captured bytes. No second Python strategy, matcher, accounting core, executable,
+transport or trading authority is added.
+
+Output remains `hepta.research.native-portfolio-report.v1`, exactly the selected
+`normalized-close-then-open-v1` model, not `hepta.research.report.v1` or the old
+`run_report` return dictionary. Its `input.configuration_origin` is
+`single-cli-generated-manifest`. `input.manifest_sha256` hashes the canonical
+sorted compact UTF-8 JSON configuration synthesized from the explicit arguments
+and source digest; it does not imply that the caller supplied a manifest file.
+Per-source provenance includes the digest and bar count, never the local path.
+The existing staged atomic replacement and post-replace failure caveat apply.
+
+This is deliberately NOT full old single-replay behavior/ABI parity. In
+particular, a partial bar's close remains untimed metadata, not a new valuation
+at its nominal end. Annualization is not implemented here: the old
+`--periods-per-year` option is rejected rather than ignored. Signed prices use
+the existing explicit portfolio domain, not a widened Data SDK. Wide Decimal
+arithmetic, fractional quantities, custom Python strategy callbacks, old report
+schemas and their dependent consumers retain their pinned #106 implementation
+until explicitly adapted. No old record, source or release is deleted.
+
+The existing source and installed/relocated model-consumer suite exercises the
+single command, equality with an explicit one-instrument portfolio, signed and
+zero prices, defaults, long-only behavior, incomplete tails, optional digests,
+one source capture/one native invocation, and failed-input/output preservation.
+These tests are additional checks in the existing executable test recipe, not
+a replacement for its original FLOW/NEXT/portfolio scenarios.

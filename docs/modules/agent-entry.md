@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`, `research/CLIENT_PACKAGE.md`
-Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`, `tests/research/native_execution_tests.cpp`, `tests/research/native_sdk_package_behavior.py`
+Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`, `research/CLIENT_PACKAGE.md`, `research/examples/strategy_client_main.cpp`, `research/strategy_gateway.py`, `research/cmake/strategy_gateway_main.py.in`, `research/STRATEGY-GATEWAY.md`
+Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`, `tests/research/native_execution_tests.cpp`, `tests/research/native_sdk_package_behavior.py`, `tests/research/strategy_gateway_behavior.py`, `tests/research/application_execution_driver.py`
 
 ## Responsibilities
 
@@ -229,3 +229,13 @@ components/versions and rejection of privileged class declarations. These tests
 join the existing core/research CTest lane. Real Gateway/Execution lifecycle and
 SIGKILL recovery tests still execute independently; package acceptance does not
 replace deployment or broker qualification.
+
+## Application-key strategy policy
+
+The [application client](../../research/STRATEGY-GATEWAY.md) source-adapts the
+selected #106 STK/CASH LimitIntent workflow through the existing native SDK.
+Its developer executable does not link Gateway, Execution or broker objects.
+Python owns only per-key serialization, intent conflict detection and a durable
+possibly-sent marker; NativeStrategyClient owns every HSR1 and transport action.
+The independent actual-service journal oracle and relocated SDK tests remain
+registered alongside all original native consumers.

@@ -143,7 +143,7 @@ private:
                     reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "proxy connect failed");
                 Require(TypedToolProtocol::WriteFrame(upstream.Get(), body, 3000, reason), reason);
                 Require(TypedToolProtocol::ReadFrame(upstream.Get(), 1048576, 3000, response, reason), reason);
-                if (request.call.name == callName_ && request.toolCallId == commandId_) {
+                if (request.call.name == callName_ && (commandId_.empty() || request.toolCallId == commandId_)) {
                     ++attempts_;
                     if (!dropped_.load()) {
                         TypedToolResultEnvelope result;
@@ -1197,6 +1197,129 @@ void TestNativeExecutionLatency() {
     Require(static_cast<bool>(std::cout), "latency output failed");
 }
 
+// Actual Python policy -> developer native adapter -> existing Gateway ->
+// separate exec-child Execution. The journal, not Python metadata, counts sends.
+class ApplicationProcess {
+public:
+    ApplicationProcess(const std::vector<std::string>& command, const std::string& outputPath)
+        : outputPath_(outputPath) {
+        Fd output(::open(outputPath.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600));
+        Require(output.Get() >= 0, "application child output creation");
+        posix_spawn_file_actions_t actions;
+        Require(::posix_spawn_file_actions_init(&actions) == 0, "application child actions");
+        int setup = ::posix_spawn_file_actions_adddup2(&actions, output.Get(), STDOUT_FILENO);
+        setup |= ::posix_spawn_file_actions_adddup2(&actions, output.Get(), STDERR_FILENO);
+        setup |= ::posix_spawn_file_actions_addopen(&actions, STDIN_FILENO, "/dev/null", O_RDONLY, 0);
+        setup |= ::posix_spawn_file_actions_addclosefrom_np(&actions, 3);
+        if (setup != 0) {
+            ::posix_spawn_file_actions_destroy(&actions);
+            throw std::runtime_error("application child descriptor isolation");
+        }
+        std::vector<char*> arguments;
+        for (const auto& value : command) arguments.push_back(const_cast<char*>(value.c_str()));
+        arguments.push_back(nullptr);
+        const int result = ::posix_spawn(&pid_, command.at(0).c_str(), &actions, nullptr, arguments.data(), ::environ);
+        ::posix_spawn_file_actions_destroy(&actions);
+        Require(result == 0, "application child spawn: " + std::to_string(result));
+    }
+    ~ApplicationProcess() {
+        if (pid_ > 0) {
+            ::kill(pid_, SIGKILL);
+            int status = 0;
+            while (::waitpid(pid_, &status, 0) < 0 && errno == EINTR) {}
+        }
+    }
+    ApplicationProcess(const ApplicationProcess&) = delete;
+    ApplicationProcess& operator=(const ApplicationProcess&) = delete;
+    std::string Finish(int expectedCode, bool killed = false) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        int status = 0;
+        for (;;) {
+            const auto done = ::waitpid(pid_, &status, WNOHANG);
+            if (done == pid_) { pid_ = -1; break; }
+            Require(done == 0 || (done < 0 && errno == EINTR), "application child wait");
+            Require(std::chrono::steady_clock::now() < deadline, "application child deadline");
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        }
+        std::ifstream stream(outputPath_);
+        std::string output((std::istreambuf_iterator<char>(stream)), std::istreambuf_iterator<char>());
+        Require(output.size() < 1048576, "application test output bound");
+        const bool accepted = killed ? (WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL) :
+            (WIFEXITED(status) && WEXITSTATUS(status) == expectedCode);
+        Require(accepted, "application child unexpected exit: " + output);
+        return output;
+    }
+private:
+    pid_t pid_ = -1;
+    std::string outputPath_;
+};
+void TestApplicationKeyRecovery(const std::string& python, const std::string& driver,
+                               const std::string& adapter, const std::string& nativeExecutable) {
+    Fixture f(false);
+    ExecutionProcess execution(f.root.path);
+    f.StartGateway();
+    const std::string tokenPath = f.root.path + "/application-token";
+    WritePrivateFile(tokenPath, f.token, 0600);
+    DropReplyProxy proxy(f.root.path + "/application.sock", f.agentConfig.toolSocket, "");
+    unsigned int childIndex = 0;
+    const auto invoke = [&](const std::string& operation, const std::string& key, int expected, bool killed = false) {
+        std::vector<std::string> arguments{python, "-I", "-B", driver, adapter, nativeExecutable,
+            f.root.path, f.root.path + "/application.sock", tokenPath, operation, key};
+        ApplicationProcess child(arguments, f.root.path + "/application-output-" + std::to_string(++childIndex));
+        return child.Finish(expected, killed);
+    };
+    const auto prepared = invoke("prepare", "lost-reply", 0);
+    Require(prepared.compare(0, 8, "COMMAND ") == 0, "application prepare did not return original command");
+    const std::string command = prepared.substr(8, prepared.find('\n') - 8);
+    Require(TradingToolWireContract::IsCanonicalCommandId(command), "application command identity invalid");
+    execution.Await(0, 0, 0);
+    Require(invoke("race", "lost-reply", 0).find("APPLICATION_RACE_PASS") != std::string::npos,
+            "application concurrent lost-reply scenario did not execute");
+    proxy.CheckOneAttempt();
+    execution.Await(1, 0, 1);
+    // Existing simulator retires unfilled in-memory orders on restart. Keep
+    // admission/command history, do not invent a reconstructed active order.
+    execution.Crash(); execution.Restart(); execution.Await(1, 0, 0);
+    NativeToolClientConfig recoveredConfig;
+    recoveredConfig.socketPath = f.root.path + "/application.sock";
+    recoveredConfig.tokenFile = tokenPath;
+    NativeToolClient recoveredNative(recoveredConfig);
+    NativeStrategyClient recovered(recoveredNative);
+    AwaitRecoveredStatus(recovered, command);
+    Require(invoke("submit", "lost-reply", 0).find("execution.get_command_status") != std::string::npos,
+            "application restart resubmitted a mutation");
+    proxy.CheckOneAttempt();
+    // Credential rotation must reject the ORIGINAL binding without replacing
+    // the request. Restore fixture bytes only after observing that refusal.
+    {
+        std::ofstream changed(tokenPath); changed << "application-rotated-test-token";
+        Require(static_cast<bool>(changed), "application token fixture write");
+    }
+    invoke("submit", "lost-reply", 2);
+    { std::ofstream original(tokenPath); original << f.token; }
+    Require(invoke("inspect", "lost-reply", 0).find(command) != std::string::npos,
+            "application recovery lost original identity");
+
+    const auto inert = invoke("prepare", "crash-before-send", 0);
+    Require(inert.compare(0, 8, "COMMAND ") == 0, "application second prepare");
+    invoke("mark-crash", "crash-before-send", 0, true);
+    Require(invoke("submit", "crash-before-send", 0).find("execution.get_command_status") != std::string::npos,
+            "pre-send crash automatically resubmitted instead of querying unknown ID");
+    execution.Await(1, 0, 0);
+    proxy.CheckOneAttempt();
+    f.gateway->Stop(); f.gateway.reset(); execution.Stop();
+    OmsJournal journal;
+    Require(journal.Init(f.executionConfig.journalPath), "application journal open");
+    std::map<std::string, unsigned int> sends;
+    Require(journal.Replay([&](const OmsJournalEvent& event) {
+        if (event.eventType == "place_send_attempt") ++sends[event.reqId];
+    }) > 0, "application journal empty/invalid");
+    Require(sends.size() == 1 && sends[command] == 1, "application recovery/concurrency increased actual sends");
+    std::cout << "APPLICATION_EXECUTION_PASS: prepared=2 place_send_attempts=1 concurrent_clients=4 "
+                 "lost_reply=1 execution_sigkill=1 presend_client_sigkill=1 binding_refusal=1 "
+                 "automatic_resends=0 (synthetic services; not deployed-host/broker qualification)\n";
+}
+
 }
 int main(int argc, char** argv) {
     try {
@@ -1207,12 +1330,19 @@ int main(int argc, char** argv) {
             TestNativeExecutionLatency();
             return 0;
         }
-        Require(argc == 1, "unsupported native Execution test argument");
+        const bool application = argc == 6 && (std::string(argv[1]) == "--application-client" ||
+                                               std::string(argv[1]) == "--application-only");
+        if (application && std::string(argv[1]) == "--application-only") {
+            TestApplicationKeyRecovery(argv[2], argv[3], argv[4], argv[5]);
+            return 0;
+        }
+        Require(argc == 1 || application, "unsupported native Execution test argument");
         TestNativeExecutionLifecycle();
         TestNativeExecutionProcessCrashes();
         TestDurableClientProcessRecovery();
         TestDurableClientProcessRecovery(true);
         TestNativeExecutionLatency();
+        if (application) TestApplicationKeyRecovery(argv[2], argv[3], argv[4], argv[5]);
         std::cout << "PASS real Native/Gateway/Execution lifecycle and SIGKILL recovery\n";
         return 0;
     }

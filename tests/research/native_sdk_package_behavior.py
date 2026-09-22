@@ -94,7 +94,8 @@ def main() -> None:
             if path.is_symlink():
                 raise RuntimeError("SDK contains a symlink")
             if path.is_file() and path.suffix not in {".a", ".h", ".cmake"} and path.name not in {
-                    "strategy-client-build-info.txt", "CLIENT_PACKAGE.md"}:
+                    "strategy-client-build-info.txt", "CLIENT_PACKAGE.md", "STRATEGY-GATEWAY.md",
+                    "strategy_gateway.py", "hepta-strategy-gateway", "hepta-strategy-native"}:
                 raise RuntimeError("unexpected SDK asset: " + str(path.relative_to(relocated)))
         configs = list(relocated.rglob("HeptaStrategyClientConfig.cmake"))
         if len(configs) != 1:
@@ -138,12 +139,33 @@ def main() -> None:
         commands = json.loads((consumer_build / "compile_commands.json").read_text())
         if any(value in json.dumps(commands) for value in (str(source), str(build), str(prefix))):
             raise RuntimeError("consumer used original source, build or staging includes")
+        # Consume only relocated installed production code, retaining the full
+        # original C++ consumer above and the same real service test fixture.
+        modules = list(relocated.rglob("strategy_gateway.py"))
+        binaries = list(relocated.rglob("hepta-strategy-native"))
+        launchers = list(relocated.rglob("hepta-strategy-gateway"))
+        if len(modules) != 1 or len(binaries) != 1 or len(launchers) != 1:
+            raise RuntimeError("missing/ambiguous application client package")
+        if "Application-key" not in run([sys.executable, "-I", "-B", str(launchers[0]), "--help"]):
+            raise RuntimeError("relocated application launcher did not execute")
+        policy = run([sys.executable, "-I", "-B", str(source / "tests/research/strategy_gateway_behavior.py"),
+                      "--adapter", str(modules[0]), "--native", str(binaries[0])])
+        if "APPLICATION_POLICY_PASS" not in policy:
+            raise RuntimeError("installed application policy cases did not execute")
+        execution = build / "research/hepta_research_native_execution_tests"
+        if not execution.is_file():
+            execution = build / "research" / config / "hepta_research_native_execution_tests"
+        observed = run([str(execution), "--application-only", sys.executable,
+                        str(source / "tests/research/application_execution_driver.py"),
+                        str(modules[0]), str(binaries[0])])
+        if "APPLICATION_EXECUTION_PASS" not in observed:
+            raise RuntimeError("installed application/real service recovery did not execute")
         # Inspect actual defined symbols. The wire/forwarding archives cannot
         # contain a Gateway, execution runtime, journal or vendor transport.
         nm = cache.get("CMAKE_NM") or shutil.which("nm")
         if not nm:
             raise RuntimeError("nm is required for client archive boundary acceptance")
-        symbols = run([nm, "-C", "--defined-only", *map(str, archives)])
+        symbols = run([nm, "-C", "--defined-only", *map(str, archives), str(binaries[0])])
         for forbidden in ("TradingToolHost::", "TradingToolRegistry::", "ExecutionCoordinator::",
                           "OmsJournal::", "ExecutionServiceRuntimeComposition::", "CThostFtdc"):
             if forbidden in symbols:

@@ -12,8 +12,9 @@ replacement for HeptaDLL. Data computation, offline accounting, matching and
 strategy callbacks have separate CMake targets. None may assert authoritative
 quotes, positions, fills, risk approval or broker success. The forward-only
 `NativeStrategyClient` links the existing NativeToolClient, not Execution core
-or a vendor SDK. Its header and source have the more specific `agent-entry`
-module ownership; the rest of this research tree is `LOCAL_ONLY`. The privileged
+or a vendor SDK. The native client, application-key Python policy, process adapter and client-only
+launcher have the more specific `agent-entry` module ownership; the remaining
+offline research tree is `LOCAL_ONLY`. The privileged
 production binaries do not link research code.
 
 The existing Python SHADOW pipeline and its evidence/receipt contracts remain
