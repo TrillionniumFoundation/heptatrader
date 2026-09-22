@@ -1,0 +1,103 @@
+name: PR113 exact-source object publication (temporary)
+on:
+  push:
+    branches: [integration/heptadll-modular-20260920]
+    paths: [.github/workflows/pr113-publication.yml]
+permissions:
+  contents: read
+jobs:
+  publish-objects:
+    if: github.repository == 'TrillionniumFoundation/heptatrader' && github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 211166aed4ff6f6ae4b3661ec3a279b324bc7ce3
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Publish only digest-verified source blobs and tree, never refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, hashlib, json, os, subprocess, urllib.request
+          repo = 'https://api.github.com/repos/TrillionniumFoundation/heptatrader'
+          base = '211166aed4ff6f6ae4b3661ec3a279b324bc7ce3'
+          base_tree = 'ee6e0ab6e0858f05f424fb8f9d69e9ab5795c4ba'
+          final_tree = '6a77df2c741c109932a4731c0cde597d1a798f6a'
+          def git(*args, data=None):
+              return subprocess.check_output(['git', *args], input=data)
+          def api(path, payload=None):
+              assert path.startswith('/git/blobs') or path == '/git/trees'
+              request = urllib.request.Request(repo + path,
+                  data=None if payload is None else json.dumps(payload).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json',
+                           'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28'},
+                  method='GET' if payload is None else 'POST')
+              with urllib.request.urlopen(request, timeout=45) as response:
+                  return json.load(response)
+          assert git('rev-parse', 'HEAD').decode().strip() == base
+          assert git('rev-parse', 'HEAD^{tree}').decode().strip() == base_tree
+          assert not git('status', '--porcelain')
+          pieces = []
+          for sha in ['1e4d3e315e86ec1540b66686c1ad728fe5841add',
+                      '7b10f68faf18556f8270cd527ffb87152c2fd27d',
+                      '58d5ad5c10c286a5d058ea16215b7f89fd8f3a29',
+                      'dffeb1a76490523a673e1ea348b76fcfc3bd61d7']:
+              blob = api('/git/blobs/' + sha)
+              assert blob['encoding'] == 'base64'
+              piece = base64.b64decode(blob['content'])
+              assert hashlib.sha1(b'blob '+str(len(piece)).encode()+b'\0'+piece).hexdigest() == sha
+              pieces.append(piece)
+          compressed = b''.join(pieces)
+          assert hashlib.sha256(compressed).hexdigest() == '77b4615baf7a56027fee0584acefe9f4949fcae81f1ffe067adb4575acf49a6a'
+          patch = gzip.decompress(compressed)
+          assert len(patch) == 110170
+          assert hashlib.sha256(patch).hexdigest() == 'f1d9d5b3a0ed1989f34631c53e14126511120f2707d4269261dcd74d762b2dea'
+          # Apply data only. No changed application/build/test code is executed.
+          git('apply', '--index', '--check', '--whitespace=error-all', '-', data=patch)
+          git('apply', '--index', '--whitespace=error-all', '-', data=patch)
+          assert git('write-tree').decode().strip() == final_tree
+          expected = set('''cmake/HeptaStrategyClientSDK.cmake
+          docs/build-targets.json
+          docs/index.md
+          docs/module-catalog.json
+          docs/modules/agent-entry.md
+          docs/modules/research-sdk.md
+          docs/technical/heptadll-consolidation.md
+          docs/technical/heptadll-consumers.md
+          research/CLIENT_PACKAGE.md
+          research/CMakeLists.txt
+          research/STRATEGY-GATEWAY.md
+          research/cmake/strategy_gateway_main.py.in
+          research/examples/strategy_client_main.cpp
+          research/include/hepta/research/native_strategy_client.h
+          research/src/native_strategy_client.cpp
+          research/strategy_gateway.py
+          tests/research/application_execution_driver.py
+          tests/research/native_client_tests.cpp
+          tests/research/native_execution_tests.cpp
+          tests/research/native_sdk_package_behavior.py
+          tests/research/strategy_gateway_behavior.py'''.splitlines())
+          changed = git('diff', '--cached', '--name-only').decode().splitlines()
+          assert set(changed) == expected and len(changed) == 21
+          elements = []
+          for path in sorted(changed):
+              record = git('ls-files', '--stage', '--', path).decode().strip()
+              metadata, actual_path = record.split('\t')
+              mode, sha, stage = metadata.split()
+              assert actual_path == path and stage == '0' and mode in ('100644', '100755')
+              content = git('show', ':' + path)
+              result = api('/git/blobs', {'encoding': 'base64', 'content': base64.b64encode(content).decode()})
+              assert result['sha'] == sha
+              elements.append({'path': path, 'mode': mode, 'type': 'blob', 'sha': sha})
+              print('VERIFIED_BLOB', sha, path, flush=True)
+          tree = api('/git/trees', {'base_tree': base_tree, 'tree': elements})
+          assert tree['sha'] == final_tree
+          print('PUBLICATION_TREE', tree['sha'], flush=True)
+          print('NO_COMMIT_OR_REF_WRITTEN; remove this temporary workflow in the reviewed delivery tree', flush=True)
+          PY
