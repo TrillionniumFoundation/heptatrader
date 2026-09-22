@@ -60,7 +60,7 @@ void BoundedCostAndAtomicRejection() {
             const auto fill = F("constant-" + std::to_string(i), i, side, 1, max);
             Check(ledger.Apply(fill) && !ledger.Apply(fill), "constant fill identity");
             const auto account = ledger.Mark(max);
-            Check(account.quantity == side * i && account.averageEntry == max &&
+            Check(account.quantity == static_cast<std::int64_t>(side) * i && account.averageEntry == max &&
                   account.unrealized == 0 && account.realizedGross == 0 && account.equity == 1000,
                   "constant-price cost and equity invariants");
         }
