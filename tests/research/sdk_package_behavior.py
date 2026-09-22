@@ -456,7 +456,12 @@ def main() -> None:
     if os.environ.get("DESTDIR"):
         raise RuntimeError("installation acceptance requires an unset DESTDIR")
     with tempfile.TemporaryDirectory(prefix="hepta research package ") as temporary:
-        root = Path(temporary)
+        # Resolve the actual existing directory before passing any paths to
+        # CMake. Windows TEMP may use an 8.3 user alias while file-api returns
+        # its long name; comparing those spellings is not a linkage check.
+        root = Path(temporary).resolve(strict=True)
+        if not root.samefile(temporary):
+            raise RuntimeError("temporary-directory canonicalization changed identity")
         prefix = root / "original prefix"
         relocated = root / "relocated prefix"
         run([args.cmake, "--install", str(build), "--config", config,
@@ -543,10 +548,10 @@ def main() -> None:
         audit(target)
         includes = [item["path"] for group in target["compileGroups"] for item in group.get("includes", [])]
         if not any(normalized(str(relocated)) in normalized(path) for path in includes):
-            raise RuntimeError("consumer lacks relocated SDK includes")
+            raise RuntimeError(f"consumer lacks relocated SDK includes: expected={relocated!s}; actual={includes!r}")
         fragments = target.get("link", {}).get("commandFragments", [])
         if not any(normalized(str(relocated)) in normalized(item["fragment"]) for item in fragments):
-            raise RuntimeError("consumer lacks relocated SDK libraries")
+            raise RuntimeError(f"consumer lacks relocated SDK libraries: expected={relocated!s}; actual={fragments!r}")
         commands = consumer_build / "compile_commands.json"
         if commands.exists():
             audit(json.loads(commands.read_text(encoding="utf-8")))
