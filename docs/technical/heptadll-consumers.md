@@ -1,8 +1,8 @@
 # HeptaDLL consumer register and support decisions
 
 Status: CURRENT; bounded source-consumer register, not an external deployment census
-Canonical development: `heptatrader/main`, continued through PR #113 on `integration/heptadll-modular-20260920`
-Inspected integration baseline: `211166aed4ff6f6ae4b3661ec3a279b324bc7ce3`
+Canonical development: `heptatrader/main`; #113 merged as `a982b4c40bf93a6de02c5516320a7bb3a2a34997`; #114 continues on `integration/heptadll-modular-20260920`
+Inspected implementation baseline: `4eb299bb5b440c1d01b543b9aef50b49851e2d83`, tree `45c2902cbc353fb968c16b6cd48ac8b41517f5e9`
 Original retained source: `HeptaDLL-main@f69de179b4d41fe1813d317673abe8116cee76e5`
 
 ## Scope and ownership
@@ -25,10 +25,10 @@ falsely called migrated to allow main development to proceed.
 
 | ID / actual consumer | Responsible role / owner evidence | Original version / platform | API or binary; data / persisted format | Decision and acceptance boundary |
 |---|---|---|---|---|
-| C01: `tests/research/sdk_package_behavior.py` external C++ consumer; `research/examples/replay_main.cpp` | Research SDK maintainers; checked-in consumer, no deployed owner claim | #107 line, current 211166ae; C++11, Linux checked here | Data/Analytics/Replay/Strategy archives; named Tick/session/bar CSV, selected BIN/XML profiles; no live state | MAINTAIN canonical offline SDK and actual install/relocation tests; no old-DLL ABI assertion |
+| C01: `tests/research/sdk_package_behavior.py` external C++ consumer; `research/examples/replay_main.cpp` | Research SDK maintainers; checked-in consumer, no deployed owner claim | #107 line through merged #113 a982b4c4; C++11 offline SDK, native platform scope in PLATFORMS.md | Data/Analytics/Replay/Strategy archives; named Tick/session/bar CSV, selected BIN/XML profiles; no live state | MAINTAIN canonical offline SDK and actual install/relocation tests; no old-DLL ABI assertion |
 | C02: `research/model_manifest.py` order-flow/next-open/portfolio/single consumers | Research SDK maintainers; checked-in commands | #106 acffe4ae reference -> #107/#110 and #113 single; POSIX Python + native C++11 | Digest-bound JSON/JSONL/normalized CSV; explicit native model/portfolio reports; no execution records | SOURCE-ADAPT selected bounded inputs to existing native models; retain old return-dictionary/Decimal callers separately under C06 |
-| C03: `tests/research/native_client_tests.cpp` and installed external C++ copy | Agent-entry/client maintainers | #107/#111/#112, current 211166ae; Linux/POSIX C++11 | NativeStrategyClient and existing transport; HSR1 immutable requests | MAINTAIN original prepare/persist/submit/inspect and explicit same-ID retry semantics; original binding required |
-| C04: #106 `research/python/hepta_research/gateway.py` application-key LimitIntent/StrategyGateway policy | Agent-entry/client maintainers for new source; deployed Python application owners unconfirmed | acffe4ae; POSIX Python | STK/CASH LMT/DAY, application keys; OLD JSON requests distinct from native HSR1 | SOURCE-ADAPT new requests to `research/strategy_gateway.py` + existing NativeStrategyClient. Runnable source and relocated SDK consumers test conservative possibly-sent recovery. Old JSON records RETAIN, no automatic conversion or deployed-migration claim |
+| C03: `tests/research/native_client_tests.cpp` and installed external C++ copy | Agent-entry/client maintainers | #107/#111/#112 through merged #113 a982b4c4; Linux/POSIX C++11 | NativeStrategyClient and existing transport; HSR1 immutable requests | MAINTAIN original prepare/persist/submit/inspect and explicit same-ID retry semantics; original binding required |
+| C04: #106 `research/python/hepta_research/gateway.py` application-key LimitIntent/StrategyGateway policy | Agent-entry/client maintainers for new source; deployed Python application owners unconfirmed | acffe4ae; POSIX Python | STK/CASH LMT/DAY; NEW HSA1 application-key bookkeeping plus original-bound native HSR1 requests; OLD JSON requests remain distinct | SOURCE-ADAPT new requests to `research/strategy_gateway.py` + existing NativeStrategyClient. Actual callers: `tests/research/strategy_gateway_behavior.py`, `application_execution_driver.py` and the installed SDK consumer; they test conservative possibly-sent recovery. Old JSON records RETAIN, no automatic conversion or deployed-migration claim |
 | C05: #108 ResearchIntentClient and HRO1 record consumers | Original application owners unconfirmed; canonical client maintainers provide destination | 56fd92bc94fd36e064d18c383ffeef9994d85fea; native/POSIX | Old native API and `.hro` HRO1 records | RETAIN old records/callers; canonical opaque lifecycle is an explicit source-adaptation destination, not ABI or binding reconstruction |
 | C06: #106 custom Python, wide Decimal, fractional-domain and historical-report consumers | Original application owners unconfirmed | acffe4ae; Python; actual deployments unknown | Old model/gateway APIs, JSON/string-Decimal/null report semantics and unrestricted numeric domains | RETAIN pinned source for unsupported domains. Accept only declared common-domain source adaptations; never silently narrow or relabel output |
 | C07: original `heptaBasicStrategy`, `heptaBasicCTAStrategy`, `heptaBasicKindleStrategy`, `heptaBasicAgent`, AgentManager and SimMdSpi consumers | Original program/package owners unconfirmed; old repository maintainers retain source | HeptaDLL-main f69de179 (code retained from 5f370325); VS/Windows and CMake Linux/macOS source entry points, actual installed platforms unconfirmed | Original `heptaHeptaDLL` interfaces/binaries, SPI callbacks, legacy CSV/BIN/XML and strategy-specific state | RETAIN original code/builds/history. New strategy work targets canonical SDK/client; no restoration of direct SPI trading in main. Each real deployed strategy needs owner/version/input/intent golden comparison before replacement |
@@ -90,3 +90,24 @@ Their disposition stays RETAIN. A real replacement entry must supplement this
 register with owner acknowledgement, original artifact digest/toolchain, required
 API/ABI/data/record formats, golden input/intent/output evidence and rollback
 version. No archive, deletion, visibility change or record conversion occurs.
+
+## Request-state handoff for C04
+
+The new application directory is explicitly HSA1, not an HSR1 serializer or a
+second OMS. Its `intent.json` binds the application key, normalized fields and
+credential scope; `command.id` names the original canonical HSR1 request. The
+`possibly-sent` marker is durable before the first submit. Repeated submission
+after that marker performs only inspection of that same command, including an
+unknown/not-found status. Absence of a receipt is not permission to resend.
+
+A lost preparation response is handled only by explicit `adopt-preparation`
+with the original command ID and validation against the already persisted HSR1
+request, intent and binding. It does not fabricate a preview, renew a permit or
+convert an old JSON/HRO1 record. These are source-consumer support decisions,
+not confirmation that an unidentified application's state directory was migrated.
+
+The C01/C03 external consumers are rebuilt with the declared language standard
+and strict compiler diagnostics. In particular, the corrected C03 fixture in
+4eb299bb rejects silent C++14 extensions in an advertised C++11 consumer. Exact
+source, package and real Gateway/Execution acceptance belongs in the associated
+PR/run receipts; this register does not turn a job definition into a passed run.
