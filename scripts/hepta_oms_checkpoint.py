@@ -140,7 +140,7 @@ def _operation(event: dict[str, Any], prior: str = "") -> str:
     if kind.startswith("cancel_") or kind == "cancel":
         return "cancel"
     if kind in {"order_intent", "place_send_attempt", "place_sent", "place_activated",
-                "place_outcome_uncertain", "execution_command_resolved"}:
+                "place_outcome_uncertain", "execution_command_resolved", "reject"}:
         return prior or "place"
     return prior
 
@@ -156,6 +156,9 @@ def _status(event: dict[str, Any], operation: str, prior: str = "unknown") -> st
         return "uncertain"
     if kind == "cancel" and state == "cancel_sent":
         return "accepted"
+    # Match native recovery: activation_pending is not an acceptance receipt.
+    if kind == "place_sent" and state == "activation_pending":
+        return "uncertain"
     if kind in {"place_sent", "place_activated", "flatten_sent", "flatten_noop"}:
         return "accepted"
     if kind in {"execution_command_resolved", "cancel_command_resolved"}:
@@ -172,6 +175,10 @@ def _durable_intent(event: dict[str, Any]) -> bool:
 
 def _update_command(commands: dict[tuple[str, str, str], dict[str, Any]],
                     event: dict[str, Any], sequence: int) -> None:
+    # #107 deliberately retains independent control/status IDs as inert metadata
+    # (empty operation, unknown status, no durable mutation intent). The v2
+    # reader already validates that historical form; do NOT port #108's index
+    # filtering, which would drop identities expected by rotation/rebase users.
     key = _key(event)
     if not all(key):
         return

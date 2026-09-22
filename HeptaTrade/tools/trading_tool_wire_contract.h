@@ -1,6 +1,6 @@
 #pragma once
 
-#include "trading_tool_registry.h"
+#include "trading_tool_types.h"
 
 #include <cctype>
 #include <cmath>

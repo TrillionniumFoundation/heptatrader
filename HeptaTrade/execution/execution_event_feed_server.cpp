@@ -133,7 +133,13 @@ bool UnixExecutionEventFeedServer::StartFromFdInternal(
     catch (...)
     {
         m_lifecycleGate->ready.store(false);
-        m_stop.store(true);
+        {
+            // A partially started worker can already be between its false
+            // predicate check and the atomic unlock/wait. Publish shutdown
+            // under that same mutex before notifying or joining it.
+            std::lock_guard<std::mutex> pendingLock(m_mutex);
+            m_stop.store(true);
+        }
         const int owned = m_listenFd.exchange(-1);
         if (owned >= 0) ::close(owned);
         m_pendingChanged.notify_all();
@@ -152,6 +158,11 @@ void UnixExecutionEventFeedServer::Stop()
     {
         std::lock_guard<std::mutex> responseLock(m_responseMutex);
         if (m_lifecycleGate) m_lifecycleGate->ready.store(false);
+        // Atomic visibility alone does not prevent a lost condition-variable
+        // wakeup: a worker may have tested false but not yet begun waiting.
+        // Keep the response fence, then acquire the worker's predicate mutex.
+        // Release both locks before notification and all thread joins.
+        std::lock_guard<std::mutex> pendingLock(m_mutex);
         m_stop.store(true);
     }
     m_pendingChanged.notify_all();

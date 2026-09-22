@@ -1,0 +1,19 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+find_dependency(Threads)
+set(HeptaStrategyClient_VERSION "@PROJECT_VERSION@")
+set(HeptaStrategyClient_RELEASE_LABEL "@HEPTA_RELEASE_LABEL@")
+set(HeptaStrategyClient_SOURCE_SHA "@HEPTA_STRATEGY_SDK_SOURCE_SHA@")
+set(HeptaStrategyClient_SOURCE_STATE "@HEPTA_STRATEGY_SDK_SOURCE_STATE@")
+set(HeptaStrategyClient_Client_FOUND TRUE)
+foreach(_component IN LISTS HeptaStrategyClient_FIND_COMPONENTS)
+    if(NOT _component STREQUAL "Client")
+        set(HeptaStrategyClient_${_component}_FOUND FALSE)
+        set(HeptaStrategyClient_NOT_FOUND_MESSAGE
+            "Unsupported component '${_component}': client-only package; no Gateway, Execution or vendor SDK")
+    endif()
+endforeach()
+include("${CMAKE_CURRENT_LIST_DIR}/HeptaStrategyClientTargets.cmake")
+check_required_components(HeptaStrategyClient)
+unset(_component)

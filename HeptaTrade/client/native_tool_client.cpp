@@ -46,14 +46,16 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
                                         std::string& token,
                                         std::string& reason)
 {
+    // The path may be borrowed from the token/diagnostic output.
+    const std::string capturedPath = path;
     token.clear();
-    if (path.empty())
+    if (capturedPath.empty())
     {
         reason = "TOKEN_FILE_REQUIRED";
         return false;
     }
     struct stat before;
-    if (::lstat(path.c_str(), &before) != 0 || !S_ISREG(before.st_mode) ||
+    if (::lstat(capturedPath.c_str(), &before) != 0 || !S_ISREG(before.st_mode) ||
         S_ISLNK(before.st_mode) || (before.st_uid != 0 && before.st_uid != ::geteuid()) ||
         before.st_nlink != 1 || (before.st_mode & 07777) != 0600 ||
         before.st_size < 1 || before.st_size > 514)
@@ -61,7 +63,7 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
         reason = "TOKEN_FILE_UNSAFE";
         return false;
     }
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    const int fd = ::open(capturedPath.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0)
     {
         reason = "TOKEN_FILE_OPEN_FAILED";
@@ -92,7 +94,7 @@ bool NativeToolClient::ReadSessionToken(const std::string& path,
         ? ::read(fd, &extra, 1) : -1;
     const bool stable = openedSafe &&
         total == static_cast<std::size_t>(opened.st_size) && extraCount == 0 &&
-        ::fstat(fd, &after) == 0 && ::lstat(path.c_str(), &pathAfter) == 0 &&
+        ::fstat(fd, &after) == 0 && ::lstat(capturedPath.c_str(), &pathAfter) == 0 &&
         SameFile(opened, after) && SameFile(after, pathAfter);
     const int closeResult = ::close(fd);
     if (!stable || closeResult != 0)
@@ -245,5 +247,73 @@ bool NativeToolClient::CallOnce(TradingToolHostRequest request,
         }
     }
     reason.clear();
+    return true;
+}
+
+
+bool NativeToolClient::ResolveRecoveryConfig(NativeToolClientConfig& config,
+                                             std::string& binding,
+                                             std::string& reason) const
+{
+    binding.clear(); reason.clear();
+    config = m_config;
+    if (config.socketPath.empty() || config.socketPath.size() > 107 ||
+        config.socketPath.find('\0') != std::string::npos ||
+        config.timeoutMs < 1 || config.timeoutMs > 120000 ||
+        config.maxResponseBytes < 1 ||
+        config.maxResponseBytes > TradingToolWireLimits::MaximumResultEnvelopeBytes())
+    {
+        reason = "NATIVE_CLIENT_CONFIG_INVALID";
+        return false;
+    }
+    if (!config.tokenFile.empty())
+    {
+        if (!ReadSessionToken(config.tokenFile, config.sessionToken, reason)) return false;
+        config.tokenFile.clear();
+    }
+    if (config.sessionToken.empty() || config.sessionToken.size() > 512 ||
+        config.sessionToken.find('\0') != std::string::npos)
+    {
+        reason = "SESSION_TOKEN_INVALID";
+        return false;
+    }
+    // Length framing avoids endpoint/token concatenation ambiguities. The
+    // synthetic prefix prevents reuse as a discovery or record digest.
+    binding = NativeToolDiscoveryContract::ContentDigest(
+        "HSB1\n" + std::to_string(::geteuid()) + "\n" +
+        std::to_string(config.socketPath.size()) + "\n" + config.socketPath +
+        std::to_string(config.sessionToken.size()) + "\n" + config.sessionToken);
+    return true;
+}
+
+bool NativeToolClient::RecoveryBinding(std::string& binding, std::string& reason) const
+{
+    NativeToolClientConfig snapshot;
+    return ResolveRecoveryConfig(snapshot, binding, reason);
+}
+
+bool NativeToolClient::CallBound(TradingToolHostRequest request,
+                                const std::string& binding,
+                                NativeToolClientResult& result,
+                                std::string& reason) const
+{
+    const std::string capturedBinding = binding;
+    result = NativeToolClientResult(); reason.clear();
+    NativeToolClientConfig snapshot;
+    std::string current;
+    if (!ResolveRecoveryConfig(snapshot, current, reason)) return false;
+    if (capturedBinding != current)
+    {
+        reason = "NATIVE_RECOVERY_BINDING_MISMATCH";
+        return false;
+    }
+    // This temporary owns the resolved token in memory. It cannot reread a
+    // rotated token between discovery and submission; no credential is saved.
+    const NativeToolClient pinned(snapshot);
+    if (!pinned.Call(request, result, reason))
+    {
+        result = NativeToolClientResult();
+        return false;
+    }
     return true;
 }

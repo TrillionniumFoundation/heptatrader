@@ -1,0 +1,23 @@
+@PACKAGE_INIT@
+
+set(HeptaResearch_VERSION "@HEPTA_RESEARCH_PACKAGE_VERSION@")
+set(HeptaResearch_RELEASE_LABEL "@HEPTA_RESEARCH_RELEASE_LABEL@")
+set(HeptaResearch_SOURCE_SHA "@HEPTA_RESEARCH_SOURCE_SHA@")
+set(HeptaResearch_SOURCE_STATE "@HEPTA_RESEARCH_SOURCE_STATE@")
+set(_HeptaResearch_supported Data Analytics Replay Strategy)
+foreach(_component IN LISTS _HeptaResearch_supported)
+    set(HeptaResearch_${_component}_FOUND TRUE)
+endforeach()
+foreach(_component IN LISTS HeptaResearch_FIND_COMPONENTS)
+    list(FIND _HeptaResearch_supported "${_component}" _component_index)
+    if(_component_index EQUAL -1)
+        set(HeptaResearch_${_component}_FOUND FALSE)
+        set(HeptaResearch_NOT_FOUND_MESSAGE
+            "Unsupported component '${_component}': this package has no NativeClient, Gateway, Execution or vendor SDK")
+    endif()
+endforeach()
+include("${CMAKE_CURRENT_LIST_DIR}/HeptaResearchTargets.cmake")
+check_required_components(HeptaResearch)
+unset(_HeptaResearch_supported)
+unset(_component)
+unset(_component_index)

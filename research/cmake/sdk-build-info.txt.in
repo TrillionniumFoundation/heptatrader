@@ -1,0 +1,11 @@
+artifact=HeptaResearch-offline-sdk
+release_label=@HEPTA_RESEARCH_RELEASE_LABEL@
+package_version=@HEPTA_RESEARCH_PACKAGE_VERSION@
+source_sha=@HEPTA_RESEARCH_SOURCE_SHA@
+source_tree_state=@HEPTA_RESEARCH_SOURCE_STATE@
+compiler_id=@CMAKE_CXX_COMPILER_ID@
+compiler_version=@CMAKE_CXX_COMPILER_VERSION@
+cxx_standard=11
+build_type=@CMAKE_BUILD_TYPE@
+components=Data,Analytics,Replay,Strategy
+native_gateway_or_broker_authority=none

@@ -771,6 +771,11 @@ std::string CatalogDigest(std::vector<Descriptor> descriptors,
 
 namespace NativeToolDiscoveryContract
 {
+std::string ContentDigest(const std::string& bytes)
+{
+    return Digest(bytes);
+}
+
 bool Validate(const std::string& discoveryOperation,
               const std::string& payload,
               const std::string& requestedTargetToolName,

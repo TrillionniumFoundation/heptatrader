@@ -1,0 +1,14 @@
+package=HeptaStrategyClient
+release_label=@HEPTA_RELEASE_LABEL@
+version=@PROJECT_VERSION@
+source_sha=@HEPTA_STRATEGY_SDK_SOURCE_SHA@
+source_tree_state=@HEPTA_STRATEGY_SDK_SOURCE_STATE@
+compiler_id=@CMAKE_CXX_COMPILER_ID@
+compiler_version=@CMAKE_CXX_COMPILER_VERSION@
+build_type=@CMAKE_BUILD_TYPE@
+system=@CMAKE_SYSTEM_NAME@
+processor=@CMAKE_SYSTEM_PROCESSOR@
+wire_protocol=HTT1
+transport=local-unix-only
+execution_authority=none
+broker_transport=none

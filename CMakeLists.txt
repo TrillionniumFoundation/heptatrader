@@ -67,6 +67,11 @@ if(BUILD_TESTING)
     add_subdirectory(tests)
 endif()
 
+# Source-built research modules and a forward-only NativeToolClient adapter.
+# Added after the core test aggregate so research tests join the canonical lane.
+# No retired runtime, vendor dependency or production install entry is restored.
+add_subdirectory(research)
+
 # Install ownership is registered after optional test targets exist so a
 # canonical tested release can carry the installed simulator lifecycle smoke.
 include(cmake/HeptaInstall.cmake)

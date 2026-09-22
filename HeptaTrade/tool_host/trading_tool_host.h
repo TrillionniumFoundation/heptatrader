@@ -3,6 +3,7 @@
 #include "../agent/decision_lease_manager.h"
 #include "../tools/trading_tool_registry.h"
 #include "trading_tool_session_catalog.h"
+#include "trading_tool_request.h"
 
 #include <cstdint>
 #include <functional>
@@ -29,18 +30,6 @@ struct TradingToolHostSessionBinding
     std::uint32_t maxTradeCallsPerMinute = 0;
     std::string executionDomain;
     std::uint32_t decisionLeaseTtlMs = 5000;
-};
-
-struct TradingToolHostRequest
-{
-    std::string sessionToken;
-    std::string toolCallId;
-    unsigned int protocolMinVersion = 1;
-    unsigned int protocolMaxVersion = 1;
-    std::string expectedSchemaHash;
-    std::uint64_t queueDeadlineAtMs = 0;
-    std::string cancelToolCallId;
-    TradingToolCall call;
 };
 
 typedef std::function<bool(const TradingToolSession&, const TradingToolCall&, std::string&)>

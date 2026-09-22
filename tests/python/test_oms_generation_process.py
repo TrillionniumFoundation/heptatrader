@@ -138,7 +138,11 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             if path.is_file())
 
     def test_generation_cost_curve_reports_restart_memory_recovery_seal_and_disk(self):
-        runtime = base.InstalledRuntime(self.root / "runtime-cost-curve")
+        # This workload deliberately admits 128 orders between restarts. Keep
+        # the runtime gate enabled with an explicit finite fixture budget; the
+        # ordinary 60/min smoke profile is not a 128-order load-test profile.
+        runtime = base.InstalledRuntime(self.root / "runtime-cost-curve",
+                                        trade_calls_per_minute=256)
         self.addCleanup(runtime.stop)
         runtime.start(self.slot)
         runtime.provision()
@@ -284,6 +288,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             "source_sha": self.manifest["source_sha"],
             "artifact_sha256": os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"],
             "points": points,
+            "configured_trade_calls_per_minute": runtime.trade_calls_per_minute,
             "rebase_ns": rebase_ns,
             "retained_disk_bytes_before_rebase": before_rebase,
             "retained_disk_bytes_after_rebase": after_rebase,
@@ -315,6 +320,20 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             finally:
                 os.close(directory_fd)
         print(json.dumps(observation, sort_keys=True))
+
+    def test_installed_trade_rate_gate_remains_enabled(self):
+        runtime = base.InstalledRuntime(self.root / "runtime-rate-gate",
+                                        trade_calls_per_minute=1)
+        self.addCleanup(runtime.stop)
+        runtime.start(self.slot)
+        runtime.provision()
+        runtime.place("BUY", 1, "1.0000")  # rests; no invented fill
+        before = runtime.send_count()
+        self.assertEqual(before, 1)
+        with self.assertRaisesRegex(AssertionError, "AGENT_TRADE_RATE_LIMIT"):
+            runtime.place("BUY", 1, "1.0000")
+        self.assertEqual(runtime.send_count(), before)
+        self.assertEqual(runtime.position(), 0)
 
     def test_fill_stop_seal_restart_preserves_state_identity_and_order_watermark(self):
         runtime = base.InstalledRuntime(self.root / "runtime")
