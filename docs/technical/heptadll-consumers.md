@@ -128,3 +128,23 @@ through the existing offline SDK and native platform tests. C05-C08 retain their
 original requests/versions, C09 remains retired in main and C10 remains private.
 A matching-source synthetic package pair does not replace those support decisions
 or establish publication clearance; HeptaDLL-main stays the compatibility source.
+
+
+## Machine-enforced migration and retirement state
+
+The human-readable table above is paired with
+[`heptadll-consumer-migrations.json`](heptadll-consumer-migrations.json) and
+[`heptadll-lifecycle-status.json`](heptadll-lifecycle-status.json).
+`tests/python/test_heptadll_migration_state.py` rejects a deployment-level
+`migrated` or `retired` claim unless it carries the named owner acknowledgement,
+original artifact SHA-256, platform/toolchain, API/ABI, data and persisted-record
+formats, golden comparison evidence and rollback version. C07/C08 therefore
+remain explicit retained/unconfirmed consumers; their unknown deployment facts
+are not manufactured to make repository retirement appear complete.
+
+Canonical feature integration and legacy repository retirement are independent
+state machines. New Data/Analytics/Replay/Strategy/client work may remain
+`integrated` while the legacy repository remains `retained`. Archival may be
+claimed only when every blocking retirement gate in the lifecycle receipt is
+true. This check is source evidence only; it does not discover an external
+binary or turn a missing deployment owner into a migration sign-off.
