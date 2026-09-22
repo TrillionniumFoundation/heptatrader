@@ -85,7 +85,7 @@ install(EXPORT HeptaResearchTargets NAMESPACE HeptaResearch::
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/HeptaResearchConfig.cmake"
               "${CMAKE_CURRENT_BINARY_DIR}/HeptaResearchConfigVersion.cmake"
     DESTINATION "${_config_dir}" COMPONENT ResearchSDK)
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sdk-build-info.txt" PACKAGE.md
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sdk-build-info.txt" PACKAGE.md PLATFORMS.md
     DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaResearch" COMPONENT ResearchSDK)
 install(FILES examples/ticks.csv examples/sessions.csv
     DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaResearch/examples" COMPONENT ResearchSDK)

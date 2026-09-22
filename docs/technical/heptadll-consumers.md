@@ -72,3 +72,21 @@ See [consolidation history](heptadll-consolidation.md),
 [application client contract](../../research/STRATEGY-GATEWAY.md),
 [client SDK contract](../../research/CLIENT_PACKAGE.md) and
 [previous main retirement](legacy-retirement.md).
+
+## Post-#113 independent platform acceptance
+
+#113 is merged as `a982b4c40bf93a6de02c5516320a7bb3a2a34997`; its application-key
+implementation and C01-C04 source adaptations are the baseline, not missing work
+to reimplement. Continue that same native core and existing integration branch.
+The added offline platform acceptance is defined in
+[PLATFORMS.md](../../research/PLATFORMS.md). Accepted Windows/macOS research
+profiles qualify only their exact source/compiler/architecture and relocated
+offline package. They do not qualify the native client/server on those systems,
+a legacy DLL/vtable, a Universal binary or an unidentified installed strategy.
+
+C07/C08 actual owners, deployed platforms and artifact identities remain
+unconfirmed, even when the corresponding canonical offline SDK passes CI.
+Their disposition stays RETAIN. A real replacement entry must supplement this
+register with owner acknowledgement, original artifact digest/toolchain, required
+API/ABI/data/record formats, golden input/intent/output evidence and rollback
+version. No archive, deletion, visibility change or record conversion occurs.

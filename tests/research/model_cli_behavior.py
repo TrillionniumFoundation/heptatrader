@@ -609,7 +609,8 @@ def main():
                             "--prefix", str(prefix)], check=True, capture_output=True, timeout=30)
             shutil.move(str(prefix), moved)
             assert not prefix.exists()
-            binaries = list(moved.rglob("hepta-research-replay"))
+            binary_name = "hepta-research-replay.exe" if os.name == "nt" else "hepta-research-replay"
+            binaries = [path for path in moved.rglob(binary_name) if path.is_file()]
             assert len(binaries) == 1
             check(binaries[0])
             portfolio_stream_check(binaries[0])
