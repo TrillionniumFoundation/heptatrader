@@ -343,7 +343,9 @@
         "tests/systemd_simulator_smoke.py",
         "tests/python/test_release_workflow.py",
         "tests/python/test_core_release_acceptance.py",
-        "tests/python/test_cmake_install_behavior.py"
+        "tests/python/test_cmake_install_behavior.py",
+        "tests/python/test_client_pair_admission.py",
+        "tests/research/installed_client_server_pair.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

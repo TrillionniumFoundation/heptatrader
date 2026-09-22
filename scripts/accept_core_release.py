@@ -20,7 +20,8 @@ from verify_build_ownership import canonical_path, load_json
 
 ROOT = Path(__file__).resolve().parents[1]
 REFERENCE_SHA = "d003f54c7c6c2bd19002627f2bcd9081228b01cd"
-CHECKS = ("install", "core-python", "simulator-lifecycle", "distinct-artifact-process", "pid1-systemd")
+CHECKS = ("install", "core-python", "simulator-lifecycle", "distinct-artifact-process",
+          "strategy-client-server-pair", "pid1-systemd")
 
 
 def digest(path: Path) -> str:
@@ -29,6 +30,61 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1 << 20), b""):
             result.update(block)
     return result.hexdigest()
+
+
+def validate_client_pair_evidence(path: Path, source: str, core_sha: str, client_sha: str) -> dict:
+    """Require the actual paired-package scenario, not an exit code or old badge."""
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise ValueError("client/server pair evidence is missing or invalid") from error
+    expected = {"schema": "hepta.installed-client-server-pair.v1", "result": "PASS",
+                "source_sha": source, "core_sha256": core_sha, "client_sha256": client_sha,
+                "client_uid": 61003, "concurrent_clients": 4,
+                "place_send_attempts": 1, "place_sent_records": 1, "final_position": 0,
+                "final_active_orders": [], "authorization_effect": "NONE",
+                "broker_io": False, "systemd_manager_exercised": False,
+                "restart_status_only": True, "pre_send_crash_status_only": True,
+                "intent_conflict_rejected": True, "binding_change_rejected": True,
+                "original_request_bytes_preserved": True, "relocated_client": True}
+    if not isinstance(value, dict) or any(
+        type(value.get(key)) is not type(want) or value[key] != want
+        for key, want in expected.items()
+    ):
+        raise ValueError("client/server pair evidence identity or scenario is invalid")
+    commands = value.get("prepared_commands")
+    if (not isinstance(commands, list) or len(commands) != 2
+        or any(not isinstance(c, str) or not re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", c) for c in commands)
+        or len(set(commands)) != 2):
+        raise ValueError("client/server pair command identities are invalid")
+    info = value.get("client_build_info")
+    if (not isinstance(info, dict) or info.get("source_sha") != source
+        or info.get("package") != "HeptaStrategyClient"
+        or info.get("source_tree_state") != "clean" or info.get("system") != "Linux"
+        or info.get("build_type") != "Release" or info.get("wire_protocol") != "HTT1"
+        or info.get("execution_authority") != "none" or info.get("broker_transport") != "none"
+        or info.get("transport") != "local-unix-only"):
+        raise ValueError("client/server pair SDK metadata is invalid")
+    processes = value.get("processes")
+    if not isinstance(processes, list) or len(processes) != 4:
+        raise ValueError("client/server pair requires actual initial and restarted processes")
+    pids, identities, counts = set(), {}, {}
+    for process in processes:
+        if not isinstance(process, dict):
+            raise ValueError("invalid paired process evidence")
+        name, uid, pid, sha = (process.get(k) for k in ("name", "uid", "pid", "executable_sha256"))
+        if (name not in ("hepta-executiond", "hepta-tool-gatewayd")
+            or type(uid) is not int or uid != {"hepta-executiond": 61002, "hepta-tool-gatewayd": 61001}[name]
+            or type(pid) is not int or pid <= 0 or pid in pids
+            or not isinstance(sha, str) or re.fullmatch(r"[0-9a-f]{64}", sha) is None):
+            raise ValueError("client/server pair process identity is invalid")
+        pids.add(pid)
+        counts[name] = counts.get(name, 0) + 1
+        if identities.setdefault(name, sha) != sha:
+            raise ValueError("client/server pair restarted executable differs")
+    if counts != {"hepta-executiond": 2, "hepta-tool-gatewayd": 2}:
+        raise ValueError("client/server pair restart is incomplete")
+    return value
 
 
 def validate_generation_cost_evidence(
@@ -332,6 +388,17 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
     host_source = None
     with tempfile.TemporaryDirectory(prefix="hepta-accept-") as temporary:
         work = Path(temporary)
+        # Build an independent developer package through its existing opt-in
+        # install component. Never add these artifacts to the core payload.
+        client_stage = work / "client-sdk"
+        command(["cmake", "--install", build, "--config", "Release", "--prefix", client_stage,
+                 "--component", "StrategyClientSDK"])
+        client_artifact = core_evidence / f"strategy-client-sdk-{source}.tar.gz"
+        if client_artifact.exists() or client_artifact.is_symlink():
+            raise ValueError("refusing to replace the client acceptance package")
+        command(["tar", "--sort=name", "--mtime=@" + epoch, "--owner=0", "--group=0",
+                 "--numeric-owner", "-czf", client_artifact, "-C", client_stage, "."])
+        client_digest = digest(client_artifact)
         reference, reference_build = work / "reference", work / "reference-build"
         command(["git", "init", reference])
         command(["git", "-C", reference, "remote", "add", "origin",
@@ -379,6 +446,13 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
             validate_generation_cost_evidence(
                 output / "process-evidence/installed-generation-cost-curve.json",
                 source, candidate_digest)
+            pair_evidence = output / "process-evidence/installed-client-server-pair.json"
+            command(clean + ["HEPTA_ISOLATED_PROCESS_TESTS=1", "python3",
+                    "tests/research/installed_client_server_pair.py",
+                    "--core-artifact", candidate, "--core-sha256", candidate_digest,
+                    "--client-artifact", client_artifact, "--client-sha256", client_digest,
+                    "--source-sha", source, "--output", pair_evidence])
+            validate_client_pair_evidence(pair_evidence, source, candidate_digest, client_digest)
             command(clean + ["HEPTA_DISPOSABLE_SYSTEMD_TEST=1", "python3", "tests/systemd_simulator_smoke.py",
                     "--artifact", candidate, "--expected-sha256", candidate_digest,
                     "--evidence-dir", output / "systemd-evidence"])
@@ -390,6 +464,8 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
         raise ValueError("checkout identity changed during acceptance")
     if digest(candidate) != candidate_digest:
         raise ValueError("candidate changed during acceptance")
+    if digest(client_artifact) != client_digest:
+        raise ValueError("client package changed during acceptance")
     command(["git", "diff", "--exit-code"])
     command(["git", "diff", "--cached", "--exit-code"])
     if checkout_status(allow_output=True):
@@ -397,7 +473,8 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
     receipt = {"schema": "heptatrader.core-artifact-acceptance.v1", "result": "PASS",
                "source_sha": source, "package_sha256": candidate_digest, "version": version,
                "profile": "core", "checks": list(CHECKS), "previous_source_sha": REFERENCE_SHA,
-               "previous_package_sha256": previous_digest, "authorization_effect": "NONE",
+               "previous_package_sha256": previous_digest, "strategy_client_sha256": client_digest,
+               "authorization_effect": "NONE",
                "paper_authorized": False, "live_authorized": False}
     descriptor = os.open(receipt_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as stream:

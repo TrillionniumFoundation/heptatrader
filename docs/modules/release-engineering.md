@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `CMakeLists.txt`, `VERSION`, `HeptaTrade/CMakeLists.txt`, `cmake`, `scripts/build_release_package.py`, `scripts/hepta_preflight.py`, `scripts/hepta_preflight_core.py`, `scripts/run_release_simulator_smoke.py`, `docs/preflight-policy-v1.json`, `scripts/accept_core_release.py`
-Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_special_files.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`, `tests/python/test_release_simulator_smoke.py`, `tests/agent_simulator_e2e_tests.cpp`, `tests/python/test_installed_runtime_processes.py`, `tests/python/test_gateway_symbol_boundary.py`, `tests/python/test_preflight_single_pass.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_release_workflow.py`, `tests/python/test_core_release_acceptance.py`, `tests/python/test_cmake_install_behavior.py`
+Tests: `tests/python/test_release_package.py`, `tests/python/test_hepta_preflight.py`, `tests/python/test_preflight_special_files.py`, `tests/python/test_preflight_complete_namespace.py`, `tests/python/test_cmake_install_integration.py`, `tests/python/test_release_simulator_smoke.py`, `tests/agent_simulator_e2e_tests.cpp`, `tests/python/test_installed_runtime_processes.py`, `tests/python/test_gateway_symbol_boundary.py`, `tests/python/test_preflight_single_pass.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_release_workflow.py`, `tests/python/test_core_release_acceptance.py`, `tests/python/test_cmake_install_behavior.py`, `tests/python/test_client_pair_admission.py`, `tests/research/installed_client_server_pair.py`
 
 ## Responsibilities
 

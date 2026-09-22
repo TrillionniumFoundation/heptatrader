@@ -1,8 +1,8 @@
 # HeptaDLL consumer register and support decisions
 
 Status: CURRENT; bounded source-consumer register, not an external deployment census
-Canonical development: `heptatrader/main`; #113 merged as `a982b4c40bf93a6de02c5516320a7bb3a2a34997`; #114 continues on `integration/heptadll-modular-20260920`
-Inspected implementation baseline: `4eb299bb5b440c1d01b543b9aef50b49851e2d83`, tree `45c2902cbc353fb968c16b6cd48ac8b41517f5e9`
+Canonical development: `heptatrader/main`; #113/#114/#115 merged; continuation remains `integration/heptadll-modular-20260920`
+Inspected implementation baseline: `30d438b8e65ad30daa520ee6f330fcff334416fa`, tree `d09a8cafadc490747dd4242497edf0e77837027a`
 Original retained source: `HeptaDLL-main@f69de179b4d41fe1813d317673abe8116cee76e5`
 
 ## Scope and ownership
@@ -111,3 +111,20 @@ and strict compiler diagnostics. In particular, the corrected C03 fixture in
 4eb299bb rejects silent C++14 extensions in an advertised C++11 consumer. Exact
 source, package and real Gateway/Execution acceptance belongs in the associated
 PR/run receipts; this register does not turn a job definition into a passed run.
+
+## C04 independent packaged-server acceptance
+
+The selected application migration now has a mandatory separately packaged
+client/server scenario in the shared core release driver. It consumes the actual
+relocated StrategyClientSDK launcher/native binary and the admitted core server
+package, rather than pairing that SDK only with a source-tree service test
+executable. The existing multi-UID InstalledRuntime fixture and single Execution
+Service remain the implementation. See [paired-package acceptance and evidence
+scope](core-release-acceptance.md#independently-packaged-application-client-and-core-server).
+
+This advances delivery acceptance for C03/C04 without inventing a new deployed
+consumer or owner acknowledgement. C01/C02 remain independently consumable
+through the existing offline SDK and native platform tests. C05-C08 retain their
+original requests/versions, C09 remains retired in main and C10 remains private.
+A matching-source synthetic package pair does not replace those support decisions
+or establish publication clearance; HeptaDLL-main stays the compatibility source.
