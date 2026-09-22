@@ -8,6 +8,7 @@
 
 namespace hepta { namespace research {
 namespace {
+using LedgerAccumulator = detail::ResearchAccumulator;
 void Require(bool value, const char* reason) {
     if (!value) throw std::invalid_argument(reason);
 }
@@ -21,6 +22,14 @@ double Finite(long double value) {
         throw std::overflow_error("RESEARCH_NUMERIC_OVERFLOW");
     return static_cast<double>(value);
 }
+#if LDBL_MANT_DIG < 64 || defined(HEPTA_RESEARCH_TEST_PORTABLE_ACCUMULATOR)
+double Finite(const detail::ResearchWide& value) {
+    const detail::ResearchWide limit(std::numeric_limits<double>::max());
+    if (!value.IsFinite() || value > limit || value < -limit)
+        throw std::overflow_error("RESEARCH_NUMERIC_OVERFLOW");
+    return static_cast<double>(value);
+}
+#endif
 Metric Optional(long double value) {
     Metric m;
     if (std::isfinite(value) && std::fabs(value) <= std::numeric_limits<double>::max()) {
@@ -28,7 +37,7 @@ Metric Optional(long double value) {
     }
     return m;
 }
-void CheckSettlementPrecision(long double entry, double price, ResearchPriceDomain domain) {
+void CheckSettlementPrecision(LedgerAccumulator entry, double price, ResearchPriceDomain domain) {
     // Reject a destructive finite rebase rather than rounding distinct nearby
     // representable entry prices into the same value. This is a representation
     // check, not a hard-coded market price-band or a broker risk decision.
@@ -40,8 +49,8 @@ void CheckSettlementPrecision(long double entry, double price, ResearchPriceDoma
         if (!std::isfinite(sample) ||
             (domain == ResearchPriceDomain::Positive && sample <= 0) ||
             (domain == ResearchPriceDomain::SignedFinite && rounded == 0 && sample != 0)) continue;
-        const long double delta = static_cast<long double>(price) - sample;
-        Require(static_cast<double>(static_cast<long double>(price) - delta) == sample,
+        const LedgerAccumulator delta = static_cast<LedgerAccumulator>(price) - sample;
+        Require(static_cast<double>(static_cast<LedgerAccumulator>(price) - delta) == sample,
                 "RESEARCH_SETTLEMENT_PRECISION_LOSS");
     }
 }
@@ -131,7 +140,7 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
             "RESEARCH_POSITION_CAPACITY");
     const std::int64_t oldAbs = quantity_ < 0 ? -quantity_ : quantity_;
     const bool sameDirection = quantity_ == 0 || (quantity_ > 0) == (signedFill > 0);
-    long double average = average_, realized = realized_, fees = fees_ + fill.fee;
+    LedgerAccumulator average = average_, realized = realized_, fees = fees_ + fill.fee;
     std::deque<Lot> nextLots;
     if (costBasis_ == CostBasis::Fifo) {
         nextLots = lots_; // Allocation and numeric failure leave live lots intact.
@@ -140,7 +149,7 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
             while (remaining > 0 && !nextLots.empty()) {
                 Lot& lot = nextLots.front();
                 const auto closed = std::min(remaining, lot.quantity);
-                realized += (static_cast<long double>(fill.price) - lot.price) *
+                realized += (static_cast<LedgerAccumulator>(fill.price) - lot.price) *
                             (quantity_ > 0 ? 1 : -1) * closed * multiplier_;
                 remaining -= closed; lot.quantity -= closed;
                 if (lot.quantity == 0) nextLots.pop_front();
@@ -156,26 +165,26 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
         for (const auto& lot : nextLots) {
             const auto total = count + lot.quantity; // Bounded by position cap.
             average = count == 0 ? lot.price :
-                average + (lot.price - average) * (static_cast<long double>(lot.quantity) / total);
+                average + (lot.price - average) * (static_cast<LedgerAccumulator>(lot.quantity) / total);
             count = total;
         }
     } else if (sameDirection) {
         // Interpolate within the two finite prices instead of
         // forming price*quantity sums. Identical fills preserve their exact
         // cost, even at DBL_MAX; true realized-P&L/fee overflow still rejects.
-        const long double weight = static_cast<long double>(fill.quantity) /
+        const LedgerAccumulator weight = static_cast<LedgerAccumulator>(fill.quantity) /
                                    (oldAbs + fill.quantity);
-        average = oldAbs == 0 ? static_cast<long double>(fill.price) :
-            average_ + (static_cast<long double>(fill.price) - average_) * weight;
+        average = oldAbs == 0 ? static_cast<LedgerAccumulator>(fill.price) :
+            average_ + (static_cast<LedgerAccumulator>(fill.price) - average_) * weight;
     } else {
         const auto closeQuantity = std::min(oldAbs, fill.quantity);
-        realized += (static_cast<long double>(fill.price) - average_) *
+        realized += (static_cast<LedgerAccumulator>(fill.price) - average_) *
                     (quantity_ > 0 ? 1 : -1) * closeQuantity * multiplier_;
         if (nextQuantity == 0) average = 0;
         else if ((nextQuantity > 0) != (quantity_ > 0)) average = fill.price;
     }
     Finite(average); Finite(realized); Finite(fees);
-    Finite(static_cast<long double>(initialEquity_) + realized - fees);
+    Finite(static_cast<LedgerAccumulator>(initialEquity_) + realized - fees);
     fills_.emplace(fill.fillId, fill);
     if (costBasis_ == CostBasis::Fifo) lots_.swap(nextLots);
     quantity_ = nextQuantity; average_ = average; realized_ = realized; fees_ = fees;
@@ -198,18 +207,18 @@ bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
     // Stage both accounting and allocations before publishing the receipt. In
     // FIFO, realize each old lot, then combine equal rebased lots; never use the
     // rounded public average to compute settlement P&L.
-    long double variation = 0;
+    LedgerAccumulator variation = 0;
     std::deque<Lot> nextLots;
     if (costBasis_ == CostBasis::Fifo) {
         for (const auto& lot : lots_)
-            variation += (static_cast<long double>(settlement.price) - lot.price) *
+            variation += (static_cast<LedgerAccumulator>(settlement.price) - lot.price) *
                          lot.quantity * (quantity_ > 0 ? 1 : -1) * multiplier_;
         if (quantity_ != 0)
             nextLots.push_back(Lot{quantity_ > 0 ? quantity_ : -quantity_, settlement.price});
     } else {
-        variation = (static_cast<long double>(settlement.price) - average_) * quantity_ * multiplier_;
+        variation = (static_cast<LedgerAccumulator>(settlement.price) - average_) * quantity_ * multiplier_;
     }
-    const long double realized = realized_ + variation;
+    const LedgerAccumulator realized = realized_ + variation;
     Finite(variation); Finite(realized);
     if (quantity_ != 0) {
         if (costBasis_ == CostBasis::Fifo) {
@@ -218,7 +227,7 @@ bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
     }
     Require(static_cast<double>(realized - variation) == static_cast<double>(realized_),
             "RESEARCH_SETTLEMENT_PRECISION_LOSS");
-    Finite(static_cast<long double>(initialEquity_) + realized - fees_);
+    Finite(static_cast<LedgerAccumulator>(initialEquity_) + realized - fees_);
     settlements_.emplace(settlement.settlementId, settlement);
     if (costBasis_ == CostBasis::Fifo) lots_.swap(nextLots);
     realized_ = realized;
@@ -237,15 +246,15 @@ ResearchAccount ResearchLedger::Mark(double mark) const {
     ResearchAccount out;
     out.quantity = quantity_; out.averageEntry = Finite(average_);
     out.realizedGross = Finite(realized_); out.fees = Finite(fees_);
-    long double unrealized = 0;
+    LedgerAccumulator unrealized = 0;
     if (costBasis_ == CostBasis::Fifo) {
         // Mark each compressed lot, preserving exact zero P&L for equal prices.
         for (const auto& lot : lots_)
-            unrealized += (static_cast<long double>(mark) - lot.price) * lot.quantity *
+            unrealized += (static_cast<LedgerAccumulator>(mark) - lot.price) * lot.quantity *
                           (quantity_ > 0 ? 1 : -1) * multiplier_;
-    } else unrealized = (static_cast<long double>(mark) - average_) * quantity_ * multiplier_;
+    } else unrealized = (static_cast<LedgerAccumulator>(mark) - average_) * quantity_ * multiplier_;
     out.unrealized = Finite(unrealized);
-    out.equity = Finite(static_cast<long double>(initialEquity_) + realized_ + unrealized - fees_);
+    out.equity = Finite(static_cast<LedgerAccumulator>(initialEquity_) + realized_ + unrealized - fees_);
     return out;
 }
 ResearchPortfolio::ResearchPortfolio(double initial, std::string currency,

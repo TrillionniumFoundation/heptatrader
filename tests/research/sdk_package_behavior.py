@@ -18,6 +18,7 @@ CONSUMER = r'''
 #include <hepta/research/replay.h>
 #include <hepta/research/strategy.h>
 #include "replay_model_cases.h"
+#include "portable_numeric_cases.h"
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -29,6 +30,7 @@ static void Require(bool value) {
     if (!value) throw std::runtime_error("installed SDK contract failed");
 }
 int main() {
+    portable_numeric_cases::RunAll();
     replay_model_cases::RunAll();
     SessionWindow window; window.openUs = 0; window.closeUs = 100; window.tradingDay = "20260920";
     SessionSchedule schedule(std::vector<SessionWindow>(1, window));
@@ -484,7 +486,7 @@ def main() -> None:
         consumer.mkdir()
         # Copy only test fixtures, never implementation headers or libraries.
         # These exact tests also run inside the canonical replay executable.
-        for fixture in ("test_support.h", "replay_model_cases.h"):
+        for fixture in ("test_support.h", "replay_model_cases.h", "portable_numeric_cases.h"):
             shutil.copyfile(source.parent / "tests/research" / fixture, consumer / fixture)
         (consumer / "main.cpp").write_text(CONSUMER, encoding="utf-8")
         (consumer / "CMakeLists.txt").write_text(CMAKE, encoding="utf-8")

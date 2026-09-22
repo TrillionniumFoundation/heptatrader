@@ -699,7 +699,7 @@ void MergedCsvOracle() {
             std::int64_t timestamp = static_cast<std::int64_t>((source * 7 + trial) % 4);
             for (std::size_t row = 0; row < (trial + source * 3) % 14; ++row) {
                 timestamp += static_cast<std::int64_t>((row * 3 + source + trial) % 4);
-                Tick tick = T(timestamp, row + 1, 100 + source + row,
+                Tick tick = T(timestamp, row + 1, static_cast<double>(100 + source + row),
                               static_cast<std::int64_t>((row + trial) % 5));
                 tick.instrument = "S" + std::to_string(source);
                 ticks.push_back(tick); expected.push_back({tick, source});

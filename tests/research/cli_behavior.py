@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -43,8 +44,17 @@ def legacy_input_modes(binary: str, examples: Path) -> None:
         def put(path: Path, text: str) -> None:
             path.write_text(text, encoding="ascii")
 
+        spool = root / "private-spool"
+        spool.mkdir()
+        environment = dict(os.environ)
+        if os.name == "nt":
+            environment.update(TMP=str(spool), TEMP=str(spool))
+
         def run(command: list[str]) -> subprocess.CompletedProcess:
-            return subprocess.run(command, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10,
+                                    env=environment)
+            require(not list(spool.iterdir()), "temporary output spool escaped process lifetime")
+            return result
 
         def reject(command: list[str], reason: str) -> None:
             failure = run(command)
