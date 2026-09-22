@@ -201,3 +201,53 @@ jobs:
             build/research-native/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 7
+
+  offline-platform:
+    # Additive OS/toolchain acceptance. Existing Linux/sanitizer/client jobs stay intact.
+    name: offline-sdk-${{ matrix.profile }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {profile: macos-arm64, os: macos-14}
+          - {profile: macos-x86_64, os: macos-15-intel}
+          - {profile: windows-msvc, os: windows-2022}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Native AppleClang offline SDK and relocated consumer
+        if: runner.os == 'macOS'
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          set -euo pipefail
+          python3 tests/research/platform_sdk_acceptance.py --profile "$PROFILE" --source-sha "$EXPECTED_SHA"
+      - name: Native MSVC offline SDK and relocated consumer
+        if: runner.os == 'Windows'
+        shell: cmd
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PROFILE: ${{ matrix.profile }}
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
+          if errorlevel 1 exit /b 1
+          python tests/research/platform_sdk_acceptance.py --profile "%PROFILE%" --source-sha "%EXPECTED_SHA%"
+          if errorlevel 1 exit /b 1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        if: always()
+        with:
+          name: offline-platform-${{ matrix.profile }}-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            build/platform-artifacts-${{ matrix.profile }}/
+            build/offline-${{ matrix.profile }}/Testing/Temporary/
+          if-no-files-found: error
+          retention-days: 7

@@ -19,6 +19,16 @@
 #include <vector>
 #include <utility>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <io.h>
+#include <fcntl.h>
+#include <atomic>
+#endif
+
 using namespace hepta::research;
 namespace {
 long long Integer(const std::string& s) {
@@ -102,12 +112,43 @@ private:
     }
     std::istream& input_;
 };
+std::FILE* TemporarySpool() {
+#ifdef _WIN32
+    // CREATE_NEW refuses existing names; no name-then-reopen race, inherited
+    // handle, shared access, or administrator/root-directory requirement.
+    wchar_t directory[MAX_PATH + 1];
+    const DWORD length = GetTempPathW(MAX_PATH + 1, directory);
+    if (length == 0 || length > MAX_PATH) return nullptr;
+    static std::atomic<unsigned long long> counter(0);
+    for (unsigned attempt = 0; attempt < 64; ++attempt) {
+        const std::wstring name = std::wstring(directory) + L"hepta-research-" +
+            std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()) +
+            L"-" + std::to_wstring(counter.fetch_add(1)) + L".tmp";
+        HANDLE handle = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                                   CREATE_NEW, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE,
+                                   nullptr);
+        if (handle == INVALID_HANDLE_VALUE) {
+            if (GetLastError() == ERROR_FILE_EXISTS || GetLastError() == ERROR_ALREADY_EXISTS) continue;
+            return nullptr;
+        }
+        const int descriptor = _open_osfhandle(reinterpret_cast<std::intptr_t>(handle),
+                                               _O_RDWR | _O_BINARY | _O_NOINHERIT);
+        if (descriptor < 0) { CloseHandle(handle); return nullptr; }
+        std::FILE* file = _fdopen(descriptor, "w+b");
+        if (!file) _close(descriptor); // owns and closes the Windows handle too
+        return file;
+    }
+    return nullptr;
+#else
+    return std::tmpfile();
+#endif
+}
 // Validate the WHOLE input/evidence pair before releasing stdout. The temporary
 // file uses bounded RAM and is closed on every path. It is neither durable
 // strategy state nor an execution outbox. Disk space scales with output size.
 class ValidatedOutput {
 public:
-    explicit ValidatedOutput(std::size_t limit = 0) : file_(std::tmpfile(), &std::fclose), limit_(limit) {
+    explicit ValidatedOutput(std::size_t limit = 0) : file_(TemporarySpool(), &std::fclose), limit_(limit) {
         if (!file_) throw std::runtime_error("cannot create research output spool");
     }
     void Append(const std::string& text) {

@@ -18,6 +18,7 @@ CONSUMER = r'''
 #include <hepta/research/replay.h>
 #include <hepta/research/strategy.h>
 #include "replay_model_cases.h"
+#include "portable_numeric_cases.h"
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -29,6 +30,7 @@ static void Require(bool value) {
     if (!value) throw std::runtime_error("installed SDK contract failed");
 }
 int main() {
+    portable_numeric_cases::RunAll();
     replay_model_cases::RunAll();
     SessionWindow window; window.openUs = 0; window.closeUs = 100; window.tradingDay = "20260920";
     SessionSchedule schedule(std::vector<SessionWindow>(1, window));
@@ -209,8 +211,8 @@ int main() {
         std::int64_t priorTime = 0;
         while (merged.Next(current)) {
             Require(current.timestampUs >= priorTime); priorTime = current.timestampUs;
-            auto& matcher = current.instrument == "MERGE.A" ? aMatch : bMatch;
-            for (const auto& event : matcher.OnTick(current)) {
+            auto& selectedMatcher = current.instrument == "MERGE.A" ? aMatch : bMatch;
+            for (const auto& event : selectedMatcher.OnTick(current)) {
                 Require(event.kind == ReplayEventKind::Fill && event.fill.timestampUs > 0);
                 Require(combined.Apply(event.fill) && !combined.Apply(event.fill)); ++matchedFills;
             }
@@ -454,7 +456,12 @@ def main() -> None:
     if os.environ.get("DESTDIR"):
         raise RuntimeError("installation acceptance requires an unset DESTDIR")
     with tempfile.TemporaryDirectory(prefix="hepta research package ") as temporary:
-        root = Path(temporary)
+        # Resolve the actual existing directory before passing any paths to
+        # CMake. Windows TEMP may use an 8.3 user alias while file-api returns
+        # its long name; comparing those spellings is not a linkage check.
+        root = Path(temporary).resolve(strict=True)
+        if not root.samefile(temporary):
+            raise RuntimeError("temporary-directory canonicalization changed identity")
         prefix = root / "original prefix"
         relocated = root / "relocated prefix"
         run([args.cmake, "--install", str(build), "--config", config,
@@ -484,18 +491,27 @@ def main() -> None:
         consumer.mkdir()
         # Copy only test fixtures, never implementation headers or libraries.
         # These exact tests also run inside the canonical replay executable.
-        for fixture in ("test_support.h", "replay_model_cases.h"):
+        for fixture in ("test_support.h", "replay_model_cases.h", "portable_numeric_cases.h"):
             shutil.copyfile(source.parent / "tests/research" / fixture, consumer / fixture)
         (consumer / "main.cpp").write_text(CONSUMER, encoding="utf-8")
         (consumer / "CMakeLists.txt").write_text(CMAKE, encoding="utf-8")
         consumer_build = root / "consumer build"
-        common = [f"-DHeptaResearch_DIR={package_dir}",
+        # Preserve the tested generator/platform/toolset as well as the compiler.
+        # Windows must not silently select a default VS generator or architecture.
+        common = ["-G", cache["CMAKE_GENERATOR"], f"-DHeptaResearch_DIR={package_dir}",
                   "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF", "-DCMAKE_FIND_USE_SYSTEM_PACKAGE_REGISTRY=OFF",
                   f"-DCMAKE_BUILD_TYPE={config}", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"]
+        for name, option in (("CMAKE_GENERATOR_PLATFORM", "-A"), ("CMAKE_GENERATOR_TOOLSET", "-T")):
+            if cache.get(name):
+                common.extend((option, cache[name]))
         for name in ("CMAKE_CXX_COMPILER", "CMAKE_CXX_FLAGS", f"CMAKE_CXX_FLAGS_{upper}",
                      "CMAKE_EXE_LINKER_FLAGS", f"CMAKE_EXE_LINKER_FLAGS_{upper}"):
             if name in cache:
                 common.append(f"-D{name}={cache[name]}")
+        # File-api is available for VS/Xcode too, unlike compile_commands.json.
+        query = consumer_build / ".cmake/api/v1/query"
+        query.mkdir(parents=True)
+        (query / "codemodel-v2").touch()
         run([args.cmake, "-S", str(consumer), "-B", str(consumer_build), *common])
         run([args.cmake, "--build", str(consumer_build), "--config", config, "--parallel", "2"])
         executable = consumer_build / ("consumer.exe" if os.name == "nt" else "consumer")
@@ -503,11 +519,42 @@ def main() -> None:
             executable = consumer_build / config / executable.name
         if "installed research contract passed" not in run([str(executable)]):
             raise RuntimeError("consumer did not exercise the installed libraries")
-        commands = (consumer_build / "compile_commands.json").read_text(encoding="utf-8")
-        # Account for JSON's escaping of backslashes and quotes.
-        commands = json.dumps(json.loads(commands), ensure_ascii=False)
-        if str(source) in commands or str(build) in commands or str(prefix) in commands:
-            raise RuntimeError("consumer compiled against original source/build/staging paths")
+        def normalized(value: str) -> str:
+            return value.replace("\\", "/").casefold() if os.name == "nt" else value
+        forbidden_paths = tuple(normalized(str(path)) for path in (source, build, prefix))
+        def audit(value: object) -> None:
+            if isinstance(value, str):
+                if any(path in normalized(value) for path in forbidden_paths):
+                    raise RuntimeError("consumer uses original source/build/staging paths")
+            elif isinstance(value, dict):
+                for item in value.values():
+                    audit(item)
+            elif isinstance(value, list):
+                for item in value:
+                    audit(item)
+        reply = consumer_build / ".cmake/api/v1/reply"
+        indices = list(reply.glob("index-*.json"))
+        if len(indices) != 1:
+            raise RuntimeError("expected one fresh consumer CMake file-api reply")
+        index = json.loads(indices[0].read_text(encoding="utf-8"))
+        codemodel = json.loads((reply / index["reply"]["codemodel-v2"]["jsonFile"]).read_text(encoding="utf-8"))
+        selected = [item for item in codemodel["configurations"] if item["name"] == config]
+        if len(selected) != 1:
+            raise RuntimeError("missing selected consumer configuration")
+        targets = [item for item in selected[0]["targets"] if item["name"] == "consumer"]
+        if len(targets) != 1:
+            raise RuntimeError("missing actual external consumer target")
+        target = json.loads((reply / targets[0]["jsonFile"]).read_text(encoding="utf-8"))
+        audit(target)
+        includes = [item["path"] for group in target["compileGroups"] for item in group.get("includes", [])]
+        if not any(normalized(str(relocated)) in normalized(path) for path in includes):
+            raise RuntimeError(f"consumer lacks relocated SDK includes: expected={relocated!s}; actual={includes!r}")
+        fragments = target.get("link", {}).get("commandFragments", [])
+        if not any(normalized(str(relocated)) in normalized(item["fragment"]) for item in fragments):
+            raise RuntimeError(f"consumer lacks relocated SDK libraries: expected={relocated!s}; actual={fragments!r}")
+        commands = consumer_build / "compile_commands.json"
+        if commands.exists():
+            audit(json.loads(commands.read_text(encoding="utf-8")))
         replay_names = {"hepta-research-replay", "hepta-research-replay.exe"}
         replay = [p for p in relocated.rglob("*") if p.is_file() and p.name in replay_names]
         ticks = list(relocated.rglob("ticks.csv")); sessions = list(relocated.rglob("sessions.csv"))

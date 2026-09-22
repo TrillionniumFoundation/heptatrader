@@ -1,10 +1,11 @@
 #include "hepta/research/analytics.h"
 #include "test_support.h"
+#include "portable_numeric_cases.h"
 #include <limits>
 using namespace hepta::research;
 namespace {
-EquityPoint P(long time, double equity, double flow = 0) { EquityPoint p; p.timestampUs = time; p.equity = equity; p.externalFlow = flow; return p; }
-ResearchFill F(const std::string& id, long time, int side, long quantity, double price, double fee = 0) {
+EquityPoint P(std::int64_t time, double equity, double flow = 0) { EquityPoint p; p.timestampUs = time; p.equity = equity; p.externalFlow = flow; return p; }
+ResearchFill F(const std::string& id, std::int64_t time, int side, std::int64_t quantity, double price, double fee = 0) {
     ResearchFill f; f.fillId = id; f.orderId = "order-" + id; f.instrument = "TEST.FUT"; f.timestampUs = time; f.side = side; f.quantity = quantity; f.price = price; f.fee = fee; return f;
 }
 void Metrics() {
@@ -482,7 +483,7 @@ void PortfolioSettlementBoundaries() {
 }
 }
 
-int main() { return Run([] {
+int main() { return Run([] { portable_numeric_cases::RunAll();
     SettlementAttributionAndIdentity(); SettlementFailureAtomicity();
     SettlementCashOracle(); PortfolioSettlementBoundaries();
     Metrics(); Ledger(); BoundedCostAndAtomicRejection();

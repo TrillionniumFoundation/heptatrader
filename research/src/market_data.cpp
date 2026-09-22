@@ -59,6 +59,37 @@ std::int64_t SignedNonnegative(const std::string& s) {
             "RESEARCH_CSV_INTEGER_OVERFLOW");
     return static_cast<std::int64_t>(value);
 }
+// Decimal grammar is checked independently of num_get so a library's ERANGE
+// for a representable subnormal cannot make us accept a malformed suffix.
+// This is a private scalar stream; no caller-owned stream state is cleared.
+double DecimalNumber(const std::string& text, const char* reason) {
+    std::size_t at = 0, digits = 0;
+    if (at < text.size() && (text[at] == '+' || text[at] == '-')) ++at;
+    while (at < text.size() && text[at] >= '0' && text[at] <= '9') { ++at; ++digits; }
+    if (at < text.size() && text[at] == '.') {
+        ++at;
+        while (at < text.size() && text[at] >= '0' && text[at] <= '9') { ++at; ++digits; }
+    }
+    Require(digits != 0, reason);
+    if (at < text.size() && (text[at] == 'e' || text[at] == 'E')) {
+        ++at;
+        if (at < text.size() && (text[at] == '+' || text[at] == '-')) ++at;
+        const auto start = at;
+        while (at < text.size() && text[at] >= '0' && text[at] <= '9') ++at;
+        Require(at != start, reason);
+    }
+    Require(at == text.size(), reason);
+    std::istringstream number(text); number.imbue(std::locale::classic());
+    double value = 0;
+    number >> std::noskipws >> value;
+    // libc++ can return the correctly rounded nonzero subnormal AND failbit.
+    // Never salvage zero underflow, a clamped overflow, badbit, or other errors.
+    if (number.fail() && !number.bad() && std::fpclassify(value) == FP_SUBNORMAL)
+        number.clear(number.rdstate() & ~std::ios::failbit);
+    Require(!number.fail() && number.peek() == std::char_traits<char>::eof() &&
+            std::isfinite(value), reason);
+    return value;
+}
 bool ReadBoundedLine(std::istream& input, std::string& line) {
     line.clear();
     char c;
@@ -263,9 +294,7 @@ bool TickCsvReader::Next(Tick& output) {
         Tick tick;
         tick.instrument = cells[0]; tick.timestampUs = SignedNonnegative(cells[1]);
         tick.sequence = Unsigned(cells[2]); tick.volume = SignedNonnegative(cells[4]);
-        std::istringstream number(cells[3]); number.imbue(std::locale::classic());
-        number >> std::noskipws >> tick.price;
-        Require(!number.fail() && number.peek() == std::char_traits<char>::eof(), "RESEARCH_CSV_PRICE_INVALID");
+        tick.price = DecimalNumber(cells[3], "RESEARCH_CSV_PRICE_INVALID");
         ValidateTick(tick);
         using std::swap;
         swap(output, tick);
@@ -426,12 +455,7 @@ void LegacyHeader(const std::string& line, const LegacyColumns& c) {
     }
 }
 double LegacyNumber(const std::string& field) {
-    double result = 0;
-    std::istringstream input(field); input.imbue(std::locale::classic());
-    input >> std::noskipws >> result;
-    Require(!input.fail() && input.peek() == std::char_traits<char>::eof() &&
-            std::isfinite(result), "RESEARCH_LEGACY_NUMBER_INVALID");
-    return result;
+    return DecimalNumber(field, "RESEARCH_LEGACY_NUMBER_INVALID");
 }
 std::int64_t LegacyTimeOfDay(const std::string& time, const std::string& fraction, bool compact) {
     Require(time.size() == (compact ? 6u : 8u), "RESEARCH_LEGACY_CLOCK_INVALID");
@@ -960,11 +984,8 @@ std::vector<std::string> BarCells(const std::string& line) {
     return cells;
 }
 double BarCsvPrice(const std::string& cell) {
-    double value = 0;
-    std::istringstream number(cell); number.imbue(std::locale::classic());
-    number >> std::noskipws >> value;
-    Require(!number.fail() && number.peek() == std::char_traits<char>::eof() &&
-            std::isfinite(value) && value > 0, "RESEARCH_CSV_PRICE_INVALID");
+    const double value = DecimalNumber(cell, "RESEARCH_CSV_PRICE_INVALID");
+    Require(value > 0, "RESEARCH_CSV_PRICE_INVALID");
     return value;
 }
 void ValidateCsvBar(const Bar& bar, const Bar* previous) {
