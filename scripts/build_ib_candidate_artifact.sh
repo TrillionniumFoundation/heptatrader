@@ -19,6 +19,10 @@ MAX_WRITABLE_BYTES="${HEPTA_IB_BUILD_MAX_WRITABLE_BYTES:-12884901888}"
 MEMORY_LIMIT="${HEPTA_IB_BUILD_MEMORY_LIMIT:-6g}"
 CPU_LIMIT="${HEPTA_IB_BUILD_CPU_LIMIT:-2.0}"
 PIDS_LIMIT="${HEPTA_IB_BUILD_PIDS_LIMIT:-256}"
+# RLIMIT_NPROC is accounted against the host UID on Linux, not just processes
+# inside this container. Keep it independent from the cgroup pids ceiling so a
+# busy owner host cannot prevent the isolated builder entrypoint from execing.
+NPROC_LIMIT="${HEPTA_IB_BUILD_NPROC_LIMIT:-65535}"
 TMPFS_LIMIT="${HEPTA_IB_BUILD_TMPFS_LIMIT:-536870912}"
 
 [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "candidate SHA is not canonical" >&2; exit 65; }
@@ -28,6 +32,11 @@ TMPFS_LIMIT="${HEPTA_IB_BUILD_TMPFS_LIMIT:-536870912}"
 }
 [[ "$MAX_WRITABLE_BYTES" =~ ^[1-9][0-9]*$ ]] || exit 78
 [[ "$PIDS_LIMIT" =~ ^[1-9][0-9]*$ ]] || exit 78
+[[ "$NPROC_LIMIT" =~ ^[1-9][0-9]*$ ]] || exit 78
+(( NPROC_LIMIT >= PIDS_LIMIT )) || {
+  echo "HEPTA_IB_BUILD_NPROC_LIMIT must be >= HEPTA_IB_BUILD_PIDS_LIMIT" >&2
+  exit 78
+}
 [[ "$TMPFS_LIMIT" =~ ^[1-9][0-9]*$ ]] || exit 78
 [[ -n "$SDK_INPUT" && -n "$QUOTA_INPUT" ]] || {
   echo "HEPTA_IB_BUILD_SDK_ROOT and HEPTA_IB_BUILD_QUOTA_ROOT are required" >&2
@@ -115,9 +124,9 @@ RUN_UID="$(id -u)"
 RUN_GID="$(id -g)"
 RESOURCE_POLICY="$WORK_ROOT/resource-policy.json"
 python3 - "$RESOURCE_POLICY" "$BUILDER_IMAGE" "$IMAGE_ID" "$MAX_WRITABLE_BYTES" \
-  "$FILESYSTEM_BYTES" "$MEMORY_LIMIT" "$CPU_LIMIT" "$PIDS_LIMIT" "$TMPFS_LIMIT" <<'PY'
+  "$FILESYSTEM_BYTES" "$MEMORY_LIMIT" "$CPU_LIMIT" "$PIDS_LIMIT" "$NPROC_LIMIT" "$TMPFS_LIMIT" <<'PY'
 import json, os, sys
-path, image, image_id, max_bytes, fs_bytes, memory, cpus, pids, tmpfs = sys.argv[1:]
+path, image, image_id, max_bytes, fs_bytes, memory, cpus, pids, nproc, tmpfs = sys.argv[1:]
 value = {
     "schema": "heptatrader.ib-builder-resource-policy.v1",
     "builder_image": image,
@@ -130,6 +139,7 @@ value = {
     "memory_swap": memory,
     "cpus": cpus,
     "pids_limit": int(pids),
+    "nproc_rlimit": int(nproc),
     "tmpfs_bytes": int(tmpfs),
     "dedicated_filesystem_bytes": int(fs_bytes),
     "maximum_writable_bytes": int(max_bytes),
@@ -152,7 +162,7 @@ COMMON_DOCKER=(
   --cpus "$CPU_LIMIT"
   --pids-limit "$PIDS_LIMIT"
   --ulimit nofile=1024:1024
-  --ulimit nproc="$PIDS_LIMIT:$PIDS_LIMIT"
+  --ulimit nproc="$NPROC_LIMIT:$NPROC_LIMIT"
   --tmpfs "/tmp:rw,nosuid,nodev,noexec,size=$TMPFS_LIMIT"
   --tmpfs "/run:rw,nosuid,nodev,noexec,size=16777216"
   --user "$RUN_UID:$RUN_GID"
