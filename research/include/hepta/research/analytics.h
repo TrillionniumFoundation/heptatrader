@@ -44,6 +44,11 @@ struct ResearchSettlement {
     std::int64_t timestampUs = 0;
     double price = 0;
 };
+// Accounting basis only: no quote, unrealized P&L or equity is implied.
+struct ResearchAccountState {
+    std::int64_t quantity = 0;
+    double averageEntry = 0, realizedGross = 0, fees = 0;
+};
 struct ResearchAccount {
     std::int64_t quantity = 0;
     double averageEntry = 0, realizedGross = 0, unrealized = 0, fees = 0, equity = 0;
@@ -74,6 +79,7 @@ public:
     // The historical maxFillIds argument bounds combined fill/settlement IDs;
     // the two ID namespaces are distinct. Failed events do not consume an ID.
     bool Settle(const ResearchSettlement& settlement);
+    ResearchAccountState State() const;
     ResearchAccount Mark(double markPrice) const;
     std::int64_t Quantity() const { return quantity_; }
     CostBasis Basis() const { return costBasis_; }
@@ -119,6 +125,19 @@ struct ResearchPortfolioSnapshot {
     std::map<std::string, ResearchPositionSnapshot> positions;
 };
 
+// Explicit partial valuation for OFFLINE consumers. When complete is false,
+// snapshot.equity/unrealized and grossNotional are UNDEFINED (stored as zero),
+// not zero-valued assets. Serialize them as null, never as a risk approval.
+// Cash is the model's shared cash/basis identity, not a broker cash balance.
+struct ResearchPortfolioValuation {
+    ResearchPortfolioSnapshot snapshot;
+    bool complete = true;
+    double cash = 0, grossNotional = 0;
+    std::vector<std::string> missingMarks, staleMarks;
+    // Includes flat instruments with no observed quote; zero is a valid signed price.
+    std::vector<std::string> unobservedMarks;
+};
+
 // Thread-affine OFFLINE portfolio. A fixed same-currency universe prevents
 // implicit FX conversions. One monotonic delivery clock spans fills, flows,
 // settlements and ticks (equal timestamps retain caller delivery order). Fill identities
@@ -145,11 +164,17 @@ public:
     bool Observe(const Tick& tick);
     ResearchPortfolioSnapshot Snapshot(std::int64_t asOfUs,
                                        std::int64_t maxMarkAgeUs) const;
+    // Read-only partial alternative; strict Snapshot keeps its original errors.
+    ResearchPortfolioValuation Valuation(std::int64_t asOfUs,
+                                         std::int64_t maxMarkAgeUs) const;
 private:
+    ResearchPortfolioValuation Value(std::int64_t asOfUs, std::int64_t maxMarkAgeUs,
+                                    bool strict) const;
     struct Position {
         Position(const ResearchInstrument& spec, double initial, std::size_t capacity)
-            : ledger(spec.instrument, initial, spec.multiplier, capacity, spec.costBasis, spec.priceDomain) {}
+            : ledger(spec.instrument, initial, spec.multiplier, capacity, spec.costBasis, spec.priceDomain), multiplier(spec.multiplier) {}
         ResearchLedger ledger;
+        double multiplier;
         Tick lastTick;
         bool hasTick = false, markCurrent = false;
     };

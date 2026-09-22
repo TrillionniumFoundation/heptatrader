@@ -246,6 +246,216 @@ def manifest_check(adapter, binary, *, installed=False):
     print("PASS JSON consumers: all 14 source splits, retries, schemas, digest/alias/FIFO rejection and atomic output")
 
 
+def portfolio_check(adapter, binary, *, installed=False):
+    """Exercise migrated normalized bars against an independent Decimal oracle.
+
+    The test oracle has no FIFO/account objects, native code or rolling sums:
+    it enumerates time events and derives each mean from observed closes.
+    """
+    import copy
+    from decimal import Decimal, localcontext
+    import hashlib
+    import math
+    import random
+    import sys
+    header = "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,ticks,complete"
+    def spec(name, quantity="2", multiplier="3", slip="0.5", fee="0.25"):
+        return dict(instrument=name,currency="USD",tick_size="1",quantity=quantity,
+                    multiplier=multiplier,lot="1",slippage=slip,fee_per_unit=fee,
+                    fast=1,slow=2,long_only=False)
+    def bars(name, prices, offset=0, incomplete=True):
+        return [[name,"20260102",offset+i*10,offset+(i+1)*10,p,p,p,p,1,1,
+                 int(not incomplete or i+1<len(prices))] for i,p in enumerate(prices)]
+    fixtures={"A":bars("A",[10,11,12,9,8,7]),"B":bars("B",[20,19,18,21,22,23],5)}
+    policies=[spec("A"),spec("B","1","2","0.25","0.1")]
+    def oracle(streams, policies, age):
+        by_name={x["instrument"]:x for x in policies}
+        names=sorted(streams); positions={n:Decimal(0) for n in names}
+        pending={n:None for n in names}; closes={n:[] for n in names}; marks={}
+        cash=Decimal(1000); fees=Decimal(0); results=[]; fills=[]
+        events=[]
+        for name in names:
+            for i,row in enumerate(streams[name]):
+                events.append((row[2],1,name,i))
+                if row[10]:events.append((row[3],0,name,i))
+        events.sort()
+        with localcontext() as ctx:
+            ctx.prec=128
+            for i,(time,phase,name,index) in enumerate(events):
+                item=by_name[name]; row=streams[name][index]; tick=Decimal(item["tick_size"])
+                price=Decimal(row[7] if phase==0 else row[4])*tick
+                marks[name]=(price,time)
+                if phase==0:
+                    closes[name].append(row[7]); direction=0
+                    if len(closes[name])>=item["slow"]:
+                        left=sum(closes[name][-item["fast"]:])*item["slow"]
+                        right=sum(closes[name][-item["slow"]:])*item["fast"]
+                        direction=(left>right)-(left<right)
+                    if item["long_only"]:direction=max(0,direction)
+                    pending[name]=direction*Decimal(item["quantity"])
+                elif pending[name] is not None:
+                    delta=pending[name]-positions[name]
+                    if delta:
+                        fill_price=price+Decimal(item["slippage"])*(1 if delta>0 else -1)
+                        fee=abs(delta)*Decimal(item["fee_per_unit"])
+                        cash-=delta*fill_price*Decimal(item["multiplier"])+fee
+                        fees+=fee;positions[name]+=delta
+                        fills.append((time,name,int(delta),float(fill_price),float(fee)))
+                    pending[name]=None
+                if i+1<len(events) and events[i+1][0]==time:continue
+                unavailable=[n for n in names if positions[n] and (n not in marks or time-marks[n][1]>age)]
+                equity=None if unavailable else cash+sum(positions[n]*marks[n][0]*Decimal(by_name[n]["multiplier"])
+                                                        for n in names if positions[n])
+                gross=None if unavailable else sum(abs(positions[n]*marks[n][0]*Decimal(by_name[n]["multiplier"]))
+                                                   for n in names if positions[n])
+                results.append(dict(timestamp_us=time,cash=cash,fees=fees,equity=equity,
+                                    gross_notional=gross,unavailable_instruments=unavailable,
+                                    positions={n:int(positions[n]) for n in names}))
+        return results,fills,pending
+    def compare(report, streams, policies, age):
+        expected,fills,pending=oracle(streams,policies,age)
+        assert len(report["equity"])==len(expected)
+        for actual,want in zip(report["equity"],expected):
+            assert actual["timestamp_us"]==want["timestamp_us"]
+            assert actual["unavailable_instruments"]==want["unavailable_instruments"]
+            assert actual["valuation_complete"]==(not want["unavailable_instruments"])
+            for key in ("cash","fees","equity","gross_notional"):
+                if want[key] is None:assert actual[key] is None,(key,actual,want)
+                else:assert math.isclose(actual[key],float(want[key]),rel_tol=1e-12,abs_tol=1e-8),(key,actual,want)
+            assert {n:v["quantity"] for n,v in actual["positions"].items()}==want["positions"]
+        # Canonical reversal splits close/open, historical oracle emits net delta.
+        aggregated={}
+        for f in report["fills"]:
+            key=(f["timestamp_us"],f["instrument"])
+            prior=aggregated.setdefault(key,[0,f["price"],0])
+            assert prior[1]==f["price"]
+            prior[0]+=f["side"]*f["quantity"];prior[2]+=f["fee"]
+        assert set(aggregated)=={(t,n) for t,n,*_ in fills}
+        for t,n,q,p,fee in fills:
+            actual=aggregated[t,n];assert actual[0]==q
+            assert math.isclose(actual[1],p,rel_tol=1e-12,abs_tol=1e-8)
+            assert math.isclose(actual[2],fee,rel_tol=1e-12,abs_tol=1e-8)
+        gaps=sum(x["equity"] is None for x in expected)
+        assert report["valuation_gap_count"]==gaps
+        assert report["pending_targets"]==pending
+        assert report["annualized"] is None and report["automatic_funding"] is False
+        if gaps:assert report["max_drawdown"] is None
+        if expected[-1]["equity"] is None:assert report["total_return"] is None
+        else:assert math.isclose(report["total_return"],float(expected[-1]["equity"])/1000-1,abs_tol=1e-12)
+    with tempfile.TemporaryDirectory(prefix="hepta-portfolio-consumer-") as directory:
+        root=Path(directory); manifest=root/"manifest.json"; output=root/"report.json";bindings=[]
+        def setup(streams=fixtures, specs=policies, age=20, split=None):
+            nonlocal bindings
+            declarations=[];bindings=[]
+            for item in specs:
+                item=copy.deepcopy(item);name=item["instrument"];rows=streams[name]
+                chunks=[rows] if not split or name!=split[0] else [rows[:split[1]],rows[split[1]:]]
+                item["sources"]=[]
+                for index,chunk in enumerate(chunks):
+                    ref=name+str(index);path=root/(ref+" bars.csv")
+                    raw=(header+"\n"+"\n".join(",".join(map(str,row)) for row in chunk)+"\n").encode()
+                    path.write_bytes(raw);bindings.extend(["--source",ref+"="+str(path)])
+                    item["sources"].append(dict(ref=ref,sha256=hashlib.sha256(raw).hexdigest()))
+                declarations.append(item)
+            document=dict(schema="hepta.research.portfolio-input.v1",currency="USD",capital="1000",
+                          max_mark_age_us=age,instruments=declarations)
+            manifest.write_text(json.dumps(document));return document
+        def call(*extra,ok=False):
+            argv=[sys.executable,"-I","-S",str(adapter),"portfolio","--manifest",str(manifest),
+                  *bindings,"--output",str(output),*extra]
+            if not installed:argv.extend(["--native-executable",str(binary)])
+            result=subprocess.run(argv,cwd=root,capture_output=True,timeout=20)
+            if ok:
+                assert result.returncode==0,result.stderr
+                report=json.loads(output.read_text())
+                assert report["schema"]=="hepta.research.native-portfolio-report.v1"
+                assert report["model"]=="normalized-close-then-open-v1" and not report["broker_authorized"]
+                assert str(root) not in output.read_text()
+                assert report["input"]["manifest_sha256"]==hashlib.sha256(manifest.read_bytes()).hexdigest()
+                return report
+            assert result.returncode!=0 and output.read_bytes()==b"previous report",result
+            assert not list(root.glob(".hepta-model-*.json"))
+        setup();baseline=call(ok=True);compare(baseline,fixtures,policies,20)
+        assert math.isclose(baseline["snapshot"]["equity"],963.7,abs_tol=1e-10)
+        assert baseline["snapshot"]["fees"]==1.8 and len(baseline["fills"])==6
+        assert baseline["equity"][-1]["timestamp_us"]==55
+        first_b=baseline["equity"][0]["positions"]["B"]
+        assert first_b["mark_observed"] is False and first_b["mark_price"] is None and first_b["mark_timestamp_us"] is None
+        for name in fixtures:
+            for split in range(1,6):
+                setup(split=(name,split));value=call(ok=True)
+                assert {k:v for k,v in value.items() if k!="input"}=={k:v for k,v in baseline.items() if k!="input"}
+        # Input declaration order and source split cannot change causal results.
+        setup(specs=list(reversed(policies)));compare(call(ok=True),fixtures,policies,20)
+        setup(age=0);stale=call(ok=True);compare(stale,fixtures,policies,0)
+        assert stale["snapshot"]["equity"] is None and stale["valuation_gap_count"]>0
+        for seed in range(24):
+            rng=random.Random(seed);streams={};specs=[]
+            for name,offset in (("A",0),("B",3),("C",0)):
+                prices=[rng.randrange(-30,31) for _ in range(12)]
+                streams[name]=bars(name,prices,offset,bool(seed%2))
+                item=spec(name,str(rng.randrange(1,4)),str(rng.randrange(1,5)),"0.25","0.1")
+                item["tick_size"]="0.5";item["fast"]=1+seed%3;item["slow"]=4+seed%4
+                item["long_only"]=bool(seed%3);specs.append(item)
+            age=seed%11;setup(streams,specs,age);compare(call(ok=True),streams,specs,age)
+        output.write_bytes(b"previous report")
+        for extra in (("--max-total-bars","2"),("--max-total-bars","250001"),
+                      ("--max-input-bytes","2"),("--source","extra=/missing")):
+            setup();call(*extra)
+        for key,value in (("quantity","0.5"),("currency","EUR"),("long_only",1),
+                          ("slow",1),("slippage","-1"),("tick_size","0.123456789123456789")):
+            d=setup();d["instruments"][0][key]=value;manifest.write_text(json.dumps(d));call()
+        d=setup();d["instruments"][0]["sources"][0]["sha256"]="0"*64
+        manifest.write_text(json.dumps(d));call()
+        for column,value in ((1,"20260230"),(2,-1),(3,0),(4,2**40+1),(5,-100),
+                             (8,-1),(9,0),(10,2)):
+            bad=copy.deepcopy(fixtures);bad["A"][0][column]=value;setup(bad);call()
+        bad=copy.deepcopy(fixtures);bad["A"][2][10]=0;setup(bad);call()
+        bad=copy.deepcopy(fixtures);bad["A"][2][2]=19;setup(bad);call()
+        setup(split=("A",3));(root/"A1 bars.csv").write_bytes(b"corrupt later source\n");call()
+        setup();raw=(root/"A0 bars.csv").read_bytes();(root/"real.csv").write_bytes(raw)
+        (root/"A0 bars.csv").unlink();(root/"A0 bars.csv").symlink_to(root/"real.csv")
+        call();(root/"A0 bars.csv").unlink()
+        setup();(root/"A0 bars.csv").unlink();os.mkfifo(root/"A0 bars.csv")
+        call();(root/"A0 bars.csv").unlink()
+        setup();output.unlink();os.link(root/"A0 bars.csv",output)
+        argv=[sys.executable,"-I","-S",str(adapter),"portfolio","--manifest",str(manifest),
+              *bindings,"--output",str(output),"--native-executable",str(binary)]
+        result=subprocess.run(argv,capture_output=True,timeout=20)
+        assert result.returncode!=0 and output.read_bytes()==raw
+    print("PASS portfolio: 10 source splits, 24 independent 3-instrument Decimal oracles, stale/null and rejection boundaries")
+
+
+def portfolio_stream_check(binary):
+    text="""HPR1,100,0,1000,USD
+I,A,1,1,1,0,1,2,1,0,0
+BEGIN
+P,A,20260922,0,10,10,10,10,10,1,1,1
+P,A,20260922,10,20,11,11,11,11,1,1,1
+P,A,20260922,20,30,12,12,12,12,1,1,0
+"""
+    def invoke(data,*extra):
+        return subprocess.run([str(binary),"--portfolio-stream",*extra],input=data,
+                              text=True,capture_output=True,timeout=15)
+    good=invoke(text);assert good.returncode==0,good.stderr
+    report=json.loads(good.stdout)
+    assert report["snapshot"]["equity"]==1000 and report["snapshot"]["timestamp_us"]==20
+    assert len(report["fills"])==1 and report["fills"][0]["timestamp_us"]==20
+    for invalid in ("",text+"\n",text+"BAD\n",text.replace("HPR1","HPR2",1),
+                    text.replace("BEGIN\n",""),text.replace("HPR1,100","HPR1,2",1),
+                    text.replace(",12,12,12,12,",",12,11,12,12,"),text.replace("1,0,0\n", "1,2,0\n"),
+                    text.replace("P,A,20260922,10,20", "P,A,20260922,9,20"),
+                    text.replace("1,1,1\nP", "1,1,0\nP",1),text+"X"*8193):
+        result=invoke(invalid);assert result.returncode!=0 and not result.stdout,(invalid,result)
+    assert invoke(text,"extra").returncode!=0
+    if Path("/dev/full").exists():
+        with open("/dev/full","wb") as sink:
+            result=subprocess.run([str(binary),"--portfolio-stream"],input=text,text=True,
+                                  stdout=sink,stderr=subprocess.PIPE,timeout=15)
+        assert result.returncode!=0
+    print("PASS HPR1 native input: completed-phase fill, incomplete tail, malformed stream and failed output")
+
+
 def main():
     parser = argparse.ArgumentParser()
     if not __debug__:
@@ -258,8 +468,10 @@ def main():
     args = parser.parse_args()
     if args.binary:
         check(args.binary)
+        portfolio_stream_check(args.binary)
         if args.manifest_adapter:
             manifest_check(args.manifest_adapter, args.binary)
+            portfolio_check(args.manifest_adapter, args.binary)
     elif args.build_dir:
         with tempfile.TemporaryDirectory(prefix="hepta-model-sdk-") as directory:
             root = Path(directory); prefix = root / "original prefix"; moved = root / "relocated sdk"
@@ -270,10 +482,12 @@ def main():
             binaries = list(moved.rglob("hepta-research-replay"))
             assert len(binaries) == 1
             check(binaries[0])
+            portfolio_stream_check(binaries[0])
             if os.name == "posix":
                 assert (binaries[0].parent / "hepta-research-models").is_file(), "installed model adapter missing"
                 assert (binaries[0].parent / "hepta-research-import").is_file(), "installed capture helper missing"
                 manifest_check(binaries[0].parent / "hepta-research-models", binaries[0], installed=True)
+                portfolio_check(binaries[0].parent / "hepta-research-models", binaries[0], installed=True)
     else:
         parser.error("--binary or --build-dir required")
 

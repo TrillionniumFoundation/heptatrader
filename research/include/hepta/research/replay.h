@@ -150,17 +150,35 @@ struct NextBarTarget {
     Bar sourceBar;
     std::int64_t observedAtUs = 0, targetQuantity = 0;
 };
+enum class NextOpenTiming { StrictlyLater, AfterClosePhase };
+// Opt-in historical normalized-bar model. AfterClosePhase permits an OPEN
+// delivered after its completed target at the SAME timestamp; it is an idealized
+// offline convention, never a claim of zero-latency live execution.
+struct NextBarPolicy {
+    NextOpenTiming timing = NextOpenTiming::StrictlyLater;
+    std::int64_t slippageTicks = 0;
+    std::map<std::string, std::int64_t> instrumentSlippageTicks;
+};
 class NextBarReplay {
 public:
     NextBarReplay(double initialEquity, std::string currency,
                   const std::vector<FlowInstrument>& instruments,
                   std::int64_t slippageTicks = 0,
                   std::size_t maxEvents = 100000);
+    NextBarReplay(double initialEquity, std::string currency,
+                  const std::vector<FlowInstrument>& instruments,
+                  NextBarPolicy policy, std::size_t maxEvents = 100000);
     bool SetTarget(const NextBarTarget& target);
     // Open ticks are explicit input evidence, not derived from a future bar.
     // Volume is retained for identity but NOT used as a liquidity assertion.
     // Exact retry never revalidates a stale mark or submits the target twice.
     std::vector<ResearchFill> ObserveOpen(const Tick& open);
+    // Explicit completed-close mark: refreshes valuation only, never consumes a
+    // pending target. Shares account clock/sequence validation and event budget.
+    bool ObserveMark(const Tick& mark);
+    ResearchPortfolioValuation Valuation(std::int64_t asOfUs,
+                                         std::int64_t maxMarkAgeUs) const;
+    std::map<std::string, std::int64_t> PendingTargets() const;
     ResearchPortfolioSnapshot Snapshot(std::int64_t asOfUs,
                                        std::int64_t maxMarkAgeUs) const;
 private:
@@ -169,7 +187,8 @@ private:
     std::map<std::string, NextBarTarget> targetIds_, pending_;
     std::map<std::string, Tick> opens_;
     std::map<std::string, std::int64_t> quantities_;
-    std::int64_t slippageTicks_, clockUs_ = 0;
+    NextBarPolicy policy_;
+    std::int64_t clockUs_ = 0;
     std::size_t maxEvents_, eventCount_ = 0;
 };
 

@@ -145,7 +145,7 @@ input to the sole native core, with explicit new report and numeric boundaries.
 The native C++ consumer and old #107 replay/import/client calls remain intact.
 The new next-open consumer exposes existing target/open contracts, not recovered
 proprietary strategies. Original #106 Python APIs, wide Decimal arithmetic,
-CLOSE/null-report conventions and normalized-bar strategy orchestration remain
+the old report schema and unported caller contracts remain
 retained at `acffe4ae84a8e4377fd92b0ac536a865c6f6b6f5`; #108 client record callers
 remain at `56fd92bc94fd36e064d18c383ffeef9994d85fea`. No outbox conversion is
 performed and no uncertain command gets a new mutation ID. Unknown external,
@@ -157,3 +157,120 @@ sign-off, exact-head CI and production host/broker qualification are independent
 CTP remains deferred; LIVE remains unavailable. No private history or vendor
 source/binary is imported. The new adapters are ordinary unprivileged offline
 SDK tools, not an additional OMS, matching/accounting framework or execution path.
+
+## Migrated normalized-bar portfolio consumer
+
+The SAME installed `hepta-research-models` command now accepts `portfolio`.
+Unlike `next-open`, this mode deliberately reproduces #106's normalized-bar
+CLOSE-before-OPEN model in the shared numeric domain. Python only validates and
+captures input/provenance, refines its declared price grid and invokes the
+existing native binary once. Signal calculation, event scheduling, target fills,
+accounting and partial valuation all run in the existing C++ SDK libraries.
+
+```sh
+python3 -I -S /sdk/bin/hepta-research-models portfolio \
+  --manifest portfolio.json \
+  --source a=/data/a-bars.csv --source b=/data/b-bars.csv \
+  --output /reports/portfolio.json
+```
+
+The existing #106 manifest schema `hepta.research.portfolio-input.v1` has exactly
+`schema`, `currency`, `capital`, `max_mark_age_us`, and `instruments`. Each of
+1..64 instruments has exactly `instrument`, `currency`, `tick_size`, `quantity`,
+`multiplier`, `lot`, `slippage`, `fee_per_unit`, `fast`, `slow`, `long_only`, and
+`sources`. Sources are ordered objects with exactly `ref` and `sha256`; all
+references across the universe must have distinct explicit command-line
+bindings. Every instrument must use the same three-letter accounting currency.
+One positive capital is counted once. Costs are nonnegative; `long_only` is a
+JSON boolean; quantities/lots are whole numbers in 1..10^12 with exact divisibility;
+windows satisfy 1 <= fast < slow <= 100000. Fractional native quantities are
+rejected, not truncated or silently converted into a different instrument.
+
+CSV is ASCII, with this exact header and eleven unquoted fields per row:
+
+```text
+instrument,trading_day,begin_us,end_us,open,high,low,close,volume,ticks,complete
+```
+
+OHLC are signed integer SOURCE-grid indices, not decimal prices. Times are
+nonnegative UTC microseconds, volume/ticks unsigned integers (ticks positive),
+and completeness is `0` or `1`. Trading-day labels are validated Gregorian dates,
+not inferred exchange calendars. Each source is nonempty and single-instrument;
+all sources for one instrument form a single ordered, nonoverlapping stream.
+A partial bar is allowed only as the final bar. Inconsistent OHLC, time/day
+reversal, conflicting instrument declarations and data after a partial tail fail.
+The binary64/native price domain and final arithmetic checks still apply.
+
+Fixed-price slippage may be a fraction of the source tick. The adapter computes
+the exact decimal common subgrid of tick size and slippage, rescales integer
+OHLC without rounding, and sends per-instrument integer slippage to the existing
+NextBarReplay. Both rescaled price indices (absolute value <= 2^40) and slippage
+(<= 1000000 subgrid ticks) must fit the native contract. A nonrepresentable grid
+or rescaling overflow rejects. The report records the subgrid/factor explicitly;
+this is not an arbitrary Decimal-magnitude or legacy binary ABI guarantee.
+
+All complete CLOSE(t) events precede every OPEN(t), with instrument-name ordering
+within each phase. A close refreshes that instrument's observed mark and feeds
+the exact integer-grid moving average. The resulting bounded target can execute
+at the next contiguous open at the SAME timestamp only in this explicitly named
+hypothetical model. Warmup/equal means give target zero; long-only maps negative
+signals to zero. No strategy observes another instrument's future close.
+An incomplete tail contributes its OPEN, possibly consuming a prior target,
+but its close has no known observation time: it supplies no mark, signal or
+future clock event. Its supplied close is retained as untimed metadata only.
+No EOF fill, liquidation, synthetic bar, liquidity or exchange session is added.
+
+### New portfolio report contract
+
+Output is **`hepta.research.native-portfolio-report.v1`**, with model
+`normalized-close-then-open-v1`. This is deliberately NOT a drop-in
+`hepta.research.portfolio-report.v1` string-Decimal/ID schema.
+
+`equity` contains one snapshot after all events at each actual timestamp;
+`snapshot` is the final one. Each includes cash, fees, positions, and
+`valuation_complete`. Missing or stale held marks make aggregate equity and
+gross notional null and identify `unavailable_instruments`; affected position
+unrealized P&L is null. Positions remain known. `mark_observed=false` and null
+mark price/time distinguish a never-observed quote from a genuine zero price.
+`valuation_gap_count` counts incomplete snapshots; any gap makes max drawdown
+null, while total return is null only if final equity is unavailable. No
+calendar/annualized metric is inferred (`annualized` is null).
+
+`fills` uses canonical IDs and explicit closing/opening legs for a reversal.
+To compare with the old net-delta report, aggregate quantity and fees for the
+same instrument/timestamp/price. Do not compare generated fill IDs as though
+there were an old order-record migration. `pending_targets` and
+`untimed_incomplete_closes` describe offline terminal state. `input` records
+manifest/source hashes and subgrid factors, not local paths. Both authority
+flags remain false; cash may be negative without an invented funding transfer.
+
+`--max-total-bars` defaults to 100000 and permits 1..250000 across the universe;
+at most 256 sources and 4096-byte CSV rows are accepted. Common captured-input,
+manifest, native timeout, private staging/atomic output and 64 MiB protocol/report
+bounds above remain active. `--max-events`/`--max-active-orders` belong to the
+FLOW/NEXT interface and do not enlarge portfolio capacity. A bounded count is
+not a throughput guarantee: the existing whole-event native model stages state.
+
+### Direct HPR1 input
+
+The SAME `hepta-research-replay` binary accepts `--portfolio-stream` on stdin:
+
+```text
+HPR1,maxBars,maxMarkAgeUs,capital,currency
+I,instrument,executionTickSize,multiplier,lot,feePerUnit,fast,slow,targetQuantity,longOnly0or1,slippageTicks
+BEGIN
+P,instrument,tradingDay,beginUs,endUs,openTicks,highTicks,lowTicks,closeTicks,volume,tickCount,complete0or1
+```
+
+HPR1 OHLC use the already-rescaled execution grid. All files are marshalled into
+one invocation, retaining signals, accounting and quotes across file boundaries.
+Direct native validation rejects incomplete/malformed later input before it
+publishes stdout; a stdout failure may expose partial bytes and is not success.
+The installed adapter supplies digest binding and atomic report replacement.
+
+The selected #106 normalized-bar manifest/CSV/MA consumer is now adapted in this
+bounded domain, including same-time phase and null-valuation behavior. Original
+source-compatible Python APIs, arbitrary Decimal range, fractional quantities,
+old report schemas, custom target functions and old client/outbox records remain
+explicitly retained. This port does not certify every historical strategy,
+platform, dataset or binary application and does not authorize source retirement.

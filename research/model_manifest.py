@@ -8,7 +8,7 @@ output explicitly uses the native v1 contract, NOT its Decimal/null report ABI.
 from __future__ import annotations
 
 import argparse
-from decimal import Decimal
+from decimal import Decimal, localcontext
 import importlib.machinery
 import importlib.util
 import json
@@ -160,7 +160,7 @@ def _publish(output, report, inputs):
         temporary.unlink(missing_ok=True)
 
 
-def replay_manifest(args):
+def _input_context(args):
     _integer(args.max_events, 1, 1000000)
     _integer(args.max_active_orders, 1, 100000)
     _integer(args.max_input_bytes, 1, MAX_BYTES)
@@ -180,6 +180,26 @@ def replay_manifest(args):
     B._alias(args.output, inputs)
     manifest_bytes, manifest_digest = B._capture(args.manifest, 1024 * 1024)
     document = _json(manifest_bytes)
+    return native, bindings, inputs, document, manifest_digest
+
+
+def _native_report(native, flag, protocol, result_file, timeout, schema, model, count):
+    with protocol.open("rb") as source, result_file.open("wb") as output, tempfile.TemporaryFile() as error:
+        result = subprocess.run([str(native), flag], stdin=source, stdout=output,
+                                stderr=error, timeout=timeout, check=False)
+    if result.returncode:
+        raise ValueError("canonical model rejected the stream/valuation; no report published")
+    captured, _ = B._capture(result_file, MAX_BYTES)
+    report = _json(captured, native=True)
+    if (not isinstance(report, dict) or report.get("schema") != schema
+            or report.get("model") != model or report.get("broker_authorized") is not False
+            or type(report.get("input_rows")) is not int or report["input_rows"] != count):
+        raise ValueError("native output contract mismatch")
+    return report
+
+
+def replay_manifest(args):
+    native, bindings, inputs, document, manifest_digest = _input_context(args)
     flow = args.mode == "order-flow"
     _fields(document, "schema capital currency max_mark_age_us instruments sources" +
             ("" if flow else " slippage_ticks"))
@@ -256,31 +276,164 @@ def replay_manifest(args):
                         raise ValueError("undeclared event instrument")
                     emit(row)
                 provenance.append({"ref": item["ref"], "sha256": digest, "event_count": len(lines)})
-        with protocol.open("rb") as source, result_file.open("wb") as output, tempfile.TemporaryFile() as error:
-            result = subprocess.run([str(native), "--model-stream"], stdin=source, stdout=output,
-                                    stderr=error, timeout=args.timeout, check=False)
-        if result.returncode:
-            raise ValueError("canonical model rejected the stream or complete final valuation; no report published")
-        captured, _ = B._capture(result_file, MAX_BYTES)
-        report = _json(captured, native=True)
         expected_model = "explicit-price-time-flow-v1" if flow else "observed-next-distinct-open-v1"
-        if (not isinstance(report, dict) or report.get("schema") != "hepta.research.native-model-report.v1"
-                or report.get("model") != expected_model or report.get("broker_authorized") is not False
-                or type(report.get("input_rows")) is not int or report["input_rows"] != count):
-            raise ValueError("native output contract mismatch")
+        report = _native_report(native, "--model-stream", protocol, result_file, args.timeout,
+                                "hepta.research.native-model-report.v1", expected_model, count)
         report["input"] = {"manifest_sha256": manifest_digest, "sources": provenance,
                            "source_sequence_offset": 1 if flow else 0}
         _publish(args.output, report, inputs)
     return {"schema": report["schema"], "model": expected_model, "input_rows": count, "broker_authorized": False}
 
 
+
+BAR_HEADER = "instrument,trading_day,begin_us,end_us,open,high,low,close,volume,ticks,complete"
+
+
+def _whole(value, low, high):
+    number = B.number(value)
+    if number != number.to_integral_value():
+        raise ValueError("canonical portfolio requires whole native quantity/lot")
+    return _integer(int(number), low, high)
+
+
+def _execution_grid(tick, slip):
+    # Refine the INPUT price grid only when fixed-price slippage requires it.
+    # E.g. source tick=1 and slippage=.5 -> execution tick=.5, source factor=2.
+    # No rounding/epsilon repair; native indices and slippage stay bounded.
+    with localcontext() as ctx:
+        ctx.prec = 128
+        places = max(0, -tick.as_tuple().exponent, -slip.as_tuple().exponent)
+        scale = Decimal(10) ** places
+        tick_units, slip_units = int(tick * scale), int(slip * scale)
+        divisor = math.gcd(tick_units, slip_units)
+        grid = Decimal(divisor) / scale
+        factor, slip_ticks = tick_units // divisor, slip_units // divisor
+        _integer(factor, 1, GRID_MAX)
+        _integer(slip_ticks, 0, 1000000)
+        return _real(grid, positive=True), factor, slip_ticks
+
+
+def replay_portfolio(args):
+    """Port the #106 normalized-bar manifest to one canonical native invocation.
+
+    Parsing/provenance only. CLOSE/OPEN scheduling, exact integer-grid signal,
+    matching, accounting, stale valuation and all report metrics run in C++.
+    """
+    native, bindings, inputs, document, manifest_digest = _input_context(args)
+    limit = _integer(args.max_total_bars, 1, 250000)
+    _fields(document, "schema currency capital max_mark_age_us instruments")
+    if document["schema"] != "hepta.research.portfolio-input.v1":
+        raise ValueError("portfolio mode/schema mismatch")
+    currency = document["currency"]
+    if not isinstance(currency, str) or not re.fullmatch(r"[A-Z]{3}", currency):
+        raise ValueError("explicit three-letter portfolio currency required")
+    declarations = document["instruments"]
+    if not isinstance(declarations, list) or not 1 <= len(declarations) <= 64:
+        raise ValueError("1..64 portfolio instruments required")
+    rows = [["HPR1", limit, _integer(document["max_mark_age_us"], 0, I64_MAX),
+             _real(document["capital"], positive=True), currency]]
+    specs, references = {}, set()
+    for item in declarations:
+        _fields(item, "instrument currency tick_size quantity multiplier lot slippage fee_per_unit fast slow long_only sources")
+        name = _identity(item["instrument"], 64)
+        if name in specs or item["currency"] != currency:
+            raise ValueError("duplicate instrument or mixed accounting currency")
+        tick, slip, fee = B.number(item["tick_size"], positive=True), B.number(item["slippage"]), B.number(item["fee_per_unit"])
+        if slip < 0 or fee < 0 or type(item["long_only"]) is not bool:
+            raise ValueError("nonnegative costs and boolean long_only required")
+        quantity, lot = _whole(item["quantity"], 1, 10**12), _whole(item["lot"], 1, 10**12)
+        fast, slow = _integer(item["fast"], 1, 100000), _integer(item["slow"], 2, 100000)
+        if quantity % lot or fast >= slow:
+            raise ValueError("lot-aligned target and fast < slow required")
+        grid, factor, slippage = _execution_grid(tick, slip)
+        rows.append(["I", name, grid, _real(item["multiplier"], positive=True), lot,
+                     _real(fee), fast, slow, quantity, int(item["long_only"]), slippage])
+        entries = item["sources"]
+        if not isinstance(entries, list) or not 1 <= len(entries) <= 256:
+            raise ValueError("bounded ordered source list required")
+        for entry in entries:
+            _fields(entry, "ref sha256")
+            ref = _identity(entry["ref"])
+            if ref in references or not isinstance(entry["sha256"], str) or not B.SHA256.fullmatch(entry["sha256"]):
+                raise ValueError("duplicate source reference or invalid digest")
+            references.add(ref)
+        specs[name] = (item, factor, grid)
+    if references != set(bindings) or len(references) > 256:
+        raise ValueError("source bindings must match all declarations exactly")
+    rows.append(["BEGIN"])
+    budget, count, provenance = args.max_input_bytes, 0, {}
+    with tempfile.TemporaryDirectory(prefix="hepta-native-portfolio-") as temp:
+        protocol, result_file = Path(temp) / "input.hpr1", Path(temp) / "report.json"
+        with protocol.open("wb") as stream:
+            total = 0
+            def emit(row):
+                nonlocal total
+                encoded = (",".join(map(str, row)) + "\n").encode("ascii")
+                total += len(encoded)
+                if total > MAX_BYTES:
+                    raise ValueError("native protocol byte bound")
+                stream.write(encoded)
+            for row in rows:
+                emit(row)
+            for name, (item, factor, grid) in sorted(specs.items()):
+                records = []
+                for entry in item["sources"]:
+                    raw, digest = B._capture(bindings[entry["ref"]], budget)
+                    budget -= len(raw)
+                    if digest != entry["sha256"]:
+                        raise ValueError("portfolio source digest mismatch")
+                    lines = raw.split(b"\n")
+                    if lines[-1] == b"":
+                        lines.pop()
+                    lines = [line[:-1] if line.endswith(b"\r") else line for line in lines]
+                    if len(lines) < 2 or lines[0] != BAR_HEADER.encode("ascii"):
+                        raise ValueError("nonempty normalized integer-bar CSV required")
+                    for line in lines[1:]:
+                        if not line or len(line) > 4096 or b"\r" in line:
+                            raise ValueError("bar line bound or line ending")
+                        try:
+                            fields = line.decode("ascii").split(",")
+                        except UnicodeError as exc:
+                            raise ValueError("ASCII normalized bar required") from exc
+                        if len(fields) != 11 or fields[0] != name:
+                            raise ValueError("bar width or declared instrument mismatch")
+                        B._day(fields[1])
+                        for index in range(2, 10):
+                            value = fields[index]
+                            if not re.fullmatch(r"-?[0-9]{1,20}", value):
+                                raise ValueError("normalized integer syntax")
+                            bound = I64_MAX if index < 4 else (2**64-1 if index > 7 else GRID_MAX)
+                            low = -GRID_MAX if 4 <= index <= 7 else (1 if index == 9 else 0)
+                            # Negative zero is not a valid unsigned source field.
+                            if low >= 0 and value.startswith("-"):
+                                raise ValueError("negative unsigned normalized field")
+                            number = _integer(int(value), low, bound)
+                            if 4 <= index <= 7:
+                                number = _integer(number * factor, -GRID_MAX, GRID_MAX)
+                            fields[index] = number
+                        if fields[10] not in ("0", "1"):
+                            raise ValueError("explicit normalized completeness required")
+                        count += 1
+                        if count > limit:
+                            raise ValueError("total portfolio bar bound")
+                        emit(["P", *fields])
+                    records.append({"ref": entry["ref"], "sha256": digest, "bar_count": len(lines)-1})
+                provenance[name] = {"sources": records, "execution_grid": grid, "source_grid_factor": factor}
+        model = "normalized-close-then-open-v1"
+        report = _native_report(native, "--portfolio-stream", protocol, result_file, args.timeout,
+                                "hepta.research.native-portfolio-report.v1", model, count)
+        report["input"] = {"manifest_sha256": manifest_digest, "instruments": provenance}
+        _publish(args.output, report, inputs)
+    return {"schema": report["schema"], "model": model, "input_rows": count, "broker_authorized": False}
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("order-flow", "next-open"))
+    parser.add_argument("mode", choices=("order-flow", "next-open", "portfolio"))
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--source", action="append", default=[], metavar="REF=PATH")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--max-events", type=int, default=100000)
+    parser.add_argument("--max-total-bars", type=int, default=100000)
     parser.add_argument("--max-active-orders", type=int, default=4096)
     parser.add_argument("--max-input-bytes", type=int, default=MAX_BYTES)
     parser.add_argument("--timeout", type=int, default=120)
@@ -288,7 +441,7 @@ def main(argv=None):
                         default=Path(__file__).absolute().with_name("hepta-research-replay"))
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(replay_manifest(args), sort_keys=True), flush=True)
+        print(json.dumps(replay_portfolio(args) if args.mode == "portfolio" else replay_manifest(args), sort_keys=True), flush=True)
     except (OSError, ValueError, TypeError, ArithmeticError, subprocess.SubprocessError) as exc:
         print("RESEARCH_MODEL_IMPORT_FAILED: " +
               (str(exc) if isinstance(exc, ValueError) else "input/process/output failure"), file=sys.stderr)

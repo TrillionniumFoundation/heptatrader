@@ -1,5 +1,6 @@
 #pragma once
 #include "hepta/research/replay.h"
+#include "hepta/research/strategy.h"
 #include "test_support.h"
 #include <limits>
 #include <map>
@@ -216,5 +217,191 @@ inline void NextBar() {
     Throws([&] { capped.ObserveOpen(Open(3, 2, 11)); });
     Check(!capped.SetTarget(target), "historical retry does not consume quota");
 }
-inline void RunAll() { SignedAccounting(); Slippage(); OrderFlow(); FlowConservation(); NextBar(); }
+
+inline void IntegerSignal() {
+    Throws([] { IntegerGridMovingAverage x(0, 2); });
+    Throws([] { IntegerGridMovingAverage x(2, 2); });
+    Throws([] { IntegerGridMovingAverage x(1, 100001); });
+    std::size_t checked = 0;
+    // Independent bounded direct-sum/cross-product oracle. With these windows
+    // and inputs every product fits int64, including near the public tick bound.
+    for (std::size_t slow = 2; slow <= 17; ++slow) for (std::size_t fast = 1; fast < slow; ++fast)
+    for (const auto base : {-(1LL << 40) + 8, 0LL, (1LL << 40) - 8}) {
+        IntegerGridMovingAverage signal(fast, slow);
+        std::vector<std::int64_t> closes;
+        for (int i = 0; i < 80; ++i) {
+            const auto value = base + ((i * 37 + i * i) % 17) - 8;
+            closes.push_back(value);
+            const auto before = signal;
+            Throws([&] { signal.ObserveClose((1LL << 40) + 1); });
+            auto copy = before;
+            const int actual = signal.ObserveClose(value);
+            Check(copy.ObserveClose(value) == actual, "failed integer signal does not advance state");
+            int expected = 0;
+            if (closes.size() >= slow) {
+                std::int64_t shortSum = 0, longSum = 0;
+                for (std::size_t j = 0; j < slow; ++j) {
+                    longSum += closes[closes.size()-1-j];
+                    if (j < fast) shortSum += closes[closes.size()-1-j];
+                }
+                const auto left = shortSum * static_cast<std::int64_t>(slow);
+                const auto right = longSum * static_cast<std::int64_t>(fast);
+                expected = left > right ? 1 : (left < right ? -1 : 0);
+            }
+            Check(actual == expected, "exact signed-grid MA independent oracle"); ++checked;
+        }
+    }
+    IntegerGridMovingAverage large(99999, 100000);
+    for (int i = 0; i < 100000; ++i)
+        Check(large.ObserveClose(1LL << 40) == 0, "maximum window equal means");
+    Check(large.ObserveClose((1LL << 40) - 1) == -1, "one tick difference at maximum window");
+    std::cout << "integer MA independent oracle cases=" << checked << '\n';
+}
+inline void PartialValuation() {
+    const auto a = Spec(), b = Spec("B");
+    ResearchPortfolio p(1000, "USD", {a.account, b.account});
+    auto empty = p.Valuation(0, 0);
+    Check(empty.complete && empty.snapshot.positions.size() == 2, "flat portfolio needs no mark");
+    Near(empty.cash, 1000); Near(empty.snapshot.equity, 1000);
+    Check(empty.unobservedMarks == std::vector<std::string>({"A","B"}), "absent flat quote differs from observed zero");
+    ResearchFill f; f.fillId="v1"; f.orderId="o"; f.instrument="A"; f.timestampUs=1;
+    f.side=1; f.quantity=2; f.price=-5; f.fee=1;
+    p.Apply(f); auto missing=p.Valuation(1, 0);
+    Check(!missing.complete && missing.missingMarks == std::vector<std::string>{"A"} &&
+          missing.staleMarks.empty(), "missing held mark is not zero-valued equity");
+    Near(missing.cash, 1009); Near(missing.snapshot.positions.at("A").quantity, 2);
+    Near(missing.snapshot.fees, 1); Throws([&] { p.Snapshot(1, 100); });
+    p.Observe(Open(2, 1, -4)); const auto fresh=p.Valuation(2, 0);
+    Check(fresh.complete, "signed quote produces complete valuation");
+    Near(fresh.snapshot.equity, 1001); Near(fresh.grossNotional, 8); Near(fresh.cash, 1009);
+    const auto stale=p.Valuation(3, 0);
+    Check(!stale.complete && stale.staleMarks == std::vector<std::string>{"A"} &&
+          stale.missingMarks.empty(), "stale held quote explicitly identified");
+    Near(stale.cash, fresh.cash); Throws([&] { p.Snapshot(3, 0); });
+    p.Observe(Open(3, 2, 0)); Near(p.Valuation(3, 0).snapshot.equity, 1009);
+    f.fillId="v2"; f.timestampUs=4; f.side=-1; f.quantity=2; f.price=1; f.fee=.5; p.Apply(f);
+    const auto flat=p.Valuation(4, 0);
+    Check(flat.complete && flat.missingMarks.empty() && flat.staleMarks.empty(), "flat stale mark is immaterial");
+    Near(flat.cash, 1010.5); Near(flat.snapshot.equity, 1010.5); Near(flat.grossNotional, 0);
+    Throws([&] { p.Valuation(3, 0); }); Throws([&] { p.Valuation(4, -1); });
+    // A strict snapshot must not acquire the partial API's new cash/gross
+    // overflow preconditions for otherwise-valid large opposite notionals.
+    auto c=Spec("C"), d=Spec("D"); c.account.multiplier=d.account.multiplier=1e308;
+    ResearchPortfolio big(1000,"USD",{c.account,d.account});
+    f.fee=0;f.price=1;f.quantity=1;f.timestampUs=0;f.fillId="large1";f.instrument="C";f.side=1;big.Apply(f);
+    f.fillId="large2";f.instrument="D";f.side=-1;big.Apply(f);
+    big.Observe(Open(0,1,1,"C"));big.Observe(Open(0,1,1,"D"));
+    Near(big.Snapshot(0,0).equity,1000);
+    Throws([&] { big.Valuation(0,0); });
+}
+inline void ClosePhaseConsumer() {
+    auto a=Spec(), b=Spec("B"); a.feePerUnit=.5; b.feePerUnit=.25;
+    NextBarPolicy policy; policy.timing=NextOpenTiming::AfterClosePhase;
+    policy.slippageTicks=1; policy.instrumentSlippageTicks["B"]=2;
+    NextBarReplay replay(1000,"USD",{a,b},policy);
+    replay.ObserveMark(Open(10,1,10));
+    replay.SetTarget(Target("phase-a",10,2));
+    auto fills=replay.ObserveOpen(Open(10,2,11));
+    Check(fills.size()==1 && fills[0].price==12 && fills[0].quantity==2,
+          "explicit completed-close phase can precede equal-time next open");
+    Check(replay.PendingTargets().empty(),"actual open consumes target once");
+    Near(replay.Valuation(10,0).snapshot.equity,997);
+    replay.ObserveMark(Open(11,3,12));
+    replay.SetTarget(Target("phase-next",11,-1,12));
+    Check(!replay.ObserveMark(Open(11,3,12)) && replay.PendingTargets().at("A")==-1,
+          "same quote retry neither fills nor consumes target");
+    Throws([&] { replay.ObserveMark(Open(11,3,13)); });
+    Throws([&] { replay.ObserveMark(Open(9,4,13)); });
+    Check(replay.Valuation(11,0).snapshot.timestampUs==11 && replay.PendingTargets().at("A")==-1,"rejected mark atomicity");
+    replay.ObserveMark(Open(11,1,20,"B"));
+    replay.SetTarget(Target("phase-b",11,-1,20,"B"));
+    auto bf=replay.ObserveOpen(Open(11,2,20,"B"));
+    Check(bf.size()==1 && bf[0].price==18,"instrument slippage override");
+    auto reverse=replay.ObserveOpen(Open(12,4,13));
+    Check(reverse.size()==2 && reverse[0].quantity==2 && reverse[1].quantity==1,
+          "phase mode retains canonical close-first reversal");
+    auto value=replay.Valuation(12,0);
+    Check(!value.complete && value.staleMarks == std::vector<std::string>{"B"},"phase model retains stale gaps");
+    replay.ObserveMark(Open(12,3,19,"B"));Check(replay.Valuation(12,0).complete,"new observed mark restores valuation");
+    Throws([&] { replay.Valuation(11,0); });
+    NextBarPolicy invalid=policy;invalid.timing=static_cast<NextOpenTiming>(3);
+    Throws([&] { NextBarReplay x(1000,"USD",{a,b},invalid); });
+    invalid=policy;invalid.instrumentSlippageTicks["unknown"]=1;
+    Throws([&] { NextBarReplay x(1000,"USD",{a,b},invalid); });
+    invalid=policy;invalid.instrumentSlippageTicks["A"]=-1;
+    Throws([&] { NextBarReplay x(1000,"USD",{a,b},invalid); });
+    policy.instrumentSlippageTicks.clear();
+    NextBarReplay capped(1000,"USD",{a},policy,1);
+    const auto mark=Open(1,1,10);capped.ObserveMark(mark);
+    Check(!capped.ObserveMark(mark),"duplicate mark does not consume capacity");
+    Throws([&] { capped.ObserveMark(Open(2,2,11)); });
+    Check(capped.Valuation(1,0).snapshot.timestampUs==1,"quota rejection retains previous clock");
+    Near(capped.Snapshot(1,0).equity,1000);
+}
+
+// A quote receipt has one semantic kind. A valuation-only observation cannot
+// be reused as opening evidence, even when every Tick field is identical.
+inline void QuoteKindIdentity() {
+    std::size_t cases = 0;
+    for (auto timing : {NextOpenTiming::StrictlyLater, NextOpenTiming::AfterClosePhase})
+    for (const auto price : {-10.0, 0.0, 10.0})
+    for (const auto desired : {-2LL, 0LL, 2LL}) {
+        auto spec = Spec(); spec.feePerUnit = .5;
+        NextBarPolicy policy; policy.timing = timing;
+        // Three accepted events: target, mark, and one fresh open. Rejected
+        // cross-kind calls and exact retries must not consume that budget.
+        NextBarReplay replay(1000, "USD", {spec}, policy, 3);
+        replay.SetTarget(Target("kind-target", 10, desired, price));
+        const auto when = timing == NextOpenTiming::StrictlyLater ? 11 : 10;
+        const auto mark = Open(when, 1, price);
+        Check(replay.ObserveMark(mark), "accept valuation-only quote");
+        const auto before = replay.Valuation(when, 0);
+        for (int retry = 0; retry < 3; ++retry) {
+            Throws([&] { replay.ObserveOpen(mark); });
+            Check(!replay.ObserveMark(mark), "same-kind mark retry stays inert");
+            const auto after = replay.Valuation(when, 0);
+            Check(after.complete && replay.PendingTargets().at("A") == desired,
+                  "kind conflict preserves pending target and mark validity");
+            Near(after.snapshot.positions.at("A").quantity, 0);
+            Near(after.snapshot.fees, before.snapshot.fees);
+            Near(after.cash, before.cash); Near(after.snapshot.equity, before.snapshot.equity);
+        }
+        auto changed = mark; changed.price += 1;
+        Throws([&] { replay.ObserveOpen(changed); });
+        Throws([&] { replay.ObserveMark(changed); });
+        const auto opening = Open(when + 1, 2, price);
+        const auto fills = replay.ObserveOpen(opening);
+        Check(fills.size() == static_cast<std::size_t>(desired != 0),
+              "fresh open consumes target exactly once after rejected reclassification");
+        Check(replay.PendingTargets().empty(), "fresh open consumes even a zero target");
+        Near(replay.Snapshot(when + 1, 0).positions.at("A").quantity, desired);
+        Near(replay.Snapshot(when + 1, 0).fees, desired == 0 ? 0 : 1);
+        Check(replay.ObserveOpen(opening).empty(), "same-kind open retry stays inert");
+        Throws([&] { replay.ObserveMark(opening); });
+        Throws([&] { replay.ObserveMark(Open(when + 2, 3, price)); });
+        Near(replay.Snapshot(when + 1, 0).positions.at("A").quantity, desired);
+        ++cases;
+    }
+    // A historical last-open retry remains inert after a newer mark and target.
+    // Instrument-local sequence identity must not reject another instrument.
+    NextBarPolicy policy; policy.timing = NextOpenTiming::AfterClosePhase;
+    NextBarReplay replay(1000, "USD", {Spec(), Spec("B")}, policy);
+    const auto opening = Open(10, 1, 10);
+    Check(replay.ObserveOpen(opening).empty(), "initial opening without target");
+    replay.ObserveMark(Open(11, 2, 11));
+    replay.SetTarget(Target("later-target", 11, 2, 11));
+    Check(replay.ObserveOpen(opening).empty() && replay.PendingTargets().at("A") == 2,
+          "historical last-open retry does not consume a newer target");
+    Throws([&] { replay.ObserveMark(opening); });
+    Check(replay.ObserveOpen(Open(11, 2, 20, "B")).empty(),
+          "receipt sequence is instrument-local");
+    Throws([&] { replay.ObserveMark(Open(11, 2, 20, "B")); });
+    Near(replay.Valuation(11, 0).snapshot.positions.at("A").quantity, 0);
+    Check(replay.PendingTargets().at("A") == 2, "other instrument cannot consume target");
+    Check(replay.ObserveOpen(Open(12, 3, 12)).size() == 1, "subsequent real open is eligible");
+    std::cout << "quote-kind identity cases=" << cases << '\n';
+}
+
+inline void RunAll() { SignedAccounting(); Slippage(); OrderFlow(); FlowConservation(); NextBar();
+    IntegerSignal(); PartialValuation(); ClosePhaseConsumer(); QuoteKindIdentity(); }
 } // namespace replay_model_cases

@@ -401,15 +401,27 @@ ResearchPortfolioSnapshot OrderFlowReplay::Snapshot(std::int64_t asOf, std::int6
     Require(asOf >= clockUs_, "RESEARCH_FLOW_SNAPSHOT_IN_PAST");
     return account_.Snapshot(asOf, maxAge);
 }
+namespace {
+NextBarPolicy DefaultNextPolicy(std::int64_t slippage) {
+    NextBarPolicy policy; policy.slippageTicks = slippage; return policy;
+}
+}
 NextBarReplay::NextBarReplay(double initial, std::string currency,
         const std::vector<FlowInstrument>& specs, std::int64_t slippage, std::size_t maxEvents)
+    : NextBarReplay(initial, std::move(currency), specs, DefaultNextPolicy(slippage), maxEvents) {}
+NextBarReplay::NextBarReplay(double initial, std::string currency,
+        const std::vector<FlowInstrument>& specs, NextBarPolicy policy, std::size_t maxEvents)
     : account_(initial, std::move(currency), AccountSpecs(specs), maxEvents),
-      slippageTicks_(slippage), maxEvents_(maxEvents) {
-    Require(slippage >= 0 && slippage <= 1000000 && maxEvents > 0 && maxEvents <= 1000000,
-            "RESEARCH_NEXT_BAR_CONFIG_INVALID");
+      policy_(std::move(policy)), maxEvents_(maxEvents) {
+    Require((policy_.timing == NextOpenTiming::StrictlyLater || policy_.timing == NextOpenTiming::AfterClosePhase) &&
+            policy_.slippageTicks >= 0 && policy_.slippageTicks <= 1000000 &&
+            maxEvents > 0 && maxEvents <= 1000000, "RESEARCH_NEXT_BAR_CONFIG_INVALID");
     for (const auto& spec : specs) {
         specs_.emplace(spec.account.instrument, spec); quantities_.emplace(spec.account.instrument, 0);
     }
+    for (const auto& item : policy_.instrumentSlippageTicks)
+        Require(specs_.count(item.first) && item.second >= 0 && item.second <= 1000000,
+                "RESEARCH_NEXT_BAR_SLIPPAGE_INVALID");
 }
 bool NextBarReplay::SetTarget(const NextBarTarget& target) {
     Require(ModelIdentity(target.targetId), "RESEARCH_NEXT_BAR_TARGET_ID_INVALID");
@@ -454,7 +466,8 @@ std::vector<ResearchFill> NextBarReplay::ObserveOpen(const Tick& open) {
     NextBarReplay staged = *this;
     std::vector<ResearchFill> fills;
     auto pending = staged.pending_.find(open.instrument);
-    if (pending != staged.pending_.end() && open.timestampUs > pending->second.observedAtUs) {
+    if (pending != staged.pending_.end() && (open.timestampUs > pending->second.observedAtUs ||
+        (policy_.timing == NextOpenTiming::AfterClosePhase && open.timestampUs == pending->second.observedAtUs))) {
         const auto& target = pending->second;
         const auto current = staged.quantities_.at(open.instrument);
         const auto desired = target.targetQuantity;
@@ -466,7 +479,10 @@ std::vector<ResearchFill> NextBarReplay::ObserveOpen(const Tick& open) {
             ResearchFill fill; fill.fillId = "next:" + target.targetId + ":" + std::to_string(i);
             fill.orderId = target.targetId; fill.instrument = open.instrument; fill.timestampUs = open.timestampUs;
             fill.side = deltas[i] > 0 ? 1 : -1; fill.quantity = deltas[i] > 0 ? deltas[i] : -deltas[i];
-            fill.price = grid.Price(market + fill.side * slippageTicks_);
+            const auto overrideSlip = policy_.instrumentSlippageTicks.find(open.instrument);
+            const auto slip = overrideSlip == policy_.instrumentSlippageTicks.end() ?
+                policy_.slippageTicks : overrideSlip->second;
+            fill.price = grid.Price(market + fill.side * slip);
             fill.fee = ModelFee(spec, fill.price, fill.quantity);
             staged.account_.Apply(fill); fills.push_back(fill);
         }
@@ -474,10 +490,37 @@ std::vector<ResearchFill> NextBarReplay::ObserveOpen(const Tick& open) {
     }
     // This is the explicit observed OPEN, not a fabricated post-trade quote.
     // The canonical portfolio invalidates a filled position until Observe.
-    staged.account_.Observe(open); staged.opens_[open.instrument] = open;
+    // A duplicate portfolio quote may be a previously accepted MARK, not an
+    // OPEN. It cannot become fresh execution evidence. Any staged fills, fees
+    // or target changes must roll back when no new observation was accepted.
+    Require(staged.account_.Observe(open), "RESEARCH_NEXT_BAR_QUOTE_KIND_CONFLICT");
+    staged.opens_[open.instrument] = open;
     staged.clockUs_ = open.timestampUs; ++staged.eventCount_;
     *this = std::move(staged);
     return fills;
+}
+bool NextBarReplay::ObserveMark(const Tick& mark) {
+    const auto found = specs_.find(mark.instrument);
+    Require(found != specs_.end(), "RESEARCH_MODEL_INSTRUMENT_UNKNOWN");
+    ModelTick(mark, found->second.account.priceDomain);
+    ResearchPriceGrid(found->second.tickSize, found->second.account.priceDomain).Index(mark.price);
+    const auto opening = opens_.find(mark.instrument);
+    Require(opening == opens_.end() || opening->second.sequence != mark.sequence,
+            "RESEARCH_NEXT_BAR_QUOTE_KIND_CONFLICT");
+    NextBarReplay staged = *this;
+    if (!staged.account_.Observe(mark)) return false;
+    Require(mark.timestampUs >= clockUs_ && eventCount_ < maxEvents_, "RESEARCH_NEXT_BAR_MARK_INVALID");
+    staged.clockUs_ = mark.timestampUs; ++staged.eventCount_;
+    *this = std::move(staged); return true;
+}
+ResearchPortfolioValuation NextBarReplay::Valuation(std::int64_t asOf, std::int64_t maxAge) const {
+    Require(asOf >= clockUs_, "RESEARCH_NEXT_BAR_SNAPSHOT_IN_PAST");
+    return account_.Valuation(asOf, maxAge);
+}
+std::map<std::string, std::int64_t> NextBarReplay::PendingTargets() const {
+    std::map<std::string, std::int64_t> values;
+    for (const auto& item : pending_) values.emplace(item.first, item.second.targetQuantity);
+    return values;
 }
 ResearchPortfolioSnapshot NextBarReplay::Snapshot(std::int64_t asOf, std::int64_t maxAge) const {
     Require(asOf >= clockUs_, "RESEARCH_NEXT_BAR_SNAPSHOT_IN_PAST");

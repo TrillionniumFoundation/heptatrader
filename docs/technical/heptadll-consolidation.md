@@ -1,6 +1,6 @@
 # HeptaDLL consolidation on the existing #107 line
 
-Status: PARTIAL IMPLEMENTATION; not repository retirement
+Status: MERGED CORE; PARTIAL CONSUMER MIGRATION; not repository retirement
 Date: 2026-09-22
 Canonical continuation: `integration/heptadll-modular-20260920`, PR #107
 Initial comparison source: `522e2eec63161e95e00e30269d4b6ffe00b5f591`
@@ -11,13 +11,24 @@ Reference #106: `acffe4ae84a8e4377fd92b0ac536a865c6f6b6f5`
 Reference #108: `56fd92bc94fd36e064d18c383ffeef9994d85fea`
 Retained original: `HeptaDLL-main@5f3703258bc4cad8f96e513d8d989c2441b4729d`
 
+## Current baseline and historical records
+
+PR #107 was merged normally as `245554c49725fee81dc5e86fea99c43bb1ce2a6c`,
+with accepted head `bb4d55fc89c83d672fb022bc22e3a6d2be29ed47` and identical
+complete tree `1fcd9846c93348e47f31a59175d5d7d9747d3f3b`. The sections
+below preserve earlier implementation/delivery observations, not a claim that
+#107 is still unmerged. New continuation uses this merged source on the SAME
+`integration/heptadll-modular-20260920` line. Main merge and original repository
+retirement remain separate decisions.
+
 ## One implementation line, not a fourth framework
 
 The selected engineering line remains #107. No alternate `Tick`, `BarBuilder`,
 Python ledger, standalone strategy gateway, transport, OMS or private SDK is
 linked into it. Capability ports are implemented through its existing targets.
-This working continuation does not merge or close the three remote PRs, assert
-complete historical parity, change repository visibility, or authorize trading.
+The initial pre-merge continuation did not merge or close the three remote PRs,
+assert complete historical parity, change visibility, or authorize trading.
+The later normal #107 merge is recorded above; compatibility retention remains.
 
 The complete #107 and #106 source snapshots were obtained from the respective
 GitHub Actions artifacts. The #107 full tree was verified against the tree above.
@@ -182,3 +193,38 @@ external or binary users retain the original library. This retention is not
 "all consumers migrated" and does not authorize closing #106/#108 as completely
 superseded, deleting releases, changing visibility or archiving HeptaDLL-main.
 Main acceptance and that later retirement decision remain independent.
+
+## Post-merge normalized-portfolio consumer continuation
+
+Baseline: actual main `245554c49725fee81dc5e86fea99c43bb1ce2a6c`, not a local
+synthetic snapshot commit. No new integration branch, framework, compiled target,
+translation unit, installed-header path, privileged SDK or account core is added.
+The existing model executable and installed Python adapter now implement the
+selected #106 normalized-portfolio manifest/CSV entry point using the SAME
+NextBarReplay, ResearchPortfolio/ResearchLedger and Strategy SDK.
+
+| Consumer or previous gap | Current decision | Remaining boundary |
+|---|---|---|
+| #106 normalized CSV/manifest, per-instrument MA, shared capital | Adapted through `hepta-research-models portfolio` | Whole-quantity, bounded binary64 execution domain; new report schema |
+| CLOSE(t) before OPEN(t), incomplete final bar | Explicit opt-in AfterClosePhase; untimed partial close remains metadata | StrictlyLater remains the default for actual observed target/open callers |
+| Historical stale/null valuation policy | Opt-in partial Valuation, null equity/gross when held marks unavailable | Original strict Snapshot still rejects; no live risk implication |
+| Integer MA, fractional fixed-price slippage | Existing Strategy SDK exact-grid signal; explicit common decimal execution subgrid | Rescaling/representation failures reject instead of rounding |
+| #107 offline/client SDK callers | Existing build/install/relocation/behavior assertions retained | Exact continuation-head acceptance is required |
+| #106 arbitrary Decimal/fractional quantity/custom Python target/report APIs | Retain pinned #106 source and caller contracts | No source-compatible or arbitrary-magnitude claim |
+| #106 StrategyGateway/outbox and #108 ResearchIntentClient records | Retain old records/callers until explicitly reconciled and adapted | No automatic record conversion or new-ID mutation retry |
+| Original source/VS/CMake/binary/external consumers | Retain original library/history/releases | Named deployment/artifact owners and publication scope remain unresolved |
+
+The original repository README now points new development to main and states its
+legacy-compatibility retention role without changing source, build entry points,
+visibility or copyright notices. Bounded organization source searches still do
+not enumerate outside/private/binary installations. This continuation therefore
+does not authorize archive/deletion or claim all historical consumers migrated.
+
+The tests extend the existing replay and CLI hosts (including actual installed
+and relocated consumers). They retain all preceding assertions and add exact
+integer MA oracles, partial/strict valuation compatibility, phase and mark
+atomicity, per-instrument costs, source splits, signed multi-instrument Decimal
+test oracles, incomplete tails and failed-input/output preservation. Reports
+record real local/remote outcomes; neither this document nor an older green
+head substitutes for acceptance of the resulting source. Contract details are
+`research/MODELS.md` and `research/MODEL-CLI.md`.
