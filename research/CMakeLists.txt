@@ -84,9 +84,14 @@ if(BUILD_TESTING)
             --native "$<TARGET_FILE:hepta_research_replay_cli>")
         set_tests_properties(hepta_research_legacy_bundle_behavior PROPERTIES LABELS "core;research" TIMEOUT 120)
     endif()
+    set(_model_manifest_args)
+    if(UNIX)
+        list(APPEND _model_manifest_args "--manifest-adapter=${CMAKE_CURRENT_SOURCE_DIR}/model_manifest.py")
+    endif()
     add_test(NAME hepta_research_model_cli COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/model_cli_behavior.py"
-        "--binary=$<TARGET_FILE:hepta_research_replay_cli>")
+        "--binary=$<TARGET_FILE:hepta_research_replay_cli>"
+        ${_model_manifest_args})
     set_tests_properties(hepta_research_model_cli PROPERTIES LABELS "core;research" TIMEOUT 60)
     if(HEPTA_RESEARCH_STANDALONE)
         add_test(NAME hepta_research_model_cli_install COMMAND "${Python3_EXECUTABLE}"
