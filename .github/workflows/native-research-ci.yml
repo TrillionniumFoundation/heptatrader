@@ -1,0 +1,65 @@
+name: Native Research Integration
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ['integration/heptadll-*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-research-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  native:
+    name: native-research-${{ matrix.compiler }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install SDK-free dependencies
+        run: sudo apt-get update && sudo apt-get install --yes cmake ninja-build g++ clang libssl-dev zlib1g-dev
+      - name: Build instrumented real integration targets
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: |
+          cmake -S . -B build/research -G Ninja -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF -DCMAKE_CXX_FLAGS='-fsanitize=address,undefined -fno-omit-frame-pointer' -DCMAKE_EXE_LINKER_FLAGS='-fsanitize=address,undefined'
+          cmake --build build/research --parallel 2 --target hepta_native_research_tests hepta_native_strategy_gateway_tests hepta_native_strategy_client_link_tests hepta_tool_gatewayd
+      - name: Execute behavior and Gateway routing
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build/research --output-on-failure -V -L research-integration
+      - name: Check linked client has no privileged authority
+        run: |
+          set -euo pipefail
+          nm -C --defined-only build/research/hepta_native_strategy_client_link_tests > build/research/client-symbols.txt
+          if grep -E ' [TW] (ExecutionCoordinator::|OmsJournal::|HeptaIBGatewayAdapter::|CThostFtdc|DeterministicExecutionVenue::)' build/research/client-symbols.txt; then
+            echo 'Unprivileged strategy client contains an execution authority' >&2
+            exit 1
+          fi
+      - name: Retain exact-source diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-research-${{ matrix.compiler }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            build/research/Testing/Temporary/
+            build/research/client-symbols.txt
+          if-no-files-found: warn
+      - name: Check unchanged source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code
