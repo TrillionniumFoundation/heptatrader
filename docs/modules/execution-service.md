@@ -105,7 +105,7 @@ Generation V2 bounds the active replay working set and historical command cache,
 
 ## Wire fields and versioned examples
 
-[`wire-operation-contracts.md`](../technical/wire-operation-contracts.md) specifies HEX1 v10's exact per-operation field sets, value representations, identity requirements and failure actions. Its in-memory golden vectors use real C++ codecs, not a documentation keyword check.
+[`wire-operation-contracts.md`](../technical/wire-operation-contracts.md) specifies HEX1 v11's exact per-operation field sets, value representations, identity requirements and failure actions. Its in-memory golden vectors use real C++ codecs, not a documentation keyword check.
 
 ## Send-attempt query cost
 

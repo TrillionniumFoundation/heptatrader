@@ -98,7 +98,7 @@ Source: `HeptaTrade/tool_host/session_supervisor_protocol.cpp`
 | 85 | `EgressPublisherPid` | `std::to_string(result.egressPublisherPid)` |
 | 86 | `EgressPublisherStartTicks` | `std::to_string(result.egressPublisherStartTicks)` |
 
-## HEX1 / version 10
+## HEX1 / version 11
 
 Source: `HeptaTrade/execution/execution_service_protocol.cpp`
 
@@ -145,6 +145,7 @@ Source: `HeptaTrade/execution/execution_service_protocol.cpp`
 | 39 | `PreviewPermit` | `command.previewPermit` |
 | 40 | `RecoveryIngressFence` | `Number(request.control.recoveryIngressFence)` |
 | 41 | `TerminalPreliminaryReceiptSha256` | `request.control.terminalPreliminaryReceiptSha256` |
+| 42 | `PositionEffect` | `command.order.positionEffect` |
 | 100 | `ResultStatus` | `Number(static_cast<int>(response.status))` |
 | 101 | `ResultCommandId` | `response.commandId` |
 | 102 | `ResultOrderId` | `Number(response.orderId)` |

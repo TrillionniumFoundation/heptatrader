@@ -790,6 +790,7 @@ bool IbPaperExecutionGuard::AllowPlaceAtAuthoritativePrice(
         return false;
     }
     if (command.timeInForce != "DAY" ||
+        !command.order.positionEffect.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL"))
     {
@@ -964,7 +965,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PlaceOrder(
     if (command.instrument.empty() || command.contract.symbol.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL") ||
-        command.timeInForce != "DAY")
+        command.timeInForce != "DAY" ||
+        !command.order.positionEffect.empty())
         return Reject(command.context, -1, "IB_PAPER_ORDER_INTENT_INVALID");
     MarketQuoteSnapshot quote;
     std::string reason;
@@ -1052,7 +1054,8 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::PreviewOrder(
     if (command.instrument.empty() || command.contract.symbol.empty() ||
         (command.order.action != "BUY" &&
          command.order.action != "SELL") ||
-        command.timeInForce != "DAY")
+        command.timeInForce != "DAY" ||
+        !command.order.positionEffect.empty())
         return Reject(command.context, -1, "IB_PAPER_ORDER_INTENT_INVALID");
     std::string blockedReason;
     if (m_coordinator.IsMutationBlocked(&blockedReason))

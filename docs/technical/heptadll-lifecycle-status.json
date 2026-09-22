@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "canonical_development": {
+    "repository": "TrillionniumFoundation/heptatrader",
+    "state": "integrated",
+    "accepted_baseline_commit": "1567c2f6d7660b9e2cbfc1e233cd50aec10d59fc"
+  },
+  "legacy_repository": {
+    "repository": "TrillionniumFoundation/HeptaDLL-main",
+    "state": "retained",
+    "archive_ready": false
+  },
+  "retirement_gates": {
+    "blocking_consumers_resolved": false,
+    "persistent_record_support_resolved": false,
+    "publication_scope_confirmed": false,
+    "release_retention_policy_confirmed": false
+  }
+}

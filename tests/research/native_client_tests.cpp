@@ -809,6 +809,39 @@ void Tests() {
     unsupported = contract; unsupported.lastTradeDateOrContractMonth = "202612";
     Throws([&] { PreparedOrder("EUR.USD", unsupported, "BUY", 1, 1, 1, expiry); });
 
+    InstrumentRef future;
+    future.symbol = "RB"; future.secType = "FUT"; future.exchange = "SHFE";
+    future.currency = "CNY"; future.lastTradeDateOrContractMonth = "202610";
+    future.multiplier = "10"; future.tradingClass = "RB";
+    future.localSymbol = "rb2610";
+    PreparedOrder closeToday("RB.202610", future, "SELL", "LMT", "IOC",
+                             "CLOSE_TODAY", 2, 3500, 3499, expiry);
+    auto futuresRequest = closeToday.SubmissionRequest(
+        "futures-close-today-001", permit);
+    futuresRequest.sessionToken = "research-codec-test-token";
+    std::string futuresWire;
+    Check(TypedToolProtocol::EncodeRequest(
+        futuresRequest, futuresWire, reason), "futures request encoding failed");
+    TradingToolHostRequest futuresDecoded;
+    Check(TypedToolProtocol::DecodeRequest(
+        futuresWire, futuresDecoded, reason), "futures request decoding failed");
+    Check(futuresDecoded.call.ibContract.lastTradeDateOrContractMonth == "202610" &&
+          futuresDecoded.call.ibContract.multiplier == "10" &&
+          futuresDecoded.call.ibContract.tradingClass == "RB" &&
+          futuresDecoded.call.ibContract.localSymbol == "rb2610",
+          "futures contract identity was lost");
+    Check(futuresDecoded.call.ibOrder.positionEffect == "CLOSE_TODAY" &&
+          futuresDecoded.call.timeInForce == "IOC",
+          "futures execution semantics were lost");
+    PreparedOrder fillOrKill("RB.202610", future, "BUY", "LMT", "FOK",
+                             "OPEN", 1, 3500, 3499, expiry);
+    Check(fillOrKill.PreviewRequest("futures-fok-preview-001").call.timeInForce == "FOK",
+          "FOK mapping was lost");
+    Throws([&] { PreparedOrder("RB.202610", future, "BUY", "LMT", "GTC",
+                               "OPEN", 1, 3500, 3499, expiry); });
+    Throws([&] { PreparedOrder("RB.202610", future, "BUY", "LMT", "IOC",
+                               "AUTO", 1, 3500, 3499, expiry); });
+
     NativeToolClientConfig config;
     // A nonexistent path below /dev/null cannot accidentally resolve to a
     // real local Gateway. This is a negative transport test, not broker proof.

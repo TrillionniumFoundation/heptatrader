@@ -13,7 +13,7 @@ import re
 ROOT = Path(__file__).resolve().parents[1]
 CODECS = (
     ("HSS1", "HeptaTrade/tool_host/session_supervisor_protocol.cpp"),
-    ("HEX1 / version 10", "HeptaTrade/execution/execution_service_protocol.cpp"),
+    ("HEX1 / version 11", "HeptaTrade/execution/execution_service_protocol.cpp"),
     ("HEV2 / version 2", "HeptaTrade/execution/execution_event_feed.cpp"),
 )
 

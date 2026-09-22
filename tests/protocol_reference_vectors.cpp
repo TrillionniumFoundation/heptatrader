@@ -20,12 +20,12 @@ static std::string Tlv(unsigned tag, const std::string& value) {
 int main() {
     std::string reason, encoded;
     ExecutionServiceRequest execution;
-    const std::string identity = Hex("48455831000a0007");
+    const std::string identity = Hex("48455831000b0007");
     Check(ExecutionServiceProtocol::DecodeRequest(identity, execution, reason));
     Check(execution.operation == ExecutionServiceOperation::GetServiceIdentity);
     Check(ExecutionServiceProtocol::EncodeRequest(execution, encoded, reason));
     Check(encoded == identity);
-    Check(!ExecutionServiceProtocol::DecodeRequest(Hex("4845583100090007"), execution, reason));
+    Check(!ExecutionServiceProtocol::DecodeRequest(Hex("48455831000a0007"), execution, reason));
     Check(!ExecutionServiceProtocol::DecodeRequest(identity + Tlv(1, "unexpected"), execution, reason));
     ExecutionEventFeedRequest feed;
     const std::string eventIdentity = Hex("4845563200020001");
@@ -43,5 +43,5 @@ int main() {
     Check(!SessionSupervisorProtocol::DecodeRequest(revoke + Tlv(3, "duplicate"), session, reason));
     Check(!SessionSupervisorProtocol::DecodeRequest(revoke + Tlv(7, "100"), session, reason));
     Check(!SessionSupervisorProtocol::DecodeRequest("HSS1" + Tlv(1, "revoke") + Tlv(3, "inert-token"), session, reason));
-    std::cout << "protocol golden vectors PASS: HSS1 / HEX1 v10 / HEV2 v2; no I/O\n";
+    std::cout << "protocol golden vectors PASS: HSS1 / HEX1 v11 / HEV2 v2; no I/O\n";
 }

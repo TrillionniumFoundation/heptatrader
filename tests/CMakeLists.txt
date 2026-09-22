@@ -1,5 +1,6 @@
 find_package(OpenSSL REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 set(HEPTA_CORE_TEST_TARGETS)
 
@@ -224,3 +225,12 @@ add_custom_target(hepta_core_test_binaries
 if(TARGET hepta_paper_terminal_latch_committer)
     add_dependencies(hepta_core_test_binaries hepta_paper_terminal_latch_committer)
 endif()
+
+
+add_test(NAME hepta_heptadll_migration_state
+    COMMAND "${Python3_EXECUTABLE}" -I -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/test_heptadll_migration_state.py"
+        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-consumer-migrations.json"
+        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-lifecycle-status.json")
+set_tests_properties(hepta_heptadll_migration_state PROPERTIES
+    LABELS "core;source" TIMEOUT 30)

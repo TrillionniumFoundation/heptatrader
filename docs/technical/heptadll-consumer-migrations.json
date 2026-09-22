@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "canonical_repository": "TrillionniumFoundation/heptatrader",
+  "legacy_repository": "TrillionniumFoundation/HeptaDLL-main",
+  "claim_requirements": [
+    "owner_acknowledgement",
+    "original_artifact_sha256",
+    "platform",
+    "toolchain",
+    "api_abi",
+    "data_formats",
+    "persisted_formats",
+    "golden_evidence",
+    "rollback_version"
+  ],
+  "consumers": [
+    {"id":"C01","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/sdk_package_behavior.py"]},
+    {"id":"C02","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/model_cli_behavior.py"]},
+    {"id":"C03","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/native_client_tests.cpp"]},
+    {"id":"C04","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/strategy_gateway_behavior.py","tests/research/native_execution_tests.cpp"]},
+    {"id":"C05","status":"retained_format","blocks_legacy_retirement":true,"reason":"HRO1 callers require explicit source adaptation; no automatic record conversion"},
+    {"id":"C06","status":"retained_format","blocks_legacy_retirement":true,"reason":"wide Decimal/custom Python/report semantics remain outside the bounded canonical profile"},
+    {"id":"C07","status":"retained_unconfirmed","blocks_legacy_retirement":true,"reason":"legacy strategy/agent deployments, owners and artifact identities are unconfirmed"},
+    {"id":"C08","status":"retained_unconfirmed","blocks_legacy_retirement":true,"reason":"external/private/binary-only consumers are not established absent"},
+    {"id":"C09","status":"retired_in_main","blocks_legacy_retirement":false,"evidence":["docs/technical/legacy-retirement.md"]},
+    {"id":"C10","status":"retained_private","blocks_legacy_retirement":true,"reason":"vendor SDK/data/manual publication scope remains separate"}
+  ]
+}

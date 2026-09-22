@@ -46,20 +46,24 @@ const char* kPlaceInputSchema =
     "{\"type\":\"object\",\"required\":[\"instrument\",\"side\",\"quantity\",\"order_type\",\"tif\",\"expires_at_ms\",\"preview_permit\"],"
     "\"properties\":{\"instrument\":{\"type\":\"string\"},\"side\":{\"enum\":[\"BUY\",\"SELL\"]},"
     "\"quantity\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"order_type\":{\"enum\":[\"MKT\",\"LMT\"]},"
-    "\"tif\":{\"enum\":[\"DAY\"]},\"limit_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
-    "\"reference_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"expires_at_ms\":{\"type\":\"integer\"},"
-    "\"symbol\":{\"type\":\"string\"},\"currency\":{\"type\":\"string\"},"
-    "\"sec_type\":{\"type\":\"string\"},\"exchange\":{\"type\":\"string\"},"
+    "\"tif\":{\"enum\":[\"DAY\",\"IOC\",\"FOK\"]},\"position_effect\":{\"enum\":[\"OPEN\",\"CLOSE\",\"CLOSE_TODAY\",\"CLOSE_YESTERDAY\"]},"
+    "\"limit_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"reference_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
+    "\"expires_at_ms\":{\"type\":\"integer\"},\"symbol\":{\"type\":\"string\"},\"currency\":{\"type\":\"string\"},"
+    "\"sec_type\":{\"type\":\"string\"},\"exchange\":{\"type\":\"string\"},\"primary_exchange\":{\"type\":\"string\"},"
+    "\"last_trade_date_or_contract_month\":{\"type\":\"string\"},\"right\":{\"type\":\"string\"},\"strike\":{\"type\":\"number\"},"
+    "\"multiplier\":{\"type\":\"string\"},\"trading_class\":{\"type\":\"string\"},\"local_symbol\":{\"type\":\"string\"},"
     "\"preview_permit\":{\"type\":\"string\",\"minLength\":71,\"maxLength\":71}},\"additionalProperties\":false}";
 
 const char* kPreviewInputSchema =
     "{\"type\":\"object\",\"required\":[\"instrument\",\"side\",\"quantity\",\"order_type\",\"tif\",\"expires_at_ms\"],"
     "\"properties\":{\"instrument\":{\"type\":\"string\"},\"side\":{\"enum\":[\"BUY\",\"SELL\"]},"
     "\"quantity\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"order_type\":{\"enum\":[\"MKT\",\"LMT\"]},"
-    "\"tif\":{\"enum\":[\"DAY\"]},\"limit_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
-    "\"reference_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"expires_at_ms\":{\"type\":\"integer\"},"
-    "\"symbol\":{\"type\":\"string\"},\"currency\":{\"type\":\"string\"},"
-    "\"sec_type\":{\"type\":\"string\"},\"exchange\":{\"type\":\"string\"}},\"additionalProperties\":false}";
+    "\"tif\":{\"enum\":[\"DAY\",\"IOC\",\"FOK\"]},\"position_effect\":{\"enum\":[\"OPEN\",\"CLOSE\",\"CLOSE_TODAY\",\"CLOSE_YESTERDAY\"]},"
+    "\"limit_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},\"reference_price\":{\"type\":\"number\",\"exclusiveMinimum\":0},"
+    "\"expires_at_ms\":{\"type\":\"integer\"},\"symbol\":{\"type\":\"string\"},\"currency\":{\"type\":\"string\"},"
+    "\"sec_type\":{\"type\":\"string\"},\"exchange\":{\"type\":\"string\"},\"primary_exchange\":{\"type\":\"string\"},"
+    "\"last_trade_date_or_contract_month\":{\"type\":\"string\"},\"right\":{\"type\":\"string\"},\"strike\":{\"type\":\"number\"},"
+    "\"multiplier\":{\"type\":\"string\"},\"trading_class\":{\"type\":\"string\"},\"local_symbol\":{\"type\":\"string\"}},\"additionalProperties\":false}";
 
 const char* kCancelInputSchema =
     "{\"type\":\"object\",\"required\":[\"order_id\"],"
