@@ -14,15 +14,91 @@
     "rollback_version"
   ],
   "consumers": [
-    {"id":"C01","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/sdk_package_behavior.py"]},
-    {"id":"C02","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/model_cli_behavior.py"]},
-    {"id":"C03","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/native_client_tests.cpp"]},
-    {"id":"C04","status":"canonical_source_accepted","blocks_legacy_retirement":false,"evidence":["tests/research/strategy_gateway_behavior.py","tests/research/native_execution_tests.cpp"]},
-    {"id":"C05","status":"retained_format","blocks_legacy_retirement":true,"reason":"HRO1 callers require explicit source adaptation; no automatic record conversion"},
-    {"id":"C06","status":"retained_format","blocks_legacy_retirement":true,"reason":"wide Decimal/custom Python/report semantics remain outside the bounded canonical profile"},
-    {"id":"C07","status":"retained_unconfirmed","blocks_legacy_retirement":true,"reason":"legacy strategy/agent deployments, owners and artifact identities are unconfirmed"},
-    {"id":"C08","status":"retained_unconfirmed","blocks_legacy_retirement":true,"reason":"external/private/binary-only consumers are not established absent"},
-    {"id":"C09","status":"retired_in_main","blocks_legacy_retirement":false,"evidence":["docs/technical/legacy-retirement.md"]},
-    {"id":"C10","status":"retained_private","blocks_legacy_retirement":true,"reason":"vendor SDK/data/manual publication scope remains separate"}
-  ]
+    {
+      "id": "C01",
+      "status": "canonical_source_accepted",
+      "blocks_legacy_retirement": false,
+      "evidence": [
+        "tests/research/sdk_package_behavior.py"
+      ]
+    },
+    {
+      "id": "C02",
+      "status": "canonical_source_accepted",
+      "blocks_legacy_retirement": false,
+      "evidence": [
+        "tests/research/model_cli_behavior.py"
+      ]
+    },
+    {
+      "id": "C03",
+      "status": "canonical_source_accepted",
+      "blocks_legacy_retirement": false,
+      "evidence": [
+        "tests/research/native_client_tests.cpp"
+      ]
+    },
+    {
+      "id": "C04",
+      "status": "canonical_source_accepted",
+      "blocks_legacy_retirement": false,
+      "evidence": [
+        "tests/research/strategy_gateway_behavior.py",
+        "tests/research/native_execution_tests.cpp"
+      ]
+    },
+    {
+      "id": "C05",
+      "status": "retained_format",
+      "blocks_legacy_retirement": true,
+      "reason": "HRO1 callers require explicit source adaptation; no automatic record conversion"
+    },
+    {
+      "id": "C06",
+      "status": "retained_format",
+      "blocks_legacy_retirement": true,
+      "reason": "wide Decimal/custom Python/report semantics remain outside the bounded canonical profile"
+    },
+    {
+      "id": "C07",
+      "status": "retained_unconfirmed",
+      "blocks_legacy_retirement": true,
+      "reason": "legacy strategy/agent deployments, owners and artifact identities are unconfirmed",
+      "source_inventory": [
+        "heptaHeptaDLL/heptaBasicStrategy.h",
+        "heptaHeptaDLL/heptaBasicCTAStrategy.h",
+        "heptaHeptaDLL/heptaBasicKindleStrategy.h",
+        "heptaHeptaDLL/heptaBasicAgent.h",
+        "heptaHeptaDLL/heptaAgentManager.h",
+        "heptaHeptaDLL/heptaSimMdSpi.h"
+      ],
+      "source_inventory_result": "framework/components observed; no checked-in concrete deployed strategy owner established"
+    },
+    {
+      "id": "C08",
+      "status": "retained_unconfirmed",
+      "blocks_legacy_retirement": true,
+      "reason": "external/private/binary-only consumers are not established absent",
+      "source_inventory_result": "outside/private/binary-only consumers cannot be enumerated from repository source"
+    },
+    {
+      "id": "C09",
+      "status": "retired_in_main",
+      "blocks_legacy_retirement": false,
+      "evidence": [
+        "docs/technical/legacy-retirement.md"
+      ]
+    },
+    {
+      "id": "C10",
+      "status": "retained_private",
+      "blocks_legacy_retirement": true,
+      "reason": "vendor SDK/data/manual publication scope remains separate"
+    }
+  ],
+  "legacy_source_inventory": {
+    "compatibility_head": "79158deec40461effdc453eb92d67ceb3d1c9d53",
+    "source_baseline": "5f3703258bc4cad8f96e513d8d989c2441b4729d",
+    "scope": "default-branch checked-in source; not a deployment census"
+  }
 }

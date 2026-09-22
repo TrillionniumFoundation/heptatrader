@@ -3,7 +3,21 @@
   "canonical_development": {
     "repository": "TrillionniumFoundation/heptatrader",
     "state": "integrated",
-    "accepted_baseline_commit": "1567c2f6d7660b9e2cbfc1e233cd50aec10d59fc"
+    "accepted_baseline_commit": "2443722f47ffc8e880786783ed98509dd1c3f17c",
+    "accepted_tree": "632d1299eaa0a0b753dcd5d21b93cb5715bf9ac0",
+    "acceptance_evidence": {
+      "main": {
+        "core_runtime_run": 35786852843,
+        "canonical_full_suite_run": 35786852878,
+        "documentation_control_plane_run": 35786852937,
+        "codeql_run": 35786852649
+      },
+      "identical_tree_pr117": {
+        "commit": "f254f84d848e13b1207f49c2733a8e5c42ad9dc9",
+        "tree": "632d1299eaa0a0b753dcd5d21b93cb5715bf9ac0",
+        "modular_integration_run": 35785630652
+      }
+    }
   },
   "legacy_repository": {
     "repository": "TrillionniumFoundation/HeptaDLL-main",

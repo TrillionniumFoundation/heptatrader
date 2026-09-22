@@ -22,6 +22,15 @@ def main():
             assert not missing, f"{item['id']} unsupported completion claim: {missing}"
             digest = item["original_artifact_sha256"]
             assert len(digest) == 71 and digest.startswith("sha256:")
+    inventory = migrations["legacy_source_inventory"]
+    assert inventory["scope"].startswith("default-branch")
+    assert len(inventory["compatibility_head"]) == 40
+    assert len(inventory["source_baseline"]) == 40
+    c07_sources = consumers["C07"]["source_inventory"]
+    assert c07_sources and all(path.startswith("heptaHeptaDLL/") for path in c07_sources)
+    assert "deployed strategy owner" in consumers["C07"]["source_inventory_result"]
+    assert "cannot be enumerated" in consumers["C08"]["source_inventory_result"]
+
     for consumer_id in ("C07", "C08"):
         item = consumers[consumer_id]
         assert item["status"] == "retained_unconfirmed"
@@ -29,6 +38,14 @@ def main():
 
     canonical = lifecycle["canonical_development"]
     legacy = lifecycle["legacy_repository"]
+    assert len(canonical["accepted_baseline_commit"]) == 40
+    assert len(canonical["accepted_tree"]) == 40
+    evidence = canonical["acceptance_evidence"]
+    assert evidence["identical_tree_pr117"]["tree"] == canonical["accepted_tree"]
+    for run_id in evidence["main"].values():
+        assert isinstance(run_id, int) and run_id > 0
+    assert evidence["identical_tree_pr117"]["modular_integration_run"] > 0
+
     assert canonical["state"] == "integrated"
     assert legacy["state"] in {"retained", "archived"}
     gates = lifecycle["retirement_gates"]
