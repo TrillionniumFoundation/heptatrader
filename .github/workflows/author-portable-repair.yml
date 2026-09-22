@@ -1,0 +1,64 @@
+name: Author portable repair objects
+on:
+  push:
+    branches: [integration/heptadll-modular-20260920]
+    paths: [.github/workflows/author-portable-repair.yml]
+permissions:
+  contents: read
+jobs:
+  author:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: c070c0c66db38bcb2282bc9e0f748fb8031bffa0
+          persist-credentials: false
+      - name: Verify inert patch and upload Git objects only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request, zlib
+          base = 'c070c0c66db38bcb2282bc9e0f748fb8031bffa0'
+          base_tree = '8c9be5a14981911e780119f0a9e4febb783a9995'
+          expected_tree = '50590a3fabdb98fcdfb4d25053e7f35278f05bd2'
+          expected_digest = '8bf0271e5041b390e53700821d7833b0c8f3463ef2b1504e2d5548741d016dd4'
+          encoded = '''eNrNPWtz2ziS3/0rEG1dIkUkrbdtyfatYisT1zq2y/ZMdmt2TqFIyOaEIrUk5cfO5H77dTcAEqSoRxJv1aUqlggCjX6j8Wq53nTKTPPOS5i9G/GY25Fzv3t1Prx9f3n98caauWxSXr7jBS5/YtODzqTVci3roMmU9rPflOh3Rabe3e7010zTrIK61Wq1aqP/938Lc3jY2RQv+9rYF/J55ceInqeeK2HOi2BWTKJ7agHDoipsocL1Q+OFsnm74YeqF6UY0T+GXcKLpzI79JAoTSwxE4kQzz10Tl8PrwcmZcD3HT/woROhTP02geJj64RxacewwCn3HDqDQnRdEsylA7YswEhPfSf3Uj+aJiO5DL14TiX8TmhHQ0E9E6Hmu51riOIKygB70zb/zRHrriSj2b/wQIMbeLEr8NIof4Zlw/cSxoUPQCXjzz7mXpGuyk4kY2wkgE4UBFAU0AzvFfoujE0ucRSKNbdcPb4Q9T28B+r/sFDsDWECfUxFNoFn4cR/F36y11lrrp5/ERRSn9tgP/PQR0bD9OBH2JPViwnACP1MRAhhA2XYcb5baoQNf09SbzlKEcQ3F/BD6D/346r53nzXZI2DXDn/W8xHpRbOZW94ABNgFsWPuh/EcdhsE9CSoKo87xihaFJnFu8zeagqALp36t/vubuc+j/uL79AMOqRmJyBc4CZIzKDjcEnpFJYKYBoVnrP1oL7GYNeRHkcQg9BpenOnRqOUXRFjh+zpef0UJNbUwCQk8+PBhsQednrTaYOjeFn+cPY48CJrLmXp00IQrtcd2wvUov59gz58ZoDsWaGVGoza7UiSjDpHw/N/LVBsFF3eAXgpjsVYiHOEewN3Ww3VHkkhulfiUIzxLMOVEHEypjcEPnI8wUevRKqhahLV/zxcSCN83H8+TOcn0rqNdhfb52JT/NrlXXVG3KboOjbzr48TcEgP8k6Bs/UVPOxOOTLlYNKLnzxNzT3FxImsOtH3zdHF6dl5/eva7JzpHPncCWMEdlcYWkgNoEHAI7vwMhPTkuTj7xYS3BxYkBmLlVFPribvwYfb+yOnkuKjs3yhkIvdbLgJ+YkPPaPuRKfjynVLZ51nyDc6uBlAz4ZFa/NbzNmbDGWeR/eVBzm1dk3oeQr31fjy0AXNDUPfjUYf4W3fTv12IgXh62iZMMLuKYHSQ7rixS70kfymvuMSklJKAhBYrqLgGhROFdYGUTNyRAp3+h/Tn4RAuZyHUQWKDj7vI8WNIvECQSqHQWesGnWpPiEOIT05AuKb78Q2PWaP7MA5skFkBH/YFVESskdgxbpc10shlgDnwoCUdbPmAkeDsXWuIpqDUmc50LeFTwO0oHq6kNOlFgXnUWcMJCoIpClDtDBpIyCrvoobml+c+c02FiIgwGYgzUCcoGGrXtYc/F6AKg68Ef0gi7fLYbmToDeNaQQPxwaxDnBeOZFeHmkiCaQAwcMSG55uTFaknpASnXIcqGHvCPkYFHliFOAM9iWXgOAHOKSGOdFx4OZwQH3rZjr1ziI+ORJsCw8SskljUCY1PcpIRCFteAskarCgSDMCxxhVDH8Li1CKKUcRJePaYEQ/KyTW1LzaImNyIOWnvEpxtVyCY7G4meSlJCQRfUoX10qtJSJEsSLAMoSUyVUSrySSAJCIT4PLFP29QQ9jgpgisBFkjeVWFRFUk3hwTBgdu5sfEsIaEbU91Jcp/gauRNNDGcJW+HXirKqqLuMyPOCSYd5tDrEVppIFwjKbAL/yPJZ/ejBJBFJFZZcPEEQzgJNOe6CRbywhwlhAhDhbUcppPhlmaFzWKhQm7shVSHqqpncvPyHtYpAi3SuooMU48MRQMpfCQ=='''
+          patch = zlib.decompress(base64.b64decode(encoded, validate=True))
+          if hashlib.sha256(patch).hexdigest() != expected_digest:
+              raise RuntimeError('patch digest mismatch; no writes permitted')
+          allowed = {'research/PLATFORMS.md', 'research/examples/replay_main.cpp', 'research/include/hepta/research/analytics.h', 'research/src/analytics.cpp', 'research/src/market_data.cpp', 'tests/research/analytics_tests.cpp', 'tests/research/cli_behavior.py', 'tests/research/market_data_tests.cpp', 'tests/research/portable_numeric_cases.h', 'tests/research/sdk_package_behavior.py'}
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          if git('rev-parse', 'HEAD') != base or git('rev-parse', 'HEAD^{tree}') != base_tree or git('status', '--porcelain'):
+              raise RuntimeError('unexpected base source')
+          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'repair.patch'
+          path.write_bytes(patch)
+          subprocess.check_call(['git', 'apply', '--index', '--unidiff-zero', str(path)])
+          paths = git('diff', '--cached', '--name-only').splitlines()
+          if set(paths) != allowed or git('write-tree') != expected_tree:
+              raise RuntimeError('candidate path/tree mismatch; no writes permitted')
+          repository = 'TrillionniumFoundation/heptatrader'
+          def api(route, payload=None):
+              request = urllib.request.Request('https://api.github.com/repos/' + repository + route, data=None if payload is None else json.dumps(payload).encode(), headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json', 'Content-Type':'application/json', 'X-GitHub-Api-Version':'2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          if api('/git/ref/heads/integration/heptadll-modular-20260920')['object']['sha'] != os.environ['GITHUB_SHA']:
+              raise RuntimeError('remote head moved; no writes permitted')
+          entries = []
+          for name in paths:
+              data = pathlib.Path(name).read_bytes()
+              wanted = hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+              result = api('/git/blobs', {'encoding':'base64', 'content':base64.b64encode(data).decode()})
+              if result['sha'] != wanted:
+                  raise RuntimeError('uploaded blob mismatch')
+              entries.append({'path':name, 'mode':'100644', 'type':'blob', 'sha':wanted})
+          result = api('/git/trees', {'base_tree':base_tree, 'tree':entries})
+          if result['sha'] != expected_tree:
+              raise RuntimeError('uploaded tree mismatch')
+          print(json.dumps({'base':base, 'authoring_parent':os.environ['GITHUB_SHA'], 'tree':result['sha'], 'files':entries}, sort_keys=True))
+          # No candidate code, tests, commit creation or ref mutation runs here.
