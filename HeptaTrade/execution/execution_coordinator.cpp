@@ -109,6 +109,7 @@ std::string PlaceRequestHash(const IbPlaceOrderCommand& command)
     AppendCanonicalField(canonical, "contract.local_symbol", command.contract.localSymbol);
     AppendCanonicalField(canonical, "order.action", command.order.action);
     AppendCanonicalField(canonical, "order.order_type", command.order.orderType);
+    AppendCanonicalField(canonical, "order.position_effect", command.order.positionEffect);
     AppendCanonicalField(canonical, "order.quantity", CanonicalDouble(command.order.totalQuantity));
     AppendCanonicalField(canonical, "order.limit_price", CanonicalDouble(command.order.lmtPrice));
     AppendCanonicalField(canonical, "order.aux_price", CanonicalDouble(command.order.auxPrice));

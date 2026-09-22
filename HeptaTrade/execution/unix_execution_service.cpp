@@ -83,6 +83,7 @@ std::string PreviewFingerprint(const PlaceOrderCommand& command)
     AppendFingerprintField(value, command.contract.localSymbol);
     AppendFingerprintField(value, command.order.action);
     AppendFingerprintField(value, command.order.orderType);
+    AppendFingerprintField(value, command.order.positionEffect);
     AppendFingerprintField(value, FingerprintNumber(command.order.totalQuantity));
     AppendFingerprintField(value, FingerprintNumber(command.order.lmtPrice));
     AppendFingerprintField(value, FingerprintNumber(command.order.auxPrice));

@@ -21,7 +21,7 @@ enum Field : unsigned int
     AuxPrice, OutsideRth, OrderId, Side, TargetCommandId,
     ExpectedServiceEpoch, ExpectedServiceFencingGeneration, ReadQuery,
     TimeInForce, OrderRef, PreviewPermit, RecoveryIngressFence,
-    TerminalPreliminaryReceiptSha256,
+    TerminalPreliminaryReceiptSha256, PositionEffect,
     ResultStatus = 100, ResultCommandId, ResultOrderId, ResultReasonCode, ResultDetail,
     ResultTargetCommandId, ResultTargetStatus, ResultAffectedCount, ResultMutationBlocked,
     ResultServiceEpoch, ResultServiceFencingGeneration,
@@ -299,7 +299,7 @@ bool DecodeContext(const std::map<unsigned int, std::string>& fields,
 
 unsigned int ExecutionServiceProtocol::ProtocolVersion()
 {
-    return 10;
+    return 11;
 }
 
 bool ExecutionServiceProtocol::EncodeRequest(const ExecutionServiceRequest& request,
@@ -347,6 +347,7 @@ bool ExecutionServiceProtocol::EncodeRequest(const ExecutionServiceRequest& requ
         AppendField(body, OutsideRth, command.order.outsideRth ? "1" : "0");
         AppendField(body, TimeInForce, command.timeInForce);
         AppendField(body, OrderRef, command.order.orderRef);
+        AppendField(body, PositionEffect, command.order.positionEffect);
         AppendField(body, PreviewPermit, command.previewPermit);
     }
     else if (request.operation == ExecutionServiceOperation::CancelIbOrder)
@@ -444,7 +445,8 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
             Instrument, ExpiresAtMs, ReferencePrice, Symbol, SecType, Exchange,
             PrimaryExchange, Currency, ContractMonth, Right, Strike, Multiplier,
             TradingClass, LocalSymbol, Action, OrderType, Quantity, LimitPrice,
-            AuxPrice, OutsideRth, TimeInForce, OrderRef, PreviewPermit};
+            AuxPrice, OutsideRth, TimeInForce, OrderRef, PositionEffect,
+            PreviewPermit};
         expectedFields.insert(placeFields,
             placeFields + sizeof(placeFields) / sizeof(placeFields[0]));
     }
@@ -560,6 +562,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
             !Require(fields, OutsideRth, outsideRth, reason) ||
             !Require(fields, TimeInForce, command.timeInForce, reason) ||
             !Require(fields, OrderRef, command.order.orderRef, reason) ||
+            !Require(fields, PositionEffect, command.order.positionEffect, reason) ||
             !Require(fields, PreviewPermit, command.previewPermit, reason) ||
             !ParseLongLong(expiresAt, command.expiresAtMs) ||
             !ParseDouble(reference, command.referencePrice) ||
@@ -569,6 +572,7 @@ bool ExecutionServiceProtocol::DecodeRequest(const std::string& body,
             !ParseDouble(auxPrice, command.order.auxPrice) ||
             (outsideRth != "0" && outsideRth != "1") ||
             command.timeInForce.size() > 16 ||
+            command.order.positionEffect.size() > 32 ||
             command.order.orderRef.size() > 128 ||
             command.previewPermit.size() > 80 ||
             (request.operation == ExecutionServiceOperation::PreviewOrder &&

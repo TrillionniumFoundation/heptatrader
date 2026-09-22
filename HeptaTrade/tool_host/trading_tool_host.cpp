@@ -47,6 +47,7 @@ bool SameOrder(const OrderIntent& left, const OrderIntent& right)
 {
     return left.action == right.action &&
         left.orderType == right.orderType &&
+        left.positionEffect == right.positionEffect &&
         SameDoubleBits(left.totalQuantity, right.totalQuantity) &&
         SameDoubleBits(left.lmtPrice, right.lmtPrice) &&
         SameDoubleBits(left.auxPrice, right.auxPrice) &&
