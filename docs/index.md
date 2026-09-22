@@ -111,3 +111,10 @@ Open work is recorded without forcing artificial closure. Permanent-history
 capacity, target-host multi-day acceptance and hosted Ruleset changes remain
 separate from repository tests. IB PAPER is qualification-gated and disabled by
 default; LIVE remains unavailable.
+
+## HeptaDLL consolidation and retained consumers
+
+New development uses this repository's existing Data/Analytics/Replay/Strategy
+and client modules. [Consumer register and support decisions](technical/heptadll-consumers.md)
+distinguish source migration, preserved old records, unsupported ABI/platform
+claims and the original compatibility repository.

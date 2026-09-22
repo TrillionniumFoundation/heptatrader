@@ -149,6 +149,11 @@ public:
     // neither a mutable diagnostic copy nor a cached durable flag is authority.
     bool Restore(const std::string& directory, const std::string& executionCommandId,
                  PreparedStrategyCommand& prepared, std::string& reason) const;
+    // Validate a durable opaque LIMIT/DAY request against an application intent
+    // and the original NativeToolClient recovery binding. No socket call or
+    // record write; Submit/Inspect still reread the same opaque snapshot.
+    bool MatchesOrder(const PreparedStrategyCommand& prepared, const PreparedOrder& order,
+                      const std::string& expectedBinding, std::string& reason) const;
     bool Submit(const PreparedStrategyCommand& prepared, NativeToolClientResult& result,
                 std::string& reason) const;
     // Read-only recovery for callers whose policy forbids another mutation

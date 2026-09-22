@@ -506,6 +506,28 @@ bool NativeStrategyClient::LoadPrepared(const PreparedStrategyCommand& prepared,
     return true;
 }
 
+bool NativeStrategyClient::MatchesOrder(const PreparedStrategyCommand& prepared,
+    const PreparedOrder& order, const std::string& expectedBinding, std::string& reason) const {
+    const std::string wantedBinding = expectedBinding;
+    reason.clear();
+    TradingToolHostRequest actual;
+    std::string binding, current;
+    if (!LoadPrepared(prepared, actual, binding, reason) ||
+        !client_.RecoveryBinding(current, reason)) return false;
+    if (binding != wantedBinding || current != binding)
+        return OutboxFail(reason, "NATIVE_RECOVERY_BINDING_MISMATCH");
+    try {
+        auto expected = order.SubmissionRequest(actual.toolCallId, actual.call.previewPermit);
+        actual.sessionToken = expected.sessionToken = kOutboxToken;
+        std::string actualWire, expectedWire;
+        if (!TypedToolProtocol::EncodeRequest(actual, actualWire, reason) ||
+            !TypedToolProtocol::EncodeRequest(expected, expectedWire, reason)) return false;
+        if (actualWire != expectedWire)
+            return OutboxFail(reason, "RESEARCH_APPLICATION_INTENT_MISMATCH");
+        return true;
+    } catch (const std::invalid_argument& e) { reason = e.what(); return false; }
+}
+
 bool NativeStrategyClient::Submit(const PreparedStrategyCommand& prepared,
     NativeToolClientResult& result, std::string& reason) const {
     result = NativeToolClientResult(); reason.clear();

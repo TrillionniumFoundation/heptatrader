@@ -642,6 +642,26 @@ void PreparedCommandLifecycle() {
     Check(client.Persist(root.path, order, "prepared-order-001", permit, reason), "prepared order fixture");
     Check(client.Restore(root.path, "prepared-order-001", prepared, reason) &&
           prepared.ToolName() == "trade.place_order", "existing order not restorable");
+    std::string applicationBinding;
+    Check(native.RecoveryBinding(applicationBinding, reason), "application binding");
+    const std::string orderPath = root.path + "/prepared-order-001.hsr";
+    const std::string orderBytes = ReadBytes(orderPath);
+    Check(client.MatchesOrder(prepared, order, applicationBinding, reason) && reason.empty(), "application intent match");
+    PreparedOrder changedOrder("EUR.USD", contract, "BUY", 11, 1.1, 1.09, 1900000000000LL);
+    Check(!client.MatchesOrder(prepared, changedOrder, applicationBinding, reason) &&
+          reason == "RESEARCH_APPLICATION_INTENT_MISMATCH", "application quantity conflict");
+    Check(!client.MatchesOrder(prepared, order, "sha256:" + std::string(64, 'f'), reason) &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "application foreign binding");
+    Check(!other.MatchesOrder(prepared, order, applicationBinding, reason) &&
+          reason == "NATIVE_RECOVERY_BINDING_MISMATCH", "application credential rotation");
+    Check(ReadBytes(orderPath) == orderBytes, "application validation rewrote HSR1");
+    Check(::unlink(orderPath.c_str()) == 0 &&
+          client.Persist(root.path, changedOrder, "prepared-order-001", permit, reason), "application changed record fixture");
+    Check(!client.MatchesOrder(prepared, changedOrder, applicationBinding, reason) &&
+          reason == "RESEARCH_OUTBOX_PREPARED_MISMATCH", "application opaque snapshot replacement");
+    Check(client.Restore(root.path, "prepared-order-001", prepared, reason) &&
+          !client.MatchesOrder(prepared, order, applicationBinding, reason), "application valid wrong request accepted");
+    WriteBytes(orderPath, orderBytes);
     Check(client.Persist(root.path, flatten, "prepared-flatten-001", permit, reason), "prepared flatten fixture");
     Check(client.Restore(root.path, "prepared-flatten-001", prepared, reason) &&
           prepared.ToolName() == "trade.flatten_position", "existing flatten not restorable");

@@ -7,7 +7,7 @@ include(CMakePackageConfigHelpers)
 if(HEPTA_RESEARCH_STANDALONE OR NOT TARGET hepta_research_native_client)
     message(FATAL_ERROR "The strategy-client SDK requires the canonical root build")
 endif()
-foreach(_dir CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_DATADIR)
+foreach(_dir CMAKE_INSTALL_INCLUDEDIR CMAKE_INSTALL_LIBDIR CMAKE_INSTALL_DATADIR CMAKE_INSTALL_BINDIR)
     if("${${_dir}}" STREQUAL "" OR IS_ABSOLUTE "${${_dir}}" OR
        "${${_dir}}" MATCHES "(^|[/\\])\\.\\.([/\\]|$)")
         message(FATAL_ERROR "StrategyClientSDK requires relative ${_dir} without parent traversal")
@@ -79,6 +79,22 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/strategy-client-build-info.txt"
               "${PROJECT_SOURCE_DIR}/research/CLIENT_PACKAGE.md"
     DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaStrategyClient"
     COMPONENT StrategyClientSDK EXCLUDE_FROM_ALL)
+
+# Both entry points are explicit developer-component installs, never production.
+install(TARGETS hepta_strategy_client_cli RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    COMPONENT StrategyClientSDK EXCLUDE_FROM_ALL)
+install(FILES "${PROJECT_SOURCE_DIR}/research/strategy_gateway.py"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaStrategyClient"
+    COMPONENT StrategyClientSDK EXCLUDE_FROM_ALL)
+install(FILES "${PROJECT_SOURCE_DIR}/research/STRATEGY-GATEWAY.md"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaStrategyClient"
+    COMPONENT StrategyClientSDK EXCLUDE_FROM_ALL)
+file(RELATIVE_PATH HEPTA_APP_MODULE_FROM_BIN "/${CMAKE_INSTALL_BINDIR}"
+    "/${CMAKE_INSTALL_DATADIR}/HeptaStrategyClient/strategy_gateway.py")
+configure_file("${PROJECT_SOURCE_DIR}/research/cmake/strategy_gateway_main.py.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/hepta-strategy-gateway" @ONLY)
+install(PROGRAMS "${CMAKE_CURRENT_BINARY_DIR}/hepta-strategy-gateway"
+    DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT StrategyClientSDK EXCLUDE_FROM_ALL)
 
 if(BUILD_TESTING)
     add_test(NAME hepta_research_native_sdk_install COMMAND "${Python3_EXECUTABLE}"

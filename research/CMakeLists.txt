@@ -35,6 +35,10 @@ if(NOT HEPTA_RESEARCH_STANDALONE)
     target_include_directories(hepta_research_native_client PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
     target_compile_features(hepta_research_native_client PUBLIC cxx_std_11)
     target_link_libraries(hepta_research_native_client PUBLIC hepta_native_tool_client)
+    add_executable(hepta_strategy_client_cli examples/strategy_client_main.cpp)
+    set_target_properties(hepta_strategy_client_cli PROPERTIES OUTPUT_NAME "hepta-strategy-native")
+    target_compile_features(hepta_strategy_client_cli PRIVATE cxx_std_11)
+    target_link_libraries(hepta_strategy_client_cli PRIVATE hepta_research_native_client)
 endif()
 
 add_executable(hepta_research_replay_cli examples/replay_main.cpp)
@@ -42,11 +46,12 @@ set_target_properties(hepta_research_replay_cli PROPERTIES OUTPUT_NAME "hepta-re
 target_link_libraries(hepta_research_replay_cli PRIVATE hepta_research_replay hepta_research_strategy)
 
 if(BUILD_TESTING)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_custom_target(hepta_research_test_binaries)
     function(hepta_research_test target source)
         add_executable(${target} ${source})
         target_compile_features(${target} PRIVATE cxx_std_11)
-        add_test(NAME ${target} COMMAND ${target})
+        add_test(NAME ${target} COMMAND ${target} ${ARGN})
         set_tests_properties(${target} PROPERTIES LABELS "core;research" TIMEOUT 30)
         add_dependencies(hepta_research_test_binaries ${target})
     endfunction()
@@ -62,9 +67,18 @@ if(BUILD_TESTING)
         hepta_research_test(hepta_research_native_gateway_tests ../tests/research/native_gateway_tests.cpp)
         target_link_libraries(hepta_research_native_gateway_tests PRIVATE
             hepta_research_native_client hepta_agent_os_core)
-        hepta_research_test(hepta_research_native_execution_tests ../tests/research/native_execution_tests.cpp)
+        hepta_research_test(hepta_research_native_execution_tests ../tests/research/native_execution_tests.cpp
+            --application-client "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/application_execution_driver.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/strategy_gateway.py" "$<TARGET_FILE:hepta_strategy_client_cli>")
         target_link_libraries(hepta_research_native_execution_tests PRIVATE
             hepta_research_native_client hepta_agent_os_core hepta_execution_service_runtime)
+        add_dependencies(hepta_research_native_execution_tests hepta_strategy_client_cli)
+        add_test(NAME hepta_research_application_policy COMMAND "${Python3_EXECUTABLE}" -I -B
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/strategy_gateway_behavior.py"
+            --adapter "${CMAKE_CURRENT_SOURCE_DIR}/strategy_gateway.py"
+            --native "$<TARGET_FILE:hepta_strategy_client_cli>")
+        set_tests_properties(hepta_research_application_policy PROPERTIES LABELS "core;research" TIMEOUT 30)
     endif()
     add_test(NAME hepta_research_replay_example COMMAND hepta_research_replay_cli
         "${CMAKE_CURRENT_SOURCE_DIR}/examples/ticks.csv"

@@ -15,7 +15,11 @@
         "scripts/hepta_agent_trust_domain.py",
         "research/include/hepta/research/native_strategy_client.h",
         "research/src/native_strategy_client.cpp",
-        "research/CLIENT_PACKAGE.md"
+        "research/CLIENT_PACKAGE.md",
+        "research/examples/strategy_client_main.cpp",
+        "research/strategy_gateway.py",
+        "research/cmake/strategy_gateway_main.py.in",
+        "research/STRATEGY-GATEWAY.md"
       ],
       "tests": [
         "tests/native_tool_client_tests.cpp",
@@ -25,7 +29,9 @@
         "tests/research/native_client_tests.cpp",
         "tests/research/native_gateway_tests.cpp",
         "tests/research/native_execution_tests.cpp",
-        "tests/research/native_sdk_package_behavior.py"
+        "tests/research/native_sdk_package_behavior.py",
+        "tests/research/strategy_gateway_behavior.py",
+        "tests/research/application_execution_driver.py"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
