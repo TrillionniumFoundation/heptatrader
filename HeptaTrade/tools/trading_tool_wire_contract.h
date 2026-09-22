@@ -220,9 +220,18 @@ public:
                               "instrument must be a bounded canonical identifier",
                               reasonCode, detail);
             if (call.orderId != -1 || call.waitTimeoutMs != 0 ||
-                call.afterEventSequence != 0 || call.ibOrder.outsideRth)
+                call.afterEventSequence != 0 || call.ibOrder.outsideRth ||
+                call.ibOrder.auxPrice != 0.0 || !call.ibOrder.orderRef.empty())
                 return Reject("UNEXPECTED_TOOL_FIELD",
-                              "order_id, wait fields and outside_rth are not accepted",
+                              "order_id, wait fields, aux_price, outside_rth and order_ref are not accepted",
+                              reasonCode, detail);
+            if (!call.ibOrder.positionEffect.empty() &&
+                call.ibOrder.positionEffect != "OPEN" &&
+                call.ibOrder.positionEffect != "CLOSE" &&
+                call.ibOrder.positionEffect != "CLOSE_TODAY" &&
+                call.ibOrder.positionEffect != "CLOSE_YESTERDAY")
+                return Reject("INVALID_POSITION_EFFECT",
+                              "position_effect must be OPEN, CLOSE, CLOSE_TODAY or CLOSE_YESTERDAY",
                               reasonCode, detail);
             if (call.ibOrder.action != "BUY" && call.ibOrder.action != "SELL")
                 return Reject("INVALID_SIDE", "side must be BUY or SELL",
@@ -236,8 +245,11 @@ public:
                 return Reject("INVALID_ORDER_TYPE",
                               "order_type must be MKT or LMT",
                               reasonCode, detail);
-            if (call.timeInForce != "DAY")
-                return Reject("INVALID_TIME_IN_FORCE", "tif must be DAY",
+            if (call.timeInForce != "DAY" &&
+                call.timeInForce != "IOC" &&
+                call.timeInForce != "FOK")
+                return Reject("INVALID_TIME_IN_FORCE",
+                              "tif must be DAY, IOC or FOK",
                               reasonCode, detail);
             if (call.ibOrder.orderType == "LMT")
             {
@@ -313,8 +325,9 @@ private:
     static bool HasOrderFields(const OrderIntent& order)
     {
         return !order.action.empty() || !order.orderType.empty() ||
-            order.totalQuantity != 0.0 || order.lmtPrice != 0.0 ||
-            order.outsideRth;
+            !order.positionEffect.empty() || order.totalQuantity != 0.0 ||
+            order.lmtPrice != 0.0 || order.auxPrice != 0.0 ||
+            order.outsideRth || !order.orderRef.empty();
     }
 
     static bool HasFieldsOtherThanInstrument(const TradingToolCall& call)

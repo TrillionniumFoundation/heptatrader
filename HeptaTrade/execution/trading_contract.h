@@ -28,6 +28,10 @@ struct OrderIntent
 {
     std::string action;
     std::string orderType;
+    // Empty preserves the existing cash/equity profile. Futures migrations must
+    // state OPEN/CLOSE/CLOSE_TODAY/CLOSE_YESTERDAY explicitly; no venue adapter
+    // may infer an offset from account state or a legacy auto-open/close mode.
+    std::string positionEffect;
     double totalQuantity = 0.0;
     double lmtPrice = 0.0;
     double auxPrice = 0.0;

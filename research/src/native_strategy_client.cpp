@@ -46,6 +46,33 @@ PreparedOrder::PreparedOrder(const std::string& instrument, const InstrumentRef&
     call_.referencePrice = reference; call_.expiresAtMs = expiry;
     Validate(call_);
 }
+PreparedOrder::PreparedOrder(const std::string& instrument, const InstrumentRef& contract,
+                             const std::string& side, const std::string& orderType,
+                             const std::string& timeInForce, const std::string& positionEffect,
+                             double quantity, double limit, double reference,
+                             std::int64_t expiry) {
+    if (contract.secType != "FUT" || contract.symbol.empty() ||
+        contract.currency.empty() || contract.exchange.empty() ||
+        (contract.lastTradeDateOrContractMonth.empty() && contract.localSymbol.empty()) ||
+        expiry <= 0 || !std::isfinite(quantity) || quantity <= 0 ||
+        !std::isfinite(reference) || reference <= 0 ||
+        (side != "BUY" && side != "SELL") ||
+        (orderType != "LMT" && orderType != "MKT") ||
+        (timeInForce != "DAY" && timeInForce != "IOC" && timeInForce != "FOK") ||
+        (positionEffect != "OPEN" && positionEffect != "CLOSE" &&
+         positionEffect != "CLOSE_TODAY" && positionEffect != "CLOSE_YESTERDAY") ||
+        (orderType == "LMT" && (!std::isfinite(limit) || limit <= 0)) ||
+        (orderType == "MKT" && limit != 0.0))
+        throw std::invalid_argument("RESEARCH_FUTURES_ORDER_PROPOSAL_INVALID");
+    call_.name = "risk.preview_order"; call_.instrument = instrument;
+    call_.ibContract = contract; call_.ibOrder.action = side;
+    call_.ibOrder.orderType = orderType;
+    call_.ibOrder.positionEffect = positionEffect;
+    call_.ibOrder.totalQuantity = quantity; call_.ibOrder.lmtPrice = limit;
+    call_.timeInForce = timeInForce; call_.referencePrice = reference;
+    call_.expiresAtMs = expiry;
+    Validate(call_);
+}
 TradingToolHostRequest PreparedOrder::PreviewRequest(const std::string& id) const {
     CheckId(id);
     TradingToolHostRequest request;

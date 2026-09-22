@@ -7,12 +7,19 @@ namespace hepta { namespace research {
 // Immutable proposal. Contract identity comes from the supported tool contract,
 // never from a CTP/IB SDK type. The service still authenticates it against the
 // server-side session binding. No account, owner, risk approval or fill fields.
-// Extra InstrumentRef fields not represented by the current HTT1 wire fail closed.
+// The legacy constructor below intentionally stays on the existing bounded
+// LMT/DAY application profile. The explicit futures overload carries complete
+// InstrumentRef identity and never infers open/close from account state.
 class PreparedOrder {
 public:
     PreparedOrder(const std::string& instrument, const InstrumentRef& contract,
                   const std::string& side, double quantity, double limitPrice,
                   double referencePrice, std::int64_t expiresAtMs);
+    PreparedOrder(const std::string& instrument, const InstrumentRef& contract,
+                  const std::string& side, const std::string& orderType,
+                  const std::string& timeInForce, const std::string& positionEffect,
+                  double quantity, double limitPrice, double referencePrice,
+                  std::int64_t expiresAtMs);
     TradingToolHostRequest PreviewRequest(const std::string& previewCallId) const;
     TradingToolHostRequest SubmissionRequest(const std::string& executionCommandId,
                                              const std::string& previewPermit) const;

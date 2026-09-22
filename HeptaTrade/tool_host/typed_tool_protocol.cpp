@@ -20,7 +20,9 @@ enum FieldId
     ExpiresAtMs = 15, WaitTimeoutMs = 16, AfterEventSequence = 17, TimeInForce = 18,
     QueueDeadlineAtMs = 19, CancelToolCallId = 20, TargetToolName = 21,
     ProtocolMinVersion = 22, ProtocolMaxVersion = 23, ExpectedSchemaHash = 24,
-    PreviewPermit = 25, TargetCommandId = 26
+    PreviewPermit = 25, TargetCommandId = 26,
+    PrimaryExchange = 27, ContractMonth = 28, Right = 29, Strike = 30,
+    Multiplier = 31, TradingClass = 32, LocalSymbol = 33, PositionEffect = 34
 };
 
 const char* FieldName(unsigned int id)
@@ -53,6 +55,14 @@ const char* FieldName(unsigned int id)
     case ExpectedSchemaHash: return "expected_schema_hash";
     case PreviewPermit: return "preview_permit";
     case TargetCommandId: return "command_id";
+    case PrimaryExchange: return "primary_exchange";
+    case ContractMonth: return "last_trade_date_or_contract_month";
+    case Right: return "right";
+    case Strike: return "strike";
+    case Multiplier: return "multiplier";
+    case TradingClass: return "trading_class";
+    case LocalSymbol: return "local_symbol";
+    case PositionEffect: return "position_effect";
     }
     return "unknown";
 }
@@ -83,7 +93,10 @@ bool IsToolFieldAllowed(const std::string& tool, unsigned int id)
         return id == Instrument || id == Symbol || id == Currency || id == SecType ||
                id == Exchange || id == Side || id == OrderType || id == Quantity ||
                id == LimitPrice || id == ReferencePrice || id == ExpiresAtMs ||
-               id == TimeInForce || (tool == "trade.place_order" && id == PreviewPermit);
+               id == TimeInForce || id == PrimaryExchange || id == ContractMonth ||
+               id == Right || id == Strike || id == Multiplier ||
+               id == TradingClass || id == LocalSymbol || id == PositionEffect ||
+               (tool == "trade.place_order" && id == PreviewPermit);
     }
     return false;
 }
@@ -112,7 +125,10 @@ std::size_t MaxFieldLength(unsigned int id)
     if (id == CancelToolCallId) return 256;
     if (id == ExpectedSchemaHash || id == PreviewPermit) return 80;
     if (id == ToolCallId || id == TargetCommandId || id == Instrument ||
-        (id >= Symbol && id <= OrderType) || id == TimeInForce) return 128;
+        (id >= Symbol && id <= OrderType) || id == TimeInForce ||
+        id == PrimaryExchange || id == ContractMonth || id == Right ||
+        id == Multiplier || id == TradingClass || id == LocalSymbol ||
+        id == PositionEffect) return 128;
     return 64;
 }
 
@@ -286,14 +302,14 @@ bool DecodeFields(const std::string& body, DecodedFields& fields,
     std::size_t offset = 4;
     while (offset < body.size())
     {
-        if (fields.size() >= 32)
+        if (fields.size() >= 48)
         { reason = "SCHEMA_TOO_MANY_FIELDS"; return false; }
         unsigned int id = 0;
         std::uint32_t length = 0;
         if (!ReadU16(body, offset, id) || !ReadU32(body, offset, length) ||
             length > 32768 || offset + length > body.size())
         { reason = "SCHEMA_MALFORMED_FIELD"; return false; }
-        if (id < SessionToken || id > TargetCommandId || fields.count(id) != 0)
+        if (id < SessionToken || id > PositionEffect || fields.count(id) != 0)
         { reason = "SCHEMA_UNKNOWN_OR_DUPLICATE_FIELD"; return false; }
         fields[id] = body.substr(offset, length);
         offset += length;
@@ -302,7 +318,7 @@ bool DecodeFields(const std::string& body, DecodedFields& fields,
         fields.count(ToolName) == 0)
     { reason = "SCHEMA_MISSING_PROTOCOL_ENVELOPE"; return false; }
     if (!ValidateFieldSet(fields, reason)) return false;
-    for (unsigned int id = SessionToken; id <= TargetCommandId; ++id)
+    for (unsigned int id = SessionToken; id <= PositionEffect; ++id)
         fields[id];
     return true;
 }
@@ -344,8 +360,15 @@ void DecodeTextFields(const DecodedFields& fields,
     request.call.ibContract.currency = fields.at(Currency);
     request.call.ibContract.secType = fields.at(SecType);
     request.call.ibContract.exchange = fields.at(Exchange);
+    request.call.ibContract.primaryExchange = fields.at(PrimaryExchange);
+    request.call.ibContract.lastTradeDateOrContractMonth = fields.at(ContractMonth);
+    request.call.ibContract.right = fields.at(Right);
+    request.call.ibContract.multiplier = fields.at(Multiplier);
+    request.call.ibContract.tradingClass = fields.at(TradingClass);
+    request.call.ibContract.localSymbol = fields.at(LocalSymbol);
     request.call.ibOrder.action = fields.at(Side);
     request.call.ibOrder.orderType = fields.at(OrderType);
+    request.call.ibOrder.positionEffect = fields.at(PositionEffect);
     request.call.timeInForce = fields.at(TimeInForce);
     request.call.previewPermit = fields.at(PreviewPermit);
     request.cancelToolCallId = fields.at(CancelToolCallId);
@@ -373,6 +396,9 @@ bool DecodeNumericFields(const DecodedFields& fields,
     if (!fields.at(ReferencePrice).empty() &&
         !ParseDouble(fields.at(ReferencePrice), request.call.referencePrice))
     { reason = "INVALID_REFERENCE_PRICE"; return false; }
+    if (!fields.at(Strike).empty() &&
+        !ParseDouble(fields.at(Strike), request.call.ibContract.strike))
+    { reason = "INVALID_STRIKE"; return false; }
     if (!fields.at(ExpiresAtMs).empty() &&
         !ParseLongLong(fields.at(ExpiresAtMs), request.call.expiresAtMs))
     { reason = "INVALID_EXPIRY"; return false; }
@@ -456,8 +482,16 @@ bool TypedToolProtocol::EncodeRequest(const TradingToolHostRequest& request, std
     if (!request.call.ibContract.currency.empty()) fields[Currency] = request.call.ibContract.currency;
     if (!request.call.ibContract.secType.empty()) fields[SecType] = request.call.ibContract.secType;
     if (!request.call.ibContract.exchange.empty()) fields[Exchange] = request.call.ibContract.exchange;
+    if (!request.call.ibContract.primaryExchange.empty()) fields[PrimaryExchange] = request.call.ibContract.primaryExchange;
+    if (!request.call.ibContract.lastTradeDateOrContractMonth.empty()) fields[ContractMonth] = request.call.ibContract.lastTradeDateOrContractMonth;
+    if (!request.call.ibContract.right.empty()) fields[Right] = request.call.ibContract.right;
+    if (request.call.ibContract.strike != 0.0) fields[Strike] = Number(request.call.ibContract.strike);
+    if (!request.call.ibContract.multiplier.empty()) fields[Multiplier] = request.call.ibContract.multiplier;
+    if (!request.call.ibContract.tradingClass.empty()) fields[TradingClass] = request.call.ibContract.tradingClass;
+    if (!request.call.ibContract.localSymbol.empty()) fields[LocalSymbol] = request.call.ibContract.localSymbol;
     if (!request.call.ibOrder.action.empty()) fields[Side] = request.call.ibOrder.action;
     if (!request.call.ibOrder.orderType.empty()) fields[OrderType] = request.call.ibOrder.orderType;
+    if (!request.call.ibOrder.positionEffect.empty()) fields[PositionEffect] = request.call.ibOrder.positionEffect;
     if (request.call.ibOrder.totalQuantity != 0.0) fields[Quantity] = Number(request.call.ibOrder.totalQuantity);
     if (request.call.ibOrder.lmtPrice != 0.0) fields[LimitPrice] = Number(request.call.ibOrder.lmtPrice);
     if (request.call.referencePrice != 0.0) fields[ReferencePrice] = Number(request.call.referencePrice);
