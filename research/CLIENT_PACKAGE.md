@@ -351,3 +351,65 @@ per original command. No historical assertion, timeout, sample count, default
 production installation, permission or trading capability is relaxed. Exact
 source and observed local/remote outcomes belong in the PR evidence, not an
 unconditional success statement in this contract.
+
+
+## Read-only recovery bound to the original durable request
+
+`InspectStored(directory, commandId, queryCallId, result, reason)` and
+`Inspect(prepared, queryCallId, result, reason)` are the conservative recovery
+path for applications that forbid mutation resubmission after any possible send.
+They send **only** `execution.get_command_status` through the existing
+NativeToolClient, with the original HSR1 credential/UID/socket binding. They do
+not call preview/place/cancel/flatten, refresh a permit/expiry, replace a command
+ID, write an acknowledgement, rewrite the request or retry automatically.
+The generic `Status(id, queryId, ...)` remains available for explicitly scoped
+queries that do not originate in an HSR1 record; it is not a record-bound substitute.
+
+Both methods reload and validate the private immutable HSR1 record before a
+call. `Inspect` additionally requires a durable prepared object and compares its
+original request/binding with the reloaded bytes, using the SAME snapshot check
+as `Submit`. Changed credentials/endpoints, missing/corrupt/unsafe records and
+changed prepared bytes fail before forwarding. Loading retains the existing
+file/directory sync checks; "read-only" means no trading mutation or client
+record-byte change, not the absence of local filesystem reads/syncs or service
+audit events. No new record format, sent marker, serializer or transport exists.
+
+```cpp
+// The application has already recorded that a send may have happened.
+// After restart, keep its ORIGINAL directory and commandId; never re-preview.
+NativeToolClientResult result;
+std::string reason;
+if (!client.InspectStored(directory, commandId, freshQueryId, result, reason)) {
+    // Retain the original record and uncertainty. Diagnose; do not resend here.
+    return;
+}
+// Inspect the ORIGINAL service envelope and target status. Transported "ok"
+// says the query succeeded, not that the target filled. Unknown/rejected/
+// uncertain outcomes are not authorization to submit or generate another ID.
+```
+
+Use a caller-owned canonical query ID distinct from the mutation command ID;
+use a new query ID for a genuinely new observation, according to the existing
+Gateway contract. All borrowed input strings are captured before outputs are
+cleared. False clears stale result data; a transported denial, unknown command
+or uncertainty remains intact. The SDK does not automatically choose between
+this policy and explicit same-ID `Submit`/`SubmitStored`. Applications must
+preserve their own durable possibly-sent decision; a crash before a first send
+may deliberately leave an unexecuted request unresolved under a status-only
+policy. Neither "not found" nor a missing local record licenses a new mutation.
+
+The existing SDK behavioral executable and its installed/relocated external
+copy exercise both inspection methods for order, cancellation and flatten
+records, credential/socket changes, invalid/aliased IDs, corruption, file modes,
+missing files and changed prepared snapshots. The existing real Execution
+crash/recovery executable adds fresh-process read-only inspections before a
+first send, after a client crash, after service restart, after cancellation and
+for a rejected flatten. Original same-ID resend tests and independent journal
+send-count assertions remain active rather than being replaced with queries.
+
+This ports the #106 **status-only recovery policy boundary** to canonical native
+consumers. It does not migrate #106 Python application keys, Decimal domains or
+JSON outbox records, or #108 HRO1 records. Those actual records/callers remain
+retained until explicitly adapted; never relabel them as HSR1, synthesize missing
+binding data, or delete them to claim retirement. No production host, power-loss,
+external deployment, broker or complete historical ABI qualification is implied.

@@ -817,16 +817,22 @@ int RunOutboxChild(const std::string& root, const std::string& socket,
             reply = auth.commandId;
         }
     } else {
-        Require(mode == "submit" || mode == "submit-hold", "outbox child mode invalid");
+        const bool inspection = mode.compare(0, 8, "inspect-") == 0;
+        Require(mode == "submit" || mode == "submit-hold" || inspection, "outbox child mode invalid");
+        const std::string queryId = "outbox-" + mode + "-query";
         NativeToolClientResult result;
         if (preparedMode) {
             PreparedStrategyCommand prepared;
             Require(client.Restore(directory, commandId, prepared, reason) && prepared.Durable(), reason);
-            Require(client.Submit(prepared, result, reason), "child prepared call: " + reason);
+            Require(inspection ? client.Inspect(prepared, queryId, result, reason) :
+                                 client.Submit(prepared, result, reason), "child prepared call: " + reason);
         } else {
-            Require(client.SubmitStored(directory, commandId, result, reason),
+            Require(inspection ? client.InspectStored(directory, commandId, queryId, result, reason) :
+                                 client.SubmitStored(directory, commandId, result, reason),
                     "child stored call: " + reason);
         }
+        if (inspection) Require(result.envelope.toolName == "execution.get_command_status",
+                                "inspection sent a mutation or preview instead of a query");
         reply = result.responseJson;
     }
     Require(TypedToolProtocol::WriteFrame(control.Get(), reply, 5000, reason), reason);
@@ -921,6 +927,14 @@ void TestDurableClientProcessRecovery(bool preparedMode = false) {
         execution.Await(0, 0, 0);
         preparer.Crash(); // The original proposal and permit die with this address space.
     }
+    // A recovered prepared-but-unsent request must remain unknown, not be
+    // placed by inspection. Every inspection below runs in a fresh executable.
+    {
+        OutboxWorker inspector(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "inspect-before", command);
+        const auto result = ReadOutboxWorker(inspector);
+        Require(result.reasonCode == "EXECUTION_COMMAND_NOT_FOUND", "inspection manufactured an unsent receipt");
+        inspector.Finish(); execution.Await(0, 0, 0);
+    }
     long filledId = -1;
     {
         OutboxWorker sender(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit-hold", command);
@@ -929,6 +943,13 @@ void TestDurableClientProcessRecovery(bool preparedMode = false) {
         filledId = result.orderId;
         execution.Await(1, 10, 0, true, 1, 0);
         sender.Crash(); // No application acknowledgement persisted after the fill.
+    }
+    {
+        OutboxWorker inspector(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "inspect-after", command);
+        const auto result = ReadOutboxWorker(inspector);
+        Require(result.status == "ok" && result.payloadJson.find(command) != std::string::npos,
+                "read-only client-crash reconciliation lost original command");
+        inspector.Finish(); execution.Await(1, 10, 0);
     }
     {
         OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", command);
@@ -941,6 +962,13 @@ void TestDurableClientProcessRecovery(bool preparedMode = false) {
     NativeToolClient native(config); NativeStrategyClient client(native);
     execution.Crash(); execution.Restart(); execution.Await(1, 10, 0);
     AwaitRecoveredStatus(client, command);
+    {
+        OutboxWorker inspector(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "inspect-restart", command);
+        const auto result = ReadOutboxWorker(inspector);
+        Require(result.status == "ok" && result.payloadJson.find(command) != std::string::npos,
+                "read-only service-restart reconciliation lost original command");
+        inspector.Finish(); execution.Await(1, 10, 0);
+    }
     {
         OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", command);
         const auto result = ReadOutboxWorker(retry);
@@ -975,6 +1003,13 @@ void TestDurableClientProcessRecovery(bool preparedMode = false) {
         execution.Await(2, 10, 0); sender.Crash();
     }
     {
+        OutboxWorker inspector(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "inspect-cancel", cancelId);
+        const auto result = ReadOutboxWorker(inspector);
+        Require(result.status == "ok" && result.payloadJson.find(cancelId) != std::string::npos,
+                "read-only cancellation reconciliation lost original command");
+        inspector.Finish(); execution.Await(2, 10, 0);
+    }
+    {
         OutboxWorker retry(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "submit", cancelId);
         const auto result = ReadOutboxWorker(retry);
         Require(result.status == "duplicate", "stored cancellation identity lost");
@@ -990,6 +1025,13 @@ void TestDurableClientProcessRecovery(bool preparedMode = false) {
         Require(result.status == "rejected", "outbox manufactured flatten authority");
         sender.Finish();
     }
+    {
+        OutboxWorker inspector(f.root.path, f.agentConfig.toolSocket, tokenFile, prefix + "inspect-flatten", flattenId);
+        const auto result = ReadOutboxWorker(inspector);
+        Require(result.toolName == "execution.get_command_status" && result.status != "duplicate",
+                "inspection replayed a rejected flatten instead of querying");
+        inspector.Finish();
+    }
     execution.Await(2, 10, 0);
     f.gateway->Stop(); f.gateway.reset(); execution.Stop();
     OmsJournal journal;
@@ -1002,7 +1044,7 @@ void TestDurableClientProcessRecovery(bool preparedMode = false) {
     Require(sends.size() == 2 && sends[command] == 1 && sends[auth.commandId] == 1 &&
             cancels.size() == 1 && cancels[cancelId] == 1, "durable client caused duplicate/unauthorized sends");
     std::cout << "durable_client_recovery=PASS prepared_facade=" << preparedMode
-              << " client_SIGKILL=3 execution_SIGKILL=1"
+              << " client_SIGKILL=3 execution_SIGKILL=1 read_only_inspections=5"
               << " place_send_attempts=2 cancel_send_attempts=1 forged_flatten_rejected=1\n";
 }
 
