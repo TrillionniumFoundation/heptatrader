@@ -41,6 +41,7 @@ state their implemented behavior, evidence and remaining limits separately.
 | `deployment` | CURRENT | [modules/deployment.md](modules/deployment.md) |
 | `repository-control` | CURRENT | [modules/repository-control.md](modules/repository-control.md) |
 | `legacy-runtime` | LEGACY | [modules/legacy-runtime.md](modules/legacy-runtime.md) |
+| `native-research` | EXPERIMENTAL | [modules/native-research.md](modules/native-research.md) |
 <!-- module-catalog:end -->
 
 ## Runtime and protocol references

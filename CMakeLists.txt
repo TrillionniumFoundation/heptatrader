@@ -69,4 +69,6 @@ endif()
 
 # Install ownership is registered after optional test targets exist so a
 # canonical tested release can carry the installed simulator lifecycle smoke.
+include(cmake/HeptaResearch.cmake)
+
 include(cmake/HeptaInstall.cmake)
