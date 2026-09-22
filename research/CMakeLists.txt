@@ -84,6 +84,16 @@ if(BUILD_TESTING)
             --native "$<TARGET_FILE:hepta_research_replay_cli>")
         set_tests_properties(hepta_research_legacy_bundle_behavior PROPERTIES LABELS "core;research" TIMEOUT 120)
     endif()
+    add_test(NAME hepta_research_model_cli COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/model_cli_behavior.py"
+        "--binary=$<TARGET_FILE:hepta_research_replay_cli>")
+    set_tests_properties(hepta_research_model_cli PROPERTIES LABELS "core;research" TIMEOUT 60)
+    if(HEPTA_RESEARCH_STANDALONE)
+        add_test(NAME hepta_research_model_cli_install COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/model_cli_behavior.py"
+            "--build-dir=${CMAKE_CURRENT_BINARY_DIR}" "--cmake=${CMAKE_COMMAND}" "--config=$<CONFIG>")
+        set_tests_properties(hepta_research_model_cli_install PROPERTIES LABELS "research;install" TIMEOUT 90)
+    endif()
     add_dependencies(hepta_research_test_binaries hepta_research_replay_cli)
     if(TARGET hepta_core_test_binaries)
         add_dependencies(hepta_core_test_binaries hepta_research_test_binaries)

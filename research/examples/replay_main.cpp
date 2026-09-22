@@ -12,6 +12,8 @@
 #include <limits>
 #include <locale>
 #include <map>
+#include <set>
+#include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -131,6 +133,8 @@ public:
 private:
     std::unique_ptr<std::FILE, int(*)(std::FILE*)> file_;
 };
+#include "model_cli.h"
+
 void LegacyUsage(std::ostream& out) {
     out << "Offline legacy input modes (one explicitly bound instrument):\n"
         << "  hepta-research-replay --import-legacy-ticks LAYOUT RAW.csv CLOCKS.csv SESSIONS.csv INSTRUMENT baseline|day-start headerless|header [MAX_ROWS]\n"
@@ -243,6 +247,8 @@ int LegacyInput(int argc, char** argv, bool ticks) {
 }
 int main(int argc, char** argv) {
     try {
+        if (argc > 1 && std::string(argv[1]) == "--model-stream")
+            return ModelInput(argc);
         if (argc > 1 && std::string(argv[1]) == "--import-legacy-ticks")
             return LegacyInput(argc, argv, true);
         if (argc > 1 && std::string(argv[1]) == "--forecast-legacy-bars")
