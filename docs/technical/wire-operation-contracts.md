@@ -9,7 +9,7 @@ A Unix stream frame prefixes the body with a four-byte unsigned big-endian byte 
 
 `HSS1` has four magic bytes followed immediately by TLVs. Each TLV is a big-endian uint16 tag, a big-endian uint32 byte length and that many value bytes. It has no additional numeric version/operation header; operation is text in field 1. Each value is at most 4096 bytes except `TerminalEvidence` and `FinalizationReceipt` (12288). Duplicate tags and truncated values fail. Text validation rejects control bytes; producer-side limits below are byte limits, not Unicode character counts.
 
-`HEX1` has magic, uint16 version **10**, uint16 operation, then the same TLVs. Requests require an exact operation-specific field set. Values are at most 4096 bytes, except command-response `ResultDetail` may be 32768. Response kind is zero. `HEV2` uses the same eight-byte header with version **2** and 4096-byte TLV values. Unknown versions are rejected, never guessed compatible.
+`HEX1` has magic, uint16 version **11**, uint16 operation, then the same TLVs. Requests require an exact operation-specific field set. Values are at most 4096 bytes, except command-response `ResultDetail` may be 32768. Response kind is zero. `HEV2` uses the same eight-byte header with version **2** and 4096-byte TLV values. Unknown versions are rejected, never guessed compatible.
 
 All numeric TLV values are decimal **text**. Booleans are exactly `0` or `1`; floating-point values must be finite. Writers use the current codec's formatter. Digests in terminal request fields are `sha256:` plus 64 lowercase hexadecimal digits, not bare hex. The [generated field table](wire-field-reference.md) lists every tag and producer binding; it is not a second manually maintained registry.
 
@@ -78,3 +78,18 @@ The complete HEX1 identity-request **body** is `48 45 58 31 00 0a 00 07`; the le
 ## Persistent-format support is separate
 
 Wire versions, OMS schema and encrypted lease layout are separate compatibility axes. See [lease layouts](session-lease-format.md) and [persistence support](persistence-support-window.md). Retiring an old reader requires proof that no supported deployment needs it; source age alone is not evidence. A same-VERSION, distinct-source rollback test certifies only that exact artifact pair and tested persisted states.
+
+
+### Futures intent fields in HEX1 v11
+
+Place/preview order requests carry `PositionEffect` (tag 42) as part of the
+exact field set. The value is empty for the existing stock/FX profile or one of
+`OPEN`, `CLOSE`, `CLOSE_TODAY`, `CLOSE_YESTERDAY` for an explicitly
+migrated futures proposal. The complete contract identity continues to use tags
+14–24. A profile that does not implement futures offset semantics must reject a
+nonempty value; dropping or inferring it is not wire compatibility.
+
+The Agent-side HTT1 codec remains protocol version 1 with optional full contract
+identity/position-effect fields. Matching-source clients and servers discover
+the current schema hash; older decoders reject unknown fields rather than
+silently narrowing the request.

@@ -8,7 +8,7 @@ Applies to: supported source readers and deployment-specific artifact pairs
 | Axis | Current writer / protocol | Compatibility claim |
 |---|---|---|
 | Session wire | HSS1 | exact operation field sets; unknown/malformed input rejected |
-| Execution / event wire | HEX1 v10 / HEV2 v2 | exact versions; no inferred rolling-wire compatibility |
+| Execution / event wire | HEX1 v11 / HEV2 v2 | exact versions; no inferred rolling-wire compatibility |
 | OMS journal | schema 4 | maintained parser accepts historical schemas 1–4; unknown versions fail |
 | Lease plaintext | HSL8 inside encrypted HSL2 envelope | dedicated historical parsers/migrations, not arbitrary rollback |
 
