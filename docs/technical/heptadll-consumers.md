@@ -1,8 +1,8 @@
 # HeptaDLL consumer register and support decisions
 
 Status: CURRENT; bounded source-consumer register, not an external deployment census
-Canonical development: `heptatrader/main`; #113/#114/#115 merged; continuation remains `integration/heptadll-modular-20260920`
-Inspected implementation baseline: `30d438b8e65ad30daa520ee6f330fcff334416fa`, tree `d09a8cafadc490747dd4242497edf0e77837027a`
+Canonical development: `heptatrader/main`; #113-#117 merged; new development remains on main
+Accepted implementation baseline: `2443722f47ffc8e880786783ed98509dd1c3f17c`, tree `632d1299eaa0a0b753dcd5d21b93cb5715bf9ac0`
 Original retained source: `HeptaDLL-main@f69de179b4d41fe1813d317673abe8116cee76e5`
 
 ## Scope and ownership
@@ -35,6 +35,21 @@ falsely called migrated to allow main development to proceed.
 | C08: upstream Pegasus HeptaTrader, private/outside-organization or binary-only linked applications | Unconfirmed; bounded organization search is not deployment evidence | Version, actual platform and deployed artifact unknown | May depend on original class layout, vtable/ABI or proprietary state | RETAIN original compatible releases/source; outside current replacement support. Do not represent as unused or migrated; this row does not block new canonical features |
 | C09: retired main monolith/HeptaStrategy/Pegasus/watchdog and root Interface/Tools consumers | Historical main source record; canonical runtime maintainers | Last pre-removal asset source 6cdae64e04a92d234852aa14670a54538e9e5f9c | Retired build flags and direct-trading composition | RETIRED IN MAIN already; retain recoverable history and explicit legacy-build failure. No empty replacement targets, old SPI bypass or second OMS |
 | C10: original vendor SDKs, recorded datasets and original Word manual | Applicable rights holder/publication decision not established here | Original private repository; platform/vendor versions remain at source | Vendor headers/binaries, account/config/data assets, original manual | RETAIN PRIVATE; this port imports none. Organization ownership, green CI or source adaptation is not publication/redistribution clearance |
+
+## Source-level C07 inventory versus deployment evidence
+
+The retained legacy default branch contains the strategy/agent framework components
+listed in `heptadll-consumer-migrations.json`. The bounded organization/default-
+branch search did not establish a checked-in concrete deployed strategy owner
+derived from those bases. That narrows what can be migrated from repository
+evidence: the canonical futures intent contract covers the observable limit/FAK/
+FOK and explicit open/close vocabulary, while deployment identity, strategy state,
+ABI expectations and operational owner acknowledgement remain unknown.
+
+This is deliberately not a negative census. C07 therefore remains
+`retained_unconfirmed`, and C08 remains the separate outside/private/binary-only
+unknown. Neither may be changed to deployment-level `migrated` merely because
+the source framework has a canonical adaptation path.
 
 ## Concrete acceptance versus unsupported assumptions
 
