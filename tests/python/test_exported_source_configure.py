@@ -27,6 +27,15 @@ class ExportedSourceConfigureTests(unittest.TestCase):
         self.assertIsNotNone(configure)
         self.assertIn('-DHEPTA_DOCUMENTATION_SOURCE_SHA="$EXPECTED_SHA"', configure.group("body"))
 
+    def test_candidate_builder_separates_host_nproc_from_container_pids(self) -> None:
+        text = BUILDER.read_text(encoding="utf-8")
+        self.assertIn('PIDS_LIMIT="${HEPTA_IB_BUILD_PIDS_LIMIT:-256}"', text)
+        self.assertIn('NPROC_LIMIT="${HEPTA_IB_BUILD_NPROC_LIMIT:-65535}"', text)
+        self.assertIn('--pids-limit "$PIDS_LIMIT"', text)
+        self.assertIn('--ulimit nproc="$NPROC_LIMIT:$NPROC_LIMIT"', text)
+        self.assertNotIn('--ulimit nproc="$PIDS_LIMIT:$PIDS_LIMIT"', text)
+        self.assertIn('"nproc_rlimit": int(nproc)', text)
+
     def test_real_exported_source_configures_without_git_metadata(self) -> None:
         source_sha = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
