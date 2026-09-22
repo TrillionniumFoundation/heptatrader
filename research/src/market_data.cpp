@@ -152,6 +152,7 @@ BarBuilder::BarBuilder(std::string instrument, std::int64_t periodUs, SessionSch
     Require(periodUs >= 0, "RESEARCH_PERIOD_INVALID");
 }
 TickOutcome BarBuilder::Push(const Tick& tick, Bar& closed) {
+    Require(!finished_, "RESEARCH_BAR_BUILDER_FINISHED");
     ValidateTick(tick);
     Require(tick.instrument == instrument_, "RESEARCH_INSTRUMENT_MISMATCH");
     if (hasLast_ && tick.sequence == last_.sequence) {
@@ -188,6 +189,7 @@ TickOutcome BarBuilder::Push(const Tick& tick, Bar& closed) {
     return didClose ? TickOutcome::ClosedPrevious : TickOutcome::Updated;
 }
 bool BarBuilder::AdvanceWatermark(std::int64_t watermark, Bar& closed) {
+    Require(!finished_, "RESEARCH_BAR_BUILDER_FINISHED");
     Require(watermark >= watermarkUs_ && (!hasLast_ || watermark >= last_.timestampUs),
             "RESEARCH_WATERMARK_REVERSED");
     watermarkUs_ = watermark;
@@ -198,6 +200,17 @@ bool BarBuilder::AdvanceWatermark(std::int64_t watermark, Bar& closed) {
 bool BarBuilder::Current(Bar& out) const {
     if (!hasBar_) return false;
     out = bar_;
+    return true;
+}
+bool BarBuilder::Finish(Bar& incompleteTail) {
+    if (finished_) return false;
+    if (!hasBar_) { finished_ = true; return false; }
+    // Allocate/copy before ending the stream; failure cannot silently consume
+    // the only tail. Default-allocator swaps publish without allocation.
+    Bar next = bar_; next.complete = false;
+    using std::swap;
+    swap(incompleteTail, next);
+    hasBar_ = false; finished_ = true;
     return true;
 }
 CumulativeVolumeDecoder::CumulativeVolumeDecoder(std::string instrument, bool countFirst)

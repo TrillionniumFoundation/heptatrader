@@ -300,7 +300,9 @@
         "tests/research/market_data_tests.cpp",
         "tests/research/analytics_tests.cpp",
         "tests/research/replay_tests.cpp",
-        "tests/research/cli_behavior.py"
+        "tests/research/cli_behavior.py",
+        "tests/research/legacy_bundle_behavior.py",
+        "tests/research/sdk_package_behavior.py"
       ],
       "broker_mutation": "LOCAL_ONLY",
       "production_authorized": false

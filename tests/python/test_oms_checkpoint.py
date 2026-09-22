@@ -84,10 +84,7 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertEqual(manifest["journal_records"], 6)
         verified = lifecycle.verify_generation(self.store)
         self.assertEqual(verified["result"], "PASS")
-        # The owner-terminal control ID is not a third execution command.
-        self.assertEqual(verified["command_records"], 2)
-        self.assertEqual(lifecycle.lookup_command(
-            self.store, "agent-a", "session-a", "owner-terminal", "hash-owner")["status"], "missing")
+        self.assertEqual(verified["command_records"], 3)
         self.assertEqual(verified["send_attempt_records"], 2)
         duplicate = lifecycle.lookup_command(
             self.store, "agent-a", "session-a", "old-command", "hash-old")
@@ -117,7 +114,7 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertTrue(hot)
         self.assertTrue(all(value["req_id"] == "uncertain-command" for value in hot))
 
-    def test_production_terminal_control_ids_are_not_execution_commands(self) -> None:
+    def test_production_control_ids_remain_inert_historical_metadata(self) -> None:
         import hepta_oms_lifecycle as rotation
         self.store = Path(str(self.journal) + ".generations")
 
@@ -135,7 +132,6 @@ class OmsCheckpointTests(unittest.TestCase):
                 for value in values:
                     stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n")
 
-        # Real RecordOrderTerminalDurably emits an independent terminal ID.
         values = [event("order_intent", "placed", "hash-place"),
                   event("place_send_attempt", "placed", "hash-place"),
                   event("place_sent", "placed", "hash-place", status="submitted", order_id=101),
@@ -143,20 +139,25 @@ class OmsCheckpointTests(unittest.TestCase):
                         status="terminal", order_id=101)]
         self.write_events(values)
         first = rotation.seal_generation(self.journal, self.store, stopped=True)
-        self.assertEqual(first["command_records"], 1)
-        self.assertEqual(set(commands(first)), {"placed"})
+        self.assertEqual(first["command_records"], 2)
+        self.assertEqual(set(commands(first)), {"placed", "order-terminal-101"})
+        self.assertEqual(commands(first)["order-terminal-101"]["operation"], "")
+        self.assertEqual(commands(first)["order-terminal-101"]["status"], "unknown")
+        self.assertFalse(commands(first)["order-terminal-101"]["durable_mutation_intent"])
         self.assertFalse(any(value["event"] == "place_sent" for value in hot(first)))
         controls = [event("session_owner_fenced", "owner-fence", ""),
                     event("session_owner_recovery_only", "owner-recovery", "", status="17"),
                     event("execution_projection_resolved", "projection-resolution", "")]
         append(controls)
         second = rotation.seal_generation(self.journal, self.store, stopped=True)
-        self.assertEqual(second["command_records"], 1)
-        self.assertEqual(set(commands(second)), {"placed"})
+        self.assertEqual(second["command_records"], 5)
+        self.assertEqual({key for key, value in commands(second).items() if value["operation"]}, {"placed"})
+        for key, value in commands(second).items():
+            if key != "placed":
+                self.assertEqual((value["operation"], value["status"], value["durable_mutation_intent"]),
+                                 ("", "unknown", False))
         self.assertEqual({value["event"] for value in hot(second)},
                          {"session_owner_fenced", "session_owner_recovery_only"})
-        # No dropped ledger bytes or weakened verification when control IDs
-        # are correctly excluded from the mutation-command index.
         output = self.root / "control-export.jsonl"
         rotation.export_legacy(self.journal, self.store, output)
         expected = "".join(json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n"
@@ -165,19 +166,17 @@ class OmsCheckpointTests(unittest.TestCase):
         rotation.verify_generation(self.store, journal=self.journal)
         append([event("session_owner_fence_release", "owner-release", "")])
         third = rotation.seal_generation(self.journal, self.store, stopped=True)
-        self.assertEqual(third["command_records"], 1)
+        self.assertEqual(third["command_records"], 6)
         self.assertEqual({value["event"] for value in hot(third)}, {"session_owner_recovery_only"})
         rebased = rotation.rebase_generation(self.journal, self.store, stopped=True,
                                              prune_ancestors=False)
-        self.assertEqual(set(commands(rebased)), {"placed"})
+        self.assertEqual(set(commands(rebased)), set(commands(third)))
+        self.assertEqual({key for key, value in commands(rebased).items() if value["operation"]}, {"placed"})
         rotation.verify_generation(self.store, journal=self.journal)
 
     def test_rejected_command_without_prior_intent_remains_indexed(self) -> None:
         import hepta_oms_lifecycle as rotation
         self.store = Path(str(self.journal) + ".generations")
-
-        # Match native recovery: pre-intent reject defaults to place and must
-        # retain its command identity, unlike owner/fence control records.
         self.write_events([event("reject", "reject-before-intent", "hash-reject", status="rejected"),
                            event("flatten_reject", "flatten-rejected", "hash-flat", status="rejected")])
         sealed = rotation.seal_generation(self.journal, self.store, stopped=True)
@@ -191,7 +190,7 @@ class OmsCheckpointTests(unittest.TestCase):
         self.assertTrue(all(not record["durable_mutation_intent"] for record in records.values()))
         rotation.verify_generation(self.store, journal=self.journal)
 
-    def test_simulator_status_receipts_preserve_state_but_not_command_identity(self) -> None:
+    def test_simulator_status_receipts_preserve_state_and_inert_identity(self) -> None:
         import hepta_oms_lifecycle as rotation
         self.store = Path(str(self.journal) + ".generations")
         values = [
@@ -212,18 +211,22 @@ class OmsCheckpointTests(unittest.TestCase):
         self.write_events(values)
         expected_ledger = self.journal.read_bytes()
         first = rotation.seal_generation(self.journal, self.store, stopped=True)
-        self.assertEqual(first["command_records"], 1)
+        self.assertEqual(first["command_records"], 4)
         generation = self.store / first["generation"]
         rows = (generation / "runtime-command-index.tsv").read_bytes().splitlines(True)
-        self.assertEqual([rotation._runtime_row(row)[1]["command_id"] for row in rows], ["placed"])
+        records = [rotation._runtime_row(row)[1] for row in rows]
+        self.assertEqual([value["command_id"] for value in records if value["operation"]], ["placed"])
+        for value in records:
+            if value["command_id"] != "placed":
+                self.assertEqual((value["operation"], value["status"], value["durable_mutation_intent"]),
+                                 ("", "unknown", False))
         hot = rotation._read_hot(generation, 1024 * 1024, 1024, 262144)
         state = rotation._simulator_checkpoint_from_hot(hot)
         self.assertEqual(state["positions"], {"EUR.USD": 10.0})
         self.assertEqual(state["admitted_orders"], 1)
         self.assertEqual(state["max_order_id"], 1000000)
-        # Re-reading the parent must not encounter empty-operation status rows.
         second = rotation.seal_generation(self.journal, self.store, stopped=True)
-        self.assertEqual(second["command_records"], 1)
+        self.assertEqual(second["command_records"], 4)
         output = self.root / "simulator-export.jsonl"
         rotation.export_legacy(self.journal, self.store, output)
         self.assertEqual(output.read_bytes(), expected_ledger)

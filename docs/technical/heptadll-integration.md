@@ -424,3 +424,26 @@ on the PR. Consumer inventory, external strategies, other historical formats,
 matching/clearing equivalence and source-archive readiness remain separate,
 explicit conditions. The retained source/history and alternate branches are
 untouched; CTP remains deferred behind XT and LIVE remains unavailable.
+
+## Legacy file bundle and EOF continuation
+
+The existing Data SDK now receives the selected #106 BIN/XML profiles through
+an import-only adapter; it does not acquire a parallel Python bar/ledger/client.
+The existing BarBuilder adds explicit incomplete-tail EOF finalization from
+#108, and the existing native replay accepts explicit capital, multiplier and
+per-unit fees and rejects buffered output failure. Source and installed/relocated
+tests exercise the same implementations. See [contract and remaining differences](../../research/LEGACY-BUNDLE.md).
+These capabilities do not certify full historical parity, external consumer
+retirement, remote exact-head CI, main merge or old-repository archival.
+
+## Consolidation disposition
+
+See [the three-PR capability/consumer register](heptadll-consolidation.md) for the
+selected implementation, concrete ports and retained incompatible models.
+The missing OMS pre-intent reject/pending-activation status fixes from #108
+are retained. Its cost-fixture sleep is not imported: #107 already has an
+explicit finite load budget and a separate rate-denial test, both unchanged.
+Its control/status-ID filter is NOT retained:
+#107 deliberately preserves those identities as non-mutating historical metadata,
+and its original rotation/rebase regressions remain unchanged. Native wire
+contracts and journal bytes are not changed. Neither this record nor local tests certify remote merge or retirement.

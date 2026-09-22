@@ -630,3 +630,14 @@ poisoned cursors and a 1,000-row non-seekable sparse stream. The existing CLI
 and relocated-SDK tests consume the new interface, compare clocks/forecasts
 with independent fixtures, and reject late-invalid input before stdout release.
 All earlier input, replay, client and installation assertions remain active.
+
+## Legacy file bundle and EOF continuation
+
+The existing Data SDK now receives the selected #106 BIN/XML profiles through
+an import-only adapter; it does not acquire a parallel Python bar/ledger/client.
+The existing BarBuilder adds explicit incomplete-tail EOF finalization from
+#108, and the existing native replay accepts explicit capital, multiplier and
+per-unit fees and rejects buffered output failure. Source and installed/relocated
+tests exercise the same implementations. See [contract and remaining differences](LEGACY-BUNDLE.md).
+These capabilities do not certify full historical parity, external consumer
+retirement, remote exact-head CI, main merge or old-repository archival.

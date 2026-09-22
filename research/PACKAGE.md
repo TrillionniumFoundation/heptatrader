@@ -233,3 +233,14 @@ remain unchanged. See [input and CLI semantics](README.md#explicit-duration-for-
 The relocated external C++11 consumer exercises both overloads, the new Data
 symbol, observation-aware Strategy calls and portable bar round trips. No new
 installed header, archive, package component or production dependency is added.
+
+## Legacy file bundle and EOF continuation
+
+The existing Data SDK now receives the selected #106 BIN/XML profiles through
+an import-only adapter; it does not acquire a parallel Python bar/ledger/client.
+The existing BarBuilder adds explicit incomplete-tail EOF finalization from
+#108, and the existing native replay accepts explicit capital, multiplier and
+per-unit fees and rejects buffered output failure. Source and installed/relocated
+tests exercise the same implementations. See [contract and remaining differences](LEGACY-BUNDLE.md).
+These capabilities do not certify full historical parity, external consumer
+retirement, remote exact-head CI, main merge or old-repository archival.

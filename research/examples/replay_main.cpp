@@ -249,12 +249,33 @@ int main(int argc, char** argv) {
             return LegacyInput(argc, argv, false);
         // Deliberately small offline example. No gateway address or credentials
         // are accepted; neither native nor Execution libraries are linked.
-        if (argc != 8 && argc != 9) {
-            std::cerr << "Usage: hepta-research-replay TICKS.csv SESSIONS.csv INSTRUMENT PERIOD_US FAST SLOW UNITS [average|fifo]\n";
+        int positional = 1;
+        while (positional < argc && std::string(argv[positional]).find("--") != 0) ++positional;
+        double initialEquity = 100000, multiplier = 1, feePerUnit = .01;
+        std::map<std::string, double*> options{{"--initial-equity", &initialEquity},
+            {"--multiplier", &multiplier}, {"--fee-per-unit", &feePerUnit}};
+        std::map<std::string, bool> seen;
+        for (int i = positional; i < argc; i += 2) {
+            const std::string name = argv[i];
+            Check(i + 1 < argc && options.count(name) != 0 && !seen[name],
+                  "unknown, repeated or valueless replay option");
+            seen[name] = true;
+            const std::string text = argv[i + 1];
+            Check(!text.empty() && text.size() <= 128, "invalid replay numeric option");
+            std::istringstream input(text); input.imbue(std::locale::classic());
+            double value = 0; input >> std::noskipws >> value;
+            Check(!input.fail() && input.peek() == std::char_traits<char>::eof() &&
+                  std::isfinite(value), "invalid replay numeric option");
+            *options.at(name) = value;
+        }
+        Check(initialEquity > 0 && multiplier > 0 && feePerUnit >= 0,
+              "replay requires positive capital/multiplier and nonnegative fee");
+        if (positional != 8 && positional != 9) {
+            std::cerr << "Usage: hepta-research-replay TICKS.csv SESSIONS.csv INSTRUMENT PERIOD_US FAST SLOW UNITS [average|fifo] [--initial-equity N] [--multiplier N] [--fee-per-unit N]\n";
             LegacyUsage(std::cerr);
             return 2;
         }
-        const std::string basisName = argc == 9 ? argv[8] : "average";
+        const std::string basisName = positional == 9 ? argv[8] : "average";
         if (basisName != "average" && basisName != "fifo")
             throw std::invalid_argument("cost basis must be average or fifo");
         const auto basis = basisName == "fifo" ? CostBasis::Fifo : CostBasis::WeightedAverage;
@@ -269,8 +290,8 @@ int main(int argc, char** argv) {
         const auto schedule = ReadSessionsCsv(sessionFile);
         BarBuilder builder(argv[3], period, schedule);
         MovingAverageForecast strategy(static_cast<std::size_t>(fast), static_cast<std::size_t>(slow));
-        ReplayMatcher matcher(argv[3], schedule, .01);
-        ResearchLedger ledger(argv[3], 100000, 1, 100000, basis);
+        ReplayMatcher matcher(argv[3], schedule, feePerUnit);
+        ResearchLedger ledger(argv[3], initialEquity, multiplier, 100000, basis);
         std::string pending;
         std::uint64_t orders = 0, fills = 0, forecasts = 0;
         std::cout.imbue(std::locale::classic());
@@ -312,6 +333,8 @@ int main(int argc, char** argv) {
         // remain marked, while ALL resting orders receive terminal treatment.
         // Next leaves tick unchanged at clean EOF. Any late parse/I/O failure
         // exits without this success summary; partial output is not a result.
+        Bar incompleteTail;
+        builder.Finish(incompleteTail); // EOF is not a completeness watermark.
         const auto finalEvents = matcher.Finish(tick.timestampUs);
         if (!matcher.Finished() || matcher.ActiveOrders() != 0)
             throw std::logic_error("replay finalization left active orders");
@@ -325,7 +348,10 @@ int main(int argc, char** argv) {
                   << ",\"equity\":" << account.equity
                   << ",\"finalized\":true,\"active_orders\":" << matcher.ActiveOrders()
                   << ",\"eof_terminal_events\":" << finalEvents.size()
+                  << ",\"initial_equity\":" << initialEquity
+                  << ",\"multiplier\":" << multiplier << ",\"fee_per_unit\":" << feePerUnit
                   << ",\"broker_authorized\":false}\n";
+        std::cout.flush();
         if (!std::cout) throw std::runtime_error("research output failed");
         return 0;
     } catch (const std::exception& e) {

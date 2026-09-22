@@ -462,6 +462,21 @@ def main() -> None:
     invalid[-1] = "0"
     failure = subprocess.run(invalid, capture_output=True, text=True, timeout=10)
     require(failure.returncode != 0, "zero quantity accepted")
+    if Path("/dev/full").exists():
+        with open("/dev/full", "wb") as full:
+            failure = subprocess.run(args, stdout=full, stderr=subprocess.PIPE, text=True, timeout=10)
+        require(failure.returncode != 0 and "RESEARCH_REPLAY_FAILED" in failure.stderr,
+                "buffered stdout failure was reported as success")
+    configured = subprocess.run(args + ["--initial-equity", "4321", "--multiplier", "10", "--fee-per-unit", "0.25"],
+                                capture_output=True, text=True, timeout=10)
+    require(configured.returncode == 0, configured.stderr)
+    configured_summary = json.loads(configured.stdout.splitlines()[-1])
+    require(configured_summary["initial_equity"] == 4321 and configured_summary["multiplier"] == 10 and
+            configured_summary["fee_per_unit"] == .25, "explicit replay accounting options lost")
+    for flags in (["--multiplier", "0"], ["--initial-equity", "nan"], ["--fee-per-unit", "-1"],
+                  ["--unknown", "1"], ["--multiplier", "1", "--multiplier", "2"], ["--multiplier"]):
+        failure = subprocess.run(args + flags, capture_output=True, text=True, timeout=10)
+        require(failure.returncode != 0, "invalid replay accounting option accepted")
     legacy_input_modes(binary, examples)
     explicit_bar_period_modes(binary)
     print("PASS: deterministic streamed output, duplicates, large input, EOF and late-error rejection")

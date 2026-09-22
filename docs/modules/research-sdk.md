@@ -3,7 +3,7 @@
 Status: EXPERIMENTAL
 Applies to: source-built research, offline developer SDK and forward-only client integration
 Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/legacy_bundle_behavior.py`, `tests/research/sdk_package_behavior.py`
 
 ## Ownership and execution boundary
 
@@ -134,7 +134,8 @@ submission order. DAY expiry, IOC partial cancellation and FOK all-or-cancel are
 explicit. No signal may consume its own timestamp's tick. There is no gateway,
 venue credential, production order API or exchange connection in this target.
 
-The replay example uses synthetic data, fixed example capital/multiplier/fees,
+The replay example uses synthetic data and explicit capital/multiplier/fee options
+(with unchanged defaults for old invocations),
 and a moving-average direction callback. It marks the final open position rather
 than inventing a last-tick liquidation. It is not a profitability demonstration
 or behavioral-equivalence claim for every historical Pegasus strategy.
@@ -360,3 +361,14 @@ required by the report exporter. Local reconstructed Git commits must not be
 relabelled as remote source identities. The original source and external-consumer
 retirement boundaries in the [integration record](../technical/heptadll-integration.md)
 remain unchanged.
+
+## Legacy file bundle and EOF continuation
+
+The existing Data SDK now receives the selected #106 BIN/XML profiles through
+an import-only adapter; it does not acquire a parallel Python bar/ledger/client.
+The existing BarBuilder adds explicit incomplete-tail EOF finalization from
+#108, and the existing native replay accepts explicit capital, multiplier and
+per-unit fees and rejects buffered output failure. Source and installed/relocated
+tests exercise the same implementations. See [contract and remaining differences](../../research/LEGACY-BUNDLE.md).
+These capabilities do not certify full historical parity, external consumer
+retirement, remote exact-head CI, main merge or old-repository archival.

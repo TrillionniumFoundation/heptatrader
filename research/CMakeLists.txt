@@ -76,6 +76,14 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/cli_behavior.py"
         "$<TARGET_FILE:hepta_research_replay_cli>" "${CMAKE_CURRENT_SOURCE_DIR}/examples")
     set_tests_properties(hepta_research_cli_behavior PROPERTIES LABELS "core;research" TIMEOUT 30)
+    # The fail-closed file capture/publish helper requires POSIX filesystem calls.
+    if(UNIX)
+        add_test(NAME hepta_research_legacy_bundle_behavior COMMAND "${Python3_EXECUTABLE}" -I -S
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/legacy_bundle_behavior.py"
+            --importer "${CMAKE_CURRENT_SOURCE_DIR}/import_legacy.py"
+            --native "$<TARGET_FILE:hepta_research_replay_cli>")
+        set_tests_properties(hepta_research_legacy_bundle_behavior PROPERTIES LABELS "core;research" TIMEOUT 120)
+    endif()
     add_dependencies(hepta_research_test_binaries hepta_research_replay_cli)
     if(TARGET hepta_core_test_binaries)
         add_dependencies(hepta_core_test_binaries hepta_research_test_binaries)

@@ -156,8 +156,7 @@ def _status(event: dict[str, Any], operation: str, prior: str = "unknown") -> st
         return "uncertain"
     if kind == "cancel" and state == "cancel_sent":
         return "accepted"
-    # A simulator placement is not accepted until the explicit activation
-    # receipt, matching ApplyRecoveredPlaceReceiptLocked in native recovery.
+    # Match native recovery: activation_pending is not an acceptance receipt.
     if kind == "place_sent" and state == "activation_pending":
         return "uncertain"
     if kind in {"place_sent", "place_activated", "flatten_sent", "flatten_noop"}:
@@ -176,24 +175,10 @@ def _durable_intent(event: dict[str, Any]) -> bool:
 
 def _update_command(commands: dict[tuple[str, str, str], dict[str, Any]],
                     event: dict[str, Any], sequence: int) -> None:
-    # Match ExecutionCoordinator::ApplyRecoveredOwnershipEventLocked and its
-    # projection-resolution fast path. These journal entries carry command-like
-    # control IDs (e.g. order-terminal-101) but never create mutation records.
-    # _project_hot still projects their owner/fence state and retains all ledger
-    # bytes; filtering them here is not pruning historical command identity.
-    if event.get("event") in {
-        "session_owner_fenced", "session_owner_recovery_only",
-        "session_owner_fence_release", "order_owner_reconciled_terminal",
-        "paper_terminal_fence", "execution_projection_resolved",
-    }:
-        return
-    # Current simulator callbacks use agent:<owner> with independent
-    # sim-status-* IDs. Native command recovery accepts agent.tool: only;
-    # these status receipts belong to the simulator state projection, not
-    # the mutation index. Retain historical agent: mutation-event support.
-    if (event.get("event") == "status" and
-            event.get("source", "").startswith("agent:")):
-        return
+    # #107 deliberately retains independent control/status IDs as inert metadata
+    # (empty operation, unknown status, no durable mutation intent). The v2
+    # reader already validates that historical form; do NOT port #108's index
+    # filtering, which would drop identities expected by rotation/rebase users.
     key = _key(event)
     if not all(key):
         return

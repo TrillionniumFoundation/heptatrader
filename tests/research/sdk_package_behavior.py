@@ -394,6 +394,15 @@ int main() {
         try { missingEvidence.Next(record); } catch (const std::invalid_argument&) { rejected = true; }
         Require(rejected && missingEvidence.RowsRead() == 0);
     }
+    BarBuilder terminalBuilder("TEST.FUT", 0, schedule); Bar terminal;
+    Tick terminalTick; terminalTick.instrument="TEST.FUT";terminalTick.timestampUs=1;
+    terminalTick.sequence=1;terminalTick.price=100;terminalTick.volume=7;
+    terminalBuilder.Push(terminalTick,terminal);
+    Require(terminalBuilder.Finish(terminal) && terminalBuilder.Finished() && !terminal.complete && terminal.volume==7);
+    Require(!terminalBuilder.Finish(terminal));
+    bool terminalRejected=false;
+    try { terminalBuilder.Push(terminalTick,terminal); } catch (const std::invalid_argument&) {terminalRejected=true;}
+    Require(terminalRejected);
     std::cout << "installed research contract passed\n";
 }
 '''
@@ -510,6 +519,12 @@ def main() -> None:
         # installed executable; no source-tree executable or fallback is used.
         run([sys.executable, str(source.parent / "tests/research/cli_behavior.py"),
              str(replay[0]), str(ticks[0].parent)])
+        if os.name == "posix":
+            importers = list(relocated.rglob("hepta-research-import"))
+            if len(importers) != 1:
+                raise RuntimeError("legacy bundle importer missing from relocated offline SDK")
+            run([sys.executable, "-I", "-S", str(source.parent / "tests/research/legacy_bundle_behavior.py"),
+                 "--importer", str(importers[0]), "--native", str(replay[0]), "--installed"])
         # Missing capabilities and mismatching versions must not become stubs.
         for name, request, expected in (
             ("native", "find_package(HeptaResearch CONFIG REQUIRED COMPONENTS NativeClient)", "NativeClient"),

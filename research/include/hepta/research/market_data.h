@@ -64,12 +64,17 @@ public:
     // Watermarks are promises: ticks older than a watermark are rejected.
     bool AdvanceWatermark(std::int64_t watermarkUs, Bar& closed);
     bool Current(Bar& partial) const;
+    // End this stream without claiming completeness. Exports a populated tail
+    // once with complete=false. Empty/repeated Finish leaves output unchanged.
+    // No timestamp/price/volume is invented; Push/AdvanceWatermark then reject.
+    bool Finish(Bar& incompleteTail);
+    bool Finished() const { return finished_; }
 private:
     std::string instrument_;
     std::int64_t periodUs_;
     SessionSchedule schedule_;
     std::int64_t watermarkUs_ = 0;
-    bool hasLast_ = false, hasBar_ = false;
+    bool hasLast_ = false, hasBar_ = false, finished_ = false;
     Tick last_;
     Bar bar_;
 };

@@ -90,6 +90,13 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/sdk-build-info.txt" PACKAGE.md
 install(FILES examples/ticks.csv examples/sessions.csv
     DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaResearch/examples" COMPONENT ResearchSDK)
 
+# Import-only capability port. No Python strategy/accounting/runtime copy.
+if(UNIX)
+    install(PROGRAMS import_legacy.py DESTINATION "${CMAKE_INSTALL_BINDIR}"
+        RENAME hepta-research-import COMPONENT ResearchSDK)
+endif()
+install(FILES LEGACY-BUNDLE.md DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaResearch" COMPONENT ResearchSDK)
+
 if(BUILD_TESTING)
     add_test(NAME hepta_research_sdk_install COMMAND "${Python3_EXECUTABLE}"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/sdk_package_behavior.py"

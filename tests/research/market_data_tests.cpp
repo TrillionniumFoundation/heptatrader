@@ -1575,6 +1575,38 @@ void LegacyExplicitBarPeriodFailures() {
     Check(!sparse.Next(out) && sparse.RowsRead()==1000,"sparse stream EOF");
 }
 
+void EndOfInputLifecycle() {
+    const SessionSchedule schedule({Window(0,10,"20260921"),Window(20,30,"20260921"),Window(40,50,"20260922")});
+    Bar out; out.instrument="UNCHANGED";
+    BarBuilder empty("TEST.FUT",0,schedule);
+    Check(!empty.Finish(out) && empty.Finished() && out.instrument=="UNCHANGED","empty EOF");
+    Check(!empty.Finish(out),"repeated empty EOF");
+    Throws([&]{empty.Push(T(1,1,100),out);});
+    Throws([&]{empty.AdvanceWatermark(100,out);});
+    for (std::int64_t period : {0,5,50}) {
+        BarBuilder builder("TEST.FUT",period,schedule);
+        builder.Push(T(1,1,100,7),out);
+        Bar before;Check(builder.Current(before),"current before EOF");
+        Check(builder.Finish(out) && builder.Finished() && !out.complete && out.volume==7 && out.tickCount==1 &&
+              out.beginUs==before.beginUs && out.endUs==before.endUs && out.close==before.close,"EOF tail changed");
+        out.instrument="UNCHANGED";
+        Check(!builder.Finish(out) && out.instrument=="UNCHANGED" && !builder.Current(out),"EOF tail repeated");
+        Throws([&]{builder.Push(T(1,1,100,7),out);});
+        Throws([&]{builder.Push(T(2,2,101,2),out);});
+        Throws([&]{builder.AdvanceWatermark(30,out);});
+    }
+    BarBuilder daily("TEST.FUT",0,schedule);
+    daily.Push(T(1,1,100,4),out);
+    Check(!daily.AdvanceWatermark(10,out),"session break became day completion");
+    daily.Push(T(21,2,110,6),out);
+    Check(daily.Finish(out) && !out.complete && out.beginUs==0 && out.endUs==30 &&
+          out.open==100 && out.close==110 && out.volume==10 && out.tickCount==2,"cross-break daily EOF");
+    BarBuilder completed("TEST.FUT",0,schedule);
+    completed.Push(T(1,1,100,7),out);
+    Check(completed.AdvanceWatermark(30,out) && out.complete,"explicit completeness watermark");
+    Check(!completed.Finish(out) && out.complete,"EOF changed already published completed bar");
+}
+
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); EndOfInputLifecycle(); }); }
