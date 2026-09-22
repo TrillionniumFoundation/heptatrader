@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Application policy faults plus the actual native adapter's non-sending boundary."""
 import argparse
+from contextlib import contextmanager
 from dataclasses import replace
+from decimal import Decimal
 import hashlib
 import importlib.util
 import json
@@ -84,6 +86,144 @@ class ApplicationPolicy(unittest.TestCase):
         for value in (True, 0, 2**63):
             with self.assertRaises(ValueError):
                 replace(self.intent, expires_at_ms=value).fields()
+    def test_numeric_normalization_is_closed_and_preserves_value(self):
+        for field in ("quantity", "limit_price", "reference_price"):
+            for value in ("1e-126", "1e-127", "1.25e-127", "1e-300", "5e-324", "1e12", "0.1"):
+                with self.subTest(field=field, value=value):
+                    fields = replace(self.intent, **{field: value}).fields()
+                    self.assertLessEqual(len(fields[field]), 128)
+                    self.assertEqual(Decimal(fields[field]), Decimal(value))
+                    self.assertEqual(g.LimitIntent(**fields).fields(), fields)
+        # Existing valid HSA1 intent bytes must not acquire a new spelling.
+        for value, canonical in (("1.10", "1.1"), ("10.000", "10"), ("1e-5", "0.00001"), ("1e12", "1000000000000")):
+            self.assertEqual(replace(self.intent, quantity=value).fields()["quantity"], canonical)
+
+    def test_small_exponent_native_validation_reaches_existing_sdk(self):
+        token = self.root / "token"
+        token.write_text("application-test-token-only")
+        token.chmod(0o600)
+        transport = g.NativeStrategyTransport(args.native, str(self.root / "missing.sock"), str(token))
+        binding = transport.scope()
+        empty_requests = self.root / "empty-requests"
+        empty_requests.mkdir(mode=0o700)
+        for field in ("quantity", "limit_price", "reference_price"):
+            fields = replace(self.intent, **{field: "1e-300"}).fields()
+            with self.subTest(field=field):
+                with self.assertRaises(g.NativeClientError) as caught:
+                    transport.call("validate", directory=str(empty_requests), binding=binding,
+                                   fields=fields, command_id=ID)
+                # The real adapter parsed the normalized intent and reached the
+                # existing record loader. No socket, preview or mutation is used.
+                self.assertTrue(caught.exception.response["reason"].startswith("RESEARCH_OUTBOX_"))
+                self.assertEqual(caught.exception.response["operation"], "validate")
+        self.assertEqual(list(empty_requests.iterdir()), [])
+
+    def test_concurrent_store_initialization_waits_for_publication(self):
+        # Pause a real first publisher after hard-link publication, before
+        # unlinking its temporary name. A second constructor must acquire the
+        # SAME flock before inspecting the transient two-link format marker.
+        path = str(self.root / "concurrent-application")
+        context = multiprocessing.get_context("fork")
+        parent_publish, child_publish = context.Pipe()
+        parent_open, child_open = context.Pipe()
+        def publisher():
+            real_link = g.os.link
+            def paused_link(source, destination, *arguments, **keywords):
+                real_link(source, destination, *arguments, **keywords)
+                if destination == ".format":
+                    child_publish.send("published")
+                    if not child_publish.poll(5) or child_publish.recv() != "continue":
+                        raise RuntimeError("publication barrier timed out")
+            try:
+                with patch.object(g.os, "link", paused_link):
+                    g.ApplicationStore(path)
+                child_publish.send("ok")
+            except BaseException as error:
+                child_publish.send("error:" + type(error).__name__ + ":" + str(error))
+            finally:
+                child_publish.close()
+        def opener():
+            real_lock = g._locked_file
+            @contextmanager
+            def observed_lock(dfd, name):
+                if name == ".init.lock":
+                    child_open.send("locking")
+                with real_lock(dfd, name):
+                    yield
+            try:
+                with patch.object(g, "_locked_file", observed_lock):
+                    g.ApplicationStore(path)
+                child_open.send("ok")
+            except BaseException as error:
+                child_open.send("error:" + type(error).__name__ + ":" + str(error))
+            finally:
+                child_open.close()
+        first = context.Process(target=publisher)
+        second = context.Process(target=opener)
+        children = []
+        try:
+            first.start(); children.append(first)
+            self.assertTrue(parent_publish.poll(5), "publisher did not reach link boundary")
+            self.assertEqual(parent_publish.recv(), "published")
+            self.assertEqual((Path(path) / ".format").stat().st_nlink, 2)
+            second.start(); children.append(second)
+            self.assertTrue(parent_open.poll(5), "second constructor did not reach init lock")
+            self.assertEqual(parent_open.recv(), "locking")
+            parent_publish.send("continue")
+            self.assertTrue(parent_publish.poll(5), "first constructor did not finish")
+            self.assertEqual(parent_publish.recv(), "ok")
+            self.assertTrue(parent_open.poll(5), "second constructor did not finish")
+            self.assertEqual(parent_open.recv(), "ok")
+            for process in children:
+                process.join(5)
+                self.assertEqual(process.exitcode, 0)
+            marker = Path(path) / ".format"
+            self.assertEqual(marker.read_bytes(), g.FORMAT)
+            self.assertEqual(marker.stat().st_nlink, 1)
+            self.assertEqual({item.name for item in Path(path).iterdir()}, {".format", ".init.lock"})
+        finally:
+            for process in children:
+                if process.is_alive():
+                    process.kill()
+                process.join(5)
+            for connection in (parent_publish, child_publish, parent_open, child_open):
+                connection.close()
+
+    def test_orphan_format_hardlink_is_not_repaired(self):
+        marker = Path(self.store.path) / ".format"
+        alias = Path(self.store.path) / ".publish-orphan"
+        os.link(marker, alias)
+        with self.assertRaises(ValueError):
+            g.ApplicationStore(self.store.path)
+        self.assertEqual(marker.stat().st_nlink, 2)
+        self.assertEqual(marker.read_bytes(), g.FORMAT)
+        self.assertTrue(alias.exists())
+
+    def test_existing_init_lock_does_not_admit_legacy_assets(self):
+        path = self.root / "locked-legacy"
+        path.mkdir(mode=0o700)
+        for name, data in ((".init.lock", b""), ("legacy.json", b'{"legacy":true}')):
+            item = path / name
+            item.write_bytes(data)
+            item.chmod(0o600)
+        before = {item.name: item.read_bytes() for item in path.iterdir()}
+        with self.assertRaises(ValueError):
+            g.ApplicationStore(str(path))
+        self.assertEqual({item.name: item.read_bytes() for item in path.iterdir()}, before)
+
+    def test_old_oversized_intent_record_is_retained_not_converted(self):
+        fields = self.intent.fields()
+        fields["limit_price"] = format(Decimal("1e-300"), "f")
+        record = {"schema": g.SCHEMA, "key": "key", "fields": fields, "binding": SCOPE}
+        data = g._json(record)
+        with self.store.locked("key", create=True) as (dfd, _):
+            g._publish(dfd, "intent.json", data)
+        with self.assertRaises(ValueError):
+            self.gateway.prepare("key", replace(self.intent, limit_price="1e-300"))
+        self.assertEqual((self.keydir / "intent.json").read_bytes(), data)
+        self.assertFalse((self.keydir / "command.id").exists())
+        self.assertEqual(self.transport.calls, [])
+
     def test_changed_intent_conflicts(self):
         self.prepared()
         for changes in ({"quantity": "11"}, {"side": "SELL"}, {"expires_at_ms": 1900000000001}, {"currency": "EUR"}):

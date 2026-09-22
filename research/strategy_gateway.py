@@ -183,7 +183,13 @@ class ApplicationStore:
                 pass
             fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent)
             _private(fd, True)
-            if _read(fd, ".format") is None and set(os.listdir(fd)) - {".init.lock"}:
+            # Do not read .format before owning the initialization lock. A
+            # cooperating publisher may be between link() and unlink(), when
+            # its valid immutable record transiently has two hard links.
+            # Screen an untouched legacy directory without adding a lock file;
+            # all marker/content validation belongs inside the lock below.
+            entries = set(os.listdir(fd))
+            if entries and not entries.intersection({".format", ".init.lock"}):
                 raise ValueError("legacy/unrecognized application store; retain original records")
             with _locked_file(fd, ".init.lock"):
                 marker = _read(fd, ".format")
@@ -264,7 +270,14 @@ class LimitIntent:
             # binary64 decimal. Do not collapse a wider Decimal onto a new value.
             if not math.isfinite(number) or not 0 < number <= 1e12 or Decimal(str(number)) != decimal:
                 raise ValueError("native binary64 round-trip/numeric bound")
-            result[name] = format(decimal, "f").rstrip("0").rstrip(".") if "." in format(decimal, "f") else format(decimal, "f")
+            fixed = format(decimal, "f")
+            if "." in fixed:
+                fixed = fixed.rstrip("0").rstrip(".")
+            # Preserve every previously valid fixed-point record. Very small
+            # accepted exponent inputs can expand beyond the 128-byte input
+            # bound; retain their checked shortest spelling so normalization
+            # is idempotent before any PREPARING state is written.
+            result[name] = fixed if len(fixed) <= 128 else str(number)
         return result
 
 
