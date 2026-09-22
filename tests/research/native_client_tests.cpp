@@ -647,7 +647,89 @@ void PreparedCommandLifecycle() {
           prepared.ToolName() == "trade.flatten_position", "existing flatten not restorable");
 }
 
+
+void StoredInspectionLifecycle() {
+    OutboxTestRoot root;
+    const auto config = OutboxConfig();
+    NativeToolClient native(config); NativeStrategyClient client(native);
+    InstrumentRef contract; contract.symbol = "EUR"; contract.secType = "CASH";
+    contract.exchange = "SIM"; contract.currency = "USD";
+    PreparedOrder order("EUR.USD", contract, "BUY", 10, 1.1, 1.09, 1900000000000LL);
+    PreparedCancellation cancellation(42); PreparedFlatten flatten("EUR.USD");
+    const std::string permit = "sha256:" + std::string(64, 'a');
+    NativeToolClientResult result; std::string reason;
+    PreparedStrategyCommand prepared;
+    Check(!client.Inspect(prepared, "inspection-query-001", result, reason) &&
+          reason == "RESEARCH_OUTBOX_NOT_DURABLE", "unprepared inspection used cached state");
+    for (int operation = 0; operation != 3; ++operation) {
+        const std::string id = "inspection-command-00" + std::to_string(operation);
+        const std::string query = "inspection-query-00" + std::to_string(operation);
+        const bool persisted = operation == 0 ? client.Persist(root.path, order, id, permit, reason) :
+            operation == 1 ? client.Persist(root.path, cancellation, id, reason) :
+                             client.Persist(root.path, flatten, id, permit, reason);
+        Check(persisted && client.Restore(root.path, id, prepared, reason), "inspection fixture persistence");
+        const auto path = root.path + "/" + id + ".hsr", bytes = ReadBytes(path);
+        for (int facade = 0; facade != 2; ++facade) {
+            const auto inspect = [&](const std::string& queryId) {
+                return facade ? client.Inspect(prepared, queryId, result, reason) :
+                    client.InspectStored(root.path, id, queryId, result, reason);
+            };
+            result.envelope.status = "ok"; result.responseJson = "stale-success";
+            Check(!inspect(id) && reason == "RESEARCH_INSPECTION_QUERY_ID_REUSED" &&
+                  result.envelope.status.empty() && result.responseJson.empty(), "inspection reused mutation ID");
+            Check(!inspect("short") && reason == "RESEARCH_TOOL_CALL_ID_INVALID", "invalid inspection ID");
+            // Existing missing endpoint is real; no test transport is injected.
+            result.responseJson = query;
+            Check(!inspect(result.responseJson) && !reason.empty() &&
+                  reason != "RESEARCH_TOOL_CALL_ID_INVALID" && result.responseJson.empty() &&
+                  result.envelope.status.empty(), "borrowed inspection ID or stale transport output");
+            reason = query;
+            Check(!inspect(reason) && !reason.empty() && reason != "RESEARCH_TOOL_CALL_ID_INVALID",
+                  "borrowed inspection diagnostic");
+            Check(ReadBytes(path) == bytes && prepared.Durable(), "inspection rewrote original request");
+            for (int change = 0; change != 2; ++change) {
+                auto otherConfig = config;
+                if (change) otherConfig.socketPath += "-other";
+                else otherConfig.sessionToken += "-rotated";
+                NativeToolClient otherNative(otherConfig); NativeStrategyClient other(otherNative);
+                const bool called = facade ? other.Inspect(prepared, query, result, reason) :
+                    other.InspectStored(root.path, id, query, result, reason);
+                Check(!called && reason == "NATIVE_RECOVERY_BINDING_MISMATCH" &&
+                      result.responseJson.empty(), "inspection queried another endpoint/credential");
+            }
+            Check(::chmod(path.c_str(), 0640) == 0, "inspection unsafe fixture");
+            Check(!inspect(query) && reason == "RESEARCH_OUTBOX_RECORD_UNSAFE", "inspection ignored unsafe record");
+            Check(::chmod(path.c_str(), 0600) == 0, "inspection restore mode");
+            auto corrupt = bytes; corrupt.back() ^= 1; WriteBytes(path, corrupt);
+            Check(!inspect(query) && reason == "RESEARCH_OUTBOX_DIGEST_MISMATCH", "inspection ignored corrupt record");
+            WriteBytes(path, bytes);
+        }
+        // Same-UID replacement is not authentication: the opaque snapshot must
+        // nevertheless detect a different, valid checksummed request at its path.
+        Check(::unlink(path.c_str()) == 0 && client.Persist(root.path, PreparedCancellation(43), id, reason),
+              "inspection replacement fixture");
+        Check(!client.Inspect(prepared, query, result, reason) &&
+              reason == "RESEARCH_OUTBOX_PREPARED_MISMATCH", "inspection accepted changed prepared bytes");
+        WriteBytes(path, bytes);
+        Check(::unlink(path.c_str()) == 0, "inspection missing fixture");
+        Check(!client.InspectStored(root.path, id, query, result, reason) &&
+              reason == "RESEARCH_OUTBOX_RECORD_UNSAFE", "missing record became status fallback");
+        Check(!client.Inspect(prepared, query, result, reason), "missing prepared record became status fallback");
+        WriteBytes(path, bytes);
+    }
+    // Capture ALL borrowed string inputs before clearing outputs.
+    const std::string id = "inspection-command-000", query = "inspection-query-final";
+    result.responseJson = root.path; reason = id; result.envelope.detail = query;
+    Check(!client.InspectStored(result.responseJson, reason, result.envelope.detail, result, reason) &&
+          reason != "RESEARCH_OUTBOX_DIRECTORY_UNSAFE" && reason != "RESEARCH_OUTBOX_ID_INVALID" &&
+          reason != "RESEARCH_TOOL_CALL_ID_INVALID" && result.responseJson.empty(), "borrowed inspection inputs lost");
+    Check(!client.InspectStored(root.path, "short", query, result, reason) &&
+          reason == "RESEARCH_OUTBOX_ID_INVALID", "invalid original command accepted");
+    std::cout << "stored_inspection=PASS three_operations both_facades binding snapshot immutable_records\n";
+}
+
 void Tests() {
+    StoredInspectionLifecycle();
     PreparedCommandLifecycle();
     TypedPreviews();
     OutboxTests();

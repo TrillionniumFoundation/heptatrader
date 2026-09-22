@@ -274,3 +274,43 @@ publication/redistribution scope and broker/host qualification remain explicit
 retained conditions. Original HeptaDLL-main source/history/releases and alternate
 branches are preserved. Archival is still conditional on genuine named consumer
 and publication evidence, not this engineering continuation or a green CI run.
+
+
+## Post-merge record-bound status-only recovery
+
+Baseline: actual main `3e75b802b0d5534afae4d66783f5e1a66cc976d6`, complete
+source tree `cd4b577e553e903bb851648c14230645da42435e` (merged #111).
+Continue the SAME `integration/heptadll-modular-20260920` branch. #107/#110/#111
+are previous completed engineering merges, not acceptance for this new patch.
+
+The #106 StrategyGateway policy after any possible send is read-only querying,
+not unconditional same-ID resubmission. NativeStrategyClient now exposes
+`InspectStored` and opaque `Inspect` for that policy. Both reuse canonical HSR1
+validation and original credential/UID/socket binding, then call only
+`execution.get_command_status`. Opaque inspection and Submit share the same
+reloaded-request snapshot check. No second transport, outbox format, Python
+ledger, automatic retry, target, translation unit or installed-header path is
+introduced. The existing generic Status and explicit Submit APIs are unchanged.
+
+Concrete consumers migrated in this patch are the native SDK behavioral caller,
+its actual installed/relocated C++11 copy, and the existing exec-child
+Gateway/Execution recovery caller. They can inspect after a possible send
+without accidentally selecting the explicit resend API. Original mutation,
+uncertainty, binding, restart and independent journal assertions remain active.
+Full-root, standalone, sanitizer and exact-head remote results belong in the
+continuation PR, not a source document's unconditional passing declaration.
+
+| Retained consumer | Decision after this patch |
+|---|---|
+| Canonical HSR1 native callers needing conservative recovery | Use InspectStored/Inspect with the original command and a separate query ID; no auto-resend |
+| Canonical callers explicitly choosing idempotent same-ID resend | Existing Submit/SubmitStored retained without changed semantics |
+| #106 Python StrategyGateway application-key/Decimal/JSON-record API | Retain pinned #106 source and records; native query policy is a migration destination, not completed application migration |
+| #108 HRO1 record consumers | Retain original records/callers; no invented binding or automatic conversion |
+| Original library strategies and external/private/binary deployments | Retain HeptaDLL-main, releases and history until named owner/artifact disposition |
+
+Engineering consolidation continues without making source age, a bounded symbol
+search, or a green CI run substitute for external consumer evidence. The source
+repository is not archived; no branch/history/release deletion, visibility or
+protection change, credential migration, broker path or trading authorization
+occurs in this patch. Retaining an unresolved consumer is an explicit decision,
+not a statement that its migration has completed.

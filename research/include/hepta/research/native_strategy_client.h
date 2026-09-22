@@ -151,6 +151,18 @@ public:
                  PreparedStrategyCommand& prepared, std::string& reason) const;
     bool Submit(const PreparedStrategyCommand& prepared, NativeToolClientResult& result,
                 std::string& reason) const;
+    // Read-only recovery for callers whose policy forbids another mutation
+    // after any possible send. Verify the ORIGINAL HSR1 record/binding, then
+    // send only execution.get_command_status. No preview, submit, new mutation
+    // ID, acknowledgement, outbox rewrite or automatic retry occurs. Unknown,
+    // rejected and uncertain responses are preserved, never permission to send.
+    // The query ID is caller-owned and must differ from the original command.
+    // Inspect additionally checks the prepared snapshot against current bytes.
+    bool InspectStored(const std::string& directory, const std::string& executionCommandId,
+                       const std::string& queryCallId, NativeToolClientResult& result,
+                       std::string& reason) const;
+    bool Inspect(const PreparedStrategyCommand& prepared, const std::string& queryCallId,
+                 NativeToolClientResult& result, std::string& reason) const;
     bool Status(const std::string& executionCommandId, const std::string& queryCallId,
                 NativeToolClientResult& result, std::string& reason) const;
 private:
@@ -159,6 +171,11 @@ private:
     bool PrepareRequest(TradingToolHostRequest request, const std::string& mutationTool,
                         PreparedStrategyCommand& prepared, NativeToolClientResult& result,
                         std::string& reason) const;
+    bool LoadPrepared(const PreparedStrategyCommand& prepared, TradingToolHostRequest& request,
+                      std::string& binding, std::string& reason) const;
+    bool InspectBound(const std::string& executionCommandId, const std::string& queryCallId,
+                      const std::string& binding, NativeToolClientResult& result,
+                      std::string& reason) const;
     bool Forward(const TradingToolHostRequest& request, NativeToolClientResult& result,
                  std::string& reason) const;
     const NativeToolClient& client_;

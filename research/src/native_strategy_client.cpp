@@ -487,17 +487,15 @@ bool NativeStrategyClient::Restore(const std::string& directory, const std::stri
     prepared.directory_ = capturedDirectory; prepared.durable_ = true;
     return true;
 }
-bool NativeStrategyClient::Submit(const PreparedStrategyCommand& prepared,
-    NativeToolClientResult& result, std::string& reason) const {
-    result = NativeToolClientResult(); reason.clear();
+bool NativeStrategyClient::LoadPrepared(const PreparedStrategyCommand& prepared,
+    TradingToolHostRequest& request, std::string& binding, std::string& reason) const {
+    request = TradingToolHostRequest(); binding.clear(); reason.clear();
     if (!prepared.Ready() || !prepared.Durable() || prepared.directory_.empty())
         return OutboxFail(reason, "RESEARCH_OUTBOX_NOT_DURABLE");
-    TradingToolHostRequest request;
-    std::string binding;
     if (!LoadOutbox(prepared.directory_, prepared.CommandId(), request, binding, reason)) return false;
     if (binding != prepared.binding_) return OutboxFail(reason, "NATIVE_RECOVERY_BINDING_MISMATCH");
     // A previously durable in-memory object must not silently submit changed
-    // bytes under the same filename. Read once, compare, then forward that copy.
+    // bytes under the same filename. Read once and compare for either action.
     auto expected = prepared.request_;
     auto actual = request;
     expected.sessionToken = actual.sessionToken = kOutboxToken;
@@ -505,7 +503,49 @@ bool NativeStrategyClient::Submit(const PreparedStrategyCommand& prepared,
     if (!TypedToolProtocol::EncodeRequest(expected, expectedWire, reason) ||
         !TypedToolProtocol::EncodeRequest(actual, actualWire, reason)) return false;
     if (expectedWire != actualWire) return OutboxFail(reason, "RESEARCH_OUTBOX_PREPARED_MISMATCH");
+    return true;
+}
+
+bool NativeStrategyClient::Submit(const PreparedStrategyCommand& prepared,
+    NativeToolClientResult& result, std::string& reason) const {
+    result = NativeToolClientResult(); reason.clear();
+    TradingToolHostRequest request;
+    std::string binding;
+    if (!LoadPrepared(prepared, request, binding, reason)) return false;
     return client_.CallBound(request, binding, result, reason);
+}
+bool NativeStrategyClient::InspectBound(const std::string& id, const std::string& queryId,
+    const std::string& binding, NativeToolClientResult& result, std::string& reason) const {
+    try {
+        CheckId(id); CheckId(queryId);
+        if (id == queryId) return OutboxFail(reason, "RESEARCH_INSPECTION_QUERY_ID_REUSED");
+        TradingToolHostRequest query;
+        query.toolCallId = queryId; query.call.name = "execution.get_command_status";
+        query.call.targetCommandId = id; Validate(query.call);
+        // A token-file credential is captured once by CallBound for discovery
+        // and forwarding. Do not fall back to the generic unbound Status API.
+        return client_.CallBound(query, binding, result, reason);
+    } catch (const std::invalid_argument& e) {
+        result = NativeToolClientResult(); reason = e.what(); return false;
+    }
+}
+bool NativeStrategyClient::InspectStored(const std::string& directory, const std::string& id,
+    const std::string& queryId, NativeToolClientResult& result, std::string& reason) const {
+    const std::string capturedDirectory = directory, capturedId = id, capturedQueryId = queryId;
+    result = NativeToolClientResult(); reason.clear();
+    TradingToolHostRequest original;
+    std::string binding;
+    if (!LoadOutbox(capturedDirectory, capturedId, original, binding, reason)) return false;
+    return InspectBound(original.toolCallId, capturedQueryId, binding, result, reason);
+}
+bool NativeStrategyClient::Inspect(const PreparedStrategyCommand& prepared, const std::string& queryId,
+    NativeToolClientResult& result, std::string& reason) const {
+    const std::string capturedQueryId = queryId;
+    result = NativeToolClientResult(); reason.clear();
+    TradingToolHostRequest original;
+    std::string binding;
+    if (!LoadPrepared(prepared, original, binding, reason)) return false;
+    return InspectBound(original.toolCallId, capturedQueryId, binding, result, reason);
 }
 
 }} // namespace hepta::research
