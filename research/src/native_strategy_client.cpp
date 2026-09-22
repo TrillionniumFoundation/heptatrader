@@ -358,11 +358,13 @@ bool WriteOutbox(int directory, const std::string& name, const std::string& byte
 } // namespace
 
 bool NativeStrategyClient::PersistRequest(const std::string& directory, TradingToolHostRequest request,
-                                          std::string& reason) const {
+                                          std::string& reason, const std::string& expectedBinding) const {
     const std::string capturedDirectory = directory;
     reason.clear();
     std::string binding, wire;
     if (!client_.RecoveryBinding(binding, reason)) return false;
+    if (!expectedBinding.empty() && binding != expectedBinding)
+        return OutboxFail(reason, "NATIVE_RECOVERY_BINDING_MISMATCH");
     if (!request.sessionToken.empty() || !OutboxMutation(request))
         return OutboxFail(reason, "RESEARCH_OUTBOX_REQUEST_INVALID");
     request.sessionToken = kOutboxToken;
@@ -409,6 +411,100 @@ bool NativeStrategyClient::SubmitStored(const std::string& directory, const std:
     TradingToolHostRequest request;
     std::string binding;
     if (!LoadOutbox(capturedDirectory, capturedId, request, binding, reason)) return false;
+    return client_.CallBound(request, binding, result, reason);
+}
+
+// The prepared-command facade uses the same codec, immutable record and bound
+// transport as the original API. No second serializer/outbox/state authority.
+bool NativeStrategyClient::PrepareRequest(TradingToolHostRequest request,
+    const std::string& mutationTool, PreparedStrategyCommand& prepared,
+    NativeToolClientResult& result, std::string& reason) const {
+    prepared = PreparedStrategyCommand(); result = NativeToolClientResult(); reason.clear();
+    std::string binding;
+    if (!client_.RecoveryBinding(binding, reason)) return false;
+    // Capture ONE credential for discovery and the preview call. Merely testing
+    // its value before/after an unbound call would permit an A/B/A rotation race.
+    if (!client_.CallBound(request, binding, result, reason)) return false;
+    TypedPreviewAuthorization authorization;
+    if (!TypedToolProtocol::DecodePreviewAuthorization(
+            result.responseJson, request.call.name, authorization, reason)) return false;
+    request.toolCallId = authorization.commandId;
+    request.call.name = mutationTool;
+    request.call.previewPermit = authorization.previewPermit;
+    Validate(request.call);
+    prepared.request_ = request;
+    prepared.binding_ = binding;
+    reason.clear(); return true;
+}
+bool NativeStrategyClient::Prepare(const PreparedOrder& order, const std::string& id,
+    PreparedStrategyCommand& prepared, NativeToolClientResult& result, std::string& reason) const {
+    try { return PrepareRequest(order.PreviewRequest(id), "trade.place_order", prepared, result, reason); }
+    catch (const std::invalid_argument& e) {
+        prepared = PreparedStrategyCommand(); result = NativeToolClientResult(); reason = e.what(); return false;
+    }
+}
+bool NativeStrategyClient::Prepare(const PreparedFlatten& flatten, const std::string& id,
+    PreparedStrategyCommand& prepared, NativeToolClientResult& result, std::string& reason) const {
+    try { return PrepareRequest(flatten.PreviewRequest(id), "trade.flatten_position", prepared, result, reason); }
+    catch (const std::invalid_argument& e) {
+        prepared = PreparedStrategyCommand(); result = NativeToolClientResult(); reason = e.what(); return false;
+    }
+}
+bool NativeStrategyClient::Prepare(const PreparedCancellation& cancellation, const std::string& id,
+    PreparedStrategyCommand& prepared, std::string& reason) const {
+    try {
+        // Capture borrowed IDs before clearing a previously prepared object.
+        const auto request = cancellation.SubmissionRequest(id);
+        prepared = PreparedStrategyCommand(); reason.clear();
+        std::string binding;
+        if (!client_.RecoveryBinding(binding, reason)) return false;
+        prepared.request_ = request; prepared.binding_ = binding;
+        return true;
+    } catch (const std::invalid_argument& e) {
+        prepared = PreparedStrategyCommand(); reason = e.what(); return false;
+    }
+}
+bool NativeStrategyClient::Persist(const std::string& directory,
+    PreparedStrategyCommand& prepared, std::string& reason) const {
+    const std::string capturedDirectory = directory;
+    prepared.durable_ = false; prepared.directory_.clear(); reason.clear();
+    if (!prepared.Ready() || prepared.binding_.empty())
+        return OutboxFail(reason, "RESEARCH_OUTBOX_UNPREPARED");
+    if (!PersistRequest(capturedDirectory, prepared.request_, reason, prepared.binding_)) return false;
+    prepared.directory_ = capturedDirectory; prepared.durable_ = true;
+    return true;
+}
+bool NativeStrategyClient::Restore(const std::string& directory, const std::string& id,
+    PreparedStrategyCommand& prepared, std::string& reason) const {
+    const std::string capturedDirectory = directory, capturedId = id;
+    prepared = PreparedStrategyCommand(); reason.clear();
+    TradingToolHostRequest request;
+    std::string binding, current;
+    if (!LoadOutbox(capturedDirectory, capturedId, request, binding, reason) ||
+        !client_.RecoveryBinding(current, reason)) return false;
+    if (current != binding) return OutboxFail(reason, "NATIVE_RECOVERY_BINDING_MISMATCH");
+    prepared.request_ = request; prepared.binding_ = binding;
+    prepared.directory_ = capturedDirectory; prepared.durable_ = true;
+    return true;
+}
+bool NativeStrategyClient::Submit(const PreparedStrategyCommand& prepared,
+    NativeToolClientResult& result, std::string& reason) const {
+    result = NativeToolClientResult(); reason.clear();
+    if (!prepared.Ready() || !prepared.Durable() || prepared.directory_.empty())
+        return OutboxFail(reason, "RESEARCH_OUTBOX_NOT_DURABLE");
+    TradingToolHostRequest request;
+    std::string binding;
+    if (!LoadOutbox(prepared.directory_, prepared.CommandId(), request, binding, reason)) return false;
+    if (binding != prepared.binding_) return OutboxFail(reason, "NATIVE_RECOVERY_BINDING_MISMATCH");
+    // A previously durable in-memory object must not silently submit changed
+    // bytes under the same filename. Read once, compare, then forward that copy.
+    auto expected = prepared.request_;
+    auto actual = request;
+    expected.sessionToken = actual.sessionToken = kOutboxToken;
+    std::string expectedWire, actualWire;
+    if (!TypedToolProtocol::EncodeRequest(expected, expectedWire, reason) ||
+        !TypedToolProtocol::EncodeRequest(actual, actualWire, reason)) return false;
+    if (expectedWire != actualWire) return OutboxFail(reason, "RESEARCH_OUTBOX_PREPARED_MISMATCH");
     return client_.CallBound(request, binding, result, reason);
 }
 

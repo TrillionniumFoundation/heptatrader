@@ -45,6 +45,25 @@ private:
     TradingToolCall call_;
 };
 
+// Opaque request lifecycle for explicitly migrated clients. Ready means an
+// immutable request exists, not service acceptance; Durable means Persist or
+// Restore succeeded, not that a send/fill occurred. Session-token bytes are
+// never retained here. Existing HRO1/JSON outboxes are NOT accepted or converted.
+class PreparedStrategyCommand {
+public:
+    PreparedStrategyCommand() : durable_(false) {}
+    bool Ready() const { return !request_.toolCallId.empty(); }
+    bool Durable() const { return durable_; }
+    const std::string& CommandId() const { return request_.toolCallId; }
+    const std::string& ToolName() const { return request_.call.name; }
+private:
+    friend class NativeStrategyClient;
+    TradingToolHostRequest request_;
+    std::string binding_;
+    std::string directory_;
+    bool durable_;
+};
+
 // This forward-only library links only NativeToolClient and its wire closure.
 // The referenced NativeToolClient must outlive this object. No automatic retry,
 // no locally invented execution command IDs, no execution journal or broker networking.
@@ -107,10 +126,38 @@ public:
     // Same UID/socket/credential, exact original ID/expiry/payload/permit.
     bool SubmitStored(const std::string& directory, const std::string& executionCommandId,
                       NativeToolClientResult& result, std::string& reason) const;
+    // Explicit Prepare -> Persist -> Submit workflow for new/migrated callers.
+    // Prepare makes exactly one bound preview for order/flatten; cancellation
+    // uses a caller-selected canonical ID without a preview or network call.
+    // No generated ID, retry, expiry refresh, historical-record conversion, or
+    // send occurs here. A false preview retains its transported envelope.
+    bool Prepare(const PreparedOrder& order, const std::string& previewCallId,
+                 PreparedStrategyCommand& prepared, NativeToolClientResult& result,
+                 std::string& reason) const;
+    bool Prepare(const PreparedFlatten& flatten, const std::string& previewCallId,
+                 PreparedStrategyCommand& prepared, NativeToolClientResult& result,
+                 std::string& reason) const;
+    bool Prepare(const PreparedCancellation& cancellation, const std::string& executionCommandId,
+                 PreparedStrategyCommand& prepared, std::string& reason) const;
+    // Failure keeps the original prepared request/ID for explicit recovery,
+    // but clears Durable. Do not obtain a replacement preview to retry a write.
+    // Even on sync failure an immutable disk record may already exist.
+    bool Persist(const std::string& directory, PreparedStrategyCommand& prepared,
+                 std::string& reason) const;
+    // Restore accepts only canonical HSR1 records, checks the original binding,
+    // and clears prepared on failure. All requests are reread at submission;
+    // neither a mutable diagnostic copy nor a cached durable flag is authority.
+    bool Restore(const std::string& directory, const std::string& executionCommandId,
+                 PreparedStrategyCommand& prepared, std::string& reason) const;
+    bool Submit(const PreparedStrategyCommand& prepared, NativeToolClientResult& result,
+                std::string& reason) const;
     bool Status(const std::string& executionCommandId, const std::string& queryCallId,
                 NativeToolClientResult& result, std::string& reason) const;
 private:
     bool PersistRequest(const std::string& directory, TradingToolHostRequest request,
+                        std::string& reason, const std::string& expectedBinding = "") const;
+    bool PrepareRequest(TradingToolHostRequest request, const std::string& mutationTool,
+                        PreparedStrategyCommand& prepared, NativeToolClientResult& result,
                         std::string& reason) const;
     bool Forward(const TradingToolHostRequest& request, NativeToolClientResult& result,
                  std::string& reason) const;
