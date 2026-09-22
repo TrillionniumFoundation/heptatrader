@@ -244,3 +244,16 @@ per-unit fees and rejects buffered output failure. Source and installed/relocate
 tests exercise the same implementations. See [contract and remaining differences](LEGACY-BUNDLE.md).
 These capabilities do not certify full historical parity, external consumer
 retirement, remote exact-head CI, main merge or old-repository archival.
+
+## Explicit flow, next-open and signed-accounting models
+
+The existing Replay and Analytics archives export `OrderFlowReplay`,
+`NextBarReplay`, `ResearchPriceGrid`, `ReplayExecutionPolicy` and opt-in
+`ResearchPriceDomain::SignedFinite`. Their [full model contract](MODELS.md)
+is installed with this same SDK. They share the existing native portfolio,
+not an imported Python ledger or an alternate execution client. The original
+positive/ungridded constructors remain the source defaults; rebuild consumers
+against matching headers and archives. Binary/legacy API compatibility is not
+asserted. The existing installed external C++11 consumer now runs the same
+signed-price, flow conservation, slippage and next-open behavioral fixtures as
+the native replay executable, without linking source implementations.

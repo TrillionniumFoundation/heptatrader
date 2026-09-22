@@ -1,6 +1,7 @@
 #include "hepta/research/replay.h"
 #include "hepta/research/strategy.h"
 #include "test_support.h"
+#include "replay_model_cases.h"
 #include <algorithm>
 #include <limits>
 using namespace hepta::research;
@@ -225,4 +226,4 @@ void ReplayConservation() {
     std::cout << "replay conservation scenarios=" << scenarios << '\n';
 }
 }
-int main() { return Run([] { Matching(); Strategy(); StrategyObservation(); StrategyObservationOracle(); NoTickExpiryAndFinish(); ClockAndRollback(); ReplayConservation(); }); }
+int main() { return Run([] { Matching(); Strategy(); StrategyObservation(); StrategyObservationOracle(); NoTickExpiryAndFinish(); ClockAndRollback(); ReplayConservation(); replay_model_cases::RunAll(); }); }

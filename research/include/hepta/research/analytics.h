@@ -53,6 +53,11 @@ struct ResearchAccount {
 // not total marked P&L. FIFO is a research cost convention, NOT a venue's
 // close-today/close-yesterday instruction or tax accounting policy.
 enum class CostBasis { WeightedAverage, Fifo };
+// Explicit OFFLINE accounting price domain. Positive is the original default.
+// SignedFinite accepts finite zero/negative research fills, marks and settlement
+// inputs. It grants no production quote/venue permission and does not reinterpret
+// the positive-only market-data CSV or BarBuilder contracts.
+enum class ResearchPriceDomain { Positive, SignedFinite };
 
 // Single-instrument, futures-style research P&L. No margin engine, broker
 // credentials, execution-authority interface, persistence or live reconciliation.
@@ -60,7 +65,8 @@ class ResearchLedger {
 public:
     ResearchLedger(std::string instrument, double initialEquity,
                    double multiplier, std::size_t maxFillIds = 100000,
-                   CostBasis costBasis = CostBasis::WeightedAverage);
+                   CostBasis costBasis = CostBasis::WeightedAverage,
+                   ResearchPriceDomain priceDomain = ResearchPriceDomain::Positive);
     bool Apply(const ResearchFill& fill); // false for an exact duplicate.
     // Realize marked P&L and reset the remaining basis without changing quantity,
     // fees or marked equity (subject to checked floating-point arithmetic).
@@ -71,11 +77,13 @@ public:
     ResearchAccount Mark(double markPrice) const;
     std::int64_t Quantity() const { return quantity_; }
     CostBasis Basis() const { return costBasis_; }
+    ResearchPriceDomain PriceDomain() const { return priceDomain_; }
 private:
     std::string instrument_;
     double initialEquity_, multiplier_;
     std::size_t maxEventIds_;
     CostBasis costBasis_;
+    ResearchPriceDomain priceDomain_;
     struct Lot { std::int64_t quantity; long double price; };
     // Quantity-compressed lots, not one allocation per contract. FIFO updates
     // stage the active lots before committing; cost is O(active lots), not O(q).
@@ -90,6 +98,7 @@ struct ResearchInstrument {
     std::string instrument, currency;
     double multiplier = 0;
     CostBasis costBasis = CostBasis::WeightedAverage;
+    ResearchPriceDomain priceDomain = ResearchPriceDomain::Positive;
 };
 struct ResearchCashFlow {
     std::string flowId;
@@ -139,7 +148,7 @@ public:
 private:
     struct Position {
         Position(const ResearchInstrument& spec, double initial, std::size_t capacity)
-            : ledger(spec.instrument, initial, spec.multiplier, capacity, spec.costBasis) {}
+            : ledger(spec.instrument, initial, spec.multiplier, capacity, spec.costBasis, spec.priceDomain) {}
         ResearchLedger ledger;
         Tick lastTick;
         bool hasTick = false, markCurrent = false;

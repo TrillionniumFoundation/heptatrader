@@ -142,3 +142,43 @@ a modified source tree. A queued remote run, local synthetic Git parent, or a
 successful related-source test is not a remote commit/merge or host/PID1/broker
 qualification. Apply a reviewed patch only to the intended #107 ancestry, reject
 concurrent HEAD movement, run the final source, then use normal reviewed merge.
+
+## Continuation from 14097ff: shared accounting and named replay models
+
+Delivery baseline: `14097ff8feba41a9d07be4eeb3fb7de790ea52e1`, complete tree
+`cb2effe22522c163ed2164335d5a959ccf2fdc05`. The original matrix above records
+what the BIN/XML delivery did; this continuation advances the rows below.
+No fourth branch, framework, compiled target, transport or account core is added.
+
+| Previous retained gap | Implemented continuation | Still distinct / retained |
+|---|---|---|
+| Signed/zero prices | Explicit SignedFinite in the existing ledger and portfolio; named replay models accept the declared signed grid | Data CSV/BIN/XML and BarBuilder stay positive-only; full signed-64/Decimal range and ABI parity are not claimed |
+| Explicit external order flow | Native OrderFlowReplay: price/time queues, maker prices, external queue-ahead, partial fills/cancel, IOC/FAK mapping, FOK preflight, DAY/GTC and self-trade prevention | Full #106 JSON manifest/JSONL/report CLI and Python API remain retained; no depth-to-queue inference |
+| Next-bar portfolio model | Native NextBarReplay with one same-currency capital, explicit delayed observations, strictly later opens and close-first reversal | Canonical marks must remain fresh; #106 CLOSE-based/null report and ingestion orchestration are not silently substituted |
+| Slippage | Optional immutable grid/slippage policy in ReplayMatcher and NextBarReplay | Original ungridded positive last-trade default unchanged; bounded binary64 is not an arbitrary Decimal equivalence claim |
+| Installed API consumer | Existing relocated C++11 SDK consumer exercises the new public models and signed accounting | This migrates that actual native consumer, not every historical CLI, strategy or binary application |
+
+The new modes call the existing ResearchPortfolio/ResearchLedger; external flow
+orders are offline liquidity input, not a second live OMS. Whole-event staging
+retains failed-event atomicity and request identities without a persistence or
+throughput claim. Public contract and exceptions are in `research/MODELS.md`,
+installed in the separate offline developer package. The original four headers
+and four archives remain the install boundary. No production target links these
+models, and no broker permission, venue state or required CI check changes.
+
+The native replay executable keeps all preceding assertions and adds independent
+slippage/conservation oracles, signed accounting, self-trade/FOK/fee-failure
+rollback, multi-instrument next-open and stale-mark fixtures. The same fixture
+header is compiled against only the installed archives after relocation. Actual
+local and exact-head remote outcomes belong on PR #107, not a hardcoded source
+success status. A bounded differential comparison against the pinned #106
+implementation is evidence only for the tested shared domain, not full parity.
+
+Consumer disposition remains explicit: the #107 external native consumer uses
+the new API; existing #107 replay/import and durable-client consumers retain
+their original paths; #106 Python command/report/Decimal consumers and #108
+client-record consumers remain on their pinned references until adapted. Unknown
+external or binary users retain the original library. This retention is not
+"all consumers migrated" and does not authorize closing #106/#108 as completely
+superseded, deleting releases, changing visibility or archiving HeptaDLL-main.
+Main acceptance and that later retirement decision remain independent.

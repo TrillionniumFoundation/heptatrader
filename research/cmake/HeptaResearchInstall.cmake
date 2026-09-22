@@ -95,7 +95,7 @@ if(UNIX)
     install(PROGRAMS import_legacy.py DESTINATION "${CMAKE_INSTALL_BINDIR}"
         RENAME hepta-research-import COMPONENT ResearchSDK)
 endif()
-install(FILES LEGACY-BUNDLE.md DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaResearch" COMPONENT ResearchSDK)
+install(FILES LEGACY-BUNDLE.md MODELS.md DESTINATION "${CMAKE_INSTALL_DATADIR}/HeptaResearch" COMPONENT ResearchSDK)
 
 if(BUILD_TESTING)
     add_test(NAME hepta_research_sdk_install COMMAND "${Python3_EXECUTABLE}"

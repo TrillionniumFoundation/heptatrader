@@ -11,6 +11,11 @@ namespace {
 void Require(bool value, const char* reason) {
     if (!value) throw std::invalid_argument(reason);
 }
+bool ValidPrice(double value, ResearchPriceDomain domain) {
+    return std::isfinite(value) &&
+        (domain == ResearchPriceDomain::SignedFinite ||
+         (domain == ResearchPriceDomain::Positive && value > 0));
+}
 double Finite(long double value) {
     if (!std::isfinite(value) || std::fabs(value) > std::numeric_limits<double>::max())
         throw std::overflow_error("RESEARCH_NUMERIC_OVERFLOW");
@@ -23,15 +28,18 @@ Metric Optional(long double value) {
     }
     return m;
 }
-void CheckSettlementPrecision(long double entry, double price) {
+void CheckSettlementPrecision(long double entry, double price, ResearchPriceDomain domain) {
     // Reject a destructive finite rebase rather than rounding distinct nearby
     // representable entry prices into the same value. This is a representation
     // check, not a hard-coded market price-band or a broker risk decision.
     const double rounded = Finite(entry);
     const double neighbors[] = {rounded, std::nextafter(rounded, 0.0),
-        std::nextafter(rounded, std::numeric_limits<double>::infinity())};
+        std::nextafter(rounded, rounded < 0 ? -std::numeric_limits<double>::infinity() :
+                       std::numeric_limits<double>::infinity())};
     for (double sample : neighbors) {
-        if (!std::isfinite(sample) || sample <= 0) continue;
+        if (!std::isfinite(sample) ||
+            (domain == ResearchPriceDomain::Positive && sample <= 0) ||
+            (domain == ResearchPriceDomain::SignedFinite && rounded == 0 && sample != 0)) continue;
         const long double delta = static_cast<long double>(price) - sample;
         Require(static_cast<double>(static_cast<long double>(price) - delta) == sample,
                 "RESEARCH_SETTLEMENT_PRECISION_LOSS");
@@ -93,11 +101,12 @@ Performance EvaluateEquity(const std::vector<EquityPoint>& points,
     return result;
 }
 ResearchLedger::ResearchLedger(std::string instrument, double initial, double multiplier,
-                               std::size_t maxFillIds, CostBasis costBasis)
-    : instrument_(std::move(instrument)), initialEquity_(initial), multiplier_(multiplier), maxEventIds_(maxFillIds), costBasis_(costBasis) {
+                               std::size_t maxFillIds, CostBasis costBasis, ResearchPriceDomain priceDomain)
+    : instrument_(std::move(instrument)), initialEquity_(initial), multiplier_(multiplier), maxEventIds_(maxFillIds), costBasis_(costBasis), priceDomain_(priceDomain) {
     Tick validation; validation.instrument = instrument_; validation.sequence = 1; validation.price = 1;
     ValidateTick(validation);
     Require(std::isfinite(initial) && initial > 0 && std::isfinite(multiplier) && multiplier > 0 &&
+            (priceDomain == ResearchPriceDomain::Positive || priceDomain == ResearchPriceDomain::SignedFinite) &&
             maxFillIds > 0 && (costBasis == CostBasis::WeightedAverage || costBasis == CostBasis::Fifo),
             "RESEARCH_LEDGER_CONFIG_INVALID");
 }
@@ -106,7 +115,7 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
             fill.orderId.size() <= 128 && fill.instrument == instrument_ &&
             fill.timestampUs >= 0 && (fill.side == 1 || fill.side == -1) &&
             fill.quantity > 0 && fill.quantity <= 1000000000000LL &&
-            std::isfinite(fill.price) && fill.price > 0 && std::isfinite(fill.fee) && fill.fee >= 0,
+            ValidPrice(fill.price, priceDomain_) && std::isfinite(fill.fee) && fill.fee >= 0,
             "RESEARCH_FILL_INVALID");
     const auto found = fills_.find(fill.fillId);
     if (found != fills_.end()) {
@@ -151,7 +160,7 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
             count = total;
         }
     } else if (sameDirection) {
-        // Interpolate within the two finite positive prices instead of
+        // Interpolate within the two finite prices instead of
         // forming price*quantity sums. Identical fills preserve their exact
         // cost, even at DBL_MAX; true realized-P&L/fee overflow still rejects.
         const long double weight = static_cast<long double>(fill.quantity) /
@@ -176,7 +185,7 @@ bool ResearchLedger::Apply(const ResearchFill& fill) {
 bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
     Require(!settlement.settlementId.empty() && settlement.settlementId.size() <= 128 &&
             settlement.instrument == instrument_ && settlement.timestampUs >= 0 &&
-            std::isfinite(settlement.price) && settlement.price > 0,
+            ValidPrice(settlement.price, priceDomain_),
             "RESEARCH_SETTLEMENT_INVALID");
     const auto found = settlements_.find(settlement.settlementId);
     if (found != settlements_.end()) {
@@ -204,8 +213,8 @@ bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
     Finite(variation); Finite(realized);
     if (quantity_ != 0) {
         if (costBasis_ == CostBasis::Fifo) {
-            for (const auto& lot : lots_) CheckSettlementPrecision(lot.price, settlement.price);
-        } else CheckSettlementPrecision(average_, settlement.price);
+            for (const auto& lot : lots_) CheckSettlementPrecision(lot.price, settlement.price, priceDomain_);
+        } else CheckSettlementPrecision(average_, settlement.price, priceDomain_);
     }
     Require(static_cast<double>(realized - variation) == static_cast<double>(realized_),
             "RESEARCH_SETTLEMENT_PRECISION_LOSS");
@@ -218,7 +227,7 @@ bool ResearchLedger::Settle(const ResearchSettlement& settlement) {
     return true;
 }
 ResearchAccount ResearchLedger::Mark(double mark) const {
-    Require(std::isfinite(mark) && mark > 0, "RESEARCH_MARK_INVALID");
+    Require(ValidPrice(mark, priceDomain_), "RESEARCH_MARK_INVALID");
     ResearchAccount out;
     out.quantity = quantity_; out.averageEntry = Finite(average_);
     out.realizedGross = Finite(realized_); out.fees = Finite(fees_);
@@ -311,10 +320,13 @@ bool ResearchPortfolio::ApplyCashFlow(const ResearchCashFlow& flow) {
     return true;
 }
 bool ResearchPortfolio::Observe(const Tick& tick) {
-    ValidateTick(tick);
     auto found = positions_.find(tick.instrument);
     Require(found != positions_.end(), "RESEARCH_PORTFOLIO_INSTRUMENT_UNKNOWN");
     auto& position = found->second;
+    Require(ValidPrice(tick.price, position.ledger.PriceDomain()), "RESEARCH_MARK_INVALID");
+    // Reuse the canonical identity/time/volume/sequence validator. The research
+    // domain is fixed by the instrument spec, never by a caller-owned tick flag.
+    Tick structural = tick; structural.price = 1; ValidateTick(structural);
     if (position.hasTick && tick.sequence == position.lastTick.sequence) {
         const auto& old = position.lastTick;
         Require(old.timestampUs == tick.timestampUs && old.price == tick.price &&

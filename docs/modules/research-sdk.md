@@ -372,3 +372,15 @@ per-unit fees and rejects buffered output failure. Source and installed/relocate
 tests exercise the same implementations. See [contract and remaining differences](../../research/LEGACY-BUNDLE.md).
 These capabilities do not certify full historical parity, external consumer
 retirement, remote exact-head CI, main merge or old-repository archival.
+
+## Distinct offline model continuation
+
+`research/MODELS.md` defines the new explicit order-flow and observed next-open
+contracts, bounded grid slippage, and signed-price accounting opt-in. They are
+implemented in the existing Replay/Analytics translation units, using one native
+ledger/portfolio. The original positive Data codecs, NativeStrategyClient and
+production installation remain unchanged. `tests/research/replay_model_cases.h`
+is compiled by the existing replay test and by the installed/relocated external
+SDK consumer; it adds no compiled target or runtime registration. Source-level
+model ports are not certification of the alternative Python CLI, wide Decimal
+domain, old client-record formats or unknown legacy consumers.
