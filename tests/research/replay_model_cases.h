@@ -269,7 +269,8 @@ inline void PartialValuation() {
     p.Apply(f); auto missing=p.Valuation(1, 0);
     Check(!missing.complete && missing.missingMarks == std::vector<std::string>{"A"} &&
           missing.staleMarks.empty(), "missing held mark is not zero-valued equity");
-    Near(missing.cash, 1009); Near(missing.snapshot.positions.at("A").quantity, 2);
+    Near(missing.cash, 1009);
+    Check(missing.snapshot.positions.at("A").quantity == 2, "missing mark preserves exact quantity");
     Near(missing.snapshot.fees, 1); Throws([&] { p.Snapshot(1, 100); });
     p.Observe(Open(2, 1, -4)); const auto fresh=p.Valuation(2, 0);
     Check(fresh.complete, "signed quote produces complete valuation");
@@ -362,7 +363,7 @@ inline void QuoteKindIdentity() {
             const auto after = replay.Valuation(when, 0);
             Check(after.complete && replay.PendingTargets().at("A") == desired,
                   "kind conflict preserves pending target and mark validity");
-            Near(after.snapshot.positions.at("A").quantity, 0);
+            Check(after.snapshot.positions.at("A").quantity == 0, "kind conflict cannot change quantity");
             Near(after.snapshot.fees, before.snapshot.fees);
             Near(after.cash, before.cash); Near(after.snapshot.equity, before.snapshot.equity);
         }
@@ -374,12 +375,14 @@ inline void QuoteKindIdentity() {
         Check(fills.size() == static_cast<std::size_t>(desired != 0),
               "fresh open consumes target exactly once after rejected reclassification");
         Check(replay.PendingTargets().empty(), "fresh open consumes even a zero target");
-        Near(replay.Snapshot(when + 1, 0).positions.at("A").quantity, desired);
+        Check(replay.Snapshot(when + 1, 0).positions.at("A").quantity == desired,
+              "fresh open and retries preserve exact target quantity");
         Near(replay.Snapshot(when + 1, 0).fees, desired == 0 ? 0 : 1);
         Check(replay.ObserveOpen(opening).empty(), "same-kind open retry stays inert");
         Throws([&] { replay.ObserveMark(opening); });
         Throws([&] { replay.ObserveMark(Open(when + 2, 3, price)); });
-        Near(replay.Snapshot(when + 1, 0).positions.at("A").quantity, desired);
+        Check(replay.Snapshot(when + 1, 0).positions.at("A").quantity == desired,
+              "fresh open and retries preserve exact target quantity");
         ++cases;
     }
     // A historical last-open retry remains inert after a newer mark and target.
@@ -396,7 +399,8 @@ inline void QuoteKindIdentity() {
     Check(replay.ObserveOpen(Open(11, 2, 20, "B")).empty(),
           "receipt sequence is instrument-local");
     Throws([&] { replay.ObserveMark(Open(11, 2, 20, "B")); });
-    Near(replay.Valuation(11, 0).snapshot.positions.at("A").quantity, 0);
+    Check(replay.Valuation(11, 0).snapshot.positions.at("A").quantity == 0,
+          "other instrument cannot change quantity");
     Check(replay.PendingTargets().at("A") == 2, "other instrument cannot consume target");
     Check(replay.ObserveOpen(Open(12, 3, 12)).size() == 1, "subsequent real open is eligible");
     std::cout << "quote-kind identity cases=" << cases << '\n';
