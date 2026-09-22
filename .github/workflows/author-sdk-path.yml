@@ -1,0 +1,62 @@
+name: Author SDK path fixture object
+on:
+  push:
+    branches: [integration/heptadll-modular-20260920]
+    paths: [.github/workflows/author-sdk-path.yml]
+permissions:
+  contents: read
+jobs:
+  author:
+    if: github.repository == 'TrillionniumFoundation/heptatrader'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ef9e9251d8e2d7505623f49395ea7df75e03c31f
+          persist-credentials: false
+      - name: Upload one verified fixture object and tree without execution or ref writes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import base64, hashlib, json, os, pathlib, subprocess, urllib.request
+          base = 'ef9e9251d8e2d7505623f49395ea7df75e03c31f'
+          tree = '4cfc635bd84a713d1469803199650df6ccea2bba'
+          name = 'tests/research/sdk_package_behavior.py'
+          wanted = 'dbb37499876ad1c0eae8a18d07b6ec8d6d60f69c'
+          expected_tree = '7b3ea95c33c49ff130c831d69f1b89f71e6ec4e4'
+          def git(*args):
+              return subprocess.check_output(['git', *args], text=True).strip()
+          if git('rev-parse', 'HEAD') != base or git('rev-parse', 'HEAD^{tree}') != tree or git('status', '--porcelain'):
+              raise RuntimeError('wrong base or dirty source')
+          def blob(data):
+              return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+          data = pathlib.Path(name).read_bytes()
+          if blob(data) != '89944ff08c5af2ba18547ebcf5ccd0270f38430f':
+              raise RuntimeError('wrong original blob')
+          replacements = [
+              ('        root = Path(temporary)\n', '        # Resolve the actual existing directory before passing any paths to\n        # CMake. Windows TEMP may use an 8.3 user alias while file-api returns\n        # its long name; comparing those spellings is not a linkage check.\n        root = Path(temporary).resolve(strict=True)\n        if not root.samefile(temporary):\n            raise RuntimeError("temporary-directory canonicalization changed identity")\n'),
+              ('raise RuntimeError("consumer lacks relocated SDK includes")', 'raise RuntimeError(f"consumer lacks relocated SDK includes: expected={relocated!s}; actual={includes!r}")'),
+              ('raise RuntimeError("consumer lacks relocated SDK libraries")', 'raise RuntimeError(f"consumer lacks relocated SDK libraries: expected={relocated!s}; actual={fragments!r}")'),
+          ]
+          for old, new in replacements:
+              if data.count(old.encode()) != 1:
+                  raise RuntimeError('wrong replacement count')
+              data = data.replace(old.encode(), new.encode())
+          if blob(data) != wanted:
+              raise RuntimeError('candidate blob mismatch')
+          def api(route, payload=None):
+              request = urllib.request.Request('https://api.github.com/repos/TrillionniumFoundation/heptatrader' + route, data=None if payload is None else json.dumps(payload).encode(), headers={'Authorization':'Bearer ' + os.environ['GH_TOKEN'], 'Accept':'application/vnd.github+json', 'Content-Type':'application/json', 'X-GitHub-Api-Version':'2022-11-28'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  return json.load(response)
+          if api('/git/ref/heads/integration/heptadll-modular-20260920')['object']['sha'] != os.environ['GITHUB_SHA']:
+              raise RuntimeError('remote parent moved')
+          if api('/git/blobs', {'encoding':'base64', 'content':base64.b64encode(data).decode()})['sha'] != wanted:
+              raise RuntimeError('uploaded blob mismatch')
+          result = api('/git/trees', {'base_tree':tree, 'tree':[{'path':name, 'mode':'100644', 'type':'blob', 'sha':wanted}]})
+          if result['sha'] != expected_tree:
+              raise RuntimeError('uploaded tree mismatch')
+          print(json.dumps({'source':base, 'authoring_parent':os.environ['GITHUB_SHA'], 'blob':wanted, 'tree':expected_tree}))
