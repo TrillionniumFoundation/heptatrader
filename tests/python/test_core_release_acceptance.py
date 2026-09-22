@@ -18,7 +18,7 @@ SHA = "a" * 40
 
 class CoreReleaseAcceptanceTests(unittest.TestCase):
     def fixture(self, root: Path, fail=None, tamper=False, untracked=False,
-                omit_cost_evidence=False, omit_core_evidence=False):
+                omit_cost_evidence=False, omit_core_evidence=False, omit_pair=False, tamper_client=False):
         calls = []
         candidate = None
 
@@ -50,6 +50,8 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                         {"name": "fixture-app", "jsonFile": "app.json"}]}]}))
                 (reply / "app.json").write_text(json.dumps({"name": "fixture-app",
                     "type": "EXECUTABLE", "install": {"destinations": [{"path": "bin"}]}}))
+            elif argv and argv[0] == "tar" and "-czf" in argv:
+                Path(argv[argv.index("-czf") + 1]).write_bytes(b"independent-sdk")
             elif argv[:3] == ["sudo", "mktemp", "-d"]:
                 stdout = "/tmp/hepta-accept-source.ABCDef12\n"
             phase = None
@@ -57,12 +59,24 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                 phase = argv[argv.index("--lane") + 1]
             elif "scripts/run_release_simulator_smoke.py" in argv:
                 phase = "smoke"
+            elif "tests/research/installed_client_server_pair.py" in argv:
+                phase = "client-pair"
             elif "tests/systemd_simulator_smoke.py" in argv:
                 phase = "systemd"
                 if tamper:
                     candidate.write_bytes(b"substituted after testing")
+                if tamper_client:
+                    next((root / "dist/core-evidence").glob("strategy-client-sdk-*.tar.gz")).write_bytes(b"changed-sdk")
             if fail is not None and phase == fail:
                 raise subprocess.CalledProcessError(29, argv)
+            if phase == "client-pair" and not omit_pair:
+                # Orchestration seam only. The independent root-host scenario
+                # executes the installed commands and produces the real receipt.
+                from test_client_pair_admission import paired_receipt
+                path = Path(argv[argv.index("--output") + 1])
+                value = paired_receipt(SHA, argv[argv.index("--core-sha256") + 1],
+                                       argv[argv.index("--client-sha256") + 1])
+                path.write_text(json.dumps(value))
             if phase == "core" and not omit_core_evidence:
                 evidence_dir = Path(kwargs["env"]["HEPTA_CORE_EVIDENCE_DIR"])
                 source_sha = kwargs["env"]["HEPTA_CORE_EVIDENCE_SOURCE_SHA"]
@@ -180,6 +194,18 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             self.assertEqual(systemd[systemd.index("--artifact") + 1], candidate)
             self.assertEqual(systemd[systemd.index("--expected-sha256") + 1], sha)
             self.assertIn("HEPTA_DISPOSABLE_SYSTEMD_TEST=1", systemd)
+            pair = next(c for c in calls if "tests/research/installed_client_server_pair.py" in c)
+            self.assertEqual(pair[pair.index("--core-artifact") + 1], candidate)
+            self.assertEqual(pair[pair.index("--core-sha256") + 1], sha)
+            self.assertEqual(pair[pair.index("--client-sha256") + 1],
+                             hashlib.sha256(b"independent-sdk").hexdigest())
+            self.assertEqual(pair[pair.index("--source-sha") + 1], SHA)
+            self.assertIn("HEPTA_ISOLATED_PROCESS_TESTS=1", pair)
+            install = next(c for c in calls if c[:2] == ["cmake", "--install"])
+            self.assertEqual(install[-2:], ["--component", "StrategyClientSDK"])
+            self.assertLess(calls.index(process), calls.index(pair))
+            self.assertLess(calls.index(pair), calls.index(systemd))
+            self.assertEqual(receipt["strategy_client_sha256"], hashlib.sha256(b"independent-sdk").hexdigest())
             # env options must precede assignments; otherwise --chdir becomes
             # a command name instead of setting the protected source cwd.
             self.assertTrue(process[3].startswith("--chdir="))
@@ -192,7 +218,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                 acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
 
     def test_every_failed_phase_and_changed_package_prevent_pass_receipt(self):
-        for phase in ("install", "core", "smoke", "process", "systemd", "tamper"):
+        for phase in ("install", "core", "smoke", "process", "client-pair", "systemd", "tamper"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 (root / "VERSION").write_text("0.3.0\n")
@@ -200,9 +226,22 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                 with self.assertRaises((subprocess.CalledProcessError, ValueError)):
                     acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
                 self.assertFalse((root / "dist/core-acceptance.json").exists())
-                if phase in ("process", "systemd", "tamper"):
+                if phase in ("process", "client-pair", "systemd", "tamper"):
                     self.assertTrue(any(c[:3] == ["sudo", "rm", "-rf"] for c in calls))
-                if phase == "process":
+                if phase in ("process", "client-pair"):
+                    self.assertFalse(any("tests/systemd_simulator_smoke.py" in c for c in calls))
+
+    def test_missing_pair_evidence_and_changed_client_prevent_acceptance(self):
+        for missing in (True, False):
+            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / "VERSION").write_text("0.3.0\n")
+                run, calls = self.fixture(root, omit_pair=missing, tamper_client=not missing)
+                with self.assertRaisesRegex(ValueError, "pair evidence|client package changed"):
+                    acceptance.accept(root / "build", root / "dist", SHA, root=root, run=run)
+                self.assertFalse((root / "dist/core-acceptance.json").exists())
+                self.assertTrue(any(c[:3] == ["sudo", "rm", "-rf"] for c in calls))
+                if missing:
                     self.assertFalse(any("tests/systemd_simulator_smoke.py" in c for c in calls))
 
     def test_missing_core_cost_evidence_prevents_acceptance(self):
