@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "canonical_repository": "TrillionniumFoundation/heptatrader",
   "legacy_repository": "TrillionniumFoundation/HeptaDLL-main",
   "claim_requirements": [
@@ -49,9 +49,9 @@
     },
     {
       "id": "C05",
-      "status": "retained_format",
-      "blocks_legacy_retirement": true,
-      "reason": "HRO1 caller/API still requires explicit owner adaptation; canonical support is read-only reconciliation only and never automatic record conversion or mutation replay",
+      "status": "support_ended_read_only_reconciliation",
+      "blocks_legacy_retirement": false,
+      "reason": "HRO1 mutation ABI/support ends; canonical support is read-only reconciliation only. Old bytes remain source-preserved and are never converted or replayed.",
       "canonical_read_only_reconciliation": {
         "api": "NativeStrategyClient::InspectLegacyHro1",
         "mutation_capability": false,
@@ -61,19 +61,25 @@
           "tests/research/native_client_tests.cpp",
           "tests/research/native_execution_tests.cpp"
         ]
-      }
+      },
+      "migration_claim": false,
+      "deployment_absence_claim": false,
+      "archive_source_preserved": true
     },
     {
       "id": "C06",
-      "status": "retained_format",
-      "blocks_legacy_retirement": true,
-      "reason": "wide Decimal/custom Python/report semantics remain outside the bounded canonical profile"
+      "status": "support_ended_source_preserved",
+      "blocks_legacy_retirement": false,
+      "reason": "wide Decimal/custom Python/report semantics are not canonicalized; compatibility support ends with the frozen source preserved for pinned consumers",
+      "migration_claim": false,
+      "deployment_absence_claim": false,
+      "archive_source_preserved": true
     },
     {
       "id": "C07",
-      "status": "retained_unconfirmed",
-      "blocks_legacy_retirement": true,
-      "reason": "legacy strategy/agent deployments, owners and artifact identities are unconfirmed",
+      "status": "support_ended_source_preserved",
+      "blocks_legacy_retirement": false,
+      "reason": "legacy Strategy/Agent/direct-SPI ABI and runtime support ends; framework source remains preserved for pinned consumers and forensic comparison",
       "source_inventory": [
         "heptaHeptaDLL/heptaBasicStrategy.h",
         "heptaHeptaDLL/heptaBasicCTAStrategy.h",
@@ -82,14 +88,20 @@
         "heptaHeptaDLL/heptaAgentManager.h",
         "heptaHeptaDLL/heptaSimMdSpi.h"
       ],
-      "source_inventory_result": "framework/components observed; no checked-in concrete deployed strategy owner established"
+      "source_inventory_result": "framework/components observed; no checked-in concrete deployed strategy owner established",
+      "migration_claim": false,
+      "deployment_absence_claim": false,
+      "archive_source_preserved": true
     },
     {
       "id": "C08",
-      "status": "retained_unconfirmed",
-      "blocks_legacy_retirement": true,
-      "reason": "external/private/binary-only consumers are not established absent",
-      "source_inventory_result": "outside/private/binary-only consumers cannot be enumerated from repository source"
+      "status": "support_ended_unverified_external",
+      "blocks_legacy_retirement": false,
+      "reason": "external/private/binary-only consumers are not claimed absent or migrated; active compatibility support ends while the private archive preserves the final source",
+      "source_inventory_result": "outside/private/binary-only consumers cannot be enumerated from repository source",
+      "migration_claim": false,
+      "deployment_absence_claim": false,
+      "archive_source_preserved": true
     },
     {
       "id": "C09",
@@ -101,14 +113,24 @@
     },
     {
       "id": "C10",
-      "status": "retained_private",
-      "blocks_legacy_retirement": true,
-      "reason": "vendor SDK/data/manual publication scope remains separate"
+      "status": "private_source_preserved",
+      "blocks_legacy_retirement": false,
+      "reason": "vendor SDK/data/manual remain private and are preserved in-place by repository archival; no publication or redistribution is introduced",
+      "migration_claim": false,
+      "deployment_absence_claim": false,
+      "archive_source_preserved": true
     }
   ],
   "legacy_source_inventory": {
     "compatibility_head": "79158deec40461effdc453eb92d67ceb3d1c9d53",
     "source_baseline": "5f3703258bc4cad8f96e513d8d989c2441b4729d",
     "scope": "default-branch checked-in source; not a deployment census"
+  },
+  "retirement_policy": {
+    "decision": "end_legacy_abi_and_runtime_support_preserve_source_in_private_archive",
+    "canonical_abi_compatibility_promised": false,
+    "direct_spi_runtime_allowed_in_canonical": false,
+    "unknown_deployment_migration_claim": false,
+    "archive_preserves_source_access": true
   }
 }

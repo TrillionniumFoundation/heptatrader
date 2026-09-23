@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "canonical_development": {
     "repository": "TrillionniumFoundation/heptatrader",
     "state": "integrated",
@@ -22,20 +22,31 @@
   "legacy_repository": {
     "repository": "TrillionniumFoundation/HeptaDLL-main",
     "state": "retained",
-    "archive_ready": false,
-    "maintenance_mode": "compatibility_pr_only",
+    "archive_ready": true,
+    "maintenance_mode": "archive_pending",
     "main_branch_protected": true,
     "admin_enforcement": true,
     "force_push_allowed": false,
     "branch_deletion_allowed": false,
     "github_tags_present": false,
     "github_releases_present": false,
-    "historical_integration_branch_retained": "integration/modular-heptatrader-20260919"
+    "historical_integration_branch_retained": "integration/modular-heptatrader-20260919",
+    "abi_support_state": "retired",
+    "canonical_runtime_support": "forbidden",
+    "archive_target_visibility": "private",
+    "source_preserved_after_archive": true,
+    "archive_action_pending": true
   },
   "retirement_gates": {
-    "blocking_consumers_resolved": false,
-    "persistent_record_support_resolved": false,
-    "publication_scope_confirmed": false,
+    "blocking_consumers_resolved": true,
+    "persistent_record_support_resolved": true,
+    "publication_scope_confirmed": true,
     "release_retention_policy_confirmed": true
+  },
+  "retirement_gate_semantics": {
+    "blocking_consumers_resolved": "every consumer category has a final support disposition; this does not claim every deployment migrated or disappeared",
+    "persistent_record_support_resolved": "canonical code never converts legacy request records; HRO1 is read-only status reconciliation and unsupported formats remain pinned to archived source",
+    "publication_scope_confirmed": "archive keeps HeptaDLL-main private and adds no redistribution/publication right",
+    "release_retention_policy_confirmed": "repository source/history remain accessible read-only after archive; no release deletion is required"
   }
 }

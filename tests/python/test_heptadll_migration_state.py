@@ -14,6 +14,8 @@ def load(path):
 def main():
     migrations = load(sys.argv[1])
     lifecycle = load(sys.argv[2])
+    assert migrations["schema_version"] == 2
+    assert lifecycle["schema_version"] == 2
     consumers = {item["id"]: item for item in migrations["consumers"]}
     assert set(consumers) == {"C%02d" % n for n in range(1, 11)}
     for item in consumers.values():
@@ -31,14 +33,28 @@ def main():
     assert "deployed strategy owner" in consumers["C07"]["source_inventory_result"]
     assert "cannot be enumerated" in consumers["C08"]["source_inventory_result"]
 
-    for consumer_id in ("C07", "C08"):
+    final_support = {
+        "C05": "support_ended_read_only_reconciliation",
+        "C06": "support_ended_source_preserved",
+        "C07": "support_ended_source_preserved",
+        "C08": "support_ended_unverified_external",
+        "C10": "private_source_preserved",
+    }
+    for consumer_id, status in final_support.items():
         item = consumers[consumer_id]
-        assert item["status"] == "retained_unconfirmed"
-        assert item["blocks_legacy_retirement"] is True
+        assert item["status"] == status
+        assert item["blocks_legacy_retirement"] is False
+        assert item["migration_claim"] is False
+        assert item["deployment_absence_claim"] is False
+        assert item["archive_source_preserved"] is True
+
+    policy = migrations["retirement_policy"]
+    assert policy["canonical_abi_compatibility_promised"] is False
+    assert policy["direct_spi_runtime_allowed_in_canonical"] is False
+    assert policy["unknown_deployment_migration_claim"] is False
+    assert policy["archive_preserves_source_access"] is True
 
     c05 = consumers["C05"]
-    assert c05["status"] == "retained_format"
-    assert c05["blocks_legacy_retirement"] is True
     reconciliation = c05["canonical_read_only_reconciliation"]
     assert reconciliation["api"] == "NativeStrategyClient::InspectLegacyHro1"
     assert reconciliation["mutation_capability"] is False
@@ -61,9 +77,15 @@ def main():
 
     assert canonical["state"] == "integrated"
     assert legacy["state"] in {"retained", "archived"}
+    assert legacy["abi_support_state"] == "retired"
+    assert legacy["canonical_runtime_support"] == "forbidden"
+    assert legacy["archive_target_visibility"] == "private"
+    assert legacy["source_preserved_after_archive"] is True
     gates = lifecycle["retirement_gates"]
     all_gates = all(gates.values())
     assert legacy["archive_ready"] == all_gates
+    if legacy["archive_ready"]:
+        assert not any(item["blocks_legacy_retirement"] for item in consumers.values())
     if legacy["state"] == "archived":
         assert legacy["archive_ready"]
         assert not any(item["blocks_legacy_retirement"] for item in consumers.values())
