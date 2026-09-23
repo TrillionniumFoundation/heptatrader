@@ -161,11 +161,16 @@ soak, physical power-loss test, actual operator alert delivery or Broker qualifi
 ### Opt-in installed capacity workload
 
 The existing installed-process cost test also accepts
-`HEPTA_GENERATION_COST_PROFILE=capacity`: 3,584 buy/sell pairs in each of its
-three stages, or 7,168/14,336/21,504 cumulative real simulator admissions.
-Each stage produces 50,176 ordinary journal records (seven per admission),
+`HEPTA_GENERATION_COST_PROFILE=capacity`: 1,536 buy/sell pairs in each of its
+three stages, or 3,072/6,144/9,216 cumulative real simulator admissions.
+Each stage produces 21,504 ordinary journal records (seven per admission),
 below the existing 80% pause boundary of the default 65,536-record tail budget.
-The existing byte pause boundary also remains enforced. This keeps maintenance
+The workload also stays below the current installed simulator
+10,000-admission risk limit, whose count remains continuous across checkpoint
+and restart. A proposed 21,504-admission measurement was correctly refused at
+that limit; it did not qualify and must not be represented as a successful
+capacity curve. No daily clock, counter, session or policy is reset to extend
+the measurement. The existing byte pause boundary also remains enforced. This keeps maintenance
 cadence bounded while increasing retained history; it does not enlarge the
 writer budget to conceal a capacity refusal. The
 ordinary `core` and `extended` profiles are unchanged. This is an opt-in

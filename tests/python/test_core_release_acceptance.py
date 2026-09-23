@@ -320,7 +320,11 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
     def test_generation_workload_is_explicit_and_bounded(self):
         self.assertEqual(acceptance.generation_cost_pairs(), (4, 16, 64))
         self.assertEqual(acceptance.generation_cost_pairs("extended"), (32, 128, 512))
-        self.assertEqual(acceptance.generation_cost_pairs("capacity"), (3584, 3584, 3584))
+        self.assertEqual(acceptance.generation_cost_pairs("capacity"), (1536, 1536, 1536))
+        # The current installed simulator has a 10,000-admission risk budget;
+        # capacity tests must not quietly demand an unsupported policy profile.
+        self.assertLessEqual(2 * sum(acceptance.generation_cost_pairs("capacity")), 10000)
+        self.assertLess(14 * max(acceptance.generation_cost_pairs("capacity")), 65536 - 65536 // 5)
         for invalid in (None, True, [], "", "EXTENDED", "production"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 acceptance.generation_cost_pairs(invalid)
@@ -376,7 +380,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                         path, SHA, "c" * 64, expected_profile="capacity")
             complete = self.generation_curve("capacity")
             self.assertEqual([p["admitted_orders"] for p in complete["points"]],
-                             [7168, 14336, 21504])
+                             [3072, 6144, 9216])
             path.write_text(json.dumps(complete))
             acceptance.validate_generation_cost_evidence(
                 path, SHA, "c" * 64, expected_profile="capacity")

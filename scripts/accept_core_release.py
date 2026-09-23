@@ -90,7 +90,7 @@ def validate_client_pair_evidence(path: Path, source: str, core_sha: str, client
 def generation_cost_pairs(profile: str = "core") -> tuple[int, int, int]:
     """Fixed synthetic workloads, never broker/runtime policy overrides."""
     profiles = {"core": (4, 16, 64), "extended": (32, 128, 512),
-                "capacity": (3584, 3584, 3584)}
+                "capacity": (1536, 1536, 1536)}
     if not isinstance(profile, str) or profile not in profiles:
         raise ValueError("unsupported generation cost profile")
     return profiles[profile]
