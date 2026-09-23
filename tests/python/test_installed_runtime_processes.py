@@ -73,6 +73,19 @@ def admitted_slot(artifact: Path, digest: str, work: Path) -> tuple[Path, dict]:
     return slot, manifest
 
 
+def prepare_process_evidence(path: Path, *, precreated: bool = False) -> Path:
+    if not precreated:
+        path.mkdir(mode=0o755, parents=True, exist_ok=False)
+        return path
+    # Only the acceptance driver's explicit precreation contract may reuse a
+    # directory, and only before it contains any evidence. Preserve its owner.
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o022 or
+            any(path.iterdir())):
+        raise ValueError("precreated process evidence must be an empty private real directory")
+    return path
+
+
 class InstalledRuntime:
     """One private persistent simulator/gateway state; binaries may change."""
     def __init__(self, root: Path, *, trade_calls_per_minute: int = 60,
@@ -382,8 +395,9 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
         cls.addClassCleanup(cls._remove_interlock)
         cls.evidence = None
         if os.environ.get("HEPTA_PROCESS_EVIDENCE_DIR"):
-            cls.evidence = Path(os.environ["HEPTA_PROCESS_EVIDENCE_DIR"])
-            cls.evidence.mkdir(mode=0o755, parents=True, exist_ok=False)
+            cls.evidence = prepare_process_evidence(
+                Path(os.environ["HEPTA_PROCESS_EVIDENCE_DIR"]),
+                precreated=os.environ.get("HEPTA_PROCESS_EVIDENCE_PRECREATED") == "1")
         cls.tmp = tempfile.TemporaryDirectory(prefix="ht-process-", dir="/tmp")
         cls.addClassCleanup(cls.tmp.cleanup)
         cls.root = Path(cls.tmp.name)

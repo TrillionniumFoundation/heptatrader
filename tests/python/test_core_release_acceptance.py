@@ -128,6 +128,11 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     item for item in argv
                     if item.startswith("HEPTA_PROCESS_CANDIDATE_SHA256="))
                 evidence_dir = Path(evidence_assignment.split("=", 1)[1])
+                self.assertIn("HEPTA_PROCESS_EVIDENCE_PRECREATED=1", argv)
+                self.assertTrue(evidence_dir.is_dir())
+                self.assertFalse(any(evidence_dir.iterdir()))
+                self.assertEqual(evidence_dir.stat().st_uid, root.stat().st_uid)
+                self.assertEqual(evidence_dir.stat().st_mode & 0o777, 0o700)
                 artifact_sha = artifact_assignment.split("=", 1)[1]
                 evidence_dir.mkdir(parents=True, exist_ok=True)
                 points = []
@@ -489,6 +494,31 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             self.assertEqual((folder / "diagnostics.json").stat().st_mode & 0o777, 0o600)
             self.assertEqual((folder / "1-hepta-executiond.log").stat().st_mode & 0o777, 0o600)
             self.assertEqual(folder.stat().st_uid, evidence.stat().st_uid)
+
+    def test_process_evidence_precreation_is_explicit_empty_and_nonwritable(self):
+        import test_installed_runtime_processes as installed
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "evidence"
+            installed.prepare_process_evidence(destination)
+            with self.assertRaises(FileExistsError):
+                installed.prepare_process_evidence(destination)
+            destination.chmod(0o700)
+            owner = destination.stat().st_uid
+            self.assertEqual(installed.prepare_process_evidence(destination, precreated=True), destination)
+            self.assertEqual(destination.stat().st_uid, owner)
+            (destination / "old.json").write_text("old evidence")
+            with self.assertRaises(ValueError):
+                installed.prepare_process_evidence(destination, precreated=True)
+            (destination / "old.json").unlink()
+            destination.chmod(0o777)
+            with self.assertRaises(ValueError):
+                installed.prepare_process_evidence(destination, precreated=True)
+            destination.chmod(0o700)
+            link = root / "link"
+            link.symlink_to(destination, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                installed.prepare_process_evidence(link, precreated=True)
 
     def test_untracked_checkout_content_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:

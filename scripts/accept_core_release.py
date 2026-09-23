@@ -503,7 +503,13 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
             command(["sudo", "chmod", "0755", host_source])
             clean = ["sudo", "env", "-i", "--chdir=" + str(host_source),
                      "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "PYTHONDONTWRITEBYTECODE=1"]
+            # Establish private upload custody before crossing sudo. The root
+            # fixture may populate this new empty directory, never adopt old
+            # evidence or leave private children owned by a different uploader.
+            process_evidence = output / "process-evidence"
+            process_evidence.mkdir(mode=0o700)
             command(clean + ["HEPTA_ISOLATED_PROCESS_TESTS=1",
+                    "HEPTA_PROCESS_EVIDENCE_PRECREATED=1",
                     "HEPTA_PROCESS_CANDIDATE_ARTIFACT=" + str(candidate),
                     "HEPTA_PROCESS_CANDIDATE_SHA256=" + candidate_digest,
                     "HEPTA_PROCESS_PREVIOUS_ARTIFACT=" + str(previous),
