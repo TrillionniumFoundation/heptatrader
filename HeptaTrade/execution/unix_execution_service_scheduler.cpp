@@ -59,7 +59,12 @@ void UnixExecutionServiceServer::WakeScheduler()
 void UnixExecutionServiceServer::RequestSchedulerStop()
 {
     if (m_lifecycleGate) m_lifecycleGate->ready.store(false);
-    m_stop.store(true);
+    {
+        // Publish the predicate under the same mutex used by wait(). Atomic
+        // alone would allow notify to fall between predicate-check and sleep.
+        std::lock_guard<std::mutex> lock(m_schedulerMutex);
+        m_stop.store(true);
+    }
     m_schedulerChanged.notify_all();
     WakeScheduler();
 }

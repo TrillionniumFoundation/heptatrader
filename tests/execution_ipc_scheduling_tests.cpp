@@ -97,6 +97,20 @@ struct Fixture {
         return Micros(start);
     }
 };
+void IdleWorkersAlwaysObserveShutdown() {
+    Fixture f;
+    for (unsigned cycle = 0; cycle < 100; ++cycle) {
+        f.server.Stop();
+        std::string reason;
+        Check(f.server.Start(f.path, {static_cast<std::uint32_t>(::geteuid())}, reason),
+              "idle-worker restart failed");
+        if (cycle % 3 == 0) f.Identity();
+        // Immediate shutdown races newly started workers entering their wait.
+        // No process-global timing or test-only runtime bypass is installed.
+    }
+    f.server.Stop();
+}
+
 void PartialFramesDoNotOccupyWorkers() {
     Fixture f; std::vector<int> peers;
     for (int i = 0; i < 12; ++i) {
@@ -265,6 +279,7 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
 }
 int main() {
     try {
+        IdleWorkersAlwaysObserveShutdown();
         PartialFramesDoNotOccupyWorkers();
         SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry();
         ExpiredQueuedCommandNeverDispatches();
