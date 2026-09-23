@@ -51,7 +51,17 @@
       "id": "C05",
       "status": "retained_format",
       "blocks_legacy_retirement": true,
-      "reason": "HRO1 callers require explicit source adaptation; no automatic record conversion"
+      "reason": "HRO1 caller/API still requires explicit owner adaptation; canonical support is read-only reconciliation only and never automatic record conversion or mutation replay",
+      "canonical_read_only_reconciliation": {
+        "api": "NativeStrategyClient::InspectLegacyHro1",
+        "mutation_capability": false,
+        "record_conversion": false,
+        "missing_recovery_binding_invented": false,
+        "evidence": [
+          "tests/research/native_client_tests.cpp",
+          "tests/research/native_execution_tests.cpp"
+        ]
+      }
     },
     {
       "id": "C06",

@@ -202,7 +202,9 @@ bool NativeStrategyClient::Status(const std::string& id, const std::string& quer
 
 namespace {
 const char* const kOutboxToken = "hepta-strategy-outbox-v1-not-a-session-token";
+const char* const kLegacyHro1Token = "hepta-research-outbox-v1-not-a-credential";
 const std::size_t kRecordLimit = 65536 + 149;
+const std::size_t kLegacyHro1RecordLimit = 65536;
 std::atomic<unsigned long> outboxTemporaryCounter(0);
 class OutboxFd {
 public:
@@ -264,15 +266,16 @@ bool SameRecord(const struct stat& a, const struct stat& b) {
         a.st_mtim.tv_sec == b.st_mtim.tv_sec && a.st_mtim.tv_nsec == b.st_mtim.tv_nsec &&
         a.st_ctim.tv_sec == b.st_ctim.tv_sec && a.st_ctim.tv_nsec == b.st_ctim.tv_nsec;
 }
-bool ReadOutbox(int directory, const std::string& name, std::string& bytes) {
+bool ReadPrivateRecord(int directory, const std::string& name, off_t minimumExclusive,
+                       off_t maximumInclusive, std::string& bytes) {
     bytes.clear();
     // NONBLOCK prevents a malicious FIFO/device entry from blocking open/read.
     OutboxFd file(::openat(directory, name.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
     struct stat before, after, linked;
     if (file.Get() < 0 || ::fstat(file.Get(), &before) != 0 || !S_ISREG(before.st_mode) ||
         before.st_uid != ::geteuid() || before.st_nlink != 1 ||
-        (before.st_mode & 07777) != 0600 || before.st_size <= 149 ||
-        before.st_size > static_cast<off_t>(kRecordLimit)) return false;
+        (before.st_mode & 07777) != 0600 || before.st_size <= minimumExclusive ||
+        before.st_size > maximumInclusive) return false;
     std::string content(static_cast<std::size_t>(before.st_size), '\0');
     std::size_t offset = 0;
     while (offset < content.size()) {
@@ -289,6 +292,9 @@ bool ReadOutbox(int directory, const std::string& name, std::string& bytes) {
         !SameRecord(before, after) || !SameRecord(after, linked)) return false;
     bytes.swap(content);
     return true;
+}
+bool ReadOutbox(int directory, const std::string& name, std::string& bytes) {
+    return ReadPrivateRecord(directory, name, 149, static_cast<off_t>(kRecordLimit), bytes);
 }
 bool SameOutboxPath(int fd, const std::string& directory) {
     OutboxFd named(OpenOutbox(directory));
@@ -331,6 +337,44 @@ bool LoadOutbox(const std::string& directory, const std::string& id,
     if (!SyncOutbox(dir.Get()) || !SameOutboxPath(dir.Get(), directory))
         return OutboxFail(reason, "RESEARCH_OUTBOX_SYNC_OR_PATH_FAILED");
     return DecodeOutbox(bytes, id, request, binding, reason);
+}
+bool DecodeLegacyHro1(const std::string& bytes, const std::string& id,
+                      TradingToolHostRequest& request, std::string& reason) {
+    request = TradingToolHostRequest();
+    if (bytes.size() <= 4 || bytes.size() > kLegacyHro1RecordLimit ||
+        bytes.compare(0, 4, "HRO1") != 0)
+        return OutboxFail(reason, "LEGACY_HRO1_FORMAT_INVALID");
+    const std::string wire = bytes.substr(4);
+    TradingToolHostRequest candidate;
+    if (!TypedToolProtocol::DecodeRequest(wire, candidate, reason)) return false;
+    if (candidate.sessionToken != kLegacyHro1Token || candidate.toolCallId != id ||
+        candidate.call.name != "trade.place_order" || candidate.call.previewPermit.empty() ||
+        !candidate.cancelToolCallId.empty() || candidate.queueDeadlineAtMs != 0)
+        return OutboxFail(reason, "LEGACY_HRO1_REQUEST_BINDING_INVALID");
+    std::string encoded;
+    if (!TypedToolProtocol::EncodeRequest(candidate, encoded, reason) || encoded != wire)
+        return OutboxFail(reason, "LEGACY_HRO1_NONCANONICAL");
+    candidate.sessionToken.clear();
+    request = candidate;
+    reason.clear();
+    return true;
+}
+bool LoadLegacyHro1(const std::string& directory, const std::string& id,
+                    TradingToolHostRequest& request, std::string& reason) {
+    request = TradingToolHostRequest();
+    reason.clear();
+    if (!TradingToolWireContract::IsCanonicalCommandId(id))
+        return OutboxFail(reason, "LEGACY_HRO1_ID_INVALID");
+    OutboxFd dir(OpenOutbox(directory));
+    if (dir.Get() < 0) return OutboxFail(reason, "LEGACY_HRO1_DIRECTORY_UNSAFE");
+    if (!LockOutbox(dir.Get())) return OutboxFail(reason, "LEGACY_HRO1_LOCK_FAILED");
+    std::string bytes;
+    if (!ReadPrivateRecord(dir.Get(), id + ".hro", 4,
+                           static_cast<off_t>(kLegacyHro1RecordLimit), bytes))
+        return OutboxFail(reason, "LEGACY_HRO1_RECORD_UNSAFE");
+    if (!SyncOutbox(dir.Get()) || !SameOutboxPath(dir.Get(), directory))
+        return OutboxFail(reason, "LEGACY_HRO1_SYNC_OR_PATH_FAILED");
+    return DecodeLegacyHro1(bytes, id, request, reason);
 }
 class OutboxTemporary {
 public:
@@ -586,6 +630,25 @@ bool NativeStrategyClient::InspectStored(const std::string& directory, const std
     std::string binding;
     if (!LoadOutbox(capturedDirectory, capturedId, original, binding, reason)) return false;
     return InspectBound(original.toolCallId, capturedQueryId, binding, result, reason);
+}
+bool NativeStrategyClient::InspectLegacyHro1(const std::string& directory, const std::string& id,
+    const std::string& queryId, NativeToolClientResult& result, std::string& reason) const {
+    const std::string capturedDirectory = directory, capturedId = id, capturedQueryId = queryId;
+    result = NativeToolClientResult(); reason.clear();
+    TradingToolHostRequest original;
+    if (!LoadLegacyHro1(capturedDirectory, capturedId, original, reason)) return false;
+    try {
+        CheckId(capturedQueryId);
+        if (original.toolCallId == capturedQueryId)
+            return OutboxFail(reason, "RESEARCH_INSPECTION_QUERY_ID_REUSED");
+    } catch (const std::invalid_argument& e) {
+        reason = e.what();
+        return false;
+    }
+    // HRO1 predates recovery binding. Deliberately do NOT reconstruct one or
+    // reuse its stored placeholder token. The caller chooses the current client
+    // endpoint/credential explicitly, and this path can only issue a status read.
+    return Status(original.toolCallId, capturedQueryId, result, reason);
 }
 bool NativeStrategyClient::Inspect(const PreparedStrategyCommand& prepared, const std::string& queryId,
     NativeToolClientResult& result, std::string& reason) const {

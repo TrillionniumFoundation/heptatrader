@@ -330,7 +330,7 @@ with unconditional Submit. There is no new automatic retry/state machine here.
 | Installed C++11 SDK consumer | Exercises the opaque lifecycle in its existing behavioral executable | Exact-head actual installation/relocation and compiler checks |
 | Actual Execution recovery test consumer | Runs both original and opaque lifecycle, including fresh client processes, SIGKILL before first send and after accepted place/cancel, and service restart | Keep the original assertions and inspect the real send-attempt journal |
 | #108 Prepare/Persist/Load/Submit application workflow | Source-migration destination is PreparedOrder/PreparedStrategyCommand and NativeStrategyClient Prepare/Persist/Restore/Submit | Adapt proposal limits and application types explicitly; this is not an automatic migration of a deployed application |
-| #108 HRO1 `.hro` records | Retain original records and original client at `56fd92bc94fd36e064d18c383ffeef9994d85fea` | Reconcile original IDs using the old caller/service; no HRO1-to-HSR1 conversion or regenerated permit |
+| #108 HRO1 `.hro` records | Retain original bytes; canonical `InspectLegacyHro1` strictly validates the old record and queries its original command ID | Read-only reconciliation only: HRO1 has no recovery binding, so the caller explicitly selects the current endpoint/credential; no HRO1-to-HSR1 conversion, preview, submit or regenerated permit |
 | #106 Python StrategyGateway / JSON outbox | Retain at `acffe4ae84a8e4377fd92b0ac536a865c6f6b6f5` | Preserve application-key mapping, Decimal validation and status-only uncertain-state policy; no automatic Python API or record conversion |
 | Historical HeptaDLL or unknown private/binary users | Retain original repository, releases and notices | Named deployment/consumer and publication-scope disposition before archival |
 
@@ -409,10 +409,24 @@ send-count assertions remain active rather than being replaced with queries.
 
 This ports the #106 **status-only recovery policy boundary** to canonical native
 consumers. It does not migrate #106 Python application keys, Decimal domains or
-JSON outbox records, or #108 HRO1 records. Those actual records/callers remain
-retained until explicitly adapted; never relabel them as HSR1, synthesize missing
-binding data, or delete them to claim retirement. No production host, power-loss,
-external deployment, broker or complete historical ABI qualification is implied.
+JSON outbox records. For #108 HRO1, `InspectLegacyHro1` now accepts only the
+original immutable `.hro` place-order framing in a private directory, performs
+a canonical decode/re-encode check, verifies the historical non-credential token
+and original command ID, and then issues only `execution.get_command_status`.
+HRO1 predates the current HSR1 recovery binding, so this API deliberately cannot
+reconstruct or invent one: the operator/caller explicitly supplies the current
+NativeToolClient endpoint and credential. It never creates an HSR1 file, previews,
+submits, refreshes a permit or treats unknown/not-found as resend authority.
+
+The unit/installed consumer exercises safe modes, changed framing/token/tool,
+query-ID separation and the absence of record conversion. The real
+Gateway/Execution fixture queries an HRO1 command before any submit, observes
+zero admitted orders, then explicitly submits once; the terminal OMS journal
+still requires exactly one `place_send_attempt` for that command. The old
+ResearchIntentClient source caller and any deployed owner remain retained until
+explicitly adapted; read-only record reconciliation is not ABI migration.
+No production host, power-loss, external deployment, broker or complete
+historical ABI qualification is implied.
 
 ## Application-key Python consumer
 
@@ -426,7 +440,9 @@ The Python application policy durably marks a possible send, then attempts at
 most one placement; subsequent calls select record-bound Inspect, even after
 timeout, SIGKILL or unknown status. Its HSA1 metadata contains application keys,
 normalized intents and command IDs, never a replacement request serialization.
-Old JSON/HRO1 records remain with their original caller.
+Old JSON/HRO1 records remain with their original caller; HRO1 may additionally
+be used as the strict read-only `InspectLegacyHro1` reconciliation input described
+above, never as a converted/submittable HSR1 request.
 See [full operations, numeric domain, failure and installation contract](STRATEGY-GATEWAY.md)
 and [consumer/support decisions](../docs/technical/heptadll-consumers.md).
 The default production install remains unchanged.
