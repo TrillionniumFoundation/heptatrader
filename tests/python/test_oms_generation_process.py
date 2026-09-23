@@ -58,8 +58,16 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         root = os.environ.get("HEPTA_PROCESS_EVIDENCE_DIR")
         if not root:
             return
+        custody = Path(root).lstat()
+        if not stat.S_ISDIR(custody.st_mode):
+            raise AssertionError("evidence destination is not a real directory")
         destination = Path(root) / self._testMethodName
         destination.mkdir(mode=0o700)
+        def handoff_file(stream) -> None:
+            os.fchmod(stream.fileno(), 0o600)
+            current = os.fstat(stream.fileno())
+            if (current.st_uid, current.st_gid) != (custody.st_uid, custody.st_gid):
+                os.fchown(stream.fileno(), custody.st_uid, custody.st_gid)
         inventory = []
         for path in sorted(runtime.root.glob("*.log")):
             metadata = path.lstat()
@@ -69,6 +77,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                 content = stream.read(16 * 1024 * 1024)
             with (destination / path.name).open("xb") as output:
                 output.write(content)
+                handoff_file(output)
             inventory.append({"name": path.name, "source_bytes": metadata.st_size,
                               "retained_bytes": len(content),
                               "sha256": hashlib.sha256(content).hexdigest(),
@@ -81,6 +90,13 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         with (destination / "diagnostics.json").open("x") as output:
             json.dump(diagnostic, output, sort_keys=True, indent=2)
             output.write("\n")
+            handoff_file(output)
+        # sudo executes the fixture, but the existing evidence directory names
+        # the upload custodian. Transfer only this newly created diagnostic set;
+        # do not make logs public or mutate source/runtime ownership.
+        current = destination.lstat()
+        if (current.st_uid, current.st_gid) != (custody.st_uid, custody.st_gid):
+            os.chown(destination, custody.st_uid, custody.st_gid, follow_symlinks=False)
 
     @staticmethod
     def _execution_peak_rss_kib(runtime: base.InstalledRuntime) -> int:

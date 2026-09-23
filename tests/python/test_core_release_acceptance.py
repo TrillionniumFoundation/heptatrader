@@ -485,6 +485,10 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             self.assertFalse(value["uncertain_observations"][0]["resolved_by_status"])
             self.assertNotIn("result", value)
             self.assertFalse(value["logs"][0]["truncated"])
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((folder / "diagnostics.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((folder / "1-hepta-executiond.log").stat().st_mode & 0o777, 0o600)
+            self.assertEqual(folder.stat().st_uid, evidence.stat().st_uid)
 
     def test_untracked_checkout_content_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:
