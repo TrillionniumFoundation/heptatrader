@@ -97,9 +97,11 @@ own authoritative checks.
 
 ## Refresh, locks and terminalization
 
-`SnapshotRefreshCoordinator` tracks account-summary, positions and open-order
-refreshes. Repeated requests coalesce into at most one subsequent refresh; they
-do not overlap generations for callbacks lacking request IDs. `Complete`
+`SnapshotRefreshCoordinator` tracks account, positions and open-order refreshes.
+The IB account leg is one account-scoped `reqAccountUpdatesMulti` generation; the
+dedicated runtime must not add an `reqAccountSummary("All")` request beside it.
+Repeated requests coalesce into at most one subsequent refresh; they do not
+overlap generations for callbacks lacking request IDs. `Complete`
 returns the completed and optional next generation. `Expire` reports an expired
 in-flight generation and whether a request was pending. Consumers must check
 these results before publishing completeness.

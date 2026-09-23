@@ -18,8 +18,9 @@ struct IBConnectParams {
     int port = 7497;
     int clientId = 101;
     // The dedicated PAPER client is scoped to exactly one configured DU
-    // account.  Production uses this identity for reqAccountUpdates so CASH
-    // FX balances cannot be aggregated across accounts.
+    // account. Production uses this identity for reqAccountUpdatesMulti and
+    // deliberately never issues reqAccountSummary("All"), so account values
+    // and CASH FX balances cannot be duplicated or aggregated across accounts.
     std::string account;
     bool readOnly = false;
 };
