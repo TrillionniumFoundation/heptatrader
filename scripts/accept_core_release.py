@@ -87,9 +87,18 @@ def validate_client_pair_evidence(path: Path, source: str, core_sha: str, client
     return value
 
 
+def generation_cost_pairs(profile: str = "core") -> tuple[int, int, int]:
+    """Fixed synthetic workloads, never broker/runtime policy overrides."""
+    profiles = {"core": (4, 16, 64), "extended": (32, 128, 512)}
+    if not isinstance(profile, str) or profile not in profiles:
+        raise ValueError("unsupported generation cost profile")
+    return profiles[profile]
+
+
 def validate_generation_cost_evidence(
-    path: Path, source_sha: str, artifact_sha256: str
+    path: Path, source_sha: str, artifact_sha256: str, *, expected_profile: str = "core"
 ) -> dict:
+    pairs = generation_cost_pairs(expected_profile)
     try:
         value = json.loads(path.read_text())
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
@@ -115,12 +124,15 @@ def validate_generation_cost_evidence(
     def unsigned(number, *, positive: bool = False) -> bool:
         return type(number) is int and number >= (1 if positive else 0)
 
-    expected_admitted = [8, 40, 168]
+    # The caller selects the workload; a receipt cannot promote its own scope.
+    if value.get("cost_profile", "core") != expected_profile:
+        raise ValueError("generation cost evidence workload profile mismatch")
+    expected_admitted = [2 * sum(pairs[:i + 1]) for i in range(len(pairs))]
     if [point.get("admitted_orders") for point in points
             if isinstance(point, dict)] != expected_admitted:
         raise ValueError("generation cost evidence cardinality is invalid")
     previous_history = -1
-    for point in points:
+    for index, point in enumerate(points):
         if not isinstance(point, dict):
             raise ValueError("generation cost evidence point is invalid")
         required_positive = (
@@ -147,6 +159,39 @@ def validate_generation_cost_evidence(
         if point["history_records"] < previous_history:
             raise ValueError("generation cost evidence history regressed")
         previous_history = point["history_records"]
+        if expected_profile == "extended" and point["place_latency_total_samples"] < 2 * pairs[index]:
+            raise ValueError("generation cost evidence sampled workload is incomplete")
+
+    if expected_profile == "extended":
+        if value.get("orderly_shutdown_verified") is not True:
+            raise ValueError("generation cost evidence shutdown is unverified")
+        if (not unsigned(value.get("elapsed_ns"), positive=True) or
+                not unsigned(value.get("configured_trade_calls_per_minute"), positive=True) or
+                value.get("configured_trade_calls_per_minute") != 4 * max(pairs)):
+            raise ValueError("generation cost evidence workload configuration is invalid")
+        processes = value.get("processes")
+        if not isinstance(processes, list) or len(processes) != 10:
+            raise ValueError("generation cost evidence installed process inventory is incomplete")
+        counts, identities, seen = {}, {}, set()
+        for process in processes:
+            if not isinstance(process, dict):
+                raise ValueError("generation cost evidence process identity is invalid")
+            name, uid, pid, sha = (process.get(k) for k in
+                                 ("name", "uid", "pid", "executable_sha256"))
+            if (name not in ("hepta-executiond", "hepta-tool-gatewayd") or
+                type(uid) is not int or uid != {"hepta-executiond": 61002,
+                                               "hepta-tool-gatewayd": 61001}[name] or
+                not unsigned(pid, positive=True) or not isinstance(sha, str) or
+                re.fullmatch(r"[0-9a-f]{64}", sha) is None):
+                raise ValueError("generation cost evidence process identity is invalid")
+            if (name, pid) in seen:
+                raise ValueError("generation cost evidence duplicates a process observation")
+            seen.add((name, pid))
+            counts[name] = counts.get(name, 0) + 1
+            if identities.setdefault(name, sha) != sha:
+                raise ValueError("generation cost evidence executable changed across restart")
+        if counts != {"hepta-executiond": 5, "hepta-tool-gatewayd": 5}:
+            raise ValueError("generation cost evidence restart inventory is incomplete")
 
     before = value.get("retained_disk_bytes_before_rebase")
     after = value.get("retained_disk_bytes_after_rebase")

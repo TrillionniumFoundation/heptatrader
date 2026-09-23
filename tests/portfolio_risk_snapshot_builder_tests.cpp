@@ -145,6 +145,39 @@ bool Near(double left, double right) {
 
 int main() {
     {
+        auto request = BaseRequest();
+        const auto full = PortfolioRiskSnapshotBuilder::Build(request);
+        request.account = PortfolioRiskAccountInput();
+        const auto exposure = PortfolioRiskSnapshotBuilder::BuildExposure(request);
+        Require(exposure.ok && exposure.reasonCode == "PORTFOLIO_RISK_EXPOSURE_OK",
+                "exposure has no account evidence prerequisite");
+        Require(!exposure.snapshot.pnl.present && !exposure.snapshot.equity.present,
+                "exposure must not fabricate zero PnL or equity facts");
+        Require(Near(exposure.snapshot.exposure.currentGrossNotional,
+                     full.snapshot.exposure.currentGrossNotional) &&
+                Near(exposure.snapshot.exposure.pendingBuyNotional, 577.5) &&
+                Near(exposure.snapshot.exposure.pendingSellNotional, 420.0),
+                "both APIs must use the same complete conservative valuation");
+        Require(!PortfolioRiskSnapshotBuilder::Build(request).ok,
+                "full builder still requires independently complete account facts");
+        request.positions[1].mark.observedAtMs = 8999;
+        Require(!PortfolioRiskSnapshotBuilder::BuildExposure(request).ok,
+                "exposure-only cannot accept stale secondary instrument");
+        request = BaseRequest(); request.pendingOrdersIdentity.generation++;
+        Require(!PortfolioRiskSnapshotBuilder::BuildExposure(request).ok,
+                "exposure-only cannot mix owner generations");
+        request = BaseRequest(); request.positions.pop_back();
+        Require(!PortfolioRiskSnapshotBuilder::BuildExposure(request).ok,
+                "exposure-only needs full declared instrument universe");
+        request = BaseRequest(); request.pendingOrders[1].orderId = request.pendingOrders[0].orderId;
+        Require(!PortfolioRiskSnapshotBuilder::BuildExposure(request).ok,
+                "exposure-only rejects conflicting pending identities");
+        request = BaseRequest(); request.positions[0].netQuantity = std::numeric_limits<double>::max();
+        Require(!PortfolioRiskSnapshotBuilder::BuildExposure(request).ok,
+                "exposure-only cannot publish overflowed gross");
+    }
+
+    {
         const PortfolioRiskSnapshotBuildResult result =
             PortfolioRiskSnapshotBuilder::Build(BaseRequest());
         Require(result.ok && result.reasonCode == "PORTFOLIO_RISK_SNAPSHOT_OK",

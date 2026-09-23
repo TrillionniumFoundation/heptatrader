@@ -135,3 +135,25 @@ maintenance on the executing host. They do not exercise actual Broker I/O,
 production account data, the full installed daemon startup, target-host alert
 delivery or a multiday soak. Their stage/source/host context must accompany any
 performance interpretation; a finite successful probe is not an unbounded SLO.
+
+### Explicit installed-process extended workload
+
+The existing isolated generation test accepts `HEPTA_GENERATION_COST_PROFILE=extended`
+only inside its already opt-in disposable Linux/multi-UID fixture. It performs
+32/128/512 buy/sell pairs per stage: 64, 320 and 1,344 cumulative admitted orders,
+then stopped-state seal/restart at each cut and rebase/restart. The default `core`
+workload remains 8/40/168 orders; ordinary release acceptance does not silently
+become an extended benchmark. Both workloads use the same digest-pinned installed
+core artifact, separate service/Agent UIDs, real preview/submit/status IPC, enabled
+finite rate limits, native final risk, journal and economic projection. No runtime
+limit or account authority is disabled for this test.
+
+The consumer independently selects the expected workload profile. Extended
+receipts must retain all five starts of each installed daemon, stable executable
+hashes, the expected service UIDs, enough measured placement samples per stage,
+elapsed time and successful final orderly shutdown. A core receipt cannot promote
+itself to extended scope; a changed executable, incomplete workload or forced
+shutdown is not accepted. Receipt staging is validated before create-only durable
+publication. Host-kernel, storage and CPU context should accompany the emitted
+measurements. These are synthetic installed-daemon observations, not a multi-day
+soak, physical power-loss test, actual operator alert delivery or Broker qualification.

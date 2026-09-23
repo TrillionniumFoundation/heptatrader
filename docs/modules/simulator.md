@@ -81,3 +81,19 @@ The current simulator is an execution venue simulator, not a full exchange micro
 The venue returns the shared [typed cancellation result](../technical/venue-cancellation-contract.md)
 under the venue mutex; coordinator callers do not sample a separate mutable
 last-error string after a cancellation.
+
+## Shared monetary exposure assembly
+
+The installed Execution simulator uses `PortfolioRiskSnapshotBuilder::BuildExposure`
+under its existing venue mutex for the supported EUR.USD and GBP.USD CASH/USD
+universe. Both instruments require fresh marks for risk increase, including zero
+positions. Actual inert reservations count at conservative max(limit, ask) value;
+original pending contract units survive policy changes. Unknown held/pending
+instruments, missing or stale secondary marks and overflow reject admission.
+`BuildExposure` does not assert PnL/equity, so enabling those account-level limits
+without a real producer still rejects. Strict flatten-only exits retain their
+existing local quote/reducible-capacity proof and do not depend on an unrelated
+instrument mark. There is no expanded venue capability or Broker permission.
+The existing native risk/runtime suite exercises both shared-builder behavior
+and the real Execution composition; the installed process tests exercise the
+packaged daemon, not a library-only stand-in.

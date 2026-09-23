@@ -129,8 +129,9 @@ struct InstrumentAuthority {
 };
 }
 
-PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
-    const PortfolioRiskSnapshotBuildRequest& request) {
+namespace {
+PortfolioRiskSnapshotBuildResult BuildSnapshot(
+    const PortfolioRiskSnapshotBuildRequest& request, bool includeAccount) {
     if (!ValidSubject(request.subject))
         return Reject("PORTFOLIO_RISK_SUBJECT_INVALID",
                       "portfolio subject must bind portfolio/account/venue/base currency and instruments");
@@ -225,7 +226,7 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
     }
 
     const PortfolioRiskAccountInput& account = request.account;
-    if (!account.complete ||
+    if (includeAccount && (!account.complete ||
         !SameSubject(account.subject, request.subject) ||
         account.baseCurrency != request.subject.baseCurrency ||
         account.connectionEpoch != request.connectionEpoch ||
@@ -235,14 +236,16 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
         !std::isfinite(account.unrealizedPnl) ||
         !std::isfinite(account.peakEquity) || account.peakEquity < 0.0 ||
         !std::isfinite(account.currentEquity) || account.currentEquity < 0.0 ||
-        account.currentEquity > account.peakEquity)
+        account.currentEquity > account.peakEquity))
         return Reject("PORTFOLIO_RISK_ACCOUNT_EVIDENCE_INVALID",
                       "account PnL/equity evidence is incomplete, stale, mixed-generation or inconsistent");
-    oldestObservedAtMs = std::min(oldestObservedAtMs, account.observedAtMs);
+    if (includeAccount)
+        oldestObservedAtMs = std::min(oldestObservedAtMs, account.observedAtMs);
 
     PortfolioRiskSnapshotBuildResult result;
     result.ok = true;
-    result.reasonCode = "PORTFOLIO_RISK_SNAPSHOT_OK";
+    result.reasonCode = includeAccount ? "PORTFOLIO_RISK_SNAPSHOT_OK" :
+        "PORTFOLIO_RISK_EXPOSURE_OK";
     PreTradeRiskAuthoritativeSnapshot& snapshot = result.snapshot;
     snapshot.identity.subject = request.subject;
     snapshot.identity.present = true;
@@ -260,6 +263,8 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
     snapshot.exposure.pendingBuyNotional = pendingBuy;
     snapshot.exposure.pendingSellNotional = pendingSell;
 
+    if (!includeAccount) return result;
+
     snapshot.pnl.subject = request.subject;
     snapshot.pnl.present = true;
     snapshot.pnl.connectionEpoch = request.connectionEpoch;
@@ -274,4 +279,16 @@ PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
     snapshot.equity.peakEquity = account.peakEquity;
     snapshot.equity.currentEquity = account.currentEquity;
     return result;
+}
+
+} // namespace
+
+PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::Build(
+    const PortfolioRiskSnapshotBuildRequest& request) {
+    return BuildSnapshot(request, true);
+}
+
+PortfolioRiskSnapshotBuildResult PortfolioRiskSnapshotBuilder::BuildExposure(
+    const PortfolioRiskSnapshotBuildRequest& request) {
+    return BuildSnapshot(request, false);
 }

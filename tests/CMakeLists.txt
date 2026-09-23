@@ -191,8 +191,8 @@ target_link_libraries(hepta_pre_trade_risk_engine_tests PRIVATE hepta_risk_engin
 hepta_register_core_test(hepta_pre_trade_risk_engine_tests)
 
 add_executable(hepta_portfolio_risk_snapshot_builder_tests
-    portfolio_risk_snapshot_builder_tests.cpp
-    ../HeptaTrade/risk/portfolio_risk_snapshot_builder.cpp)
+    portfolio_risk_snapshot_builder_tests.cpp)
+target_link_libraries(hepta_portfolio_risk_snapshot_builder_tests PRIVATE hepta_risk_engine)
 hepta_register_core_test(hepta_portfolio_risk_snapshot_builder_tests)
 
 add_executable(hepta_venue_capability_tests

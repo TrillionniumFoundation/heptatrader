@@ -97,6 +97,7 @@ private:
     {
         long id = -1;
         std::string instrument;
+        InstrumentRef contract;
         OrderIntent request;
         bool activated = true;
         bool submitted = false;

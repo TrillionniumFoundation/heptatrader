@@ -282,6 +282,81 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                 acceptance.validate_generation_cost_evidence(
                     path, SHA, "c" * 64)
 
+    @staticmethod
+    def generation_curve(profile):
+        pairs = acceptance.generation_cost_pairs(profile)
+        points = []
+        for index, batch in enumerate(pairs):
+            admitted = 2 * sum(pairs[:index + 1])
+            points.append({"admitted_orders": admitted, "history_records": 4 * admitted,
+                "seal_ns": 1, "restart_recovery_ns": 1, "simulator_state_recovery_ns": 1,
+                "startup_ready_ns": 3, "execution_peak_rss_kib": 1,
+                "place_latency_total_samples": 2 * batch, "place_latency_total_max_ns": 1,
+                "place_latency_total_p99_upper_ns": 1, "journal_bytes_before_seal": 1,
+                "retained_disk_bytes": admitted + 10})
+        return {"schema": "heptatrader.installed-generation-cost-curve.v1",
+            "result": "PASS", "cost_profile": profile, "synthetic": True,
+            "installed_processes": True, "broker_io": False, "source_sha": SHA,
+            "artifact_sha256": "c" * 64, "points": points, "rebase_ns": 1,
+            "retained_disk_bytes_before_rebase": 100,
+            "retained_disk_bytes_after_rebase": 50, "post_rebase_recovery_ns": 1,
+            "post_rebase_simulator_state_recovery_ns": 1, "post_rebase_startup_ready_ns": 3,
+            "post_rebase_execution_peak_rss_kib": 1, "oldest_command_duplicate_no_resend": True,
+            "final_position": 0, "authorization_effect": "NONE", "elapsed_ns": 1,
+            "orderly_shutdown_verified": True, "configured_trade_calls_per_minute": 4 * max(pairs),
+            "processes": [{"name": name, "uid": uid, "pid": 100 + index,
+                           "executable_sha256": "d" * 64}
+                for index in range(5)
+                for name, uid in (("hepta-executiond", 61002), ("hepta-tool-gatewayd", 61001))]}
+
+    def test_generation_workload_is_explicit_and_bounded(self):
+        self.assertEqual(acceptance.generation_cost_pairs(), (4, 16, 64))
+        self.assertEqual(acceptance.generation_cost_pairs("extended"), (32, 128, 512))
+        for invalid in (None, True, [], "", "EXTENDED", "production"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                acceptance.generation_cost_pairs(invalid)
+
+    def test_generation_receipt_cannot_select_its_own_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.json"
+            core = self.generation_curve("core")
+            core.pop("cost_profile")  # Existing core v1 observations remain readable.
+            path.write_text(json.dumps(core))
+            acceptance.validate_generation_cost_evidence(path, SHA, "c" * 64)
+            with self.assertRaisesRegex(ValueError, "profile"):
+                acceptance.validate_generation_cost_evidence(
+                    path, SHA, "c" * 64, expected_profile="extended")
+            path.write_text(json.dumps(self.generation_curve("extended")))
+            acceptance.validate_generation_cost_evidence(
+                path, SHA, "c" * 64, expected_profile="extended")
+            with self.assertRaisesRegex(ValueError, "profile"):
+                acceptance.validate_generation_cost_evidence(path, SHA, "c" * 64)
+
+    def test_extended_generation_evidence_requires_actual_scope_and_shutdown(self):
+        mutations = [
+            lambda v: v.update(orderly_shutdown_verified=False),
+            lambda v: v.update(elapsed_ns=True),
+            lambda v: v.update(configured_trade_calls_per_minute=0),
+            lambda v: v.update(configured_trade_calls_per_minute=2048.0),
+            lambda v: v["processes"][2].update(pid=v["processes"][0]["pid"]),
+            lambda v: v["points"][2].update(admitted_orders=168),
+            lambda v: v["points"][2].update(place_latency_total_samples=1),
+            lambda v: v["processes"].pop(),
+            lambda v: v["processes"][0].update(uid=0),
+            lambda v: v["processes"][0].update(executable_sha256="e" * 64),
+            lambda v: v["processes"][0].update(pid=True),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.json"
+            for index, mutate in enumerate(mutations):
+                with self.subTest(mutation=index):
+                    value = self.generation_curve("extended")
+                    mutate(value)
+                    path.write_text(json.dumps(value))
+                    with self.assertRaises(ValueError):
+                        acceptance.validate_generation_cost_evidence(
+                            path, SHA, "c" * 64, expected_profile="extended")
+
     def test_untracked_checkout_content_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

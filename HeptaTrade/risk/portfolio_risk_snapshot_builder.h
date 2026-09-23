@@ -70,6 +70,11 @@ struct PortfolioRiskSnapshotBuildResult {
 
 class PortfolioRiskSnapshotBuilder {
 public:
+    // Exposure-only assembly never asserts account PnL/equity presence. The
+    // full Build contract below still requires independently complete account
+    // evidence; callers cannot turn absent account facts into observed zero.
+    static PortfolioRiskSnapshotBuildResult BuildExposure(
+        const PortfolioRiskSnapshotBuildRequest& request);
     static PortfolioRiskSnapshotBuildResult Build(
         const PortfolioRiskSnapshotBuildRequest& request);
 };

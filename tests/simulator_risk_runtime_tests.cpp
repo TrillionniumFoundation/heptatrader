@@ -10,6 +10,7 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <set>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -56,6 +57,7 @@ void TestDeterministicRiskReservationAndActivation()
     DeterministicExecutionVenue venue([&]() { return now; });
     venue.SetRiskConfig(Risk());
     venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+    venue.SetQuote("GBP.USD", 1.2500, 1.2502);
     const auto contract = Contract();
     const auto order = Order();
     assert(venue.PreviewRisk(contract, order).allow);
@@ -130,6 +132,7 @@ struct FlattenFixture
         risk.maxSnapshotAgeMs = monetary ? 1000 : 0;
         venue.SetRiskConfig(risk);
         venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+        venue.SetQuote("GBP.USD", 1.2500, 1.2502);
         std::string reason;
         assert(venue.RestoreRiskState({{"EUR.USD", position}}, 0, reason));
     }
@@ -338,6 +341,7 @@ void TestPreviewAndFinalAdmissionRejectSameRisk()
     DeterministicExecutionVenue venue([&]() { return now; });
     venue.SetRiskConfig(Risk());
     venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+    venue.SetQuote("GBP.USD", 1.2500, 1.2502);
     auto tooLarge = Order(101.0);
     const auto preview = venue.PreviewRisk(Contract(), tooLarge);
     assert(!preview.allow);
@@ -379,6 +383,70 @@ void TestPreviewAndFinalAdmissionRejectSameRisk()
     assert(!stale.allow && stale.reasonCode == "SIM_QUOTE_STALE");
     assert(!venue.PlaceOrder(Contract(), Order(), &id));
     assert(venue.LastRejectReason() == stale.reasonCode);
+}
+
+void TestCanonicalPortfolioExposureOwner()
+{
+    std::uint64_t now = 10000;
+    DeterministicExecutionVenue venue([&]() { return now; });
+    auto risk = Risk();
+    venue.SetRiskConfig(risk);
+    venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+    assert(venue.PreviewRisk(Contract(), Order(1)).reasonCode ==
+           "SIM_RISK_PORTFOLIO_QUOTE_UNAVAILABLE");
+    // An unrelated missing mark cannot disable the existing guarded exit.
+    std::string reason;
+    assert(venue.RestoreRiskState({{"EUR.USD", 10}}, 0, reason));
+    risk.flattenOnly = true;
+    venue.SetRiskConfig(risk);
+    auto exit = Order(10); exit.action = "SELL";
+    assert(venue.PreviewRisk(Contract(), exit).allow);
+    risk.flattenOnly = false;
+    venue.SetRiskConfig(risk);
+    venue.SetQuote("GBP.USD", 1.2500, 1.2502);
+    assert(venue.RestoreRiskState({{"EUR.USD", 10}, {"GBP.USD", 20}}, 0, reason));
+    auto sterling = Contract(); sterling.symbol = "GBP";
+    auto resting = Order(50); resting.orderType = "LMT"; resting.lmtPrice = 2.0;
+    long reserved = -1;
+    assert(venue.PlaceOrderCorrelated(sterling, resting, "portfolio-pending", &reserved, false));
+    const auto tooMuch = venue.PreviewRisk(Contract(), Order(20));
+    assert(!tooMuch.allow && tooMuch.reasonCode == "RISK_WORST_CASE_GROSS_LIMIT");
+    assert(venue.Position("EUR.USD") == 10 && venue.Position("GBP.USD") == 20);
+    assert(venue.ActiveOrderIds() == std::set<long>({reserved}));
+    // A fresh candidate quote must not refresh the other instrument's age.
+    now += 1001;
+    venue.SetQuote("EUR.USD", 1.1000, 1.1002);
+    assert(venue.PreviewRisk(Contract(), Order(1)).reasonCode ==
+           "PORTFOLIO_RISK_VALUATION_EVIDENCE_INVALID");
+    venue.SetQuote("GBP.USD", 1.2500, 1.2502);
+    risk.maxWorstCaseGrossNotional = 1000;
+    risk.maxDailyLoss = 10;
+    venue.SetRiskConfig(risk);
+    assert(venue.PreviewRisk(Contract(), Order(1)).reasonCode == "RISK_SNAPSHOT_PNL_REQUIRED");
+    risk.maxDailyLoss = 0; risk.maxDrawdown = 10;
+    venue.SetRiskConfig(risk);
+    assert(venue.PreviewRisk(Contract(), Order(1)).reasonCode == "RISK_SNAPSHOT_EQUITY_REQUIRED");
+
+    DeterministicExecutionVenue changedPolicy([&]() { return now; });
+    changedPolicy.SetQuote("EUR.USD", 1.1000, 1.1002);
+    changedPolicy.SetQuote("GBP.USD", 1.2500, 1.2502);
+    auto generic = Contract(); generic.secType = "FUT";
+    long genericId = -1;
+    assert(changedPolicy.PlaceOrderCorrelated(generic, Order(1), "generic-inert", &genericId, false));
+    changedPolicy.SetRiskConfig(Risk());
+    assert(changedPolicy.PreviewRisk(Contract(), Order(1)).reasonCode ==
+           "SIM_RISK_PENDING_CONTRACT_UNAVAILABLE");
+
+    DeterministicExecutionVenue restored([&]() { return now; });
+    restored.SetRiskConfig(Risk());
+    restored.SetQuote("EUR.USD", 1.1000, 1.1002);
+    restored.SetQuote("GBP.USD", 1.2500, 1.2502);
+    assert(restored.RestoreRiskState({{"JPY.USD", 1}}, 0, reason));
+    assert(restored.PreviewRisk(Contract(), Order(1)).reasonCode ==
+           "SIM_RISK_POSITION_UNIVERSE_MISMATCH");
+    assert(restored.RestoreRiskState({{"GBP.USD", std::numeric_limits<double>::max()}}, 0, reason));
+    assert(restored.PreviewRisk(Contract(), Order(1)).reasonCode ==
+           "PORTFOLIO_RISK_NOTIONAL_OVERFLOW");
 }
 
 int Listener(const std::string& path)
@@ -448,6 +516,7 @@ void TestExactQuoteExpiryWithoutSchedulerAssumptions()
     risk.maxSnapshotAgeMs = 100;
     venue.SetRiskConfig(risk);
     venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    venue.SetQuoteObserved("GBP.USD", 1.2500, 1.2502, now, now + 100);
     const auto contract = Contract();
     const auto order = Order();
     assert(venue.PreviewRisk(contract, order).allow);
@@ -467,11 +536,13 @@ void TestExactQuoteExpiryWithoutSchedulerAssumptions()
     // A past preview cannot authorize a later send. No clock manipulation
     // reaches the production daemon or configuration.
     venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    venue.SetQuoteObserved("GBP.USD", 1.2500, 1.2502, now, now + 100);
     assert(venue.PreviewRisk(contract, order).allow);
     now += 101;
     assert(!venue.PlaceOrder(contract, order, &rejectedId));
     assert(rejectedId == -1 && venue.ActiveOrderIds().empty());
     venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    venue.SetQuoteObserved("GBP.USD", 1.2500, 1.2502, now, now + 100);
     long id = -1;
     assert(venue.PlaceOrder(contract, order, &id));
     now += 101;
@@ -479,6 +550,7 @@ void TestExactQuoteExpiryWithoutSchedulerAssumptions()
     assert(venue.Position("EUR.USD") == 0.0);
     assert(venue.ExecutionOrderIds().empty());
     venue.SetQuoteObserved("EUR.USD", 1.1000, 1.1002, now, now + 100);
+    venue.SetQuoteObserved("GBP.USD", 1.2500, 1.2502, now, now + 100);
     venue.Process();
     assert(venue.Position("EUR.USD") == 100.0);
     assert(venue.ExecutionOrderIds() == std::set<long>({id}));
@@ -655,6 +727,7 @@ void TestProductionRuntimePumpsAndJournalsEvents()
 
 int main()
 {
+    TestCanonicalPortfolioExposureOwner();
     TestDeterministicRiskReservationAndActivation();
     TestFlattenCapacityReservations();
     TestFlattenCancellationAndStrictRemainder();
