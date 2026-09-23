@@ -23,10 +23,16 @@ void TestArchiveReplayAppendAndLogicalBudgets()
         REQUIRE(h.gzipStorage && h.capacityKnown);
         REQUIRE(h.currentBytes == original.size() && h.storageBytes == packed.size());
         REQUIRE(j.Append(MakeCriticalEvent("compressed-append")));
+        auto first = MakeCriticalEvent("compressed-pair-intent");
+        auto second = MakeCriticalEvent("compressed-pair-attempt");
+        second.eventType = "place_send_attempt";
+        REQUIRE(j.AppendDurablePair(first, second) == OmsJournal::DurablePairResult::Committed);
+        REQUIRE(j.GetHealthSnapshot().durableSyncWrites == 2);
+        REQUIRE(j.GetHealthSnapshot().criticalSyncWrites == 3);
     }
     {
         OmsJournal j; REQUIRE(j.Init(path));
-        REQUIRE(j.Replay({}) == 13);
+        REQUIRE(j.Replay({}) == 15);
         const auto h = j.GetHealthSnapshot();
         REQUIRE(h.currentBytes > original.size() && h.storageBytes < h.currentBytes);
     }

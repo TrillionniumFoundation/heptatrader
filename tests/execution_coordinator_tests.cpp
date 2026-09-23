@@ -15,6 +15,30 @@
 #include <thread>
 #include <unistd.h>
 
+#include <atomic>
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/syscall.h>
+
+// One exact-inode sync failure in this test executable only. No production
+// fault injection or alternate journal provider is introduced.
+namespace CoordinatorSyncFault {
+std::atomic<bool> armed{false};
+dev_t device = 0;
+ino_t inode = 0;
+}
+extern "C" int fdatasync(int fd) {
+    if (CoordinatorSyncFault::armed.load()) {
+        struct stat value;
+        if (::fstat(fd, &value) == 0 && value.st_dev == CoordinatorSyncFault::device &&
+            value.st_ino == CoordinatorSyncFault::inode && CoordinatorSyncFault::armed.exchange(false)) {
+            errno = EIO;
+            return -1;
+        }
+    }
+    return ::syscall(SYS_fdatasync, fd);
+}
+
 namespace {
 
 std::string TempJournalPath()
@@ -106,6 +130,9 @@ void TestJournalBeforeSendAndDuplicate()
     callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string& ) -> VenuePlaceResult {
         long venueOrderId = -1;
         ++placeCalls;
+        // Two ordered pre-send records need one completed durability barrier,
+        // not two independent device waits. Neither may be missing at dispatch.
+        assert(journal.GetHealthSnapshot().durableSyncWrites == 1);
         int intents = 0;
         int attempts = 0;
         journal.Replay([&](const OmsJournalEvent& event) {
@@ -163,6 +190,47 @@ void TestJournalBeforeSendAndDuplicate()
     assert(recovered.orders.at(42).placeSent);
 
     std::remove(path.c_str());
+}
+
+void TestPresendSyncFailureNeverSendsOrResetsIdentity()
+{
+    const std::string path = TempJournalPath();
+    const auto command = MakePlace("presend-sync-failure");
+    int sends = 0;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string&) {
+        ++sends; return VenuePlaceResult::Submitted(42);
+    });
+    {
+        OmsJournal journal; assert(journal.Init(path));
+        struct stat identity; assert(::stat(path.c_str(), &identity) == 0);
+        CoordinatorSyncFault::device = identity.st_dev;
+        CoordinatorSyncFault::inode = identity.st_ino;
+        ExecutionCoordinator coordinator(journal, callbacks);
+        CoordinatorSyncFault::armed.store(true);
+        const auto result = coordinator.PlaceOrder(command);
+        CoordinatorSyncFault::armed.store(false);
+        assert(result.status == ExecutionCommandStatus::Rejected);
+        assert(result.reasonCode == "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED");
+        assert(sends == 0);
+        assert(journal.GetHealthSnapshot().writePoisoned);
+        assert(journal.GetHealthSnapshot().durableSyncWrites == 0);
+        assert(coordinator.PlaceOrder(command).status == ExecutionCommandStatus::Duplicate);
+        assert(sends == 0);
+    }
+    {
+        OmsJournal journal; assert(journal.Init(path));
+        ExecutionCoordinator recovered(journal, callbacks); std::string reason;
+        assert(!recovered.RecoverFromJournal(reason));
+        assert(reason == "RECOVERY_RECONCILE_REQUIRED");
+        ExecutionCommandResult status;
+        assert(recovered.GetCommandStatus(command.context.agentId, command.context.sessionId,
+                                           command.context.toolCallId, status));
+        assert(status.status == ExecutionCommandStatus::Uncertain);
+        assert(recovered.PlaceOrder(command).status == ExecutionCommandStatus::Uncertain);
+        assert(sends == 0);
+    }
+    assert(::unlink(path.c_str()) == 0);
 }
 
 void AppendUncertainIntent(OmsJournal& journal, const std::string& callId,
@@ -1892,11 +1960,19 @@ void TestTwoPhaseActivationDurabilityAndRecovery()
             ++activations;
             assert(id == 1701 && projected);
             int receipts = 0;
+            std::vector<std::string> preActivationEvents;
             assert(journal.Replay([&](const OmsJournalEvent& event) {
+                preActivationEvents.push_back(event.eventType);
                 if (event.eventType == "place_sent" && event.orderId == id) ++receipts;
-            }) >= 0);
+            }) == 3);
             assert(receipts == 1);
-            assert(journal.GetHealthSnapshot().durableSyncWrites >= 3);
+            assert(preActivationEvents == std::vector<std::string>(
+                {"order_intent", "place_send_attempt", "place_sent"}));
+            // The pair has one barrier; the reservation receipt has its own
+            // later barrier. Activation must not cross either boundary early.
+            const auto durable = journal.GetHealthSnapshot();
+            assert(durable.criticalSyncWrites == 3);
+            assert(durable.durableSyncWrites == 2);
             // The durable prefix is exactly what a process crash before or
             // during activation leaves behind. It must never replay accepted.
             ExecutionCoordinator interrupted(journal, callbacks);
@@ -2466,6 +2542,7 @@ int main(int argc, char** argv)
     TestSessionFenceTracksFlattenDispatchOutsideCoordinatorLock();
     TestCompactTerminalUniverseExceedsLegacyEnumerationLimit();
     TestJournalBeforeSendAndDuplicate();
+    TestPresendSyncFailureNeverSendsOrResetsIdentity();
     TestTwoPhaseActivationDurabilityAndRecovery();
     TestJournalFailurePreventsBrokerSend();
     TestVenueCorrelationBindsCommandIdentity();

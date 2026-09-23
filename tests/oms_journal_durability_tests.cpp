@@ -12,6 +12,68 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// Syscall faults are confined to this test executable and one exact inode.
+// Production has no fault switch, replacement path or alternate sync provider.
+#include <atomic>
+#include <cerrno>
+#include <limits>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+
+namespace JournalFault {
+enum Mode { None, SecondWriteFailure, SyncFailure, ReplaceDuringSync,
+            CrashAfterFirstWrite, CrashBeforeSync, TornSecondWrite };
+std::atomic<int> mode{None};
+std::atomic<unsigned> writes{0};
+dev_t device = 0;
+ino_t inode = 0;
+std::string path, moved;
+bool Matches(int fd) {
+    struct stat value;
+    return ::fstat(fd, &value) == 0 && value.st_dev == device && value.st_ino == inode;
+}
+void Arm(const std::string& name, Mode selected) {
+    struct stat value;
+    if (::lstat(name.c_str(), &value) != 0) std::abort();
+    path = name; moved = name + ".moved"; device = value.st_dev; inode = value.st_ino;
+    writes.store(0); mode.store(selected);
+}
+}
+extern "C" ssize_t write(int fd, const void* buffer, size_t size) {
+    const int mode = JournalFault::mode.load();
+    if (mode != JournalFault::None && JournalFault::Matches(fd)) {
+        const unsigned ordinal = ++JournalFault::writes;
+        if (mode == JournalFault::SecondWriteFailure && ordinal == 2) {
+            errno = ENOSPC; return -1;
+        }
+        if (mode == JournalFault::TornSecondWrite && ordinal >= 2) {
+            if (ordinal == 2) return ::syscall(SYS_write, fd, buffer, std::min(size, size_t(7)));
+            errno = EIO; return -1;
+        }
+        const ssize_t result = ::syscall(SYS_write, fd, buffer, size);
+        if (mode == JournalFault::CrashAfterFirstWrite && result > 0) ::_exit(91);
+        return result;
+    }
+    return ::syscall(SYS_write, fd, buffer, size);
+}
+extern "C" int fdatasync(int fd) {
+    const int mode = JournalFault::mode.load();
+    if (mode != JournalFault::None && JournalFault::Matches(fd)) {
+        if (mode == JournalFault::CrashBeforeSync) ::_exit(92);
+        if (mode == JournalFault::SyncFailure) { errno = EIO; return -1; }
+        if (mode == JournalFault::ReplaceDuringSync) {
+            JournalFault::mode.store(JournalFault::None);
+            const int synced = ::syscall(SYS_fdatasync, fd);
+            if (synced != 0 || ::rename(JournalFault::path.c_str(), JournalFault::moved.c_str()) != 0)
+                return -1;
+            const int decoy = ::open(JournalFault::path.c_str(), O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, 0600);
+            if (decoy < 0) return -1;
+            return ::close(decoy);
+        }
+    }
+    return ::syscall(SYS_fdatasync, fd);
+}
+
 namespace
 {
 void Require(bool condition, const char* expression, int line)
@@ -60,6 +122,120 @@ OmsJournalEvent MakeCriticalEvent(const std::string& id)
     event.account = "DU123456";
     event.executionDomain = "PAPER";
     return event;
+}
+
+void TestPairValidationAndSingleBarrier()
+{
+    for (int async = 0; async < 2; ++async) {
+        const std::string directory = MakeTempDirectory(), path = directory + "/journal";
+        ::setenv("HEPTA_OMS_ASYNC_FLUSH", async ? "1" : "0", 1);
+        ::setenv("HEPTA_OMS_SYNC_CRITICAL", "0", 1);
+        {
+            OmsJournal journal; REQUIRE(journal.Init(path));
+            OmsJournalEvent first = MakeCriticalEvent("intent"), second = MakeCriticalEvent("attempt");
+            second.eventType = "place_send_attempt";
+            OmsJournalEvent invalid = second;
+            invalid.qty = std::numeric_limits<double>::quiet_NaN();
+            REQUIRE(journal.AppendDurablePair(first, invalid) == OmsJournal::DurablePairResult::SecondFailed);
+            REQUIRE(IsEmptyFile(path));
+            invalid = second; invalid.eventType = "not_a_critical_event";
+            REQUIRE(journal.AppendDurablePair(first, invalid) == OmsJournal::DurablePairResult::SecondFailed);
+            REQUIRE(IsEmptyFile(path));
+            REQUIRE(!journal.GetHealthSnapshot().writePoisoned);
+            REQUIRE(journal.AppendDurablePair(first, second) == OmsJournal::DurablePairResult::Committed);
+            const auto health = journal.GetHealthSnapshot();
+            REQUIRE(health.durableSyncWrites == 1);
+            REQUIRE(health.criticalSyncWrites == 2);
+            REQUIRE(health.criticalAsyncWrites == 0);
+            REQUIRE(health.currentRecords == 2);
+            std::vector<std::string> events;
+            REQUIRE(journal.Replay([&](const OmsJournalEvent& event) { events.push_back(event.eventType); }) == 2);
+            REQUIRE(events == std::vector<std::string>({"order_intent", "place_send_attempt"}));
+        }
+        REQUIRE(::unlink(path.c_str()) == 0); REQUIRE(::rmdir(directory.c_str()) == 0);
+    }
+    ::setenv("HEPTA_OMS_ASYNC_FLUSH", "0", 1); ::setenv("HEPTA_OMS_SYNC_CRITICAL", "1", 1);
+}
+
+void TestPairWriteAndSyncFailuresRemainUncommitted()
+{
+    for (auto mode : {JournalFault::SecondWriteFailure, JournalFault::TornSecondWrite, JournalFault::SyncFailure}) {
+        const std::string directory = MakeTempDirectory(), path = directory + "/journal";
+        {
+            OmsJournal journal; REQUIRE(journal.Init(path));
+            auto first = MakeCriticalEvent("intent"), second = MakeCriticalEvent("attempt");
+            second.eventType = "place_send_attempt";
+            JournalFault::Arm(path, mode);
+            const auto result = journal.AppendDurablePair(first, second);
+            JournalFault::mode.store(JournalFault::None);
+            REQUIRE(result == OmsJournal::DurablePairResult::SecondFailed);
+            REQUIRE(journal.GetHealthSnapshot().writePoisoned);
+            REQUIRE(journal.GetHealthSnapshot().durableSyncWrites == 0);
+            REQUIRE(!journal.Append(MakeCriticalEvent("must-not-follow-failure")));
+        }
+        {
+            OmsJournal recovered;
+            if (mode == JournalFault::TornSecondWrite) {
+                REQUIRE(!recovered.Init(path)); // A torn suffix is not an empty journal.
+            } else {
+                REQUIRE(recovered.Init(path));
+                int events = 0;
+                const int count = recovered.Replay([&](const OmsJournalEvent&) { ++events; });
+                REQUIRE(count == (mode == JournalFault::SyncFailure ? 2 : 1));
+                REQUIRE(events == count); // Preserve the whole readable prefix, never erase it.
+            }
+        }
+        REQUIRE(::unlink(path.c_str()) == 0); REQUIRE(::rmdir(directory.c_str()) == 0);
+    }
+}
+
+void TestSyncPathReplacementCannotBeAcknowledged()
+{
+    for (bool pair : {false, true}) {
+        const std::string directory = MakeTempDirectory(), path = directory + "/journal";
+        {
+            OmsJournal journal; REQUIRE(journal.Init(path));
+            auto first = MakeCriticalEvent("intent"), second = MakeCriticalEvent("attempt");
+            second.eventType = "place_send_attempt";
+            JournalFault::Arm(path, JournalFault::ReplaceDuringSync);
+            if (pair) REQUIRE(journal.AppendDurablePair(first, second) == OmsJournal::DurablePairResult::SecondFailed);
+            else REQUIRE(!journal.Append(first));
+            JournalFault::mode.store(JournalFault::None);
+            REQUIRE(journal.GetHealthSnapshot().writePoisoned);
+            REQUIRE(journal.GetHealthSnapshot().durableSyncWrites == 0);
+            REQUIRE(IsEmptyFile(path));
+        }
+        REQUIRE(::unlink(path.c_str()) == 0); REQUIRE(::unlink((path + ".moved").c_str()) == 0);
+        REQUIRE(::rmdir(directory.c_str()) == 0);
+    }
+}
+
+void TestPairCrashCutsKeepOriginalRecords()
+{
+    for (auto mode : {JournalFault::CrashAfterFirstWrite, JournalFault::CrashBeforeSync}) {
+        const std::string directory = MakeTempDirectory(), path = directory + "/journal";
+        const pid_t child = ::fork(); REQUIRE(child >= 0);
+        if (child == 0) {
+            OmsJournal journal; if (!journal.Init(path)) ::_exit(90);
+            auto first = MakeCriticalEvent("intent"), second = MakeCriticalEvent("attempt");
+            second.eventType = "place_send_attempt";
+            JournalFault::Arm(path, mode);
+            journal.AppendDurablePair(first, second);
+            ::_exit(99); // No successful acknowledgement is reachable at either cut.
+        }
+        int status = 0; REQUIRE(::waitpid(child, &status, 0) == child);
+        REQUIRE(WIFEXITED(status));
+        REQUIRE(WEXITSTATUS(status) == (mode == JournalFault::CrashAfterFirstWrite ? 91 : 92));
+        {
+            OmsJournal recovered; REQUIRE(recovered.Init(path));
+            std::vector<std::string> events;
+            const int count = recovered.Replay([&](const OmsJournalEvent& event) { events.push_back(event.eventType); });
+            REQUIRE(count == (mode == JournalFault::CrashAfterFirstWrite ? 1 : 2));
+            REQUIRE(events.front() == "order_intent");
+            if (count == 2) REQUIRE(events.back() == "place_send_attempt");
+        }
+        REQUIRE(::unlink(path.c_str()) == 0); REQUIRE(::rmdir(directory.c_str()) == 0);
+    }
 }
 
 void TestPathReplacementPoisonsBeforeWriting()
@@ -460,6 +636,10 @@ int main()
     TestOversizedAndTornRecordsDoNotApplyValidPrefix();
     TestAppendRejectsOversizedRecordWithoutIdentityLoss();
     TestCountBudgetBoundsManySmallEventsAndDoesNotBlockExitAppend();
+    TestPairValidationAndSingleBarrier();
+    TestPairWriteAndSyncFailuresRemainUncommitted();
+    TestSyncPathReplacementCannotBeAcknowledged();
+    TestPairCrashCutsKeepOriginalRecords();
     TestPathReplacementPoisonsBeforeWriting();
     TestMissingPathPoisonsBeforeWriting();
     TestSymlinkReplacementPoisonsBeforeWriting();

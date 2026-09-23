@@ -47,9 +47,17 @@ both Execution daemons' existing five-second `heptatrader.oms-capacity.v1` strea
 
 | JSON object | Measured boundary | Included | Excluded |
 |---|---|---|---|
-| `append_latency` | Append entry to exit | journal lock wait, validation, serialization, enqueue/synchronous write, failed attempts | later async-worker completion and Broker I/O |
+| `append_latency` | Append or durable-pair entry to exit | journal lock wait, validation, serialization, enqueue/synchronous write, failed attempts | later async-worker completion and Broker I/O |
 | `data_sync_latency` | each journal-file `fdatasync` call | creation, critical-write, replay, close and EINTR retries, including failures | directory `fsync`, Broker acknowledgement and unattempted calls |
 | `replay_validation_latency` | Replay entry through full snapshot validation | lock wait, draining queued writes, sync, bounded parsing and identity validation | recovery callbacks, application projection/reconciliation and complete service readiness |
+
+An `AppendDurablePair` contributes one append-call sample, two logical
+`critical_sync_writes` and one successful `durable_sync_writes` barrier. Its two
+ordered records remain separate in replay/capacity counts. `data_sync_latency`
+continues to count actual sync attempts, including failures; it is not a count
+of logical records. Do not compare append-call rates across this change as
+though they were order or event rates. A rejected/poisoned pair cannot be treated
+as committed merely because a write or timing counter increased.
 
 Every object contains `samples`, `total_ns`, `max_ns`, `last_ns`, `saturated`,
 and fixed noncumulative histogram buckets. Durations use `steady_clock` and

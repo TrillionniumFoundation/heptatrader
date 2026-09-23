@@ -206,25 +206,15 @@ ExecutionCoordinator::DispatchPlaceOrderLocked(
     ExecutionOperationTiming& timing)
 {
     const AgentExecutionContext& context = command.context;
-    // This marker is immediately before venue IO and restores the rolling
-    // send-attempt budget even after a crash between send and receipt.
-    const OmsJournalEvent sendAttempt = BuildEvent(
-        context, "place_send_attempt", -1, dispatch.instrument,
-        command.order.action, command.order.totalQuantity,
-        dispatch.eventPrice, "attempt_recorded", "", "",
-        dispatch.requestHash, dispatch.venueCorrelationId);
-    if (!AppendOrBlockLocked(
-            sendAttempt, "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED"))
-        return RejectLocked(
-            context, "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED",
-            "broker send was not attempted", -1, dispatch.requestHash);
+    // Intent and send marker share one completed durability barrier before
+    // this function. Final risk revalidation still occurs after that sync.
     if (m_placeSendAttemptKeys.insert(dispatch.requestKey).second)
     {
         PlaceSendAttempt attempt;
         attempt.requestKey = dispatch.requestKey;
         attempt.account = context.account;
         attempt.executionDomain = context.executionDomain;
-        attempt.tsMs = sendAttempt.tsMs;
+        attempt.tsMs = dispatch.sendAttemptTsMs;
         m_placeSendAttempts.push_back(attempt);
     }
     ExecutionCommandResult preVenueRejection;

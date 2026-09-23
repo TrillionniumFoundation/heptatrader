@@ -102,6 +102,13 @@ public:
 
     bool Init(const std::string& path);
     bool Append(const OmsJournalEvent& evt);
+    // Two ordered critical records with no intervening external effect share
+    // one durability barrier. This is not an atomic two-record disk format:
+    // a failed/crashed call may leave a prefix, which ordinary replay retains.
+    // Success means both records were synced and their path stayed pinned.
+    enum class DurablePairResult { Committed, FirstFailed, SecondFailed };
+    DurablePairResult AppendDurablePair(const OmsJournalEvent& first,
+                                        const OmsJournalEvent& second);
     int Replay(const std::function<void(const OmsJournalEvent&)>& onEvent) const;
     std::string GetPath() const;
     OmsJournalHealthSnapshot GetHealthSnapshot() const;
@@ -123,6 +130,8 @@ public:
 
 private:
     static bool IsCriticalEventType(const std::string& eventType);
+    bool EncodeValidatedEventLocked(const OmsJournalEvent& event,
+                                    std::string& line) const;
     bool FlushBufferedLocked();
     bool QueueLineLocked(std::string line, bool asynchronous);
     bool FlushQueuedNoLock();

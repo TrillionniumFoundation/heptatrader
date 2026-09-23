@@ -47,6 +47,13 @@ Protocol fields and reason codes are versioned. Unknown fields, unsupported vers
 
 ## Persistence and recovery
 
+Placement persists the unchanged `order_intent` and `place_send_attempt` as an
+ordered pair with one completed file-data sync before final risk/venue dispatch.
+Neither a client response nor a Broker call occurs between those records. Failure
+keeps the writer fenced; a surviving prefix replays conservatively without resend.
+Reservation/activation, outcomes, cancel and flatten retain their separate durable
+boundaries. See the [journal contract](oms-journal.md#durability-contract).
+
 The OMS journal is the durable mutation ledger. Startup recovers it before accepting mutations. Without a generation store, the legacy path validates and replays the complete pinned journal before its first recovery callback. With a selected generation store, startup validates the selected generation, lineage, cumulative command/send indexes and active-tail sentinel, replays only the bounded hot set plus active tail, and services older command identities from the pinned disk index on demand. Both paths preserve exact command identity, unresolved sends, owner fences and terminal evidence; corruption or pointer/index drift fails closed rather than falling back to an older generation or treating history as empty.
 
 The coordinator no longer copies a complete replay into a second full-history vector. Generation-backed recovery also avoids repopulating every historical command into the coordinator: historical command lookup uses the cumulative full-key disk index and a bounded cache, while current/unresolved state remains hot. Allocation or projection exceptions clear partial projections and fence mutations; valid uncertain commands remain available for authoritative reconciliation. See [recovery memory and exception semantics](../technical/coordinator-recovery-memory.md) and [OMS recovery capacity](../technical/oms-recovery-capacity.md).
