@@ -184,6 +184,34 @@ class BuildOwnershipTests(unittest.TestCase):
             with self.assertRaisesRegex(ownership.OwnershipError, "duplicate JSON key"):
                 ownership.load_json(path)
 
+    def test_core_only_generation_needs_no_sdk_and_preserves_ib_snapshot(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, inventory = self.fixture(temporary)
+            path = root / "docs/build-targets.json"
+            # A stale unselected profile is not recertified or used to block core.
+            inventory["profiles"]["ib"]["targets"][0]["declared_in"] = "retired/CMakeLists.txt"
+            old_ib = copy.deepcopy(inventory["profiles"]["ib"])
+            path.write_text(json.dumps(inventory))
+            ownership.generate(root, path, {"core"})
+            generated = ownership.load_json(path)
+            self.assertEqual(generated["profiles"]["ib"], old_ib)
+            ownership.verify(root, generated, "core")
+            with self.assertRaises(ownership.OwnershipError):
+                ownership.validate_inventory(root, generated, {"ib"})
+
+    def test_new_core_inventory_and_failed_all_generation_are_atomic(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root, _ = self.fixture(temporary)
+            path = root / "docs/new-inventory.json"
+            self.assertEqual(ownership.main(["--root", str(root), "--inventory", str(path),
+                                            "--generate", "--profile", "core"]), 0)
+            self.assertEqual(set(ownership.load_json(path)["profiles"]), {"core"})
+            previous = path.read_bytes()
+            self.assertEqual(ownership.main(["--root", str(root), "--inventory", str(path),
+                                            "--generate", "--profile", "all"]), 1)
+            self.assertEqual(path.read_bytes(), previous)
+            self.assertFalse(list(path.parent.glob("*.tmp")))
+
 
 if __name__ == "__main__":
     unittest.main()

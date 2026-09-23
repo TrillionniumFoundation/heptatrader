@@ -160,6 +160,7 @@ set(HEPTA_TYPED_TOOL_PROTOCOL_SOURCES
 
 set(HEPTA_SESSION_SUPERVISOR_CORE_SOURCES
     tool_host/session_supervisor_lease_store.cpp
+    tool_host/session_supervisor_lease_codec.cpp
     tool_host/session_supervisor_protocol.cpp)
 
 add_library(hepta_execution_contract STATIC
@@ -187,6 +188,7 @@ add_library(hepta_execution_server STATIC
     execution/execution_decision_lease_authority.cpp
     execution/execution_event_feed_server.cpp
     execution/unix_execution_service.cpp
+    execution/unix_execution_service_scheduler.cpp
     execution/unix_execution_service_flatten.cpp
     execution/unix_execution_service_flatten_permit.cpp)
 target_include_directories(hepta_execution_server
@@ -201,15 +203,20 @@ target_include_directories(hepta_agent_execution_support
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_agent_execution_support PUBLIC Threads::Threads)
 
+# One production object per profile; tests link the same journal implementation.
+add_library(hepta_oms_journal STATIC oms_journal.cpp)
+target_include_directories(hepta_oms_journal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_oms_journal PUBLIC Threads::Threads ZLIB::ZLIB)
+
 add_library(hepta_execution_core STATIC
     ${HEPTA_EXECUTION_COORDINATOR_SOURCES}
     execution/paper_terminal_mutation_manifest.cpp
     execution/execution_place_order_dispatch.cpp
     execution/execution_authoritative_flatten.cpp
-    execution/execution_authoritative_flatten_dispatch.cpp
-    oms_journal.cpp)
+    execution/execution_authoritative_flatten_dispatch.cpp)
 target_include_directories(hepta_execution_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_execution_core PUBLIC
+    hepta_oms_journal
     hepta_execution_server
     hepta_execution_client
     hepta_agent_execution_support
@@ -259,6 +266,8 @@ add_library(hepta_agent_os_core STATIC
     tool_host/trading_tool_session_control_plane.cpp
     tool_host/trading_tool_watch_transaction.cpp
     tool_host/unix_session_supervisor_server.cpp
+    tool_host/session_supervisor_support.cpp
+    tool_host/session_supervisor_terminal.cpp
     tool_host/unix_tool_server.cpp)
 target_include_directories(hepta_agent_os_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -381,9 +390,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         VERBATIM)
 endif()
 
-add_library(hepta_simulator_runtime STATIC
-    simulator/deterministic_execution_venue.cpp
-    risk/pre_trade_risk_engine.cpp)
+add_library(hepta_risk_engine STATIC risk/pre_trade_risk_engine.cpp)
+target_include_directories(hepta_risk_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_library(hepta_ib_paper_policy STATIC
+    execution/ib_paper_execution_profile.cpp
+    execution/ib_paper_kill_switch.cpp
+    execution/ib_paper_authoritative_flatten.cpp
+    execution/ib_paper_execution_flatten_guard.cpp
+    execution/ib_paper_flatten_plan_binding.cpp)
+target_include_directories(hepta_ib_paper_policy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_ib_paper_policy PUBLIC hepta_execution_core OpenSSL::Crypto)
+
+add_library(hepta_simulator_runtime STATIC simulator/deterministic_execution_venue.cpp)
+target_link_libraries(hepta_simulator_runtime PUBLIC hepta_risk_engine)
 target_include_directories(hepta_simulator_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(hepta_execution_service_runtime STATIC
@@ -417,23 +437,17 @@ add_executable(hepta_ib_executiond
     execution/ib_paper_execution_runtime_terminal.cpp
     execution/ib_paper_execution_runtime_flatten.cpp
     execution/ib_paper_execution_hook_authority.cpp
-    execution/ib_paper_kill_switch.cpp
-    execution/ib_paper_execution_profile.cpp
-    execution/ib_paper_authoritative_flatten.cpp
-    execution/ib_paper_execution_flatten_guard.cpp
-    execution/ib_paper_flatten_plan_binding.cpp
     adapter_ib/ib_api_wrapper.cpp
     ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
     adapter_ib/ib_order_lifecycle.cpp
     adapter_ib/ib_venue_correlation.cpp
-    risk/pre_trade_risk_engine.cpp
     state/authoritative_trading_snapshot_store.cpp
     state/ib_authoritative_quote_subscription_set.cpp
     state/ib_contract_identity.cpp)
 target_include_directories(hepta_ib_executiond PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
-target_link_libraries(hepta_ib_executiond PRIVATE hepta_execution_core)
+target_link_libraries(hepta_ib_executiond PRIVATE hepta_execution_core hepta_ib_paper_policy hepta_risk_engine)
 if(HEPTA_ENABLE_IBAPI)
     # Only broker-owning targets select the native SDK implementation. Agent
     # contracts, clients, Gateway and simulator never inherit this definition.

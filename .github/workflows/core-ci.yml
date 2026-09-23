@@ -3,6 +3,11 @@ name: Core Runtime CI
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**/*.md'
+      - 'doc/**'
+      - 'pic/**'
   push:
     branches: [main]
   merge_group:
@@ -45,6 +50,28 @@ jobs:
           HEPTA_JOBS: "2"
         run: ./scripts/dev_core.sh
 
+      - name: Stage the native client SDK from the already-tested canonical build
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          test -z "$(git status --porcelain --untracked-files=normal)"
+          printf '%s\n' "$EXPECTED_SHA" > build/core/SOURCE_COMMIT
+          python3 tests/research/native_latency_report.py --self-test
+          python3 tests/research/native_latency_report.py \
+            --log build/core/Testing/Temporary/LastTest.log \
+            --junit build/core/core-results.xml --build-dir build/core \
+            --source-sha "$EXPECTED_SHA" --output build/core/native-latency.json
+          cmake --install build/core --prefix "$PWD/build/client-sdk-stage" --component StrategyClientSDK
+          grep -Fx "source_sha=$EXPECTED_SHA" build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
+          grep -Fx 'source_tree_state=clean' build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
+          mkdir -p build/client-sdk-artifacts
+          archive="hepta-strategy-client-sdk-linux-x86_64-$EXPECTED_SHA.tar.gz"
+          tar -czf "build/client-sdk-artifacts/$archive" -C build/client-sdk-stage .
+          (cd build/client-sdk-artifacts && sha256sum "$archive" > "$archive.sha256")
+          cp build/core/SOURCE_COMMIT build/core/native-latency.json build/core/core-results.xml build/client-sdk-artifacts/
+
       - name: Accept the exact core artifact through installed processes and systemd
         id: accept-core-artifact
         env:
@@ -81,6 +108,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+
+      - name: Publish the exact-source native client SDK and test evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: strategy-client-sdk-linux-x86_64-${{ github.event.pull_request.head.sha || github.sha }}
+          path: build/client-sdk-artifacts/
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Reassert clean exact source
         if: always()

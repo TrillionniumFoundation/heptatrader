@@ -448,12 +448,6 @@ def write_module_metadata(root: Path) -> None:
 def validate(root: Path | str = ROOT) -> list[str]:
     root = Path(root).resolve()
     errors: list[str] = []
-    readme = root / "README.md"
-    if readme.exists() or readme.is_symlink():
-        errors.append(
-            "README.md: repository homepage entry point must remain absent; "
-            "use docs/index.md"
-        )
     for workflow in REQUIRED_WORKFLOWS:
         _existing_path(root, workflow.as_posix(), workflow.as_posix(), errors)
     modules = _validate_catalog(root, errors)

@@ -28,3 +28,9 @@ claim they have occurred. Ordinary CI never receives Broker credentials. Optiona
 IB PAPER activation still requires exact immutable-artifact qualification and
 actual host/account evidence. Later main movement cannot mutate an already bound
 candidate. PAPER and LIVE remain unauthorized by source checks.
+
+Pure prose/image PRs run source validation without a native rebuild; the exact
+main commit still runs full core/release and independent sanitizer acceptance.
+SDK publication consumes the already-tested canonical build, while standalone
+platform SDK jobs remain independent. Five-run recovery stress stays on main
+and merge candidates rather than every PR iteration.

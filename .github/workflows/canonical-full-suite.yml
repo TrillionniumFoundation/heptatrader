@@ -3,6 +3,11 @@ name: Canonical Full Suite
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**/*.md'
+      - 'doc/**'
+      - 'pic/**'
   push:
     branches: [main]
   merge_group:
@@ -86,6 +91,7 @@ jobs:
             --output-junit "$PWD/$BUILD_DIR/core-results.xml" \
             --output-log "$PWD/$BUILD_DIR/core-ctest.log"
       - name: Repeat real research Execution crash and recovery acceptance
+        if: github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \

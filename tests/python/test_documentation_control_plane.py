@@ -30,6 +30,8 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             path = root / workflow
             path.write_text("name: fixture\n", encoding="utf-8")
         (root / "docs/index.md").write_text("# Index\n", encoding="utf-8")
+        (root / "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md").write_text(
+            "# Historical entry\nSee [index](index.md).\n", encoding="utf-8")
         (root / "docs/DOCUMENTATION-POLICY.md").write_text("# Policy\n", encoding="utf-8")
         (root / "docs/modules/component.md").write_text(
             "# Component\n\n"
@@ -95,15 +97,12 @@ class DocumentationControlPlaneTests(unittest.TestCase):
             encoding="utf-8")
         return root
 
-    def test_root_readme_is_rejected(self) -> None:
+    def test_root_readme_navigation_is_allowed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
-            (root / "README.md").write_text("# Reintroduced homepage\n", encoding="utf-8")
-            errors = documentation.validate(root)
-            self.assertTrue(
-                any("homepage entry point must remain absent" in item for item in errors),
-                errors,
-            )
+            (root / "README.md").write_text(
+                "# HeptaTrader\nSee [documentation](docs/index.md).\n", encoding="utf-8")
+            self.assertEqual(documentation.validate(root), [])
 
     def test_missing_implementation_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

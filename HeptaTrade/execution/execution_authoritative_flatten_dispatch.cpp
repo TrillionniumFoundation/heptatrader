@@ -34,7 +34,7 @@ ExecutionCoordinator::RejectAuthoritativeFlattenLocked(
     const ExecutionCommandResult rejected = RejectLocked(
         command.context, reasonCode, detail, -1,
         dispatch.requestHash);
-    RequestRecord& record = m_requests[dispatch.requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
     record.venueCorrelationId = dispatch.venueCorrelationId;
     record.operation = "flatten";
     record.context = command.context;
@@ -62,7 +62,7 @@ ExecutionCoordinator::UncertainAuthoritativeFlattenLocked(
         dispatch.venueCorrelationId);
     const bool journaled = AppendOrBlockLocked(
         event, "OMS_FLATTEN_UNCERTAIN_WRITE_FAILED");
-    RequestRecord& record = m_requests[dispatch.requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
     record.status = ExecutionCommandStatus::Uncertain;
     record.orderId = orderId;
     record.reasonCode = journaled ? code :
@@ -135,7 +135,7 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
     if (!AppendOrBlockLocked(
             sent, "OMS_FLATTEN_RECEIPT_WRITE_FAILED"))
     {
-        RequestRecord& record = m_requests[dispatch.requestKey];
+        RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
         record.status = ExecutionCommandStatus::Uncertain;
         record.orderId = orderId;
         record.reasonCode = "OMS_FLATTEN_RECEIPT_WRITE_FAILED";
@@ -162,7 +162,7 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
                 failure,
                 "OMS_EXECUTION_PROJECTION_FAILURE_WRITE_FAILED"))
             BlockMutationsLocked(code);
-        RequestRecord& record = m_requests[dispatch.requestKey];
+        RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
         record.status = ExecutionCommandStatus::Uncertain;
         record.orderId = orderId;
         record.reasonCode = code;
@@ -176,7 +176,7 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
         return uncertain;
     }
 
-    RequestRecord& record = m_requests[dispatch.requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
     record.status = ExecutionCommandStatus::Accepted;
     record.orderId = orderId;
     record.reasonCode.clear();

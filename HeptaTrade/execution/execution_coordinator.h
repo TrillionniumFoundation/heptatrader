@@ -225,17 +225,21 @@ private:
 
     // Hot records remain ordinary unordered-map entries. A miss consults the
     // immutable full-key generation index and materializes at most a small LRU
-    // cache of terminal historical records. operator[] promotes a cached record
+    // cache of terminal historical records. UpsertPromoted promotes a cached record
     // before it can be changed by an active-tail event.
-    class RequestRecordStore : public std::unordered_map<std::string, RequestRecord>
+    class RequestRecordStore
     {
     public:
         typedef std::unordered_map<std::string, RequestRecord> Base;
         explicit RequestRecordStore(OmsGenerationStore* generationStore = nullptr);
-        Base::iterator find(const std::string& key);
-        Base::const_iterator find(const std::string& key) const;
-        RequestRecord& operator[](const std::string& key);
-        void clear();
+        Base::iterator LookupOrLoad(const std::string& key);
+        RequestRecord& UpsertPromoted(const std::string& key);
+        RequestRecord& AtResident(const std::string& key) { return m_records.at(key); }
+        Base::iterator begin() { return m_records.begin(); }
+        Base::iterator end() { return m_records.end(); }
+        Base::const_iterator begin() const { return m_records.begin(); }
+        Base::const_iterator end() const { return m_records.end(); }
+        void Clear();
         std::size_t HotSize() const;
 
     private:
@@ -248,6 +252,7 @@ private:
         void Promote(const std::string& key);
 
     private:
+        Base m_records;
         OmsGenerationStore* m_generationStore = nullptr;
         std::deque<std::string> m_historicalOrder;
         std::unordered_set<std::string> m_historicalKeys;
@@ -455,7 +460,8 @@ private:
     ExecutionCoordinatorCallbacks m_callbacks;
     mutable std::mutex m_mutex;
     OmsGenerationStore m_generationStore;
-    RequestRecordStore m_requests;
+    // Logical reads may populate the bounded historical cache under m_mutex.
+    mutable RequestRecordStore m_requests;
     std::unordered_map<long, ExecutionOrderOwner> m_orderOwners;
     std::unordered_set<std::string> m_fencedSessionOwners;
     std::unordered_map<std::string, std::uint64_t>

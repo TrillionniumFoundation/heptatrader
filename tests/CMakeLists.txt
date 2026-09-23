@@ -48,15 +48,13 @@ target_compile_definitions(hepta_execution_coordinator_tests PRIVATE
 hepta_register_core_test(hepta_execution_coordinator_tests)
 
 add_executable(hepta_oms_journal_durability_tests
-    oms_journal_durability_tests.cpp
-    ../HeptaTrade/oms_journal.cpp)
-target_link_libraries(hepta_oms_journal_durability_tests pthread ZLIB::ZLIB)
+    oms_journal_durability_tests.cpp)
+target_link_libraries(hepta_oms_journal_durability_tests PRIVATE hepta_oms_journal)
 hepta_register_core_test(hepta_oms_journal_durability_tests)
 
 add_executable(hepta_oms_journal_schema_v4_tests
-    oms_journal_schema_v4_tests.cpp
-    ../HeptaTrade/oms_journal.cpp)
-target_link_libraries(hepta_oms_journal_schema_v4_tests pthread ZLIB::ZLIB)
+    oms_journal_schema_v4_tests.cpp)
+target_link_libraries(hepta_oms_journal_schema_v4_tests PRIVATE hepta_oms_journal)
 hepta_register_core_test(hepta_oms_journal_schema_v4_tests)
 
 add_executable(hepta_trading_tool_registry_tests
@@ -164,20 +162,12 @@ add_executable(hepta_ib_order_lifecycle_tests
 hepta_register_core_test(hepta_ib_order_lifecycle_tests)
 
 add_executable(hepta_ib_paper_kill_switch_tests
-    ib_paper_kill_switch_tests.cpp
-    ../HeptaTrade/execution/ib_paper_kill_switch.cpp)
-target_link_libraries(hepta_ib_paper_kill_switch_tests pthread)
+    ib_paper_kill_switch_tests.cpp)
+target_link_libraries(hepta_ib_paper_kill_switch_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_kill_switch_tests)
 
-add_executable(hepta_ib_paper_execution_profile_tests
-    ib_paper_execution_profile_tests.cpp
-    ../HeptaTrade/execution/ib_paper_execution_profile.cpp
-    ../HeptaTrade/execution/ib_paper_kill_switch.cpp
-    ../HeptaTrade/execution/ib_paper_authoritative_flatten.cpp
-    ../HeptaTrade/execution/ib_paper_execution_flatten_guard.cpp
-    ../HeptaTrade/execution/ib_paper_flatten_plan_binding.cpp)
-target_link_libraries(hepta_ib_paper_execution_profile_tests
-    hepta_execution_core OpenSSL::Crypto pthread)
+add_executable(hepta_ib_paper_execution_profile_tests ib_paper_execution_profile_tests.cpp)
+target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_paper_policy)
 hepta_register_core_test(hepta_ib_paper_execution_profile_tests)
 
 add_executable(hepta_ib_live_terminal_reconciliation_tests
@@ -190,15 +180,14 @@ add_executable(hepta_ib_live_terminal_reconciliation_tests
     ../HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp
     ../HeptaTrade/adapter_ib/ib_order_lifecycle.cpp
     ../HeptaTrade/adapter_ib/ib_venue_correlation.cpp
-    ../HeptaTrade/risk/pre_trade_risk_engine.cpp
     ../HeptaTrade/state/ib_contract_identity.cpp)
 target_link_libraries(hepta_ib_live_terminal_reconciliation_tests
-    hepta_execution_core)
+    hepta_execution_core hepta_risk_engine)
 hepta_register_core_test(hepta_ib_live_terminal_reconciliation_tests)
 
 add_executable(hepta_pre_trade_risk_engine_tests
-    pre_trade_risk_engine_tests.cpp
-    ../HeptaTrade/risk/pre_trade_risk_engine.cpp)
+    pre_trade_risk_engine_tests.cpp)
+target_link_libraries(hepta_pre_trade_risk_engine_tests PRIVATE hepta_risk_engine)
 hepta_register_core_test(hepta_pre_trade_risk_engine_tests)
 
 add_executable(hepta_portfolio_risk_snapshot_builder_tests
@@ -211,6 +200,11 @@ add_executable(hepta_venue_capability_tests
     ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
     ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
 hepta_register_core_test(hepta_venue_capability_tests)
+
+add_executable(hepta_execution_ipc_scheduling_tests execution_ipc_scheduling_tests.cpp)
+target_link_libraries(hepta_execution_ipc_scheduling_tests PRIVATE hepta_execution_core)
+hepta_register_core_test(hepta_execution_ipc_scheduling_tests)
+set_tests_properties(hepta_execution_ipc_scheduling_tests PROPERTIES TIMEOUT 30)
 
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}

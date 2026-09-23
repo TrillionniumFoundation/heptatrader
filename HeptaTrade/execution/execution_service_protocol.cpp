@@ -768,26 +768,35 @@ bool ExecutionServiceProtocol::DecodeResponse(const std::string& body,
     return true;
 }
 
+namespace
+{
+bool InvalidTerminalWitness(const ExecutionTerminalWitness& witness,
+                            ExecutionCommandStatus status)
+{
+    return (!witness.terminalLatchSha256.empty() &&
+         !CanonicalSha256(witness.terminalLatchSha256)) ||
+        (witness.terminalRuntimeVerified &&
+         (status != ExecutionCommandStatus::Accepted ||
+          witness.terminalizationServiceEpoch.empty() ||
+          witness.terminalizationServiceEpoch.size() > 128 ||
+          witness.terminalizationServiceFencingGeneration == 0 ||
+          witness.terminalizationGeneration == 0 ||
+          !CanonicalSha256(witness.terminalLatchSha256) ||
+          !witness.terminalMutationGateClosed ||
+          witness.terminalBrokerTransportConnected ||
+          !witness.terminalBrokerEventIngressHalted ||
+          !witness.terminalBrokerCallbackQueueDrained ||
+          witness.terminalBrokerCallbacksInFlight != 0 ||
+          witness.terminalBrokerReconnectPermitted ||
+          !witness.terminalLatchDurable ||
+          !witness.terminalRuntimeLatchLoaded));
+}
+}
+
 bool ExecutionServiceProtocol::EncodeControlResponse(const ExecutionControlResult& response,
                                                      std::string& body, std::string& reason)
 {
-    if ((!response.terminalLatchSha256.empty() &&
-         !CanonicalSha256(response.terminalLatchSha256)) ||
-        (response.terminalRuntimeVerified &&
-         (response.status != ExecutionCommandStatus::Accepted ||
-          response.terminalizationServiceEpoch.empty() ||
-          response.terminalizationServiceEpoch.size() > 128 ||
-          response.terminalizationServiceFencingGeneration == 0 ||
-          response.terminalizationGeneration == 0 ||
-          !CanonicalSha256(response.terminalLatchSha256) ||
-          !response.terminalMutationGateClosed ||
-          response.terminalBrokerTransportConnected ||
-          !response.terminalBrokerEventIngressHalted ||
-          !response.terminalBrokerCallbackQueueDrained ||
-          response.terminalBrokerCallbacksInFlight != 0 ||
-          response.terminalBrokerReconnectPermitted ||
-          !response.terminalLatchDurable ||
-          !response.terminalRuntimeLatchLoaded)))
+    if (InvalidTerminalWitness(response, response.status))
     {
         reason = "EXECUTION_PROTOCOL_INVALID_TERMINAL_WITNESS";
         return false;
@@ -1152,21 +1161,7 @@ bool ExecutionServiceProtocol::DecodeControlResponse(const std::string& body,
         terminalRuntimeLatchLoaded == "1";
     response.terminalRuntimeVerified = terminalRuntimeVerified == "1";
     response.terminalReplay = terminalReplay == "1";
-    if (response.terminalRuntimeVerified &&
-        (response.status != ExecutionCommandStatus::Accepted ||
-         response.terminalizationServiceEpoch.empty() ||
-         response.terminalizationServiceEpoch.size() > 128 ||
-         response.terminalizationServiceFencingGeneration == 0 ||
-         response.terminalizationGeneration == 0 ||
-         !CanonicalSha256(response.terminalLatchSha256) ||
-         !response.terminalMutationGateClosed ||
-         response.terminalBrokerTransportConnected ||
-         !response.terminalBrokerEventIngressHalted ||
-         !response.terminalBrokerCallbackQueueDrained ||
-         response.terminalBrokerCallbacksInFlight != 0 ||
-         response.terminalBrokerReconnectPermitted ||
-         !response.terminalLatchDurable ||
-         !response.terminalRuntimeLatchLoaded))
+    if (InvalidTerminalWitness(response, response.status))
     {
         reason = "EXECUTION_PROTOCOL_INVALID_TERMINAL_WITNESS";
         return false;

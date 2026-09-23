@@ -7,6 +7,9 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
+#include <deque>
+#include <vector>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -94,12 +97,23 @@ private:
         std::string flattenPlanBinding;
     };
 
+    // A bounded nonblocking framing reactor feeds two serialized lanes.
+    // Only owner/status controls may overlap an ordinary authority call.
+    struct ClientJob;
+    void StartScheduler();
+    void RequestSchedulerStop();
+    void JoinScheduler();
+    bool IsSchedulerThread() const;
+    void WakeScheduler();
     void AcceptLoop();
-    void HandleClient(int clientFd);
-    bool ReadAuthorizedRequest(int clientFd,
-                               const std::chrono::steady_clock::time_point& deadline,
-                               ExecutionServiceRequest& request,
-                               std::string& reason);
+    void AuthorityLoop(bool controlLane);
+    void ReceiveClient(const std::shared_ptr<ClientJob>& client);
+    void WriteClient(const std::shared_ptr<ClientJob>& client);
+    void CloseClient(const std::shared_ptr<ClientJob>& client);
+    void SetResponse(const std::shared_ptr<ClientJob>& client,
+                     const std::string& body);
+    std::string HandleRequest(const ExecutionServiceRequest& request,
+        const std::chrono::steady_clock::time_point& deadline);
     bool ApplyPreDispatchGate(const ExecutionServiceRequest& request,
                               ExecutionCommandResult& result,
                               ExecutionControlResult& controlResult,
@@ -170,7 +184,17 @@ private:
     ExecutionServiceIdentity m_serviceIdentity;
     std::shared_ptr<ExecutionServiceLifecycleGate> m_lifecycleGate;
     std::thread m_acceptThread;
+    std::thread m_controlThread;
+    std::thread m_commandThread;
+    int m_wakeFd = -1;
     mutable std::mutex m_lifecycleMutex;
+    std::condition_variable m_lifecycleChanged;
+    bool m_stopping = false;
+    std::mutex m_schedulerMutex;
+    std::condition_variable m_schedulerChanged;
+    std::vector<std::shared_ptr<ClientJob>> m_clients;
+    std::deque<std::shared_ptr<ClientJob>> m_controlQueue;
+    std::deque<std::shared_ptr<ClientJob>> m_commandQueue;
     mutable std::mutex m_previewMutex;
     std::unordered_map<std::string, PreviewPermitRecord> m_previewPermits;
 };

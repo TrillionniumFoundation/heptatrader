@@ -1168,7 +1168,7 @@ void ExecutionCoordinator::RequestRecordStore::RememberHistorical(
         const std::string oldest = m_historicalOrder.front();
         m_historicalOrder.pop_front();
         if (m_historicalKeys.erase(oldest) != 0)
-            Base::erase(oldest);
+            m_records.erase(oldest);
     }
     if (m_historicalOrder.size() > kHistoricalCommandCache * 4U)
     {
@@ -1189,21 +1189,21 @@ void ExecutionCoordinator::RequestRecordStore::Promote(const std::string& key)
 ExecutionCoordinator::RequestRecordStore::Base::iterator
 ExecutionCoordinator::RequestRecordStore::LoadHistorical(const std::string& key)
 {
-    Base::iterator existing = Base::find(key);
-    if (existing != Base::end()) return existing;
+    Base::iterator existing = m_records.find(key);
+    if (existing != m_records.end()) return existing;
     if (m_generationStore == nullptr || !m_generationStore->IsActive())
-        return Base::end();
+        return m_records.end();
 
     std::string agentId, sessionId, commandId;
     if (!DecodeRequestKey(key, agentId, sessionId, commandId))
-        return Base::end();
+        return m_records.end();
 
     OmsGenerationCommandRecord historical;
     std::string reason;
     const OmsGenerationLookupStatus status = m_generationStore->LookupCommand(
         agentId, sessionId, commandId, historical, reason);
     if (status == OmsGenerationLookupStatus::Missing)
-        return Base::end();
+        return m_records.end();
 
     RequestRecord record;
     record.context.agentId = agentId;
@@ -1230,51 +1230,41 @@ ExecutionCoordinator::RequestRecordStore::LoadHistorical(const std::string& key)
         record.durableMutationIntent = historical.durableMutationIntent;
     }
     const std::pair<Base::iterator, bool> inserted =
-        Base::insert(std::make_pair(key, record));
+        m_records.insert(std::make_pair(key, record));
     RememberHistorical(key);
     return inserted.first;
 }
 
 ExecutionCoordinator::RequestRecordStore::Base::iterator
-ExecutionCoordinator::RequestRecordStore::find(const std::string& key)
+ExecutionCoordinator::RequestRecordStore::LookupOrLoad(const std::string& key)
 {
-    Base::iterator existing = Base::find(key);
-    return existing != Base::end() ? existing : LoadHistorical(key);
-}
-
-ExecutionCoordinator::RequestRecordStore::Base::const_iterator
-ExecutionCoordinator::RequestRecordStore::find(const std::string& key) const
-{
-    Base::const_iterator existing = Base::find(key);
-    if (existing != Base::end()) return existing;
-    RequestRecordStore* self = const_cast<RequestRecordStore*>(this);
-    const Base::iterator loaded = self->LoadHistorical(key);
-    return loaded == self->Base::end() ? Base::end() : loaded;
+    Base::iterator existing = m_records.find(key);
+    return existing != m_records.end() ? existing : LoadHistorical(key);
 }
 
 ExecutionCoordinator::RequestRecord&
-ExecutionCoordinator::RequestRecordStore::operator[](const std::string& key)
+ExecutionCoordinator::RequestRecordStore::UpsertPromoted(const std::string& key)
 {
-    Base::iterator existing = find(key);
-    if (existing != Base::end())
+    Base::iterator existing = LookupOrLoad(key);
+    if (existing != m_records.end())
     {
         Promote(key);
         return existing->second;
     }
-    return Base::operator[](key);
+    return m_records[key];
 }
 
-void ExecutionCoordinator::RequestRecordStore::clear()
+void ExecutionCoordinator::RequestRecordStore::Clear()
 {
-    Base::clear();
+    m_records.clear();
     m_historicalOrder.clear();
     m_historicalKeys.clear();
 }
 
 std::size_t ExecutionCoordinator::RequestRecordStore::HotSize() const
 {
-    return Base::size() >= m_historicalKeys.size() ?
-        Base::size() - m_historicalKeys.size() : 0U;
+    return m_records.size() >= m_historicalKeys.size() ?
+        m_records.size() - m_historicalKeys.size() : 0U;
 }
 
 bool ExecutionCoordinator::EnterPaperTerminalFenceAndProjectGenerationAwareLocked(

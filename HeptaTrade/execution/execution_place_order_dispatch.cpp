@@ -16,7 +16,7 @@ ExecutionCoordinator::UncertainPlaceOutcomeLocked(
         dispatch.venueCorrelationId);
     const bool journaled = AppendOrBlockLocked(
         event, "OMS_PLACE_UNCERTAIN_WRITE_FAILED");
-    RequestRecord& record = m_requests[dispatch.requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
     record.status = ExecutionCommandStatus::Uncertain;
     record.orderId = orderId;
     record.reasonCode = journaled ? code :
@@ -76,7 +76,7 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
         dispatch.venueCorrelationId);
     if (!AppendOrBlockLocked(sent, "OMS_PLACE_RECEIPT_WRITE_FAILED"))
     {
-        RequestRecord& record = m_requests[dispatch.requestKey];
+        RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
         record.status = ExecutionCommandStatus::Uncertain;
         record.orderId = orderId;
         record.reasonCode = "OMS_PLACE_RECEIPT_WRITE_FAILED";
@@ -105,7 +105,7 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
                 failure,
                 "OMS_EXECUTION_PROJECTION_FAILURE_WRITE_FAILED"))
             BlockMutationsLocked(code);
-        RequestRecord& record = m_requests[dispatch.requestKey];
+        RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
         record.status = ExecutionCommandStatus::Uncertain;
         record.orderId = orderId;
         record.reasonCode = code;
@@ -148,7 +148,7 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
             return UncertainPlaceOutcomeLocked(command, dispatch, orderId,
                 "venue activated without a durable activation receipt");
     }
-    RequestRecord& record = m_requests[dispatch.requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
     record.status = ExecutionCommandStatus::Accepted;
     record.orderId = orderId;
     record.reasonCode.clear();

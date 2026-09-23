@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/execution`, `HeptaTrade/agent`, `HeptaTrade/events`
-Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/send_attempt_time_index_cases.h`, `tests/python/test_send_attempt_time_index.py`, `tests/venue_placement_cases.h`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`, `tests/pre_intent_refusal_cases.h`, `tests/python/test_execution_latency_boundaries.py`, `tests/cancel_uncertainty_cases.h`, `tests/oms_recovery_growth_probe.h`, `tests/python/test_venue_place_rejection.py`, `tests/flatten_result_cases.h`, `tests/python/test_execution_reason_metrics.py`
+Tests: `tests/execution_coordinator_tests.cpp`, `tests/execution_event_feed_tests.cpp`, `tests/execution_decision_lease_authority_tests.cpp`, `tests/send_attempt_time_index_cases.h`, `tests/python/test_send_attempt_time_index.py`, `tests/venue_placement_cases.h`, `tests/recovery_projection_faults.cpp`, `tests/python/test_recovery_projection.py`, `tests/pre_intent_refusal_cases.h`, `tests/python/test_execution_latency_boundaries.py`, `tests/cancel_uncertainty_cases.h`, `tests/oms_recovery_growth_probe.h`, `tests/python/test_venue_place_rejection.py`, `tests/flatten_result_cases.h`, `tests/python/test_execution_reason_metrics.py`, `tests/execution_ipc_scheduling_tests.cpp`
 
 ## Responsibilities
 
@@ -124,3 +124,36 @@ The [cost contract](../technical/runtime-cost-observations.md) distinguishes coo
 ## Atomic authoritative-flatten result
 
 The [flatten result contract](../technical/venue-flatten-contract.md) completes the typed placement/cancellation boundary. The coordinator no longer carries `lastIbRejectReason` or a Boolean/out-ID flatten callback. The adapter captures classification, detail and known order identity under the send lock; possible SDK calls and post-send bookkeeping failures remain durably uncertain. The existing no-op proof, schema, owner fences, guarded exits and reconciliation are unchanged. The existing OMS stream also exports bounded coordinator reason bins; these are not complete profile/risk or Broker lifecycle telemetry.
+
+## Bounded IPC scheduling
+
+The command socket now uses one nonblocking framing/reply reactor (64 live
+connections, at most 1 MiB per configured request) and two FIFO authority lanes
+(24 queued requests per lane). Partial frames and slow readers consume bounded
+connection slots, not authority workers. The same accept-time steady deadline
+covers framing, queueing and reply; expired queued calls never enter authority.
+Overload closes the connection without fabricating a command result.
+
+Identity, command status, recovery status and owner fence/release share the
+control lane. General authoritative reads stay on the ordinary lane so a slow
+snapshot provider cannot occupy the reserved control worker. Other operations retain a single ordered
+lane. Fence/release stay in the same FIFO so an old release cannot overtake a
+completed newer fence. Identity, trust-domain binding and readiness are checked
+again at dispatch. The coordinator remains the only durable mutation owner.
+IB status/fence no longer take the policy dispatch mutex; IB fence release uses
+try-lock and returns `IB_PAPER_CONTROL_BUSY` without removing the fence while a
+policy operation is active.
+
+A timeout after dispatch only ends the reply channel. It never detaches,
+retries or pretends to cancel a possibly-effectful authority call. Stop closes
+admission/transports and joins every authority lane outside the lifecycle lock;
+a callback can request Stop without self-join. An indefinitely stuck in-process
+provider still requires process-level recovery, not unsafe thread abandonment.
+Local journal/fsync and control callbacks must themselves be bounded for an
+operational latency SLO; this scheduler is not a hard-real-time claim.
+
+`tests/execution_ipc_scheduling_tests.cpp` exercises partial-frame concurrency,
+slow authority with query/fence access, queued expiry, lost replies, concurrent
+Stop/callback Stop and restart. Its real coordinator/socket fixture proves that
+an in-flight venue call remains visible to fencing, fence release is rejected,
+exact-ID replay sends once and the owner fence survives journal recovery.

@@ -460,7 +460,9 @@ bool UnixExecutionServiceServer::Start(const std::string& socketPath,
                                        int ioTimeoutMs)
 {
     std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
-    if (!m_stop.load() || allowedPeerUids.empty() || maxRequestBytes < 1024 || ioTimeoutMs < 1)
+    if (!m_stop.load() || m_stopping || m_listenFd.load() >= 0 ||
+        allowedPeerUids.empty() || maxRequestBytes < 1024 ||
+        maxRequestBytes > 1048576 || ioTimeoutMs < 1 || ioTimeoutMs > 30000)
     {
         reason = "EXECUTION_SERVER_INVALID_CONFIG";
         return false;
@@ -544,7 +546,7 @@ bool UnixExecutionServiceServer::Start(const std::string& socketPath,
     m_stop.store(false);
     try
     {
-        m_acceptThread = std::thread(&UnixExecutionServiceServer::AcceptLoop, this);
+        StartScheduler();
     }
     catch (const std::exception& ex)
     {
@@ -629,8 +631,10 @@ bool UnixExecutionServiceServer::StartFromFdInternal(
     int ioTimeoutMs)
 {
     std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
-    if (!m_stop.load() || allowedPeerUids.empty() || maxRequestBytes < 1024 ||
-        ioTimeoutMs < 1 || !ValidIdentity(identity) || !lifecycleGate ||
+    if (!m_stop.load() || m_stopping || m_listenFd.load() >= 0 ||
+        allowedPeerUids.empty() || maxRequestBytes < 1024 ||
+        maxRequestBytes > 1048576 || ioTimeoutMs < 1 || ioTimeoutMs > 30000 ||
+        !ValidIdentity(identity) || !lifecycleGate ||
         (gatewayContextBinding != nullptr &&
          !gatewayContextBinding->Complete()))
     {
@@ -660,7 +664,7 @@ bool UnixExecutionServiceServer::StartFromFdInternal(
     m_stop.store(false);
     try
     {
-        m_acceptThread = std::thread(&UnixExecutionServiceServer::AcceptLoop, this);
+        StartScheduler();
     }
     catch (const std::exception& ex)
     {
@@ -676,17 +680,18 @@ bool UnixExecutionServiceServer::StartFromFdInternal(
 }
 void UnixExecutionServiceServer::Stop()
 {
-    std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
-    if (m_lifecycleGate) m_lifecycleGate->ready.store(false);
-    m_stop.store(true);
-    if (m_acceptThread.joinable() &&
-        m_acceptThread.get_id() == std::this_thread::get_id())
-    {
-        // A callback may request shutdown, but final join/close/path cleanup
-        // must be performed later by the owning lifecycle thread.
-        return;
-    }
-    if (m_acceptThread.joinable()) m_acceptThread.join();
+    std::unique_lock<std::mutex> lifecycleLock(m_lifecycleMutex);
+    // A callback can request shutdown while the lifecycle owner is joining
+    // it. Never wait for that owner, join ourselves, or abandon an authority.
+    if (IsSchedulerThread()) { RequestSchedulerStop(); return; }
+    m_lifecycleChanged.wait(lifecycleLock, [this] { return !m_stopping; });
+    m_stopping = true;
+    RequestSchedulerStop();
+    lifecycleLock.unlock();
+    JoinScheduler();
+    lifecycleLock.lock();
+    if (m_wakeFd >= 0) ::close(m_wakeFd);
+    m_wakeFd = -1;
     const int ownedListenFd = m_listenFd.exchange(-1);
     if (ownedListenFd >= 0) ::close(ownedListenFd);
     if (m_ownsSocketPath && !m_socketPath.empty())
@@ -705,9 +710,12 @@ void UnixExecutionServiceServer::Stop()
         std::lock_guard<std::mutex> previewLock(m_previewMutex);
         m_previewPermits.clear();
     }
+    m_stopping = false;
+    m_lifecycleChanged.notify_all();
 }
 bool UnixExecutionServiceServer::IsRunning() const
 {
+    std::lock_guard<std::mutex> lock(m_lifecycleMutex);
     return !m_stop.load() && m_listenFd.load() >= 0 && m_lifecycleGate &&
         (m_lifecycleGate->ready.load() ||
          m_lifecycleGate->terminalControlOnly.load());
@@ -721,53 +729,6 @@ ExecutionServiceIdentity UnixExecutionServiceServer::ServiceIdentity() const
 {
     std::lock_guard<std::mutex> lifecycleLock(m_lifecycleMutex);
     return m_serviceIdentity;
-}
-void UnixExecutionServiceServer::AcceptLoop()
-{
-    while (!m_stop.load())
-    {
-        const int listenFd = m_listenFd.load();
-        if (listenFd < 0) break;
-        struct pollfd pending;
-        pending.fd = listenFd;
-        pending.events = POLLIN;
-        pending.revents = 0;
-        const int pollResult = ::poll(&pending, 1, 100);
-        if (pollResult < 0 && errno == EINTR) continue;
-        if (pollResult <= 0) continue;
-        if ((pending.revents & POLLIN) == 0)
-        {
-            if (m_stop.load()) break;
-            continue;
-        }
-        const int clientFd = ::accept4(
-            listenFd, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
-        if (clientFd < 0)
-        {
-            if (errno == EINTR) continue;
-            if (m_stop.load() || errno == EBADF || errno == EINVAL) break;
-            continue;
-        }
-        HandleClient(clientFd);
-        ::close(clientFd);
-    }
-}
-bool UnixExecutionServiceServer::ReadAuthorizedRequest(
-    int clientFd,
-    const std::chrono::steady_clock::time_point& deadline,
-    ExecutionServiceRequest& request,
-    std::string& reason)
-{
-    struct ucred credential;
-    socklen_t credentialLength = sizeof(credential);
-    if (::getsockopt(clientFd, SOL_SOCKET, SO_PEERCRED, &credential, &credentialLength) != 0 ||
-        credentialLength != sizeof(credential) ||
-        m_allowedPeerUids.find(static_cast<std::uint32_t>(credential.uid)) == m_allowedPeerUids.end())
-        return false;
-    std::string requestBody;
-    if (!ReadFrame(clientFd, m_maxRequestBytes, deadline, requestBody))
-        return false;
-    return ExecutionServiceProtocol::DecodeRequest(requestBody, request, reason);
 }
 namespace
 {
@@ -1034,32 +995,26 @@ void UnixExecutionServiceServer::ValidateAndBindResponse(
     controlResult.serviceFencingGeneration =
         m_serviceIdentity.serviceFencingGeneration;
 }
-void UnixExecutionServiceServer::HandleClient(int clientFd)
+std::string UnixExecutionServiceServer::HandleRequest(
+    const ExecutionServiceRequest& request,
+    const std::chrono::steady_clock::time_point& deadline)
 {
-    const IoDeadline deadline = DeadlineAfter(m_ioTimeoutMs);
-    ExecutionServiceRequest request;
     std::string reason;
     ExecutionCommandResult result;
     ExecutionControlResult controlResult;
     bool controlResponse = false;
-    if (!ReadAuthorizedRequest(clientFd, deadline, request, reason))
+    // Revalidate the daemon identity, trust-domain binding and lifecycle at
+    // dispatch, not merely when an input frame was queued.
+    if (ApplyPreDispatchGate(request, result, controlResult, controlResponse))
     {
-        if (reason.empty()) return;
-        result.status = ExecutionCommandStatus::Rejected;
-        result.reasonCode = reason;
-        result.detail =
-            "Execution IPC request was rejected before authority dispatch";
+        if (m_stop.load() || std::chrono::steady_clock::now() >= deadline)
+            return std::string();
+        DispatchRequest(request, result, controlResult, controlResponse);
     }
-    else
-    {
-        if (ApplyPreDispatchGate(request, result, controlResult, controlResponse))
-            DispatchRequest(request, result, controlResult, controlResponse);
-        ValidateAndBindResponse(request, result, controlResult, controlResponse);
-    }
+    ValidateAndBindResponse(request, result, controlResult, controlResponse);
     std::string responseBody;
     const bool encoded = controlResponse ?
         ExecutionServiceProtocol::EncodeControlResponse(controlResult, responseBody, reason) :
         ExecutionServiceProtocol::EncodeResponse(result, responseBody, reason);
-    if (encoded)
-        WriteFrame(clientFd, responseBody, deadline);
+    return encoded ? responseBody : std::string();
 }

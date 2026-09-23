@@ -70,3 +70,14 @@ retention change is hidden in this recovery optimization.
 See [recovery budgets](oms-recovery-capacity.md),
 [storage maintenance](oms-archive-lifecycle.md) and
 [persistence support](persistence-support-window.md).
+
+## Explicit historical lookup ownership
+
+The coordinator request store now composes its resident map instead of publicly
+inheriting `std::unordered_map`. `LookupOrLoad` explicitly names the possible
+pinned-index I/O/cache insertion; `UpsertPromoted` explicitly removes a resident
+historical record from cache-only eviction before mutation. Resident iteration
+never claims to enumerate permanent history. Logical reads may populate the
+bounded cache only under the coordinator mutex; no `const_cast` disguises that
+operation. The permanent index, limits, request hashes and recovery behavior
+are unchanged and exercised by the existing generation/ancient-ID regressions.

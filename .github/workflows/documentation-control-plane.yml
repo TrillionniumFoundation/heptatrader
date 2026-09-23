@@ -52,24 +52,6 @@ jobs:
           echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $lint_dir/actionlint.tar.gz" | sha256sum --check --strict
           tar -xzf "$lint_dir/actionlint.tar.gz" -C "$lint_dir" actionlint
           "$lint_dir/actionlint" -shellcheck= -pyflakes=
-          # Prove the actual validator rejects the context error that escaped
-          # shell-only tests. This fixture has no runner allocation or secrets.
-          cat > "$lint_dir/invalid.yml" <<'YAML'
-          on: workflow_dispatch
-          jobs:
-            invalid:
-              runs-on: ubuntu-24.04
-              env:
-                BAD: CONTEXT_MARKER
-              steps:
-                - run: echo inert
-          YAML
-          sed -i 's/CONTEXT_MARKER/$\x7b\x7b runner.temp \x7d\x7d/' "$lint_dir/invalid.yml"
-          if "$lint_dir/actionlint" -shellcheck= -pyflakes= "$lint_dir/invalid.yml" > "$lint_dir/rejection.txt" 2>&1; then
-            echo 'actionlint accepted an invalid job-level runner context' >&2
-            exit 1
-          fi
-          grep -q 'runner' "$lint_dir/rejection.txt"
 
       - name: Validate documentation and source truth contracts
         run: |

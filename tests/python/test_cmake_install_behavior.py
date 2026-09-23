@@ -150,13 +150,14 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("installed_docs", ROOT / "cmake/render_installed_documentation.py")
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
-        self.assertFalse((ROOT / "README.md").exists())
+        readme = ROOT / "README.md"
+        original = readme.read_bytes() if readme.exists() else None
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "docs"
             module.render(ROOT, output, "b" * 40)
             self.assertEqual(module.validate_installed_links(output), [])
             self.assertIn("/blob/" + "b" * 40 + "/.github/workflows/release.yml", (output / "index.md").read_text())
-            self.assertFalse((ROOT / "README.md").exists())
+            self.assertEqual(readme.read_bytes() if readme.exists() else None, original)
             self.assertFalse((output / ".github").exists())
             self.assertFalse((output / "doc").exists())
 

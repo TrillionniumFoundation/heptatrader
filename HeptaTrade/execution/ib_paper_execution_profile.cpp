@@ -1140,7 +1140,8 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::BeginControl(
 ExecutionControlResult IbPaperExecutionPolicyAuthority::QueryCommandStatus(
     const ExecutionControlCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    // These operations inspect immutable policy context and the coordinator's
+    // own synchronized state. They must not wait behind Broker dispatch.
     ExecutionControlResult result = BeginControl(command);
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     result.targetCommandId = command.targetCommandId;
@@ -1177,7 +1178,8 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::QueryCommandStatus(
 ExecutionControlResult IbPaperExecutionPolicyAuthority::FenceSessionOwner(
     const ExecutionControlCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
+    // These operations inspect immutable policy context and the coordinator's
+    // own synchronized state. They must not wait behind Broker dispatch.
     ExecutionControlResult result = BeginControl(command);
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     result.affectedCount = m_coordinator.FenceSessionOwner(
@@ -1196,9 +1198,16 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::FenceSessionOwner(
 ExecutionControlResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwnerFence(
     const ExecutionControlCommand& command)
 {
-    std::lock_guard<std::mutex> lock(m_mutex);
     ExecutionControlResult result = BeginControl(command);
     if (result.status == ExecutionCommandStatus::Rejected) return result;
+    std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
+    if (!lock.owns_lock())
+    {
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = "IB_PAPER_CONTROL_BUSY";
+        result.detail = "Fence remains installed while another policy operation is active";
+        return result;
+    }
     if (!m_callbacks.correlationSnapshot)
     {
         result.status = ExecutionCommandStatus::Rejected;

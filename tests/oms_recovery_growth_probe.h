@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cerrno>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -192,6 +194,130 @@ void TestNativeGenerationRecoveryAndPermanentIdentity()
     }
     assert(std::remove(path.c_str()) == 0);
     RemoveGenerationFixture(store);
+}
+
+
+// The scaled generation probe uses only newly created synthetic state. Each
+// recovery sample execs a fresh test process so VmHWM excludes the writer and
+// maintenance process allocations. It is never a broker/host-soak qualification.
+std::uint64_t GenerationProbeTreeBytes(const std::string& directory)
+{
+    DIR* dir = ::opendir(directory.c_str()); assert(dir != nullptr);
+    std::uint64_t bytes = 0;
+    while (dirent* entry = ::readdir(dir))
+    {
+        const std::string name = entry->d_name;
+        if (name == "." || name == "..") continue;
+        const std::string path = directory + "/" + name;
+        struct stat info{}; assert(::lstat(path.c_str(), &info) == 0);
+        assert(!S_ISLNK(info.st_mode));
+        bytes += S_ISDIR(info.st_mode) ? GenerationProbeTreeBytes(path) :
+            static_cast<std::uint64_t>(info.st_size);
+    }
+    assert(::closedir(dir) == 0); return bytes;
+}
+
+IbPlaceOrderCommand GenerationProbeCommand(unsigned i, std::int64_t expiry)
+{
+    auto command = MakePlace("generation-cost-" + std::to_string(i));
+    command.expiresAtMs = expiry;
+    command.context.executionDomain = "IB-PAPER:EUR.USD";
+    command.context.decisionLeaseFencingToken = 7;
+    command.context.decisionLeaseGeneration = 3;
+    return command;
+}
+
+int InspectGenerationProbe(const std::string& path, std::int64_t expiry,
+                           unsigned expected, const std::string& stage)
+{
+    unsigned sends = 0;
+    auto callbacks = CancelFixtureCallbacks();
+    // Synthetic owner/lease fixture only; no runtime verifier is replaced.
+    callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) {
+        return true;
+    };
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string&) {
+        ++sends; return VenuePlaceResult::Submitted(999999);
+    });
+    OmsJournal journal; assert(journal.Init(path));
+    ExecutionCoordinator coordinator(journal, callbacks);
+    const auto start = std::chrono::steady_clock::now();
+    std::string reason; assert(coordinator.RecoverFromJournal(reason));
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    const auto before = coordinator.RuntimeObservation();
+    assert(before.retainedCommands == 0 && before.orderOwners == 0);
+    assert(coordinator.PlaceOrder(GenerationProbeCommand(0, expiry)).status == ExecutionCommandStatus::Duplicate);
+    assert(coordinator.PlaceOrder(GenerationProbeCommand(expected - 1, expiry)).status == ExecutionCommandStatus::Duplicate);
+    auto conflict = GenerationProbeCommand(0, expiry); conflict.order.totalQuantity += 1;
+    assert(coordinator.PlaceOrder(conflict).reasonCode == "IDEMPOTENCY_KEY_CONFLICT");
+    assert(sends == 0);
+    struct rusage usage{}; assert(::getrusage(RUSAGE_SELF, &usage) == 0);
+    std::cout << "{\"schema\":\"heptatrader.generation-recovery-sample.v1\","
+        << "\"synthetic\":true,\"broker_io\":false,\"orders\":" << expected
+        << ",\"stage\":\"" << stage << "\",\"recovery_ns\":" << ns
+        << ",\"fresh_process_peak_rss_kib\":" << usage.ru_maxrss
+        << ",\"retained_hot_commands\":" << before.retainedCommands
+        << ",\"ancient_duplicate_and_conflict_verified\":true,\"resends\":0}\n";
+    return 0;
+}
+
+int RunGenerationGrowthProbe(unsigned requested, const std::string& executable)
+{
+    assert(requested > 0 && requested <= 100000);
+    const std::string path = TempJournalPath(), store = path + ".generations";
+    const std::string lifecycle = std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_lifecycle.py";
+    const std::int64_t expiry = OmsJournal::NowEpochMs() + 86400000;
+    const unsigned batchSize = std::min(4096U, std::max(1U, requested / 4));
+    unsigned sends = 0, written = 0;
+    auto callbacks = CancelFixtureCallbacks();
+    // Synthetic owner/lease fixture only; no runtime verifier is replaced.
+    callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) {
+        return true;
+    };
+    callbacks.placement = VenuePlacement::Immediate([&](const PlaceOrderCommand&, const std::string&) {
+        return VenuePlaceResult::Submitted(1000 + ++sends);
+    });
+    while (written < requested)
+    {
+        const unsigned end = std::min(requested, written + batchSize);
+        {
+            OmsJournal journal; assert(journal.Init(path));
+            ExecutionCoordinator coordinator(journal, callbacks); std::string reason;
+            assert(coordinator.RecoverFromJournal(reason));
+            for (; written < end; ++written)
+            {
+                const auto result = coordinator.PlaceOrder(GenerationProbeCommand(written, expiry));
+                assert(result.status == ExecutionCommandStatus::Accepted);
+                assert(coordinator.RecordOrderTerminalDurably(result.orderId, &reason));
+            }
+        }
+        const auto start = std::chrono::steady_clock::now();
+        assert(RunPython({"python3", lifecycle, "seal", "--journal", path,
+                          "--store", store, "--stopped-state"}) == 0);
+        const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        std::cout << "{\"schema\":\"heptatrader.generation-maintenance-sample.v1\","
+            << "\"synthetic\":true,\"broker_io\":false,\"orders\":" << written
+            << ",\"stage\":\"seal\",\"maintenance_ns\":" << ns
+            << ",\"retained_disk_bytes\":" << GenerationProbeTreeBytes(store) << "}\n" << std::flush;
+        assert(RunPython({executable, "--generation-inspect", path, std::to_string(expiry),
+                          std::to_string(written), "sealed"}) == 0);
+    }
+    assert(sends == requested);
+    const auto start = std::chrono::steady_clock::now();
+    assert(RunPython({"python3", lifecycle, "rebase", "--journal", path,
+                      "--store", store, "--stopped-state", "--prune-ancestors"}) == 0);
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    std::cout << "{\"schema\":\"heptatrader.generation-maintenance-sample.v1\","
+        << "\"synthetic\":true,\"broker_io\":false,\"orders\":" << written
+        << ",\"stage\":\"rebase\",\"maintenance_ns\":" << ns
+        << ",\"retained_disk_bytes\":" << GenerationProbeTreeBytes(store) << "}\n" << std::flush;
+    assert(RunPython({executable, "--generation-inspect", path, std::to_string(expiry),
+                      std::to_string(written), "rebased"}) == 0);
+    assert(std::remove(path.c_str()) == 0); RemoveGenerationFixture(store);
+    return 0;
 }
 
 int RunRecoveryGrowthProbe(unsigned requested)
