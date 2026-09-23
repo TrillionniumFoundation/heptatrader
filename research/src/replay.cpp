@@ -201,6 +201,21 @@ std::int64_t ResearchPriceGrid::Index(double price) const {
     return index;
 }
 
+CumulativeTradeObservation LegacyCumulativeTradeObservation(
+        const LegacyTickRecord& record, LegacyTickCsvLayout layout) {
+    const auto top = DecodeLegacyTopOfBook(record, layout);
+    CumulativeTradeObservation result;
+    result.instrument = record.tick.instrument;
+    result.timestampUs = record.tick.timestampUs;
+    result.sequence = record.tick.sequence;
+    result.cumulativeVolume = record.cumulativeVolume;
+    result.cumulativeTurnover = record.turnover;
+    result.lastPrice = record.tick.price;
+    result.bestBidPrice = top.bestBidPrice;
+    result.bestAskPrice = top.bestAskPrice;
+    return result;
+}
+
 CumulativeTopOfBookTradeInference::CumulativeTopOfBookTradeInference(
         std::string instrument, double tickSize, double multiplier,
         ResearchPriceDomain domain, std::size_t maxObservations)
