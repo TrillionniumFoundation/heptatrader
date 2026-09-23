@@ -26,6 +26,14 @@ invented by this integration.
 
 ## Capability disposition
 
+The machine-readable [source disposition](heptadll-source-disposition.json) pins
+all 93 `.h` / `.cpp` / `.xml` assets under `heptaHeptaDLL/` at the retained
+source baseline, including each Git blob identity. CI rejects an unclassified
+asset, a missing canonical evidence path, or promotion of critical direct-SPI,
+simulator or process-local order-identity sources into a canonicalized group.
+This is source closure for the pinned baseline, not proof that an external
+binary consumer or deployed host has retired.
+
 | Reference assets under `heptaHeptaDLL/` | Destination and present scope |
 |---|---|
 | `heptaKindleStick`, `heptaKindleStickSeries` | `research_data`: bar building, bounded series, replacement, OHLC-field extrema, latest strict threshold queries, confirmed peaks/troughs, reverse indexing, retained-day count and OHLCV merging. These are explicit new APIs, not compatibility aliases for historical signatures. |
