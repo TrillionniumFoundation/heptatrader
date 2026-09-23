@@ -312,7 +312,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
     def test_generation_workload_is_explicit_and_bounded(self):
         self.assertEqual(acceptance.generation_cost_pairs(), (4, 16, 64))
         self.assertEqual(acceptance.generation_cost_pairs("extended"), (32, 128, 512))
-        self.assertEqual(acceptance.generation_cost_pairs("capacity"), (512, 2048, 8192))
+        self.assertEqual(acceptance.generation_cost_pairs("capacity"), (3584, 3584, 3584))
         for invalid in (None, True, [], "", "EXTENDED", "production"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 acceptance.generation_cost_pairs(invalid)
@@ -368,7 +368,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                         path, SHA, "c" * 64, expected_profile="capacity")
             complete = self.generation_curve("capacity")
             self.assertEqual([p["admitted_orders"] for p in complete["points"]],
-                             [1024, 5120, 21504])
+                             [7168, 14336, 21504])
             path.write_text(json.dumps(complete))
             acceptance.validate_generation_cost_evidence(
                 path, SHA, "c" * 64, expected_profile="capacity")
