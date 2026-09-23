@@ -55,7 +55,9 @@ private:
 // Opaque request lifecycle for explicitly migrated clients. Ready means an
 // immutable request exists, not service acceptance; Durable means Persist or
 // Restore succeeded, not that a send/fill occurred. Session-token bytes are
-// never retained here. Existing HRO1/JSON outboxes are NOT accepted or converted.
+// never retained here. Existing JSON outboxes are not accepted or converted;
+// HRO1 is accepted only by explicit read-only InspectLegacyHro1, never by this
+// restore/submit lifecycle and never as a converted HSR1 request.
 class PreparedStrategyCommand {
 public:
     PreparedStrategyCommand() : durable_(false) {}
@@ -173,6 +175,15 @@ public:
     bool InspectStored(const std::string& directory, const std::string& executionCommandId,
                        const std::string& queryCallId, NativeToolClientResult& result,
                        std::string& reason) const;
+    // Read-only compatibility for retained HRO1 ResearchIntentClient records.
+    // The old format has no HSR1 recovery binding, so this validates the exact
+    // immutable place-order record and its original command ID, then performs
+    // ONLY execution.get_command_status against this explicitly configured
+    // client. It never converts, persists, previews or submits the old request.
+    // Unknown/not-found/uncertain status is never permission to mutate.
+    bool InspectLegacyHro1(const std::string& directory, const std::string& executionCommandId,
+                           const std::string& queryCallId, NativeToolClientResult& result,
+                           std::string& reason) const;
     bool Inspect(const PreparedStrategyCommand& prepared, const std::string& queryCallId,
                  NativeToolClientResult& result, std::string& reason) const;
     bool Status(const std::string& executionCommandId, const std::string& queryCallId,

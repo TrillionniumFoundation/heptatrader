@@ -335,6 +335,27 @@ void TestNativeExecutionLifecycle() {
     NativeToolClientResult result; std::string reason;
     const auto start = std::chrono::steady_clock::now();
     const auto auth = Preview(client, marketable, "research-actual-preview-1");
+
+    // A retained HRO1 record may be queried, but cannot become a mutation
+    // source. Exercise the real Gateway/Execution path before the command has
+    // ever been submitted, then rely on the terminal OMS journal below to prove
+    // there is still exactly one place_send_attempt after the explicit submit.
+    const std::string legacyDirectory = f.root.path + "/legacy-hro1";
+    Require(::mkdir(legacyDirectory.c_str(), 0700) == 0, "legacy HRO1 directory");
+    auto legacyRequest = marketable.SubmissionRequest(auth.commandId, auth.permit);
+    legacyRequest.sessionToken = "hepta-research-outbox-v1-not-a-credential";
+    std::string legacyWire;
+    Require(TypedToolProtocol::EncodeRequest(legacyRequest, legacyWire, reason), reason);
+    WritePrivateFile(legacyDirectory + "/" + auth.commandId + ".hro", "HRO1" + legacyWire, 0600);
+    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                                    "research-legacy-hro1-query-001", result, reason),
+            "legacy HRO1 status transport failed: " + reason);
+    Require(f.execution->Venue().AdmittedOrderCount() == 0,
+            "legacy HRO1 inspection admitted an order");
+    errno = 0;
+    Require(::access((legacyDirectory + "/" + auth.commandId + ".hsr").c_str(), F_OK) != 0 &&
+            errno == ENOENT, "legacy HRO1 inspection created HSR1 state");
+
     Require(client.Submit(marketable, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "ok", "real submit rejected: " + result.responseJson);
     const long filledId = result.envelope.orderId;

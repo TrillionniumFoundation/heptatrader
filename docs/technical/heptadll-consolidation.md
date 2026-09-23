@@ -266,13 +266,17 @@ success flag. No new target, translation unit, archive, installed-header path,
 production installation entry, command schema, OMS or broker authority is added.
 
 The new API provides a destination for source-adapting #108 callers, not binary
-or old-record compatibility. HRO1 records lack the canonical binding and remain
-with the original client. #106's Python application-key/Decimal/outbox state
-machine and its status-only handling of uncertain submissions remain on their
-pinned reference. Those policies cannot be replaced by unconditional same-ID
-Submit without an application decision. No historical record is converted,
-credentialed anew, deleted or marked successfully migrated by this change.
-Existing #107 HSR1 records remain usable under their original binding.
+ABI compatibility. HRO1 records lack the canonical recovery binding; they remain
+immutable legacy bytes, but `InspectLegacyHro1` can now strictly validate their
+historical framing/token/original place-order command and issue only a status
+query through an explicitly configured current client. It cannot convert HRO1
+to HSR1, preview, submit, refresh a permit or reconstruct the missing binding.
+#106's Python application-key/Decimal/outbox state machine and its status-only
+handling of uncertain submissions remain on their pinned reference. Those
+policies cannot be replaced by unconditional same-ID Submit without an
+application decision. No historical record is converted, credentialed anew,
+deleted or marked successfully migrated by this change. Existing #107 HSR1
+records remain usable under their original binding.
 
 The previous model/portfolio/CSV/BIN/XML migrations and all of their tests remain
 in the merged baseline. Full legacy ABI and arbitrary Decimal equivalence,
@@ -312,7 +316,7 @@ continuation PR, not a source document's unconditional passing declaration.
 | Canonical HSR1 native callers needing conservative recovery | Use InspectStored/Inspect with the original command and a separate query ID; no auto-resend |
 | Canonical callers explicitly choosing idempotent same-ID resend | Existing Submit/SubmitStored retained without changed semantics |
 | #106 Python StrategyGateway application-key/Decimal/JSON-record API | Retain pinned #106 source and records; native query policy is a migration destination, not completed application migration |
-| #108 HRO1 record consumers | Retain original records/callers; no invented binding or automatic conversion |
+| #108 HRO1 record consumers | Retain original caller/API; canonical `InspectLegacyHro1` can strictly validate the immutable old record and query its original command ID, but cannot invent the missing recovery binding, convert to HSR1 or submit |
 | Original library strategies and external/private/binary deployments | Retain HeptaDLL-main, releases and history until named owner/artifact disposition |
 
 Engineering consolidation continues without making source age, a bounded symbol

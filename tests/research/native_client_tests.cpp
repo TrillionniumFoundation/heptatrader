@@ -315,8 +315,56 @@ void OutboxTests() {
     const bool stored = client.Persist(root.path, cancellation, "umask-request-001", reason);
     ::umask(previousMask);
     Check(stored && client.LoadStored(root.path, "umask-request-001", loaded, reason), "restrictive umask persistence");
+    // Retained HRO1 is supported only as a read-only reconciliation input.
+    // Its old framing has no current recovery binding, so no conversion or
+    // mutation retry can be derived from the record.
+    const std::string legacyId = "legacy-hro1-order-001";
+    const std::string legacyQuery = "legacy-hro1-query-001";
+    auto legacyRequest = order.SubmissionRequest(legacyId, permit);
+    legacyRequest.sessionToken = "hepta-research-outbox-v1-not-a-credential";
+    std::string legacyWire;
+    Check(TypedToolProtocol::EncodeRequest(legacyRequest, legacyWire, reason), "legacy HRO1 fixture encode");
+    const std::string legacyPath = root.path + "/" + legacyId + ".hro";
+    const std::string legacyBytes = "HRO1" + legacyWire;
+    WriteBytes(legacyPath, legacyBytes);
+    result.envelope.status = "ok"; result.responseJson = "stale";
+    Check(!client.InspectLegacyHro1(root.path, legacyId, legacyQuery, result, reason) &&
+          !reason.empty() && reason.find("LEGACY_HRO1_") != 0,
+          "valid legacy HRO1 did not reach read-only status transport");
+    Check(result.envelope.status.empty() && result.responseJson.empty() &&
+          ReadBytes(legacyPath) == legacyBytes, "legacy HRO1 inspection mutated state or leaked success");
+    errno = 0;
+    Check(::access((root.path + "/" + legacyId + ".hsr").c_str(), F_OK) != 0 && errno == ENOENT,
+          "legacy HRO1 inspection converted the record");
+    Check(!client.InspectLegacyHro1(root.path, legacyId, legacyId, result, reason) &&
+          reason == "RESEARCH_INSPECTION_QUERY_ID_REUSED",
+          "legacy HRO1 reused mutation identity for query");
+
+    auto legacyWrong = order.PreviewRequest(legacyId);
+    legacyWrong.sessionToken = "hepta-research-outbox-v1-not-a-credential";
+    Check(TypedToolProtocol::EncodeRequest(legacyWrong, legacyWire, reason), "legacy wrong-tool encode");
+    WriteBytes(legacyPath, "HRO1" + legacyWire);
+    Check(!client.InspectLegacyHro1(root.path, legacyId, legacyQuery, result, reason) &&
+          reason == "LEGACY_HRO1_REQUEST_BINDING_INVALID", "legacy mutation allowlist widened");
+
+    legacyWrong = legacyRequest;
+    legacyWrong.sessionToken = "different-placeholder";
+    Check(TypedToolProtocol::EncodeRequest(legacyWrong, legacyWire, reason), "legacy wrong-token encode");
+    WriteBytes(legacyPath, "HRO1" + legacyWire);
+    Check(!client.InspectLegacyHro1(root.path, legacyId, legacyQuery, result, reason) &&
+          reason == "LEGACY_HRO1_REQUEST_BINDING_INVALID", "legacy placeholder binding ignored");
+
+    WriteBytes(legacyPath, legacyBytes);
+    Check(::chmod(legacyPath.c_str(), 0640) == 0, "legacy fixture chmod");
+    Check(!client.InspectLegacyHro1(root.path, legacyId, legacyQuery, result, reason) &&
+          reason == "LEGACY_HRO1_RECORD_UNSAFE", "unsafe legacy record mode accepted");
+    Check(::chmod(legacyPath.c_str(), 0600) == 0, "legacy fixture mode restore");
+    WriteBytes(legacyPath, original);
+    Check(!client.InspectLegacyHro1(root.path, legacyId, legacyQuery, result, reason),
+          "HSR1 bytes relabeled as HRO1 were accepted");
+
     std::cout << "outbox: immutable place/cancel/flatten, credential binding, unsafe-file rejection,"
-              << " checksum oracles and 12 concurrent publishers passed\n";
+              << " checksum oracles, read-only HRO1 reconciliation and 12 concurrent publishers passed\n";
 }
 
 // Inputs may be borrowed from the previous result/request or error string.

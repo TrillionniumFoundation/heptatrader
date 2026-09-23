@@ -36,6 +36,19 @@ def main():
         assert item["status"] == "retained_unconfirmed"
         assert item["blocks_legacy_retirement"] is True
 
+    c05 = consumers["C05"]
+    assert c05["status"] == "retained_format"
+    assert c05["blocks_legacy_retirement"] is True
+    reconciliation = c05["canonical_read_only_reconciliation"]
+    assert reconciliation["api"] == "NativeStrategyClient::InspectLegacyHro1"
+    assert reconciliation["mutation_capability"] is False
+    assert reconciliation["record_conversion"] is False
+    assert reconciliation["missing_recovery_binding_invented"] is False
+    assert set(reconciliation["evidence"]) == {
+        "tests/research/native_client_tests.cpp",
+        "tests/research/native_execution_tests.cpp",
+    }
+
     canonical = lifecycle["canonical_development"]
     legacy = lifecycle["legacy_repository"]
     assert len(canonical["accepted_baseline_commit"]) == 40
