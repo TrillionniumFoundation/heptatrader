@@ -123,6 +123,21 @@ int main() {
     const auto expiry = matcher.AdvanceWatermark(80);
     Require(expiry.size() == 1 && expiry[0].kind == ReplayEventKind::Expired);
     matcher.Finish(80); Require(matcher.Finished() && matcher.ActiveOrders() == 0);
+    // The retained tick-trade capability is exposed only as a bounded OFFLINE
+    // inference model. This call proves the symbol survives SDK relocation.
+    CumulativeTopOfBookTradeInference inference("TEST.FUT", 1.0, 10.0);
+    CumulativeTradeObservation cumulative;
+    cumulative.instrument = "TEST.FUT"; cumulative.sequence = 1; cumulative.timestampUs = 20;
+    cumulative.cumulativeVolume = 100; cumulative.cumulativeTurnover = 100000;
+    cumulative.lastPrice = 99; cumulative.bestBidPrice = 99; cumulative.bestAskPrice = 100;
+    CumulativeTradeInferenceResult inferred;
+    Require(!inference.Observe(cumulative, inferred));
+    cumulative.sequence = 2; cumulative.timestampUs = 21; cumulative.cumulativeVolume = 103;
+    cumulative.cumulativeTurnover = 103000; cumulative.lastPrice = 100;
+    cumulative.bestBidPrice = 100; cumulative.bestAskPrice = 101;
+    Require(inference.Observe(cumulative, inferred) && inferred.inferred &&
+            inferred.inferredBuyVolume == 3 && inferred.inferredSellVolume == 0 &&
+            inferred.levels.size() == 1 && inferred.levels[0].price == 100);
     std::vector<EquityPoint> points(3);
     points[0].equity = 1000;
     points[1].timestampUs = 1; points[1].equity = 1100;
