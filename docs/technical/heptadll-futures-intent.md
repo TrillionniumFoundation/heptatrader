@@ -29,10 +29,19 @@ client, Gateway and venue adapter may not guess it.
 The generic tool contract can express IOC/FOK and explicit position effect.
 That is not venue qualification. The current IB PAPER and deterministic
 simulator profiles remain DAY-only and reject nonempty position effects, so a
-futures request cannot silently degrade into stock/FX semantics. A future CTP,
-XT or other venue profile must implement and test its own exact offset/TIF
-translation, rejection behavior, crash recovery, terminal reconciliation and
-broker evidence before it may accept these requests.
+futures request cannot silently degrade into stock/FX semantics.
+
+The generic IB adapter nevertheless preserves an already-qualified DAY/IOC/FOK
+value through the final SDK call rather than rewriting it to DAY. IB's native
+`openClose` field can represent only `OPEN -> O` and `CLOSE -> C`;
+`CLOSE_TODAY` and `CLOSE_YESTERDAY` therefore fail before broker send instead
+of being collapsed into `CLOSE`. This is semantic preservation only: it does
+not widen the current CASH/STK PAPER profile or authorize a FUT mutation.
+
+A future IB-futures, CTP, XT or other venue profile must implement and test its
+own exact contract/offset/TIF translation, rejection behavior, risk accounting,
+crash recovery, terminal reconciliation and broker evidence before it may
+accept these requests.
 
 The request semantic hash, preview-permit fingerprint, Tool Host replay identity,
 decision audit fingerprint and internal Execution Service wire all bind

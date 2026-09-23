@@ -1433,6 +1433,12 @@ public:
     }
 
     bool PlaceOrder(long localOrderId, const IBContractLite& c, const IBOrderLite& o) override {
+        return PlaceOrderWithTimeInForce(localOrderId, c, o, "DAY");
+    }
+
+    bool PlaceOrderWithTimeInForce(
+        long localOrderId, const IBContractLite& c, const IBOrderLite& o,
+        const std::string& timeInForce) override {
         if (!m_connected || m_params.readOnly) return false;
 
         auto rejectLocal = [&](const std::string& reason, int code) -> bool {
@@ -1469,7 +1475,21 @@ public:
         if (o.outsideRth) {
             od.outsideRth = true;
         }
-        od.tif = "DAY";
+        if (timeInForce != "DAY" && timeInForce != "IOC" &&
+            timeInForce != "FOK") {
+            return rejectLocal("IB_LOCAL_REJECT_TIF_INVALID", 32105);
+        }
+        od.tif = timeInForce;
+        if (o.positionEffect.empty()) {
+            od.openClose.clear();
+        } else if (o.positionEffect == "OPEN") {
+            od.openClose = "O";
+        } else if (o.positionEffect == "CLOSE") {
+            od.openClose = "C";
+        } else {
+            return rejectLocal(
+                "IB_LOCAL_REJECT_POSITION_EFFECT_UNREPRESENTABLE", 32106);
+        }
         od.orderRef = o.orderRef;
 
         Trace(BuildOrderTrace(localOrderId, ct, od));
