@@ -268,12 +268,14 @@ sanitizer results, exact tested tree identity and observed remote run status are
 recorded in PR #107 for each continuation, not hardcoded here as a success file.
 A previous head's acceptance does not automatically qualify a later source tree.
 
-Remaining exact historical API/ABI parity, external-consumer disposition,
-exchange-specific cache/matching/settlement behavior, production deployment and
-optional CTP work stay explicit. This branch is a capability integration
-candidate, not a claim that the historical library has been fully replaced or
-LIVE trading has been enabled. The original repository and release history
-remain retained until actual consumer and retirement conditions are satisfied.
+Exact historical API/ABI parity, exchange-specific cache/matching/settlement
+behavior, production deployment and optional CTP work remain explicitly outside
+the canonical replacement claim. They are final support boundaries, not missing
+authority/runtime work to import. Active legacy ABI/runtime support has ended;
+the lifecycle receipt records every retirement gate satisfied while the original
+repository remains retained only until the separate GitHub archive action is
+performed. This does not claim external deployments migrated or disappeared,
+and it does not enable LIVE trading.
 
 
 ## Typed preview-to-durable-client continuation
