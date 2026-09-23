@@ -54,7 +54,7 @@ state their implemented behavior, evidence and remaining limits separately.
 | Durable recovery | [OMS event schema](OMS-EVENT-SCHEMA.md), [lease format](technical/session-lease-format.md), [recovery capacity](technical/oms-recovery-capacity.md), [coordinator recovery memory](technical/coordinator-recovery-memory.md), [persistence support](technical/persistence-support-window.md), [lossless archive](technical/oms-archive-lifecycle.md) |
 | Lifecycle and development venue | [service lifecycle](technical/service-lifecycle.md), [simulator walkthrough](technical/simulator-operator-walkthrough.md), [systemd acceptance](technical/systemd-simulator-acceptance.md) |
 | Runtime observations | [metric inventory](OBSERVABILITY-METRICS.md), [cost boundaries](technical/runtime-cost-observations.md), [live OMS capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md), [OMS report](technical/oms-operational-report.md), [Gateway metrics](technical/gateway-runtime-observability.md), [collection](technical/telemetry-collection.md) |
-| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md), [C++ research SDK](modules/research-sdk.md), [HeptaDLL integration](technical/heptadll-integration.md) |
+| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md), [C++ research SDK](modules/research-sdk.md), [HeptaDLL integration](technical/heptadll-integration.md), [HeptaDLL source disposition](technical/heptadll-source-disposition.json) |
 
 ## Operations and release
 

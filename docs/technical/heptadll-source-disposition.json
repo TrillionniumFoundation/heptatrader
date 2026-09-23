@@ -1,0 +1,611 @@
+{
+  "schema_version": 1,
+  "legacy_repository": "TrillionniumFoundation/HeptaDLL-main",
+  "source_baseline": "5f3703258bc4cad8f96e513d8d989c2441b4729d",
+  "source_tree": "e05dd0640b82824f702b26590a514d2392af5bb4",
+  "scope": {
+    "prefix": "heptaHeptaDLL/",
+    "extensions": [
+      ".h",
+      ".cpp",
+      ".xml"
+    ],
+    "asset_count": 93,
+    "source_manifest_sha256": "sha256:c1e859c2600e883d095ecbb3c5f1bef0d8d0aae289a807e10ddd981afcbbc4e4",
+    "excludes": "Interface/ vendor SDK trees, binaries, manuals, build project files and recorded data are governed separately by C10/publication policy."
+  },
+  "group_definitions": {
+    "data_bar_semantics": {
+      "disposition": "canonicalized",
+      "canonical_targets": [
+        "Data"
+      ],
+      "evidence": [
+        "research/include/hepta/research/market_data.h",
+        "research/src/market_data.cpp",
+        "tests/research/market_data_tests.cpp"
+      ],
+      "boundary": "Legacy class layout and signatures are not ABI-compatible aliases."
+    },
+    "time_session_semantics": {
+      "disposition": "bounded_canonicalized",
+      "canonical_targets": [
+        "Data"
+      ],
+      "evidence": [
+        "research/include/hepta/research/market_data.h",
+        "research/src/market_data.cpp",
+        "tests/research/market_data_tests.cpp"
+      ],
+      "boundary": "Explicit UTC SessionSchedule/Gregorian validation replace useful semantics; implicit local-clock wrap, mutable current-session cache and historical exchange-rule tables remain reference-only."
+    },
+    "analytics_semantics": {
+      "disposition": "bounded_canonicalized",
+      "canonical_targets": [
+        "Analytics"
+      ],
+      "evidence": [
+        "research/include/hepta/research/analytics.h",
+        "research/src/analytics.cpp",
+        "tests/research/analytics_tests.cpp"
+      ],
+      "boundary": "Cash-flow-adjusted performance, multiplier-aware P&L and explicit offline variation settlement are canonical; hard-coded clearing calendars, margin and legacy metrics marked broken/unfinished are not claimed."
+    },
+    "replay_semantics": {
+      "disposition": "bounded_canonicalized",
+      "canonical_targets": [
+        "Replay",
+        "Analytics"
+      ],
+      "evidence": [
+        "research/include/hepta/research/replay.h",
+        "research/src/replay.cpp",
+        "tests/research/replay_tests.cpp",
+        "research/MODELS.md"
+      ],
+      "boundary": "Explicit replay/order-flow and uniquely solvable top-of-book inference are canonical; depth-snapshot queue reconstruction, wider-spread heuristics and callback runtime behavior remain retained."
+    },
+    "strategy_client_semantics": {
+      "disposition": "bounded_canonicalized",
+      "canonical_targets": [
+        "Strategy",
+        "NativeStrategyClient",
+        "Tool Gateway",
+        "Execution Service"
+      ],
+      "evidence": [
+        "research/include/hepta/research/strategy.h",
+        "research/include/hepta/research/native_strategy_client.h",
+        "tests/research/native_client_tests.cpp",
+        "tests/research/native_execution_tests.cpp"
+      ],
+      "boundary": "Forecast/application intent semantics migrate onto the canonical client/execution chain; direct-SPI order helpers, AgentManager threading and old strategy ABI are not copied."
+    },
+    "retained_runtime_spi": {
+      "disposition": "retained_authority_runtime",
+      "canonical_targets": [
+        "NativeStrategyClient",
+        "Tool Gateway",
+        "Execution Service"
+      ],
+      "evidence": [
+        "docs/technical/heptadll-integration.md",
+        "docs/technical/heptadll-consumers.md",
+        "docs/technical/legacy-retirement.md"
+      ],
+      "boundary": "Broker/SPI, simulator callback runtime, process-local mutation identity and direct order authority are intentionally not imported as a second core."
+    },
+    "retained_abi_types": {
+      "disposition": "retained_compatibility_abi",
+      "canonical_targets": [
+        "Data",
+        "Analytics",
+        "Replay",
+        "Strategy",
+        "NativeStrategyClient"
+      ],
+      "evidence": [
+        "docs/technical/heptadll-consumers.md",
+        "docs/technical/heptadll-consolidation.md"
+      ],
+      "boundary": "Legacy structs/enums/class layouts may be consumed by binary or private callers; canonical typed contracts are intentionally distinct and no ABI alias is asserted."
+    },
+    "reference_schedule": {
+      "disposition": "retained_reference_data",
+      "canonical_targets": [
+        "Data"
+      ],
+      "evidence": [
+        "docs/technical/heptadll-integration.md",
+        "research/LEGACY-BUNDLE.md"
+      ],
+      "boundary": "Historical session tables are provenance/reference data, not current exchange-calendar authority."
+    },
+    "infrastructure": {
+      "disposition": "superseded_infrastructure",
+      "canonical_targets": [],
+      "evidence": [
+        "docs/technical/heptadll-integration.md"
+      ],
+      "boundary": "Parser glue, locks, logging, object pools, Windows scaffolding and local utility/version code are implementation infrastructure rather than portable trading capability."
+    }
+  },
+  "summary": {
+    "reference_schedule": 1,
+    "infrastructure": 30,
+    "strategy_client_semantics": 10,
+    "retained_runtime_spi": 18,
+    "time_session_semantics": 14,
+    "data_bar_semantics": 6,
+    "retained_abi_types": 4,
+    "analytics_semantics": 4,
+    "replay_semantics": 6
+  },
+  "assets": [
+    {
+      "path": "heptaHeptaDLL/TradingSession.xml",
+      "blob_sha1": "f723c893c236ba88de8de6813db7593eeab61c1c",
+      "group": "reference_schedule"
+    },
+    {
+      "path": "heptaHeptaDLL/csv.h",
+      "blob_sha1": "93e9034e528766c54b2722f23120a8dd8ab714f2",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/csvparser.cpp",
+      "blob_sha1": "50e201f487e149309e3792b59db180f9637c6a31",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/csvparser.h",
+      "blob_sha1": "3cb3612bdf63f31c44b20f626dfd08b02d0ceb10",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/dllmain.cpp",
+      "blob_sha1": "260abc6dd8c40a55d1dea784a0528b0a0c19a6e6",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaAgentManager.cpp",
+      "blob_sha1": "caa96bdf5e53a2de58001163723bc87de9dd893a",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaAgentManager.h",
+      "blob_sha1": "da4061b98cd1ba45485b4a1b071148829a4aacb9",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaAutoCriticalSection.cpp",
+      "blob_sha1": "7079ed54c5db74d8d866f4c56ae214dde0d45106",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaAutoCriticalSection.h",
+      "blob_sha1": "ffd29d5f25cd71a3b86e8aac3ef09e3dd03078d6",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaAutoMutex.cpp",
+      "blob_sha1": "a6b0961de0bdc9fedacbcaba57ffb0130648dca8",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaAutoMutex.h",
+      "blob_sha1": "e4ad97a66ceb9e0cc8412243d07021d2f288f1ee",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicAgent.cpp",
+      "blob_sha1": "81d63a35eee6b7b27d558b96045ec6d4ecec3de8",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicAgent.h",
+      "blob_sha1": "45116276a7594af2b0da6b506a19235320a288f7",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicCTAStrategy.cpp",
+      "blob_sha1": "69c5a9bf583390bb7b670c06bf3f2aee8a40b7c3",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicCTAStrategy.h",
+      "blob_sha1": "c021965da80538d47fe94e7ce6b095ea22e5aeab",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicCout.cpp",
+      "blob_sha1": "95ea9361a4e092852ca15b95a94915cac32d230b",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicCout.h",
+      "blob_sha1": "7032b30c10b1f69d778efd3490a616e9c4128d15",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicKindleStrategy.cpp",
+      "blob_sha1": "39c04369b99bf8c1a01d2846add8d664351a9511",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicKindleStrategy.h",
+      "blob_sha1": "94afcfd043bba7f1438f171f873787158c2d2b94",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicMdSpi.cpp",
+      "blob_sha1": "6596fc4a77ab45d7ee7f5b74bbd2f0d28c0605c0",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicMdSpi.h",
+      "blob_sha1": "1704902cb87ecfbf011f72f976f555d2458735bc",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicSimulator.cpp",
+      "blob_sha1": "eccee972c7dffb07ae0daf206a1c63ba2b2d9bbb",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicSimulator.h",
+      "blob_sha1": "d75bef43c9578ec0846f0b3ac5b9fab1c0998953",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicStrategy.cpp",
+      "blob_sha1": "b1a749a26ad909b33abc1c4a90028ffa121ce3d9",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicStrategy.h",
+      "blob_sha1": "35ef3bfe551ef8d97db1ba26db3cf3675310d9d5",
+      "group": "strategy_client_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicTradeSpi.cpp",
+      "blob_sha1": "a1ed417b3ec4eda047f1356ab152d8173246c404",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaBasicTradeSpi.h",
+      "blob_sha1": "36d61e85a9de49fa6219e25c42c5b90b27a2570e",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCalendar.cpp",
+      "blob_sha1": "e13416014e45beda556f5081e26c6f0ae0b4ff54",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCalendar.h",
+      "blob_sha1": "48d62902af19297acb370fe16d25a62e076fed35",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaChinaTradingCalendar.cpp",
+      "blob_sha1": "7074ab6582a62020a43aeb7964c3c98cf8e707df",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaChinaTradingCalendar.h",
+      "blob_sha1": "c8a4eac7c955d1e2570d13aa98ad9407e10712d0",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCommonUtility.cpp",
+      "blob_sha1": "e4766acb1fd8680b6ceec17738766bdb85248c3d",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCommonUtility.h",
+      "blob_sha1": "82c13ac009407d4c6dc85c937a356e93587f0eb6",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCriticalSection.cpp",
+      "blob_sha1": "801a886a2f4bd706a3d992579a456bbdc0d16d70",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCriticalSection.h",
+      "blob_sha1": "1197fa310d61f8a9e45cb12773eba37c11ba208c",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCriticalSectionWithSpin.cpp",
+      "blob_sha1": "7645d23dc67e5599bc31e446b263ec14eddaa68b",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaCriticalSectionWithSpin.h",
+      "blob_sha1": "c1e3e9cb7711f7880831904afe9949676bfee97e",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaDataFileHelper.cpp",
+      "blob_sha1": "dfeb7f9093f84b76a4fc7601326ab187c1418f67",
+      "group": "data_bar_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaDataFileHelper.h",
+      "blob_sha1": "75c2b9a8c24840faa9384027c009b38c44fc7122",
+      "group": "data_bar_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaDate.cpp",
+      "blob_sha1": "f8eb26f59ce94374aa03e4894d0ecb2939a671c4",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaDate.h",
+      "blob_sha1": "67c94e05c48d02fcdb1bbddb79ba26023d5e956c",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaEasyTradeLog.cpp",
+      "blob_sha1": "77f472ebdac76e6f6199515b5466e78f29e68c51",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaEasyTradeLog.h",
+      "blob_sha1": "0e7e0ae06664787b2f182c57dabe33afb95c0ecd",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaFtdMdSpi.cpp",
+      "blob_sha1": "3364bca89d2e3546143fd97f6200171f4983d34e",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaFtdMdSpi.h",
+      "blob_sha1": "2e9a9ac7c9cb2aff3bfa23e29b3fd9b60b72827c",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaFtdTradeSpi.cpp",
+      "blob_sha1": "beef30258278194b0cc3a4ca8b3b8c91bb835a6b",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaFtdTradeSpi.h",
+      "blob_sha1": "345e65ef24011d0839c82a7f1bc82d93afe6a7c5",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaInterfaceDefine.cpp",
+      "blob_sha1": "ee2109cca8e419ae5dcd0f195229f1c57b664ade",
+      "group": "retained_abi_types"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaInterfaceDefine.h",
+      "blob_sha1": "f5c08a25db3056a2d616853ba7d6c9b9167a7a43",
+      "group": "retained_abi_types"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaKindleStick.cpp",
+      "blob_sha1": "fea4d03a22ef3c77014520ca13b836bd2e48a037",
+      "group": "data_bar_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaKindleStick.h",
+      "blob_sha1": "42e860b1a6e13826acd3c86d64665f77ad31912d",
+      "group": "data_bar_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaKindleStickSeries.cpp",
+      "blob_sha1": "2b9c7443f2f4ea8a8e24aa43d911908031ec5134",
+      "group": "data_bar_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaKindleStickSeries.h",
+      "blob_sha1": "a088502f2074cbff81cfae5b10c158023fd0d4d0",
+      "group": "data_bar_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaLog.cpp",
+      "blob_sha1": "6f5a134890b88f93add2d43a4d59356f6f052d02",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaLog.h",
+      "blob_sha1": "d8eee632738fd77876f3f56f57d95b4c20b368ec",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaMarketTime.cpp",
+      "blob_sha1": "ed3e3e729a353c45d17a7860a80739840e8dc90c",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaMarketTime.h",
+      "blob_sha1": "8c93d3188c607f4277601e48ecb05657bd0d5625",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaMutex.h",
+      "blob_sha1": "180cd34e217b7b8ced6e89b684a5d466c4f4bda2",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaNetValueEvaluation.cpp",
+      "blob_sha1": "181cd7b0b6e9a45a6fd57995ef592dc2432864db",
+      "group": "analytics_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaNetValueEvaluation.h",
+      "blob_sha1": "91a18a882d999eeafe93d07e9aac86f889b060c5",
+      "group": "analytics_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaOrderBook.cpp",
+      "blob_sha1": "4a1029bb7ae07e5cd171f95e438e8a62e5a22d0b",
+      "group": "replay_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaOrderBook.h",
+      "blob_sha1": "606e89ee216973c9d1bc3ddc283e46e7733d9520",
+      "group": "replay_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaOrderReference.cpp",
+      "blob_sha1": "f9a340727be3640ed358665e62c8eb6b8ad69a85",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaOrderReference.h",
+      "blob_sha1": "8a656b4fe740223b9ea123670ec8e5ebc1ad9154",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaPegasusSimulator.cpp",
+      "blob_sha1": "cb25a118c7bdc9dd156027a17377f3fff0619061",
+      "group": "replay_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaPegasusSimulator.h",
+      "blob_sha1": "5f3eef755291899309f5c607739c4a742ee2fb19",
+      "group": "replay_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaProductTradeTime.cpp",
+      "blob_sha1": "4a91d780f6d088716c21ba0f089b0a7a8c09a926",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaProductTradeTime.h",
+      "blob_sha1": "f2539a7b509bcc2e93cedbccc6cb3df26f6381b1",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaProductTradeTimeMgr.cpp",
+      "blob_sha1": "51c15bfea554a8817f279b85c1979b6d631cf7c3",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaProductTradeTimeMgr.h",
+      "blob_sha1": "9dee452bbfa697e6ebb9743efd93da4dc848f998",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaQdpMdSpi.cpp",
+      "blob_sha1": "20bf3f0fd345118c36cb083d03436ab619b06ba1",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaQdpMdSpi.h",
+      "blob_sha1": "643cf4f1e10fb41a83887cf7fee3f096c5f5efd3",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaSettlement.cpp",
+      "blob_sha1": "e5ff2bef9c87e725864cc61945b33172d71136d0",
+      "group": "analytics_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaSettlement.h",
+      "blob_sha1": "5ecb79e196e99774ee4a633115da5515e273c695",
+      "group": "analytics_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaShareObjPool.h",
+      "blob_sha1": "e006428fefae6f7c80ae45a7d567a274bffe81ca",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaSimMdSpi.cpp",
+      "blob_sha1": "d2c066de72041de0dbccbaa53641aa0830981086",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaSimMdSpi.h",
+      "blob_sha1": "55dcb6aee7c77e034535dec75df56a6d3a9d9f4c",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaSimTradeSpi.cpp",
+      "blob_sha1": "1ca252438d02100259f9e9a0c3661df77f15a183",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaSimTradeSpi.h",
+      "blob_sha1": "14f3d561242ccd044fa6023c36e91143dc1a6286",
+      "group": "retained_runtime_spi"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaStrategyLog.cpp",
+      "blob_sha1": "d813be7a95235de536c421b6137d25bbfd54b43e",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaStrategyLog.h",
+      "blob_sha1": "4ed4ee13e19e2c73ceb9807f6048328c7575c29c",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTickTradeManager.cpp",
+      "blob_sha1": "929d9ca6b1a01bf619d679840f013d290061bc8d",
+      "group": "replay_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTickTradeManager.h",
+      "blob_sha1": "1d870856a162444cb542c04a202d857a79b45aef",
+      "group": "replay_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTimeStamp.cpp",
+      "blob_sha1": "97ac8832bda975d45abc6f66cb8448d7b6967ca4",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTimeStamp.h",
+      "blob_sha1": "bd5bb7e55eda42d271b008df7b643fc0f85ce7c9",
+      "group": "time_session_semantics"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTradeCommonDefine.cpp",
+      "blob_sha1": "62da593eb6b304ac8927334a1f991e1ae987e96d",
+      "group": "retained_abi_types"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTradeCommonDefine.h",
+      "blob_sha1": "f7d6bcff9377fcd99e7ceddf2afcb4d4ed4e916f",
+      "group": "retained_abi_types"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTradeLog.cpp",
+      "blob_sha1": "b4e636582d52cec3e99926cc56fc527ce6e98ed3",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaTradeLog.h",
+      "blob_sha1": "55c44089b06556cdfbfdc04b64a4bab257475deb",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/heptaVersion.h",
+      "blob_sha1": "4bb23131b7692fbcbdaff5599208454ab6a8c2e0",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/stdafx.cpp",
+      "blob_sha1": "e4bbf3d017253fc2fea4a6894724e6bc5c0aca83",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/stdafx.h",
+      "blob_sha1": "9b645eb38d2c2bc471828f7994961c5efff5df7e",
+      "group": "infrastructure"
+    },
+    {
+      "path": "heptaHeptaDLL/targetver.h",
+      "blob_sha1": "7a7d2c83b87e4a064a51e5fd8a18393201ddfaeb",
+      "group": "infrastructure"
+    }
+  ]
+}

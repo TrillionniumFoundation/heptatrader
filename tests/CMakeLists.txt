@@ -234,3 +234,12 @@ add_test(NAME hepta_heptadll_migration_state
         "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-lifecycle-status.json")
 set_tests_properties(hepta_heptadll_migration_state PROPERTIES
     LABELS "core;source" TIMEOUT 30)
+
+add_test(NAME hepta_heptadll_source_disposition
+    COMMAND "${Python3_EXECUTABLE}" -I -B
+        "${CMAKE_CURRENT_SOURCE_DIR}/python/test_heptadll_source_disposition.py"
+        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-source-disposition.json"
+        "${CMAKE_SOURCE_DIR}"
+        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-consumer-migrations.json")
+set_tests_properties(hepta_heptadll_source_disposition PROPERTIES
+    LABELS "core;source" TIMEOUT 30)
