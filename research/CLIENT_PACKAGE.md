@@ -126,7 +126,14 @@ credential value. Timeout changes and use of a token file versus the same token
 value do not change the binding. Token rotation, a different UID or endpoint
 fail closed rather than accidentally replaying a command into another session.
 `CallBound` resolves a token file once and pins that in-memory value for both
-fresh discovery and the one forwarded call, closing a token-rotation window.
+verified discovery and the one forwarded call, closing a token-rotation window.
+A warm `NativeToolClient` now reuses its verified catalog only for that exact
+credential/UID/endpoint binding. Ordinary `Call` also pins one credential across
+discovery and dispatch; credential rotation requires a new catalog on the next
+call. Cache reuse never authorizes an operation, retries a mutation, extends a
+permit or suppresses server-side schema/capability checks. The static client SDK
+must be rebuilt with the matching headers; independently built object-layout
+compatibility is not asserted.
 This is configuration binding, **not** server attestation or a credential. The
 Gateway/Execution service still verifies the real session, lease, preview and
 command identity. Configuration changes require explicit operator reconciliation;

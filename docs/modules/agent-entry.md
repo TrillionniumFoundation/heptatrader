@@ -34,6 +34,22 @@ The Python MCP bridge keeps only a discovered descriptor catalog and catalog dig
 
 The native client performs the equivalent wire and discovery checks in C++. Neither client persists execution state.
 
+`NativeToolClient::Call` and `CallBound` resolve one credential snapshot before
+any network request and retain it across discovery and dispatch. The verified
+catalog is a single bounded in-memory cache keyed by the exact credential, UID
+and endpoint recovery binding. Warm bound calls reuse that catalog rather than
+issuing another `system.tools.list` and durable Gateway audit. A changed binding
+requires independent discovery; a stored request with the old binding is rejected
+before network dispatch. Token rotation during discovery cannot switch the
+principal of the call already in progress. Every actual call still reaches the
+Gateway's current session/capability/schema checks and Execution's existing
+permit/final-risk boundary. No mutation is retried or automatically refreshed.
+Real-socket tests cover cold discovery, warm bound reuse, rotation between calls
+and rotation while the discovery response is pending. This is an internal C++
+class-layout change requiring client recompilation, not a wire/HSR1 change or
+binary-compatibility claim for independently built clients.
+
+
 ## Failure semantics
 
 - Missing or unsafe token: fail before connecting.

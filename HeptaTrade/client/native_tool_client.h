@@ -46,6 +46,12 @@ public:
                                  std::string& reason);
 
 private:
+    bool CallPinned(TradingToolHostRequest request,
+                    NativeToolClientResult& result, std::string& reason) const;
+    bool CallSnapshot(TradingToolHostRequest request,
+                      const NativeToolClientConfig& snapshot,
+                      const std::string& binding,
+                      NativeToolClientResult& result, std::string& reason) const;
     bool ResolveRecoveryConfig(NativeToolClientConfig& config,
                                std::string& binding, std::string& reason) const;
     bool CallOnce(TradingToolHostRequest request,
@@ -57,4 +63,7 @@ private:
     NativeToolClientConfig m_config;
     mutable std::mutex m_discoveryMutex;
     mutable NativeToolDiscoveryContract::CatalogSnapshot m_discoveryCatalog;
+    // Schema discovery is reusable data, never authorization. A different
+    // resolved credential/endpoint/UID must obtain its own verified catalog.
+    mutable std::string m_discoveryBinding;
 };

@@ -7,6 +7,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -155,7 +156,9 @@ bool DescribeAgainstListedCatalog(
     return called;
 }
 
-void TestAutomaticSchemaDiscoveryAndInjection()
+enum class DiscoveryScenario { Automatic, BoundReuse, InflightRotation };
+
+void TestDiscoveryCredentialScenario(DiscoveryScenario scenario)
 {
     const std::string descriptorHash =
         "sha256:23e27458810abb6b8949d4cae06768582133e9f909235e06828bfda9d78811e0";
@@ -181,6 +184,12 @@ void TestAutomaticSchemaDiscoveryAndInjection()
         "\"detail\":\"\",\"order_id\":-1,\"payload\":{\"bid\":1.0,\"ask\":1.1}}"
     };
 
+    const bool reuseBound = scenario == DiscoveryScenario::BoundReuse;
+    const bool rotateInflight = scenario == DiscoveryScenario::InflightRotation;
+    const std::vector<bool> discoveryRequests = reuseBound ?
+        std::vector<bool>{true, false, false, false, true, false, false} :
+        (rotateInflight ? std::vector<bool>{true, false, true, false} :
+                          std::vector<bool>{true, false});
     char directory[] = "/tmp/hepta-native-client-schema-XXXXXX";
     assert(::mkdtemp(directory) != nullptr);
     const std::string socketPath = std::string(directory) + "/tool.sock";
@@ -195,11 +204,20 @@ void TestAutomaticSchemaDiscoveryAndInjection()
                   sizeof(address)) == 0);
     assert(::listen(listener, 2) == 0);
 
+    const std::string tokenPath = std::string(directory) + "/token";
+    const auto writeToken = [&tokenPath](const std::string& value) {
+        const int fd = ::open(tokenPath.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+        assert(fd >= 0);
+        assert(::write(fd, value.data(), value.size()) == static_cast<ssize_t>(value.size()));
+        assert(::close(fd) == 0);
+    };
+    writeToken("native-client-session-token");
     const pid_t child = ::fork();
     assert(child >= 0);
     if (child == 0)
     {
-        for (unsigned int index = 0; index < 2; ++index)
+        ::alarm(10); // a failed cache expectation must not orphan a listener
+        for (std::size_t index = 0; index < discoveryRequests.size(); ++index)
         {
             const int connection = ::accept(listener, nullptr, nullptr);
             if (connection < 0) _exit(2);
@@ -211,16 +229,22 @@ void TestAutomaticSchemaDiscoveryAndInjection()
                 !TypedToolProtocol::DecodeRequest(
                     requestBody, observed, childReason))
                 _exit(3);
-            if ((index == 0 &&
+            if ((discoveryRequests[index] &&
                  (observed.call.name != "system.tools.list" ||
                   !observed.expectedSchemaHash.empty())) ||
-                (index == 1 &&
+                (!discoveryRequests[index] &&
                  (observed.call.name != "market.get_quote" ||
                   observed.call.instrument != "EUR.USD" ||
                   observed.expectedSchemaHash != descriptorHash)))
                 _exit(4);
+            const bool rotated = (reuseBound && index >= 4) || (rotateInflight && index >= 2);
+            if (observed.sessionToken != (rotated ? "rotated-session-token" :
+                                                   "native-client-session-token")) _exit(6);
+            // Change credentials while discovery is in flight. The next
+            // request in THIS call must still use the original principal.
+            if (rotateInflight && index == 0) writeToken("rotated-session-token");
             if (!TypedToolProtocol::WriteFrame(
-                    connection, responses[index], 2000, childReason))
+                    connection, responses[discoveryRequests[index] ? 0 : 1], 2000, childReason))
                 _exit(5);
             ::close(connection);
         }
@@ -230,7 +254,8 @@ void TestAutomaticSchemaDiscoveryAndInjection()
 
     NativeToolClientConfig config;
     config.socketPath = socketPath;
-    config.sessionToken = "native-client-session-token";
+    if (reuseBound || rotateInflight) config.tokenFile = tokenPath;
+    else config.sessionToken = "native-client-session-token";
     config.timeoutMs = 2000;
     config.maxResponseBytes = 65536;
     NativeToolClient client(config);
@@ -242,13 +267,62 @@ void TestAutomaticSchemaDiscoveryAndInjection()
     std::string reason;
     assert(client.Call(request, result, reason));
     assert(result.envelope.status == "ok");
+    if (reuseBound)
+    {
+        std::string binding;
+        assert(client.RecoveryBinding(binding, reason));
+        request.toolCallId = "bound-quote-001";
+        assert(client.CallBound(request, binding, result, reason));
+        request.toolCallId = "bound-quote-002";
+        assert(client.CallBound(request, binding, result, reason));
+        const TradingToolHostRequest validRequest = request;
+        request.expectedSchemaHash = "sha256:" + std::string(64, 'a');
+        assert(!client.CallBound(request, binding, result, reason));
+        assert(reason == "DISCOVERY_REQUEST_SCHEMA_HASH_MISMATCH");
+        assert(result.responseJson.empty());
+        request.expectedSchemaHash.clear();
+        request.call.name = "trade.place_order";
+        assert(!client.CallBound(request, binding, result, reason));
+        assert(reason == "DISCOVERY_TOOL_NOT_ADVERTISED");
+        assert(result.responseJson.empty());
+        request = validRequest;
+        writeToken("rotated-session-token");
+        assert(!client.CallBound(request, binding, result, reason));
+        assert(reason == "NATIVE_RECOVERY_BINDING_MISMATCH");
+        assert(result.responseJson.empty());
+        request.toolCallId = "rotated-quote-001";
+        assert(client.Call(request, result, reason));
+        assert(client.RecoveryBinding(binding, reason));
+        request.toolCallId = "rotated-bound-quote-001";
+        assert(client.CallBound(request, binding, result, reason));
+    }
+    else if (rotateInflight)
+    {
+        request.toolCallId = "after-inflight-rotation";
+        assert(client.Call(request, result, reason));
+        assert(result.envelope.status == "ok");
+    }
 
     ::close(listener);
     int status = 0;
     assert(::waitpid(child, &status, 0) == child);
     assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    std::remove(tokenPath.c_str());
     std::remove(socketPath.c_str());
     assert(::rmdir(directory) == 0);
+}
+
+void TestAutomaticSchemaDiscoveryAndInjection()
+{
+    TestDiscoveryCredentialScenario(DiscoveryScenario::Automatic);
+}
+void TestBoundDiscoveryReuseAndCredentialRotation()
+{
+    TestDiscoveryCredentialScenario(DiscoveryScenario::BoundReuse);
+}
+void TestCredentialPinnedAcrossDiscoveryRotation()
+{
+    TestDiscoveryCredentialScenario(DiscoveryScenario::InflightRotation);
 }
 
 void TestTransportResponseBoundary()
@@ -492,6 +566,8 @@ int main()
     std::remove(link.c_str());
     std::remove(path);
     TestAutomaticSchemaDiscoveryAndInjection();
+    TestBoundDiscoveryReuseAndCredentialRotation();
+    TestCredentialPinnedAcrossDiscoveryRotation();
     TestTransportResponseBoundary();
     return 0;
 }
