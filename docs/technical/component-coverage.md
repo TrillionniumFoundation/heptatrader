@@ -44,3 +44,11 @@ The lightweight historical `OmsRecover` projection is compiled from
 unit owned by that target in both inventories, not a shipped implementation.
 The module catalog still lists its behavioral fixtures under OMS tests; the
 production journal parser and supported historical schemas are unchanged.
+
+## Independent build-profile refresh
+
+`python3 scripts/verify_build_ownership.py --generate --profile core` regenerates
+only core without an IB SDK. Unselected profile snapshots are preserved, not
+certified. `--profile ib` requires the real SDK/BID archive; `--profile all`
+explicitly observes both. A failed selected profile leaves the previous file
+unchanged. Full generated graphs are kept one target per line for focused diffs.

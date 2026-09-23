@@ -93,3 +93,14 @@ The Agent-side HTT1 codec remains protocol version 1 with optional full contract
 identity/position-effect fields. Matching-source clients and servers discover
 the current schema hash; older decoders reject unknown fields rather than
 silently narrowing the request.
+
+## Narrow internal evidence, unchanged wire envelope
+
+`ExecutionOwnerAuditResult` and `ExecutionTerminalWitness` now own separate
+field families. Supervisor audit/barrier/receipt helpers consume the audit
+result only; the terminal validator accepts only terminal evidence plus the
+operation status. Encoding and decoding reuse that same terminal invariant.
+`ExecutionControlResult` remains a compatibility envelope with existing source
+field spelling and explicit HEX1 v11 serialization; no field ID, default,
+reason code or journal/lease format is changed. This is not a claim that every
+public control operation has already migrated to a distinct wire response.

@@ -252,7 +252,7 @@ ExecutionCommandResult ExecutionCoordinator::HandleDeferredCancelLocked(
     pending.detail = journaled ?
         "cancel intent queued; broker API cancel will dispatch after Submitted/OpenOrder" :
         "cancel intent was queued but its pending receipt could not be persisted; reconcile required";
-    m_requests[requestKey] = pending;
+    m_requests.UpsertPromoted(requestKey) = pending;
     ExecutionCommandResult result;
     result.status = ExecutionCommandStatus::Uncertain;
     result.commandId = context.toolCallId;
@@ -298,7 +298,7 @@ ExecutionCommandResult ExecutionCoordinator::DuplicateResultLocked(const AgentEx
     ExecutionCommandResult result;
     result.commandId = context.toolCallId;
     const std::string requestKey = RequestKey(context.agentId, context.sessionId, context.toolCallId);
-    const std::unordered_map<std::string, RequestRecord>::const_iterator it = m_requests.find(requestKey);
+    const std::unordered_map<std::string, RequestRecord>::const_iterator it = m_requests.LookupOrLoad(requestKey);
     if (it != m_requests.end())
     {
         if (it->second.status == ExecutionCommandStatus::Uncertain)
@@ -359,7 +359,7 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
             context.agentId, context.sessionId, context.toolCallId);
         RequestRecord record;
         const std::unordered_map<std::string, RequestRecord>::const_iterator
-            existing = m_requests.find(key);
+            existing = m_requests.LookupOrLoad(key);
         if (existing != m_requests.end() &&
             (requestHash.empty() || existing->second.requestHash.empty() ||
              existing->second.requestHash == requestHash))
@@ -370,7 +370,7 @@ ExecutionCommandResult ExecutionCoordinator::RejectLocked(const AgentExecutionCo
         record.detail = detail;
         if (!requestHash.empty()) record.requestHash = requestHash;
         if (record.context.agentId.empty()) record.context = context;
-        m_requests[key] = record;
+        m_requests.UpsertPromoted(key) = record;
     }
     return result;
 }
@@ -396,7 +396,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
         return RefuseBeforeIntent(context, "REQUEST_HASH_FAILED", "canonical request hashing failed");
     const std::string requestKey = RequestKey(context.agentId, context.sessionId, context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
-        m_requests.find(requestKey);
+        m_requests.LookupOrLoad(requestKey);
     if (existing != m_requests.end())
     {
         if (!existing->second.requestHash.empty() && existing->second.requestHash != requestHash)
@@ -486,7 +486,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
     pending.quantity = command.order.totalQuantity;
     pending.price = eventPrice;
     pending.durableMutationIntent = true;
-    m_requests[requestKey] = pending;
+    m_requests.UpsertPromoted(requestKey) = pending;
     PlaceOrderDispatchContext dispatch;
     dispatch.requestKey = requestKey;
     dispatch.requestHash = requestHash;
@@ -504,7 +504,7 @@ bool ExecutionCoordinator::PrecheckPlaceIbOrder(
         command.context.agentId, command.context.sessionId,
         command.context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
-        m_requests.find(requestKey);
+        m_requests.LookupOrLoad(requestKey);
     if (existing == m_requests.end()) return false;
     const std::string requestHash = PlaceRequestHash(command);
     if (!existing->second.requestHash.empty() &&
@@ -520,7 +520,7 @@ bool ExecutionCoordinator::IsDurablePlaceReplay(
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
-        m_requests.find(RequestKey(command.context.agentId,
+        m_requests.LookupOrLoad(RequestKey(command.context.agentId,
             command.context.sessionId, command.context.toolCallId));
     return existing != m_requests.end() &&
         (existing->second.status == ExecutionCommandStatus::Accepted ||
@@ -561,7 +561,7 @@ void ExecutionCoordinator::GetPlaceSendAttemptTimes(
 
 void ExecutionCoordinator::ResetRecoveryProjectionLocked()
 {
-    m_requests.clear();
+    m_requests.Clear();
     m_orderOwners.clear();
     m_fencedSessionOwners.clear();
     m_recoveryOnlySessionOwners.clear();
@@ -803,7 +803,7 @@ void ExecutionCoordinator::ApplyRecoveredEventLocked(
     const std::string requestKey =
         RequestKey(agentId, event.traceId, commandId);
     TrackRecoveredSendAttemptLocked(event, requestKey);
-    RequestRecord& record = m_requests[requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(requestKey);
     if (!HydrateRecoveredRecordLocked(event, agentId, commandId, record)) return;
     ApplyRecoveredCommandStateLocked(event, record, agentId);
 }
@@ -1211,7 +1211,7 @@ bool ExecutionCoordinator::GetCommandStatus(
     if (agentId.empty() || sessionId.empty() || commandId.empty()) return false;
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::unordered_map<std::string, RequestRecord>::const_iterator found =
-        m_requests.find(RequestKey(agentId, sessionId, commandId));
+        m_requests.LookupOrLoad(RequestKey(agentId, sessionId, commandId));
     if (found == m_requests.end()) return false;
     out = ExecutionCommandResult();
     out.status = found->second.status;

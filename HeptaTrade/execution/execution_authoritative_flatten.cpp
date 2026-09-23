@@ -256,7 +256,7 @@ ExecutionCoordinator::HandleCancelProjectionFailureLocked(
     record.instrument = instrument;
     record.side = side;
     record.durableMutationIntent = true;
-    m_requests[requestKey] = record;
+    m_requests.UpsertPromoted(requestKey) = record;
 
     ExecutionCommandResult result;
     result.status = ExecutionCommandStatus::Uncertain;
@@ -273,7 +273,7 @@ bool ExecutionCoordinator::PrecheckFlattenPosition(
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::unordered_map<std::string, RequestRecord>::const_iterator found =
-        m_requests.find(RequestKey(command.context.agentId,
+        m_requests.LookupOrLoad(RequestKey(command.context.agentId,
             command.context.sessionId, command.context.toolCallId));
     if (found == m_requests.end()) return false;
     const std::string requestHash = FlattenHash(command);
@@ -291,7 +291,7 @@ bool ExecutionCoordinator::IsDurableFlattenReplay(
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::unordered_map<std::string, RequestRecord>::const_iterator found =
-        m_requests.find(RequestKey(command.context.agentId,
+        m_requests.LookupOrLoad(RequestKey(command.context.agentId,
             command.context.sessionId, command.context.toolCallId));
     return found != m_requests.end() &&
         (found->second.status == ExecutionCommandStatus::Accepted ||
@@ -330,7 +330,7 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
     const std::string requestKey = RequestKey(
         context.agentId, context.sessionId, context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator
-        existing = m_requests.find(requestKey);
+        existing = m_requests.LookupOrLoad(requestKey);
     if (existing != m_requests.end())
     {
         if (!existing->second.requestHash.empty() &&
@@ -404,7 +404,7 @@ ExecutionCommandResult ExecutionCoordinator::ExecuteAuthoritativeFlattenLocked(
     pending.quantity = quantity;
     pending.price = price;
     pending.durableMutationIntent = true;
-    m_requests[requestKey] = pending;
+    m_requests.UpsertPromoted(requestKey) = pending;
     return DispatchAuthoritativeFlattenLocked(
         command, plan, dispatch, lock, timing);
 }
@@ -453,7 +453,7 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenNoopLocked(
         if (commitAttempted)
         {
             RequestRecord& record =
-                m_requests[dispatch.requestKey];
+                m_requests.UpsertPromoted(dispatch.requestKey);
             record.reasonCode =
                 "OMS_FLATTEN_NOOP_WRITE_FAILED";
             ExecutionCommandResult uncertain;
@@ -477,7 +477,7 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenNoopLocked(
             command, plan, dispatch,
             "IB_FLATTEN_NOOP_COMMIT_CALLBACK_INVALID",
             "adapter accepted no-op without durable commit");
-    RequestRecord& record = m_requests[dispatch.requestKey];
+    RequestRecord& record = m_requests.UpsertPromoted(dispatch.requestKey);
     record.status = ExecutionCommandStatus::Accepted;
     record.reasonCode = "POSITION_ALREADY_FLAT";
     ExecutionCommandResult accepted;

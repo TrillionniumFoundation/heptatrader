@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `HeptaTrade/tool_host/session_supervisor_protocol.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_store.cpp`, `HeptaTrade/tool_host/unix_session_supervisor_server.cpp`, `HeptaTrade/cli/hepta_sessionctl.cpp`
+Implementation: `HeptaTrade/tool_host/session_supervisor_protocol.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_store.cpp`, `HeptaTrade/tool_host/unix_session_supervisor_server.cpp`, `HeptaTrade/cli/hepta_sessionctl.cpp`, `HeptaTrade/tool_host/session_supervisor_internal.h`, `HeptaTrade/tool_host/session_supervisor_support.cpp`, `HeptaTrade/tool_host/session_supervisor_terminal.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_codec_internal.h`, `HeptaTrade/tool_host/session_supervisor_lease_codec.cpp`
 Tests: `tests/unix_session_supervisor_server_tests.cpp`, `tests/session_supervisor_lease_store_migration_tests.cpp`
 
 ## Responsibilities
@@ -79,3 +79,18 @@ HSS1 wire protocol, encrypted store envelope and versioned plaintext records.
 It documents the actual migration restrictions, finalization states and failure
 points. Those format rules, not the illustrative logical state diagram above,
 are the compatibility contract for restart and rollback.
+
+## Internal implementation boundaries
+
+The public supervisor, serialized lease state and HSS1/HSL formats are unchanged.
+`session_supervisor_terminal.cpp` owns recovery/finalization coordination;
+`session_supervisor_support.cpp` owns shared receipt/scope helpers;
+`session_supervisor_lease_codec.cpp` owns HSL parsing/serialization and the
+existing encrypted envelope. The lease store retains physical file identity,
+atomic persistence and state-transition ownership. Private helper declarations
+are not installed APIs. Existing transition and crash tests exercise the same
+method bodies after extraction; no durable boundary is split across owners.
+
+This extraction does not claim that every logical state has been redesigned.
+Format consolidation or a new state machine would require separate migration
+and recovery evidence, not a line-count target.

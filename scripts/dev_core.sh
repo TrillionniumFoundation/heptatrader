@@ -18,5 +18,8 @@ cmake -S "$root" -B "$build_dir" "${generator[@]}" \
   -DHEPTA_BUILD_LEGACY_MONOLITH=OFF \
   -DHEPTA_BUILD_LEGACY_SIMULATOR=OFF \
   -DBUILD_IB_PROBE=OFF
+build_dir="$(cd "$build_dir" && pwd)"
 cmake --build "$build_dir" --target hepta_core_test_binaries --parallel "$jobs"
-ctest --test-dir "$build_dir" --output-on-failure -L core --parallel "$jobs"
+ctest --test-dir "$build_dir" --output-on-failure --no-tests=error -L core --parallel "$jobs" \
+  --test-output-size-passed 65536 --output-junit "$build_dir/core-results.xml" \
+  --output-log "$build_dir/core-ctest.log"

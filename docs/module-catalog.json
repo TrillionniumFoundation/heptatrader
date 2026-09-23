@@ -62,7 +62,12 @@
         "HeptaTrade/tool_host/session_supervisor_protocol.cpp",
         "HeptaTrade/tool_host/session_supervisor_lease_store.cpp",
         "HeptaTrade/tool_host/unix_session_supervisor_server.cpp",
-        "HeptaTrade/cli/hepta_sessionctl.cpp"
+        "HeptaTrade/cli/hepta_sessionctl.cpp",
+        "HeptaTrade/tool_host/session_supervisor_internal.h",
+        "HeptaTrade/tool_host/session_supervisor_support.cpp",
+        "HeptaTrade/tool_host/session_supervisor_terminal.cpp",
+        "HeptaTrade/tool_host/session_supervisor_lease_codec_internal.h",
+        "HeptaTrade/tool_host/session_supervisor_lease_codec.cpp"
       ],
       "tests": [
         "tests/unix_session_supervisor_server_tests.cpp",
@@ -95,7 +100,8 @@
         "tests/oms_recovery_growth_probe.h",
         "tests/python/test_venue_place_rejection.py",
         "tests/flatten_result_cases.h",
-        "tests/python/test_execution_reason_metrics.py"
+        "tests/python/test_execution_reason_metrics.py",
+        "tests/execution_ipc_scheduling_tests.cpp"
       ],
       "broker_mutation": "SOLE_AUTHORITY",
       "production_authorized": false

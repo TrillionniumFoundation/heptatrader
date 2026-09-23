@@ -1,6 +1,12 @@
 #include "execution/ib_paper_execution_profile.h"
 
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
+#include <future>
+#include <mutex>
+#include <thread>
+#include <unistd.h>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -261,10 +267,64 @@ void TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath()
         command, unreachable, flattenRisk, 2000, reason));
     assert(reason == "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED");
 }
+
+void TestPolicyControlsDoNotWaitBehindVenueDispatch()
+{
+    IbPaperExecutionProfileConfig config; std::string reason;
+    assert(IbPaperExecutionProfileConfig::FromValues(QualificationValues(), config, reason));
+    char path[] = "/tmp/hepta-policy-control-XXXXXX";
+    const int fd = ::mkstemp(path); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path));
+    std::mutex mutex; std::condition_variable changed; bool entered = false, released = false;
+    ExecutionCoordinatorCallbacks callbacks;
+    callbacks.placement = VenuePlacement::Immediate([](const PlaceOrderCommand&, const std::string&) {
+        return VenuePlaceResult::Submitted(42);
+    });
+    callbacks.validateDecisionLease = [](const AgentExecutionContext&, const std::string&, std::string*) { return true; };
+    callbacks.cancelOrder = [&](long) {
+        std::unique_lock<std::mutex> lock(mutex); entered = true; changed.notify_all();
+        assert(changed.wait_for(lock, std::chrono::seconds(5), [&] { return released; }));
+        return VenueCancelResult::Submitted();
+    };
+    ExecutionCoordinator coordinator(journal, callbacks);
+    PlaceOrderCommand place = QualificationOrder(config, "BUY", 1.0);
+    place.context.agentId = "policy-control"; place.context.sessionId = "session";
+    place.context.toolCallId = "place"; place.context.decisionLeaseFencingToken = 1;
+    place.context.decisionLeaseGeneration = 1; place.contract.symbol = "EUR";
+    place.instrument = "EUR.USD"; place.expiresAtMs = OmsJournal::NowEpochMs() + 60000;
+    assert(coordinator.PlaceOrder(place).status == ExecutionCommandStatus::Accepted);
+    IbPaperExecutionPolicyCallbacks policyCallbacks;
+    policyCallbacks.nowMs = [] { return OmsJournal::NowEpochMs(); };
+    std::shared_ptr<IbPaperKillSwitchReader> killSwitch(new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionPolicyAuthority policy(coordinator, config, policyCallbacks, killSwitch);
+    CancelOrderCommand cancel; cancel.context = place.context; cancel.context.toolCallId = "cancel"; cancel.orderId = 42;
+    auto pending = std::async(std::launch::async, [&] { return policy.CancelOrder(cancel); });
+    {
+        std::unique_lock<std::mutex> lock(mutex);
+        assert(changed.wait_for(lock, std::chrono::seconds(2), [&] { return entered; }));
+    }
+    ExecutionControlCommand control; control.context = place.context;
+    control.context.toolCallId = "control"; control.targetCommandId = "place";
+    auto status = std::async(std::launch::async, [&] { return policy.QueryCommandStatus(control); });
+    assert(status.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    assert(status.get().status == ExecutionCommandStatus::Accepted);
+    auto fence = std::async(std::launch::async, [&] { return policy.FenceSessionOwner(control); });
+    assert(fence.wait_for(std::chrono::seconds(1)) == std::future_status::ready);
+    assert(fence.get().status == ExecutionCommandStatus::Accepted);
+    const auto release = policy.ReleaseSessionOwnerFence(control);
+    assert(release.status == ExecutionCommandStatus::Rejected);
+    assert(release.reasonCode == "IB_PAPER_CONTROL_BUSY");
+    assert(coordinator.IsSessionOwnerFenced(place.context.agentId, place.context.sessionId));
+    { std::lock_guard<std::mutex> lock(mutex); released = true; changed.notify_all(); }
+    assert(pending.get().status == ExecutionCommandStatus::Accepted);
+    ::unlink(path);
+}
+
 }
 
 int main()
 {
+    TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();
     TestQualificationProfileRejectsWiderOrAmbiguousAuthority();
     TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath();

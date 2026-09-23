@@ -11,9 +11,8 @@ Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_do
 Every entry has a unique ID, lifecycle status, document, implementation paths,
 test paths, mutation classification and authorization value. The checker
 validates those fields, existing paths, local links and capability consistency.
-`docs/index.md` is the canonical repository entry point. The repository root
-intentionally has no `README.md`, keeping the hosted repository homepage free
-of a duplicate project introduction.
+`docs/index.md` is the canonical repository entry point. A root `README.md` may provide a short navigation entry without duplicating
+module or capability inventories. Its presence or absence is not a CI gate.
 The module table in `index.md` is generated with:
 
 ```bash

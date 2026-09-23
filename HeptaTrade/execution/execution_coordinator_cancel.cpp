@@ -23,7 +23,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         return RefuseBeforeIntent(context, "REQUEST_HASH_FAILED", "canonical request hashing failed", command.orderId);
     const std::string requestKey = RequestKey(context.agentId, context.sessionId, context.toolCallId);
     const std::unordered_map<std::string, RequestRecord>::const_iterator existing =
-        m_requests.find(requestKey);
+        m_requests.LookupOrLoad(requestKey);
     if (existing != m_requests.end())
     {
         if (!existing->second.requestHash.empty() && existing->second.requestHash != requestHash)
@@ -89,7 +89,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         m_cancelPreflightsInFlight.erase(command.orderId);
 
         const std::unordered_map<std::string, RequestRecord>::const_iterator
-            refreshedExisting = m_requests.find(requestKey);
+            refreshedExisting = m_requests.LookupOrLoad(requestKey);
         if (refreshedExisting != m_requests.end())
         {
             if (!refreshedExisting->second.requestHash.empty() &&
@@ -169,7 +169,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
     pending.instrument = instrument;
     pending.side = side;
     pending.durableMutationIntent = true;
-    m_requests[requestKey] = pending;
+    m_requests.UpsertPromoted(requestKey) = pending;
 
     // Persist the cancel send boundary before broker I/O. A crash after this
     // record must never cause an automatic second cancel request.
@@ -213,7 +213,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         record.instrument = instrument;
         record.side = side;
         record.durableMutationIntent = true;
-        m_requests[requestKey] = record;
+        m_requests.UpsertPromoted(requestKey) = record;
 
         ExecutionCommandResult result;
         result.status = ExecutionCommandStatus::Uncertain;
@@ -258,7 +258,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
     record.instrument = instrument;
     record.side = side;
     record.durableMutationIntent = true;
-    m_requests[requestKey] = record;
+    m_requests.UpsertPromoted(requestKey) = record;
 
     ExecutionCommandResult result;
     result.status = ExecutionCommandStatus::Accepted;
@@ -275,7 +275,7 @@ ExecutionCommandResult ExecutionCoordinator::UncertainCancelOutcomeLocked(
     // Close admission before any diagnostic allocation. The existing durable
     // send-attempt plus pending identity survive even a later receipt failure.
     BlockMutationsLocked("RECOVERY_RECONCILE_REQUIRED");
-    RequestRecord& record = m_requests.at(requestKey);
+    RequestRecord& record = m_requests.AtResident(requestKey);
     record.status = ExecutionCommandStatus::Uncertain;
     record.reasonCode = "RECOVERY_RECONCILE_REQUIRED";
     record.detail = detail.empty() ? "cancel may have reached venue; reconciliation required" :

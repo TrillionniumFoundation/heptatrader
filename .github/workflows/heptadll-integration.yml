@@ -2,7 +2,7 @@ name: HeptaDLL Modular Integration
 
 on:
   push:
-    branches: [integration/heptadll-modular-20260920]
+    branches: [main]
   pull_request:
     branches: [main]
     paths:
@@ -10,13 +10,15 @@ on:
       - 'CMakeLists.txt'
       - 'cmake/HeptaStrategyClient*'
       - 'cmake/strategy-client-build-info.txt.in'
-      - 'HeptaTrade/**'
+      - 'VERSION'
       - 'research/**'
       - 'tests/research/**'
-      - 'docs/module-catalog.json'
-      - 'docs/build-targets.json'
       - 'docs/modules/research-sdk.md'
       - 'docs/technical/heptadll-integration.md'
+
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,37 +28,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  source-snapshot:
-    # Reproducible input, NOT a substitute for any build/test/qualification job.
-    name: exact-public-source
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Archive the exact tracked public input
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          mkdir -p "$RUNNER_TEMP/research-source"
-          git archive --format=tar.gz --output="$RUNNER_TEMP/research-source/heptatrader-source.tar.gz" HEAD
-          printf '%s\n' "$EXPECTED_SHA" > "$RUNNER_TEMP/research-source/SOURCE_COMMIT"
-          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/research-source/SOURCE_TREE"
-          cd "$RUNNER_TEMP/research-source"
-          sha256sum heptatrader-source.tar.gz > heptatrader-source.tar.gz.sha256
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: research-source-${{ github.event.pull_request.head.sha || github.sha }}
-          path: ${{ runner.temp }}/research-source/
-          if-no-files-found: error
-          retention-days: 7
-
   portable:
     name: portable-${{ matrix.profile }}
     runs-on: ubuntu-24.04
@@ -117,6 +88,8 @@ jobs:
           tar -czf "build/research-sdk-artifacts/$archive" -C build/research-sdk-stage .
           (cd build/research-sdk-artifacts && sha256sum "$archive" > "$archive.sha256")
           cp build/research-ci/SOURCE_COMMIT build/research-sdk-artifacts/
+          git archive --format=tar.gz --output=build/research-sdk-artifacts/heptatrader-source.tar.gz HEAD
+          git rev-parse 'HEAD^{tree}' > build/research-sdk-artifacts/SOURCE_TREE
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: success() && matrix.profile == 'gcc-release'
         with:
@@ -132,73 +105,6 @@ jobs:
             build/research-ci/SOURCE_COMMIT
             build/research-ci/results.xml
             build/research-ci/Testing/Temporary/
-          if-no-files-found: warn
-          retention-days: 7
-
-  canonical-client:
-    name: canonical-native-client-boundary
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          persist-credentials: false
-          fetch-depth: 1
-      - name: Build against the real canonical Gateway and verify ownership
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build g++ python3 libssl-dev zlib1g-dev
-          cmake -S . -B build/research-native -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF
-          printf '%s\n' "$EXPECTED_SHA" > build/research-native/SOURCE_COMMIT
-          cmake --build build/research-native --target hepta_research_test_binaries --parallel 2
-          ctest --test-dir build/research-native -R '^hepta_research_' \
-            --no-tests=error --output-on-failure --test-output-size-passed 65536 --output-junit results.xml
-          python3 tests/research/native_latency_report.py --self-test
-          python3 tests/research/native_latency_report.py \
-            --log build/research-native/Testing/Temporary/LastTest.log \
-            --junit build/research-native/results.xml \
-            --build-dir build/research-native --source-sha "$EXPECTED_SHA" \
-            --output build/research-native/native-latency.json
-          python3 scripts/verify_build_ownership.py --profile core
-          git diff --exit-code
-      - name: Stage the verified forward-only client SDK
-        env:
-          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
-          test "$(uname -m)" = x86_64
-          test -z "$(git status --porcelain --untracked-files=normal)"
-          cmake --install build/research-native --prefix "$PWD/build/client-sdk-stage" --component StrategyClientSDK
-          grep -Fx "source_sha=$EXPECTED_SHA" build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
-          grep -Fx 'source_tree_state=clean' build/client-sdk-stage/share/HeptaStrategyClient/strategy-client-build-info.txt
-          mkdir -p build/client-sdk-artifacts
-          archive="hepta-strategy-client-sdk-linux-x86_64-$EXPECTED_SHA.tar.gz"
-          tar -czf "build/client-sdk-artifacts/$archive" -C build/client-sdk-stage .
-          (cd build/client-sdk-artifacts && sha256sum "$archive" > "$archive.sha256")
-          cp build/research-native/SOURCE_COMMIT build/client-sdk-artifacts/
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: strategy-client-sdk-linux-x86_64-${{ github.event.pull_request.head.sha || github.sha }}
-          path: build/client-sdk-artifacts/
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        if: always()
-        with:
-          name: research-canonical-${{ github.event.pull_request.head.sha || github.sha }}
-          path: |
-            build/research-native/SOURCE_COMMIT
-            build/research-native/results.xml
-            build/research-native/native-latency.json
-            build/research-native/Testing/Temporary/
           if-no-files-found: warn
           retention-days: 7
 

@@ -350,8 +350,8 @@ JUnit and full log records, rejects missing/duplicate/malformed samples and
 inconsistent counters, and computes integer nearest-rank p50/p95/p99. It retains
 raw observations, input hashes, clean local Git commit/tree identity, compiler,
 build flags and host context. Its behavioral self-tests run in the existing
-modular-integration CI; the resulting `native-latency.json` joins the existing
-`research-canonical-<head>` artifact. Missing evidence fails report generation;
+Core Runtime CI; the resulting `native-latency.json` joins the existing
+`strategy-client-sdk-linux-x86_64-<head>` artifact. Missing evidence fails report generation;
 there is no invented duration or relaxed timing threshold.
 
 These are small-sample observations across independent fixtures. p99 is the
@@ -391,3 +391,15 @@ is compiled by the existing replay test and by the installed/relocated external
 SDK consumer; it adds no compiled target or runtime registration. Source-level
 model ports are not certification of the alternative Python CLI, wide Decimal
 domain, old client-record formats or unknown legacy consumers.
+
+## CI ownership after integration
+
+Core Runtime CI builds and tests the canonical native client boundary once,
+exports its measured latency from that same CTest run and stages the separate
+StrategyClientSDK from that same build. The old additional canonical-client
+job is removed. The standalone offline SDK retains independent compiler and
+macOS/MSVC jobs, now also triggered on main and merge candidates. The GCC SDK
+artifact carries the exact source archive; no separate source-only job is needed.
+Sanitizer builds remain independent; their five-run recovery repetition runs
+on main/merge candidates instead of every PR iteration. No Broker evidence or
+platform result is inferred from another profile's successful build.

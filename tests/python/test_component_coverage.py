@@ -14,6 +14,10 @@ import check_component_coverage as coverage  # noqa: E402
 
 
 class ComponentCoverageTests(unittest.TestCase):
+    def test_navigation_readme_is_support_without_hiding_new_runtime(self):
+        self.assertFalse(coverage._is_production("README.md"))
+        self.assertTrue(coverage._is_production("new-runtime/entry.cpp"))
+
     def fixture(self, directory: str) -> Path:
         root = Path(directory)
         for relative in (

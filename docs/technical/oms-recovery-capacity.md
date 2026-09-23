@@ -117,3 +117,21 @@ A larger budget or a successful generation seal does not resolve uncertain broke
 Native and Python tests cover inclusive/over-limit replay boundaries, bad settings, torn/oversized records, callback atomicity, new-entry pause, generation publication crash points, V1→V2 compatibility, parent/current/sentinel corruption, ancient same-ID duplicate/conflict, no second venue send, sorted send-attempt continuity/migration across a cut, streaming cumulative-index verification, a lineage longer than 1,024 generations plus cycle rejection, repeated generations and explicit downgrade export.
 
 The opt-in installed process lane additionally executes the real simulator across fill → stop → V2 seal → restart and verifies economic position, command identity, duplicate no-resend and order-ID watermark. The recovery-growth fixture remains useful for measuring legacy full-ledger cost. Generation fixtures prove bounded coordinator hot restart and bounded maintenance working memory, not bounded total disk storage. The source suite records a synthetic 16-generation cost curve with 1,024 commands / 4,096 logical events, checkpoints at 256/512/1,024 commands and 4/8/16 decoded owner/session identities, plus seal/verify time, current cumulative command/send-index bytes, generation output bytes, logical event bytes, retained bytes, retained-to-logical storage amplification and rebase time. Its `test_process_peak_rss_kib` field is only a whole-Python-test-process diagnostic because `ru_maxrss` may include earlier allocations; it is not stage-isolated maintenance-memory evidence. The isolated installed-process cost curve is the runtime memory evidence: it exercises 8, 40 and 168 cumulative admitted orders and records coordinator recovery, simulator-state recovery, complete startup-ready latency, inclusive place-operation p99 bucket/max, journal bytes, retained generation bytes and per-process Linux `VmHWM`, plus a post-rebase restart. The generation-index reader regression separately proves linear selected-range read bytes on a 20,000-row fixture, while the native terminal fixture crosses 4,202 terminal commands. These measurements are descriptive evidence from the exact CI host, not universal fixed performance thresholds. None of these source fixtures is a target-host multiday soak, physical durability benchmark, Broker qualification campaign or proof that a chosen maintenance cadence satisfies an operational SLO.
+
+## Opt-in scaled generation and maintenance observation
+
+`hepta_execution_coordinator_tests --generation-growth N` accepts 1–100,000
+synthetic placements in newly created temporary state, seals batches no larger
+than 4,096 orders with the real lifecycle tool, and rebases/prunes only that
+owned test lineage. Existing production replay/admission limits are unchanged.
+Every stage execs a fresh test reader to measure recovery and process peak RSS
+without inheriting writer/maintenance allocation peaks. It verifies empty hot
+command state, ancient/new duplicate identity, conflict rejection and no resend
+both before and after rebase. Maintenance records include time and retained disk
+bytes. A 16-order version runs in the existing core target.
+
+These records measure native coordinator persistence/recovery and stopped-state
+maintenance on the executing host. They do not exercise actual Broker I/O,
+production account data, the full installed daemon startup, target-host alert
+delivery or a multiday soak. Their stage/source/host context must accompany any
+performance interpretation; a finite successful probe is not an unbounded SLO.

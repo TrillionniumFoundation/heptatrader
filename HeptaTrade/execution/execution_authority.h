@@ -167,7 +167,9 @@ struct ExecutionControlCommand
     std::string terminalPreliminaryReceiptSha256;
 };
 
-struct ExecutionControlResult
+// Operation-domain audit result. Supervisor audit helpers consume this type,
+// not the unrelated terminal witness fields carried by the v11 wire envelope.
+struct ExecutionOwnerAuditResult
 {
     ExecutionCommandStatus status = ExecutionCommandStatus::Rejected;
     std::string commandId;
@@ -201,6 +203,18 @@ struct ExecutionControlResult
     // floating JSON numbers and exponent notation are never emitted.
     std::string brokerPositionQuantity;
     std::string brokerGrossAbsolutePosition;
+    std::string ownerAccount;
+    std::string ownerExecutionDomain;
+    std::string reasonCode;
+    std::string detail;
+    std::string serviceEpoch;
+    std::uint64_t serviceFencingGeneration = 0;
+};
+
+// One-way terminal evidence is independently typed; its validation must not
+// inspect query, owner-count or arbitrary diagnostic fields.
+struct ExecutionTerminalWitness
+{
     // Typed one-way terminal witness.  These fields are meaningful only for
     // TerminalizeRecoveryOwner and are all fail-closed defaults elsewhere.
     std::string terminalizationServiceEpoch;
@@ -227,12 +241,13 @@ struct ExecutionControlResult
     bool terminalRuntimeLatchLoaded = false;
     bool terminalRuntimeVerified = false;
     bool terminalReplay = false;
-    std::string ownerAccount;
-    std::string ownerExecutionDomain;
-    std::string reasonCode;
-    std::string detail;
-    std::string serviceEpoch;
-    std::uint64_t serviceFencingGeneration = 0;
+};
+
+// Compatibility envelope for the existing HEX1 v11 codec/callers. Inheritance
+// preserves source field spelling, NOT a C++ ABI guarantee. Wire serialization
+// is explicit and unchanged. New internal helpers take the narrow domain type.
+struct ExecutionControlResult : ExecutionOwnerAuditResult, ExecutionTerminalWitness
+{
 };
 
 struct ExecutionReadCommand

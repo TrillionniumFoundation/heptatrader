@@ -43,19 +43,6 @@
       "disposition": "CLOSED. Canonical native startup consumes a digest-bound selected generation, bounded hot replay and the lineage-bound active tail instead of repopulating all historical commands into the coordinator. V2 sealing carries a compact simulator economic checkpoint (positions, admitted-order count and order-ID watermark) so normal simulator restart restores checkpoint plus bounded tail rather than replaying permanent event history; legacy/V1 and older-V2 migration reconstructs that checkpoint only during stopped-state maintenance; normal V2 startup never replays permanent event history as a compatibility fallback. Historical `(agent, session, command)` identity and canonical request hashes remain in pinned cumulative disk indexes used by status/admission lookup. Current V2 send-attempt indexes are globally ordered by account/domain/time and use stream merge; a legacy unsorted parent is migrated with bounded external-sort chunks rather than whole-file materialization. Verification streams cumulative indexes. Stopped-state `rebase` can collapse a verified lineage into one parentless generation, publish it crash-safely and only then prune unreferenced ancestors, preserving complete logical events and permanent command/send indexes. Installed-process cost-curve acceptance measures restart recovery, Execution peak RSS, seal cost and retained disk bytes across increasing history and re-verifies an ancient duplicate without resend after rebase. No command identity is expired and PAPER/LIVE authorization remains false."
     },
     {
-      "id": "OWNER-RULESET-002",
-      "domain": "EXTERNAL",
-      "state": "OPEN",
-      "summary": "Ruleset 22597364 still enforces two approvals, code-owner review and merge queue despite owner-operated intent.",
-      "evidence": [
-        "docs/technical/owner-ruleset-transition.md",
-        "docs/adr/0002-owner-operated-repository.md"
-      ],
-      "issue": 90,
-      "blocking_releases": [],
-      "disposition": "OPEN. The read-only transition planner preserves the actual required checks, deletion and force-push protection. The available GitHub integration exposes Ruleset readback but no administrative Ruleset write action; no alternate administration plugin is connected. Server administration and post-change readback therefore remain a real owner action and are not represented as a source-code closure."
-    },
-    {
       "id": "RUNTIME-TELEMETRY-003",
       "domain": "REPOSITORY",
       "state": "CLOSED",

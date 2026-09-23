@@ -2,8 +2,8 @@
 """Compare reviewed Linux build ownership with fresh CMake file-api models.
 
 Default verification configures the SDK-free core profile without compiling.
-IB verification and inventory generation require an explicitly supplied SDK
-and BID archive. This checks build membership/ownership, not functional gap
+Only IB verification/generation requires an explicitly supplied SDK and BID
+archive. Core generation updates only core; an unselected profile is not certified. This checks build membership/ownership, not functional gap
 closure, broker qualification, or authorization.
 """
 from __future__ import annotations
@@ -219,13 +219,18 @@ def observe(root: Path, profile: str, sdk: Path | None = None,
         return read_model(root, reply, profile, modules, sdk)
 
 
-def validate_inventory(root: Path, inventory: Any) -> None:
+def validate_inventory(root: Path, inventory: Any, profiles: set[str] | None = None) -> None:
     if (not isinstance(inventory, dict) or set(inventory) != {"schema", "coverage", "profiles"} or
         inventory["schema"] != SCHEMA or inventory["coverage"] != COVERAGE or
-        not isinstance(inventory["profiles"], dict) or set(inventory["profiles"]) != {"core", "ib"}):
+        not isinstance(inventory["profiles"], dict) or not inventory["profiles"] or
+        not set(inventory["profiles"]) <= {"core", "ib"}):
         raise OwnershipError("unsupported inventory schema or profile coverage")
+    if profiles is not None and not profiles <= set(inventory["profiles"]):
+        raise OwnershipError("requested profile is missing from inventory")
     modules = module_paths(root)
     for profile, content in inventory["profiles"].items():
+        if profiles is not None and profile not in profiles:
+            continue
         if (not isinstance(content, dict) or set(content) != {"requires_ib_sdk", "options", "targets"} or
             content["requires_ib_sdk"] is not (profile == "ib") or content["options"] != profile_options(profile)):
             raise OwnershipError(f"{profile}: profile options or SDK scope changed")
@@ -282,7 +287,7 @@ def validate_inventory(root: Path, inventory: Any) -> None:
 def verify(root: Path, inventory: Any, profile: str = "core",
            sdk: Path | None = None, decimal: Path | None = None) -> None:
     root = root.resolve()
-    validate_inventory(root, inventory)
+    validate_inventory(root, inventory, {profile})
     actual = observe(root, profile, sdk, decimal)
     expected = inventory["profiles"][profile]
     if actual != expected:
@@ -293,28 +298,65 @@ def verify(root: Path, inventory: Any, profile: str = "core",
         raise OwnershipError(f"{profile}: build inventory drift\n" + "\n".join(difference[:100]))
 
 
+def render_inventory(inventory: dict[str, Any]) -> str:
+    """One target per line keeps generated graph changes reviewable."""
+    compact = lambda value: json.dumps(value, separators=(",", ":"))
+    header = compact({key: inventory[key] for key in ("schema", "coverage")})[:-1]
+    sections = []
+    for profile, content in inventory["profiles"].items():
+        prefix = compact({key: value for key, value in content.items() if key != "targets"})[:-1]
+        targets = ",\n".join(compact(target) for target in content["targets"])
+        sections.append(compact(profile) + ":" + prefix + ',"targets":[\n' + targets + '\n]}')
+    return header + ',"profiles":{\n' + ",\n".join(sections) + "\n}}\n"
+
+
+def generate(root: Path, path: Path, profiles: set[str],
+             sdk: Path | None = None, decimal: Path | None = None) -> None:
+    if not profiles or not profiles <= {"core", "ib"}:
+        raise OwnershipError("unknown generation profile")
+    inventory = load_json(path) if path.exists() else {
+        "schema": SCHEMA, "coverage": COVERAGE, "profiles": {}}
+    # Observe every selected profile before replacing anything. A failed SDK
+    # configuration cannot leave a half-updated inventory on disk.
+    observed = {profile: observe(root, profile, sdk, decimal)
+                for profile in ("core", "ib") if profile in profiles}
+    if not isinstance(inventory, dict) or not isinstance(inventory.get("profiles"), dict):
+        raise OwnershipError("unsupported inventory structure")
+    inventory["profiles"].update(observed)
+    validate_inventory(root, inventory, profiles)
+    contents = render_inventory(inventory)
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                     prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            stream.write(contents)
+            stream.flush()
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--inventory", type=Path)
-    parser.add_argument("--profile", choices=("core", "ib"), default="core")
+    parser.add_argument("--profile", choices=("core", "ib", "all"), default="core")
     parser.add_argument("--ib-sdk", type=Path)
     parser.add_argument("--ib-decimal-library", type=Path)
-    parser.add_argument("--generate", action="store_true", help="regenerate both profiles; requires explicit IB SDK/archive")
+    parser.add_argument("--generate", action="store_true", help="regenerate only selected profile(s); default core requires no SDK")
     args = parser.parse_args(argv)
     root = args.root.resolve()
     path = args.inventory or root / "docs/build-targets.json"
+    selected = {"core", "ib"} if args.profile == "all" else {args.profile}
     try:
         if args.generate:
-            inventory = {"schema": SCHEMA, "coverage": COVERAGE,
-                         "profiles": {profile: observe(root, profile, args.ib_sdk, args.ib_decimal_library)
-                                      for profile in ("core", "ib")}}
-            validate_inventory(root, inventory)
-            path.write_text(json.dumps(inventory, indent=2) + "\n", encoding="utf-8")
-            print("[BUILD OWNERSHIP] generated both reviewed-profile candidates; review changes before committing")
+            generate(root, path, selected, args.ib_sdk, args.ib_decimal_library)
+            print(f"[BUILD OWNERSHIP] generated {','.join(sorted(selected))}; unselected profiles unchanged and unverified")
         else:
-            verify(root, load_json(path), args.profile, args.ib_sdk, args.ib_decimal_library)
-            print(f"[BUILD OWNERSHIP] PASS {args.profile}: fresh CMake target/TU membership and canonical ownership match")
+            inventory = load_json(path)
+            for profile in sorted(selected):
+                verify(root, inventory, profile, args.ib_sdk, args.ib_decimal_library)
+                print(f"[BUILD OWNERSHIP] PASS {profile}: fresh CMake target/TU membership and canonical ownership match")
         return 0
     except (OwnershipError, OSError) as error:
         print(f"[BUILD OWNERSHIP] {error}", file=sys.stderr)
