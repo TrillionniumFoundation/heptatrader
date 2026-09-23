@@ -43,9 +43,9 @@ public:
         const std::string& targetCommandId,
         SessionSupervisorLeaseStore& leaseStore,
         SessionSupervisorLeaseRecord& durableRecord,
-        ExecutionControlResult& result,
+        ExecutionControlStatusResult& result,
         std::string& reason,
-        ExecutionControlResult* ownerAudit = nullptr,
+        ExecutionOwnerAuditResult* ownerAudit = nullptr,
         std::uint64_t recoveryExpiresAtMs = 0,
         const std::string& durableCurrentToken = std::string())
     {
@@ -67,7 +67,7 @@ public:
         const std::string& token,
         std::uint64_t expectedGeneration,
         const SessionSupervisorLeaseRecord& durableRecord,
-        ExecutionControlResult& ownerAudit,
+        ExecutionOwnerAuditResult& ownerAudit,
         std::string& reason);
     bool FenceRecoveryOnlyOwner(
         const std::string& issuer,
@@ -78,7 +78,7 @@ public:
     bool AuditFinalizedRecoveryOwner(
         const std::string& issuer,
         const SessionSupervisorLeaseRecord& durableRecord,
-        ExecutionControlResult& ownerAudit,
+        ExecutionOwnerAuditResult& ownerAudit,
         std::string& reason);
 	bool TerminalizeFinalizedRecoveryOwner(
 		const std::string& issuer,
@@ -102,7 +102,7 @@ public:
         std::uint64_t expectedGeneration,
         std::uint64_t expiresAtMs,
         std::uint64_t& newGeneration,
-        ExecutionControlResult& ownerAudit,
+        ExecutionOwnerAuditResult& ownerAudit,
         std::string& reason);
     bool Renew(const std::string& issuer,
                const std::string& token,

@@ -16,3 +16,13 @@ Any host tuning must:
 7. rerun core, network-boundary, reconnect, and bounded PAPER qualification tests.
 
 Disabling flow control, interrupt moderation, energy features, or scheduler controls can reduce or worsen latency depending on hardware and load. No old PowerShell helper or local process-name check is considered canonical evidence. Deployment-specific tuning belongs in an independently reviewed host profile.
+
+## Optional source connectivity probe
+
+The optional root `BUILD_IB_PROBE=ON` build reuses `hepta_ibapi_client` rather
+than carrying a second SDK source list. It requires `HEPTA_ENABLE_IBAPI=ON`, the
+same explicit `IBAPI_ROOT` and pinned `IBAPI_DECIMAL_LIBRARY`; the root Decimal
+ABI check remains mandatory. The probe derives its unused callbacks from the
+pinned SDK's `DefaultEWrapper`. Compile-only verification does not establish
+Broker connectivity, qualification or permission to trade. The probe is not
+part of the default core package and is never launched by core tests.

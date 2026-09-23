@@ -157,3 +157,44 @@ shutdown is not accepted. Receipt staging is validated before create-only durabl
 publication. Host-kernel, storage and CPU context should accompany the emitted
 measurements. These are synthetic installed-daemon observations, not a multi-day
 soak, physical power-loss test, actual operator alert delivery or Broker qualification.
+
+### Opt-in installed capacity workload
+
+The existing installed-process cost test also accepts
+`HEPTA_GENERATION_COST_PROFILE=capacity`: 1,536 buy/sell pairs in each of its
+three stages, or 3,072/6,144/9,216 cumulative real simulator admissions.
+Each stage produces 21,504 ordinary journal records (seven per admission),
+below the existing 80% pause boundary of the default 65,536-record tail budget.
+The workload also stays below the current installed simulator
+10,000-admission risk limit, whose count remains continuous across checkpoint
+and restart. A proposed 21,504-admission measurement was correctly refused at
+that limit; it did not qualify and must not be represented as a successful
+capacity curve. No daily clock, counter, session or policy is reset to extend
+the measurement. The existing byte pause boundary also remains enforced. This keeps maintenance
+cadence bounded while increasing retained history; it does not enlarge the
+writer budget to conceal a capacity refusal. The
+ordinary `core` and `extended` profiles are unchanged. This is an opt-in
+measurement, not an added routine merge gate. It uses the same installed owner,
+preview, final risk, journal, fill, generation, restart and ancient-duplicate
+path, with the existing supported operator-configured trade-rate limit. No
+production limit is widened and no Broker transport is enabled.
+
+The evidence consumer must explicitly select `capacity`; a core/extended receipt
+cannot claim its scope. Like extended evidence it requires complete samples,
+exact artifact/source identity, stable executable hashes, distinct process
+observations, the expected non-root owners and verified orderly shutdown.
+Successful source tests are not a capacity observation. Record actual measured
+results separately with host/filesystem/resource limits; this test is not a
+physical power-loss or multi-day target-host qualification.
+
+Capacity mode preserves and counts an original uncertain placement reply. Before
+another order it queries that same command ID through the ordinary authenticated
+status tool and requires positive matching authoritative acceptance; it never
+creates another preview, resends the mutation, extends its expiry or changes a
+daemon timeout. Position and active-order observations still must complete.
+Unresolved, rejected, mismatched or unqualified status fails the workload. The
+receipt retains bounded uncertainty observations and requires exactly one sealed
+send attempt per actual admission. Latency samples include the slow operations.
+Core/extended behavior remains unchanged. All installed generation tests retain
+bounded daemon logs and source/artifact-bound diagnostics after shutdown, even
+on failure; diagnostic capture cannot publish an acceptance result.

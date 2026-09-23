@@ -62,12 +62,12 @@ private:
 		SessionSupervisorLeaseRecord& record,
 		std::uint64_t nowMs,
 		const std::string& targetCommandId,
-		ExecutionControlResult& commandResult,
-		ExecutionControlResult& ownerAudit,
+		ExecutionControlStatusResult& commandResult,
+		ExecutionOwnerAuditResult& ownerAudit,
 		std::string& reason);
 	bool FinalizePaperRecovery(
 		const SessionSupervisorLeaseRecord& record,
-		ExecutionControlResult& ownerAudit,
+		ExecutionOwnerAuditResult& ownerAudit,
 		std::string& reason);
 	bool HandlePaperFinalize(
 		const SessionSupervisorRequest& request,

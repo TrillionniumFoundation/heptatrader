@@ -42,11 +42,11 @@ public:
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
     ExecutionCommandResult FlattenPosition(
         const FlattenPositionCommand& command) override;
-    ExecutionControlResult QueryCommandStatus(const ExecutionControlCommand& command) override;
-    ExecutionControlResult FenceSessionOwner(const ExecutionControlCommand& command) override;
-    ExecutionControlResult ReleaseSessionOwnerFence(const ExecutionControlCommand& command) override;
-    ExecutionControlResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override;
-    ExecutionControlResult RecoveryAuditOwner(
+    ExecutionControlStatusResult QueryCommandStatus(const ExecutionControlCommand& command) override;
+    ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& command) override;
+    ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& command) override;
+    ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override;
+    ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
     ExecutionControlResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command) override;

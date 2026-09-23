@@ -157,3 +157,21 @@ slow authority with query/fence access, queued expiry, lost replies, concurrent
 Stop/callback Stop and restart. Its real coordinator/socket fixture proves that
 an in-flight venue call remains visible to fencing, fence release is rejected,
 exact-ID replay sends once and the owner fence survives journal recovery.
+
+## Control result domains
+
+`ExecutionControlAuthority` now returns `ExecutionControlStatusResult` from
+query, fence, fence-release and reconcile operations. Recovery audit returns
+`ExecutionOwnerAuditResult`. The simulator policy, IB PAPER policy, IPC client,
+Gateway and Supervisor recovery callers consume these same types; ordinary
+status cannot carry an owner-completeness assertion or a terminal witness.
+This is an internal source-API change, not a new installed StrategyClient API.
+
+`ExecutionControlResult` remains the explicit HEX1 v11 codec/terminal-operation
+envelope. Server dispatch widens a narrow result explicitly with absent/default
+unrelated evidence; it does not infer or copy terminal authority from status.
+Existing wire fields, HSL/OMS formats, final-use checks and recovery ordering are
+unchanged. The real IPC regression injects unrelated audit/terminal fields in a
+synthetic underlying response and verifies that ordinary status transmits only
+its own result and exact command/service identity. Contract static assertions
+prevent implicit widening or restoration of the broad virtual status API.

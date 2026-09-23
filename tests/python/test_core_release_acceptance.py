@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -127,6 +128,11 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     item for item in argv
                     if item.startswith("HEPTA_PROCESS_CANDIDATE_SHA256="))
                 evidence_dir = Path(evidence_assignment.split("=", 1)[1])
+                self.assertIn("HEPTA_PROCESS_EVIDENCE_PRECREATED=1", argv)
+                self.assertTrue(evidence_dir.is_dir())
+                self.assertFalse(any(evidence_dir.iterdir()))
+                self.assertEqual(evidence_dir.stat().st_uid, root.stat().st_uid)
+                self.assertEqual(evidence_dir.stat().st_mode & 0o777, 0o700)
                 artifact_sha = artifact_assignment.split("=", 1)[1]
                 evidence_dir.mkdir(parents=True, exist_ok=True)
                 points = []
@@ -289,6 +295,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
         for index, batch in enumerate(pairs):
             admitted = 2 * sum(pairs[:index + 1])
             points.append({"admitted_orders": admitted, "history_records": 4 * admitted,
+                "send_attempt_records": admitted,
                 "seal_ns": 1, "restart_recovery_ns": 1, "simulator_state_recovery_ns": 1,
                 "startup_ready_ns": 3, "execution_peak_rss_kib": 1,
                 "place_latency_total_samples": 2 * batch, "place_latency_total_max_ns": 1,
@@ -304,6 +311,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             "post_rebase_execution_peak_rss_kib": 1, "oldest_command_duplicate_no_resend": True,
             "final_position": 0, "authorization_effect": "NONE", "elapsed_ns": 1,
             "orderly_shutdown_verified": True, "configured_trade_calls_per_minute": 4 * max(pairs),
+            "uncertain_observations": [], "mutation_resends": 0,
             "processes": [{"name": name, "uid": uid, "pid": 100 + index,
                            "executable_sha256": "d" * 64}
                 for index in range(5)
@@ -312,6 +320,11 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
     def test_generation_workload_is_explicit_and_bounded(self):
         self.assertEqual(acceptance.generation_cost_pairs(), (4, 16, 64))
         self.assertEqual(acceptance.generation_cost_pairs("extended"), (32, 128, 512))
+        self.assertEqual(acceptance.generation_cost_pairs("capacity"), (1536, 1536, 1536))
+        # The current installed simulator has a 10,000-admission risk budget;
+        # capacity tests must not quietly demand an unsupported policy profile.
+        self.assertLessEqual(2 * sum(acceptance.generation_cost_pairs("capacity")), 10000)
+        self.assertLess(14 * max(acceptance.generation_cost_pairs("capacity")), 65536 - 65536 // 5)
         for invalid in (None, True, [], "", "EXTENDED", "production"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 acceptance.generation_cost_pairs(invalid)
@@ -356,6 +369,160 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         acceptance.validate_generation_cost_evidence(
                             path, SHA, "c" * 64, expected_profile="extended")
+
+    def test_capacity_profile_cannot_borrow_smaller_or_incomplete_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.json"
+            for profile in ("core", "extended"):
+                path.write_text(json.dumps(self.generation_curve(profile)))
+                with self.assertRaisesRegex(ValueError, "profile"):
+                    acceptance.validate_generation_cost_evidence(
+                        path, SHA, "c" * 64, expected_profile="capacity")
+            complete = self.generation_curve("capacity")
+            self.assertEqual([p["admitted_orders"] for p in complete["points"]],
+                             [3072, 6144, 9216])
+            path.write_text(json.dumps(complete))
+            acceptance.validate_generation_cost_evidence(
+                path, SHA, "c" * 64, expected_profile="capacity")
+            for field, value in (("orderly_shutdown_verified", False),
+                                 ("processes", []), ("configured_trade_calls_per_minute", 2048)):
+                damaged = self.generation_curve("capacity")
+                damaged[field] = value
+                path.write_text(json.dumps(damaged))
+                with self.assertRaises(ValueError):
+                    acceptance.validate_generation_cost_evidence(
+                        path, SHA, "c" * 64, expected_profile="capacity")
+            damaged = self.generation_curve("capacity")
+            damaged["points"][-1]["place_latency_total_samples"] = 1024
+            path.write_text(json.dumps(damaged))
+            with self.assertRaisesRegex(ValueError, "sampled workload"):
+                acceptance.validate_generation_cost_evidence(
+                    path, SHA, "c" * 64, expected_profile="capacity")
+
+    def test_capacity_uncertainty_cannot_hide_resend_or_unresolved_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.json"
+            complete = self.generation_curve("capacity")
+            record = {"command_id": "original", "reason_code": "EXECUTION_SERVICE_UNAVAILABLE",
+                      "resolved_by_status": True, "order_id": 7, "elapsed_ns": 42}
+            complete["uncertain_observations"] = [record]
+            path.write_text(json.dumps(complete))
+            acceptance.validate_generation_cost_evidence(
+                path, SHA, "c" * 64, expected_profile="capacity")
+            mutations = [lambda v: v.update(mutation_resends=1),
+                         lambda v: v.update(mutation_resends=False),
+                         lambda v: v["uncertain_observations"][0].update(resolved_by_status=False),
+                         lambda v: v["uncertain_observations"].append(dict(record)),
+                         lambda v: v["points"][0].update(send_attempt_records=999)]
+            for mutate in mutations:
+                value = json.loads(json.dumps(complete))
+                mutate(value)
+                path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    acceptance.validate_generation_cost_evidence(
+                        path, SHA, "c" * 64, expected_profile="capacity")
+
+    def test_installed_uncertain_place_observes_original_id_without_resending(self):
+        import test_installed_runtime_processes as installed
+        runtime = installed.InstalledRuntime.__new__(installed.InstalledRuntime)
+        runtime.uncertain_observations = []
+        calls = []
+        def call(tool, fields=(), **options):
+            calls.append((tool, list(fields), options))
+            if tool == "risk.preview_order":
+                return {"payload": {"approved": True, "single_use": True,
+                        "command_id": "original", "preview_permit": "opaque"}}
+            if tool == "trade.place_order":
+                return {"status": "uncertain", "reason_code": "EXECUTION_SERVICE_UNAVAILABLE"}
+            self.assertEqual(tool, "execution.get_command_status")
+            self.assertEqual(list(fields), ["command_id=original"])
+            return {"status": "ok", "payload": {"authoritative": True,
+                    "command_id": "original", "command_status": "accepted", "order_id": 17,
+                    "execution_service_epoch": "epoch", "execution_service_fencing_generation": 1}}
+        runtime.call = call
+        command, fields, order = runtime.place("BUY", 1, "1.1002", observe_uncertain=True)
+        self.assertEqual((command, order), ("original", 17))
+        self.assertEqual([item[0] for item in calls],
+                         ["risk.preview_order", "trade.place_order", "execution.get_command_status"])
+        self.assertEqual(calls[1][2]["call_id"], "original")
+        self.assertIn("preview_permit=opaque", fields)
+        self.assertTrue(runtime.uncertain_observations[0]["resolved_by_status"])
+
+    def test_installed_uncertain_status_requires_positive_exact_authority(self):
+        import test_installed_runtime_processes as installed
+        for change in ({"command_id": "foreign"}, {"authoritative": False},
+                       {"execution_service_fencing_generation": True},
+                       {"command_status": "rejected"}, {"order_id": -1}):
+            runtime = installed.InstalledRuntime.__new__(installed.InstalledRuntime)
+            runtime.uncertain_observations = []
+            calls = []
+            value = {"authoritative": True, "command_id": "original", "command_status": "accepted",
+                     "order_id": 17, "execution_service_epoch": "epoch",
+                     "execution_service_fencing_generation": 1, **change}
+            def call(tool, fields=(), **options):
+                calls.append(tool)
+                return {"status": "ok", "payload": value}
+            runtime.call = call
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                runtime._observe_uncertain_place("original", {"reason_code": "UNAVAILABLE"})
+            self.assertEqual(calls, ["execution.get_command_status"])
+            self.assertFalse(runtime.uncertain_observations[0]["resolved_by_status"])
+
+    def test_generation_diagnostics_preserve_logs_without_acceptance_claim(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        import test_oms_generation_process as installed
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            runtime_root = root / "runtime"
+            runtime_root.mkdir()
+            (runtime_root / "1-hepta-executiond.log").write_text("diagnostic\n")
+            runtime = SimpleNamespace(root=runtime_root, observed_processes=[],
+                                      uncertain_observations=[{"resolved_by_status": False}])
+            case = installed.OmsGenerationInstalledProcessTests(
+                "test_installed_trade_rate_gate_remains_enabled")
+            case.manifest = {"source_sha": SHA}
+            with mock.patch.dict(os.environ, {"HEPTA_PROCESS_EVIDENCE_DIR": str(evidence),
+                                              "HEPTA_PROCESS_CANDIDATE_SHA256": "c" * 64}):
+                case._retain_diagnostics(runtime)
+            folder = evidence / "test_installed_trade_rate_gate_remains_enabled"
+            self.assertEqual((folder / "1-hepta-executiond.log").read_text(), "diagnostic\n")
+            value = json.loads((folder / "diagnostics.json").read_text())
+            self.assertEqual(value["source_sha"], SHA)
+            self.assertFalse(value["uncertain_observations"][0]["resolved_by_status"])
+            self.assertNotIn("result", value)
+            self.assertFalse(value["logs"][0]["truncated"])
+            self.assertEqual(folder.stat().st_mode & 0o777, 0o700)
+            self.assertEqual((folder / "diagnostics.json").stat().st_mode & 0o777, 0o600)
+            self.assertEqual((folder / "1-hepta-executiond.log").stat().st_mode & 0o777, 0o600)
+            self.assertEqual(folder.stat().st_uid, evidence.stat().st_uid)
+
+    def test_process_evidence_precreation_is_explicit_empty_and_nonwritable(self):
+        import test_installed_runtime_processes as installed
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "evidence"
+            installed.prepare_process_evidence(destination)
+            with self.assertRaises(FileExistsError):
+                installed.prepare_process_evidence(destination)
+            destination.chmod(0o700)
+            owner = destination.stat().st_uid
+            self.assertEqual(installed.prepare_process_evidence(destination, precreated=True), destination)
+            self.assertEqual(destination.stat().st_uid, owner)
+            (destination / "old.json").write_text("old evidence")
+            with self.assertRaises(ValueError):
+                installed.prepare_process_evidence(destination, precreated=True)
+            (destination / "old.json").unlink()
+            destination.chmod(0o777)
+            with self.assertRaises(ValueError):
+                installed.prepare_process_evidence(destination, precreated=True)
+            destination.chmod(0o700)
+            link = root / "link"
+            link.symlink_to(destination, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                installed.prepare_process_evidence(link, precreated=True)
 
     def test_untracked_checkout_content_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:

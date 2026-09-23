@@ -248,7 +248,7 @@ bool TradingToolSessionControlPlane::FinalizeRecoveryOnlyOwner(
     const std::string& token,
     std::uint64_t expectedGeneration,
     const SessionSupervisorLeaseRecord& durableRecord,
-    ExecutionControlResult& ownerAudit,
+    ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason)
 {
     TradingToolHostSessionBinding identity;
@@ -285,7 +285,7 @@ bool TradingToolSessionControlPlane::FenceRecoveryOnlyOwner(
 bool TradingToolSessionControlPlane::AuditFinalizedRecoveryOwner(
     const std::string& issuer,
     const SessionSupervisorLeaseRecord& durableRecord,
-    ExecutionControlResult& ownerAudit,
+    ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason)
 {
     TradingToolHostSessionBinding identity;
@@ -359,7 +359,7 @@ bool TradingToolSessionControlPlane::RenewPaperAfterAudit(
     std::uint64_t expectedGeneration,
     std::uint64_t expiresAtMs,
     std::uint64_t& newGeneration,
-    ExecutionControlResult& ownerAudit,
+    ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason)
 {
     TradingToolHostSessionBinding existing;

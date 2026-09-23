@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import stat
 import os
 from pathlib import Path
 import subprocess
@@ -49,6 +51,52 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                 raise RuntimeError("fixture interlock identity changed; refusing cleanup")
         cls.lock.unlink()
         base.HOST_INTERLOCK.rmdir()
+
+    def _retain_diagnostics(self, runtime: base.InstalledRuntime) -> None:
+        # Cleanup ordering stops processes first, then copies bounded logs before
+        # the class removes its temporary state. Never publish a PASS here.
+        root = os.environ.get("HEPTA_PROCESS_EVIDENCE_DIR")
+        if not root:
+            return
+        custody = Path(root).lstat()
+        if not stat.S_ISDIR(custody.st_mode):
+            raise AssertionError("evidence destination is not a real directory")
+        destination = Path(root) / self._testMethodName
+        destination.mkdir(mode=0o700)
+        def handoff_file(stream) -> None:
+            os.fchmod(stream.fileno(), 0o600)
+            current = os.fstat(stream.fileno())
+            if (current.st_uid, current.st_gid) != (custody.st_uid, custody.st_gid):
+                os.fchown(stream.fileno(), custody.st_uid, custody.st_gid)
+        inventory = []
+        for path in sorted(runtime.root.glob("*.log")):
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+                raise AssertionError("unsafe process diagnostic source")
+            with path.open("rb") as stream:
+                content = stream.read(16 * 1024 * 1024)
+            with (destination / path.name).open("xb") as output:
+                output.write(content)
+                handoff_file(output)
+            inventory.append({"name": path.name, "source_bytes": metadata.st_size,
+                              "retained_bytes": len(content),
+                              "sha256": hashlib.sha256(content).hexdigest(),
+                              "truncated": metadata.st_size > len(content)})
+        diagnostic = {"source_sha": self.manifest["source_sha"],
+                      "artifact_sha256": os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"],
+                      "processes": runtime.observed_processes,
+                      "uncertain_observations": runtime.uncertain_observations,
+                      "logs": inventory, "authorization_effect": "NONE"}
+        with (destination / "diagnostics.json").open("x") as output:
+            json.dump(diagnostic, output, sort_keys=True, indent=2)
+            output.write("\n")
+            handoff_file(output)
+        # sudo executes the fixture, but the existing evidence directory names
+        # the upload custodian. Transfer only this newly created diagnostic set;
+        # do not make logs public or mutate source/runtime ownership.
+        current = destination.lstat()
+        if (current.st_uid, current.st_gid) != (custody.st_uid, custody.st_gid):
+            os.chown(destination, custody.st_uid, custody.st_gid, follow_symlinks=False)
 
     @staticmethod
     def _execution_peak_rss_kib(runtime: base.InstalledRuntime) -> int:
@@ -138,6 +186,42 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             for path in store.rglob("*")
             if path.is_file())
 
+    def test_capacity_observes_discarded_client_reply_without_resending(self):
+        runtime = base.InstalledRuntime(self.root / "runtime-lost-reply")
+        self.addCleanup(self._retain_diagnostics, runtime)
+        self.addCleanup(runtime.stop)
+        runtime.start(self.slot)
+        runtime.provision()
+        real_call = runtime.call
+        lost = []
+        calls = []
+        def discard_one_reply(tool, fields=(), **options):
+            calls.append(tool)
+            result = real_call(tool, fields, **options)
+            if tool == "trade.place_order" and not lost:
+                # Client/application delivery fault AFTER actual IPC success.
+                # The observer gets no fabricated authoritative order result.
+                lost.append((options["call_id"], result["order_id"]))
+                return {"status": "uncertain", "tool": tool,
+                        "reason_code": "FIXTURE_CLIENT_REPLY_DISCARDED"}
+            return result
+        runtime.call = discard_one_reply
+        command, _fields, order = runtime.place("BUY", 1, "1.1002", observe_uncertain=True)
+        self.assertEqual(lost, [(command, order)])
+        runtime.wait_position(1)
+        runtime.wait_no_orders()
+        self.assertEqual(runtime.send_count(), 1)
+        self.assertEqual(calls.count("trade.place_order"), 1)
+        self.assertEqual(calls.count("risk.preview_order"), 1)
+        self.assertIn("execution.get_command_status", calls)
+        self.assertEqual(len(runtime.uncertain_observations), 1)
+        self.assertTrue(runtime.uncertain_observations[0]["resolved_by_status"])
+        runtime.place("SELL", 1, "1.1000")
+        runtime.wait_position(0)
+        runtime.wait_no_orders()
+        self.assertEqual(runtime.send_count(), 2)
+        runtime.stop()
+
     def test_generation_cost_curve_reports_restart_memory_recovery_seal_and_disk(self):
         # Opt-in extended workload uses the SAME installed binaries, UID,
         # final risk, durable identity and rate-gated tool path as core.
@@ -146,6 +230,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         workload_started = time.monotonic_ns()
         runtime = base.InstalledRuntime(self.root / "runtime-cost-curve",
                                         trade_calls_per_minute=4 * max(pairs_per_stage))
+        self.addCleanup(self._retain_diagnostics, runtime)
         self.addCleanup(runtime.stop)
         runtime.start(self.slot)
         runtime.provision()
@@ -160,10 +245,12 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         points = []
         for stage, pairs in enumerate(pairs_per_stage, start=1):
             for _ in range(pairs):
-                command, fields, order_id = runtime.place("BUY", 1, "1.1002", ttl_ms=600000)
+                command, fields, order_id = runtime.place("BUY", 1, "1.1002", ttl_ms=600000,
+                                                            observe_uncertain=profile == "capacity")
                 runtime.wait_position(1)
                 runtime.wait_no_orders()
-                runtime.place("SELL", 1, "1.1000", ttl_ms=600000)
+                runtime.place("SELL", 1, "1.1000", ttl_ms=600000,
+                              observe_uncertain=profile == "capacity")
                 runtime.wait_position(0)
                 runtime.wait_no_orders()
                 expected_admitted += 2
@@ -188,6 +275,10 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             seal_ns = time.monotonic_ns() - seal_started
             self.assertEqual(sealed.returncode, 0, sealed.stderr)
             receipt = json.loads(sealed.stdout)
+            selected = json.loads((store / "CURRENT").read_text())["generation"]
+            sealed_manifest = json.loads((store / selected / "manifest.json").read_text())
+            self.assertEqual(sealed_manifest["send_attempt_records"], expected_admitted,
+                             "status observation must never create a second send")
 
             runtime.start(self.slot)
             runtime.wait_position(0)
@@ -213,6 +304,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
                 "stage": stage,
                 "admitted_orders": expected_admitted,
                 "history_records": receipt["history_records"],
+                "send_attempt_records": sealed_manifest["send_attempt_records"],
                 "seal_ns": seal_ns,
                 "restart_recovery_ns": recovery_ns,
                 "simulator_state_recovery_ns": startup["simulator_state_recovery_ns"],
@@ -290,6 +382,8 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             "schema": "heptatrader.installed-generation-cost-curve.v1",
             "cost_profile": profile,
             "orderly_shutdown_verified": True,
+            "uncertain_observations": runtime.uncertain_observations,
+            "mutation_resends": 0,
             "elapsed_ns": time.monotonic_ns() - workload_started,
             "processes": runtime.observed_processes,
             "result": "PASS",
@@ -343,6 +437,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
     def test_two_cash_instruments_survive_installed_generation_restart(self):
         runtime = base.InstalledRuntime(self.root / "runtime-two-cash",
                                         two_cash_instruments=True)
+        self.addCleanup(self._retain_diagnostics, runtime)
         self.addCleanup(runtime.stop)
         runtime.start(self.slot)
         runtime.provision()
@@ -391,6 +486,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
     def test_installed_trade_rate_gate_remains_enabled(self):
         runtime = base.InstalledRuntime(self.root / "runtime-rate-gate",
                                         trade_calls_per_minute=1)
+        self.addCleanup(self._retain_diagnostics, runtime)
         self.addCleanup(runtime.stop)
         runtime.start(self.slot)
         runtime.provision()
@@ -404,6 +500,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
 
     def test_fill_stop_seal_restart_preserves_state_identity_and_order_watermark(self):
         runtime = base.InstalledRuntime(self.root / "runtime")
+        self.addCleanup(self._retain_diagnostics, runtime)
         self.addCleanup(runtime.stop)
         runtime.start(self.slot)
         runtime.provision()

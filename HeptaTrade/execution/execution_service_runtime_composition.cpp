@@ -179,10 +179,10 @@ public:
         if (rejected.status == ExecutionCommandStatus::Rejected) return rejected;
         return m_coordinator.CancelOrder(command);
     }
-    ExecutionControlResult QueryCommandStatus(
+    ExecutionControlStatusResult QueryCommandStatus(
         const ExecutionControlCommand& command) override
     {
-        ExecutionControlResult result = BeginControl(command);
+        ExecutionControlStatusResult result(BeginControl(command));
         if (result.status == ExecutionCommandStatus::Rejected) return result;
         result.targetCommandId = command.targetCommandId;
         if (!m_coordinator.EnterRecoveryOnlyForControl(command, result))
@@ -204,10 +204,10 @@ public:
         result.mutationBlocked = m_coordinator.IsMutationBlocked(&blockReason);
         return result;
     }
-    ExecutionControlResult FenceSessionOwner(
+    ExecutionControlStatusResult FenceSessionOwner(
         const ExecutionControlCommand& command) override
     {
-        ExecutionControlResult result = BeginControl(command);
+        ExecutionControlStatusResult result(BeginControl(command));
         if (result.status == ExecutionCommandStatus::Rejected) return result;
         result.affectedCount = m_coordinator.FenceSessionOwner(
             command.context.agentId, command.context.sessionId);
@@ -222,10 +222,10 @@ public:
         result.status = ExecutionCommandStatus::Accepted;
         return result;
     }
-    ExecutionControlResult RecoveryAuditOwner(
+    ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override
     {
-        ExecutionControlResult result = BeginControl(command);
+        ExecutionOwnerAuditResult result(BeginControl(command));
         result.ownerAccount = command.context.account; result.ownerExecutionDomain = command.context.executionDomain;
         if (result.status == ExecutionCommandStatus::Rejected) return result;
         if (!m_coordinator.EnterRecoveryOnlyForControl(command, result)) return result;
@@ -271,10 +271,10 @@ public:
         result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
         return result;
     }
-    ExecutionControlResult ReleaseSessionOwnerFence(
+    ExecutionControlStatusResult ReleaseSessionOwnerFence(
         const ExecutionControlCommand& command) override
     {
-        ExecutionControlResult result = BeginControl(command);
+        ExecutionControlStatusResult result(BeginControl(command));
         if (result.status == ExecutionCommandStatus::Rejected) return result;
         std::size_t removedOwners = 0;
         std::string reason;
@@ -294,10 +294,10 @@ public:
         result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
         return result;
     }
-    ExecutionControlResult ReconcileAuthoritativeState(
+    ExecutionControlStatusResult ReconcileAuthoritativeState(
         const ExecutionControlCommand& command) override
     {
-        ExecutionControlResult result = BeginControl(command);
+        ExecutionControlStatusResult result(BeginControl(command));
         if (result.status == ExecutionCommandStatus::Rejected) return result;
         std::string reason;
         std::size_t removedOwners = 0;
@@ -493,9 +493,9 @@ private:
         accepted.commandId = command.context.toolCallId;
         return accepted;
     }
-    ExecutionControlResult BeginControl(const ExecutionControlCommand& command) const
+    ExecutionControlStatusResult BeginControl(const ExecutionControlCommand& command) const
     {
-        ExecutionControlResult result;
+        ExecutionControlStatusResult result;
         result.commandId = command.context.toolCallId;
         if (command.context.agentId.empty() || command.context.sessionId.empty() ||
             command.context.toolCallId.empty() || command.context.venue != "SIMULATOR" ||

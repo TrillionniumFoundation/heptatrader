@@ -538,28 +538,28 @@ public:
 	std::function<ExecutionControlResult(const ExecutionControlCommand&)>
 		terminalize;
 
-	ExecutionControlResult QueryCommandStatus(
+	ExecutionControlStatusResult QueryCommandStatus(
 		const ExecutionControlCommand& command) override
 	{
 		assert(query);
 		return query(command);
 	}
-	ExecutionControlResult FenceSessionOwner(
+	ExecutionControlStatusResult FenceSessionOwner(
 		const ExecutionControlCommand& command) override
 	{
 		return fence ? fence(command) : Rejected(command);
 	}
-	ExecutionControlResult ReleaseSessionOwnerFence(
+	ExecutionControlStatusResult ReleaseSessionOwnerFence(
 		const ExecutionControlCommand& command) override
 	{
 		return Rejected(command);
 	}
-	ExecutionControlResult ReconcileAuthoritativeState(
+	ExecutionControlStatusResult ReconcileAuthoritativeState(
 		const ExecutionControlCommand& command) override
 	{
 		return Rejected(command);
 	}
-	ExecutionControlResult RecoveryAuditOwner(
+	ExecutionOwnerAuditResult RecoveryAuditOwner(
 		const ExecutionControlCommand& command) override
 	{
 		return ownerAudit ? ownerAudit(command) : Rejected(command);

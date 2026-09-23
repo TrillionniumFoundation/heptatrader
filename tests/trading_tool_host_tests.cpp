@@ -20,23 +20,23 @@ public:
 	std::function<ExecutionControlResult(const ExecutionControlCommand&)>
 		query;
 
-	ExecutionControlResult QueryCommandStatus(
+	ExecutionControlStatusResult QueryCommandStatus(
 		const ExecutionControlCommand& command) override
 	{
 		assert(query);
 		return query(command);
 	}
-	ExecutionControlResult FenceSessionOwner(
+	ExecutionControlStatusResult FenceSessionOwner(
 		const ExecutionControlCommand& command) override
 	{
 		return Rejected(command);
 	}
-	ExecutionControlResult ReleaseSessionOwnerFence(
+	ExecutionControlStatusResult ReleaseSessionOwnerFence(
 		const ExecutionControlCommand& command) override
 	{
 		return Rejected(command);
 	}
-	ExecutionControlResult ReconcileAuthoritativeState(
+	ExecutionControlStatusResult ReconcileAuthoritativeState(
 		const ExecutionControlCommand& command) override
 	{
 		return Rejected(command);

@@ -91,7 +91,7 @@ bool SameMutationPayload(const TradingToolSession& leftSession,
 
 bool ExactZeroOwnerAudit(
     const TradingToolHostSessionBinding& binding,
-    const ExecutionControlResult& audit,
+    const ExecutionOwnerAuditResult& audit,
     std::string& reason)
 {
     if (audit.status != ExecutionCommandStatus::Accepted ||
@@ -837,7 +837,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
     const std::string& token,
     std::uint64_t expectedGeneration,
     const SessionSupervisorLeaseRecord& durableRecord,
-    ExecutionControlResult& ownerAudit,
+    ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason)
 {
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
@@ -890,7 +890,7 @@ bool TradingToolHost::FinalizeRecoveryOnlyOwner(
     if (!ExactZeroOwnerAudit(binding, ownerAudit, reason)) return false;
     command.context.toolCallId = "recovery-owner-finalize-fence-" +
         std::to_string(expectedGeneration);
-    const ExecutionControlResult fenced =
+    const ExecutionControlStatusResult fenced =
         authority->FenceSessionOwner(command);
     if (fenced.status != ExecutionCommandStatus::Accepted ||
         fenced.affectedCount != 0)
@@ -984,7 +984,7 @@ bool TradingToolHost::FenceRecoveryOnlyOwner(
         durableRecord.finalizationId + "-" +
         std::to_string(expectedGeneration);
     command.recoveryIngressFence = expectedGeneration;
-    const ExecutionControlResult fenced =
+    const ExecutionControlStatusResult fenced =
         authority->FenceSessionOwner(command);
     if (fenced.status != ExecutionCommandStatus::Accepted ||
         fenced.affectedCount != 0)
@@ -1022,10 +1022,10 @@ bool TradingToolHost::FenceRecoveryOnlyOwner(
 
 bool TradingToolHost::AuditFinalizedRecoveryOwner(
     const SessionSupervisorLeaseRecord& durableRecord,
-    ExecutionControlResult& ownerAudit,
+    ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason)
 {
-    ownerAudit = ExecutionControlResult();
+    ownerAudit = ExecutionOwnerAuditResult();
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     ExecutionControlAuthority* authority = nullptr;
     {
@@ -1106,7 +1106,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     std::uint64_t expectedGeneration,
     std::uint64_t expiresAtMs,
     std::uint64_t& newGeneration,
-    ExecutionControlResult& ownerAudit,
+    ExecutionOwnerAuditResult& ownerAudit,
     std::string& reason)
 {
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);

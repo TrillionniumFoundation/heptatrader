@@ -73,6 +73,19 @@ def admitted_slot(artifact: Path, digest: str, work: Path) -> tuple[Path, dict]:
     return slot, manifest
 
 
+def prepare_process_evidence(path: Path, *, precreated: bool = False) -> Path:
+    if not precreated:
+        path.mkdir(mode=0o755, parents=True, exist_ok=False)
+        return path
+    # Only the acceptance driver's explicit precreation contract may reuse a
+    # directory, and only before it contains any evidence. Preserve its owner.
+    metadata = path.lstat()
+    if (not stat.S_ISDIR(metadata.st_mode) or metadata.st_mode & 0o022 or
+            any(path.iterdir())):
+        raise ValueError("precreated process evidence must be an empty private real directory")
+    return path
+
+
 class InstalledRuntime:
     """One private persistent simulator/gateway state; binaries may change."""
     def __init__(self, root: Path, *, trade_calls_per_minute: int = 60,
@@ -87,6 +100,7 @@ class InstalledRuntime:
         root.mkdir(mode=0o755)
         self.processes: list[tuple[subprocess.Popen, object, Path, str]] = []
         self.observed_processes: list[dict] = []
+        self.uncertain_observations: list[dict] = []
         self.serial = 0
         self.prefix: Path | None = None
         for name, uid, mode in (("e", EXECUTION_UID, 0o755), ("g", GATEWAY_UID, 0o755),
@@ -220,7 +234,8 @@ class InstalledRuntime:
             raise AssertionError(f"session provision failed: {result.stdout} {result.stderr}")
 
     def call(self, tool: str, fields: Sequence[str] = (), *, call_id: str | None = None,
-             uid: int = AGENT_UID, reject: bool = False, duplicate: bool = False) -> dict:
+             uid: int = AGENT_UID, reject: bool = False, duplicate: bool = False,
+             observe_uncertain: bool = False) -> dict:
         self.serial += 1
         token = "agent/token" if uid == AGENT_UID else "other/token"
         result = subprocess.run([
@@ -237,6 +252,11 @@ class InstalledRuntime:
             if result.returncode != 7 or value.get("status") != "duplicate":
                 raise AssertionError(f"expected a typed duplicate: {value}")
             return value
+        if observe_uncertain and result.returncode == 8:
+            value = json.loads(result.stdout)
+            if value.get("status") != "uncertain" or value.get("tool") != tool:
+                raise AssertionError("malformed uncertain transport response")
+            return value  # caller must observe the SAME command; this is not success
         if result.returncode:
             raise AssertionError(f"{tool}: exit={result.returncode}: {result.stdout} {result.stderr}")
         value = json.loads(result.stdout)
@@ -289,7 +309,7 @@ class InstalledRuntime:
             raise AssertionError(f"position did not settle: expected={expected}, observed={observed}")
 
     def place(self, side: str, quantity: int, price: str, *, ttl_ms: int = 60000,
-              symbol: str = "EUR") -> tuple[str, list[str], int]:
+              symbol: str = "EUR", observe_uncertain: bool = False) -> tuple[str, list[str], int]:
         if symbol not in ("EUR", "GBP"):
             raise ValueError("unsupported isolated simulator instrument")
         reference = "1.1001" if symbol == "EUR" else "1.2501"
@@ -301,8 +321,46 @@ class InstalledRuntime:
             raise AssertionError(preview)
         command = preview["command_id"]
         exact = fields + ["preview_permit=" + preview["preview_permit"]]
-        result = self.call("trade.place_order", exact, call_id=command)
+        result = self.call("trade.place_order", exact, call_id=command,
+                           observe_uncertain=observe_uncertain)
+        if result.get("status") == "uncertain":
+            return command, exact, self._observe_uncertain_place(command, result)
         return command, exact, result["order_id"]
+
+    def _observe_uncertain_place(self, command: str, original: dict) -> int:
+        # Explicit long-run client behavior, not transport retry. Never issue a
+        # second preview/mutation or refresh the original permit/command expiry.
+        if len(self.uncertain_observations) >= 64:
+            raise AssertionError("uncertain observation diagnostic bound exhausted")
+        started = time.monotonic_ns()
+        observation = {"command_id": command, "reason_code": original.get("reason_code"),
+                       "resolved_by_status": False, "order_id": None, "elapsed_ns": 0}
+        self.uncertain_observations.append(observation)
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            status = self.call("execution.get_command_status", [f"command_id={command}"],
+                               observe_uncertain=True)
+            observation["elapsed_ns"] = time.monotonic_ns() - started
+            if status.get("status") == "uncertain":
+                time.sleep(0.025)
+                continue
+            value = status.get("payload", {})
+            if (value.get("authoritative") is not True or value.get("command_id") != command or
+                    not isinstance(value.get("execution_service_epoch"), str) or
+                    not value["execution_service_epoch"] or
+                    type(value.get("execution_service_fencing_generation")) is not int or
+                    value["execution_service_fencing_generation"] <= 0):
+                raise AssertionError("uncertain command status lacks exact authoritative identity")
+            if value.get("command_status") == "accepted":
+                order = value.get("order_id")
+                if type(order) is not int or order < 0:
+                    raise AssertionError("uncertain command status has no valid order identity")
+                observation.update(resolved_by_status=True, order_id=order)
+                return order
+            if value.get("command_status") != "uncertain":
+                raise AssertionError("uncertain placement was not authoritatively accepted")
+            time.sleep(0.025)
+        raise AssertionError("uncertain placement remained unresolved; no mutation was resent")
 
     def send_count(self) -> int:
         data = (self.root / "es/oms-journal.jsonl").read_bytes()
@@ -337,8 +395,9 @@ class InstalledRuntimeProcessTests(unittest.TestCase):
         cls.addClassCleanup(cls._remove_interlock)
         cls.evidence = None
         if os.environ.get("HEPTA_PROCESS_EVIDENCE_DIR"):
-            cls.evidence = Path(os.environ["HEPTA_PROCESS_EVIDENCE_DIR"])
-            cls.evidence.mkdir(mode=0o755, parents=True, exist_ok=False)
+            cls.evidence = prepare_process_evidence(
+                Path(os.environ["HEPTA_PROCESS_EVIDENCE_DIR"]),
+                precreated=os.environ.get("HEPTA_PROCESS_EVIDENCE_PRECREATED") == "1")
         cls.tmp = tempfile.TemporaryDirectory(prefix="ht-process-", dir="/tmp")
         cls.addClassCleanup(cls.tmp.cleanup)
         cls.root = Path(cls.tmp.name)

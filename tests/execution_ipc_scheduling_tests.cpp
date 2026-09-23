@@ -1,6 +1,8 @@
 #include "../HeptaTrade/execution/unix_execution_service_server.h"
 #include "../HeptaTrade/execution/unix_execution_service_client.h"
 #include "../HeptaTrade/execution/execution_coordinator.h"
+#include "../HeptaTrade/execution/execution_service_protocol.h"
+#include "../HeptaTrade/execution/unix_execution_service_internal.h"
 #include <arpa/inet.h>
 #include <atomic>
 #include <chrono>
@@ -48,6 +50,7 @@ CancelOrderCommand Cancel(const std::string& id, long order) {
 }
 struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadAuthority {
     Gate gate; std::atomic<int> cancels{0}; std::function<void()> afterBlock;
+    std::atomic<bool> injectUnrelatedEvidence{false};
     std::mutex orderMutex; std::vector<long> order;
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& c) override {
         ExecutionCommandResult r; r.commandId = c.context.toolCallId; return r;
@@ -61,12 +64,18 @@ struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadA
     }
     ExecutionControlResult Reply(const ExecutionControlCommand& c) {
         ExecutionControlResult r; r.status = ExecutionCommandStatus::Accepted;
-        r.commandId = c.context.toolCallId; r.targetCommandId = c.targetCommandId; return r;
+        r.commandId = c.context.toolCallId; r.targetCommandId = c.targetCommandId;
+        if (injectUnrelatedEvidence) {
+            r.ownerAuditAuthoritative = true; r.ownerAuditComplete = true;
+            r.ownerActiveOrderCount = 73; r.terminalMutationGateClosed = true;
+            r.terminalLatchDurable = true; r.terminalRuntimeVerified = true;
+        }
+        return r;
     }
-    ExecutionControlResult QueryCommandStatus(const ExecutionControlCommand& c) override { return Reply(c); }
-    ExecutionControlResult FenceSessionOwner(const ExecutionControlCommand& c) override { return Reply(c); }
-    ExecutionControlResult ReleaseSessionOwnerFence(const ExecutionControlCommand& c) override { return Reply(c); }
-    ExecutionControlResult ReconcileAuthoritativeState(const ExecutionControlCommand& c) override { return Reply(c); }
+    ExecutionControlStatusResult QueryCommandStatus(const ExecutionControlCommand& c) override { return Reply(c); }
+    ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& c) override { return Reply(c); }
+    ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& c) override { return Reply(c); }
+    ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& c) override { return Reply(c); }
     ExecutionCommandResult PreviewOrder(const PlaceOrderCommand& c) override { return PlaceOrder(c); }
     ExecutionCommandResult ReadAuthoritativeState(const ExecutionReadCommand& c) override {
         ExecutionCommandResult r; r.status = ExecutionCommandStatus::Accepted;
@@ -97,6 +106,37 @@ struct Fixture {
         return Micros(start);
     }
 };
+void OrdinaryControlWireCannotCarryAuditOrTerminalEvidence() {
+    Fixture f;
+    f.authority.injectUnrelatedEvidence = true;
+    ExecutionServiceRequest request;
+    request.operation = ExecutionServiceOperation::QueryCommandStatus;
+    request.control = Control("narrow-wire");
+    const auto identity = f.server.ServiceIdentity();
+    request.expectedServiceEpoch = identity.serviceEpoch;
+    request.expectedServiceFencingGeneration = identity.serviceFencingGeneration;
+    std::string body, response, reason;
+    Check(ExecutionServiceProtocol::EncodeRequest(request, body, reason), "encode status request");
+    const int fd = f.Connect();
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    const bool transported = HeptaExecutionServiceInternal::WriteFrame(fd, body, deadline) &&
+        HeptaExecutionServiceInternal::ReadFrame(fd, 32768, deadline, response);
+    ::close(fd);
+    Check(transported, "raw control roundtrip");
+    ExecutionControlResult decoded;
+    Check(ExecutionServiceProtocol::DecodeControlResponse(response, decoded, reason), "decode v11 status response");
+    Check(decoded.status == ExecutionCommandStatus::Accepted && decoded.commandId == "narrow-wire",
+          "narrowing changed the ordinary command result");
+    Check(decoded.targetCommandId == request.control.targetCommandId &&
+          decoded.serviceEpoch == identity.serviceEpoch &&
+          decoded.serviceFencingGeneration == identity.serviceFencingGeneration,
+          "narrowing lost command or service identity");
+    Check(!decoded.ownerAuditAuthoritative && !decoded.ownerAuditComplete &&
+          decoded.ownerActiveOrderCount == 0 && !decoded.terminalMutationGateClosed &&
+          !decoded.terminalLatchDurable && !decoded.terminalRuntimeVerified,
+          "ordinary status leaked unrelated authority into the compatibility wire");
+}
+
 void IdleWorkersAlwaysObserveShutdown() {
     Fixture f;
     for (unsigned cycle = 0; cycle < 100; ++cycle) {
@@ -195,26 +235,26 @@ struct CoordinatorAuthority : ExecutionAuthority, ExecutionControlAuthority, Exe
     ExecutionCommandResult ReadAuthoritativeState(const ExecutionReadCommand& c) override {
         ExecutionCommandResult r; r.commandId = c.context.toolCallId; return r;
     }
-    ExecutionControlResult QueryCommandStatus(const ExecutionControlCommand& c) override {
-        ExecutionControlResult r; r.commandId = c.context.toolCallId; r.targetCommandId = c.targetCommandId;
+    ExecutionControlStatusResult QueryCommandStatus(const ExecutionControlCommand& c) override {
+        ExecutionControlStatusResult r; r.commandId = c.context.toolCallId; r.targetCommandId = c.targetCommandId;
         ExecutionCommandResult target;
         if (coordinator.GetCommandStatus(c.context.agentId, c.context.sessionId, c.targetCommandId, target)) {
             r.status = ExecutionCommandStatus::Accepted; r.targetStatus = target.status; r.orderId = target.orderId;
         }
         return r;
     }
-    ExecutionControlResult FenceSessionOwner(const ExecutionControlCommand& c) override {
-        ExecutionControlResult r; r.commandId = c.context.toolCallId; r.status = ExecutionCommandStatus::Accepted;
+    ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& c) override {
+        ExecutionControlStatusResult r; r.commandId = c.context.toolCallId; r.status = ExecutionCommandStatus::Accepted;
         r.affectedCount = coordinator.FenceSessionOwner(c.context.agentId, c.context.sessionId); return r;
     }
-    ExecutionControlResult ReleaseSessionOwnerFence(const ExecutionControlCommand& c) override {
-        ExecutionControlResult r; r.commandId = c.context.toolCallId;
+    ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& c) override {
+        ExecutionControlStatusResult r; r.commandId = c.context.toolCallId;
         if (coordinator.AuditAndReleaseSessionOwnerFence(c.context.agentId, c.context.sessionId, true, r.reasonCode))
             r.status = ExecutionCommandStatus::Accepted;
         return r;
     }
-    ExecutionControlResult ReconcileAuthoritativeState(const ExecutionControlCommand& c) override {
-        ExecutionControlResult r; r.commandId = c.context.toolCallId; return r;
+    ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& c) override {
+        ExecutionControlStatusResult r; r.commandId = c.context.toolCallId; return r;
     }
 };
 std::string JsonField(const std::string& json, const std::string& key) {
@@ -279,6 +319,7 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
 }
 int main() {
     try {
+        OrdinaryControlWireCannotCarryAuditOrTerminalEvidence();
         IdleWorkersAlwaysObserveShutdown();
         PartialFramesDoNotOccupyWorkers();
         SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry();

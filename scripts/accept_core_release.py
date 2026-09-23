@@ -89,7 +89,8 @@ def validate_client_pair_evidence(path: Path, source: str, core_sha: str, client
 
 def generation_cost_pairs(profile: str = "core") -> tuple[int, int, int]:
     """Fixed synthetic workloads, never broker/runtime policy overrides."""
-    profiles = {"core": (4, 16, 64), "extended": (32, 128, 512)}
+    profiles = {"core": (4, 16, 64), "extended": (32, 128, 512),
+                "capacity": (1536, 1536, 1536)}
     if not isinstance(profile, str) or profile not in profiles:
         raise ValueError("unsupported generation cost profile")
     return profiles[profile]
@@ -159,10 +160,10 @@ def validate_generation_cost_evidence(
         if point["history_records"] < previous_history:
             raise ValueError("generation cost evidence history regressed")
         previous_history = point["history_records"]
-        if expected_profile == "extended" and point["place_latency_total_samples"] < 2 * pairs[index]:
+        if expected_profile != "core" and point["place_latency_total_samples"] < 2 * pairs[index]:
             raise ValueError("generation cost evidence sampled workload is incomplete")
 
-    if expected_profile == "extended":
+    if expected_profile != "core":
         if value.get("orderly_shutdown_verified") is not True:
             raise ValueError("generation cost evidence shutdown is unverified")
         if (not unsigned(value.get("elapsed_ns"), positive=True) or
@@ -192,6 +193,27 @@ def validate_generation_cost_evidence(
                 raise ValueError("generation cost evidence executable changed across restart")
         if counts != {"hepta-executiond": 5, "hepta-tool-gatewayd": 5}:
             raise ValueError("generation cost evidence restart inventory is incomplete")
+
+    if expected_profile == "capacity":
+        if type(value.get("mutation_resends")) is not int or value["mutation_resends"] != 0:
+            raise ValueError("capacity workload must not resend uncertain mutations")
+        uncertain = value.get("uncertain_observations")
+        if not isinstance(uncertain, list) or len(uncertain) > 64:
+            raise ValueError("capacity uncertain observation inventory is invalid")
+        seen_commands = set()
+        for item in uncertain:
+            if (not isinstance(item, dict) or item.get("resolved_by_status") is not True or
+                not isinstance(item.get("command_id"), str) or not item["command_id"] or
+                item["command_id"] in seen_commands or
+                not isinstance(item.get("reason_code"), str) or not item["reason_code"] or
+                not unsigned(item.get("order_id")) or
+                not unsigned(item.get("elapsed_ns"), positive=True)):
+                raise ValueError("capacity uncertain command lacks a unique observed resolution")
+            seen_commands.add(item["command_id"])
+        for point in points:
+            if (type(point.get("send_attempt_records")) is not int or
+                    point["send_attempt_records"] != point["admitted_orders"]):
+                raise ValueError("capacity send history differs from actual admissions")
 
     before = value.get("retained_disk_bytes_before_rebase")
     after = value.get("retained_disk_bytes_after_rebase")
@@ -481,7 +503,13 @@ def accept(build: Path, output: Path, source: str, *, root: Path = ROOT,
             command(["sudo", "chmod", "0755", host_source])
             clean = ["sudo", "env", "-i", "--chdir=" + str(host_source),
                      "PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LC_ALL=C", "PYTHONDONTWRITEBYTECODE=1"]
+            # Establish private upload custody before crossing sudo. The root
+            # fixture may populate this new empty directory, never adopt old
+            # evidence or leave private children owned by a different uploader.
+            process_evidence = output / "process-evidence"
+            process_evidence.mkdir(mode=0o700)
             command(clean + ["HEPTA_ISOLATED_PROCESS_TESTS=1",
+                    "HEPTA_PROCESS_EVIDENCE_PRECREATED=1",
                     "HEPTA_PROCESS_CANDIDATE_ARTIFACT=" + str(candidate),
                     "HEPTA_PROCESS_CANDIDATE_SHA256=" + candidate_digest,
                     "HEPTA_PROCESS_PREVIOUS_ARTIFACT=" + str(previous),

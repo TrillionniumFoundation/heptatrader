@@ -169,7 +169,7 @@ public:
                                 std::uint64_t ingressFence,
                                 std::string& reason);
     bool EnterRecoveryOnlyForControl(const ExecutionControlCommand& command,
-                                     ExecutionControlResult& result);
+                                     ExecutionControlStatusResult& result);
     std::size_t FenceSessionOwner(const std::string& agentId, const std::string& sessionId);
     bool IsSessionOwnerFenced(const std::string& agentId, const std::string& sessionId) const;
     bool IsSessionOwnerRecoveryOnly(const std::string& agentId,

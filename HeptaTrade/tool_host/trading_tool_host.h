@@ -85,18 +85,18 @@ public:
         const std::string& targetCommandId,
         SessionSupervisorLeaseStore& leaseStore,
         SessionSupervisorLeaseRecord& durableRecord,
-        ExecutionControlResult& result,
+        ExecutionControlStatusResult& result,
         std::string& reason,
         TradingToolRecoveryFenceCommittedHook committedHook = nullptr,
         void* committedHookContext = nullptr,
-        ExecutionControlResult* ownerAudit = nullptr,
+        ExecutionOwnerAuditResult* ownerAudit = nullptr,
         std::uint64_t recoveryExpiresAtMs = 0,
         const std::string& durableCurrentToken = std::string());
     bool FinalizeRecoveryOnlyOwner(
         const std::string& token,
         std::uint64_t expectedGeneration,
         const SessionSupervisorLeaseRecord& durableRecord,
-        ExecutionControlResult& ownerAudit,
+        ExecutionOwnerAuditResult& ownerAudit,
         std::string& reason);
     // PAPER finalization is deliberately split into three independently
     // retryable phases.  The HSL7 state machine, rather than local absence,
@@ -108,7 +108,7 @@ public:
         std::string& reason);
     bool AuditFinalizedRecoveryOwner(
         const SessionSupervisorLeaseRecord& durableRecord,
-        ExecutionControlResult& ownerAudit,
+        ExecutionOwnerAuditResult& ownerAudit,
         std::string& reason);
 	bool TerminalizeFinalizedRecoveryOwner(
 		const SessionSupervisorLeaseRecord& durableRecord,
@@ -128,7 +128,7 @@ public:
         std::uint64_t expectedGeneration,
         std::uint64_t expiresAtMs,
         std::uint64_t& newGeneration,
-        ExecutionControlResult& ownerAudit,
+        ExecutionOwnerAuditResult& ownerAudit,
         std::string& reason);
     std::size_t ReapExpiredSessions(std::uint64_t nowMs);
     TradingToolResult Invoke(std::uint32_t peerUid, const TradingToolHostRequest& request);

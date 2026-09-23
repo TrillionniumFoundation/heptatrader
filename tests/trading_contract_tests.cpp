@@ -1,3 +1,21 @@
+#include "../HeptaTrade/execution/execution_authority.h"
+#include <type_traits>
+#include <utility>
+
+static_assert(std::is_same<decltype(std::declval<ExecutionControlAuthority&>().QueryCommandStatus(
+    std::declval<const ExecutionControlCommand&>())), ExecutionControlStatusResult>::value,
+    "ordinary status must not return audit or terminal authority");
+static_assert(std::is_same<decltype(std::declval<ExecutionControlAuthority&>().FenceSessionOwner(
+    std::declval<const ExecutionControlCommand&>())), ExecutionControlStatusResult>::value,
+    "fencing must not return unrelated terminal evidence");
+static_assert(std::is_same<decltype(std::declval<ExecutionControlAuthority&>().RecoveryAuditOwner(
+    std::declval<const ExecutionControlCommand&>())), ExecutionOwnerAuditResult>::value,
+    "recovery audit must not return terminal evidence");
+static_assert(!std::is_convertible<ExecutionControlStatusResult, ExecutionControlResult>::value,
+    "wire widening must be explicit and start with non-authorizing defaults");
+static_assert(!std::is_convertible<ExecutionOwnerAuditResult, ExecutionTerminalWitness>::value,
+    "owner audit does not prove terminal shutdown");
+
 #include "../HeptaTrade/execution/trading_contract.h"
 
 #include <cassert>

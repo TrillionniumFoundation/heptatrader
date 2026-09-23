@@ -167,9 +167,9 @@ struct ExecutionControlCommand
     std::string terminalPreliminaryReceiptSha256;
 };
 
-// Operation-domain audit result. Supervisor audit helpers consume this type,
-// not the unrelated terminal witness fields carried by the v11 wire envelope.
-struct ExecutionOwnerAuditResult
+// Common outcome of status/fence/reconcile operations. It cannot carry an
+// owner-audit assertion or terminal witness; those require their own operation.
+struct ExecutionControlStatusResult
 {
     ExecutionCommandStatus status = ExecutionCommandStatus::Rejected;
     std::string commandId;
@@ -178,6 +178,19 @@ struct ExecutionOwnerAuditResult
     long orderId = -1;
     std::uint64_t affectedCount = 0;
     bool mutationBlocked = false;
+    std::string reasonCode;
+    std::string detail;
+    std::string serviceEpoch;
+    std::uint64_t serviceFencingGeneration = 0;
+};
+
+// Recovery audit adds only the independently observed owner/account state.
+// Explicit widening starts with fail-closed defaults; status is not evidence.
+struct ExecutionOwnerAuditResult : ExecutionControlStatusResult
+{
+    ExecutionOwnerAuditResult() = default;
+    explicit ExecutionOwnerAuditResult(const ExecutionControlStatusResult& status)
+        : ExecutionControlStatusResult(status) {}
     // Typed evidence for one exact Execution owner audit.  The counts are
     // meaningful only when both flags are true and the returned account and
     // domain exactly match the requested server-bound owner context.
@@ -205,10 +218,6 @@ struct ExecutionOwnerAuditResult
     std::string brokerGrossAbsolutePosition;
     std::string ownerAccount;
     std::string ownerExecutionDomain;
-    std::string reasonCode;
-    std::string detail;
-    std::string serviceEpoch;
-    std::uint64_t serviceFencingGeneration = 0;
 };
 
 // One-way terminal evidence is independently typed; its validation must not
@@ -248,6 +257,11 @@ struct ExecutionTerminalWitness
 // is explicit and unchanged. New internal helpers take the narrow domain type.
 struct ExecutionControlResult : ExecutionOwnerAuditResult, ExecutionTerminalWitness
 {
+    ExecutionControlResult() = default;
+    explicit ExecutionControlResult(const ExecutionControlStatusResult& status)
+        : ExecutionOwnerAuditResult(status) {}
+    explicit ExecutionControlResult(const ExecutionOwnerAuditResult& audit)
+        : ExecutionOwnerAuditResult(audit) {}
 };
 
 struct ExecutionReadCommand
@@ -293,18 +307,18 @@ class ExecutionControlAuthority
 {
 public:
     virtual ~ExecutionControlAuthority() = default;
-    virtual ExecutionControlResult QueryCommandStatus(
+    virtual ExecutionControlStatusResult QueryCommandStatus(
         const ExecutionControlCommand& command) = 0;
-    virtual ExecutionControlResult FenceSessionOwner(
+    virtual ExecutionControlStatusResult FenceSessionOwner(
         const ExecutionControlCommand& command) = 0;
-    virtual ExecutionControlResult ReleaseSessionOwnerFence(
+    virtual ExecutionControlStatusResult ReleaseSessionOwnerFence(
         const ExecutionControlCommand& command) = 0;
-    virtual ExecutionControlResult ReconcileAuthoritativeState(
+    virtual ExecutionControlStatusResult ReconcileAuthoritativeState(
         const ExecutionControlCommand& command) = 0;
-    virtual ExecutionControlResult RecoveryAuditOwner(
+    virtual ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command)
     {
-        ExecutionControlResult result;
+        ExecutionOwnerAuditResult result;
         result.commandId = command.context.toolCallId;
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = "EXECUTION_OWNER_AUDIT_UNAVAILABLE";

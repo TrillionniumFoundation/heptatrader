@@ -119,7 +119,7 @@ const char* CommandStatusName(ExecutionCommandStatus status)
     return nullptr;
 }
 
-bool EncodeCommandStatus(const ExecutionControlResult& result,
+bool EncodeCommandStatus(const ExecutionControlStatusResult& result,
                          const std::string& targetCommandId,
                          std::string& payload,
                          std::string& reason)
@@ -347,8 +347,7 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
             ExecutionControlCommand command;
             command.context = session.executionContext;
             command.targetCommandId = call.targetCommandId;
-            const ExecutionControlResult result =
-                m_executionGateway->QueryCommandStatus(command);
+            const ExecutionControlStatusResult result = m_executionGateway->QueryCommandStatus(command);
             if (result.status != ExecutionCommandStatus::Accepted)
             {
                 callbackReason = result.reasonCode.empty() ?
@@ -681,8 +680,7 @@ bool ToolGatewayRuntimeComposition::FenceRevokedOwner(
     callId << "gateway-owner-fence-" << NowMs() << '-'
            << m_fenceSequence.fetch_add(1) << '-' << reasonCode.size();
     command.context.toolCallId = callId.str();
-    const ExecutionControlResult result =
-        m_executionGateway->FenceSessionOwner(command);
+    const ExecutionControlStatusResult result = m_executionGateway->FenceSessionOwner(command);
     if (result.status != ExecutionCommandStatus::Accepted)
     {
         failureReason = result.reasonCode.empty() ?
