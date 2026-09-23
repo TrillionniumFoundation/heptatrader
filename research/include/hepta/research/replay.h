@@ -45,6 +45,10 @@ struct CumulativeTradeObservation {
     double bestBidPrice = 0;
     double bestAskPrice = 0;
 };
+// Bind a reviewed legacy Tick record to this exact inference evidence contract.
+// This performs no inference and does not use displayed size as queue state.
+CumulativeTradeObservation LegacyCumulativeTradeObservation(
+    const LegacyTickRecord& record, LegacyTickCsvLayout layout);
 struct InferredTradeLevel {
     std::int64_t priceTicks = 0;
     double price = 0;

@@ -137,6 +137,14 @@ non-integral tick notional, impossible quantities, overflow and over-capacity
 input fail closed. A zero-volume/zero-turnover interval may advance the quote
 baseline without fabricating a trade.
 
+For the four reviewed legacy Tick CSV layouts, callers may obtain the source
+Bid1/Ask1 fields through Data's explicit `DecodeLegacyTopOfBook` adapter and use
+`LegacyCumulativeTradeObservation` to bind those fields together with the same
+record's cumulative volume, turnover and last price. The latter is only a typed
+Data-to-Replay mapping; it does not infer a book, consume displayed size as queue
+state or relax any admission rule in this model. Ordinary legacy Tick reads do
+not automatically promote raw depth columns.
+
 Sequences increase globally and time cannot reverse. Exact historical retries are
 inert; conflicting reuse fails. The retained receipt count is explicitly bounded
 (1..1,000,000) and each inferred interval is bounded to 10^12 units. Logical or

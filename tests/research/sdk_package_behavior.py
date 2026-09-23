@@ -261,10 +261,46 @@ int main() {
             fields[0] = instrument; fields[1] = "19700101"; fields[2] = "00:00:00";
             fields[3] = std::to_string(ms); fields[4] = std::to_string(price);
             fields[5] = std::to_string(volume); fields[29] = "10";
+            fields[13] = std::to_string(price + 1); fields[14] = std::to_string(price - 1);
+            fields[23] = "11"; fields[24] = "12";
             std::ostringstream text;
             for (std::size_t i = 0; i < fields.size(); ++i) { if (i) text << ','; text << fields[i]; }
             return text.str() + "\n";
         };
+        const auto inferenceRow = [](int ms, int volume, int turnover,
+                                     int last, int bid, int ask) {
+            std::vector<std::string> fields(32, "0");
+            fields[0] = "RAW.A"; fields[1] = "19700101"; fields[2] = "00:00:00";
+            fields[3] = std::to_string(ms); fields[4] = std::to_string(last);
+            fields[5] = std::to_string(volume); fields[7] = std::to_string(turnover);
+            fields[13] = std::to_string(ask); fields[14] = std::to_string(bid);
+            fields[23] = "10"; fields[24] = "10"; fields[29] = "10";
+            std::ostringstream text;
+            for (std::size_t i = 0; i < fields.size(); ++i) { if (i) text << ','; text << fields[i]; }
+            return text.str() + "\n";
+        };
+        std::istringstream inferenceInput(
+            inferenceRow(10, 100, 100000, 100, 99, 100) +
+            inferenceRow(11, 103, 103000, 100, 100, 101));
+        LegacyTickCsvReader inferenceReader(inferenceInput, LegacyTickCsvLayout::Hepta32,
+            {{"RAW.A", rawSchedule}},
+            [](std::size_t, const std::string&, const std::string&, const std::string&) {
+                LegacyTickClock clock; clock.actionDay = "19700101"; return clock;
+            }, false);
+        CumulativeTopOfBookTradeInference cumulativeInference("RAW.A", 1.0, 10.0);
+        LegacyTickRecord inferenceRecord; CumulativeTradeInferenceResult inferredTrade;
+        Require(inferenceReader.Next(inferenceRecord) &&
+                !cumulativeInference.Observe(
+                    LegacyCumulativeTradeObservation(inferenceRecord, LegacyTickCsvLayout::Hepta32),
+                    inferredTrade));
+        Require(inferenceReader.Next(inferenceRecord) &&
+                cumulativeInference.Observe(
+                    LegacyCumulativeTradeObservation(inferenceRecord, LegacyTickCsvLayout::Hepta32),
+                    inferredTrade) &&
+                inferredTrade.inferredBuyVolume == 3 && inferredTrade.inferredSellVolume == 0 &&
+                inferredTrade.levels.size() == 1 && inferredTrade.levels[0].price == 100);
+        Require(!inferenceReader.Next(inferenceRecord));
+
         std::istringstream rawInput(
             rawRow("RAW.A", 0, 100, 100) + rawRow("RAW.B", 0, 50, 200) +
             rawRow("RAW.A", 1, 101, 101) + rawRow("RAW.A", 1, 101, 101) +
@@ -292,6 +328,11 @@ int main() {
         while (rawReader.Next(rawRecord)) {
             const bool isA = rawRecord.tick.instrument == "RAW.A";
             Require(rawRecord.sourceFields.size() == 32 && rawRecord.actionDay == "19700101");
+            const auto top = DecodeLegacyTopOfBook(rawRecord, LegacyTickCsvLayout::Hepta32);
+            Require(top.instrument == rawRecord.tick.instrument && top.sequence == rawRecord.tick.sequence &&
+                    top.bestBidPrice == rawRecord.tick.price - 1 &&
+                    top.bestAskPrice == rawRecord.tick.price + 1 &&
+                    top.bestBidVolume == 12 && top.bestAskVolume == 11);
             const auto rawEvents = (isA ? rawA : rawB).OnTick(rawRecord.tick);
             for (const auto& rawEvent : rawEvents) {
                 Require(rawEvent.kind == ReplayEventKind::Fill && rawEvent.fill.timestampUs == 1000);

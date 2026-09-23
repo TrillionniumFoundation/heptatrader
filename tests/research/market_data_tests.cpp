@@ -883,6 +883,52 @@ void LegacyCsvProfiles() {
               reader.RowsRead()==8 && resolutions==8,"legacy stable checked EOF");
     }
 }
+void LegacyTopOfBookAdapters() {
+    for (const auto& c : legacyProfiles) {
+        auto cells = LegacyCells(c);
+        std::size_t bidPrice = 0, bidVolume = 0, askPrice = 0, askVolume = 0;
+        switch (c.layout) {
+        case LegacyTickCsvLayout::Hepta32:
+            bidPrice = 14; bidVolume = 24; askPrice = 13; askVolume = 23; break;
+        case LegacyTickCsvLayout::Immsg34:
+            bidPrice = 16; bidVolume = 26; askPrice = 15; askVolume = 25; break;
+        case LegacyTickCsvLayout::Immsg35:
+            bidPrice = 17; bidVolume = 27; askPrice = 16; askVolume = 26; break;
+        case LegacyTickCsvLayout::Zs58:
+            bidPrice = 4; bidVolume = 5; askPrice = 7; askVolume = 8; break;
+        }
+        cells[bidPrice] = "99"; cells[askPrice] = "100";
+        cells[bidVolume] = "12"; cells[askVolume] = "13";
+        std::istringstream input(LegacyLine(cells));
+        LegacyTickCsvReader reader(input,c.layout,AnyLegacyTime(),FixedLegacyClock(),false);
+        LegacyTickRecord record; Check(reader.Next(record),"top-of-book source row");
+        const auto top = DecodeLegacyTopOfBook(record,c.layout);
+        Check(top.instrument == record.tick.instrument && top.timestampUs == record.tick.timestampUs &&
+              top.sequence == record.tick.sequence && top.bestBidPrice == 99 &&
+              top.bestAskPrice == 100 && top.bestBidVolume == 12 && top.bestAskVolume == 13,
+              "typed legacy top-of-book mapping");
+
+        auto invalid = record;
+        invalid.sourceFields[askPrice] = "99";
+        Throws([&] { DecodeLegacyTopOfBook(invalid,c.layout); });
+        invalid = record; invalid.sourceFields[bidPrice] = "0";
+        Throws([&] { DecodeLegacyTopOfBook(invalid,c.layout); });
+        invalid = record; invalid.sourceFields[bidVolume] = "1.5";
+        Throws([&] { DecodeLegacyTopOfBook(invalid,c.layout); });
+        invalid = record; invalid.sourceFields.pop_back();
+        Throws([&] { DecodeLegacyTopOfBook(invalid,c.layout); });
+    }
+    auto cells = LegacyCells(legacyProfiles[0]);
+    cells[14] = "99"; cells[24] = "0"; cells[13] = "100"; cells[23] = "0";
+    std::istringstream input(LegacyLine(cells));
+    LegacyTickCsvReader reader(input,LegacyTickCsvLayout::Hepta32,AnyLegacyTime(),FixedLegacyClock(),false);
+    LegacyTickRecord record; Check(reader.Next(record),"zero-size top-of-book row");
+    const auto top = DecodeLegacyTopOfBook(record,LegacyTickCsvLayout::Hepta32);
+    Check(top.bestBidVolume == 0 && top.bestAskVolume == 0,
+          "zero displayed size remains observed zero, not missing liquidity");
+    Throws([&] { DecodeLegacyTopOfBook(record,LegacyTickCsvLayout::Immsg34); });
+}
+
 void LegacyCsvRejection() {
     for (const auto& c : legacyProfiles) {
         const auto valid=LegacyCells(c);
@@ -1609,4 +1655,4 @@ void EndOfInputLifecycle() {
 
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); EndOfInputLifecycle(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyTopOfBookAdapters(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); EndOfInputLifecycle(); }); }

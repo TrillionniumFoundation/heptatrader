@@ -277,10 +277,28 @@ counter contributes zero extra volume. There is no evidence to deduplicate
 historical rows as exchange retries. Downstream normalized readers/matchers
 retain their existing exact-Tick retry behavior. The record keeps TradingDay,
 ActionDay, offset, original cumulative count, finite nonnegative turnover/open
-interest, and all source columns. Raw depth columns are bounded text only, not
-validated books, quote authority, execution liquidity or current market rules.
-The current positive finite `Tick.price` contract is retained; negative-price
-futures histories are explicitly unsupported by this reader and are not repaired.
+interest, and all source columns. Raw depth columns remain bounded text by
+default: reading a record does not validate a book or promote execution liquidity.
+
+Call `DecodeLegacyTopOfBook(record, layout)` only when the reviewed Bid1/Ask1
+columns are required as typed **offline observed evidence**. The adapter covers
+the same four selected layouts, preserves the record's instrument/time/sequence,
+and returns Bid1/Ask1 prices plus displayed sizes. It rejects the wrong layout,
+non-integer/negative sizes, nonpositive prices and crossed/locked quotes rather
+than repairing them. A displayed size of zero remains an observed zero; it is
+not inferred missing liquidity. The adapter does not construct deeper levels,
+queue position, a trade tape or an executable quote.
+
+For the bounded cumulative-turnover model, use
+`LegacyCumulativeTradeObservation(record, layout)` to bind the record's exact
+cumulative volume, turnover and last price to that typed top-of-book evidence,
+then pass the result to `CumulativeTopOfBookTradeInference`. This is a fixed
+Data-to-Replay field binding, not another inference algorithm. Displayed sizes
+are deliberately not used as queue state. The replay model still accepts only
+its documented uniquely solvable previous-one-tick-spread case and marks output
+as inferred. The current positive finite `Tick.price` contract is retained;
+negative-price futures histories are explicitly unsupported by this reader and
+are not repaired.
 
 Headerless input is the default. `hasHeader=true` validates selected positional
 names case-insensitively: InstrumentID, TradingDay, UpdateTime, UpdateMillisec

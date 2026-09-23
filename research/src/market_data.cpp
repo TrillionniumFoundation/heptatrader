@@ -405,12 +405,24 @@ struct LegacyColumns {
     int actionDay; // -1: absent; NEVER substitute TradingDay.
     bool immsg, compactTime;
 };
+struct LegacyTopOfBookColumns {
+    std::size_t bidPrice, bidVolume, askPrice, askVolume;
+};
 LegacyColumns LegacyProfile(LegacyTickCsvLayout layout) {
     switch (layout) {
     case LegacyTickCsvLayout::Hepta32: return {32,0,1,2,3,4,5,7,29,-1,false,false};
     case LegacyTickCsvLayout::Immsg34: return {34,2,3,4,5,6,7,9,31,-1,true,false};
     case LegacyTickCsvLayout::Immsg35: return {35,2,3,5,6,7,8,10,32,4,true,false};
     case LegacyTickCsvLayout::Zs58: return {58,3,0,1,2,37,38,46,39,-1,false,true};
+    }
+    throw std::invalid_argument("RESEARCH_LEGACY_LAYOUT_INVALID");
+}
+LegacyTopOfBookColumns LegacyTopOfBookProfile(LegacyTickCsvLayout layout) {
+    switch (layout) {
+    case LegacyTickCsvLayout::Hepta32: return {14,24,13,23};
+    case LegacyTickCsvLayout::Immsg34: return {16,26,15,25};
+    case LegacyTickCsvLayout::Immsg35: return {17,27,16,26};
+    case LegacyTickCsvLayout::Zs58: return {4,5,7,8};
     }
     throw std::invalid_argument("RESEARCH_LEGACY_LAYOUT_INVALID");
 }
@@ -578,6 +590,26 @@ LegacyTickCsvReader::LegacyTickCsvReader(std::istream& input, LegacyTickCsvLayou
 LegacyTickCsvReader::~LegacyTickCsvReader() = default;
 bool LegacyTickCsvReader::Next(LegacyTickRecord& output) { return impl_->Next(output); }
 std::size_t LegacyTickCsvReader::RowsRead() const { return impl_->rows; }
+
+LegacyTopOfBookObservation DecodeLegacyTopOfBook(
+        const LegacyTickRecord& record, LegacyTickCsvLayout layout) {
+    const auto profile = LegacyProfile(layout);
+    const auto depth = LegacyTopOfBookProfile(layout);
+    Require(record.sourceFields.size() == profile.count,
+            "RESEARCH_LEGACY_TOP_OF_BOOK_LAYOUT_MISMATCH");
+    LegacyTopOfBookObservation result;
+    result.instrument = record.tick.instrument;
+    result.timestampUs = record.tick.timestampUs;
+    result.sequence = record.tick.sequence;
+    result.bestBidPrice = LegacyNumber(record.sourceFields[depth.bidPrice]);
+    result.bestAskPrice = LegacyNumber(record.sourceFields[depth.askPrice]);
+    result.bestBidVolume = SignedNonnegative(record.sourceFields[depth.bidVolume]);
+    result.bestAskVolume = SignedNonnegative(record.sourceFields[depth.askVolume]);
+    Require(std::isfinite(result.bestBidPrice) && std::isfinite(result.bestAskPrice) &&
+            result.bestBidPrice > 0 && result.bestAskPrice > result.bestBidPrice,
+            "RESEARCH_LEGACY_TOP_OF_BOOK_INVALID");
+    return result;
+}
 
 namespace {
 std::size_t LegacyBarColumns(LegacyBarCsvLayout layout) {

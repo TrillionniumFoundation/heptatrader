@@ -170,10 +170,23 @@ struct LegacyTickRecord {
     int utcOffsetMinutes = 0;
     std::int64_t cumulativeVolume = 0;
     double turnover = 0, openInterest = 0;
-    // Retained, bounded, unqualified source columns. Unselected depth fields
-    // are NOT interpreted, repaired or promoted to authoritative quotes.
+    // Retained, bounded, unqualified source columns. They remain available even
+    // when callers do not opt into a typed adapter below.
     std::vector<std::string> sourceFields;
 };
+// Explicit OFFLINE promotion of the reviewed Bid1/Ask1 columns from one legacy
+// record. These are observed source fields, not a reconstructed queue, trade tape
+// or execution quote. Invalid/empty/crossed legacy depth fails when this adapter
+// is requested; ordinary LegacyTickCsvReader use retains its previous behavior.
+struct LegacyTopOfBookObservation {
+    std::string instrument;
+    std::int64_t timestampUs = 0;
+    std::uint64_t sequence = 0;
+    double bestBidPrice = 0, bestAskPrice = 0;
+    std::int64_t bestBidVolume = 0, bestAskVolume = 0;
+};
+LegacyTopOfBookObservation DecodeLegacyTopOfBook(
+    const LegacyTickRecord& record, LegacyTickCsvLayout layout);
 // One serialized, possibly mixed-instrument stream. Callers explicitly supply
 // 1..64 instrument/session bindings, layout, clock resolver and first-volume
 // policy. Headerless by default; hasHeader validates selected positional names.
