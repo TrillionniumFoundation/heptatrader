@@ -203,6 +203,74 @@ void ClockAndRollback() {
           "rejected tick did not consume sequence, quantity or fill ID");
     Check(overflow.Finish(20).at(0).remaining == 1, "partial fill remainder is preserved at finish");
 }
+void CumulativeTradeInference() {
+    auto observation = [](unsigned long sequence, long time, long volume, double turnover,
+                          double last, double bid, double ask) {
+        CumulativeTradeObservation o; o.instrument = "TEST.FUT"; o.sequence = sequence;
+        o.timestampUs = time; o.cumulativeVolume = volume; o.cumulativeTurnover = turnover;
+        o.lastPrice = last; o.bestBidPrice = bid; o.bestAskPrice = ask; return o;
+    };
+    CumulativeTopOfBookTradeInference model("TEST.FUT", 1.0, 10.0);
+    CumulativeTradeInferenceResult out; out.deltaVolume = -7;
+    const auto baseline = observation(1, 10, 100, 100000, 99, 99, 100);
+    Check(!model.Observe(baseline, out) && out.deltaVolume == -7 && model.Observations() == 1,
+          "trade inference baseline publishes nothing");
+
+    auto askOnly = observation(2, 11, 103, 103000, 100, 100, 101);
+    Check(model.Observe(askOnly, out) && out.inferred && out.deltaVolume == 3 &&
+          out.inferredBuyVolume == 3 && out.inferredSellVolume == 0 &&
+          out.levels.size() == 1 && out.levels[0].priceTicks == 100 &&
+          out.levels[0].quantity == 3, "one-price ask inference");
+
+    auto mixed = observation(3, 12, 108, 108030, 101, 100, 101);
+    Check(model.Observe(mixed, out) && out.deltaVolume == 5 &&
+          out.inferredBuyVolume == 3 && out.inferredSellVolume == 2 &&
+          out.levels.size() == 2 && out.levels[0].priceTicks == 100 &&
+          out.levels[0].quantity == 2 && out.levels[1].priceTicks == 101 &&
+          out.levels[1].quantity == 3, "adjacent two-price inference");
+    const auto clock = model.ClockUs(); out.deltaVolume = -9;
+    Check(!model.Observe(mixed, out) && out.deltaVolume == -9 && model.ClockUs() == clock,
+          "exact inference retry is inert");
+    auto conflict = mixed; conflict.cumulativeTurnover += 10;
+    Throws([&] { model.Observe(conflict, out); });
+    Check(model.ClockUs() == clock && out.deltaVolume == -9, "conflict is atomic");
+
+    auto fractionalNotional = observation(4, 13, 111, 111031, 101, 100, 101);
+    Throws([&] { model.Observe(fractionalNotional, out); });
+    auto reversed = observation(4, 13, 107, 109000, 101, 100, 101);
+    Throws([&] { model.Observe(reversed, out); });
+    auto badTurnover = observation(4, 13, 110, 200000, 101, 100, 101);
+    Throws([&] { model.Observe(badTurnover, out); });
+    auto offGrid = observation(4, 13, 110, 110050, 101, 100.5, 101.5);
+    Throws([&] { model.Observe(offGrid, out); });
+    auto oldTime = observation(4, 11, 110, 110050, 101, 100, 101);
+    Throws([&] { model.Observe(oldTime, out); });
+    Check(model.ClockUs() == clock && model.Observations() == 3,
+          "rejected observations preserve inference state");
+
+    CumulativeTopOfBookTradeInference ambiguous("TEST.FUT", 1.0, 10.0);
+    Check(!ambiguous.Observe(observation(1, 1, 0, 0, 99, 99, 101), out),
+          "wide baseline is retained as evidence only");
+    Throws([&] { ambiguous.Observe(observation(2, 2, 1, 1000, 100, 100, 101), out); });
+    Check(ambiguous.Observations() == 1, "wide-spread inference fails closed");
+    Throws([&] { ambiguous.Observe(observation(2, 2, 0, 1, 100, 100, 101), out); });
+    Check(ambiguous.Observations() == 1, "turnover without volume is rejected atomically");
+    Check(ambiguous.Observe(observation(2, 2, 0, 0, 100, 100, 101), out) &&
+          out.deltaVolume == 0 && out.levels.empty(), "zero-volume quote transition is explicit");
+    Check(ambiguous.Observe(observation(3, 3, 2, 2010, 101, 100, 101), out) &&
+          out.inferredBuyVolume == 1 && out.inferredSellVolume == 1,
+          "new adjacent quote becomes next interval evidence");
+
+    CumulativeTopOfBookTradeInference bounded("TEST.FUT", 1.0, 10.0,
+        ResearchPriceDomain::Positive, 2);
+    Check(!bounded.Observe(baseline, out), "bounded baseline");
+    Check(bounded.Observe(askOnly, out), "bounded second receipt");
+    Throws([&] { bounded.Observe(mixed, out); });
+    Throws([] { CumulativeTopOfBookTradeInference unsupported(
+        "TEST.FUT", 1.0, 10.0, ResearchPriceDomain::SignedFinite); });
+    std::cout << "cumulative top-of-book trade inference cases=20\n";
+}
+
 void ReplayConservation() {
     // Exhaustive small books: both directions, all TIFs, quantity and liquidity.
     std::size_t scenarios = 0;
@@ -226,4 +294,4 @@ void ReplayConservation() {
     std::cout << "replay conservation scenarios=" << scenarios << '\n';
 }
 }
-int main() { return Run([] { Matching(); Strategy(); StrategyObservation(); StrategyObservationOracle(); NoTickExpiryAndFinish(); ClockAndRollback(); ReplayConservation(); replay_model_cases::RunAll(); }); }
+int main() { return Run([] { Matching(); Strategy(); StrategyObservation(); StrategyObservationOracle(); NoTickExpiryAndFinish(); ClockAndRollback(); CumulativeTradeInference(); ReplayConservation(); replay_model_cases::RunAll(); }); }

@@ -19,6 +19,7 @@ Research holdings and fills are never authoritative live state.
 | `ReplayMatcher` (original constructor) | `offline-last-trade-liquidity-v1` | Incremental Tick volume, shared in submission order, strictly later timestamps, unchanged positive-price/no-slippage default |
 | `ReplayMatcher` with `ReplayExecutionPolicy` | `offline-last-trade-grid-slippage-v1` | Same volume/lifecycle, explicitly configured adverse integer-grid slippage; limits checked against slipped price |
 | `OrderFlowReplay` | `explicit-price-time-flow-v1` | Explicit order arrivals/cancellations; best price then arrival sequence; resting maker price; no inferred external replenishment |
+| `CumulativeTopOfBookTradeInference` | `previous-top-of-book-turnover-inference-v1` | Consecutive cumulative volume/turnover plus the previous observed one-tick bid/ask; algebraic two-price decomposition only, explicitly inferred rather than observed |
 | `NextBarReplay` | `observed-next-distinct-open-v1` | Explicit completed-bar target observation and a strictly later observed open; hypothetical target-delta fills, not a volume/queue model |
 
 Choosing another model changes an assumption; it is not an optimization that
@@ -104,6 +105,45 @@ attribution to the explicit basis while preserving quantity, fees, external cash
 flows and marked equity. This named flow event also supplies its explicit mark.
 It is not a cash deposit, cash variation-margin transfer or an exchange settlement
 certificate. Direct `ResearchPortfolio::Settle` still does not refresh marks.
+
+## Bounded cumulative top-of-book trade inference
+
+`CumulativeTopOfBookTradeInference` is the selected, semantically bounded
+continuation of the useful arithmetic in the retained `heptaTickTradeManager`.
+It is an **offline inference model**, not a trade tape, market-data normalizer,
+order book, exchange feed, execution input or authority source. Its result carries
+`inferred=true`; callers must not relabel `levels`, `inferredBuyVolume` or
+`inferredSellVolume` as observed exchange facts.
+
+Each input is a caller-supplied cumulative volume/turnover observation with an
+explicit top-of-book quote, last price, sequence and UTC timestamp. The first
+observation establishes a baseline. For a later positive volume delta, the model
+uses the **previous** quote and accepts only an adjacent one-tick bid/ask. Under
+that deliberately narrow assumption, the equations
+
+`bidQty + askQty = deltaVolume` and
+`multiplier * (bidQty*bidPrice + askQty*askPrice) = deltaTurnover`
+
+have a unique integer solution. The reported buy/sell split is the conventional
+top-of-book interpretation of quantity inferred at the previous ask/bid; it does
+not prove aggressor identity. The current quote becomes evidence only for the
+next interval.
+
+Prices must lie exactly on the declared positive `ResearchPriceGrid`; turnover
+is finite nonnegative cumulative notional in the units described by the equation
+above. Wider previous spreads, signed-price domains, off-grid prices, a last price
+outside the two candidate levels, counter reversal, turnover without volume,
+non-integral tick notional, impossible quantities, overflow and over-capacity
+input fail closed. A zero-volume/zero-turnover interval may advance the quote
+baseline without fabricating a trade.
+
+Sequences increase globally and time cannot reverse. Exact historical retries are
+inert; conflicting reuse fails. The retained receipt count is explicitly bounded
+(1..1,000,000) and each inferred interval is bounded to 10^12 units. Logical or
+numeric rejection leaves the prior model state and caller output unchanged. No
+CZCE/ZCE or other venue-specific workaround from the historical implementation is
+promoted into canonical data truth; multi-price decomposition and those legacy
+heuristics remain retained reference behavior pending separately justified models.
 
 ## Next-distinct-open lifecycle
 

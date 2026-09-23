@@ -30,6 +30,58 @@ private:
     ResearchPriceDomain domain_;
 };
 
+// OFFLINE inference from two consecutive cumulative volume/turnover observations
+// and the PREVIOUS observed top of book. The result is inferred, never an
+// observed trade tape or authoritative exchange event. This intentionally
+// supports only a one-tick previous spread, where bid/ask quantities are
+// algebraically unique. Wider spreads and inconsistent evidence fail closed.
+struct CumulativeTradeObservation {
+    std::string instrument;
+    std::int64_t timestampUs = 0;
+    std::uint64_t sequence = 0;
+    std::int64_t cumulativeVolume = 0;
+    double cumulativeTurnover = 0;
+    double lastPrice = 0;
+    double bestBidPrice = 0;
+    double bestAskPrice = 0;
+};
+struct InferredTradeLevel {
+    std::int64_t priceTicks = 0;
+    double price = 0;
+    std::int64_t quantity = 0;
+};
+struct CumulativeTradeInferenceResult {
+    bool inferred = false;
+    std::uint64_t fromSequence = 0, toSequence = 0;
+    std::int64_t timestampUs = 0;
+    std::int64_t deltaVolume = 0;
+    double deltaTurnover = 0;
+    std::int64_t inferredBuyVolume = 0, inferredSellVolume = 0;
+    std::vector<InferredTradeLevel> levels;
+};
+class CumulativeTopOfBookTradeInference {
+public:
+    CumulativeTopOfBookTradeInference(std::string instrument, double tickSize,
+        double multiplier, ResearchPriceDomain domain = ResearchPriceDomain::Positive,
+        std::size_t maxObservations = 100000);
+    // The first observation establishes a baseline and returns false. Exact
+    // retries also return false. In both cases output is unchanged.
+    bool Observe(const CumulativeTradeObservation& observation,
+                 CumulativeTradeInferenceResult& output);
+    std::size_t Observations() const { return receipts_.size(); }
+    std::int64_t ClockUs() const { return clockUs_; }
+private:
+    std::string instrument_;
+    ResearchPriceGrid grid_;
+    double tickSize_, multiplier_;
+    std::size_t maxObservations_;
+    bool initialized_ = false;
+    std::uint64_t lastSequence_ = 0;
+    std::int64_t clockUs_ = 0;
+    CumulativeTradeObservation last_;
+    std::map<std::uint64_t, CumulativeTradeObservation> receipts_;
+};
+
 enum class ReplayTimeInForce { Day, ImmediateOrCancel, FillOrKill };
 struct ReplayOrder {
     std::string orderId, instrument, tradingDay;

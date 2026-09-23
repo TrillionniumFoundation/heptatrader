@@ -26,6 +26,21 @@ bool SameOrder(const ReplayOrder& a, const ReplayOrder& b) {
         a.submittedAtUs == b.submittedAtUs && a.expiresAtUs == b.expiresAtUs && a.side == b.side &&
         a.quantity == b.quantity && a.limitPrice == b.limitPrice && a.timeInForce == b.timeInForce;
 }
+bool SameInferenceObservation(const CumulativeTradeObservation& a,
+                              const CumulativeTradeObservation& b) {
+    return a.instrument == b.instrument && a.timestampUs == b.timestampUs &&
+        a.sequence == b.sequence && a.cumulativeVolume == b.cumulativeVolume &&
+        a.cumulativeTurnover == b.cumulativeTurnover && a.lastPrice == b.lastPrice &&
+        a.bestBidPrice == b.bestBidPrice && a.bestAskPrice == b.bestAskPrice;
+}
+long double InferenceTolerance(long double a, long double b) {
+    const long double scale = std::max(1.0L, std::max(std::fabs(a), std::fabs(b)));
+    // This is an inference-admission tolerance, not a rounding license. If
+    // cumulative-double subtraction has lost more than one millionth of one
+    // tick-notional unit, the evidence is too ambiguous for this model.
+    return std::min(1.0e-6L,
+        64.0L * std::numeric_limits<double>::epsilon() * scale);
+}
 }
 ReplayMatcher::ReplayMatcher(std::string instrument, SessionSchedule schedule, double fee, std::size_t capacity)
     : ReplayMatcher(std::move(instrument), std::move(schedule), fee, capacity, ReplayExecutionPolicy()) {}
@@ -184,6 +199,123 @@ std::int64_t ResearchPriceGrid::Index(double price) const {
     const auto index = static_cast<std::int64_t>(nearest);
     Price(index); // Includes positive-domain and adjacent-representation checks.
     return index;
+}
+
+CumulativeTopOfBookTradeInference::CumulativeTopOfBookTradeInference(
+        std::string instrument, double tickSize, double multiplier,
+        ResearchPriceDomain domain, std::size_t maxObservations)
+    : instrument_(std::move(instrument)), grid_(tickSize, domain),
+      tickSize_(tickSize), multiplier_(multiplier), maxObservations_(maxObservations) {
+    Require(domain == ResearchPriceDomain::Positive,
+            "RESEARCH_TRADE_INFERENCE_SIGNED_DOMAIN_UNSUPPORTED");
+    Tick identity; identity.instrument = instrument_; identity.sequence = 1;
+    identity.price = grid_.Price(1); ValidateTick(identity);
+    const long double unit = static_cast<long double>(tickSize_) * multiplier_;
+    Require(std::isfinite(multiplier_) && multiplier_ > 0 &&
+            std::isfinite(unit) && unit > 0 &&
+            unit <= std::numeric_limits<double>::max() &&
+            maxObservations_ > 0 && maxObservations_ <= 1000000,
+            "RESEARCH_TRADE_INFERENCE_CONFIG_INVALID");
+}
+bool CumulativeTopOfBookTradeInference::Observe(
+        const CumulativeTradeObservation& o, CumulativeTradeInferenceResult& output) {
+    Require(o.instrument == instrument_ && o.sequence > 0 && o.timestampUs >= 0 &&
+            o.cumulativeVolume >= 0 && std::isfinite(o.cumulativeTurnover) &&
+            o.cumulativeTurnover >= 0 && std::isfinite(o.lastPrice) &&
+            std::isfinite(o.bestBidPrice) && std::isfinite(o.bestAskPrice),
+            "RESEARCH_TRADE_INFERENCE_OBSERVATION_INVALID");
+    const auto bid = grid_.Index(o.bestBidPrice);
+    const auto ask = grid_.Index(o.bestAskPrice);
+    grid_.Index(o.lastPrice);
+    Require(bid < ask, "RESEARCH_TRADE_INFERENCE_QUOTE_INVALID");
+
+    const auto duplicate = receipts_.find(o.sequence);
+    if (duplicate != receipts_.end()) {
+        Require(SameInferenceObservation(duplicate->second, o),
+                "RESEARCH_TRADE_INFERENCE_SEQUENCE_CONFLICT");
+        return false;
+    }
+    Require(receipts_.size() < maxObservations_,
+            "RESEARCH_TRADE_INFERENCE_CAPACITY");
+    if (!initialized_) {
+        CumulativeTradeObservation nextLast = o, receipt = o;
+        receipts_.emplace(o.sequence, std::move(receipt));
+        last_ = std::move(nextLast); lastSequence_ = o.sequence; clockUs_ = o.timestampUs;
+        initialized_ = true;
+        return false;
+    }
+
+    Require(o.sequence > lastSequence_ && o.timestampUs >= clockUs_,
+            "RESEARCH_TRADE_INFERENCE_OUT_OF_ORDER");
+    Require(o.cumulativeVolume >= last_.cumulativeVolume &&
+            o.cumulativeTurnover >= last_.cumulativeTurnover,
+            "RESEARCH_TRADE_INFERENCE_COUNTER_REVERSED");
+    const auto deltaVolume = o.cumulativeVolume - last_.cumulativeVolume;
+    Require(deltaVolume <= 1000000000000LL,
+            "RESEARCH_TRADE_INFERENCE_VOLUME_BOUND");
+    const long double deltaTurnover =
+        static_cast<long double>(o.cumulativeTurnover) - last_.cumulativeTurnover;
+
+    CumulativeTradeInferenceResult result;
+    result.inferred = true;
+    result.fromSequence = last_.sequence; result.toSequence = o.sequence;
+    result.timestampUs = o.timestampUs; result.deltaVolume = deltaVolume;
+    result.deltaTurnover = ModelFinite(deltaTurnover);
+
+    if (deltaVolume == 0) {
+        Require(o.cumulativeTurnover == last_.cumulativeTurnover,
+                "RESEARCH_TRADE_INFERENCE_TURNOVER_WITHOUT_VOLUME");
+    } else {
+        const auto previousBid = grid_.Index(last_.bestBidPrice);
+        const auto previousAsk = grid_.Index(last_.bestAskPrice);
+        Require(previousAsk - previousBid == 1,
+                "RESEARCH_TRADE_INFERENCE_AMBIGUOUS_SPREAD");
+        const auto lastPrice = grid_.Index(o.lastPrice);
+        Require(lastPrice == previousBid || lastPrice == previousAsk,
+                "RESEARCH_TRADE_INFERENCE_LAST_PRICE_OUTSIDE_BOOK");
+
+        const long double turnoverPerTick =
+            static_cast<long double>(tickSize_) * multiplier_;
+        const long double tickNotional = deltaTurnover / turnoverPerTick;
+        const long double rounded = std::round(tickNotional);
+        Require(std::isfinite(tickNotional) &&
+                std::fabs(tickNotional - rounded) <= InferenceTolerance(tickNotional, rounded) &&
+                rounded >= std::numeric_limits<std::int64_t>::min() &&
+                rounded <= std::numeric_limits<std::int64_t>::max(),
+                "RESEARCH_TRADE_INFERENCE_TURNOVER_OFF_GRID");
+
+        const long double askQuantityRaw =
+            rounded - static_cast<long double>(deltaVolume) * previousBid;
+        const long double askRounded = std::round(askQuantityRaw);
+        Require(std::fabs(askQuantityRaw - askRounded) <=
+                    InferenceTolerance(askQuantityRaw, askRounded) &&
+                askRounded >= 0 && askRounded <= deltaVolume,
+                "RESEARCH_TRADE_INFERENCE_EVIDENCE_INCONSISTENT");
+        const auto askQuantity = static_cast<std::int64_t>(askRounded);
+        const auto bidQuantity = deltaVolume - askQuantity;
+        Require((lastPrice != previousAsk || askQuantity > 0) &&
+                (lastPrice != previousBid || bidQuantity > 0),
+                "RESEARCH_TRADE_INFERENCE_LAST_PRICE_UNSUPPORTED");
+
+        result.inferredSellVolume = bidQuantity;
+        result.inferredBuyVolume = askQuantity;
+        if (bidQuantity > 0) {
+            InferredTradeLevel level;
+            level.priceTicks = previousBid; level.price = grid_.Price(previousBid);
+            level.quantity = bidQuantity; result.levels.push_back(level);
+        }
+        if (askQuantity > 0) {
+            InferredTradeLevel level;
+            level.priceTicks = previousAsk; level.price = grid_.Price(previousAsk);
+            level.quantity = askQuantity; result.levels.push_back(level);
+        }
+    }
+
+    CumulativeTradeObservation nextLast = o, receipt = o;
+    receipts_.emplace(o.sequence, std::move(receipt));
+    last_ = std::move(nextLast); lastSequence_ = o.sequence; clockUs_ = o.timestampUs;
+    output = std::move(result);
+    return true;
 }
 namespace {
 bool ModelIdentity(const std::string& id) {
