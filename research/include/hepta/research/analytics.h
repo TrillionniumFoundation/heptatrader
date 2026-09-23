@@ -129,7 +129,9 @@ struct Performance {
     std::size_t returnCount = 0;
     double totalReturn = 0;
     double maxDrawdown = 0;
-    Metric annualizedReturn, annualizedVolatility, sharpe, sortino, calmar;
+    double averageDrawdown = 0;
+    Metric annualizedReturn, annualizedVolatility, annualizedDownsideDeviation;
+    Metric sharpe, sortino, calmar, sterling;
 };
 // Observations must be equally spaced at the caller-declared sampling rate.
 // No hard-coded 16:00 cutoff, inferred holiday calendar, or automatic deposit.

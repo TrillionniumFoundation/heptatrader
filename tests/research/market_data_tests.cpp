@@ -779,6 +779,22 @@ const LegacyTestColumns legacyProfiles[] = {
     {LegacyTickCsvLayout::Immsg35,35,2,3,5,6,7,8,10,32,4},
     {LegacyTickCsvLayout::Zs58,58,3,0,1,2,37,38,46,39,-1}
 };
+struct LegacyDepthTestColumns {
+    std::array<std::size_t,5> bidPrice, bidVolume, askPrice, askVolume;
+};
+LegacyDepthTestColumns DepthColumns(LegacyTickCsvLayout layout) {
+    switch (layout) {
+    case LegacyTickCsvLayout::Hepta32:
+        return {{{14,15,16,17,18}},{{24,25,26,27,28}},{{13,12,11,10,9}},{{23,22,21,20,19}}};
+    case LegacyTickCsvLayout::Immsg34:
+        return {{{16,17,18,19,20}},{{26,27,28,29,30}},{{15,14,13,12,11}},{{25,24,23,22,21}}};
+    case LegacyTickCsvLayout::Immsg35:
+        return {{{17,18,19,20,21}},{{27,28,29,30,31}},{{16,15,14,13,12}},{{26,25,24,23,22}}};
+    case LegacyTickCsvLayout::Zs58:
+        return {{{4,10,16,22,28}},{{5,11,17,23,29}},{{7,13,19,25,31}},{{8,14,20,26,32}}};
+    }
+    throw std::invalid_argument("test layout");
+}
 std::vector<std::string> LegacyCells(const LegacyTestColumns& c, const std::string& instrument = "A",
     const std::string& day = "20260921", const std::string& action = "20260921",
     const std::string& time = "00:00:00", const std::string& fraction = "0",
@@ -927,6 +943,52 @@ void LegacyTopOfBookAdapters() {
     Check(top.bestBidVolume == 0 && top.bestAskVolume == 0,
           "zero displayed size remains observed zero, not missing liquidity");
     Throws([&] { DecodeLegacyTopOfBook(record,LegacyTickCsvLayout::Immsg34); });
+}
+
+void LegacyDepth5Adapters() {
+    for (const auto& c : legacyProfiles) {
+        auto cells = LegacyCells(c);
+        const auto columns = DepthColumns(c.layout);
+        for (std::size_t i = 0; i < 5; ++i) {
+            cells[columns.bidPrice[i]] = std::to_string(99 - static_cast<int>(i));
+            cells[columns.bidVolume[i]] = std::to_string(10 + static_cast<int>(i));
+            cells[columns.askPrice[i]] = std::to_string(100 + static_cast<int>(i));
+            cells[columns.askVolume[i]] = std::to_string(20 + static_cast<int>(i));
+        }
+        std::istringstream input(LegacyLine(cells));
+        LegacyTickCsvReader reader(input,c.layout,AnyLegacyTime(),FixedLegacyClock(),false);
+        LegacyTickRecord record; Check(reader.Next(record),"depth5 source row");
+        const auto depth = DecodeLegacyDepth5(record,c.layout);
+        Check(depth.instrument==record.tick.instrument && depth.timestampUs==record.tick.timestampUs &&
+              depth.sequence==record.tick.sequence && depth.bids[4].present && depth.asks[4].present &&
+              depth.bids[4].price==95 && depth.asks[4].price==104 &&
+              depth.bids[0].volume==10 && depth.asks[4].volume==24,
+              "typed legacy depth5 mapping");
+
+        auto invalid=record; invalid.sourceFields[columns.bidPrice[2]]="0";
+        invalid.sourceFields[columns.bidVolume[2]]="0";
+        Throws([&]{ DecodeLegacyDepth5(invalid,c.layout); });
+        invalid=record; invalid.sourceFields[columns.bidPrice[1]]="99";
+        Throws([&]{ DecodeLegacyDepth5(invalid,c.layout); });
+        invalid=record; invalid.sourceFields[columns.askPrice[1]]="100";
+        Throws([&]{ DecodeLegacyDepth5(invalid,c.layout); });
+        invalid=record; invalid.sourceFields[columns.bidVolume[3]]="1.5";
+        Throws([&]{ DecodeLegacyDepth5(invalid,c.layout); });
+        invalid=record; invalid.sourceFields.pop_back();
+        Throws([&]{ DecodeLegacyDepth5(invalid,c.layout); });
+
+        invalid=record; invalid.sourceFields[columns.bidVolume[1]]="0";
+        for(std::size_t i=2;i<5;++i) {
+            invalid.sourceFields[columns.bidPrice[i]]="0";
+            invalid.sourceFields[columns.bidVolume[i]]="0";
+            invalid.sourceFields[columns.askPrice[i]]="0";
+            invalid.sourceFields[columns.askVolume[i]]="0";
+        }
+        const auto prefix=DecodeLegacyDepth5(invalid,c.layout);
+        Check(prefix.bids[1].present && prefix.bids[1].volume==0 &&
+              !prefix.bids[2].present && !prefix.asks[2].present,
+              "depth5 contiguous prefix with zero displayed size");
+    }
 }
 
 void LegacyCsvRejection() {
@@ -1655,4 +1717,4 @@ void EndOfInputLifecycle() {
 
 }
 int main() { return Run([] { SessionsAndBars(); CsvAndCumulative(); SeriesAndOracle();
-    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyTopOfBookAdapters(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); EndOfInputLifecycle(); }); }
+    QueryBoundaries(); QueryOracle(); BarCsvContract(); BoundedMeans(); StreamingCsv(); StreamingBarsCsv(); MergedCsv(); MergedCsvOracle(); LegacyCsvProfiles(); LegacyTopOfBookAdapters(); LegacyDepth5Adapters(); LegacyCsvRejection(); LegacyCsvStreamingOracle(); LegacyBarProfiles(); LegacyBarRejections(); LegacyBarStreamingOracle(); CsvExceptionMasks(); CsvThrowingSourceFailures(); LegacyExplicitBarPeriods(); LegacyExplicitBarPeriodFailures(); EndOfInputLifecycle(); }); }
