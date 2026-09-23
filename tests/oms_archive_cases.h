@@ -27,8 +27,11 @@ void TestArchiveReplayAppendAndLogicalBudgets()
         auto second = MakeCriticalEvent("compressed-pair-attempt");
         second.eventType = "place_send_attempt";
         REQUIRE(j.AppendDurablePair(first, second) == OmsJournal::DurablePairResult::Committed);
-        REQUIRE(j.GetHealthSnapshot().durableSyncWrites == 2);
-        REQUIRE(j.GetHealthSnapshot().criticalSyncWrites == 3);
+        // The intentionally refused unvalidated append above is already a
+        // critical-write attempt. Assert only these three new record attempts
+        // and their two completed barriers, without erasing failed attempts.
+        REQUIRE(j.GetHealthSnapshot().durableSyncWrites == h.durableSyncWrites + 2);
+        REQUIRE(j.GetHealthSnapshot().criticalSyncWrites == h.criticalSyncWrites + 3);
     }
     {
         OmsJournal j; REQUIRE(j.Init(path));

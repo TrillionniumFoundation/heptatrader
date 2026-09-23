@@ -51,8 +51,8 @@ both Execution daemons' existing five-second `heptatrader.oms-capacity.v1` strea
 | `data_sync_latency` | each journal-file `fdatasync` call | creation, critical-write, replay, close and EINTR retries, including failures | directory `fsync`, Broker acknowledgement and unattempted calls |
 | `replay_validation_latency` | Replay entry through full snapshot validation | lock wait, draining queued writes, sync, bounded parsing and identity validation | recovery callbacks, application projection/reconciliation and complete service readiness |
 
-An `AppendDurablePair` contributes one append-call sample, two logical
-`critical_sync_writes` and one successful `durable_sync_writes` barrier. Its two
+A successful `AppendDurablePair` contributes one append-call sample, two record
+attempts in `critical_sync_writes` and one successful `durable_sync_writes` barrier. Its two
 ordered records remain separate in replay/capacity counts. `data_sync_latency`
 continues to count actual sync attempts, including failures; it is not a count
 of logical records. Do not compare append-call rates across this change as
