@@ -89,7 +89,8 @@ def validate_client_pair_evidence(path: Path, source: str, core_sha: str, client
 
 def generation_cost_pairs(profile: str = "core") -> tuple[int, int, int]:
     """Fixed synthetic workloads, never broker/runtime policy overrides."""
-    profiles = {"core": (4, 16, 64), "extended": (32, 128, 512)}
+    profiles = {"core": (4, 16, 64), "extended": (32, 128, 512),
+                "capacity": (512, 2048, 8192)}
     if not isinstance(profile, str) or profile not in profiles:
         raise ValueError("unsupported generation cost profile")
     return profiles[profile]
@@ -159,10 +160,10 @@ def validate_generation_cost_evidence(
         if point["history_records"] < previous_history:
             raise ValueError("generation cost evidence history regressed")
         previous_history = point["history_records"]
-        if expected_profile == "extended" and point["place_latency_total_samples"] < 2 * pairs[index]:
+        if expected_profile != "core" and point["place_latency_total_samples"] < 2 * pairs[index]:
             raise ValueError("generation cost evidence sampled workload is incomplete")
 
-    if expected_profile == "extended":
+    if expected_profile != "core":
         if value.get("orderly_shutdown_verified") is not True:
             raise ValueError("generation cost evidence shutdown is unverified")
         if (not unsigned(value.get("elapsed_ns"), positive=True) or

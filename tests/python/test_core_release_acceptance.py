@@ -312,6 +312,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
     def test_generation_workload_is_explicit_and_bounded(self):
         self.assertEqual(acceptance.generation_cost_pairs(), (4, 16, 64))
         self.assertEqual(acceptance.generation_cost_pairs("extended"), (32, 128, 512))
+        self.assertEqual(acceptance.generation_cost_pairs("capacity"), (512, 2048, 8192))
         for invalid in (None, True, [], "", "EXTENDED", "production"):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                 acceptance.generation_cost_pairs(invalid)
@@ -356,6 +357,35 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         acceptance.validate_generation_cost_evidence(
                             path, SHA, "c" * 64, expected_profile="extended")
+
+    def test_capacity_profile_cannot_borrow_smaller_or_incomplete_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.json"
+            for profile in ("core", "extended"):
+                path.write_text(json.dumps(self.generation_curve(profile)))
+                with self.assertRaisesRegex(ValueError, "profile"):
+                    acceptance.validate_generation_cost_evidence(
+                        path, SHA, "c" * 64, expected_profile="capacity")
+            complete = self.generation_curve("capacity")
+            self.assertEqual([p["admitted_orders"] for p in complete["points"]],
+                             [1024, 5120, 21504])
+            path.write_text(json.dumps(complete))
+            acceptance.validate_generation_cost_evidence(
+                path, SHA, "c" * 64, expected_profile="capacity")
+            for field, value in (("orderly_shutdown_verified", False),
+                                 ("processes", []), ("configured_trade_calls_per_minute", 2048)):
+                damaged = self.generation_curve("capacity")
+                damaged[field] = value
+                path.write_text(json.dumps(damaged))
+                with self.assertRaises(ValueError):
+                    acceptance.validate_generation_cost_evidence(
+                        path, SHA, "c" * 64, expected_profile="capacity")
+            damaged = self.generation_curve("capacity")
+            damaged["points"][-1]["place_latency_total_samples"] = 1024
+            path.write_text(json.dumps(damaged))
+            with self.assertRaisesRegex(ValueError, "sampled workload"):
+                acceptance.validate_generation_cost_evidence(
+                    path, SHA, "c" * 64, expected_profile="capacity")
 
     def test_untracked_checkout_content_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -157,3 +157,22 @@ shutdown is not accepted. Receipt staging is validated before create-only durabl
 publication. Host-kernel, storage and CPU context should accompany the emitted
 measurements. These are synthetic installed-daemon observations, not a multi-day
 soak, physical power-loss test, actual operator alert delivery or Broker qualification.
+
+### Opt-in installed capacity workload
+
+The existing installed-process cost test also accepts
+`HEPTA_GENERATION_COST_PROFILE=capacity`: 512/2,048/8,192 buy/sell pairs in its
+three stages, or 1,024/5,120/21,504 cumulative real simulator admissions. The
+ordinary `core` and `extended` profiles are unchanged. This is an opt-in
+measurement, not an added routine merge gate. It uses the same installed owner,
+preview, final risk, journal, fill, generation, restart and ancient-duplicate
+path, with the existing supported operator-configured trade-rate limit. No
+production limit is widened and no Broker transport is enabled.
+
+The evidence consumer must explicitly select `capacity`; a core/extended receipt
+cannot claim its scope. Like extended evidence it requires complete samples,
+exact artifact/source identity, stable executable hashes, distinct process
+observations, the expected non-root owners and verified orderly shutdown.
+Successful source tests are not a capacity observation. Record actual measured
+results separately with host/filesystem/resource limits; this test is not a
+physical power-loss or multi-day target-host qualification.
