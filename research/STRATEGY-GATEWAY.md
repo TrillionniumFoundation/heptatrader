@@ -1,6 +1,6 @@
 # Application-key Python consumer migration
 
-Status: IMPLEMENTED IN THE #113 CONTINUATION; exact-head acceptance is recorded in PR #113
+Status: MAINTAINED SOURCE CONSUMER; initial implementation/acceptance in #113, current-head results require fresh execution
 Baseline: `211166aed4ff6f6ae4b3661ec3a279b324bc7ce3` on `integration/heptadll-modular-20260920`
 Reference caller: #106 `research/python/hepta_research/gateway.py` at `acffe4ae84a8e4377fd92b0ac536a865c6f6b6f5`
 
@@ -152,9 +152,11 @@ arbitrary Decimal calls or external binary applications. An existing unmarked
 legacy directory is rejected without rewriting its records. The consumer-by-
 consumer decisions and support boundary are in
 [the consumer register](../docs/technical/heptadll-consumers.md).
-The original HeptaDLL repository, releases/history and alternate references are
-retained. Source integration proceeds without claiming that unknown deployments
-were migrated; original-repository archival is not part of this delivery.
+The original HeptaDLL repository is a private read-only archive with active
+legacy ABI/runtime support ended. History and alternate references remain
+preserved. That support decision does not claim unknown deployments migrated
+or old JSON/HRO1 records converted; source integration and deployment migration
+remain separate.
 
 ## Post-merge initialization and numeric normalization
 

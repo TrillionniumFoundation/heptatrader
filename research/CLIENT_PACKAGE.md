@@ -332,7 +332,7 @@ with unconditional Submit. There is no new automatic retry/state machine here.
 | #108 Prepare/Persist/Load/Submit application workflow | Source-migration destination is PreparedOrder/PreparedStrategyCommand and NativeStrategyClient Prepare/Persist/Restore/Submit | Adapt proposal limits and application types explicitly; this is not an automatic migration of a deployed application |
 | #108 HRO1 `.hro` records | Retain original bytes; canonical `InspectLegacyHro1` strictly validates the old record and queries its original command ID | Read-only reconciliation only: HRO1 has no recovery binding, so the caller explicitly selects the current endpoint/credential; no HRO1-to-HSR1 conversion, preview, submit or regenerated permit |
 | #106 Python StrategyGateway / JSON outbox | Retain at `acffe4ae84a8e4377fd92b0ac536a865c6f6b6f5` | Preserve application-key mapping, Decimal validation and status-only uncertain-state policy; no automatic Python API or record conversion |
-| Historical HeptaDLL or unknown private/binary users | Retain original repository, releases and notices | Named deployment/consumer and publication-scope disposition before archival |
+| Historical HeptaDLL or unknown private/binary users | Active legacy ABI/runtime support ended; private archived source/history and notices remain preserved | Archive completion is not deployment migration; a real replacement still requires named owner/artifact/API/state and behavioral evidence |
 
 Do not run old and new applications as independent mutation owners for the same
 unreconciled intent. Preserve the old record, stop its automatic processing,

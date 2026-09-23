@@ -1,3 +1,8 @@
+"""Check pinned inventory consistency, not API equivalence or test execution.
+
+Canonical evidence paths must exist, but behavioral acceptance is performed by
+the research/native/installed-consumer CTest lanes, not by this validator.
+"""
 import hashlib
 import json
 import pathlib

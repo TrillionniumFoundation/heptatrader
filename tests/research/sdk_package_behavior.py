@@ -19,6 +19,7 @@ CONSUMER = r'''
 #include <hepta/research/strategy.h>
 #include "replay_model_cases.h"
 #include "portable_numeric_cases.h"
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -255,22 +256,48 @@ int main() {
         Require(rejected && invalid.RowsRead() == 0 && current.instrument == before.instrument &&
                 current.timestampUs == before.timestampUs && current.sequence == before.sequence);
     }
-    // Raw legacy records enter the SAME installed Data/Strategy/Replay/Analytics
-    // libraries. No source-tree implementation or alternative matcher is linked.
-    {
+    // One checked-in consumer runs the same golden stream through every supported
+    // legacy Tick layout using ONLY relocated Data/Strategy/Replay/Analytics.
+    // These literal column contracts are test inputs, not decoder implementation.
+    struct InstalledLegacyProfile {
+        LegacyTickCsvLayout layout;
+        std::size_t count, instrument, day, time, fraction, price, volume, interest;
+        int actionDay;
+        std::array<std::size_t, 5> bids, bidSizes, asks, askSizes;
+    };
+    const InstalledLegacyProfile profiles[] = {
+        {LegacyTickCsvLayout::Hepta32,32,0,1,2,3,4,5,29,-1,
+            {{14,15,16,17,18}},{{24,25,26,27,28}},{{13,12,11,10,9}},{{23,22,21,20,19}}},
+        {LegacyTickCsvLayout::Immsg34,34,2,3,4,5,6,7,31,-1,
+            {{16,17,18,19,20}},{{26,27,28,29,30}},{{15,14,13,12,11}},{{25,24,23,22,21}}},
+        {LegacyTickCsvLayout::Immsg35,35,2,3,5,6,7,8,32,4,
+            {{17,18,19,20,21}},{{27,28,29,30,31}},{{16,15,14,13,12}},{{26,25,24,23,22}}},
+        {LegacyTickCsvLayout::Zs58,58,3,0,1,2,37,38,39,-1,
+            {{4,10,16,22,28}},{{5,11,17,23,29}},{{7,13,19,25,31}},{{8,14,20,26,32}}}
+    };
+    for (const auto& profile : profiles) {
         SessionWindow rawWindow; rawWindow.openUs = 0; rawWindow.closeUs = 1000000;
         rawWindow.tradingDay = "19700101";
         SessionSchedule rawSchedule({rawWindow});
-        const auto rawRow = [](const std::string& instrument, int ms, int price, int volume) {
-            std::vector<std::string> fields(32, "0");
-            fields[0] = instrument; fields[1] = "19700101"; fields[2] = "00:00:00";
-            fields[3] = std::to_string(ms); fields[4] = std::to_string(price);
-            fields[5] = std::to_string(volume); fields[29] = "10";
-            for (int level = 0; level < 5; ++level) {
-                fields[13 - level] = std::to_string(price + 1 + level);
-                fields[14 + level] = std::to_string(price - 1 - level);
-                fields[23 - level] = std::to_string(11 + level);
-                fields[24 + level] = std::to_string(12 + level);
+        const auto rawRow = [&profile](const std::string& instrument, int ms, int price, int volume) {
+            std::vector<std::string> fields(profile.count, "0");
+            fields[profile.instrument] = instrument; fields[profile.day] = "19700101";
+            fields[profile.time] = profile.layout == LegacyTickCsvLayout::Zs58 ? "000000" : "00:00:00";
+            fields[profile.fraction] = std::to_string(ms *
+                (profile.layout == LegacyTickCsvLayout::Zs58 ? 1000 : 1));
+            fields[profile.price] = std::to_string(price);
+            fields[profile.volume] = std::to_string(volume); fields[profile.interest] = "10";
+            if (profile.actionDay >= 0) fields[static_cast<std::size_t>(profile.actionDay)] = "19700101";
+            if (profile.layout == LegacyTickCsvLayout::Immsg34 ||
+                profile.layout == LegacyTickCsvLayout::Immsg35) {
+                fields[0] = "1970-01-01 00:00:00"; fields[1] = "IMMSG";
+            }
+            for (std::size_t level = 0; level < 5; ++level) {
+                const int n = static_cast<int>(level);
+                fields[profile.asks[level]] = std::to_string(price + 1 + n);
+                fields[profile.bids[level]] = std::to_string(price - 1 - n);
+                fields[profile.askSizes[level]] = std::to_string(11 + n);
+                fields[profile.bidSizes[level]] = std::to_string(12 + n);
             }
             std::ostringstream text;
             for (std::size_t i = 0; i < fields.size(); ++i) { if (i) text << ','; text << fields[i]; }
@@ -315,10 +342,10 @@ int main() {
             rawRow("RAW.A", 1, 101, 101) + rawRow("RAW.A", 1, 101, 101) +
             rawRow("RAW.B", 1, 50, 202) + rawRow("RAW.A", 2, 103, 101) +
             rawRow("RAW.B", 2, 49, 202));
-        LegacyTickCsvReader rawReader(rawInput, LegacyTickCsvLayout::Hepta32,
+        LegacyTickCsvReader rawReader(rawInput, profile.layout,
             {{"RAW.A", rawSchedule}, {"RAW.B", rawSchedule}},
-            [](std::size_t, const std::string&, const std::string&, const std::string& sourceDay) {
-                Require(sourceDay.empty()); LegacyTickClock clock;
+            [&profile](std::size_t, const std::string&, const std::string&, const std::string& sourceDay) {
+                Require(sourceDay == (profile.actionDay >= 0 ? "19700101" : "")); LegacyTickClock clock;
                 clock.actionDay = "19700101"; clock.utcOffsetMinutes = 0; return clock;
             }, false);
         ReplayMatcher rawA("RAW.A", rawSchedule, 0.5), rawB("RAW.B", rawSchedule, 0.5);
@@ -336,9 +363,9 @@ int main() {
         LegacyTickRecord rawRecord; std::size_t rawFills = 0, closedBars = 0, signals = 0;
         while (rawReader.Next(rawRecord)) {
             const bool isA = rawRecord.tick.instrument == "RAW.A";
-            Require(rawRecord.sourceFields.size() == 32 && rawRecord.actionDay == "19700101");
-            const auto top = DecodeLegacyTopOfBook(rawRecord, LegacyTickCsvLayout::Hepta32);
-            const auto depth = DecodeLegacyDepth5(rawRecord, LegacyTickCsvLayout::Hepta32);
+            Require(rawRecord.sourceFields.size() == profile.count && rawRecord.actionDay == "19700101");
+            const auto top = DecodeLegacyTopOfBook(rawRecord, profile.layout);
+            const auto depth = DecodeLegacyDepth5(rawRecord, profile.layout);
             Require(top.instrument == rawRecord.tick.instrument && top.sequence == rawRecord.tick.sequence &&
                     top.bestBidPrice == rawRecord.tick.price - 1 &&
                     top.bestAskPrice == rawRecord.tick.price + 1 &&
@@ -346,6 +373,23 @@ int main() {
                     depth.instrument == rawRecord.tick.instrument && depth.bids[4].present &&
                     depth.asks[4].present && depth.bids[4].price == rawRecord.tick.price - 5 &&
                     depth.asks[4].price == rawRecord.tick.price + 5);
+            for (std::size_t level = 0; level < 5; ++level) {
+                const double n = static_cast<double>(level);
+                Require(depth.bids[level].present && depth.asks[level].present &&
+                        depth.bids[level].price == rawRecord.tick.price - 1 - n &&
+                        depth.asks[level].price == rawRecord.tick.price + 1 + n &&
+                        depth.bids[level].volume == 12 + static_cast<std::int64_t>(level) &&
+                        depth.asks[level].volume == 11 + static_cast<std::int64_t>(level));
+            }
+            // A malformed snapshot must reject through the installed decoder;
+            // it cannot become executable liquidity or poison the valid stream.
+            auto brokenDepth = rawRecord;
+            brokenDepth.sourceFields[profile.bids[1]] = brokenDepth.sourceFields[profile.bids[0]];
+            const auto before = brokenDepth.sourceFields;
+            bool rejected = false;
+            try { (void)DecodeLegacyDepth5(brokenDepth, profile.layout); }
+            catch (const std::invalid_argument&) { rejected = true; }
+            Require(rejected && brokenDepth.sourceFields == before);
             const auto rawEvents = (isA ? rawA : rawB).OnTick(rawRecord.tick);
             for (const auto& rawEvent : rawEvents) {
                 Require(rawEvent.kind == ReplayEventKind::Fill && rawEvent.fill.timestampUs == 1000);
