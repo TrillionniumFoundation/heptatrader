@@ -19,17 +19,36 @@ The writer emits finite numeric values and escaped JSON strings. The parser vali
 
 ## Durability contract
 
-For a risk-increasing mutation:
+For a risk-increasing placement, normalize the intent and bind owner, session,
+execution domain, command ID and request hash. Append `order_intent` followed by
+`place_send_attempt`, complete their file-data sync, revalidate the pinned path,
+then perform final risk validation and call the venue. The outcome remains a
+later durable record; a reserving simulator also keeps the independent
+`place_sent` barrier before activation and the later activation receipt.
 
-1. normalize the intent;
-2. bind owner, session, execution domain, command ID, and request hash;
-3. append intent;
-4. make the record durable;
-5. append and durably commit the send attempt;
-6. call the venue;
-7. append the observed result, broker callback, or uncertain state.
+`AppendDurablePair` writes these two existing schema-4 records under one journal
+lock with one completed sync covering both. It validates both records before
+either write and bounds each by the existing record quota. It always synchronizes,
+even when ordinary `Append` is configured for asynchronous research use. It is
+not a general batching queue, a new record format or an atomic two-record disk
+transaction. The caller may use it only where no external effect depends on the
+first record separately. Cancel and flatten keep their existing append boundaries.
 
-A successful return must not precede the durable state it claims. The journal directory and file must be regular, trusted, and non-symlink paths under the service-owned state directory. Path replacement, unsafe metadata, or synchronization failure poisons further writes.
+A failed write, sync, allocation after writing begins, or pinned-path change
+prevents successful acknowledgement and poisons further writes. A crash can leave
+no record, an intent-only prefix, both records, or a torn suffix. Existing replay
+retains complete intent/send records as unresolved and rejects malformed tails;
+it never silently discards a prefix, expires an identity or retries a venue send.
+The coordinator invokes no venue on pair failure and keeps its existing distinct
+intent/send-marker failure codes. A later reopen still requires reconciliation
+for surviving records even if this process had observed a local no-send failure.
+
+A successful return must not precede the durable state it claims. The journal
+directory and file must be regular, trusted, non-symlink paths under the
+service-owned state directory. Identity is checked after writes and again after
+sync returns: a pathname replacement while sync blocks cannot be acknowledged.
+This removes one pre-send device wait, not a guarantee of bounded device latency
+or physical power-loss qualification.
 
 ## Idempotency
 

@@ -578,6 +578,9 @@ bool OmsJournal::WriteLineToPinnedFileLocked(const std::string& line, bool durab
             ++m_durableSyncFailures;
             return false;
         }
+        // Sync may block while the path is replaced. Do not acknowledge
+        // bytes on an inode a restart would no longer find at this path.
+        if (!ValidatePinnedPathLocked()) return false;
         ++m_durableSyncWrites;
     }
     if (m_capacityKnown)
@@ -901,24 +904,81 @@ bool OmsJournal::QueueLineLocked(std::string line, bool asynchronous)
     return true;
 }
 
+bool OmsJournal::EncodeValidatedEventLocked(
+    const OmsJournalEvent& event, std::string& line) const
+{
+    if (event.eventType.empty() || !std::isfinite(event.qty) ||
+        !std::isfinite(event.price) ||
+        !std::isfinite(event.brokerRemainingQuantity) ||
+        !std::isfinite(event.brokerMarketCapPrice)) return false;
+    line = BuildJsonLine(event);
+    // Record limits apply before any write; total-file limits do not delete
+    // exit/terminal records or expire command identities.
+    if (line.size() > m_replayMaxRecordBytes) return false;
+    OmsJournalEvent checked;
+    return ParseJsonLine(line, checked);
+}
+
+OmsJournal::DurablePairResult OmsJournal::AppendDurablePair(
+    const OmsJournalEvent& first, const OmsJournalEvent& second)
+{
+    const auto started = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(m_mtx);
+    OmsScopedLatencySample timing(m_appendLatency, started);
+    if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
+        !ValidatePinnedPathLocked()) return DurablePairResult::FirstFailed;
+    // Validate BOTH complete records before writing either. At most two
+    // deployment-bounded records are retained; no general batching queue.
+    std::string firstLine, secondLine;
+    if (!IsCriticalEventType(first.eventType) ||
+        !EncodeValidatedEventLocked(first, firstLine))
+        return DurablePairResult::FirstFailed;
+    if (!IsCriticalEventType(second.eventType) ||
+        !EncodeValidatedEventLocked(second, secondLine))
+        return DurablePairResult::SecondFailed;
+    DurablePairResult failure = DurablePairResult::FirstFailed;
+    try
+    {
+        if (m_asyncEnabled && m_criticalFlushQueued && !FlushQueuedNoLock())
+            return failure;
+        if ((!m_asyncEnabled || m_criticalFlushQueued) && !FlushBufferedLocked())
+            return failure;
+        ++m_criticalSyncWrites;
+        if (!WriteLineToPinnedFileLocked(firstLine, false))
+        {
+            m_writePoisoned = true;
+            return failure;
+        }
+        failure = DurablePairResult::SecondFailed;
+        ++m_criticalSyncWrites;
+        // Always sync, even if ordinary Append is configured asynchronous.
+        // No venue effect is permitted until this barrier returns success.
+        if (!WriteLineToPinnedFileLocked(secondLine, true))
+        {
+            m_writePoisoned = true;
+            return failure;
+        }
+        return DurablePairResult::Committed;
+    }
+    catch (...)
+    {
+        // A prefix may already exist. Preserve it and stop writing; only
+        // recovery can interpret it. Never report a successful pair.
+        m_writePoisoned = true;
+        ++m_writeFailTotal;
+        return failure;
+    }
+}
+
 bool OmsJournal::Append(const OmsJournalEvent& evt)
 {
     const auto started = std::chrono::steady_clock::now();
     std::lock_guard<std::mutex> lk(m_mtx);
     OmsScopedLatencySample timing(m_appendLatency, started);
     if (m_path.empty() || m_fd < 0 || m_writePoisoned ||
-        evt.eventType.empty() || !std::isfinite(evt.qty) ||
-        !std::isfinite(evt.price) ||
-        !std::isfinite(evt.brokerRemainingQuantity) ||
-        !std::isfinite(evt.brokerMarketCapPrice)) return false;
-    if (!ValidatePinnedPathLocked()) return false;
-
-    std::string line = BuildJsonLine(evt);
-    // Do not create a record this deployment's reader refuses. The total-file
-    // replay budget does NOT stop exit/terminal records or rotate identities.
-    if (line.size() > m_replayMaxRecordBytes) return false;
-    OmsJournalEvent checked;
-    if (!ParseJsonLine(line, checked)) return false;
+        !ValidatePinnedPathLocked()) return false;
+    std::string line;
+    if (!EncodeValidatedEventLocked(evt, line)) return false;
     const bool critical = IsCriticalEventType(evt.eventType);
 
     if (critical)

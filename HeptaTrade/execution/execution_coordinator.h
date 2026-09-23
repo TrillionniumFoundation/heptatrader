@@ -273,6 +273,7 @@ private:
         std::string venueCorrelationId;
         std::string instrument;
         double eventPrice = 0.0;
+        std::int64_t sendAttemptTsMs = 0;
     };
 
     struct AuthoritativeFlattenDispatchContext

@@ -470,9 +470,19 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
                                               command.order.action, command.order.totalQuantity,
                                               eventPrice, "intent_recorded", "", "", requestHash,
                                               venueCorrelationId);
-    if (!AppendOrBlockLocked(intent, "OMS_INTENT_WRITE_FAILED"))
-        return RejectLocked(context, "OMS_INTENT_WRITE_FAILED", "broker send was not attempted",
-                            -1, requestHash);
+    const OmsJournalEvent sendAttempt = BuildEvent(
+        context, "place_send_attempt", -1, instrument, command.order.action,
+        command.order.totalQuantity, eventPrice, "attempt_recorded", "", "",
+        requestHash, venueCorrelationId);
+    const OmsJournal::DurablePairResult persisted =
+        m_journal.AppendDurablePair(intent, sendAttempt);
+    if (persisted != OmsJournal::DurablePairResult::Committed)
+    {
+        const char* failure = persisted == OmsJournal::DurablePairResult::FirstFailed ?
+            "OMS_INTENT_WRITE_FAILED" : "OMS_PLACE_SEND_ATTEMPT_WRITE_FAILED";
+        BlockMutationsLocked(failure);
+        return RejectLocked(context, failure, "broker send was not attempted", -1, requestHash);
+    }
 
     RequestRecord pending;
     pending.status = ExecutionCommandStatus::Uncertain;
@@ -493,6 +503,7 @@ ExecutionCommandResult ExecutionCoordinator::PlaceOrderLocked(
     dispatch.venueCorrelationId = venueCorrelationId;
     dispatch.instrument = instrument;
     dispatch.eventPrice = eventPrice;
+    dispatch.sendAttemptTsMs = sendAttempt.tsMs;
     return DispatchPlaceOrderLocked(command, dispatch, lock, timing);
 }
 

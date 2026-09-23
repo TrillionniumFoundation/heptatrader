@@ -23,10 +23,19 @@ void TestArchiveReplayAppendAndLogicalBudgets()
         REQUIRE(h.gzipStorage && h.capacityKnown);
         REQUIRE(h.currentBytes == original.size() && h.storageBytes == packed.size());
         REQUIRE(j.Append(MakeCriticalEvent("compressed-append")));
+        auto first = MakeCriticalEvent("compressed-pair-intent");
+        auto second = MakeCriticalEvent("compressed-pair-attempt");
+        second.eventType = "place_send_attempt";
+        REQUIRE(j.AppendDurablePair(first, second) == OmsJournal::DurablePairResult::Committed);
+        // The intentionally refused unvalidated append above is already a
+        // critical-write attempt. Assert only these three new record attempts
+        // and their two completed barriers, without erasing failed attempts.
+        REQUIRE(j.GetHealthSnapshot().durableSyncWrites == h.durableSyncWrites + 2);
+        REQUIRE(j.GetHealthSnapshot().criticalSyncWrites == h.criticalSyncWrites + 3);
     }
     {
         OmsJournal j; REQUIRE(j.Init(path));
-        REQUIRE(j.Replay({}) == 13);
+        REQUIRE(j.Replay({}) == 15);
         const auto h = j.GetHealthSnapshot();
         REQUIRE(h.currentBytes > original.size() && h.storageBytes < h.currentBytes);
     }
