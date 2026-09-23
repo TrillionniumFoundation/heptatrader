@@ -1,6 +1,6 @@
 # HeptaDLL consolidation on the existing #107 line
 
-Status: MERGED CORE; PARTIAL CONSUMER MIGRATION; not repository retirement
+Status: MERGED CORE; LEGACY ABI/RUNTIME SUPPORT RETIRED; ARCHIVE PENDING
 Date: 2026-09-22
 Canonical continuation: `integration/heptadll-modular-20260920`, PR #107
 Initial comparison source: `522e2eec63161e95e00e30269d4b6ffe00b5f591`
@@ -118,26 +118,26 @@ but common parsing/accounting/transport semantics must not have parallel cores.
 | #106 next-bar portfolio, order-flow CLI, signed-price consumers | Source retained at pinned branch; not replaced by last-trade replay | Port named model/input contracts, preserve all relevant scenarios and intentional differences |
 | #106 StrategyGateway/outbox and #108 ResearchIntentClient callers | Source retained; do not claim wire/local-record compatibility | Named caller migration onto NativeStrategyClient; no automatic record-format conversion |
 | Historical heptatrader monolith, HeptaStrategy, Pegasus, watchdog | Already retired in main, per legacy-retirement.md | Do not restore their exclusive direct-trading build graph |
-| Original heptaBasicAgent/AgentManager/SimMdSpi and VS/CMake builds | Original repository retained, not reclassified as unused | Determine actual deployments/packaged consumers before retirement |
-| Upstream Pegasus HeptaTrader, external/private/binary-only installations | Unknown; not proven absent | Named owners/artifact versions and migrate/retain decisions |
-| Vendor SDKs, legacy data, original manual | Remain in original repository; not published by this change | Applicable publication/redistribution determination, separate from code tests |
+| Original heptaBasicAgent/AgentManager/SimMdSpi and VS/CMake builds | Old ABI/runtime support ends; source/history preserved in private archive | No canonical direct-SPI/runtime restoration; unknown deployments are not relabeled migrated |
+| Upstream Pegasus HeptaTrader, external/private/binary-only installations | Unknown and not proven absent; active compatibility support ends | Preserve final source in private archive; no ABI promise and no fabricated migration/absence claim |
+| Vendor SDKs, legacy data, original manual | Remain private in the archived repository; never imported into canonical packages | Archival preserves existing private scope and grants no new publication/redistribution right |
 
 On 2026-09-22, organization/default-branch searches for `heptaBasicStrategy` and
 `heptaHeptaDLL` returned original source/build references and the canonical
 historical-retirement document. This is a bounded indexed search, not an external
 consumer census. It omits non-default branches, unindexed installations, outside
-organizations and binary-only callers. It cannot justify deletion or archival.
+organizations and binary-only callers. It therefore cannot establish deployment
+migration or absence; final archival is based on the explicit support-end/source-
+preservation policy above, not on treating this bounded search as a negative census.
 
-**Decision: retain the original repository, history and pinned #106/#108/#109
-source refs.** The three alternate Draft PRs are now closed as non-merge retained
-references; their commits/branches remain available for compatibility analysis.
-Closing those PRs is not a claim that C05/C06 records or callers migrated, and
-none may be revived as a second research/client core. Capability integration can
-enter main after its own review and exact-head acceptance; complete legacy
-retirement is a later independent claim. Repository archival does not migrate
-persistent host state or revoke an old trading binary. The legacy repository
-remains private and unarchived; its main branch is protected for PR-only
-compatibility maintenance with force-push/deletion disabled.
+**Final decision: archive the original private repository after the final
+compatibility notice is merged, while preserving its source/history read-only.**
+The alternate #106/#108/#109 refs remain historical evidence only and may not be
+revived as a second research/client core. This does not claim C05-C08 deployments
+were migrated or disappeared. It ends active old ABI/runtime support: HRO1 gets
+read-only reconciliation, unsupported numeric/API domains stay pinned to frozen
+source, and direct-SPI/Agent/runtime composition remains forbidden in canonical
+main. Archival does not migrate persistent host state or revoke an old binary.
 
 ## Acceptance and publication
 
@@ -357,3 +357,18 @@ remain. The build inventory's core graph is regenerated from actual CMake; the
 IB profile receives only the identical SDK-independent target delta. This does
 not claim an executed external-IB-SDK build or broker campaign. Actual exact-head
 CI/SDK outcomes are recorded in PR #113, not inferred from a previous green run.
+
+## Final legacy source disposition
+
+The final source audit does not justify another code import. `heptaSettlement`
+semantics are covered by the maintained Analytics ledger/portfolio/settlement
+contracts; `heptaKindleStickSeries` extrema/peak/trough behavior is covered by
+`BarSeries`; cumulative tick trade inference is bounded by the reviewed
+`CumulativeTopOfBookTradeInference`; session/bar construction uses explicit
+`SessionSchedule` input. The old China calendar/product-trading-time tables are
+not promoted as canonical exchange truth, and logging/mutex/helper wrappers add
+no product capability. Strategy/Agent/SPI/simulator composition remains retired.
+
+Therefore the remaining value of `HeptaDLL-main` is compatibility provenance,
+not another implementation line. The private archive is the preservation
+boundary; `heptatrader` is the sole development and execution authority.
