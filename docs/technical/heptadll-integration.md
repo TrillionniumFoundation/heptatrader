@@ -272,9 +272,10 @@ Exact historical API/ABI parity, exchange-specific cache/matching/settlement
 behavior, production deployment and optional CTP work remain explicitly outside
 the canonical replacement claim. They are final support boundaries, not missing
 authority/runtime work to import. Active legacy ABI/runtime support has ended;
-the lifecycle receipt records every retirement gate satisfied while the original
-repository remains retained only until the separate GitHub archive action is
-performed. This does not claim external deployments migrated or disappeared,
+the lifecycle receipt records every retirement gate satisfied. The final
+HeptaDLL-main compatibility notice merged in PR #3 and the private legacy
+repository is now archived read-only. This does not claim external deployments
+migrated or disappeared,
 and it does not enable LIVE trading.
 
 

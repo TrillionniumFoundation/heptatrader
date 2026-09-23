@@ -21,9 +21,9 @@
   },
   "legacy_repository": {
     "repository": "TrillionniumFoundation/HeptaDLL-main",
-    "state": "retained",
+    "state": "archived",
     "archive_ready": true,
-    "maintenance_mode": "archive_pending",
+    "maintenance_mode": "read_only_archive",
     "main_branch_protected": true,
     "admin_enforcement": true,
     "force_push_allowed": false,
@@ -35,7 +35,10 @@
     "canonical_runtime_support": "forbidden",
     "archive_target_visibility": "private",
     "source_preserved_after_archive": true,
-    "archive_action_pending": true
+    "archive_action_pending": false,
+    "archive_notice_pr": 3,
+    "archive_notice_merge_commit": "a6de05702716d1f5892de5fc66f23b8e85b649cc",
+    "archived_observed_date": "2026-09-23"
   },
   "retirement_gates": {
     "blocking_consumers_resolved": true,

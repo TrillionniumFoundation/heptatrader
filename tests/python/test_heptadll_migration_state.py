@@ -76,11 +76,14 @@ def main():
     assert evidence["identical_tree_pr117"]["modular_integration_run"] > 0
 
     assert canonical["state"] == "integrated"
-    assert legacy["state"] in {"retained", "archived"}
+    assert legacy["state"] == "archived"
     assert legacy["abi_support_state"] == "retired"
     assert legacy["canonical_runtime_support"] == "forbidden"
     assert legacy["archive_target_visibility"] == "private"
     assert legacy["source_preserved_after_archive"] is True
+    assert legacy["archive_action_pending"] is False
+    assert legacy["archive_notice_pr"] == 3
+    assert legacy["archive_notice_merge_commit"] == "a6de05702716d1f5892de5fc66f23b8e85b649cc"
     gates = lifecycle["retirement_gates"]
     all_gates = all(gates.values())
     assert legacy["archive_ready"] == all_gates

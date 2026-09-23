@@ -1,6 +1,6 @@
 # HeptaDLL consolidation on the existing #107 line
 
-Status: MERGED CORE; LEGACY ABI/RUNTIME SUPPORT RETIRED; ARCHIVE PENDING
+Status: MERGED CORE; LEGACY ABI/RUNTIME SUPPORT RETIRED; LEGACY REPOSITORY ARCHIVED
 Date: 2026-09-22
 Canonical continuation: `integration/heptadll-modular-20260920`, PR #107
 Initial comparison source: `522e2eec63161e95e00e30269d4b6ffe00b5f591`
@@ -132,6 +132,9 @@ preservation policy above, not on treating this bounded search as a negative cen
 
 **Final decision: archive the original private repository after the final
 compatibility notice is merged, while preserving its source/history read-only.**
+This action is now complete: HeptaDLL-main PR #3 merged as
+`a6de05702716d1f5892de5fc66f23b8e85b649cc`, and the private repository is
+archived.
 The alternate #106/#108/#109 refs remain historical evidence only and may not be
 revived as a second research/client core. This does not claim C05-C08 deployments
 were migrated or disappeared. It ends active old ABI/runtime support: HRO1 gets
