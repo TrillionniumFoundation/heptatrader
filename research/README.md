@@ -286,8 +286,16 @@ the same four selected layouts, preserves the record's instrument/time/sequence,
 and returns Bid1/Ask1 prices plus displayed sizes. It rejects the wrong layout,
 non-integer/negative sizes, nonpositive prices and crossed/locked quotes rather
 than repairing them. A displayed size of zero remains an observed zero; it is
-not inferred missing liquidity. The adapter does not construct deeper levels,
-queue position, a trade tape or an executable quote.
+not inferred missing liquidity.
+
+`DecodeLegacyDepth5(record, layout)` is the opt-in full five-level companion
+for those same reviewed source layouts. It exposes only the source snapshot:
+levels must form a contiguous prefix from level 1, prices must move monotonically
+away from the spread, sizes must be nonnegative integers, and zero/zero denotes
+an absent level. It never reconstructs queue position, subtracts own orders,
+infers hidden liquidity, creates a trade tape or upgrades displayed depth into
+executable liquidity. `DecodeLegacyTopOfBook` remains the smaller contract for
+callers that require only level 1.
 
 For the bounded cumulative-turnover model, use
 `LegacyCumulativeTradeObservation(record, layout)` to bind the record's exact

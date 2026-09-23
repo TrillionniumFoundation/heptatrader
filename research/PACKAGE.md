@@ -165,7 +165,10 @@ the installed CLI's FIFO option.
 
 This extends existing Analytics source/header/test targets and existing exports;
 it creates no new trading runtime, authority, installed-header path or CMake
-target. Rebuild consumers: source defaults are preserved, **binary ABI is not**.
+target. The performance result also exposes average sampled drawdown, annualized
+downside deviation and Sterling using the package's explicit sampling/cash-flow
+contract; it does not recreate the old implicit trading-day calendar. Rebuild
+consumers: source defaults are preserved, **binary ABI is not**.
 Net positions/FIFO cost accounting do not implement hedge-mode long/short books,
 exchange-specific clearing calendars, margin, tax lots, broker reconciliation, historical
 cache decoding, or CTP close-today/close-yesterday order semantics. The source

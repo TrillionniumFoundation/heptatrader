@@ -11,14 +11,21 @@ ResearchFill F(const std::string& id, std::int64_t time, int side, std::int64_t 
 void Metrics() {
     auto empty = EvaluateEquity({}, 252); Check(empty.returnCount == 0 && !empty.sharpe.defined, "empty metrics");
     auto constant = EvaluateEquity({P(0, 100), P(1, 100), P(2, 100)}, 252);
-    Check(constant.annualizedVolatility.defined && !constant.sharpe.defined && !constant.sortino.defined && !constant.calmar.defined, "undefined denominators");
+    Check(constant.annualizedVolatility.defined && constant.annualizedDownsideDeviation.defined &&
+          !constant.sharpe.defined && !constant.sortino.defined && !constant.calmar.defined &&
+          !constant.sterling.defined, "undefined denominators");
     Near(constant.totalReturn, 0); Near(constant.annualizedReturn.value, 0);
+    Near(constant.averageDrawdown, 0); Near(constant.annualizedDownsideDeviation.value, 0);
     auto flow = EvaluateEquity({P(0, 100), P(1, 200, 100), P(2, 100, -100)}, 252);
     Near(flow.totalReturn, 0); Near(flow.maxDrawdown, 0);
     auto result = EvaluateEquity({P(0, 100), P(1, 110), P(2, 99), P(3, 108.9)}, 3);
     Near(result.totalReturn, .089); Near(result.maxDrawdown, .1); Near(result.annualizedReturn.value, .089);
     Near(result.annualizedVolatility.value, .2); Near(result.sharpe.value, .5);
-    Check(result.sortino.defined && result.calmar.defined, "defined ratios");
+    Near(result.averageDrawdown, 11.0 / 300.0);
+    Near(result.annualizedDownsideDeviation.value, .1);
+    Check(result.sortino.defined && result.calmar.defined && result.sterling.defined,
+          "defined ratios");
+    Near(result.sterling.value, .089 / (11.0 / 300.0));
     Throws([] { EvaluateEquity({P(0, 0)}, 252); });
     Throws([] { EvaluateEquity({P(0, 100), P(0, 101)}, 252); });
     Throws([] { EvaluateEquity({P(0, 100), P(1, 100, 101)}, 252); });
