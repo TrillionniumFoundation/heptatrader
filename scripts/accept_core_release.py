@@ -194,6 +194,27 @@ def validate_generation_cost_evidence(
         if counts != {"hepta-executiond": 5, "hepta-tool-gatewayd": 5}:
             raise ValueError("generation cost evidence restart inventory is incomplete")
 
+    if expected_profile == "capacity":
+        if type(value.get("mutation_resends")) is not int or value["mutation_resends"] != 0:
+            raise ValueError("capacity workload must not resend uncertain mutations")
+        uncertain = value.get("uncertain_observations")
+        if not isinstance(uncertain, list) or len(uncertain) > 64:
+            raise ValueError("capacity uncertain observation inventory is invalid")
+        seen_commands = set()
+        for item in uncertain:
+            if (not isinstance(item, dict) or item.get("resolved_by_status") is not True or
+                not isinstance(item.get("command_id"), str) or not item["command_id"] or
+                item["command_id"] in seen_commands or
+                not isinstance(item.get("reason_code"), str) or not item["reason_code"] or
+                not unsigned(item.get("order_id")) or
+                not unsigned(item.get("elapsed_ns"), positive=True)):
+                raise ValueError("capacity uncertain command lacks a unique observed resolution")
+            seen_commands.add(item["command_id"])
+        for point in points:
+            if (type(point.get("send_attempt_records")) is not int or
+                    point["send_attempt_records"] != point["admitted_orders"]):
+                raise ValueError("capacity send history differs from actual admissions")
+
     before = value.get("retained_disk_bytes_before_rebase")
     after = value.get("retained_disk_bytes_after_rebase")
     if (

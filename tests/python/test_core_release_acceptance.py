@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -289,6 +290,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
         for index, batch in enumerate(pairs):
             admitted = 2 * sum(pairs[:index + 1])
             points.append({"admitted_orders": admitted, "history_records": 4 * admitted,
+                "send_attempt_records": admitted,
                 "seal_ns": 1, "restart_recovery_ns": 1, "simulator_state_recovery_ns": 1,
                 "startup_ready_ns": 3, "execution_peak_rss_kib": 1,
                 "place_latency_total_samples": 2 * batch, "place_latency_total_max_ns": 1,
@@ -304,6 +306,7 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             "post_rebase_execution_peak_rss_kib": 1, "oldest_command_duplicate_no_resend": True,
             "final_position": 0, "authorization_effect": "NONE", "elapsed_ns": 1,
             "orderly_shutdown_verified": True, "configured_trade_calls_per_minute": 4 * max(pairs),
+            "uncertain_observations": [], "mutation_resends": 0,
             "processes": [{"name": name, "uid": uid, "pid": 100 + index,
                            "executable_sha256": "d" * 64}
                 for index in range(5)
@@ -386,6 +389,102 @@ class CoreReleaseAcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "sampled workload"):
                 acceptance.validate_generation_cost_evidence(
                     path, SHA, "c" * 64, expected_profile="capacity")
+
+    def test_capacity_uncertainty_cannot_hide_resend_or_unresolved_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "curve.json"
+            complete = self.generation_curve("capacity")
+            record = {"command_id": "original", "reason_code": "EXECUTION_SERVICE_UNAVAILABLE",
+                      "resolved_by_status": True, "order_id": 7, "elapsed_ns": 42}
+            complete["uncertain_observations"] = [record]
+            path.write_text(json.dumps(complete))
+            acceptance.validate_generation_cost_evidence(
+                path, SHA, "c" * 64, expected_profile="capacity")
+            mutations = [lambda v: v.update(mutation_resends=1),
+                         lambda v: v.update(mutation_resends=False),
+                         lambda v: v["uncertain_observations"][0].update(resolved_by_status=False),
+                         lambda v: v["uncertain_observations"].append(dict(record)),
+                         lambda v: v["points"][0].update(send_attempt_records=999)]
+            for mutate in mutations:
+                value = json.loads(json.dumps(complete))
+                mutate(value)
+                path.write_text(json.dumps(value))
+                with self.assertRaises(ValueError):
+                    acceptance.validate_generation_cost_evidence(
+                        path, SHA, "c" * 64, expected_profile="capacity")
+
+    def test_installed_uncertain_place_observes_original_id_without_resending(self):
+        import test_installed_runtime_processes as installed
+        runtime = installed.InstalledRuntime.__new__(installed.InstalledRuntime)
+        runtime.uncertain_observations = []
+        calls = []
+        def call(tool, fields=(), **options):
+            calls.append((tool, list(fields), options))
+            if tool == "risk.preview_order":
+                return {"payload": {"approved": True, "single_use": True,
+                        "command_id": "original", "preview_permit": "opaque"}}
+            if tool == "trade.place_order":
+                return {"status": "uncertain", "reason_code": "EXECUTION_SERVICE_UNAVAILABLE"}
+            self.assertEqual(tool, "execution.get_command_status")
+            self.assertEqual(list(fields), ["command_id=original"])
+            return {"status": "ok", "payload": {"authoritative": True,
+                    "command_id": "original", "command_status": "accepted", "order_id": 17,
+                    "execution_service_epoch": "epoch", "execution_service_fencing_generation": 1}}
+        runtime.call = call
+        command, fields, order = runtime.place("BUY", 1, "1.1002", observe_uncertain=True)
+        self.assertEqual((command, order), ("original", 17))
+        self.assertEqual([item[0] for item in calls],
+                         ["risk.preview_order", "trade.place_order", "execution.get_command_status"])
+        self.assertEqual(calls[1][2]["call_id"], "original")
+        self.assertIn("preview_permit=opaque", fields)
+        self.assertTrue(runtime.uncertain_observations[0]["resolved_by_status"])
+
+    def test_installed_uncertain_status_requires_positive_exact_authority(self):
+        import test_installed_runtime_processes as installed
+        for change in ({"command_id": "foreign"}, {"authoritative": False},
+                       {"execution_service_fencing_generation": True},
+                       {"command_status": "rejected"}, {"order_id": -1}):
+            runtime = installed.InstalledRuntime.__new__(installed.InstalledRuntime)
+            runtime.uncertain_observations = []
+            calls = []
+            value = {"authoritative": True, "command_id": "original", "command_status": "accepted",
+                     "order_id": 17, "execution_service_epoch": "epoch",
+                     "execution_service_fencing_generation": 1, **change}
+            def call(tool, fields=(), **options):
+                calls.append(tool)
+                return {"status": "ok", "payload": value}
+            runtime.call = call
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                runtime._observe_uncertain_place("original", {"reason_code": "UNAVAILABLE"})
+            self.assertEqual(calls, ["execution.get_command_status"])
+            self.assertFalse(runtime.uncertain_observations[0]["resolved_by_status"])
+
+    def test_generation_diagnostics_preserve_logs_without_acceptance_claim(self):
+        from unittest import mock
+        from types import SimpleNamespace
+        import test_oms_generation_process as installed
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            runtime_root = root / "runtime"
+            runtime_root.mkdir()
+            (runtime_root / "1-hepta-executiond.log").write_text("diagnostic\n")
+            runtime = SimpleNamespace(root=runtime_root, observed_processes=[],
+                                      uncertain_observations=[{"resolved_by_status": False}])
+            case = installed.OmsGenerationInstalledProcessTests(
+                "test_installed_trade_rate_gate_remains_enabled")
+            case.manifest = {"source_sha": SHA}
+            with mock.patch.dict(os.environ, {"HEPTA_PROCESS_EVIDENCE_DIR": str(evidence),
+                                              "HEPTA_PROCESS_CANDIDATE_SHA256": "c" * 64}):
+                case._retain_diagnostics(runtime)
+            folder = evidence / "test_installed_trade_rate_gate_remains_enabled"
+            self.assertEqual((folder / "1-hepta-executiond.log").read_text(), "diagnostic\n")
+            value = json.loads((folder / "diagnostics.json").read_text())
+            self.assertEqual(value["source_sha"], SHA)
+            self.assertFalse(value["uncertain_observations"][0]["resolved_by_status"])
+            self.assertNotIn("result", value)
+            self.assertFalse(value["logs"][0]["truncated"])
 
     def test_untracked_checkout_content_prevents_acceptance(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -181,3 +181,15 @@ observations, the expected non-root owners and verified orderly shutdown.
 Successful source tests are not a capacity observation. Record actual measured
 results separately with host/filesystem/resource limits; this test is not a
 physical power-loss or multi-day target-host qualification.
+
+Capacity mode preserves and counts an original uncertain placement reply. Before
+another order it queries that same command ID through the ordinary authenticated
+status tool and requires positive matching authoritative acceptance; it never
+creates another preview, resends the mutation, extends its expiry or changes a
+daemon timeout. Position and active-order observations still must complete.
+Unresolved, rejected, mismatched or unqualified status fails the workload. The
+receipt retains bounded uncertainty observations and requires exactly one sealed
+send attempt per actual admission. Latency samples include the slow operations.
+Core/extended behavior remains unchanged. All installed generation tests retain
+bounded daemon logs and source/artifact-bound diagnostics after shutdown, even
+on failure; diagnostic capture cannot publish an acceptance result.
