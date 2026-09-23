@@ -52,3 +52,9 @@ only core without an IB SDK. Unselected profile snapshots are preserved, not
 certified. `--profile ib` requires the real SDK/BID archive; `--profile all`
 explicitly observes both. A failed selected profile leaves the previous file
 unchanged. Full generated graphs are kept one target per line for focused diffs.
+
+The companion `check_component_coverage.py` selects the same profile (`core` by
+default, or explicit `ib`/`all`). An unselected stale graph neither blocks that
+profile nor supplies reachability evidence for its missing source. Ownership
+is still checked for every tracked production path. Validate IB/all alongside
+the actual corresponding CMake profile, never infer IB qualification from core.

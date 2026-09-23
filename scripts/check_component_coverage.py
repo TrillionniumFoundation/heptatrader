@@ -316,7 +316,7 @@ def _validate_build_ownership(
 
 
 
-def validate(root: Path | str = ROOT) -> list[str]:
+def validate(root: Path | str = ROOT, profile: str = "core") -> list[str]:
     root = Path(root).resolve()
     try:
         tracked = _tracked_files(root)
@@ -332,9 +332,21 @@ def validate(root: Path | str = ROOT) -> list[str]:
             or inventory.get("schema") != "heptatrader.build-targets.v1"
         ):
             raise CoverageError("unsupported build target inventory")
+        profiles = inventory.get("profiles")
+        if not isinstance(profiles, dict) or not profiles:
+            raise CoverageError("build target inventory has no profiles")
+        if profile not in {"core", "ib", "all"}:
+            raise CoverageError("unknown build profile")
+        selected = {"core", "ib"} if profile == "all" else {profile}
+        if not selected <= set(profiles):
+            raise CoverageError("requested build profile is missing")
+        # Match the fresh CMake verifier's selected profile. A stale unselected
+        # IB snapshot cannot block an SDK-free rename or supply false evidence
+        # that a source missing from the selected graph was actually built.
+        selected_inventory = dict(inventory, profiles={name: profiles[name] for name in sorted(selected)})
         owners, _, unbuilt_paths = _module_ownership(root, tracked, catalog)
-        _validate_build_ownership(set(tracked), owners, catalog, inventory)
-        _validate_source_reachability(set(tracked), owners, unbuilt_paths, inventory)
+        _validate_build_ownership(set(tracked), owners, catalog, selected_inventory)
+        _validate_source_reachability(set(tracked), owners, unbuilt_paths, selected_inventory)
         return []
     except CoverageError as error:
         return [str(error)]
@@ -343,13 +355,14 @@ def validate(root: Path | str = ROOT) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--profile", choices=("core", "ib", "all"), default="core")
     args = parser.parse_args(argv)
-    errors = validate(args.root)
+    errors = validate(args.root, args.profile)
     for error in errors:
         print(f"[COMPONENT-COVERAGE] {error}", file=sys.stderr)
     if errors:
         return 1
-    print("[COMPONENT-COVERAGE] PASS")
+    print(f"[COMPONENT-COVERAGE] PASS {args.profile}; unselected profiles are not certified")
     return 0
 
 

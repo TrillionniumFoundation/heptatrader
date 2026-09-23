@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import copy
 from pathlib import Path
 import subprocess
 import sys
@@ -109,6 +110,30 @@ class ComponentCoverageTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q", str(root)], check=True)
         subprocess.run(["git", "-C", str(root), "add", "."], check=True)
         return root
+
+    def test_stale_unselected_ib_inventory_does_not_block_core(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            path = root / "docs/build-targets.json"
+            value = json.loads(path.read_text())
+            value["profiles"]["ib"] = copy.deepcopy(value["profiles"]["core"])
+            value["profiles"]["ib"]["targets"][0]["translation_units"][0]["path"] = "HeptaTrade/execution/old.cpp"
+            path.write_text(json.dumps(value))
+            self.assertEqual(coverage.validate(root, "core"), [])
+            self.assertTrue(coverage.validate(root, "ib"))
+            self.assertTrue(coverage.validate(root, "all"))
+
+    def test_unselected_profile_cannot_hide_missing_selected_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            path = root / "docs/build-targets.json"
+            value = json.loads(path.read_text())
+            value["profiles"]["ib"] = copy.deepcopy(value["profiles"]["core"])
+            value["profiles"]["core"]["targets"][0]["translation_units"] = []
+            path.write_text(json.dumps(value))
+            self.assertTrue(any("not reachable" in error for error in coverage.validate(root, "core")))
+            self.assertEqual(coverage.validate(root, "ib"), [])
+            self.assertTrue(coverage.validate(root, "unsupported"))
 
     def test_fixture_has_complete_discovered_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
