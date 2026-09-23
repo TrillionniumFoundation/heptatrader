@@ -390,7 +390,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         VERBATIM)
 endif()
 
-add_library(hepta_risk_engine STATIC risk/pre_trade_risk_engine.cpp)
+add_library(hepta_risk_engine STATIC
+    risk/pre_trade_risk_engine.cpp
+    risk/portfolio_risk_snapshot_builder.cpp)
 target_include_directories(hepta_risk_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(hepta_ib_paper_policy STATIC

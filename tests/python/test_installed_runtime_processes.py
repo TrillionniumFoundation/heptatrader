@@ -75,10 +75,14 @@ def admitted_slot(artifact: Path, digest: str, work: Path) -> tuple[Path, dict]:
 
 class InstalledRuntime:
     """One private persistent simulator/gateway state; binaries may change."""
-    def __init__(self, root: Path, *, trade_calls_per_minute: int = 60):
+    def __init__(self, root: Path, *, trade_calls_per_minute: int = 60,
+                 two_cash_instruments: bool = False):
         if type(trade_calls_per_minute) is not int or not 1 <= trade_calls_per_minute <= 100000:
             raise ValueError("invalid isolated fixture trade-call budget")
         self.trade_calls_per_minute = trade_calls_per_minute
+        if type(two_cash_instruments) is not bool:
+            raise ValueError("invalid isolated fixture instrument selection")
+        self.two_cash_instruments = two_cash_instruments
         self.root = root
         root.mkdir(mode=0o755)
         self.processes: list[tuple[subprocess.Popen, object, Path, str]] = []
@@ -180,7 +184,8 @@ class InstalledRuntime:
                         "HEPTA_TOOL_ALLOW_TRADE": "1", "HEPTA_TOOL_ACCOUNT": "SIM",
                         "HEPTA_TOOL_AGENT_ID": "smoke-agent", "HEPTA_EXECUTION_DOMAIN_ID": "SIM:smoke-agent",
                         "HEPTA_TOOL_SESSION_TEMPLATES": "watch,paper",
-                        "HEPTA_TOOL_CONTRACT_BINDINGS": "EUR.USD|EUR|CASH|IDEALPRO|USD",
+                        "HEPTA_TOOL_CONTRACT_BINDINGS": "EUR.USD|EUR|CASH|IDEALPRO|USD" +
+                            (";GBP.USD|GBP|CASH|IDEALPRO|USD" if self.two_cash_instruments else ""),
                         "HEPTA_TOOL_MAX_ORDER_QTY": "100",
                         "HEPTA_TOOL_MAX_TRADE_CALLS_PER_MIN": str(self.trade_calls_per_minute),
                         "HEPTA_TOOL_DECISION_LEASE_TTL_MS": "60000",
@@ -283,10 +288,14 @@ class InstalledRuntime:
         if observed != expected:
             raise AssertionError(f"position did not settle: expected={expected}, observed={observed}")
 
-    def place(self, side: str, quantity: int, price: str, *, ttl_ms: int = 60000) -> tuple[str, list[str], int]:
-        fields = ["instrument=EUR.USD", "symbol=EUR", "currency=USD", "sec_type=CASH", "exchange=IDEALPRO",
+    def place(self, side: str, quantity: int, price: str, *, ttl_ms: int = 60000,
+              symbol: str = "EUR") -> tuple[str, list[str], int]:
+        if symbol not in ("EUR", "GBP"):
+            raise ValueError("unsupported isolated simulator instrument")
+        reference = "1.1001" if symbol == "EUR" else "1.2501"
+        fields = [f"instrument={symbol}.USD", f"symbol={symbol}", "currency=USD", "sec_type=CASH", "exchange=IDEALPRO",
                   f"side={side}", "order_type=LMT", "tif=DAY", f"quantity={quantity}",
-                  f"limit_price={price}", "reference_price=1.1001", f"expires_at_ms={int(time.time()*1000)+ttl_ms}"]
+                  f"limit_price={price}", f"reference_price={reference}", f"expires_at_ms={int(time.time()*1000)+ttl_ms}"]
         preview = self.call("risk.preview_order", fields)["payload"]
         if preview.get("approved") is not True or preview.get("single_use") is not True:
             raise AssertionError(preview)

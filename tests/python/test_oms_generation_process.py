@@ -11,6 +11,7 @@ import tempfile
 import unittest
 
 import test_installed_runtime_processes as base
+from accept_core_release import generation_cost_pairs, validate_generation_cost_evidence
 
 
 @unittest.skipUnless(os.environ.get("HEPTA_ISOLATED_PROCESS_TESTS") == "1",
@@ -138,11 +139,13 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             if path.is_file())
 
     def test_generation_cost_curve_reports_restart_memory_recovery_seal_and_disk(self):
-        # This workload deliberately admits 128 orders between restarts. Keep
-        # the runtime gate enabled with an explicit finite fixture budget; the
-        # ordinary 60/min smoke profile is not a 128-order load-test profile.
+        # Opt-in extended workload uses the SAME installed binaries, UID,
+        # final risk, durable identity and rate-gated tool path as core.
+        profile = os.environ.get("HEPTA_GENERATION_COST_PROFILE", "core")
+        pairs_per_stage = generation_cost_pairs(profile)
+        workload_started = time.monotonic_ns()
         runtime = base.InstalledRuntime(self.root / "runtime-cost-curve",
-                                        trade_calls_per_minute=256)
+                                        trade_calls_per_minute=4 * max(pairs_per_stage))
         self.addCleanup(runtime.stop)
         runtime.start(self.slot)
         runtime.provision()
@@ -155,7 +158,7 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         first_order = None
         expected_admitted = 0
         points = []
-        for stage, pairs in enumerate((4, 16, 64), start=1):
+        for stage, pairs in enumerate(pairs_per_stage, start=1):
             for _ in range(pairs):
                 command, fields, order_id = runtime.place("BUY", 1, "1.1002", ttl_ms=600000)
                 runtime.wait_position(1)
@@ -223,7 +226,8 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             })
 
         self.assertEqual(
-            [point["admitted_orders"] for point in points], [8, 40, 168])
+            [point["admitted_orders"] for point in points],
+            [2 * sum(pairs_per_stage[:i + 1]) for i in range(len(pairs_per_stage))])
         self.assertTrue(all(point["seal_ns"] > 0 for point in points))
         self.assertTrue(all(point["restart_recovery_ns"] >= 0
                             for point in points))
@@ -279,8 +283,15 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
         self.assertEqual(duplicate["order_id"], first_order)
         self.assertEqual(journal.read_bytes(), tail_before_duplicate)
 
+        # Do not publish PASS while the last real processes are still alive.
+        # stop() rejects forced shutdown/nonzero exits; cleanup remains idempotent.
+        runtime.stop()
         observation = {
             "schema": "heptatrader.installed-generation-cost-curve.v1",
+            "cost_profile": profile,
+            "orderly_shutdown_verified": True,
+            "elapsed_ns": time.monotonic_ns() - workload_started,
+            "processes": runtime.observed_processes,
             "result": "PASS",
             "synthetic": True,
             "installed_processes": True,
@@ -307,19 +318,75 @@ class OmsGenerationInstalledProcessTests(unittest.TestCase):
             if not evidence_directory.is_dir() or evidence_directory.is_symlink():
                 raise AssertionError("process evidence directory is unavailable or unsafe")
             evidence_path = evidence_directory / "installed-generation-cost-curve.json"
-            with evidence_path.open("x") as stream:
-                json.dump(observation, stream, sort_keys=True, indent=2)
-                stream.write("\n")
-                stream.flush()
-                os.fsync(stream.fileno())
-            directory_fd = os.open(
-                evidence_directory,
-                os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            # Validate staged evidence before an atomic create-only publication.
+            with tempfile.TemporaryDirectory(prefix=".generation-evidence-",
+                                             dir=evidence_directory) as staging:
+                staged = Path(staging) / "curve.json"
+                with staged.open("x") as stream:
+                    json.dump(observation, stream, sort_keys=True, indent=2)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                validate_generation_cost_evidence(
+                    staged, self.manifest["source_sha"],
+                    os.environ["HEPTA_PROCESS_CANDIDATE_SHA256"], expected_profile=profile)
+                os.link(staged, evidence_path)  # never replace previous evidence
+                directory_fd = os.open(
+                    evidence_directory,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         print(json.dumps(observation, sort_keys=True))
+
+    def test_two_cash_instruments_survive_installed_generation_restart(self):
+        runtime = base.InstalledRuntime(self.root / "runtime-two-cash",
+                                        two_cash_instruments=True)
+        self.addCleanup(runtime.stop)
+        runtime.start(self.slot)
+        runtime.provision()
+
+        def wait_positions(expected):
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                rows = runtime.call("portfolio.list_positions")["payload"]["positions"]
+                observed = {row["instrument"]: row["quantity"] for row in rows}
+                if all(observed.get(symbol, 0) == quantity
+                       for symbol, quantity in expected.items()):
+                    return
+                time.sleep(0.025)
+            self.fail(f"two-instrument positions did not settle: {observed}")
+
+        first = runtime.place("BUY", 25, "1.1002", symbol="EUR")
+        second = runtime.place("BUY", 40, "1.2502", symbol="GBP")
+        self.assertNotEqual(first[2], second[2])
+        wait_positions({"EUR.USD": 25, "GBP.USD": 40})
+        runtime.wait_no_orders()
+        self.assertEqual(runtime.call("risk.get_limits")["payload"]["admitted_order_count"], 2)
+        runtime.stop()
+        journal = runtime.root / "es/oms-journal.jsonl"
+        result = subprocess.run([
+            sys.executable, "-S", str(self.slot / "libexec/heptatrader/hepta_oms_lifecycle.py"),
+            "seal", "--journal", str(journal), "--store", str(journal) + ".generations",
+            "--stopped-state"], env=base.CLEAN_ENV, user=base.EXECUTION_UID,
+            group=base.TEST_GID, extra_groups=[], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        runtime.start(self.slot)
+        wait_positions({"EUR.USD": 25, "GBP.USD": 40})
+        before = journal.read_bytes()
+        for command, fields, order_id in (first, second):
+            duplicate = runtime.call("trade.place_order", fields,
+                                     call_id=command, duplicate=True)
+            self.assertEqual(duplicate["order_id"], order_id)
+        self.assertEqual(journal.read_bytes(), before)
+        runtime.place("SELL", 25, "1.1000", symbol="EUR")
+        runtime.place("SELL", 40, "1.2500", symbol="GBP")
+        wait_positions({"EUR.USD": 0, "GBP.USD": 0})
+        runtime.wait_no_orders()
+        self.assertEqual(runtime.call("risk.get_limits")["payload"]["admitted_order_count"], 4)
+        runtime.stop()
 
     def test_installed_trade_rate_gate_remains_enabled(self):
         runtime = base.InstalledRuntime(self.root / "runtime-rate-gate",

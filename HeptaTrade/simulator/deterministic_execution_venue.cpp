@@ -1,4 +1,5 @@
 #include "deterministic_execution_venue.h"
+#include "../risk/portfolio_risk_snapshot_builder.h"
 
 #include <chrono>
 #include <cmath>
@@ -11,6 +12,16 @@ std::uint64_t NowMs()
 {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+bool SupportedMonetaryContract(const InstrumentRef& contract)
+{
+    return contract.secType == "CASH" && contract.currency == "USD" &&
+        (contract.symbol == "EUR" || contract.symbol == "GBP") &&
+        contract.lastTradeDateOrContractMonth.empty() && contract.right.empty() &&
+        contract.strike == 0.0 &&
+        (contract.multiplier.empty() || contract.multiplier == "1") &&
+        contract.localSymbol.empty() && contract.tradingClass.empty();
 }
 
 bool ValidQuote(const double bid, const double ask,
@@ -128,12 +139,7 @@ PreTradeRiskDecision DeterministicExecutionVenue::EvaluateRiskLocked(
     // This small fixture has a reviewed unit contract only for these CASH/USD
     // pairs. Derivatives, cross-currency assets and incomplete account PnL are
     // rejected, not valued through a generic quantity*price assumption.
-    if (contract.secType != "CASH" || contract.currency != "USD" ||
-        (contract.symbol != "EUR" && contract.symbol != "GBP") ||
-        !contract.lastTradeDateOrContractMonth.empty() || !contract.right.empty() ||
-        contract.strike != 0.0 ||
-        (!contract.multiplier.empty() && contract.multiplier != "1") ||
-        !contract.localSymbol.empty() || !contract.tradingClass.empty())
+    if (!SupportedMonetaryContract(contract))
     {
         PreTradeRiskDecision rejected;
         rejected.reasonCode = "SIM_RISK_UNIT_OR_QUOTE_UNAVAILABLE";
@@ -144,50 +150,108 @@ PreTradeRiskDecision DeterministicExecutionVenue::EvaluateRiskLocked(
     context.authorizedSubject.venue = context.venue;
     context.authorizedSubject.baseCurrency = "USD";
     context.authorizedSubject.instruments = {"EUR.USD", "GBP.USD"};
-    auto& identity = context.authoritativeSnapshot.identity;
-    identity.subject = context.authorizedSubject;
-    identity.present = true;
-    identity.complete = true;
-    identity.connectionEpoch = 1;
-    identity.generation = m_generation;
-    identity.observedAtMs = static_cast<std::int64_t>(now);
-    identity.evaluatedAtMs = static_cast<std::int64_t>(now);
-    auto& exposure = context.authoritativeSnapshot.exposure;
-    exposure.subject = context.authorizedSubject;
-    exposure.present = true;
-    exposure.connectionEpoch = identity.connectionEpoch;
-    exposure.generation = identity.generation;
-    // Every held or reserved position participates, even before activation.
-    auto mark = [&](const std::string& instrument, double& price) {
-        const auto found = m_quotes.find(instrument);
-        if (context.authorizedSubject.instruments.count(instrument) == 0 ||
-            found == m_quotes.end() || !ValidQuote(found->second.bid, found->second.ask,
-                found->second.observedAtMs, found->second.staleAfterMs, now) ||
-            (m_riskConfig.maxSnapshotAgeMs > 0 &&
-             now - found->second.observedAtMs >
-                static_cast<std::uint64_t>(m_riskConfig.maxSnapshotAgeMs)))
-            return false;
-        price = found->second.ask;
-        return true;
-    };
-    for (const auto& held : m_positions)
+    if (m_riskConfig.flattenOnly)
     {
-        if (held.second == 0.0) continue;
-        double price = 0.0;
-        if (!mark(held.first, price)) exposure.present = false;
-        exposure.currentGrossNotional += std::fabs(held.second) * price;
+        // Preserve the guarded exit contract: reducible capacity above and
+        // this instrument's valid quote are required, but an unrelated missing
+        // portfolio mark must not prevent a strictly no-crossing exit. The
+        // generic engine still enforces kill/quantity/rate/price/flatten rules.
+        auto& identity = context.authoritativeSnapshot.identity;
+        identity.subject = context.authorizedSubject;
+        identity.present = identity.complete = true;
+        identity.connectionEpoch = 1;
+        identity.generation = m_generation;
+        identity.observedAtMs = identity.evaluatedAtMs = static_cast<std::int64_t>(now);
+        return PreTradeRiskEngine::Evaluate(m_riskConfig, context);
+    }
+    // This mutex owns the complete simulator universe, including explicit
+    // zero positions and inert reservations. No Agent supplies these rows.
+    PortfolioRiskSnapshotBuildRequest snapshotRequest;
+    snapshotRequest.subject = context.authorizedSubject;
+    snapshotRequest.connectionEpoch = 1;
+    snapshotRequest.generation = m_generation;
+    snapshotRequest.evaluatedAtMs = static_cast<std::int64_t>(now);
+    snapshotRequest.maxEvidenceAgeMs = m_riskConfig.maxSnapshotAgeMs;
+    snapshotRequest.positionsIdentity.subject = context.authorizedSubject;
+    snapshotRequest.positionsIdentity.complete = true;
+    snapshotRequest.positionsIdentity.connectionEpoch = 1;
+    snapshotRequest.positionsIdentity.generation = m_generation;
+    snapshotRequest.positionsIdentity.observedAtMs = static_cast<std::int64_t>(now);
+    snapshotRequest.pendingOrdersIdentity = snapshotRequest.positionsIdentity;
+    for (const auto& held : m_positions)
+        if (context.authorizedSubject.instruments.count(held.first) == 0)
+            return reject("SIM_RISK_POSITION_UNIVERSE_MISMATCH");
+    std::map<std::string, PortfolioRiskValuationInput> valuations;
+    for (const auto& instrument : context.authorizedSubject.instruments)
+    {
+        const auto observed = m_quotes.find(instrument);
+        if (observed == m_quotes.end() || !ValidQuote(observed->second.bid,
+                observed->second.ask, observed->second.observedAtMs,
+                observed->second.staleAfterMs, now))
+            return reject("SIM_RISK_PORTFOLIO_QUOTE_UNAVAILABLE");
+        PortfolioRiskValuationInput row;
+        row.contract.specificationId = "simulator-cash-usd-v1";
+        row.contract.specificationVersion = 1;
+        row.contract.instrument = instrument;
+        row.contract.kind = PreTradeRiskInstrumentKind::CashFx;
+        row.contract.quantityUnit = PreTradeRiskQuantityUnit::BaseCurrencyUnits;
+        row.contract.priceUnit = PreTradeRiskPriceUnit::QuoteCurrencyPerUnit;
+        row.contract.multiplier = 1.0;
+        row.contract.quoteCurrency = "USD";
+        row.authorizedQuoteSourceId = "sim:" + instrument;
+        row.authorizedFxSourceId = "sim:USD/USD";
+        const auto held = m_positions.find(instrument);
+        row.netQuantity = held == m_positions.end() ? 0.0 : held->second;
+        row.mark.sourceId = row.authorizedQuoteSourceId;
+        row.mark.instrument = instrument;
+        row.mark.currency = "USD";
+        row.mark.price = observed->second.ask;
+        row.mark.connectionEpoch = 1;
+        row.mark.generation = m_generation;
+        row.mark.observedAtMs = static_cast<std::int64_t>(observed->second.observedAtMs);
+        row.fx.sourceId = row.authorizedFxSourceId;
+        row.fx.fromCurrency = row.fx.toCurrency = "USD";
+        row.fx.rate = 1.0; // Execution-owned identity conversion, not market FX.
+        row.fx.connectionEpoch = 1;
+        row.fx.generation = m_generation;
+        row.fx.observedAtMs = static_cast<std::int64_t>(now);
+        valuations.emplace(instrument, row);
+        snapshotRequest.positions.push_back(row);
     }
     for (const auto& pending : m_orders)
     {
         if (pending.second.terminal) continue;
-        double price = 0.0;
-        if (!mark(pending.second.instrument, price)) exposure.present = false;
-        if (pending.second.request.orderType == "LMT")
-            price = std::max(price, pending.second.request.lmtPrice);
-        const double value = pending.second.request.totalQuantity * price;
-        if (pending.second.request.action == "BUY") exposure.pendingBuyNotional += value;
-        else exposure.pendingSellNotional += value;
+        // Preserve the admitted contract across a later policy change; never
+        // relabel a generic fixture derivative as CASH merely by its symbol.
+        if (!SupportedMonetaryContract(pending.second.contract))
+            return reject("SIM_RISK_PENDING_CONTRACT_UNAVAILABLE");
+        const auto found = valuations.find(pending.second.instrument);
+        if (found == valuations.end())
+            return reject("SIM_RISK_PENDING_UNIVERSE_MISMATCH");
+        const auto& valuation = found->second;
+        PortfolioRiskPendingOrderInput row;
+        row.orderId = std::to_string(pending.first);
+        row.contract = valuation.contract;
+        row.authorizedQuoteSourceId = valuation.authorizedQuoteSourceId;
+        row.authorizedFxSourceId = valuation.authorizedFxSourceId;
+        row.side = pending.second.request.action;
+        row.quantity = pending.second.request.totalQuantity;
+        row.limitPrice = pending.second.request.orderType == "LMT" ?
+            pending.second.request.lmtPrice : valuation.mark.price;
+        row.quote = valuation.mark;
+        row.fx = valuation.fx;
+        snapshotRequest.pendingOrders.push_back(row);
     }
+    const auto built = PortfolioRiskSnapshotBuilder::BuildExposure(snapshotRequest);
+    if (!built.ok)
+    {
+        PreTradeRiskDecision rejected;
+        rejected.reasonCode = built.reasonCode;
+        rejected.detail = built.detail;
+        return rejected;
+    }
+    context.authoritativeSnapshot = built.snapshot;
+    const auto& identity = context.authoritativeSnapshot.identity;
     context.instrumentContract.specificationId = "simulator-cash-usd-v1";
     context.instrumentContract.specificationVersion = 1;
     context.instrumentContract.instrument = context.symbol;
@@ -330,6 +394,7 @@ VenuePlaceResult DeterministicExecutionVenue::PlaceOrderWithResult(
     Order stored;
     stored.id = m_nextOrderId++;
     stored.instrument = instrument;
+    stored.contract = contract;
     stored.request = order;
     stored.correlationId = correlationId;
     stored.activated = activate;
