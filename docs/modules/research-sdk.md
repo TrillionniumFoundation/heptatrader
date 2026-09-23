@@ -127,6 +127,12 @@ before computing returns. Sampling frequency and the annual risk-free rate are
 caller inputs; timestamps order the equally weighted sampling observations and
 do not infer a business calendar. Zero-denominator ratios are undefined metrics,
 not NaN/Inf or a fabricated zero. Inputs with nonpositive pre-flow capital fail.
+The result includes maximum and average sampled drawdown, annualized downside
+deviation, Sharpe, Sortino, Calmar and Sterling ratios. These preserve the useful
+`heptaNetValueEvaluation` metric vocabulary without importing its implicit
+16:00 day boundary, weekend calendar or elapsed-natural-year assumptions:
+sampling frequency, cash flows and annual risk-free rate remain explicit caller
+inputs, so this is a canonical semantic port rather than formula/ABI parity.
 
 `ReplayMatcher` implements a documented offline last-trade/liquidity assumption,
 not exchange queue reconstruction. Limit orders are eligible only on a later

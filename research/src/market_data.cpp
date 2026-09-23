@@ -408,6 +408,9 @@ struct LegacyColumns {
 struct LegacyTopOfBookColumns {
     std::size_t bidPrice, bidVolume, askPrice, askVolume;
 };
+struct LegacyDepth5Columns {
+    std::array<std::size_t, 5> bidPrice, bidVolume, askPrice, askVolume;
+};
 LegacyColumns LegacyProfile(LegacyTickCsvLayout layout) {
     switch (layout) {
     case LegacyTickCsvLayout::Hepta32: return {32,0,1,2,3,4,5,7,29,-1,false,false};
@@ -423,6 +426,24 @@ LegacyTopOfBookColumns LegacyTopOfBookProfile(LegacyTickCsvLayout layout) {
     case LegacyTickCsvLayout::Immsg34: return {16,26,15,25};
     case LegacyTickCsvLayout::Immsg35: return {17,27,16,26};
     case LegacyTickCsvLayout::Zs58: return {4,5,7,8};
+    }
+    throw std::invalid_argument("RESEARCH_LEGACY_LAYOUT_INVALID");
+}
+LegacyDepth5Columns LegacyDepth5Profile(LegacyTickCsvLayout layout) {
+    LegacyDepth5Columns result;
+    switch (layout) {
+    case LegacyTickCsvLayout::Hepta32:
+        result.bidPrice = {{14,15,16,17,18}}; result.bidVolume = {{24,25,26,27,28}};
+        result.askPrice = {{13,12,11,10,9}}; result.askVolume = {{23,22,21,20,19}}; return result;
+    case LegacyTickCsvLayout::Immsg34:
+        result.bidPrice = {{16,17,18,19,20}}; result.bidVolume = {{26,27,28,29,30}};
+        result.askPrice = {{15,14,13,12,11}}; result.askVolume = {{25,24,23,22,21}}; return result;
+    case LegacyTickCsvLayout::Immsg35:
+        result.bidPrice = {{17,18,19,20,21}}; result.bidVolume = {{27,28,29,30,31}};
+        result.askPrice = {{16,15,14,13,12}}; result.askVolume = {{26,25,24,23,22}}; return result;
+    case LegacyTickCsvLayout::Zs58:
+        result.bidPrice = {{4,10,16,22,28}}; result.bidVolume = {{5,11,17,23,29}};
+        result.askPrice = {{7,13,19,25,31}}; result.askVolume = {{8,14,20,26,32}}; return result;
     }
     throw std::invalid_argument("RESEARCH_LEGACY_LAYOUT_INVALID");
 }
@@ -608,6 +629,48 @@ LegacyTopOfBookObservation DecodeLegacyTopOfBook(
     Require(std::isfinite(result.bestBidPrice) && std::isfinite(result.bestAskPrice) &&
             result.bestBidPrice > 0 && result.bestAskPrice > result.bestBidPrice,
             "RESEARCH_LEGACY_TOP_OF_BOOK_INVALID");
+    return result;
+}
+
+LegacyDepth5Observation DecodeLegacyDepth5(
+        const LegacyTickRecord& record, LegacyTickCsvLayout layout) {
+    const auto profile = LegacyProfile(layout);
+    const auto columns = LegacyDepth5Profile(layout);
+    Require(record.sourceFields.size() == profile.count,
+            "RESEARCH_LEGACY_DEPTH_LAYOUT_MISMATCH");
+    LegacyDepth5Observation result;
+    result.instrument = record.tick.instrument;
+    result.timestampUs = record.tick.timestampUs;
+    result.sequence = record.tick.sequence;
+    for (std::size_t i = 0; i < 5; ++i) {
+        const auto decode = [&](std::size_t priceColumn, std::size_t volumeColumn) {
+            LegacyDepthLevel level;
+            level.price = LegacyNumber(record.sourceFields[priceColumn]);
+            level.volume = SignedNonnegative(record.sourceFields[volumeColumn]);
+            if (level.price == 0 && level.volume == 0) return level;
+            Require(std::isfinite(level.price) && level.price > 0,
+                    "RESEARCH_LEGACY_DEPTH_INVALID");
+            level.present = true;
+            return level;
+        };
+        result.bids[i] = decode(columns.bidPrice[i], columns.bidVolume[i]);
+        result.asks[i] = decode(columns.askPrice[i], columns.askVolume[i]);
+        if (i == 0) {
+            Require(result.bids[i].present && result.asks[i].present &&
+                    result.asks[i].price > result.bids[i].price,
+                    "RESEARCH_LEGACY_DEPTH_INVALID");
+        } else {
+            Require((!result.bids[i].present || result.bids[i - 1].present) &&
+                    (!result.asks[i].present || result.asks[i - 1].present),
+                    "RESEARCH_LEGACY_DEPTH_GAP");
+            if (result.bids[i].present)
+                Require(result.bids[i].price < result.bids[i - 1].price,
+                        "RESEARCH_LEGACY_DEPTH_ORDER_INVALID");
+            if (result.asks[i].present)
+                Require(result.asks[i].price > result.asks[i - 1].price,
+                        "RESEARCH_LEGACY_DEPTH_ORDER_INVALID");
+        }
+    }
     return result;
 }
 

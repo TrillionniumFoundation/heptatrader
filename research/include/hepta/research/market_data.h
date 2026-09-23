@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -186,6 +187,25 @@ struct LegacyTopOfBookObservation {
     std::int64_t bestBidVolume = 0, bestAskVolume = 0;
 };
 LegacyTopOfBookObservation DecodeLegacyTopOfBook(
+    const LegacyTickRecord& record, LegacyTickCsvLayout layout);
+// Optional full five-level source snapshot for the same reviewed layouts.
+// A level is either present with a positive finite price and nonnegative
+// displayed size, or absent as exact zero/zero. Present levels are contiguous
+// from level 1 and price-monotone away from the spread. This is observed input
+// only: no queue reconstruction, own-order deduction or executable liquidity.
+struct LegacyDepthLevel {
+    bool present = false;
+    double price = 0;
+    std::int64_t volume = 0;
+};
+struct LegacyDepth5Observation {
+    std::string instrument;
+    std::int64_t timestampUs = 0;
+    std::uint64_t sequence = 0;
+    std::array<LegacyDepthLevel, 5> bids;
+    std::array<LegacyDepthLevel, 5> asks;
+};
+LegacyDepth5Observation DecodeLegacyDepth5(
     const LegacyTickRecord& record, LegacyTickCsvLayout layout);
 // One serialized, possibly mixed-instrument stream. Callers explicitly supply
 // 1..64 instrument/session bindings, layout, clock resolver and first-volume

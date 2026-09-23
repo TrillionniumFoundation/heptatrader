@@ -142,7 +142,11 @@ int main() {
     points[0].equity = 1000;
     points[1].timestampUs = 1; points[1].equity = 1100;
     points[2].timestampUs = 2; points[2].equity = 1100; points[2].externalFlow = 100;
-    Require(std::fabs(EvaluateEquity(points, 252).totalReturn) < 1e-12);
+    const auto flatPerformance = EvaluateEquity(points, 252);
+    Require(std::fabs(flatPerformance.totalReturn) < 1e-12 &&
+            flatPerformance.annualizedDownsideDeviation.defined &&
+            flatPerformance.annualizedDownsideDeviation.value == 0 &&
+            flatPerformance.averageDrawdown == 0 && !flatPerformance.sterling.defined);
     // Exercise the corrected Data and Analytics symbols after relocation,
     // not a separately compiled fragment of their source implementation.
     const double maximum = std::numeric_limits<double>::max();
@@ -261,8 +265,12 @@ int main() {
             fields[0] = instrument; fields[1] = "19700101"; fields[2] = "00:00:00";
             fields[3] = std::to_string(ms); fields[4] = std::to_string(price);
             fields[5] = std::to_string(volume); fields[29] = "10";
-            fields[13] = std::to_string(price + 1); fields[14] = std::to_string(price - 1);
-            fields[23] = "11"; fields[24] = "12";
+            for (int level = 0; level < 5; ++level) {
+                fields[13 - level] = std::to_string(price + 1 + level);
+                fields[14 + level] = std::to_string(price - 1 - level);
+                fields[23 - level] = std::to_string(11 + level);
+                fields[24 + level] = std::to_string(12 + level);
+            }
             std::ostringstream text;
             for (std::size_t i = 0; i < fields.size(); ++i) { if (i) text << ','; text << fields[i]; }
             return text.str() + "\n";
@@ -329,10 +337,14 @@ int main() {
             const bool isA = rawRecord.tick.instrument == "RAW.A";
             Require(rawRecord.sourceFields.size() == 32 && rawRecord.actionDay == "19700101");
             const auto top = DecodeLegacyTopOfBook(rawRecord, LegacyTickCsvLayout::Hepta32);
+            const auto depth = DecodeLegacyDepth5(rawRecord, LegacyTickCsvLayout::Hepta32);
             Require(top.instrument == rawRecord.tick.instrument && top.sequence == rawRecord.tick.sequence &&
                     top.bestBidPrice == rawRecord.tick.price - 1 &&
                     top.bestAskPrice == rawRecord.tick.price + 1 &&
-                    top.bestBidVolume == 12 && top.bestAskVolume == 11);
+                    top.bestBidVolume == 12 && top.bestAskVolume == 11 &&
+                    depth.instrument == rawRecord.tick.instrument && depth.bids[4].present &&
+                    depth.asks[4].present && depth.bids[4].price == rawRecord.tick.price - 5 &&
+                    depth.asks[4].price == rawRecord.tick.price + 5);
             const auto rawEvents = (isA ? rawA : rawB).OnTick(rawRecord.tick);
             for (const auto& rawEvent : rawEvents) {
                 Require(rawEvent.kind == ReplayEventKind::Fill && rawEvent.fill.timestampUs == 1000);

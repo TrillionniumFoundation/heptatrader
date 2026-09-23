@@ -81,6 +81,7 @@ Performance EvaluateEquity(const std::vector<EquityPoint>& points,
     result.returnCount = points.size() - 1;
     const long double periodRiskFree = std::expm1(std::log1p(static_cast<long double>(riskFree)) / periodsPerYear);
     long double mean = 0, m2 = 0, downside = 0, logNav = 0, logHigh = 0;
+    long double drawdownSum = 0;
     for (std::size_t i = 1; i < points.size(); ++i) {
         const long double preFlow = static_cast<long double>(points[i].equity) - points[i].externalFlow;
         Require(preFlow > 0, "RESEARCH_NONPOSITIVE_PREFLOW_CAPITAL");
@@ -94,7 +95,9 @@ Performance EvaluateEquity(const std::vector<EquityPoint>& points,
         downside += below * below;
         logNav += std::log(ratio);
         logHigh = std::max(logHigh, logNav);
-        result.maxDrawdown = std::max(result.maxDrawdown, Finite(-std::expm1(logNav - logHigh)));
+        const double drawdown = Finite(-std::expm1(logNav - logHigh));
+        drawdownSum += drawdown;
+        result.maxDrawdown = std::max(result.maxDrawdown, drawdown);
     }
     result.totalReturn = Finite(std::expm1(logNav));
     result.annualizedReturn = Optional(std::expm1(logNav * periodsPerYear / result.returnCount));
@@ -104,9 +107,13 @@ Performance EvaluateEquity(const std::vector<EquityPoint>& points,
         if (vol > 0) result.sharpe = Optional((mean - periodRiskFree) * periodsPerYear / vol);
     }
     const long double down = std::sqrt(downside / result.returnCount * periodsPerYear);
+    result.annualizedDownsideDeviation = Optional(down);
+    result.averageDrawdown = Finite(drawdownSum / result.returnCount);
     if (down > 0) result.sortino = Optional((mean - periodRiskFree) * periodsPerYear / down);
     if (result.maxDrawdown > 0 && result.annualizedReturn.defined)
         result.calmar = Optional(result.annualizedReturn.value / result.maxDrawdown);
+    if (result.averageDrawdown > 0 && result.annualizedReturn.defined)
+        result.sterling = Optional(result.annualizedReturn.value / result.averageDrawdown);
     return result;
 }
 ResearchLedger::ResearchLedger(std::string instrument, double initial, double multiplier,
