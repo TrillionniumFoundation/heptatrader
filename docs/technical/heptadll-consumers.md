@@ -1,8 +1,8 @@
 # HeptaDLL consumer register and support decisions
 
 Status: FINAL SUPPORT DISPOSITION; legacy repository archived, not an external deployment census
-Canonical development: `heptatrader/main`; #113-#117 merged; new development remains on main
-Accepted implementation baseline: `2443722f47ffc8e880786783ed98509dd1c3f17c`, tree `632d1299eaa0a0b753dcd5d21b93cb5715bf9ac0`
+Canonical development: `heptatrader/main`; new development remains on main
+Historical #117 acceptance baseline (not current-head qualification): `2443722f47ffc8e880786783ed98509dd1c3f17c`, tree `632d1299eaa0a0b753dcd5d21b93cb5715bf9ac0`
 Original retained source: `HeptaDLL-main@f69de179b4d41fe1813d317673abe8116cee76e5`
 
 ## Scope and ownership
@@ -77,11 +77,43 @@ A migrated request keeps its original ID and original authority for reconciliati
 Never treat a missing status, a transport failure or copied directory as permission
 to submit a replacement ID. Old host state is not migrated by a Git merge.
 
+## Behavioral acceptance for maintained source consumers
+
+The source-disposition validator checks the frozen inventory and evidence paths;
+it does not run these consumers or prove every historical API equivalent. The
+following are executable acceptance boundaries, not hardcoded passing receipts.
+
+| Source consumer | Executed behavior / independent observation | Not implied |
+|---|---|---|
+| C01 relocated offline SDK (`sdk_package_behavior.py`) | Rebuild an external C++11 consumer against installed archives only. All four legacy Tick layouts drive the same seven-row, two-instrument Data → Strategy/Replay → Analytics stream: two fills, four completed bars, one causal signal and equity 1028.5; all five depth levels and malformed-depth rejection are checked. | Full legacy layout/ABI or arbitrary strategy parity; displayed depth is not executable liquidity. |
+| C02 model commands (`model_cli_behavior.py`) | Existing source and relocated CLI scenarios use the named native order-flow, next-open and portfolio models and declared report/numeric contracts. | Different model assumptions or old arbitrary Decimal/report APIs becoming equivalent. |
+| C03/C04 native/application clients (`native_client_tests.cpp`, `strategy_gateway_behavior.py`, `native_execution_tests.cpp`) | Preserve the existing installed-client, concurrent application-key, lost-reply, client/exec-child SIGKILL, service recovery and independent OMS send-count assertions. | A deployed customer's state directory or broker campaign being migrated. |
+| C05 read-only HRO1 (`native_execution_tests.cpp`) | Query before submission, after an actual simulator fill, after Execution restart and after revocation. A never-submitted ID returns `error / EXECUTION_COMMAND_NOT_FOUND` before and after restart. Original bytes remain unchanged, HSR1 restore is refused and the final OMS journal has no added sends. | HRO1 mutation support, fabricated recovery binding or permission to retry an unknown command. |
+
+Use the existing lanes, not a new completion dashboard:
+
+```sh
+cmake -S research -B build/research -DCMAKE_BUILD_TYPE=Release
+cmake --build build/research --parallel 2
+ctest --test-dir build/research --no-tests=error --output-on-failure --output-junit offline.xml
+cmake -S . -B build/core -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON -DHEPTA_ENABLE_IBAPI=OFF
+cmake --build build/core --target hepta_core_test_binaries --parallel 2
+ctest --test-dir build/core -L core --no-tests=error --output-on-failure --output-junit core.xml
+```
+
+Retain the actual source commit/tree, compiler/configuration, inventory and JUnit
+outcomes with the PR/Actions run. A prior baseline receipt or a test file's
+existence is not a pass for the current head. Root simulator acceptance, offline
+cross-platform acceptance and real deployment/broker qualification stay distinct.
+No private legacy source, vendor files, recorded data or live credentials are
+needed or published for these synthetic source-consumer tests.
+
 ## Retirement decision
 
-Decision for this delivery: END HeptaDLL ABI/runtime compatibility support and
-archive `HeptaDLL-main` after the final compatibility notice is merged. Canonical
-new development continues only in `heptatrader`. The archive preserves the
+Completed decision: active HeptaDLL ABI/runtime compatibility support has ended
+and `HeptaDLL-main` is archived after its final notice merged. The observed action
+is pinned in `heptadll-lifecycle-status.json`. Canonical new development continues
+only in `heptatrader`. The archive preserves the
 private source, history and historical integration branch read-only; it does not
 import them into the canonical build, publish private assets, convert host state,
 or revoke an already deployed binary.

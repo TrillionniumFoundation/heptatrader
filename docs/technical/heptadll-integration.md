@@ -1,11 +1,17 @@
 # HeptaDLL modular integration record
 
-Status: EXPERIMENTAL
-Date: 2026-09-21
-Target baseline: `heptatrader@5615b3ddb6badb1967771724d53b89c7ad194ddc`
-Reference baseline: `HeptaDLL-main@5f3703258bc4cad8f96e513d8d989c2441b4729d`
-Branch: `integration/heptadll-modular-20260920`
-Module contract: [C++ research SDK](../modules/research-sdk.md)
+Canonical development: `heptatrader/main`; research API qualification remains experimental.
+Current lifecycle and support decisions: [consumer register](heptadll-consumers.md)
+and [observed lifecycle receipt](heptadll-lifecycle-status.json).
+HeptaDLL-main is a private, read-only archive; it is not an active compatibility
+implementation or an API/ABI-compatible dependency of the canonical product.
+Module contract: [C++ research SDK](../modules/research-sdk.md).
+
+Historical starting point (2026-09-21, **not current HEAD**):
+`heptatrader@5615b3ddb6badb1967771724d53b89c7ad194ddc`, referencing
+`HeptaDLL-main@5f3703258bc4cad8f96e513d8d989c2441b4729d` on the former
+`integration/heptadll-modular-20260920` line. Historical branch/baseline mentions
+below record completed work; new changes continue from current main.
 
 ## Publication and provenance
 
@@ -28,11 +34,17 @@ invented by this integration.
 
 The machine-readable [source disposition](heptadll-source-disposition.json) pins
 all 93 `.h` / `.cpp` / `.xml` assets under `heptaHeptaDLL/` at the retained
-source baseline, including each Git blob identity. CI rejects an unclassified
-asset, a missing canonical evidence path, or promotion of critical direct-SPI,
-simulator or process-local order-identity sources into a canonicalized group.
-This is source closure for the pinned baseline, not proof that an external
-binary consumer or deployed host has retired.
+source baseline, including each Git blob identity. The inventory validator checks
+those declared entries, their manifest digest, grouped dispositions and existence
+of the listed evidence paths. It does not enumerate the private repository during
+CI, inspect every public API, execute the linked tests, or prove API/ABI equivalence.
+Critical declared SPI/simulator/order-identity assets must remain noncanonical.
+The 93-file scope excludes vendor trees, binaries, manuals, build files and data;
+it is an inventory-consistency result, **not 93 verified capability migrations**.
+Behavioral acceptance belongs to the runnable source/installed consumers in the
+[consumer register](heptadll-consumers.md#behavioral-acceptance-for-maintained-source-consumers),
+with exact-source execution results in PR/Actions evidence. Neither inventory
+consistency nor a source test proves external deployment migration.
 
 | Reference assets under `heptaHeptaDLL/` | Destination and present scope |
 |---|---|
@@ -64,12 +76,15 @@ binary consumers, all non-default branches or all external applications. The
 reference README names the upstream Pegasus/HeptaTrader lineage; it is not evidence
 that all consumers are retired.
 
-Accordingly, the source repository is **not archived**, its release entry points
-are not deleted and no history is rewritten. Archive readiness requires a named
-consumer inventory, explicit disposition of remaining historical APIs/strategies,
-cache and matching modes, applicable redistribution confirmation, and exact-head
-build/behavior/recovery/permission evidence. A source copy or green offline test
-alone does not satisfy those conditions.
+The later support decision is complete: HeptaDLL-main is archived privately,
+with source/history preserved and active legacy ABI/runtime support ended.
+The consumer register distinguishes accepted source consumers from support-ended
+or unverified deployments. In particular, C05-C08 are **not** asserted migrated,
+and archive readiness is a support-policy disposition, not proof of replacement.
+HRO1 is read-only reconciliation only; no old request is converted or resubmitted.
+A real deployment replacement still needs owner/artifact/platform/API/state-format
+and behavioral evidence. Archival does not perform that replacement, publish the
+private source, or grant broker/LIVE authority.
 
 ## Replay clock and terminal lifecycle
 

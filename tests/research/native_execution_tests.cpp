@@ -346,7 +346,24 @@ void TestNativeExecutionLifecycle() {
     legacyRequest.sessionToken = "hepta-research-outbox-v1-not-a-credential";
     std::string legacyWire;
     Require(TypedToolProtocol::EncodeRequest(legacyRequest, legacyWire, reason), reason);
-    WritePrivateFile(legacyDirectory + "/" + auth.commandId + ".hro", "HRO1" + legacyWire, 0600);
+    const std::string legacyPath = legacyDirectory + "/" + auth.commandId + ".hro";
+    const std::string legacyBytes = "HRO1" + legacyWire;
+    WritePrivateFile(legacyPath, legacyBytes, 0600);
+    const auto legacyUnchanged = [&]() {
+        std::ifstream input(legacyPath, std::ios::binary);
+        Require(input.good(), "legacy source record disappeared");
+        std::ostringstream retained; retained << input.rdbuf();
+        Require(!input.bad() && retained.str() == legacyBytes,
+                "read-only reconciliation rewrote legacy request bytes");
+        struct stat info;
+        Require(::lstat(legacyPath.c_str(), &info) == 0 && S_ISREG(info.st_mode) &&
+                (info.st_mode & 0777) == 0600 && info.st_nlink == 1,
+                "legacy record safety changed during reconciliation");
+        errno = 0;
+        Require(::access((legacyDirectory + "/" + auth.commandId + ".hsr").c_str(), F_OK) != 0 &&
+                errno == ENOENT, "legacy reconciliation created canonical mutation state");
+    };
+
     Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
                                     "research-legacy-hro1-query-001", result, reason),
             "legacy HRO1 status transport failed: " + reason);
@@ -355,6 +372,32 @@ void TestNativeExecutionLifecycle() {
     errno = 0;
     Require(::access((legacyDirectory + "/" + auth.commandId + ".hsr").c_str(), F_OK) != 0 &&
             errno == ENOENT, "legacy HRO1 inspection created HSR1 state");
+
+    Require(result.envelope.toolName == "execution.get_command_status",
+            "legacy inspection returned a mutation envelope");
+    legacyUnchanged();
+    PreparedStrategyCommand legacyPrepared;
+    Require(!client.Restore(legacyDirectory, auth.commandId, legacyPrepared, reason) &&
+            !legacyPrepared.Ready() && !legacyPrepared.Durable(),
+            "HRO1 entered the canonical restore/submit lifecycle");
+    // A real unknown command stays rejected, not a new preview or send. The
+    // synthetic record is deliberately never submitted at any point in this test.
+    const std::string neverId = "research-legacy-never-submitted";
+    auto neverRequest = marketable.SubmissionRequest(neverId, auth.permit);
+    neverRequest.sessionToken = "hepta-research-outbox-v1-not-a-credential";
+    std::string neverWire;
+    Require(TypedToolProtocol::EncodeRequest(neverRequest, neverWire, reason), reason);
+    const std::string neverPath = legacyDirectory + "/" + neverId + ".hro";
+    WritePrivateFile(neverPath, "HRO1" + neverWire, 0600);
+    Require(client.InspectLegacyHro1(legacyDirectory, neverId,
+                "research-legacy-unknown-query", result, reason) &&
+            result.envelope.toolName == "execution.get_command_status" &&
+            result.envelope.status == "error" &&
+            result.responseJson.find("EXECUTION_COMMAND_NOT_FOUND") != std::string::npos,
+            "unknown HRO1 command was not preserved as not found: " + result.responseJson);
+    Require(f.execution->Venue().AdmittedOrderCount() == 0,
+            "unknown legacy command triggered a venue send");
+    legacyUnchanged();
 
     Require(client.Submit(marketable, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "ok", "real submit rejected: " + result.responseJson);
@@ -368,6 +411,16 @@ void TestNativeExecutionLifecycle() {
     Require(client.Submit(altered, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "rejected", "changed payload reused a command identity");
     Require(f.execution->Venue().AdmittedOrderCount() == 1, "retry or conflict sent another order");
+    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                "research-legacy-filled-query", result, reason) &&
+            result.envelope.toolName == "execution.get_command_status" &&
+            result.envelope.status == "ok" && result.envelope.orderId == filledId &&
+            result.envelope.payloadJson.find(auth.commandId) != std::string::npos,
+            "legacy read lost the executed command identity: " + result.responseJson);
+    Require(f.execution->Venue().AdmittedOrderCount() == 1,
+            "post-fill legacy inspection sent another order");
+    legacyUnchanged();
+
 
     PreparedOrder resting("EUR.USD", Contract(), "BUY", 7, 1.1000, 1.1001, expiry);
     const auto restingAuth = Preview(client, resting, "research-actual-preview-2");
@@ -448,6 +501,20 @@ void TestNativeExecutionLifecycle() {
     Require(f.execution->Venue().AdmittedOrderCount() == 3, "restart reset the admission ledger");
     Require(client.Submit(lostReplyOrder, lostAuth.commandId, lostAuth.permit, result, reason), reason);
     Require(result.envelope.status == "duplicate", "lost-reply command was forgotten on restart");
+    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                "research-legacy-restarted-query", result, reason) &&
+            result.envelope.toolName == "execution.get_command_status" &&
+            result.envelope.status == "ok" && result.envelope.orderId == filledId,
+            "legacy read lost durable status after Execution restart: " + result.responseJson);
+    Require(client.InspectLegacyHro1(legacyDirectory, neverId,
+                "research-legacy-unknown-restarted", result, reason) &&
+            result.envelope.status == "error" &&
+            result.responseJson.find("EXECUTION_COMMAND_NOT_FOUND") != std::string::npos,
+            "restart fabricated a result for an unsent legacy command");
+    Require(f.execution->Venue().AdmittedOrderCount() == 3,
+            "legacy restart reconciliation sent another order");
+    legacyUnchanged();
+
     SessionSupervisorRequest revoke;
     revoke.operation = SessionSupervisorOperation::Revoke; revoke.token = f.token;
     revoke.expectedGeneration = f.leaseGeneration;
@@ -456,6 +523,22 @@ void TestNativeExecutionLifecycle() {
     Require(client.Submit(marketable, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "permission_denied", "revoked session reached Execution");
     Require(f.execution->Venue().AdmittedOrderCount() == 3, "revoked session submitted an order");
+    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                "research-legacy-revoked-query", result, reason) &&
+            result.envelope.status == "permission_denied",
+            "legacy inspection bypassed session revocation: " + result.responseJson);
+    Require(f.execution->Venue().AdmittedOrderCount() == 3,
+            "revoked legacy inspection sent an order");
+    legacyUnchanged();
+    std::ifstream neverInput(neverPath, std::ios::binary);
+    Require(neverInput.good(), "unknown legacy source record disappeared");
+    std::ostringstream neverRetained; neverRetained << neverInput.rdbuf();
+    Require(!neverInput.bad() && neverRetained.str() == "HRO1" + neverWire,
+            "unknown legacy record was rewritten");
+    errno = 0;
+    Require(::access((legacyDirectory + "/" + neverId + ".hsr").c_str(), F_OK) != 0 &&
+            errno == ENOENT, "unknown legacy command acquired canonical mutation state");
+
 
     f.gateway->Stop(); f.gateway.reset(); f.execution->Stop();
     std::map<std::string, unsigned int> placeAttempts, cancelAttempts;
@@ -469,13 +552,14 @@ void TestNativeExecutionLifecycle() {
             placeAttempts[lostAuth.commandId] == 1 && placeAttempts.size() == 3 &&
             cancelAttempts["research-actual-cancel-1"] == 1 &&
             cancelAttempts.size() == 1, "journal contains duplicate or bypass sends");
+    Require(placeAttempts.count(neverId) == 0, "unsent legacy command appears in send journal");
     std::uint64_t auditRecords = 0;
     Require(SessionSupervisorAuditJournal::Verify(f.agentConfig.supervisorAuditJournalPath, auditRecords, reason),
             "real Gateway audit verification: " + reason);
     Require(auditRecords > 0, "no durable Gateway decisions recorded");
     std::cout << "native_execution_lifecycle_us=" <<
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count()
-        << " orders=3 fills=2 cancels=1 lost_reply=1 durable_restart=1 revoked=1 audit_records=" << auditRecords
+        << " orders=3 fills=2 cancels=1 lost_reply=1 durable_restart=1 revoked=1 hro1_readonly_lifecycle=1 audit_records=" << auditRecords
         << " (local simulator; not broker latency or process-isolation qualification)\n";
 }
 

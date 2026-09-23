@@ -151,9 +151,11 @@ remain at `56fd92bc94fd36e064d18c383ffeef9994d85fea`. No outbox conversion is
 performed and no uncertain command gets a new mutation ID. Unknown external,
 private and binary consumers retain their original repository/releases.
 
-Do not archive HeptaDLL-main or declare the alternative PRs fully superseded on
-this consumer port alone. Public/private redistribution, actual consumer owner
-sign-off, exact-head CI and production host/broker qualification are independent.
+HeptaDLL-main is now a private read-only archive under the separate support-end
+decision in the [consumer register](../docs/technical/heptadll-consumers.md).
+This consumer port does not prove that the retained alternatives, old record
+formats or every deployment have been replaced. Public/private redistribution,
+actual owner sign-off, exact-head CI and host/broker qualification are independent.
 CTP remains deferred; LIVE remains unavailable. No private history or vendor
 source/binary is imported. The new adapters are ordinary unprivileged offline
 SDK tools, not an additional OMS, matching/accounting framework or execution path.

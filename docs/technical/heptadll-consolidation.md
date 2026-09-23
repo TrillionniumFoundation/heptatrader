@@ -1,8 +1,17 @@
 # HeptaDLL consolidation on the existing #107 line
 
 Status: MERGED CORE; LEGACY ABI/RUNTIME SUPPORT RETIRED; LEGACY REPOSITORY ARCHIVED
-Date: 2026-09-22
-Canonical continuation: `integration/heptadll-modular-20260920`, PR #107
+Current development: `heptatrader/main`.
+Current support/evidence scope: [consumer register](heptadll-consumers.md).
+Repository archival ends active legacy support; it does not certify every
+historical API, binary or deployment as replaced.
+
+## Historical comparison and delivery sequence
+
+The dated baselines, gap tables and continuation instructions below describe
+successive deliveries, not a current backlog or instructions to reopen old lines.
+Initial comparison date: 2026-09-22.
+Historical integration line: `integration/heptadll-modular-20260920`, PR #107.
 Initial comparison source: `522e2eec63161e95e00e30269d4b6ffe00b5f591`
 Initial comparison tree: `36244a97e13f39a9ef8a8f99f77da436c02debfb`
 Delivery parent after concurrent update: `d3fd08198ce5fe08ac2e381c4a2e0b5cfa01ebe3`
@@ -17,8 +26,8 @@ PR #107 was merged normally as `245554c49725fee81dc5e86fea99c43bb1ce2a6c`,
 with accepted head `bb4d55fc89c83d672fb022bc22e3a6d2be29ed47` and identical
 complete tree `1fcd9846c93348e47f31a59175d5d7d9747d3f3b`. The sections
 below preserve earlier implementation/delivery observations, not a claim that
-#107 is still unmerged. New continuation uses this merged source on the SAME
-`integration/heptadll-modular-20260920` line. Main merge and original repository
+#107 is still unmerged. Its later continuations used that same integration line;
+new work now starts from current main. Main merge and original repository
 retirement remain separate decisions.
 
 ## One implementation line, not a fourth framework
@@ -324,12 +333,11 @@ continuation PR, not a source document's unconditional passing declaration.
 | #108 HRO1 record consumers | Retain original caller/API; canonical `InspectLegacyHro1` can strictly validate the immutable old record and query its original command ID, but cannot invent the missing recovery binding, convert to HSR1 or submit |
 | Original library strategies and external/private/binary deployments | Retain HeptaDLL-main, releases and history until named owner/artifact disposition |
 
-Engineering consolidation continues without making source age, a bounded symbol
-search, or a green CI run substitute for external consumer evidence. The source
-repository is not archived; no branch/history/release deletion, visibility or
-protection change, credential migration, broker path or trading authorization
-occurs in this patch. Retaining an unresolved consumer is an explicit decision,
-not a statement that its migration has completed.
+At this historical delivery the source repository was still retained; that patch
+did not archive it or change credentials, broker paths or trading authorization.
+The later private archive is recorded in the lifecycle receipt. Neither action
+makes a bounded symbol search or a green CI run substitute for external consumer
+evidence. Retention or support termination is not a completed migration claim.
 
 
 ## PR #113 application-key continuation
@@ -350,8 +358,9 @@ The [consumer register](heptadll-consumers.md) identifies concrete maintained
 callers, source adaptations and explicit retained consumers, with version,
 platform, interface/state format and owner-evidence boundaries. Unknown external
 users do not block new canonical features, but are not certified migrated.
-HeptaDLL-main remains the historical compatibility repository, not an active
-parallel core and not a newly archived/deleted repository.
+At #113, HeptaDLL-main was still the retained historical compatibility source.
+It has since become a private read-only archive, not an active parallel core;
+current support decisions are in the consumer register.
 
 The added executable is an unprivileged SDK command, not a fourth framework.
 Client package allowlists are extended only for its explicit executable/module/

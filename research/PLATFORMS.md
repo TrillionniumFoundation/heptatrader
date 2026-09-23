@@ -63,9 +63,11 @@ releases stay in HeptaDLL-main; no vendor/history/data/manual is imported.
 Before replacing a real legacy artifact, record its actual owner acknowledgement,
 original release/digest, platform/toolchain, required API/ABI, input format,
 persisted record format and golden input/intent/output comparisons. A scoped
-RETAIN decision permits continued canonical development; no fictitious owner
-sign-off is needed. Do not archive the original repository or discard old request
-records based only on platform CI. No trading authorization is part of this work.
+support disposition permits continued canonical development; no fictitious owner
+sign-off is needed. The original repository is now a private read-only archive
+under the separate support-end decision in the consumer register. Platform CI
+does not prove deployment migration or authorize discarding old request records.
+No trading authorization is part of this work.
 
 ## Portability repairs after the first native acceptance attempt
 
