@@ -11,12 +11,12 @@
 #include <chrono>
 #include <atomic>
 
-#include "EWrapper.h"
+#include "DefaultEWrapper.h"
 #include "EClientSocket.h"
 #include "EReaderOSSignal.h"
 #include "EReader.h"
 
-class ProbeWrapper : public EWrapper {
+class ProbeWrapper : public DefaultEWrapper {
 public:
     std::atomic<bool> connected{false};
     std::atomic<bool> gotNextValidId{false};
@@ -35,23 +35,6 @@ public:
         connected = true;
     }
 
-    // ---- required no-op overrides (keep minimal) ----
-    void tickPrice(TickerId, TickType, double, const TickAttrib&) override {}
-    void tickSize(TickerId, TickType, Decimal) override {}
-    void tickOptionComputation(TickerId, TickType, int, double, double, double, double, double, double, double, double) override {}
-    void tickGeneric(TickerId, TickType, double) override {}
-    void tickString(TickerId, TickType, const std::string&) override {}
-    void tickEFP(TickerId, TickType, double, const std::string&, double, int, const std::string&, double, double) override {}
-    void orderStatus(OrderId, const std::string&, Decimal, Decimal, double, int, int, double, int, const std::string&, double) override {}
-    void openOrder(OrderId, const Contract&, const Order&, const OrderState&) override {}
-    void openOrderEnd() override {}
-    void winError(const std::string&, int) override {}
-    void connectionClosed() override { std::cout << "[IB] connectionClosed" << std::endl; }
-    void updateAccountValue(const std::string&, const std::string&, const std::string&, const std::string&) override {}
-    void updatePortfolio(const Contract&, Decimal, double, double, double, double, double, const std::string&) override {}
-    void updateAccountTime(const std::string&) override {}
-    void accountDownloadEnd(const std::string&) override {}
-    void nextValidId(long) {}
 };
 
 int main(int argc, char** argv) {
