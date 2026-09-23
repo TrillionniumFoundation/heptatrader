@@ -128,13 +128,16 @@ historical-retirement document. This is a bounded indexed search, not an externa
 consumer census. It omits non-default branches, unindexed installations, outside
 organizations and binary-only callers. It cannot justify deletion or archival.
 
-**Decision: retain the original repository, releases, history and #106/#108
-branches.** Do not close alternate PRs as “fully superseded” while the retained
-gaps above remain. Capability integration can enter main after its own review
-and exact-head acceptance; complete legacy retirement is a later independent
-claim. Repository archival does not migrate persistent host state or revoke an
-old trading binary. No archive, branch deletion, visibility/protection change or
-trading authorization has been performed by this working continuation.
+**Decision: retain the original repository, history and pinned #106/#108/#109
+source refs.** The three alternate Draft PRs are now closed as non-merge retained
+references; their commits/branches remain available for compatibility analysis.
+Closing those PRs is not a claim that C05/C06 records or callers migrated, and
+none may be revived as a second research/client core. Capability integration can
+enter main after its own review and exact-head acceptance; complete legacy
+retirement is a later independent claim. Repository archival does not migrate
+persistent host state or revoke an old trading binary. The legacy repository
+remains private and unarchived; its main branch is protected for PR-only
+compatibility maintenance with force-push/deletion disabled.
 
 ## Acceptance and publication
 
@@ -192,9 +195,11 @@ the new API; existing #107 replay/import and durable-client consumers retain
 their original paths; #106 Python command/report/Decimal consumers and #108
 client-record consumers remain on their pinned references until adapted. Unknown
 external or binary users retain the original library. This retention is not
-"all consumers migrated" and does not authorize closing #106/#108 as completely
-superseded, deleting releases, changing visibility or archiving HeptaDLL-main.
-Main acceptance and that later retirement decision remain independent.
+"all consumers migrated". #106/#108/#109 are closed only as non-merge retained
+references; their source refs remain pinned and incompatible callers/records stay
+explicitly retained. No release/history deletion, visibility change or
+HeptaDLL-main archival follows from closing those PRs. Main acceptance and that
+later retirement decision remain independent.
 
 ## Post-merge normalized-portfolio consumer continuation
 

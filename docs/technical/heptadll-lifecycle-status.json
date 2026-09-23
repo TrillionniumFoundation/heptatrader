@@ -22,12 +22,20 @@
   "legacy_repository": {
     "repository": "TrillionniumFoundation/HeptaDLL-main",
     "state": "retained",
-    "archive_ready": false
+    "archive_ready": false,
+    "maintenance_mode": "compatibility_pr_only",
+    "main_branch_protected": true,
+    "admin_enforcement": true,
+    "force_push_allowed": false,
+    "branch_deletion_allowed": false,
+    "github_tags_present": false,
+    "github_releases_present": false,
+    "historical_integration_branch_retained": "integration/modular-heptatrader-20260919"
   },
   "retirement_gates": {
     "blocking_consumers_resolved": false,
     "persistent_record_support_resolved": false,
     "publication_scope_confirmed": false,
-    "release_retention_policy_confirmed": false
+    "release_retention_policy_confirmed": true
   }
 }
