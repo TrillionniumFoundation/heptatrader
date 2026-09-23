@@ -389,8 +389,9 @@ void TestNativeExecutionLifecycle() {
     Require(TypedToolProtocol::EncodeRequest(neverRequest, neverWire, reason), reason);
     const std::string neverPath = legacyDirectory + "/" + neverId + ".hro";
     WritePrivateFile(neverPath, "HRO1" + neverWire, 0600);
-    Require(client.InspectLegacyHro1(legacyDirectory, neverId,
-                "research-legacy-unknown-query", result, reason) &&
+    const bool legacy_unknown = client.InspectLegacyHro1(legacyDirectory, neverId,
+                "research-legacy-unknown-query", result, reason);
+    Require(legacy_unknown &&
             result.envelope.toolName == "execution.get_command_status" &&
             result.envelope.status == "error" &&
             result.responseJson.find("EXECUTION_COMMAND_NOT_FOUND") != std::string::npos,
@@ -411,12 +412,16 @@ void TestNativeExecutionLifecycle() {
     Require(client.Submit(altered, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "rejected", "changed payload reused a command identity");
     Require(f.execution->Venue().AdmittedOrderCount() == 1, "retry or conflict sent another order");
-    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
-                "research-legacy-filled-query", result, reason) &&
+    const bool legacy_filled = client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                "research-legacy-filled-query", result, reason);
+    Require(legacy_filled &&
             result.envelope.toolName == "execution.get_command_status" &&
-            result.envelope.status == "ok" && result.envelope.orderId == filledId &&
-            result.envelope.payloadJson.find(auth.commandId) != std::string::npos,
-            "legacy read lost the executed command identity: " + result.responseJson);
+            result.envelope.status == "ok" && result.envelope.orderId == -1 &&
+            result.envelope.payloadJson.find("\"authoritative\":true,") != std::string::npos &&
+            result.envelope.payloadJson.find("\"command_status\":\"accepted\",") != std::string::npos &&
+            result.envelope.payloadJson.find("\"order_id\":" + std::to_string(filledId) + ",") != std::string::npos &&
+            result.envelope.payloadJson.find("\"command_id\":\"" + auth.commandId + "\",") != std::string::npos,
+            "legacy read lost the executed command identity: " + reason + " " + result.responseJson);
     Require(f.execution->Venue().AdmittedOrderCount() == 1,
             "post-fill legacy inspection sent another order");
     legacyUnchanged();
@@ -501,13 +506,20 @@ void TestNativeExecutionLifecycle() {
     Require(f.execution->Venue().AdmittedOrderCount() == 3, "restart reset the admission ledger");
     Require(client.Submit(lostReplyOrder, lostAuth.commandId, lostAuth.permit, result, reason), reason);
     Require(result.envelope.status == "duplicate", "lost-reply command was forgotten on restart");
-    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
-                "research-legacy-restarted-query", result, reason) &&
+    const bool legacy_restarted = client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                "research-legacy-restarted-query", result, reason);
+    Require(legacy_restarted &&
             result.envelope.toolName == "execution.get_command_status" &&
-            result.envelope.status == "ok" && result.envelope.orderId == filledId,
+            result.envelope.status == "ok" && result.envelope.orderId == -1 &&
+            result.envelope.payloadJson.find("\"authoritative\":true,") != std::string::npos &&
+            result.envelope.payloadJson.find("\"command_status\":\"accepted\",") != std::string::npos &&
+            result.envelope.payloadJson.find("\"order_id\":" + std::to_string(filledId) + ",") != std::string::npos &&
+            result.envelope.payloadJson.find("\"command_id\":\"" + auth.commandId + "\",") != std::string::npos &&
+            result.envelope.payloadJson.find(f.execution->ServiceEpoch()) != std::string::npos,
             "legacy read lost durable status after Execution restart: " + result.responseJson);
-    Require(client.InspectLegacyHro1(legacyDirectory, neverId,
-                "research-legacy-unknown-restarted", result, reason) &&
+    const bool legacy_unknown_restarted = client.InspectLegacyHro1(legacyDirectory, neverId,
+                "research-legacy-unknown-restarted", result, reason);
+    Require(legacy_unknown_restarted &&
             result.envelope.status == "error" &&
             result.responseJson.find("EXECUTION_COMMAND_NOT_FOUND") != std::string::npos,
             "restart fabricated a result for an unsent legacy command");
@@ -523,8 +535,9 @@ void TestNativeExecutionLifecycle() {
     Require(client.Submit(marketable, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "permission_denied", "revoked session reached Execution");
     Require(f.execution->Venue().AdmittedOrderCount() == 3, "revoked session submitted an order");
-    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
-                "research-legacy-revoked-query", result, reason) &&
+    const bool legacy_revoked = client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+                "research-legacy-revoked-query", result, reason);
+    Require(legacy_revoked &&
             result.envelope.status == "permission_denied",
             "legacy inspection bypassed session revocation: " + result.responseJson);
     Require(f.execution->Venue().AdmittedOrderCount() == 3,
