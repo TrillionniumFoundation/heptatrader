@@ -78,7 +78,7 @@ ExecutionCommandResult UnixExecutionServiceClient::CancelIbOrderWithIdentity(
         InvalidateServiceIdentity(identity);
     return result;
 }
-ExecutionControlResult UnixExecutionServiceClient::QueryCommandStatus(
+ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatus(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
@@ -87,7 +87,7 @@ ExecutionControlResult UnixExecutionServiceClient::QueryCommandStatus(
         return ControlTransportFailure(command.context.toolCallId, reason);
     return QueryCommandStatusWithIdentity(command, identity);
 }
-ExecutionControlResult UnixExecutionServiceClient::QueryCommandStatusWithIdentity(
+ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatusWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
@@ -97,7 +97,7 @@ ExecutionControlResult UnixExecutionServiceClient::QueryCommandStatusWithIdentit
         ExecutionServiceOperation::RecoveryQueryCommandStatus;
     return DispatchControlWithIdentity(command, identity, operation);
 }
-ExecutionControlResult UnixExecutionServiceClient::RecoveryAuditOwner(
+ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
@@ -106,7 +106,7 @@ ExecutionControlResult UnixExecutionServiceClient::RecoveryAuditOwner(
         return ControlTransportFailure(command.context.toolCallId, reason);
     return RecoveryAuditOwnerWithIdentity(command, identity);
 }
-ExecutionControlResult UnixExecutionServiceClient::RecoveryAuditOwnerWithIdentity(
+ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
@@ -131,7 +131,7 @@ UnixExecutionServiceClient::TerminalizeRecoveryOwnerWithIdentity(
         command, identity,
         ExecutionServiceOperation::TerminalizeRecoveryOwner);
 }
-ExecutionControlResult UnixExecutionServiceClient::FenceSessionOwner(
+ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
@@ -140,14 +140,14 @@ ExecutionControlResult UnixExecutionServiceClient::FenceSessionOwner(
         return ControlTransportFailure(command.context.toolCallId, reason);
     return FenceSessionOwnerWithIdentity(command, identity);
 }
-ExecutionControlResult UnixExecutionServiceClient::FenceSessionOwnerWithIdentity(
+ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
     return DispatchControlWithIdentity(
         command, identity, ExecutionServiceOperation::FenceSessionOwner);
 }
-ExecutionControlResult UnixExecutionServiceClient::ReleaseSessionOwnerFence(
+ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFence(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
@@ -156,14 +156,14 @@ ExecutionControlResult UnixExecutionServiceClient::ReleaseSessionOwnerFence(
         return ControlTransportFailure(command.context.toolCallId, reason);
     return ReleaseSessionOwnerFenceWithIdentity(command, identity);
 }
-ExecutionControlResult UnixExecutionServiceClient::ReleaseSessionOwnerFenceWithIdentity(
+ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFenceWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
     return DispatchControlWithIdentity(command, identity,
         ExecutionServiceOperation::ReleaseSessionOwnerFence);
 }
-ExecutionControlResult UnixExecutionServiceClient::ReconcileAuthoritativeState(
+ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeState(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
@@ -172,7 +172,7 @@ ExecutionControlResult UnixExecutionServiceClient::ReconcileAuthoritativeState(
         return ControlTransportFailure(command.context.toolCallId, reason);
     return ReconcileAuthoritativeStateWithIdentity(command, identity);
 }
-ExecutionControlResult UnixExecutionServiceClient::ReconcileAuthoritativeStateWithIdentity(
+ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeStateWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {

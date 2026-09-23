@@ -1122,10 +1122,10 @@ ExecutionCommandResult IbPaperExecutionPolicyAuthority::CancelOrder(
     return m_coordinator.CancelOrder(command);
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::BeginControl(
+ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::BeginControl(
     const ExecutionControlCommand& command) const
 {
-    ExecutionControlResult result;
+    ExecutionControlStatusResult result;
     result.commandId = command.context.toolCallId;
     if (!ValidContext(command.context))
     {
@@ -1137,12 +1137,12 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::BeginControl(
     return result;
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::QueryCommandStatus(
+ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::QueryCommandStatus(
     const ExecutionControlCommand& command)
 {
     // These operations inspect immutable policy context and the coordinator's
     // own synchronized state. They must not wait behind Broker dispatch.
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionControlStatusResult result(BeginControl(command));
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     result.targetCommandId = command.targetCommandId;
     if (command.recoveryIngressFence != 0)
@@ -1175,12 +1175,12 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::QueryCommandStatus(
     return result;
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::FenceSessionOwner(
+ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::FenceSessionOwner(
     const ExecutionControlCommand& command)
 {
     // These operations inspect immutable policy context and the coordinator's
     // own synchronized state. They must not wait behind Broker dispatch.
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionControlStatusResult result(BeginControl(command));
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     result.affectedCount = m_coordinator.FenceSessionOwner(
         command.context.agentId, command.context.sessionId);
@@ -1195,10 +1195,10 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::FenceSessionOwner(
     return result;
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwnerFence(
+ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwnerFence(
     const ExecutionControlCommand& command)
 {
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionControlStatusResult result(BeginControl(command));
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     std::unique_lock<std::mutex> lock(m_mutex, std::try_to_lock);
     if (!lock.owns_lock())
@@ -1239,10 +1239,10 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwnerFence
     return result;
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
+ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
     const ExecutionControlCommand& command)
 {
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionControlStatusResult result(BeginControl(command));
     if (result.status == ExecutionCommandStatus::Rejected) return result;
     std::size_t affected = 0;
     std::string reason;
@@ -1258,11 +1258,11 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeSt
     return result;
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
+ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
     result.ownerExecutionDomain = command.context.executionDomain;
     if (result.status == ExecutionCommandStatus::Rejected) return result;
@@ -1298,11 +1298,11 @@ ExecutionControlResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(
     return AuditRecoveryOwner(command, recovery);
 }
 
-ExecutionControlResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
+ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     const ExecutionControlCommand& command,
     const IBAuthoritativeRecoveryAuditSnapshot& recovery)
 {
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionOwnerAuditResult result(BeginControl(command));
     result.ownerAccount = command.context.account;
     result.ownerExecutionDomain = command.context.executionDomain;
     if (result.status == ExecutionCommandStatus::Rejected) return result;
@@ -1553,7 +1553,7 @@ ExecutionControlResult
 IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
     const ExecutionControlCommand& command)
 {
-    ExecutionControlResult result = BeginControl(command);
+    ExecutionControlResult result(BeginControl(command));
     result.targetCommandId = command.targetCommandId;
     result.ownerAccount = command.context.account;
     result.ownerExecutionDomain = command.context.executionDomain;
@@ -1622,7 +1622,8 @@ IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
     }
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        result = AuditRecoveryOwner(command, frozen);
+        static_cast<ExecutionOwnerAuditResult&>(result) =
+            AuditRecoveryOwner(command, frozen);
     }
     result.targetCommandId = command.targetCommandId;
     if (result.status != ExecutionCommandStatus::Accepted)

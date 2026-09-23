@@ -103,20 +103,20 @@ public:
         result.orderId = command.orderId;
         return result;
     }
-    ExecutionControlResult QueryCommandStatus(const ExecutionControlCommand& command) override
+    ExecutionControlStatusResult QueryCommandStatus(const ExecutionControlCommand& command) override
     {
         return Control(command, 0);
     }
-    ExecutionControlResult FenceSessionOwner(const ExecutionControlCommand& command) override
+    ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& command) override
     {
         ++fences;
         return Control(command, 2);
     }
-    ExecutionControlResult ReleaseSessionOwnerFence(const ExecutionControlCommand& command) override
+    ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& command) override
     {
         return Control(command, 0);
     }
-    ExecutionControlResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override
+    ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override
     {
         ++reconciles;
         return Control(command, 1);
@@ -766,8 +766,7 @@ void TestEventRestartRequiresIdentityRefreshAndReconcile()
     ExecutionControlCommand reconcile;
     reconcile.context = owner;
     reconcile.context.toolCallId = "event-restart-reconcile";
-    const ExecutionControlResult reconciled =
-        gateway.ReconcileAuthoritativeState(reconcile);
+    const ExecutionControlStatusResult reconciled = gateway.ReconcileAuthoritativeState(reconcile);
     assert(reconciled.status == ExecutionCommandStatus::Accepted);
     assert(!reconciled.mutationBlocked);
     assert(remote.reconciles == 1);

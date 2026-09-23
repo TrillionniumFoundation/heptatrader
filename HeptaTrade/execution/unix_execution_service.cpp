@@ -895,13 +895,13 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
         return result;
     }
     if (request.operation == ExecutionServiceOperation::QueryCommandStatus)
-        return m_controlAuthority->QueryCommandStatus(request.control);
+        return ExecutionControlResult(m_controlAuthority->QueryCommandStatus(request.control));
     if (request.operation ==
         ExecutionServiceOperation::RecoveryQueryCommandStatus)
     {
         RevokePreviewPermitsForOwner(request.control.context.agentId,
             request.control.context.sessionId);
-        return m_controlAuthority->QueryCommandStatus(request.control);
+        return ExecutionControlResult(m_controlAuthority->QueryCommandStatus(request.control));
     }
     if (request.operation == ExecutionServiceOperation::FenceSessionOwner)
     {
@@ -909,17 +909,17 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
                                      request.control.context.sessionId);
         m_decisionLeases->FenceOwner(request.control.context.agentId,
                                      request.control.context.sessionId);
-        return m_controlAuthority->FenceSessionOwner(request.control);
+        return ExecutionControlResult(m_controlAuthority->FenceSessionOwner(request.control));
     }
     if (request.operation == ExecutionServiceOperation::ReleaseSessionOwnerFence)
-        return m_controlAuthority->ReleaseSessionOwnerFence(request.control);
+        return ExecutionControlResult(m_controlAuthority->ReleaseSessionOwnerFence(request.control));
     if (request.operation == ExecutionServiceOperation::RecoveryAuditOwner)
     {
         RevokePreviewPermitsForOwner(request.control.context.agentId,
             request.control.context.sessionId);
         m_decisionLeases->FenceOwner(request.control.context.agentId,
             request.control.context.sessionId);
-        return m_controlAuthority->RecoveryAuditOwner(request.control);
+        return ExecutionControlResult(m_controlAuthority->RecoveryAuditOwner(request.control));
     }
     if (request.operation ==
         ExecutionServiceOperation::TerminalizeRecoveryOwner)
@@ -931,7 +931,7 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
         return m_controlAuthority->TerminalizeRecoveryOwner(
             request.control);
     }
-    return m_controlAuthority->ReconcileAuthoritativeState(request.control);
+    return ExecutionControlResult(m_controlAuthority->ReconcileAuthoritativeState(request.control));
 }
 void UnixExecutionServiceServer::DispatchRequest(
     const ExecutionServiceRequest& request,

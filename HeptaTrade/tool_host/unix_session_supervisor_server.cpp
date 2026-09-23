@@ -236,8 +236,8 @@ bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
 				 records[i].expiresAtMs <= nowMs))
 			{
 				SessionSupervisorLeaseRecord recovery = records[i];
-				ExecutionControlResult commandResult;
-				ExecutionControlResult ownerAudit;
+				ExecutionControlStatusResult commandResult;
+				ExecutionOwnerAuditResult ownerAudit;
 				std::string recoveryReason;
 				if (!EnterPaperRecovery(recovery, nowMs, std::string(),
 						commandResult, ownerAudit, recoveryReason))
@@ -708,8 +708,8 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 					static_cast<std::uint64_t>(
 						std::chrono::duration_cast<std::chrono::milliseconds>(
 							std::chrono::system_clock::now().time_since_epoch()).count());
-				ExecutionControlResult commandResult;
-				ExecutionControlResult ownerAudit;
+				ExecutionControlStatusResult commandResult;
+				ExecutionOwnerAuditResult ownerAudit;
 				if (!EnterPaperRecovery(record, recoveryNowMs, std::string(),
 						commandResult, ownerAudit, reason))
 				{
@@ -985,8 +985,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 					previous.paperFinalizationRequired = true;
 				result.paperFinalizationRequired =
 					previous.paperFinalizationRequired;
-				ExecutionControlResult commandResult;
-				ExecutionControlResult ownerAudit;
+				ExecutionControlStatusResult commandResult;
+				ExecutionOwnerAuditResult ownerAudit;
 				std::string queryReason;
 				const std::uint64_t nowMs = static_cast<std::uint64_t>(
 					std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1125,8 +1125,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 								std::chrono::milliseconds>(
 								std::chrono::system_clock::now().
 									time_since_epoch()).count());
-					ExecutionControlResult commandResult;
-					ExecutionControlResult ownerAudit;
+					ExecutionControlStatusResult commandResult;
+					ExecutionOwnerAuditResult ownerAudit;
 					if (!EnterPaperRecovery(previous, nowMs, std::string(),
 							commandResult, ownerAudit,
 							result.ReasonCode()))
@@ -1317,8 +1317,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 								replacement.token, recovery,
 								result.ReasonCode()))
 							goto write_result;
-						ExecutionControlResult commandResult;
-						ExecutionControlResult ownerAudit;
+						ExecutionControlStatusResult commandResult;
+						ExecutionOwnerAuditResult ownerAudit;
 						std::string recoveryReason;
 						if (!EnterPaperRecovery(recovery, nowMs,
 								std::string(), commandResult, ownerAudit,
@@ -1371,7 +1371,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 					else if (m_leaseStore != nullptr &&
 						replacement.templateId == "paper")
 					{
-						ExecutionControlResult ownerAudit;
+						ExecutionOwnerAuditResult ownerAudit;
 						result.accepted = m_controlPlane.RenewPaperAfterAudit(
 							issuer->second, request.token,
 							replacement.token, request.expectedGeneration,
@@ -1411,8 +1411,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 								replacement.token, recovery,
 								result.ReasonCode()))
 							goto write_result;
-						ExecutionControlResult commandResult;
-						ExecutionControlResult ownerAudit;
+						ExecutionControlStatusResult commandResult;
+						ExecutionOwnerAuditResult ownerAudit;
 						std::string recoveryReason;
 						if (!EnterPaperRecovery(recovery, nowMs,
 								std::string(), commandResult, ownerAudit,
@@ -1478,8 +1478,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							recovery.recoveryCommandId.clear();
 							recovery.fencePending = false;
 							recovery.fenceReason.clear();
-							ExecutionControlResult commandResult;
-							ExecutionControlResult ownerAudit;
+							ExecutionControlStatusResult commandResult;
+							ExecutionOwnerAuditResult ownerAudit;
 							std::string recoveryReason;
 							if (!EnterPaperRecovery(recovery, nowMs,
 									std::string(), commandResult, ownerAudit,
@@ -1610,8 +1610,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 						const std::string rejectionReason = result.ReasonCode();
 						if (record.templateId == "paper")
 						{
-							ExecutionControlResult commandResult;
-							ExecutionControlResult ownerAudit;
+							ExecutionControlStatusResult commandResult;
+							ExecutionOwnerAuditResult ownerAudit;
 							std::string recoveryReason;
 							if (!EnterPaperRecovery(record, nowMs, std::string(),
 									commandResult, ownerAudit, recoveryReason))
@@ -1667,8 +1667,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							"SUPERVISOR_LEASE_ACTIVATION_FAILED:" + activationReason;
 							if (record.templateId == "paper")
 							{
-								ExecutionControlResult commandResult;
-								ExecutionControlResult ownerAudit;
+								ExecutionControlStatusResult commandResult;
+								ExecutionOwnerAuditResult ownerAudit;
 								std::string recoveryReason;
 								if (!EnterPaperRecovery(record, nowMs,
 										std::string(), commandResult, ownerAudit,

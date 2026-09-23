@@ -29,15 +29,15 @@ bool TradingToolHost::PrepareRecoveryOnlyBinding(
 bool TradingToolHost::EnterRecoveryOnlyAndQuery(
     const std::string& token, std::uint64_t expectedGeneration,
     const std::string& targetCommandId, SessionSupervisorLeaseStore& leaseStore,
-    SessionSupervisorLeaseRecord& durableRecord, ExecutionControlResult& result,
+    SessionSupervisorLeaseRecord& durableRecord, ExecutionControlStatusResult& result,
     std::string& reason,
     TradingToolRecoveryFenceCommittedHook committedHook,
     void* committedHookContext,
-    ExecutionControlResult* ownerAudit,
+    ExecutionOwnerAuditResult* ownerAudit,
     std::uint64_t recoveryExpiresAtMs,
     const std::string& durableCurrentToken)
 {
-    result = ExecutionControlResult();
+    result = ExecutionControlStatusResult();
     if (!ValidRequest(token, expectedGeneration, targetCommandId,
             ownerAudit != nullptr))
         return RecoveryFailure(reason, "SESSION_RECOVERY_QUERY_INVALID");

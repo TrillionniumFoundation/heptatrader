@@ -30,15 +30,15 @@ public:
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
     ExecutionCommandResult FlattenPosition(
         const FlattenPositionCommand& command) override;
-    ExecutionControlResult QueryCommandStatus(
+    ExecutionControlStatusResult QueryCommandStatus(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult FenceSessionOwner(
+    ExecutionControlStatusResult FenceSessionOwner(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult ReleaseSessionOwnerFence(
+    ExecutionControlStatusResult ReleaseSessionOwnerFence(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult ReconcileAuthoritativeState(
+    ExecutionControlStatusResult ReconcileAuthoritativeState(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult RecoveryAuditOwner(
+    ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
     ExecutionControlResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command) override;
@@ -61,19 +61,19 @@ public:
     ExecutionCommandResult FlattenPositionWithIdentity(
         const FlattenPositionCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult QueryCommandStatusWithIdentity(
+    ExecutionControlStatusResult QueryCommandStatusWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult FenceSessionOwnerWithIdentity(
+    ExecutionControlStatusResult FenceSessionOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult ReleaseSessionOwnerFenceWithIdentity(
+    ExecutionControlStatusResult ReleaseSessionOwnerFenceWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult ReconcileAuthoritativeStateWithIdentity(
+    ExecutionControlStatusResult ReconcileAuthoritativeStateWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult RecoveryAuditOwnerWithIdentity(
+    ExecutionOwnerAuditResult RecoveryAuditOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
     ExecutionControlResult TerminalizeRecoveryOwnerWithIdentity(

@@ -24,8 +24,8 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 	SessionSupervisorLeaseRecord& record,
 	std::uint64_t nowMs,
 	const std::string& targetCommandId,
-	ExecutionControlResult& commandResult,
-	ExecutionControlResult& ownerAudit,
+	ExecutionControlStatusResult& commandResult,
+	ExecutionOwnerAuditResult& ownerAudit,
 	std::string& reason)
 {
 	if (m_leaseStore == nullptr || record.templateId != "paper" ||
@@ -109,7 +109,7 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 
 bool UnixSessionSupervisorServer::FinalizePaperRecovery(
 	const SessionSupervisorLeaseRecord& record,
-	ExecutionControlResult& ownerAudit,
+	ExecutionOwnerAuditResult& ownerAudit,
 	std::string& reason)
 {
 	if (m_leaseStore == nullptr || record.templateId != "paper" ||
@@ -375,11 +375,11 @@ bool UnixSessionSupervisorServer::HandlePaperFinalize(
 				return left.ownerTokenSha256 < right.ownerTokenSha256;
 			return left.leaseGeneration < right.leaseGeneration;
 		});
-	ExecutionControlResult audit;
+	ExecutionOwnerAuditResult audit;
 	bool firstAudit = true;
 	for (std::size_t i = 0; i < paperRecords.size(); ++i)
 	{
-		ExecutionControlResult ownerAudit;
+		ExecutionOwnerAuditResult ownerAudit;
 		std::string auditReason;
 		if (!m_controlPlane.AuditFinalizedRecoveryOwner(
 				paperRecords[i].issuer, paperRecords[i],

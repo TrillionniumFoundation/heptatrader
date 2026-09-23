@@ -88,7 +88,7 @@ bool ExecutionCoordinator::IsSessionOwnerRecoveryOnly(
 
 bool ExecutionCoordinator::EnterRecoveryOnlyForControl(
     const ExecutionControlCommand& command,
-    ExecutionControlResult& result)
+    ExecutionControlStatusResult& result)
 {
     if (command.recoveryIngressFence == 0) return true;
     std::string reason;
