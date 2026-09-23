@@ -84,6 +84,18 @@ class CanonicalIbPaperProfileTests(unittest.TestCase):
             errors = profile.validate(policy_path, environment_path)
             self.assertTrue(any("single active order" in error for error in errors), errors)
 
+    def test_single_account_wrapper_uses_one_account_subscription_family(self) -> None:
+        source = (ROOT / "HeptaTrade/adapter_ib/ib_api_wrapper.cpp").read_text(
+            encoding="utf-8-sig"
+        )
+        self.assertNotIn("m_client.reqAccountSummary(", source)
+        self.assertNotIn("m_client.cancelAccountSummary(", source)
+        self.assertIn("m_client.reqAccountUpdatesMulti(", source)
+        self.assertIn(
+            'm_activeAccountUpdatesReqId, m_params.account, "", true',
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

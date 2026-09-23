@@ -800,7 +800,6 @@ IBApiScopeExit<F> MakeIBApiScopeExit(F fn) {
 class IBApiWrapperReal final : public IIBApiWrapper, public EWrapperDefault {
 public:
     static constexpr int kInitialAccountRefreshReqId = 9001;
-    static constexpr const char* kAccountSummaryTags = "NetLiquidation,AvailableFunds,MaintMarginReq,RealizedPnL,UnrealizedPnL,TotalCashValue,SettledCash,AccruedCash,BuyingPower,ExcessLiquidity,InitMarginReq,FullInitMarginReq,FullMaintMarginReq,LookAheadInitMarginReq,LookAheadMaintMarginReq,LookAheadAvailableFunds,GrossPositionValue,Cushion,Leverage";
     int ResolveMarketDataType() const {
         const char* p = std::getenv("HEPTA_IB_MARKET_DATA_TYPE");
         if (p == nullptr || *p == '\0') return 1; // realtime
@@ -1054,10 +1053,6 @@ public:
             m_status = "IB_DISCONNECTED";
             return;
         }
-        if (wasConnected && m_accountSummarySubscribed) {
-            m_client.cancelAccountSummary(m_activeAccountSummaryReqId);
-            m_accountSummarySubscribed = false;
-        }
         if (wasConnected && m_accountUpdatesSubscribed &&
             !m_params.account.empty()) {
             m_client.cancelAccountUpdatesMulti(m_activeAccountUpdatesReqId);
@@ -1162,39 +1157,36 @@ public:
 
     bool ReqAccountSummary() override {
         if (!m_connected || m_params.account.empty()) return false;
-        if (m_accountSummarySubscribed) {
-            m_client.cancelAccountSummary(m_activeAccountSummaryReqId);
-            m_accountSummarySubscribed = false;
-        }
         if (m_accountUpdatesSubscribed) {
             m_client.cancelAccountUpdatesMulti(m_activeAccountUpdatesReqId);
             m_accountUpdatesSubscribed = false;
             m_accountUpdatesInitialDownloadPending = false;
         }
-        m_accountSummaryEndObserved = false;
-        m_accountDownloadEndObserved = false;
         if (m_nextAccountRefreshReqId <= 0 ||
-            m_nextAccountRefreshReqId >
-                std::numeric_limits<int>::max() - 2) return false;
-        m_activeAccountSummaryReqId = m_nextAccountRefreshReqId++;
+            m_nextAccountRefreshReqId ==
+                std::numeric_limits<int>::max()) return false;
         m_activeAccountUpdatesReqId = m_nextAccountRefreshReqId++;
-        m_client.reqAccountSummary(
-            m_activeAccountSummaryReqId, "All", kAccountSummaryTags);
-        m_accountSummarySubscribed = true;
-        // reqPositions does not represent IB spot-FX CASH inventory.  The
-        // account-specific multi-update stream supplies currency-unit
-        // CashBalance values and accountUpdateMultiEnd supplies an initial
-        // generation boundary. The runtime explicitly re-requests a full
-        // download after a fill because IB does not promise sub-minute
-        // account-value subscription updates.
+        // This runtime is intentionally single-account. Do not pair the
+        // account-scoped stream with reqAccountSummary(..., "All", ...): the
+        // latter asks IB for an all-account summary and duplicates the same
+        // account state through a second subscription family. That violates
+        // this dedicated single-account boundary and consumes the separate
+        // account-summary subscription quota for no authoritative benefit.
+        //
+        // reqPositionsMulti does not represent IB spot-FX CASH inventory. The
+        // account-specific multi-update stream supplies both ordinary account
+        // values and currency-unit CashBalance values, while
+        // accountUpdateMultiEnd supplies the exact initial generation boundary.
+        // The runtime explicitly re-requests a full download after a fill
+        // because IB does not promise sub-minute account-value subscription
+        // updates.
         m_client.reqAccountUpdatesMulti(
             m_activeAccountUpdatesReqId, m_params.account, "", true);
         m_accountUpdatesSubscribed = true;
         m_accountUpdatesInitialDownloadPending = true;
-        Trace("account_refresh.request summary_req=" +
-            std::to_string(m_activeAccountSummaryReqId) +
-            " multi_req=" +
-            std::to_string(m_activeAccountUpdatesReqId));
+        Trace("account_refresh.request multi_req=" +
+            std::to_string(m_activeAccountUpdatesReqId) +
+            " account_scoped=true");
         return true;
     }
 
@@ -1562,7 +1554,6 @@ public:
     }
     void connectionClosed() override {
         m_connected = false;
-        m_accountSummarySubscribed = false;
         m_accountUpdatesSubscribed = false;
         m_accountUpdatesInitialDownloadPending = false;
         m_positionsSubscribed = false;
@@ -1734,22 +1725,14 @@ public:
         // CashBalance/AccountReady callbacks are monitor signals that make the
         // committed generation stale if their values change.
         m_accountUpdatesInitialDownloadPending = false;
-        m_accountDownloadEndObserved = true;
-        PublishCombinedAccountSnapshotEnd();
+        PublishAccountSnapshotEnd();
     }
-    void accountSummary(int reqId, const std::string& account, const std::string& tag, const std::string& value, const std::string& currency) override {
-        if (reqId != m_activeAccountSummaryReqId) return;
-        IBEvent event = MakeIBEvent(IBEventType::AccountValue, static_cast<long long>(reqId), tag + ":" + currency, value, 0.0);
-        event.account = account;
-        PushEvent(std::move(event));
-    }
-    void accountSummaryEnd(int reqId) override {
-        Trace("account_refresh.summary_end req=" + std::to_string(reqId) +
-            " active=" + std::to_string(m_activeAccountSummaryReqId));
-        if (reqId != m_activeAccountSummaryReqId) return;
-        m_accountSummaryEndObserved = true;
-        PublishCombinedAccountSnapshotEnd();
-    }
+    // No reqAccountSummary request is issued by the dedicated single-account
+    // runtime. Ignore stray callbacks from unrelated SDK users rather than
+    // admitting unscoped account-group data into this session.
+    void accountSummary(int, const std::string&, const std::string&,
+                        const std::string&, const std::string&) override {}
+    void accountSummaryEnd(int) override {}
     static std::string BuildPositionKey(const Contract& c) {
         if (c.conId > 0) return std::string("CONID:") + std::to_string(c.conId);
         // conId should normally be present. Retain a deterministic complete
@@ -1827,22 +1810,12 @@ public:
     void accountDownloadEnd(const std::string&) override {}
 
 private:
-    void PublishCombinedAccountSnapshotEnd() {
-        if (!m_accountSummaryEndObserved ||
-            !m_accountDownloadEndObserved) return;
-        Trace("account_refresh.combined_end summary_req=" +
-            std::to_string(m_activeAccountSummaryReqId) +
-            " multi_req=" +
+    void PublishAccountSnapshotEnd() {
+        Trace("account_refresh.scoped_end multi_req=" +
             std::to_string(m_activeAccountUpdatesReqId));
-        if (m_accountSummarySubscribed) {
-            m_client.cancelAccountSummary(m_activeAccountSummaryReqId);
-            m_accountSummarySubscribed = false;
-        }
-        m_accountSummaryEndObserved = false;
-        m_accountDownloadEndObserved = false;
         IBEvent event = MakeIBEvent(
             IBEventType::AccountSummaryEnd,
-            static_cast<long long>(m_activeAccountSummaryReqId),
+            static_cast<long long>(m_activeAccountUpdatesReqId),
             "ACCOUNT_AND_CASH_SNAPSHOT_END", "END", 0.0);
         event.account = m_params.account;
         PushEvent(std::move(event));
@@ -2141,13 +2114,9 @@ private:
     std::atomic<std::uint64_t> m_eventIngressFarmCallbackSequence{ 0 };
     IBCashFarmAdmissionMarker m_eventIngressFarmMarker;
     std::atomic<bool> m_terminalIngressHalted{ false };
-    bool m_accountSummarySubscribed = false;
     bool m_accountUpdatesSubscribed = false;
     bool m_accountUpdatesInitialDownloadPending = false;
-    bool m_accountSummaryEndObserved = false;
-    bool m_accountDownloadEndObserved = false;
     int m_nextAccountRefreshReqId = kInitialAccountRefreshReqId;
-    int m_activeAccountSummaryReqId = 0;
     int m_activeAccountUpdatesReqId = 0;
     bool m_positionsSubscribed = false;
     bool m_positionsInitialDownloadPending = false;
