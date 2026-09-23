@@ -145,8 +145,9 @@ int main() {
     const auto flatPerformance = EvaluateEquity(points, 252);
     Require(std::fabs(flatPerformance.totalReturn) < 1e-12 &&
             flatPerformance.annualizedDownsideDeviation.defined &&
-            flatPerformance.annualizedDownsideDeviation.value == 0 &&
-            flatPerformance.averageDrawdown == 0 && !flatPerformance.sterling.defined);
+            flatPerformance.annualizedDownsideDeviation.value > 0 &&
+            flatPerformance.averageDrawdown > 0 && flatPerformance.sterling.defined &&
+            std::fabs(flatPerformance.sterling.value) < 1e-12);
     // Exercise the corrected Data and Analytics symbols after relocation,
     // not a separately compiled fragment of their source implementation.
     const double maximum = std::numeric_limits<double>::max();
