@@ -10,8 +10,10 @@ Original retained source: `HeptaDLL-main@f69de179b4d41fe1813d317673abe8116cee76e
 There is one new-development line. New Data, Analytics, Replay, Strategy and
 client features extend their existing targets in heptatrader. The offline SDK,
 forward-only StrategyClientSDK and authoritative Execution runtime remain
-separate installation/link boundaries. Alternate #106/#108/#109 implementations
-are retained compatibility references, not a second active core to merge wholesale.
+separate installation/link boundaries. Alternate #106/#108/#109 implementations are closed Draft PRs whose pinned
+branches/commits remain compatibility references, not active cores to merge
+wholesale. Their closure reduces parallel implementation lines; it does not
+convert C05/C06 records or establish deployment-level migration.
 
 The owner authorized this consolidation and retention policy. No named external
 operator, deployed host or binary-only customer was identified by the repository
@@ -46,10 +48,15 @@ evidence: the canonical futures intent contract covers the observable limit/FAK/
 FOK and explicit open/close vocabulary, while deployment identity, strategy state,
 ABI expectations and operational owner acknowledgement remain unknown.
 
-This is deliberately not a negative census. C07 therefore remains
+This is deliberately not a negative census. A follow-up GitHub global code search
+on 2026-09-23 for `heptaHeptaDLL`, `heptaBasicStrategy`,
+`heptaBasicCTAStrategy`, and `heptaAgentManager` returned only the retained
+HeptaDLL source plus heptatrader migration records; it found no additional public
+source consumer. That still cannot observe private repositories, unindexed
+branches, installed libraries or binary-only applications. C07 therefore remains
 `retained_unconfirmed`, and C08 remains the separate outside/private/binary-only
 unknown. Neither may be changed to deployment-level `migrated` merely because
-the source framework has a canonical adaptation path.
+the source framework has a canonical adaptation path or a public search is empty.
 
 ## Concrete acceptance versus unsupported assumptions
 
@@ -72,9 +79,12 @@ to submit a replacement ID. Old host state is not migrated by a Git merge.
 
 Decision for this delivery: KEEP HeptaDLL-main as the historical/compatibility
 retention repository; canonical new development continues only in heptatrader.
-No archive/delete/visibility change, release removal or force-push is required.
-Do not merge #106/#108/#109 as additional research cores, and do not describe
-retained incompatible records as fully superseded.
+The legacy main branch is protected for PR-only maintenance with administrator
+enforcement, conversation resolution, and force-push/deletion disabled. GitHub
+currently exposes no tags or releases for that repository; history and the
+remaining historical integration branch are retained. #106/#108/#109 are closed
+non-merge references and must not be restored as additional research cores.
+Do not describe retained incompatible records as fully superseded.
 
 Retirement is a later scoped decision, not an attempt to prove that no unknown
 consumer exists anywhere. Before archiving, resolve or explicitly preserve every
