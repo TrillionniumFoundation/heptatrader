@@ -136,6 +136,7 @@ bool NativeToolClient::CallSnapshot(TradingToolHostRequest request,
     // a token file after an external call; a rotation cannot change the owner
     // of the second request halfway through this operation.
     NativeToolClient pinned(snapshot);
+    std::string publishedBinding = binding; // allocate before any possible effect
     {
         std::lock_guard<std::mutex> lock(m_discoveryMutex);
         if (m_discoveryBinding == binding)
@@ -147,8 +148,12 @@ bool NativeToolClient::CallSnapshot(TradingToolHostRequest request,
         // No cache lock spans socket I/O. Concurrent callers may publish in
         // either order, but every cache read checks the full subject binding.
         std::lock_guard<std::mutex> lock(m_discoveryMutex);
-        m_discoveryCatalog = pinned.m_discoveryCatalog;
-        m_discoveryBinding = binding;
+        // Publish by no-allocation swaps: optional cache maintenance after a
+        // possible mutation must not lose an already observed result to OOM.
+        m_discoveryCatalog.schemaHash.swap(pinned.m_discoveryCatalog.schemaHash);
+        m_discoveryCatalog.descriptorSchemaHashes.swap(
+            pinned.m_discoveryCatalog.descriptorSchemaHashes);
+        m_discoveryBinding.swap(publishedBinding);
     }
     return called;
 }
