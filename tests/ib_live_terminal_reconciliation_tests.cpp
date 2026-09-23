@@ -80,6 +80,7 @@ class Broker : public IIBApiWrapper {
 public:
     bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;
     int cancelFault = 0, placeFault = 0, places = 0;
+    std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
     bool Connect(const IBConnectParams&) override {connected=true;return true;}
@@ -95,7 +96,11 @@ public:
     bool ReqMktData(int,const IBContractLite&) override {return true;}
     bool CancelMktData(int) override {return true;}
     bool PlaceOrder(long id,const IBContractLite& c,const IBOrderLite& o) override {
-        ++places; orderId=id;contract=c;submitted=o;
+        return PlaceOrderWithTimeInForce(id,c,o,"DAY");
+    }
+    bool PlaceOrderWithTimeInForce(long id,const IBContractLite& c,
+        const IBOrderLite& o,const std::string& tif) override {
+        ++places; orderId=id;contract=c;submitted=o;submittedTif=tif;
         if (placeFault == 1) throw std::runtime_error("after flatten send");
         if (placeFault == 2) return false;
         if (placeFault == 3) failNextCancelAllocation = true;
@@ -169,6 +174,36 @@ struct Fixture {
         e.number2=filled;e.number3=status=="Filled"?0:1-filled;return e;
     }
 };
+void TestIbAdapterPreservesQualifiedIntentAtFinalSend() {
+    Fixture f;
+    IBContractLite c;c.symbol="ES";c.secType="FUT";c.exchange="CME";
+    c.currency="USD";c.lastTradeDateOrContractMonth="202612";
+    c.multiplier="50";
+    IBOrderLite o;o.action="BUY";o.orderType="LMT";o.lmtPrice=6000;
+    o.totalQuantity=1;o.positionEffect="OPEN";
+    IBFinalOrderSendContext ctx;ctx.timeInForce="IOC";
+    const std::string correlation="hepta-v1-sha256:"+std::string(64,'c');
+    const auto placed=f.adapter.PlaceOrderWithResult(c,o,correlation,&ctx);
+    assert(placed.disposition==VenuePlaceDisposition::Submitted);
+    assert(f.broker->places==1&&f.broker->submittedTif=="IOC");
+    assert(f.broker->submitted.positionEffect=="OPEN");
+
+    const int before=f.broker->places;
+    o.positionEffect="CLOSE_TODAY";
+    const auto rejected=f.adapter.PlaceOrderWithResult(c,o,
+        "hepta-v1-sha256:"+std::string(64,'d'),&ctx);
+    assert(rejected.disposition==VenuePlaceDisposition::Rejected);
+    assert(f.broker->places==before);
+    assert(rejected.detail=="RISK_POSITION_EFFECT_NOT_REPRESENTABLE_BY_IB");
+
+    o.positionEffect="CLOSE";
+    ctx.timeInForce="GTC";
+    const auto badTif=f.adapter.PlaceOrderWithResult(c,o,
+        "hepta-v1-sha256:"+std::string(64,'e'),&ctx);
+    assert(badTif.disposition==VenuePlaceDisposition::Rejected);
+    assert(f.broker->places==before);
+    assert(badTif.detail=="RISK_TIME_IN_FORCE_INVALID");
+}
 void TestTypedFlattenCapturesResultAtSendBoundary() {
     // Generic adapter fixture only. This does not expand the deployed PAPER
     // profile to STK or bypass any runtime profile/quote/kill-switch check.
@@ -415,6 +450,7 @@ void TestReconnectAndIncompleteBootstrap() {
 }
 }
 int main() {
+    TestIbAdapterPreservesQualifiedIntentAtFinalSend();
     TestTypedFlattenCapturesResultAtSendBoundary();
     TestTypedCancelAndDeferredNoResendAfterException();
     TestWrapperQuantityTrackerCannotMixBrokerClients();

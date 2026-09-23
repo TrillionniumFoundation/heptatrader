@@ -155,6 +155,10 @@ struct IBAuthoritativeRecoveryAuditSnapshot {
 };
 
 struct IBFinalOrderSendContext {
+    // Service-owned exact TIF selected by the qualified Execution profile.
+    // Empty keeps adapter-only legacy calls DAY-only; production Execution
+    // always supplies the already-validated command value here.
+    std::string timeInForce;
     bool exactReduceOnly = false;
     bool proveFlatOnly = false;
     bool authoritativeQuoteBound = false;
@@ -326,6 +330,7 @@ private:
         const std::string& reason, const std::string& extraJson);
     bool ValidateOrderRequest(
         const IBContractLite& contract, const IBOrderLite& order,
+        const std::string& timeInForce,
         std::string& reason, std::string& detail) const;
     void ResetDailyRiskStateIfNeeded();
     bool CircuitBreakerAllowsOrder(std::time_t nowTs);
@@ -346,7 +351,8 @@ private:
         std::string& reason, std::string& detail);
     bool SubmitValidatedOrder(
         long orderId, const IBContractLite& contract,
-        const IBOrderLite& order, std::time_t nowTs,
+        const IBOrderLite& order, const std::string& timeInForce,
+        std::time_t nowTs,
         const IBOrderRiskBaseline* baseline, long* outOrderId,
         const std::chrono::steady_clock::time_point& startedAt, bool* sendAttempted);
     bool BeginOpenOrderRefresh(bool accountWide);

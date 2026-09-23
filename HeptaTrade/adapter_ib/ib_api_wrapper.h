@@ -397,6 +397,15 @@ public:
     virtual bool CancelMktData(int reqId) = 0;
 
     virtual bool PlaceOrder(long localOrderId, const IBContractLite& c, const IBOrderLite& o) = 0;
+    // Exact TIF-aware broker send. Legacy/test wrappers that have not opted into
+    // wider semantics remain DAY-only and fail closed for every other value.
+    virtual bool PlaceOrderWithTimeInForce(
+        long localOrderId, const IBContractLite& c, const IBOrderLite& o,
+        const std::string& timeInForce)
+    {
+        if (timeInForce != "DAY") return false;
+        return PlaceOrder(localOrderId, c, o);
+    }
     virtual bool CancelOrder(long localOrderId) = 0;
 
     virtual bool PollOnce(int timeoutMs) = 0;

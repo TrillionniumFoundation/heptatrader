@@ -130,6 +130,7 @@ bool HeptaIBGatewayAdapter::RejectOrder(
 }
 bool HeptaIBGatewayAdapter::ValidateOrderRequest(
     const IBContractLite& contract, const IBOrderLite& order,
+    const std::string& timeInForce,
     std::string& reason, std::string& detail) const {
     if (contract.symbol.empty() || contract.secType.empty() ||
         contract.exchange.empty() || contract.currency.empty()) {
@@ -146,6 +147,19 @@ bool HeptaIBGatewayAdapter::ValidateOrderRequest(
             detail = "missing option expiry/right/strike";
             return false;
         }
+    }
+    if (timeInForce != "DAY" && timeInForce != "IOC" &&
+        timeInForce != "FOK") {
+        reason = "RISK_TIME_IN_FORCE_INVALID";
+        detail = "IB send supports only DAY, IOC or FOK";
+        return false;
+    }
+    if (!order.positionEffect.empty() &&
+        order.positionEffect != "OPEN" &&
+        order.positionEffect != "CLOSE") {
+        reason = "RISK_POSITION_EFFECT_NOT_REPRESENTABLE_BY_IB";
+        detail = "IB openClose cannot distinguish CLOSE_TODAY/CLOSE_YESTERDAY";
+        return false;
     }
     if (!(order.totalQuantity > 0.0) ||
         !std::isfinite(order.totalQuantity)) {
@@ -322,13 +336,15 @@ bool HeptaIBGatewayAdapter::BuildOrderRiskBaseline(
 
 bool HeptaIBGatewayAdapter::SubmitValidatedOrder(
     long orderId, const IBContractLite& contract, const IBOrderLite& order,
-    std::time_t nowTs, const IBOrderRiskBaseline* baseline,
+    const std::string& timeInForce, std::time_t nowTs,
+    const IBOrderRiskBaseline* baseline,
     long* outOrderId,
     const std::chrono::steady_clock::time_point& startedAt, bool* sendAttempted) {
     if (!BeginBrokerMutation("IB_RECOVERY_AUDIT_PLACE_MUTATION"))
         return false;
     if (sendAttempted) *sendAttempted = true;
-    const bool accepted = m_api->PlaceOrder(orderId, contract, order);
+    const bool accepted =
+        m_api->PlaceOrderWithTimeInForce(orderId, contract, order, timeInForce);
     if (accepted) {
         // Preserve a known assigned ID even if later bookkeeping allocates or
         // throws. The typed caller still reports an uncertain overall outcome.
@@ -397,7 +413,10 @@ bool HeptaIBGatewayAdapter::PlaceOrderInternal(
             contract, startedAt,
             reason.empty() ? "RISK_PREFLIGHT_FAILED" : reason,
             OrderDetailJson(detail));
-    if (!ValidateOrderRequest(contract, order, reason, detail))
+    const std::string timeInForce =
+        (context && !context->timeInForce.empty()) ?
+        context->timeInForce : "DAY";
+    if (!ValidateOrderRequest(contract, order, timeInForce, reason, detail))
         return RejectOrder(
             contract, startedAt, reason, OrderDetailJson(detail));
 
@@ -435,6 +454,6 @@ bool HeptaIBGatewayAdapter::PlaceOrderInternal(
             "\"detail\":\"final pre-send risk-increase check rejected "
             "broker send\"");
     return SubmitValidatedOrder(
-        orderId, contract, order, nowTs,
+        orderId, contract, order, timeInForce, nowTs,
         hasBaseline ? &baseline : nullptr, outOrderId, startedAt, sendAttempted);
 }

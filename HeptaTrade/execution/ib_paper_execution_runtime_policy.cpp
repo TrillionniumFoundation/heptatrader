@@ -36,6 +36,7 @@ void IbPaperExecutionRuntimeComposition::BuildCoordinator()
             std::lock_guard<std::recursive_mutex> lock(m_authoritativeQuoteSendMutex);
             const AuthoritativePlaceQuoteBinding& quote = command.authoritativeQuoteBinding;
             IBFinalOrderSendContext context;
+            context.timeInForce = command.timeInForce;
             context.authoritativeQuoteBound = quote.valid;
             context.instrument = quote.instrument;
             context.quoteSubscriptionId = quote.subscriptionId;
