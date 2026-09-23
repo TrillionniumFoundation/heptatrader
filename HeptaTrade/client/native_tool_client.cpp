@@ -120,6 +120,49 @@ bool NativeToolClient::Call(TradingToolHostRequest request,
                             std::string& reason) const
 {
     result = NativeToolClientResult();
+    NativeToolClientConfig snapshot;
+    std::string binding;
+    if (!ResolveRecoveryConfig(snapshot, binding, reason)) return false;
+    return CallSnapshot(request, snapshot, binding, result, reason);
+}
+
+bool NativeToolClient::CallSnapshot(TradingToolHostRequest request,
+                                    const NativeToolClientConfig& snapshot,
+                                    const std::string& binding,
+                                    NativeToolClientResult& result,
+                                    std::string& reason) const
+{
+    // Pin the resolved credential across discovery and dispatch. Never reread
+    // a token file after an external call; a rotation cannot change the owner
+    // of the second request halfway through this operation.
+    NativeToolClient pinned(snapshot);
+    std::string publishedBinding = binding; // allocate before any possible effect
+    {
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        if (m_discoveryBinding == binding)
+            pinned.m_discoveryCatalog = m_discoveryCatalog;
+    }
+    const bool called = pinned.CallPinned(request, result, reason);
+    if (!pinned.m_discoveryCatalog.schemaHash.empty())
+    {
+        // No cache lock spans socket I/O. Concurrent callers may publish in
+        // either order, but every cache read checks the full subject binding.
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        // Publish by no-allocation swaps: optional cache maintenance after a
+        // possible mutation must not lose an already observed result to OOM.
+        m_discoveryCatalog.schemaHash.swap(pinned.m_discoveryCatalog.schemaHash);
+        m_discoveryCatalog.descriptorSchemaHashes.swap(
+            pinned.m_discoveryCatalog.descriptorSchemaHashes);
+        m_discoveryBinding.swap(publishedBinding);
+    }
+    return called;
+}
+
+bool NativeToolClient::CallPinned(TradingToolHostRequest request,
+                                  NativeToolClientResult& result,
+                                  std::string& reason) const
+{
+    result = NativeToolClientResult();
     if (m_config.timeoutMs < 1 || m_config.timeoutMs > 120000 ||
         m_config.maxResponseBytes < 1 ||
         m_config.maxResponseBytes >
@@ -307,13 +350,8 @@ bool NativeToolClient::CallBound(TradingToolHostRequest request,
         reason = "NATIVE_RECOVERY_BINDING_MISMATCH";
         return false;
     }
-    // This temporary owns the resolved token in memory. It cannot reread a
-    // rotated token between discovery and submission; no credential is saved.
-    const NativeToolClient pinned(snapshot);
-    if (!pinned.Call(request, result, reason))
-    {
-        result = NativeToolClientResult();
-        return false;
-    }
-    return true;
+    // Use the same snapshot-bound cache as ordinary calls. Warm bound calls
+    // do not add another catalog RPC/durable Gateway audit before submission.
+    // The server still validates capability, schema, permit and final risk.
+    return CallSnapshot(request, snapshot, current, result, reason);
 }
