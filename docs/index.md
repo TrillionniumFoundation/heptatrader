@@ -74,9 +74,11 @@ state their implemented behavior, evidence and remaining limits separately.
 source/development concerns. They do not change hosted permissions or authorize
 Broker actions.
 
-The machine-readable sources are [module catalog](module-catalog.json),
-[capabilities](capabilities.json), [build targets](build-targets.json),
-[gap register](gap-register.json) and [preflight policy](preflight-policy-v1.json).
+The machine-readable source policies are [module catalog](module-catalog.json),
+[capabilities](capabilities.json), [gap register](gap-register.json) and
+[preflight policy](preflight-policy-v1.json). The CMake File API is observed
+directly during build-ownership verification rather than copied into a second
+checked-in target graph.
 The decisions are [publication atomicity](adr/0001-release-publication-atomicity.md),
 [owner operation](adr/0002-owner-operated-repository.md) and
 [immutable artifact qualification](adr/0003-immutable-artifact-paper-qualification.md).

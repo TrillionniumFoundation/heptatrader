@@ -71,10 +71,9 @@ target_link_libraries(hepta_execution_event_hub_tests
 hepta_register_core_test(hepta_execution_event_hub_tests)
 
 add_executable(hepta_execution_event_feed_tests
-    execution_event_feed_tests.cpp
-    ../HeptaTrade/tool_host/execution_event_relay.cpp)
+    execution_event_feed_tests.cpp)
 target_link_libraries(hepta_execution_event_feed_tests
-    hepta_execution_core)
+    hepta_execution_core hepta_execution_event_relay)
 hepta_register_core_test(hepta_execution_event_feed_tests)
 
 add_executable(hepta_execution_gateway_runtime_composition_tests
@@ -90,8 +89,7 @@ target_link_libraries(hepta_trading_tool_host_tests
 hepta_register_core_test(hepta_trading_tool_host_tests)
 
 add_executable(hepta_unix_tool_server_tests
-    unix_tool_server_tests.cpp
-    ../HeptaTrade/tool_host/unix_tool_client.cpp)
+    unix_tool_server_tests.cpp)
 target_link_libraries(hepta_unix_tool_server_tests
     hepta_agent_os_core hepta_execution_core hepta_native_tool_client)
 hepta_register_core_test(hepta_unix_tool_server_tests)
@@ -118,10 +116,10 @@ target_link_libraries(hepta_session_supervisor_lease_store_migration_tests
 hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
 
 add_executable(hepta_agent_simulator_e2e_tests
-    agent_simulator_e2e_tests.cpp
-    ../HeptaTrade/state/authoritative_trading_snapshot_store.cpp)
+    agent_simulator_e2e_tests.cpp)
 target_link_libraries(hepta_agent_simulator_e2e_tests
-    hepta_agent_os_core hepta_execution_core hepta_simulator_runtime)
+    hepta_agent_os_core hepta_execution_core hepta_simulator_runtime
+    hepta_authoritative_state)
 hepta_register_core_test(hepta_agent_simulator_e2e_tests)
 set_tests_properties(hepta_agent_simulator_e2e_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
@@ -133,9 +131,9 @@ set_tests_properties(hepta_simulator_risk_runtime_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 30)
 
 add_executable(hepta_decision_lease_manager_tests
-    decision_lease_manager_tests.cpp
-    ../HeptaTrade/agent/decision_lease_manager.cpp)
-target_link_libraries(hepta_decision_lease_manager_tests pthread)
+    decision_lease_manager_tests.cpp)
+target_link_libraries(hepta_decision_lease_manager_tests
+    hepta_agent_execution_support)
 hepta_register_core_test(hepta_decision_lease_manager_tests)
 
 add_executable(hepta_execution_decision_lease_authority_tests
@@ -145,20 +143,20 @@ target_link_libraries(hepta_execution_decision_lease_authority_tests
 hepta_register_core_test(hepta_execution_decision_lease_authority_tests)
 
 add_executable(hepta_authoritative_trading_snapshot_store_tests
-    authoritative_trading_snapshot_store_tests.cpp
-    ../HeptaTrade/state/authoritative_trading_snapshot_store.cpp)
-target_link_libraries(hepta_authoritative_trading_snapshot_store_tests pthread)
+    authoritative_trading_snapshot_store_tests.cpp)
+target_link_libraries(hepta_authoritative_trading_snapshot_store_tests
+    hepta_authoritative_state)
 hepta_register_core_test(hepta_authoritative_trading_snapshot_store_tests)
 
 add_executable(hepta_snapshot_refresh_coordinator_tests
-    snapshot_refresh_coordinator_tests.cpp
-    ../HeptaTrade/state/snapshot_refresh_coordinator.cpp)
-target_link_libraries(hepta_snapshot_refresh_coordinator_tests pthread)
+    snapshot_refresh_coordinator_tests.cpp)
+target_link_libraries(hepta_snapshot_refresh_coordinator_tests
+    hepta_authoritative_state)
 hepta_register_core_test(hepta_snapshot_refresh_coordinator_tests)
 
 add_executable(hepta_ib_order_lifecycle_tests
-    ib_order_lifecycle_tests.cpp
-    ../HeptaTrade/adapter_ib/ib_order_lifecycle.cpp)
+    ib_order_lifecycle_tests.cpp)
+target_link_libraries(hepta_ib_order_lifecycle_tests PRIVATE hepta_ib_order_state)
 hepta_register_core_test(hepta_ib_order_lifecycle_tests)
 
 add_executable(hepta_ib_paper_kill_switch_tests
@@ -171,18 +169,9 @@ target_link_libraries(hepta_ib_paper_execution_profile_tests PRIVATE hepta_ib_pa
 hepta_register_core_test(hepta_ib_paper_execution_profile_tests)
 
 add_executable(hepta_ib_live_terminal_reconciliation_tests
-    ib_live_terminal_reconciliation_tests.cpp
-    ../HeptaTrade/adapter_ib/ib_api_wrapper.cpp
-    ../HeptaTrade/adapter_ib/ib_gateway_adapter.cpp
-    ../HeptaTrade/adapter_ib/ib_gateway_adapter_event_state.cpp
-    ../HeptaTrade/adapter_ib/ib_gateway_adapter_terminal.cpp
-    ../HeptaTrade/adapter_ib/ib_gateway_adapter_order_submission.cpp
-    ../HeptaTrade/adapter_ib/ib_gateway_adapter_reduce_only.cpp
-    ../HeptaTrade/adapter_ib/ib_order_lifecycle.cpp
-    ../HeptaTrade/adapter_ib/ib_venue_correlation.cpp
-    ../HeptaTrade/state/ib_contract_identity.cpp)
+    ib_live_terminal_reconciliation_tests.cpp)
 target_link_libraries(hepta_ib_live_terminal_reconciliation_tests
-    hepta_execution_core hepta_risk_engine)
+    hepta_execution_core hepta_risk_engine hepta_ib_adapter_runtime)
 hepta_register_core_test(hepta_ib_live_terminal_reconciliation_tests)
 
 add_executable(hepta_pre_trade_risk_engine_tests

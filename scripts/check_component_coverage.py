@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Validate build/Git-discovered production components against module ownership."""
+"""Validate Git-discovered production components against module ownership.
+
+Live CMake reachability is owned by verify_build_ownership.py; this source-only
+check deliberately does not consume a second checked-in build graph.
+"""
 from __future__ import annotations
 
 import argparse
@@ -13,11 +17,8 @@ from source_json import SourceJsonError, load_source_json
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG = Path("docs/module-catalog.json")
-BUILD_INVENTORY = Path("docs/build-targets.json")
-
-# Only translation-unit candidates can be proven reachable from a CMake
-# target.  Headers are pulled in by those units and are therefore covered by
-# the compiler/build checks rather than by this source reachability check.
+# C/C++ sources may be explicitly retained as unbuilt by their owning module;
+# the live CMake verifier checks that all other owned sources are reachable.
 SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".c++"}
 
 # Documentation, tests and images have their own checks. Anything else tracked
@@ -211,142 +212,18 @@ def _module_ownership(
     return owners, module_paths, unbuilt_paths
 
 
-def _validate_source_reachability(
-    tracked: set[str],
-    owners: dict[str, str],
-    unbuilt_paths: set[str],
-    inventory: dict[str, Any],
-) -> None:
-    """Ensure every tracked production C/C++ source reaches a CMake target.
 
-    ``docs/build-targets.json`` is produced from the CMake File API by
-    ``verify_build_ownership.py``.  This check deliberately consumes that
-    reviewed inventory without invoking CMake, so unit tests and source-only
-    checks remain lightweight.  The dedicated build-ownership check verifies
-    that the inventory itself is fresh.  A source may be omitted only when its
-    owning catalog module explicitly lists it under ``unbuilt``.
-    """
-    built: set[str] = set()
-    profiles = inventory.get("profiles", {})
-    for profile in profiles.values():
-        for target in profile.get("targets", []):
-            for unit in target.get("translation_units", []):
-                if isinstance(unit, dict) and unit.get("kind") == "implementation":
-                    path = unit.get("path")
-                    if isinstance(path, str) and path in tracked:
-                        built.add(path)
-
-    candidates = {
-        path
-        for path, _owner in owners.items()
-        if Path(path).suffix.lower() in SOURCE_SUFFIXES
-    }
-    missing = sorted(candidates - built - unbuilt_paths)
-    if missing:
-        rendered = ", ".join(missing)
-        raise CoverageError(
-            "production C/C++ source is not reachable from the reviewed CMake "
-            f"build inventory (add a target or explicitly mark it unbuilt): {rendered}"
-        )
-
-
-def _validate_build_ownership(
-    tracked: set[str],
-    owners: dict[str, str],
-    catalog: dict[str, Any],
-    inventory: dict[str, Any],
-) -> None:
-    modules = {
-        item.get("id")
-        for item in catalog.get("modules", [])
-        if isinstance(item, dict)
-    }
-    profiles = inventory.get("profiles")
-    if not isinstance(profiles, dict) or not profiles:
-        raise CoverageError("build target inventory has no profiles")
-    for profile_name, profile in profiles.items():
-        if not isinstance(profile, dict):
-            raise CoverageError(f"build profile is invalid: {profile_name}")
-        targets = profile.get("targets")
-        if not isinstance(targets, list):
-            raise CoverageError(f"build profile has no target list: {profile_name}")
-        for target in targets:
-            if not isinstance(target, dict):
-                raise CoverageError(f"{profile_name}: target is not an object")
-            target_name = target.get("name", "<unknown>")
-            units = target.get("translation_units", [])
-            if not isinstance(units, list):
-                raise CoverageError(
-                    f"{profile_name}/{target_name}: translation_units is invalid"
-                )
-            for unit in units:
-                if not isinstance(unit, dict) or unit.get("kind") != "implementation":
-                    continue
-                path = unit.get("path")
-                declared = unit.get("owner")
-                if not isinstance(path, str):
-                    raise CoverageError(
-                        f"{profile_name}/{target_name}: implementation path is invalid"
-                    )
-                # External SDK translation units are intentionally outside the
-                # repository and have no repository module owner.
-                if path not in tracked:
-                    if declared not in {None, ""}:
-                        raise CoverageError(
-                            f"{profile_name}/{target_name}: external translation unit "
-                            f"claims repository owner {declared!r}: {path}"
-                        )
-                    continue
-                inferred = owners.get(path)
-                if inferred is None:
-                    raise CoverageError(
-                        f"{profile_name}/{target_name}: tracked implementation is outside "
-                        f"the production ownership model: {path}"
-                    )
-                if declared not in modules:
-                    raise CoverageError(
-                        f"{profile_name}/{target_name}: unknown declared owner "
-                        f"{declared!r} for {path}"
-                    )
-                if declared != inferred:
-                    raise CoverageError(
-                        f"{profile_name}/{target_name}: owner drift for {path}: "
-                        f"catalog={inferred}, build_inventory={declared}"
-                    )
-
-
-
-def validate(root: Path | str = ROOT, profile: str = "core") -> list[str]:
+def validate(root: Path | str = ROOT) -> list[str]:
     root = Path(root).resolve()
     try:
         tracked = _tracked_files(root)
         catalog = _load_json(root / CATALOG)
-        inventory = _load_json(root / BUILD_INVENTORY)
         if (
             not isinstance(catalog, dict)
             or catalog.get("schema") != "heptatrader.module-catalog.v1"
         ):
             raise CoverageError("unsupported module catalog")
-        if (
-            not isinstance(inventory, dict)
-            or inventory.get("schema") != "heptatrader.build-targets.v1"
-        ):
-            raise CoverageError("unsupported build target inventory")
-        profiles = inventory.get("profiles")
-        if not isinstance(profiles, dict) or not profiles:
-            raise CoverageError("build target inventory has no profiles")
-        if profile not in {"core", "ib", "all"}:
-            raise CoverageError("unknown build profile")
-        selected = {"core", "ib"} if profile == "all" else {profile}
-        if not selected <= set(profiles):
-            raise CoverageError("requested build profile is missing")
-        # Match the fresh CMake verifier's selected profile. A stale unselected
-        # IB snapshot cannot block an SDK-free rename or supply false evidence
-        # that a source missing from the selected graph was actually built.
-        selected_inventory = dict(inventory, profiles={name: profiles[name] for name in sorted(selected)})
-        owners, _, unbuilt_paths = _module_ownership(root, tracked, catalog)
-        _validate_build_ownership(set(tracked), owners, catalog, selected_inventory)
-        _validate_source_reachability(set(tracked), owners, unbuilt_paths, selected_inventory)
+        _module_ownership(root, tracked, catalog)
         return []
     except CoverageError as error:
         return [str(error)]
@@ -355,14 +232,13 @@ def validate(root: Path | str = ROOT, profile: str = "core") -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--profile", choices=("core", "ib", "all"), default="core")
     args = parser.parse_args(argv)
-    errors = validate(args.root, args.profile)
+    errors = validate(args.root)
     for error in errors:
         print(f"[COMPONENT-COVERAGE] {error}", file=sys.stderr)
     if errors:
         return 1
-    print(f"[COMPONENT-COVERAGE] PASS {args.profile}; unselected profiles are not certified")
+    print("[COMPONENT-COVERAGE] PASS source ownership; build reachability is verified from live CMake")
     return 0
 
 

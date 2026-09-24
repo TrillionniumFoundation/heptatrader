@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import copy
 from pathlib import Path
 import subprocess
 import sys
@@ -21,119 +20,40 @@ class ComponentCoverageTests(unittest.TestCase):
 
     def fixture(self, directory: str) -> Path:
         root = Path(directory)
-        for relative in (
-            "HeptaTrade/execution",
-            "scripts",
-            "docs/modules",
-            "docs",
-        ):
+        for relative in ("HeptaTrade/execution", "scripts", "docs/modules", "docs"):
             (root / relative).mkdir(parents=True, exist_ok=True)
         (root / "CMakeLists.txt").write_text("project(fixture)\n", encoding="utf-8")
         (root / "HeptaTrade/execution/core.cpp").write_text(
-            "int fixture() { return 0; }\n", encoding="utf-8"
-        )
+            "int fixture() { return 0; }\n", encoding="utf-8")
         (root / "scripts/check.py").write_text("pass\n", encoding="utf-8")
         for name in ("release-engineering", "execution-service", "repository-control"):
             (root / f"docs/modules/{name}.md").write_text(
-                f"# {name}\n\nStatus: CURRENT\n", encoding="utf-8"
-            )
+                f"# {name}\n\nStatus: CURRENT\n", encoding="utf-8")
         catalog = {
             "schema": "heptatrader.module-catalog.v1",
             "modules": [
-                {
-                    "id": "release-engineering",
-                    "status": "CURRENT",
-                    "document": "docs/modules/release-engineering.md",
-                    "implementation": ["CMakeLists.txt"],
-                    "tests": ["scripts/check.py"],
-                    "broker_mutation": "NONE",
-                    "production_authorized": False,
-                },
-                {
-                    "id": "execution-service",
-                    "status": "CURRENT",
-                    "document": "docs/modules/execution-service.md",
-                    "implementation": ["HeptaTrade/execution"],
-                    "tests": ["scripts/check.py"],
-                    "broker_mutation": "SOLE_AUTHORITY",
-                    "production_authorized": False,
-                },
-                {
-                    "id": "repository-control",
-                    "status": "CURRENT",
-                    "document": "docs/modules/repository-control.md",
-                    "implementation": ["scripts/check.py"],
-                    "tests": ["scripts/check.py"],
-                    "broker_mutation": "NONE",
-                    "production_authorized": False,
-                },
+                {"id": "release-engineering", "status": "CURRENT",
+                 "document": "docs/modules/release-engineering.md",
+                 "implementation": ["CMakeLists.txt"], "tests": ["scripts/check.py"],
+                 "broker_mutation": "NONE", "production_authorized": False},
+                {"id": "execution-service", "status": "CURRENT",
+                 "document": "docs/modules/execution-service.md",
+                 "implementation": ["HeptaTrade/execution"], "tests": ["scripts/check.py"],
+                 "broker_mutation": "SOLE_AUTHORITY", "production_authorized": False},
+                {"id": "repository-control", "status": "CURRENT",
+                 "document": "docs/modules/repository-control.md",
+                 "implementation": ["scripts/check.py"], "tests": ["scripts/check.py"],
+                 "broker_mutation": "NONE", "production_authorized": False},
             ],
         }
-        inventory = {
-            "schema": "heptatrader.build-targets.v1",
-            "profiles": {
-                "core": {
-                    "targets": [
-                        {
-                            "name": "fixture",
-                            "type": "STATIC_LIBRARY",
-                            "translation_units": [
-                                {
-                                    "path": "HeptaTrade/execution/core.cpp",
-                                    "kind": "implementation",
-                                    "owner": "execution-service",
-                                }
-                            ],
-                        }
-                    ]
-                }
-            },
-        }
         (root / "docs/module-catalog.json").write_text(
-            json.dumps(catalog, indent=2) + "\n", encoding="utf-8"
-        )
-        (root / "docs/build-targets.json").write_text(
-            json.dumps(inventory, indent=2) + "\n", encoding="utf-8"
-        )
-        (root / "docs/DEVELOPMENT-DOCUMENTATION-INDEX.md").write_text(
-            "\n".join(
-                [
-                    "# Development documentation",
-                    "docs/modules/release-engineering.md",
-                    "docs/modules/execution-service.md",
-                    "docs/modules/repository-control.md",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
+            json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
         subprocess.run(["git", "init", "-q", str(root)], check=True)
         subprocess.run(["git", "-C", str(root), "add", "."], check=True)
         return root
 
-    def test_stale_unselected_ib_inventory_does_not_block_core(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.fixture(directory)
-            path = root / "docs/build-targets.json"
-            value = json.loads(path.read_text())
-            value["profiles"]["ib"] = copy.deepcopy(value["profiles"]["core"])
-            value["profiles"]["ib"]["targets"][0]["translation_units"][0]["path"] = "HeptaTrade/execution/old.cpp"
-            path.write_text(json.dumps(value))
-            self.assertEqual(coverage.validate(root, "core"), [])
-            self.assertTrue(coverage.validate(root, "ib"))
-            self.assertTrue(coverage.validate(root, "all"))
-
-    def test_unselected_profile_cannot_hide_missing_selected_source(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.fixture(directory)
-            path = root / "docs/build-targets.json"
-            value = json.loads(path.read_text())
-            value["profiles"]["ib"] = copy.deepcopy(value["profiles"]["core"])
-            value["profiles"]["core"]["targets"][0]["translation_units"] = []
-            path.write_text(json.dumps(value))
-            self.assertTrue(any("not reachable" in error for error in coverage.validate(root, "core")))
-            self.assertEqual(coverage.validate(root, "ib"), [])
-            self.assertTrue(coverage.validate(root, "unsupported"))
+    def test_repository_has_complete_discovered_ownership(self) -> None:
+        self.assertEqual(coverage.validate(ROOT), [])
 
     def test_fixture_has_complete_discovered_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -147,73 +67,57 @@ class ComponentCoverageTests(unittest.TestCase):
             path.write_text("int orphan() { return 0; }\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(root), "add", str(path)], check=True)
             errors = coverage.validate(root)
-            self.assertTrue(
-                any("unowned production path" in item and "new_component" in item for item in errors),
-                errors,
-            )
+            self.assertTrue(any("unowned production path" in item and "new_component" in item
+                                for item in errors), errors)
 
     def test_new_unowned_script_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
             script = root / "scripts/new_release_path.py"
-            script.parent.mkdir(parents=True, exist_ok=True)
             script.write_text("print('unowned')\n", encoding="utf-8")
-            subprocess.run(
-                ["git", "-C", str(root), "add", script.relative_to(root)],
-                check=True,
-            )
+            subprocess.run(["git", "-C", str(root), "add", script.relative_to(root)], check=True)
             errors = coverage.validate(root)
-            self.assertTrue(
-                any("unowned production path: scripts/new_release_path.py" in item for item in errors),
-                errors,
-            )
+            self.assertTrue(any("unowned production path: scripts/new_release_path.py" in item
+                                for item in errors), errors)
 
-    def test_build_inventory_owner_drift_is_rejected(self) -> None:
+    def test_owned_cpp_source_does_not_require_a_second_build_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
-            path = root / "docs/build-targets.json"
-            value = json.loads(path.read_text(encoding="utf-8"))
-            value["profiles"]["core"]["targets"][0]["translation_units"][0][
-                "owner"
-            ] = "release-engineering"
-            path.write_text(json.dumps(value), encoding="utf-8")
-            subprocess.run(["git", "-C", str(root), "add", str(path)], check=True)
-            errors = coverage.validate(root)
-            self.assertTrue(any("owner drift" in item for item in errors), errors)
+            path = root / "HeptaTrade/execution/new_owned.cpp"
+            path.write_text("int owned() { return 0; }\n", encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", path.relative_to(root)], check=True)
+            self.assertEqual(coverage.validate(root), [])
+            # Whether this source is actually reachable is intentionally the live
+            # CMake verifier's job, not a checked-in target graph consumed here.
 
-    def test_tracked_cpp_source_missing_from_build_inventory_fails_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = self.fixture(directory)
-            path = root / "HeptaTrade/execution/orphan.cpp"
-            path.write_text("int orphan() { return 0; }\n", encoding="utf-8")
-            subprocess.run(
-                ["git", "-C", str(root), "add", path.relative_to(root)], check=True
-            )
-            errors = coverage.validate(root)
-            self.assertTrue(
-                any("not reachable from the reviewed CMake build inventory" in item for item in errors),
-                errors,
-            )
-
-    def test_explicitly_unbuilt_cpp_source_is_allowed(self) -> None:
+    def test_explicitly_unbuilt_cpp_source_is_valid_source_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = self.fixture(directory)
             path = root / "HeptaTrade/execution/unbuilt.cpp"
             path.write_text("int retained_for_migration() { return 0; }\n", encoding="utf-8")
-            subprocess.run(
-                ["git", "-C", str(root), "add", path.relative_to(root)], check=True
-            )
+            subprocess.run(["git", "-C", str(root), "add", path.relative_to(root)], check=True)
             catalog_path = root / "docs/module-catalog.json"
             catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
-            execution = next(
-                module for module in catalog["modules"] if module["id"] == "execution-service"
-            )
+            execution = next(module for module in catalog["modules"]
+                             if module["id"] == "execution-service")
             execution["unbuilt"] = ["HeptaTrade/execution/unbuilt.cpp"]
             catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
-            subprocess.run(
-                ["git", "-C", str(root), "add", catalog_path.relative_to(root)], check=True
-            )
+            subprocess.run(["git", "-C", str(root), "add", catalog_path.relative_to(root)], check=True)
             self.assertEqual(coverage.validate(root), [])
+
+    def test_unbuilt_source_must_be_owned_tracked_cpp(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self.fixture(directory)
+            catalog_path = root / "docs/module-catalog.json"
+            catalog = json.loads(catalog_path.read_text())
+            execution = next(module for module in catalog["modules"]
+                             if module["id"] == "execution-service")
+            execution["unbuilt"] = ["scripts/check.py"]
+            catalog_path.write_text(json.dumps(catalog))
+            subprocess.run(["git", "-C", str(root), "add", catalog_path.relative_to(root)], check=True)
+            errors = coverage.validate(root)
+            self.assertTrue(any("outside implementation boundary" in item or "not a C/C++ source" in item
+                                for item in errors), errors)
 
     def test_new_top_level_runtime_directory_cannot_escape_ownership(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -223,7 +127,8 @@ class ComponentCoverageTests(unittest.TestCase):
             path.write_text("def worker(): pass\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(root), "add", "."], check=True)
             errors = coverage.validate(root)
-            self.assertTrue(any("unowned production path: new_runtime/worker.py" in item for item in errors), errors)
+            self.assertTrue(any("unowned production path: new_runtime/worker.py" in item
+                                for item in errors), errors)
 
 
 if __name__ == "__main__":

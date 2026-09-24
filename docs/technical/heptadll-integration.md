@@ -256,9 +256,10 @@ branches remain retained, and CTP remains deferred behind the selected XT work.
 
 ## Build ownership
 
-The reviewed inventory includes the twelve research library/executable/test
-aggregate targets in both profiles and the existing core aggregate's dependency
-on `hepta_research_test_binaries`. No pre-existing target, translation unit,
+The live CMake model includes the research library/executable/test aggregate
+targets in both profiles and the existing core aggregate's dependency on
+`hepta_research_test_binaries`; source CI observes this directly rather than
+requiring a checked-in expanded target graph. No pre-existing target, translation unit,
 module owner or SDK boundary was removed. Records are serialized one target per
 line; JSON schema and strict fresh-model comparison are unchanged. The inventory
 is not runtime registration and does not grant trading or packaging authority.

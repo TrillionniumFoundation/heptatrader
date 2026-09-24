@@ -1,17 +1,23 @@
 #!/usr/bin/env python3
-"""Compare reviewed Linux build ownership with fresh CMake file-api models.
+"""Validate the live CMake build graph against repository ownership.
 
-Default verification configures the SDK-free core profile without compiling.
-Only IB verification/generation requires an explicitly supplied SDK and BID
-archive. Core generation updates only core; an unselected profile is not certified. This checks build membership/ownership, not functional gap
-closure, broker qualification, or authorization.
+The CMake File API is the build truth.  No checked-in expansion of every target,
+dependency and translation unit is required: ordinary target/source refactors
+must not create a second graph-maintenance ceremony.  The module catalog remains
+the reviewed ownership policy, and every tracked C/C++ implementation source
+owned by that catalog must either be present in the selected live build graph or
+be explicitly listed as ``unbuilt`` by its owner.
+
+The default SDK-free core profile only configures CMake.  The IB profile requires
+an explicitly supplied SDK and BID archive because its real configure-time ABI
+probe is part of that build.  This validates source/build ownership, not Broker
+qualification or trading authorization.
 """
 from __future__ import annotations
 
 import argparse
-import difflib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import platform
 import subprocess
 import sys
@@ -21,7 +27,8 @@ from typing import Any
 from source_json import SourceJsonError, load_source_json
 
 ROOT = Path(__file__).resolve().parents[1]
-SCHEMA = "heptatrader.build-targets.v1"
+REPORT_SCHEMA = "heptatrader.build-observation.v2"
+SOURCE_SUFFIXES = {".c", ".cc", ".cpp", ".cxx", ".c++"}
 OPTIONS = {
     "CMAKE_BUILD_TYPE": "Release",
     "BUILD_TESTING": "ON",
@@ -33,8 +40,16 @@ OPTIONS = {
 COVERAGE = {
     "platform": "Linux",
     "configuration": "Release",
-    "scope": "Targets and translation units exposed by CMake file-api codemodel for canonical core and IB SDK profiles. Imported/interface targets are not generally exposed; legacy monolith, legacy simulator, legacy bridge and IB probe are excluded.",
-    "ownership": "Implementation TUs use the most specific module-catalog implementation path; test TUs and generated CMake PCH TUs belong to their compiling target; external IB SDK TUs have no repository module owner.",
+    "scope": (
+        "Live targets and translation units exposed by the selected CMake File "
+        "API codemodel. Imported/interface targets are not generally exposed; "
+        "legacy monolith/simulator/bridge and the optional IB probe are excluded."
+    ),
+    "ownership": (
+        "Repository implementation TUs use the most-specific module-catalog "
+        "boundary; tests/generated PCH TUs belong to their compiling target; "
+        "external IB SDK TUs have no repository owner."
+    ),
 }
 
 
@@ -52,9 +67,9 @@ def load_json(path: Path) -> Any:
 def canonical_path(value: Any) -> str:
     if not isinstance(value, str) or not value or "\\" in value:
         raise OwnershipError(f"invalid repository-relative path: {value!r}")
-    path = Path(value)
+    path = PurePosixPath(value)
     if path.is_absolute() or path.as_posix() != value or any(
-            part in ("", ".", "..") for part in value.split("/")):
+            part in ("", ".", "..") for part in path.parts):
         raise OwnershipError(f"non-canonical path: {value!r}")
     return value
 
@@ -62,35 +77,60 @@ def canonical_path(value: Any) -> str:
 def regular_repository_path(root: Path, value: Any) -> str:
     value = canonical_path(value)
     path = root / value
-    if path.resolve() != path or not path.is_file():
-        raise OwnershipError(f"missing or symlinked repository file: {value}")
+    try:
+        if path.resolve() != path or not path.is_file():
+            raise OwnershipError(f"missing or symlinked repository file: {value}")
+    except OSError as error:
+        raise OwnershipError(f"cannot inspect repository file {value}: {error}") from error
     return value
 
 
-def module_paths(root: Path) -> dict[str, list[str]]:
+def module_model(root: Path) -> tuple[dict[str, list[str]], set[str]]:
     catalog = load_json(root / "docs/module-catalog.json")
     if not isinstance(catalog, dict) or catalog.get("schema") != "heptatrader.module-catalog.v1":
         raise OwnershipError("unsupported module catalog")
-    result: dict[str, list[str]] = {}
+    modules: dict[str, list[str]] = {}
+    unbuilt: set[str] = set()
     for module in catalog.get("modules", []):
         if not isinstance(module, dict):
             raise OwnershipError("invalid module entry")
         name = module.get("id")
-        if not isinstance(name, str) or not name or name in result:
+        if not isinstance(name, str) or not name or name in modules:
             raise OwnershipError(f"invalid or duplicate module id: {name!r}")
         regular_repository_path(root, module.get("document"))
         implementations = module.get("implementation")
         if not isinstance(implementations, list) or not implementations:
             raise OwnershipError(f"{name}: missing implementation paths")
-        result[name] = [canonical_path(item) for item in implementations]
-    if not result:
+        modules[name] = [canonical_path(item) for item in implementations]
+        declared_unbuilt = module.get("unbuilt", [])
+        if not isinstance(declared_unbuilt, list):
+            raise OwnershipError(f"{name}: unbuilt must be a list")
+        for item in declared_unbuilt:
+            item = canonical_path(item)
+            if Path(item).suffix.lower() not in SOURCE_SUFFIXES:
+                raise OwnershipError(f"{name}: unbuilt path is not C/C++ source: {item}")
+            if item in unbuilt:
+                raise OwnershipError(f"duplicate unbuilt source: {item}")
+            if not any(item == prefix or item.startswith(prefix.rstrip("/") + "/")
+                       for prefix in modules[name]):
+                raise OwnershipError(f"{name}: unbuilt source is outside its implementation boundary: {item}")
+            regular_repository_path(root, item)
+            unbuilt.add(item)
+    if not modules:
         raise OwnershipError("module catalog is empty")
-    return result
+    return modules, unbuilt
+
+
+def module_paths(root: Path) -> dict[str, list[str]]:
+    """Compatibility helper used by focused unit tests."""
+    return module_model(root)[0]
 
 
 def owner_for(path: str, modules: dict[str, list[str]]) -> str:
-    candidates = [(len(prefix), module) for module, paths in modules.items()
-                  for prefix in paths if path == prefix or path.startswith(prefix + "/")]
+    candidates = [(len(prefix.rstrip("/")), module)
+                  for module, paths in modules.items()
+                  for prefix in paths
+                  if path == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/")]
     longest = max((length for length, _ in candidates), default=-1)
     owners = sorted({module for length, module in candidates if length == longest})
     if len(owners) != 1:
@@ -107,7 +147,7 @@ def configure_model(root: Path, build: Path, profile: str,
     if profile not in ("core", "ib"):
         raise OwnershipError(f"unknown profile: {profile}")
     if platform.system() != "Linux":
-        raise OwnershipError("the reviewed inventory covers Linux only")
+        raise OwnershipError("live build-ownership verification currently covers Linux only")
     query = build / ".cmake/api/v1/query"
     query.mkdir(parents=True)
     (query / "codemodel-v2").touch()
@@ -131,7 +171,7 @@ def read_model(root: Path, reply: Path, profile: str,
                modules: dict[str, list[str]], sdk: Path | None) -> dict[str, Any]:
     indexes = list(reply.glob("index-*.json"))
     if len(indexes) != 1:
-        raise OwnershipError("expected exactly one fresh CMake file-api reply")
+        raise OwnershipError("expected exactly one fresh CMake File API reply")
     index = load_json(indexes[0])
     try:
         model = load_json(reply / index["reply"]["codemodel-v2"]["jsonFile"])
@@ -153,8 +193,6 @@ def read_model(root: Path, reply: Path, profile: str,
             declaration = graph["nodes"][data["backtrace"]]
             declared = Path(graph["files"][declaration["file"]])
             if declared.is_absolute():
-                # Only CMake's own generated dashboard utilities are outside
-                # repository ownership. An external user-defined target is an error.
                 if (data["type"] == "UTILITY" and
                     data.get("folder", {}).get("name") == "CTestDashboardTargets" and
                     declared.resolve() == cmake_root / "Modules/CTestTargets.cmake"):
@@ -170,16 +208,19 @@ def read_model(root: Path, reply: Path, profile: str,
                     header = Path(item["header"])
                     if not header.is_absolute() or not header.is_relative_to(root):
                         raise OwnershipError(f"{data['name']}: unclassified precompiled header")
-                    precompiled_headers.add(regular_repository_path(root, header.relative_to(root).as_posix()))
+                    precompiled_headers.add(regular_repository_path(
+                        root, header.relative_to(root).as_posix()))
             for source in data.get("sources", []):
                 if "compileGroupIndex" not in source:
-                    continue  # inventory covers translation units, not headers/rules
+                    continue
                 path = Path(source["path"])
-                expected_pch = build_root / data["paths"]["build"] / "CMakeFiles" / (data["name"] + ".dir") / "cmake_pch.hxx.cxx"
+                expected_pch = (build_root / data["paths"]["build"] / "CMakeFiles" /
+                                (data["name"] + ".dir") / "cmake_pch.hxx.cxx")
                 if path == expected_pch and precompiled_headers:
                     normalized = canonical_path(path.relative_to(build_root).as_posix())
                     kind, owner = "generated_cmake_pch", data["name"]
-                elif source.get("isGenerated"):
+                elif source.get("isGenerated") or (
+                        path.is_absolute() and path.is_relative_to(build_root)):
                     raise OwnershipError(f"{data['name']}: unclassified generated translation unit")
                 elif path.is_absolute() and not path.is_relative_to(root):
                     if profile != "ib" or sdk is None or not path.is_relative_to(sdk.resolve()):
@@ -187,8 +228,8 @@ def read_model(root: Path, reply: Path, profile: str,
                     normalized = canonical_path(path.relative_to(sdk.resolve()).as_posix())
                     kind, owner = "external_ib_sdk", None
                 else:
-                    normalized = regular_repository_path(root,
-                        path.relative_to(root).as_posix() if path.is_absolute() else path.as_posix())
+                    normalized = regular_repository_path(
+                        root, path.relative_to(root).as_posix() if path.is_absolute() else path.as_posix())
                     if normalized.startswith("tests/"):
                         kind, owner = "test", data["name"]
                     else:
@@ -199,13 +240,15 @@ def read_model(root: Path, reply: Path, profile: str,
                                 "standard": group.get("languageStandard", {}).get("standard")})
             if len({(s["kind"], s["path"]) for s in sources}) != len(sources):
                 raise OwnershipError(f"{data['name']}: duplicate translation unit")
+            dependencies = sorted(names[item["id"]] for item in data.get("dependencies", []))
             targets.append({"name": data["name"], "type": data["type"],
                             "declared_in": declared_in,
                             "precompiled_headers": sorted(precompiled_headers),
-                            "dependencies": sorted(names[item["id"]] for item in data.get("dependencies", [])),
-                            "translation_units": sorted(sources, key=lambda item: (item["kind"], item["path"]))})
+                            "dependencies": dependencies,
+                            "translation_units": sorted(
+                                sources, key=lambda item: (item["kind"], item["path"]))})
     except (KeyError, TypeError, IndexError) as error:
-        raise OwnershipError(f"incomplete CMake file-api model: {error}") from error
+        raise OwnershipError(f"incomplete CMake File API model: {error}") from error
     return {"requires_ib_sdk": profile == "ib", "options": profile_options(profile),
             "targets": sorted(targets, key=lambda target: target["name"])}
 
@@ -213,118 +256,84 @@ def read_model(root: Path, reply: Path, profile: str,
 def observe(root: Path, profile: str, sdk: Path | None = None,
             decimal: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
-    modules = module_paths(root)
+    modules, _ = module_model(root)
     with tempfile.TemporaryDirectory(prefix="hepta-build-ownership-") as temporary:
         reply = configure_model(root, Path(temporary) / "build", profile, sdk, decimal)
         return read_model(root, reply, profile, modules, sdk)
 
 
-def validate_inventory(root: Path, inventory: Any, profiles: set[str] | None = None) -> None:
-    if (not isinstance(inventory, dict) or set(inventory) != {"schema", "coverage", "profiles"} or
-        inventory["schema"] != SCHEMA or inventory["coverage"] != COVERAGE or
-        not isinstance(inventory["profiles"], dict) or not inventory["profiles"] or
-        not set(inventory["profiles"]) <= {"core", "ib"}):
-        raise OwnershipError("unsupported inventory schema or profile coverage")
-    if profiles is not None and not profiles <= set(inventory["profiles"]):
-        raise OwnershipError("requested profile is missing from inventory")
-    modules = module_paths(root)
-    for profile, content in inventory["profiles"].items():
-        if profiles is not None and profile not in profiles:
+def tracked_files(root: Path) -> set[str]:
+    try:
+        result = subprocess.run(["git", "-C", str(root), "ls-files", "-z"],
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                timeout=30, check=False)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise OwnershipError(f"cannot enumerate tracked source: {error}") from error
+    if result.returncode:
+        raise OwnershipError("build ownership requires a Git worktree: " +
+                             result.stderr.decode("utf-8", "replace").strip())
+    tracked: set[str] = set()
+    for raw in result.stdout.split(b"\0"):
+        if not raw:
             continue
-        if (not isinstance(content, dict) or set(content) != {"requires_ib_sdk", "options", "targets"} or
-            content["requires_ib_sdk"] is not (profile == "ib") or content["options"] != profile_options(profile)):
-            raise OwnershipError(f"{profile}: profile options or SDK scope changed")
-        targets = content["targets"]
-        if not isinstance(targets, list) or not targets:
-            raise OwnershipError(f"{profile}: empty target inventory")
-        names = [target.get("name") for target in targets if isinstance(target, dict)]
-        if len(names) != len(targets) or any(not isinstance(name, str) or not name for name in names) or len(set(names)) != len(names):
-            raise OwnershipError(f"{profile}: invalid or duplicate target name")
-        for target in targets:
-            if set(target) != {"name", "type", "declared_in", "precompiled_headers", "dependencies", "translation_units"}:
-                raise OwnershipError(f"{profile}: unexpected target fields")
-            regular_repository_path(root, target["declared_in"])
-            if target["type"] not in {"EXECUTABLE", "STATIC_LIBRARY", "SHARED_LIBRARY", "MODULE_LIBRARY", "OBJECT_LIBRARY", "UTILITY"}:
-                raise OwnershipError(f"{target['name']}: unsupported target type")
-            dependencies = target["dependencies"]
-            if not isinstance(dependencies, list) or len(set(dependencies)) != len(dependencies) or any(item not in names for item in dependencies):
-                raise OwnershipError(f"{target['name']}: unknown or duplicate dependency")
-            headers = target["precompiled_headers"]
-            if not isinstance(headers, list) or len(set(headers)) != len(headers):
-                raise OwnershipError(f"{target['name']}: invalid precompiled headers")
-            for header in headers:
-                regular_repository_path(root, header)
-            seen = set()
-            if not isinstance(target["translation_units"], list):
-                raise OwnershipError(f"{target['name']}: invalid translation units")
-            for source in target["translation_units"]:
-                if not isinstance(source, dict) or set(source) != {"path", "kind", "owner", "language", "standard"}:
-                    raise OwnershipError(f"{target['name']}: invalid translation unit fields")
-                path = canonical_path(source["path"])
-                identity = (source["kind"], path)
-                if identity in seen:
-                    raise OwnershipError(f"{target['name']}: duplicate translation unit")
-                seen.add(identity)
-                if source["kind"] == "external_ib_sdk":
-                    if profile != "ib" or source["owner"] is not None:
-                        raise OwnershipError("external SDK translation unit cannot have a repository owner")
-                elif source["kind"] == "test":
-                    regular_repository_path(root, path)
-                    if not path.startswith("tests/") or source["owner"] != target["name"]:
-                        raise OwnershipError("test translation unit ownership mismatch")
-                elif source["kind"] == "generated_cmake_pch":
-                    if source["owner"] != target["name"] or not headers or not path.endswith(
-                            f"CMakeFiles/{target['name']}.dir/cmake_pch.hxx.cxx"):
-                        raise OwnershipError("generated CMake PCH ownership mismatch")
-                elif source["kind"] == "implementation":
-                    regular_repository_path(root, path)
-                    if source["owner"] not in modules or source["owner"] != owner_for(path, modules):
-                        raise OwnershipError(f"{path}: canonical module owner mismatch")
-                else:
-                    raise OwnershipError(f"{path}: unknown ownership kind")
+        try:
+            tracked.add(canonical_path(raw.decode("utf-8", "strict")))
+        except UnicodeError as error:
+            raise OwnershipError("tracked path is not valid UTF-8") from error
+    return tracked
 
 
-def verify(root: Path, inventory: Any, profile: str = "core",
-           sdk: Path | None = None, decimal: Path | None = None) -> None:
+def verify_source_reachability(root: Path, observed: dict[str, Any]) -> None:
+    modules, unbuilt = module_model(root)
+    tracked = tracked_files(root)
+    built = {
+        source["path"]
+        for target in observed["targets"]
+        for source in target["translation_units"]
+        if source["kind"] == "implementation"
+    }
+    candidates: set[str] = set()
+    for path in tracked:
+        if Path(path).suffix.lower() not in SOURCE_SUFFIXES:
+            continue
+        if not any(path == prefix.rstrip("/") or path.startswith(prefix.rstrip("/") + "/")
+                   for paths in modules.values() for prefix in paths):
+            continue
+        # Once a tracked source enters any implementation boundary, ambiguity
+        # is an error rather than a reason to skip reachability validation.
+        owner_for(path, modules)
+        regular_repository_path(root, path)
+        candidates.add(path)
+    missing = sorted(candidates - built - unbuilt)
+    if missing:
+        raise OwnershipError(
+            "tracked production C/C++ source is absent from the selected live CMake graph "
+            "and is not explicitly unbuilt: " + ", ".join(missing)
+        )
+    stale_unbuilt = sorted(unbuilt & built)
+    if stale_unbuilt:
+        raise OwnershipError(
+            "module catalog marks live CMake sources as unbuilt: " + ", ".join(stale_unbuilt)
+        )
+
+
+def verify(root: Path, profile: str = "core", sdk: Path | None = None,
+           decimal: Path | None = None) -> dict[str, Any]:
     root = root.resolve()
-    validate_inventory(root, inventory, {profile})
-    actual = observe(root, profile, sdk, decimal)
-    expected = inventory["profiles"][profile]
-    if actual != expected:
-        difference = list(difflib.unified_diff(
-            json.dumps(expected, indent=2, sort_keys=True).splitlines(),
-            json.dumps(actual, indent=2, sort_keys=True).splitlines(),
-            fromfile="reviewed inventory", tofile="fresh CMake file-api", lineterm=""))
-        raise OwnershipError(f"{profile}: build inventory drift\n" + "\n".join(difference[:100]))
+    observed = observe(root, profile, sdk, decimal)
+    verify_source_reachability(root, observed)
+    return observed
 
 
-def render_inventory(inventory: dict[str, Any]) -> str:
-    """One target per line keeps generated graph changes reviewable."""
-    compact = lambda value: json.dumps(value, separators=(",", ":"))
-    header = compact({key: inventory[key] for key in ("schema", "coverage")})[:-1]
-    sections = []
-    for profile, content in inventory["profiles"].items():
-        prefix = compact({key: value for key, value in content.items() if key != "targets"})[:-1]
-        targets = ",\n".join(compact(target) for target in content["targets"])
-        sections.append(compact(profile) + ":" + prefix + ',"targets":[\n' + targets + '\n]}')
-    return header + ',"profiles":{\n' + ",\n".join(sections) + "\n}}\n"
+def render_report(profiles: dict[str, dict[str, Any]]) -> str:
+    report = {"schema": REPORT_SCHEMA, "coverage": COVERAGE, "profiles": profiles}
+    return json.dumps(report, indent=2, sort_keys=True) + "\n"
 
 
-def generate(root: Path, path: Path, profiles: set[str],
-             sdk: Path | None = None, decimal: Path | None = None) -> None:
-    if not profiles or not profiles <= {"core", "ib"}:
-        raise OwnershipError("unknown generation profile")
-    inventory = load_json(path) if path.exists() else {
-        "schema": SCHEMA, "coverage": COVERAGE, "profiles": {}}
-    # Observe every selected profile before replacing anything. A failed SDK
-    # configuration cannot leave a half-updated inventory on disk.
-    observed = {profile: observe(root, profile, sdk, decimal)
-                for profile in ("core", "ib") if profile in profiles}
-    if not isinstance(inventory, dict) or not isinstance(inventory.get("profiles"), dict):
-        raise OwnershipError("unsupported inventory structure")
-    inventory["profiles"].update(observed)
-    validate_inventory(root, inventory, profiles)
-    contents = render_inventory(inventory)
+def write_report(path: Path, profiles: dict[str, dict[str, Any]]) -> None:
+    path = path.resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    contents = render_report(profiles)
     with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
                                      prefix=path.name + ".", suffix=".tmp", delete=False) as stream:
         temporary = Path(stream.name)
@@ -339,24 +348,23 @@ def generate(root: Path, path: Path, profiles: set[str],
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=ROOT)
-    parser.add_argument("--inventory", type=Path)
     parser.add_argument("--profile", choices=("core", "ib", "all"), default="core")
     parser.add_argument("--ib-sdk", type=Path)
     parser.add_argument("--ib-decimal-library", type=Path)
-    parser.add_argument("--generate", action="store_true", help="regenerate only selected profile(s); default core requires no SDK")
+    parser.add_argument("--report", type=Path,
+                        help="optional generated observation report; never a source-of-truth input")
     args = parser.parse_args(argv)
     root = args.root.resolve()
-    path = args.inventory or root / "docs/build-targets.json"
-    selected = {"core", "ib"} if args.profile == "all" else {args.profile}
+    selected = ("core", "ib") if args.profile == "all" else (args.profile,)
     try:
-        if args.generate:
-            generate(root, path, selected, args.ib_sdk, args.ib_decimal_library)
-            print(f"[BUILD OWNERSHIP] generated {','.join(sorted(selected))}; unselected profiles unchanged and unverified")
-        else:
-            inventory = load_json(path)
-            for profile in sorted(selected):
-                verify(root, inventory, profile, args.ib_sdk, args.ib_decimal_library)
-                print(f"[BUILD OWNERSHIP] PASS {profile}: fresh CMake target/TU membership and canonical ownership match")
+        observed: dict[str, dict[str, Any]] = {}
+        for profile in selected:
+            observed[profile] = verify(
+                root, profile, args.ib_sdk, args.ib_decimal_library)
+            print(f"[BUILD OWNERSHIP] PASS {profile}: live CMake membership, canonical ownership and source reachability")
+        if args.report is not None:
+            write_report(args.report, observed)
+            print(f"[BUILD OWNERSHIP] wrote diagnostic report {args.report}")
         return 0
     except (OwnershipError, OSError) as error:
         print(f"[BUILD OWNERSHIP] {error}", file=sys.stderr)
