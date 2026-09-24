@@ -70,9 +70,8 @@ private:
 		ExecutionControlStatusResult& commandResult,
 		ExecutionOwnerAuditResult& ownerAudit,
 		std::string& reason,
-        std::unique_lock<std::timed_mutex>* serialization = nullptr,
-        std::chrono::steady_clock::time_point deadline =
-            std::chrono::steady_clock::time_point::max());
+        std::unique_lock<std::timed_mutex>* serialization,
+        std::chrono::steady_clock::time_point deadline);
 	bool FinalizePaperRecovery(
 		const SessionSupervisorLeaseRecord& record,
 		ExecutionOwnerAuditResult& ownerAudit,

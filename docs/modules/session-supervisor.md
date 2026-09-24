@@ -111,6 +111,10 @@ intent or lease mutation. The local deadline is never an HSS1/HEX1 field, permit
 lease extension or cancellation of an already-dispatched authority operation.
 Execution identity/event-identity checks, request writes and response reads share
 that deadline for recovery observation; a lost/late result remains uncertain.
+Failed initial PAPER activation also retains the original request deadline. Local
+and durable recovery-only fencing still completes after expiry, but cannot start
+a fresh remote observation window. Recovery callers must specify their deadline
+explicitly; only a newly selected maintenance owner receives a fresh interval.
 
 PAPER recovery reserves its exact `(agent_id, session_id)`, commits the durable
 and local recovery-only fence, then releases the Gateway mutation-dispatch lock
