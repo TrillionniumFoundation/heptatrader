@@ -5,7 +5,7 @@ Applies to: native local clients, Gateway–Execution and operator session contr
 
 ## Framing, values and authority
 
-A Unix stream frame prefixes the body with a four-byte unsigned big-endian byte length. Clients must enforce the transport's configured frame limit before allocating. The codecs below do not replace peer UID, session capability, account/domain or risk checks. Parsing a valid request never grants authority. Do not send examples to a Broker service: the golden-vector test decodes memory buffers only.
+A Unix stream frame prefixes the body with a four-byte unsigned big-endian byte length. Clients must enforce the transport's configured frame limit before allocating. Connect/request framing and the post-delivery authority-response wait are separately bounded; a caller response timeout is not Execution cancellation and cannot authorize a retry. Server read, queue and response-write phases also have independent deadlines, while an already-dispatched authority completes exactly once. The codecs below do not replace peer UID, session capability, account/domain or risk checks. Parsing a valid request never grants authority. Do not send examples to a Broker service: the golden-vector test decodes memory buffers only.
 
 `HSS1` has four magic bytes followed immediately by TLVs. Each TLV is a big-endian uint16 tag, a big-endian uint32 byte length and that many value bytes. It has no additional numeric version/operation header; operation is text in field 1. Each value is at most 4096 bytes except `TerminalEvidence` and `FinalizationReceipt` (12288). Duplicate tags and truncated values fail. Text validation rejects control bytes; producer-side limits below are byte limits, not Unicode character counts.
 
@@ -96,11 +96,15 @@ silently narrowing the request.
 
 ## Narrow internal evidence, unchanged wire envelope
 
-`ExecutionOwnerAuditResult` and `ExecutionTerminalWitness` now own separate
-field families. Supervisor audit/barrier/receipt helpers consume the audit
-result only; the terminal validator accepts only terminal evidence plus the
-operation status. Encoding and decoding reuse that same terminal invariant.
-`ExecutionControlResult` remains a compatibility envelope with existing source
-field spelling and explicit HEX1 v11 serialization; no field ID, default,
-reason code or journal/lease format is changed. This is not a claim that every
-public control operation has already migrated to a distinct wire response.
+`ExecutionControlStatusResult`, `ExecutionOwnerAuditResult` and
+`ExecutionTerminalResult` own distinct domain outcomes. Supervisor audit and
+receipt helpers consume the audit result only; terminalization consumes the
+owner-bound terminal result and one-way witness only. Encoding and decoding
+reuse the same terminal invariant.
+
+`ExecutionControlResult` remains a compatibility envelope at the explicit HEX1
+v11 and HPT2 persistent-latch boundaries. Server-side widening and client/replay
+narrowing are explicit, so audit counters cannot be mistaken for terminal proof
+and terminal proof cannot manufacture an audit. No field ID, default, reason
+code or journal/lease format changes; distinct wire response versions remain
+future protocol work rather than an internal type-safety prerequisite.

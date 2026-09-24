@@ -20,7 +20,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 MARKER = "NATIVE_EXECUTION_LATENCY_JSON="
-TEST = "hepta_research_native_execution_tests"
+TEST = "hepta_research_native_execution_latency_tests"
 MAX_LOG = 32 * 1024 * 1024
 MAX_RECORD = 64 * 1024
 PHASES = (
@@ -236,7 +236,7 @@ class ReportTests(unittest.TestCase):
     def test_log_and_junit_binding(self) -> None:
         raw = json.dumps(self.fixture()); line = MARKER + raw
         root = ET.Element("testsuite"); case = ET.SubElement(root, "testcase", name=TEST, status="run")
-        ET.SubElement(case, "system-out").text = line
+        ET.SubElement(case, "system-out").text = "CTEST_FULL_OUTPUT\n" + line
         validate_junit(ET.tostring(root, encoding="unicode"), raw)
         self.assertEqual(extract_record("noise\n"+line+"\n")[0], self.fixture())
         for log in ("", line+"\n"+line):

@@ -304,7 +304,7 @@ bool TradingToolSessionControlPlane::TerminalizeFinalizedRecoveryOwner(
     const std::string& issuer,
     const SessionSupervisorLeaseRecord& durableRecord,
     const std::string& preliminaryReceiptSha256,
-    ExecutionControlResult& terminalResult,
+    ExecutionTerminalResult& terminalResult,
     std::string& reason)
 {
     TradingToolHostSessionBinding identity;

@@ -564,10 +564,11 @@ public:
 	{
 		return ownerAudit ? ownerAudit(command) : Rejected(command);
 	}
-	ExecutionControlResult TerminalizeRecoveryOwner(
+	ExecutionTerminalResult TerminalizeRecoveryOwner(
 		const ExecutionControlCommand& command) override
 	{
-		return terminalize ? terminalize(command) : Rejected(command);
+		return NarrowTerminalResult(
+			terminalize ? terminalize(command) : Rejected(command));
 	}
 
 private:

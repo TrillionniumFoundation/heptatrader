@@ -349,6 +349,17 @@ void TestConfigIsHardOffAndStrict()
     invalidLimit["HEPTA_EXECUTION_IO_TIMEOUT_MS"] = "2501";
     assert(!ExecutionGatewayRuntimeConfig::FromValues(invalidLimit).Validate(reason));
     assert(reason == "EXECUTION_GATEWAY_LIMIT_INVALID");
+    invalidLimit["HEPTA_EXECUTION_IO_TIMEOUT_MS"] = "1000";
+    invalidLimit["HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS"] = "999";
+    assert(!ExecutionGatewayRuntimeConfig::FromValues(invalidLimit).Validate(reason));
+    assert(reason == "EXECUTION_GATEWAY_LIMIT_INVALID");
+    invalidLimit["HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS"] = "30001";
+    assert(!ExecutionGatewayRuntimeConfig::FromValues(invalidLimit).Validate(reason));
+    assert(reason == "EXECUTION_GATEWAY_LIMIT_INVALID");
+    invalidLimit["HEPTA_EXECUTION_IO_TIMEOUT_MS"] = "2000";
+    invalidLimit["HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS"] = "1500";
+    assert(!ExecutionGatewayRuntimeConfig::FromValues(invalidLimit).Validate(reason));
+    assert(reason == "EXECUTION_GATEWAY_LIMIT_INVALID");
 
     ExecutionGatewayRuntimeConfig remote = RemoteConfig(
         "/tmp/execution.sock", "/tmp/events.sock");

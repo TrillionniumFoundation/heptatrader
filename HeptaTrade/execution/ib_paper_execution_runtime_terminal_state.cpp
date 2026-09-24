@@ -56,7 +56,7 @@ bool IbPaperExecutionRuntimeComposition::LoadPaperTerminalLatch(
     m_terminalRecoveryIngressFence = 0;
     m_terminalFenceBinding = PaperTerminalFenceBinding();
     m_terminalMutationManifest = PaperTerminalMutationManifest();
-    m_terminalResult = ExecutionControlResult();
+    m_terminalResult = ExecutionTerminalResult();
 
     const int directoryFd = ::open(m_config.stateDirectory.c_str(),
         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
@@ -148,7 +148,7 @@ bool IbPaperExecutionRuntimeComposition::LoadPaperTerminalLatch(
     m_terminalRecoveryIngressFence = recoveryIngressFence;
     m_terminalFenceBinding = binding;
     m_terminalMutationManifest = manifest;
-    m_terminalResult = terminal;
+    m_terminalResult = NarrowTerminalResult(terminal);
     reason.clear();
     return true;
 }
@@ -278,8 +278,8 @@ bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalizingLatch(
 
 bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalHaltedLatch(
     const ExecutionControlCommand& command,
-    const ExecutionControlResult& audit,
-    ExecutionControlResult& terminal,
+    const ExecutionOwnerAuditResult& audit,
+    ExecutionTerminalResult& terminal,
     std::string& reason)
 {
     const bool exactBinding = m_terminalLatchPresent &&
@@ -295,6 +295,8 @@ bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalHaltedLatch(
         m_terminalRecoveryIngressFence == command.recoveryIngressFence;
     if (!exactBinding || !exactFence ||
         audit.status != ExecutionCommandStatus::Accepted ||
+        audit.ownerAccount != command.context.account ||
+        audit.ownerExecutionDomain != command.context.executionDomain ||
         !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
         audit.brokerConnectionEpoch == 0 ||
         audit.brokerConnectionEpoch !=
@@ -336,7 +338,10 @@ bool IbPaperExecutionRuntimeComposition::PersistPaperTerminalHaltedLatch(
         !WriteTerminalLatchAtomic(m_config.stateDirectory, contents,
             &expectedIntent, reason))
         return false;
-    terminal = audit;
+    terminal = ExecutionTerminalResult(
+        static_cast<const ExecutionControlStatusResult&>(audit));
+    terminal.ownerAccount = audit.ownerAccount;
+    terminal.ownerExecutionDomain = audit.ownerExecutionDomain;
     terminal.status = ExecutionCommandStatus::Accepted;
     terminal.targetCommandId = command.targetCommandId;
     terminal.mutationBlocked = true;

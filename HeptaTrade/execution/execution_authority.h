@@ -252,9 +252,23 @@ struct ExecutionTerminalWitness
     bool terminalReplay = false;
 };
 
-// Compatibility envelope for the existing HEX1 v11 codec/callers. Inheritance
-// preserves source field spelling, NOT a C++ ABI guarantee. Wire serialization
-// is explicit and unchanged. New internal helpers take the narrow domain type.
+// Terminalization carries only its exact owner binding and one-way shutdown
+// witness.  Recovery-audit counters and Broker generations remain in the
+// separately completed ExecutionOwnerAuditResult that authorizes the commit.
+struct ExecutionTerminalResult : ExecutionControlStatusResult,
+                                 ExecutionTerminalWitness
+{
+    ExecutionTerminalResult() = default;
+    explicit ExecutionTerminalResult(
+        const ExecutionControlStatusResult& status)
+        : ExecutionControlStatusResult(status) {}
+    std::string ownerAccount;
+    std::string ownerExecutionDomain;
+};
+
+// Compatibility envelope for the existing HEX1 v11 codec and the persistent
+// HPT2 terminal-latch decoder.  Widening is explicit; domain callers consume
+// the narrow status, audit or terminal result above.
 struct ExecutionControlResult : ExecutionOwnerAuditResult, ExecutionTerminalWitness
 {
     ExecutionControlResult() = default;
@@ -262,7 +276,40 @@ struct ExecutionControlResult : ExecutionOwnerAuditResult, ExecutionTerminalWitn
         : ExecutionOwnerAuditResult(status) {}
     explicit ExecutionControlResult(const ExecutionOwnerAuditResult& audit)
         : ExecutionOwnerAuditResult(audit) {}
+    explicit ExecutionControlResult(const ExecutionTerminalResult& terminal)
+        : ExecutionOwnerAuditResult(
+              static_cast<const ExecutionControlStatusResult&>(terminal)),
+          ExecutionTerminalWitness(
+              static_cast<const ExecutionTerminalWitness&>(terminal))
+    {
+        ownerAccount = terminal.ownerAccount;
+        ownerExecutionDomain = terminal.ownerExecutionDomain;
+    }
 };
+
+inline ExecutionControlStatusResult NarrowControlStatusResult(
+    const ExecutionControlResult& wire)
+{
+    return static_cast<const ExecutionControlStatusResult&>(wire);
+}
+
+inline ExecutionOwnerAuditResult NarrowOwnerAuditResult(
+    const ExecutionControlResult& wire)
+{
+    return static_cast<const ExecutionOwnerAuditResult&>(wire);
+}
+
+inline ExecutionTerminalResult NarrowTerminalResult(
+    const ExecutionControlResult& wire)
+{
+    ExecutionTerminalResult result(
+        static_cast<const ExecutionControlStatusResult&>(wire));
+    result.ownerAccount = wire.ownerAccount;
+    result.ownerExecutionDomain = wire.ownerExecutionDomain;
+    static_cast<ExecutionTerminalWitness&>(result) =
+        static_cast<const ExecutionTerminalWitness&>(wire);
+    return result;
+}
 
 struct ExecutionReadCommand
 {
@@ -324,10 +371,10 @@ public:
         result.reasonCode = "EXECUTION_OWNER_AUDIT_UNAVAILABLE";
         return result;
     }
-    virtual ExecutionControlResult TerminalizeRecoveryOwner(
+    virtual ExecutionTerminalResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command)
     {
-        ExecutionControlResult result;
+        ExecutionTerminalResult result;
         result.commandId = command.context.toolCallId;
         result.targetCommandId = command.targetCommandId;
         result.status = ExecutionCommandStatus::Rejected;

@@ -45,6 +45,16 @@ The exact implementation has more detailed records, but the invariants are:
 
 Protocol fields and reason codes are versioned. Unknown fields, unsupported versions, and oversized frames are rejected.
 
+Gateway–Execution transport uses distinct clocks. `HEPTA_EXECUTION_IO_TIMEOUT_MS`
+bounds connect and individual framing phases, while
+`HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS` bounds the wait after a complete request has
+been delivered to the Execution authority. Server input, queue residence and
+response writing each receive their own bounded window. Once authority dispatch
+starts, an expired input/queue clock cannot cancel it or close its reply channel;
+the caller may still exhaust its independent response wait and must then treat a
+possibly durable mutation as `UNCERTAIN`, query the same command ID and never
+retry under a new identity.
+
 ## Persistence and recovery
 
 Placement persists the unchanged `order_intent` and `place_send_attempt` as an
@@ -169,18 +179,19 @@ exact-ID replay sends once and the owner fence survives journal recovery.
 
 ## Control result domains
 
-`ExecutionControlAuthority` now returns `ExecutionControlStatusResult` from
+`ExecutionControlAuthority` returns `ExecutionControlStatusResult` from
 query, fence, fence-release and reconcile operations. Recovery audit returns
-`ExecutionOwnerAuditResult`. The simulator policy, IB PAPER policy, IPC client,
-Gateway and Supervisor recovery callers consume these same types; ordinary
-status cannot carry an owner-completeness assertion or a terminal witness.
-This is an internal source-API change, not a new installed StrategyClient API.
+`ExecutionOwnerAuditResult`; terminalization returns `ExecutionTerminalResult`,
+which carries only the exact owner scope and one-way shutdown witness. The
+simulator policy, IB PAPER policy, IPC client, Gateway and Supervisor recovery
+callers consume these same types. Ordinary status cannot carry audit or terminal
+authority, and an accepted owner audit cannot be converted implicitly into a
+terminal result. This is an internal source-API change, not a new installed
+StrategyClient API.
 
-`ExecutionControlResult` remains the explicit HEX1 v11 codec/terminal-operation
-envelope. Server dispatch widens a narrow result explicitly with absent/default
-unrelated evidence; it does not infer or copy terminal authority from status.
-Existing wire fields, HSL/OMS formats, final-use checks and recovery ordering are
-unchanged. The real IPC regression injects unrelated audit/terminal fields in a
-synthetic underlying response and verifies that ordinary status transmits only
-its own result and exact command/service identity. Contract static assertions
-prevent implicit widening or restoration of the broad virtual status API.
+`ExecutionControlResult` remains only the explicit HEX1 v11 codec and HPT2
+persistent-latch compatibility envelope. Server dispatch widens a narrow result
+explicitly with absent/default unrelated evidence; client and replay boundaries
+narrow it before domain use. Existing wire fields, HSL/OMS formats, final-use
+checks and recovery ordering are unchanged. Contract and IPC regressions verify
+that status, audit and terminal fields cannot silently manufacture one another.

@@ -24,7 +24,8 @@ public:
                                         std::size_t maxResponseBytes = 32768,
                                         const std::set<std::uint32_t>&
                                             allowedServerUids =
-                                                std::set<std::uint32_t>());
+                                                std::set<std::uint32_t>(),
+                                        int responseTimeoutMs = 0);
 
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override;
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
@@ -40,7 +41,7 @@ public:
         const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult TerminalizeRecoveryOwner(
+    ExecutionTerminalResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command) override;
     ExecutionCommandResult ReadAuthoritativeState(
         const ExecutionReadCommand& command) override;
@@ -76,7 +77,7 @@ public:
     ExecutionOwnerAuditResult RecoveryAuditOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult TerminalizeRecoveryOwnerWithIdentity(
+    ExecutionTerminalResult TerminalizeRecoveryOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
     ExecutionCommandResult ReadAuthoritativeStateWithIdentity(
@@ -109,6 +110,7 @@ private:
 
     std::string m_socketPath;
     int m_ioTimeoutMs;
+    int m_responseTimeoutMs;
     std::size_t m_maxResponseBytes;
     std::set<std::uint32_t> m_allowedServerUids;
     std::mutex m_serviceIdentityMutex;

@@ -142,6 +142,11 @@ void UnixExecutionServiceServer::SetResponse(
     const std::uint32_t length = htonl(static_cast<std::uint32_t>(body.size()));
     client->response.assign(reinterpret_cast<const char*>(&length), sizeof(length));
     client->response.append(body);
+    // Authority execution is not an I/O phase. Once it completes, give the
+    // response its own bounded nonblocking write window instead of reusing the
+    // accept/read or queue deadline that may already have elapsed.
+    client->deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(m_ioTimeoutMs);
     client->state = ClientJob::Writing;
 }
 
@@ -203,6 +208,11 @@ void UnixExecutionServiceServer::ReceiveClient(const std::shared_ptr<ClientJob>&
             CloseClient(client);
             return;
         }
+        // Completing the input frame starts a distinct bounded queue phase.
+        // A slow sender cannot consume this budget because the read phase had
+        // its own deadline from accept time.
+        client->deadline = std::chrono::steady_clock::now() +
+            std::chrono::milliseconds(m_ioTimeoutMs);
         client->state = ClientJob::Queued;
         queue->push_back(client);
         m_schedulerChanged.notify_all();
@@ -249,8 +259,11 @@ void UnixExecutionServiceServer::AuthorityLoop(
                 }
                 client->state = ClientJob::Executing;
             }
-            // The authority owns durable effects. Once dispatched, a timeout
-            // closes only the reply channel; never detach/retry/cancel it.
+            // The authority owns durable effects. Once dispatched it must run
+            // to a typed result; an ingress/queue timeout must never close the
+            // executing reply channel or imply cancellation/retry. The caller's
+            // independently bounded response wait may still expire and report
+            // uncertainty, while this service completes exactly once.
             const std::string response = HandleRequest(client->request, client->deadline);
             {
                 std::lock_guard<std::mutex> lock(m_schedulerMutex);
@@ -285,7 +298,10 @@ void UnixExecutionServiceServer::AcceptLoop()
                 const auto now = std::chrono::steady_clock::now();
                 for (const auto& client : m_clients)
                 {
-                    if (client->state != ClientJob::Closed && now >= client->deadline)
+                    if ((client->state == ClientJob::Reading ||
+                         client->state == ClientJob::Queued ||
+                         client->state == ClientJob::Writing) &&
+                        now >= client->deadline)
                         CloseClient(client);
                     if (client->state == ClientJob::Reading || client->state == ClientJob::Writing)
                     {

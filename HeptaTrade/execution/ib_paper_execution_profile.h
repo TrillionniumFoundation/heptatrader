@@ -145,11 +145,11 @@ struct IbPaperExecutionPolicyCallbacks
     // returns the already-durable witness without broker I/O.
     std::function<bool(const ExecutionControlCommand&,
                        IBAuthoritativeRecoveryAuditSnapshot&,
-                       ExecutionControlResult&, std::string&)>
+                       ExecutionTerminalResult&, std::string&)>
         beginTerminalRecoveryAudit;
     std::function<bool(const ExecutionControlCommand&,
-                       const ExecutionControlResult&,
-                       ExecutionControlResult&, std::string&)>
+                       const ExecutionOwnerAuditResult&,
+                       ExecutionTerminalResult&, std::string&)>
         commitTerminalRecoveryAudit;
     std::function<std::int64_t()> nowMs;
     std::function<MarketQuoteSnapshot(const std::string&)> authoritativeQuote;
@@ -181,7 +181,7 @@ public:
     ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult TerminalizeRecoveryOwner(
+    ExecutionTerminalResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command) override;
     ExecutionCommandResult PreviewOrder(
         const PlaceOrderCommand& command) override;

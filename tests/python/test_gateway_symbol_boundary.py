@@ -17,16 +17,18 @@ class GatewaySymbolBoundaryTests(unittest.TestCase):
             compiled = subprocess.run(["c++", "-O0", str(cpp), "-o", str(binary)], capture_output=True, text=True, timeout=30)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             return subprocess.run(["cmake", f"-DHEPTA_GATEWAY_BINARY={binary}",
-                                   f"-DHEPTA_NM_EXECUTABLE={shutil.which('nm')}",
-                                   "-DHEPTA_GATEWAY_REPORT_RELEASE_BUDGET=ON", "-P",
+                                   f"-DHEPTA_NM_EXECUTABLE={shutil.which('nm')}", "-P",
                                    str(ROOT / "cmake/verify_gateway_forbidden_symbols.cmake")],
                                   capture_output=True, text=True, timeout=10)
 
-    def test_innocent_symbol_growth_is_advisory_not_a_build_failure(self):
+    def test_innocent_symbol_growth_is_observed_without_a_fake_budget(self):
         source = "\n".join(f"int ordinary_{i}() {{ return {i}; }}" for i in range(1250))
         result = self.check_binary(source + "\nint main() { return ordinary_0(); }\n")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("Advisory Gateway symbol growth", result.stderr)
+        output = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, output)
+        self.assertIn("Gateway privileged-symbol boundary PASS", output)
+        self.assertRegex(output, r"defined_symbols=\d+ observed")
+        self.assertNotIn("Advisory Gateway symbol growth", output)
 
     def test_privileged_execution_symbol_remains_a_hard_error(self):
         result = self.check_binary("class ExecutionCoordinator { public: void Send(); };\n"

@@ -4,10 +4,10 @@
 bool TradingToolHost::TerminalizeFinalizedRecoveryOwner(
     const SessionSupervisorLeaseRecord& durableRecord,
     const std::string& preliminaryReceiptSha256,
-    ExecutionControlResult& terminalResult,
+    ExecutionTerminalResult& terminalResult,
     std::string& reason)
 {
-    terminalResult = ExecutionControlResult();
+    terminalResult = ExecutionTerminalResult();
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     ExecutionControlAuthority* authority = nullptr;
     {

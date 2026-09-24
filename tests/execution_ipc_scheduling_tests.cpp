@@ -89,6 +89,31 @@ struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadA
         if (blockReconcile.load()) commandGate.Block();
         return Reply(c);
     }
+    ExecutionTerminalResult TerminalizeRecoveryOwner(
+        const ExecutionControlCommand& c) override {
+        ExecutionTerminalResult r;
+        r.status = ExecutionCommandStatus::Accepted;
+        r.commandId = c.context.toolCallId;
+        r.targetCommandId = c.targetCommandId;
+        r.mutationBlocked = true;
+        r.reasonCode = "TEST_TERMINAL_HALTED";
+        r.ownerAccount = c.context.account;
+        r.ownerExecutionDomain = c.context.executionDomain;
+        r.terminalizationServiceEpoch = "test-terminal-service";
+        r.terminalizationServiceFencingGeneration = 5;
+        r.terminalizationGeneration = 1;
+        r.terminalLatchSha256 = "sha256:" + std::string(64, 'a');
+        r.terminalMutationGateClosed = true;
+        r.terminalBrokerTransportConnected = false;
+        r.terminalBrokerEventIngressHalted = true;
+        r.terminalBrokerCallbackQueueDrained = true;
+        r.terminalBrokerCallbacksInFlight = 0;
+        r.terminalBrokerReconnectPermitted = false;
+        r.terminalLatchDurable = true;
+        r.terminalRuntimeLatchLoaded = true;
+        r.terminalRuntimeVerified = true;
+        return r;
+    }
     ExecutionCommandResult PreviewOrder(const PlaceOrderCommand& c) override {
         ExecutionCommandResult r; r.commandId = c.context.toolCallId;
         r.status = ExecutionCommandStatus::Accepted; r.detail = "{}"; return r;
@@ -159,6 +184,60 @@ void OrdinaryControlWireCannotCarryAuditOrTerminalEvidence() {
           "ordinary status leaked unrelated authority into the compatibility wire");
 }
 
+void TerminalWireCarriesOnlyOwnerBoundWitness() {
+    Fixture f;
+    ExecutionServiceRequest request;
+    request.operation = ExecutionServiceOperation::TerminalizeRecoveryOwner;
+    request.control = Control("terminal-wire");
+    request.control.targetCommandId = "terminal-finalization";
+    request.control.recoveryIngressFence = 7;
+    request.control.terminalPreliminaryReceiptSha256 =
+        "sha256:" + std::string(64, 'b');
+    const auto identity = f.server.ServiceIdentity();
+    request.expectedServiceEpoch = identity.serviceEpoch;
+    request.expectedServiceFencingGeneration = identity.serviceFencingGeneration;
+    std::string body, response, reason;
+    Check(ExecutionServiceProtocol::EncodeRequest(request, body, reason),
+          "encode terminal request");
+    const int fd = f.Connect();
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    const bool transported =
+        HeptaExecutionServiceInternal::WriteFrame(fd, body, deadline) &&
+        HeptaExecutionServiceInternal::ReadFrame(
+            fd, 32768, deadline, response);
+    ::close(fd);
+    Check(transported, "raw terminal roundtrip");
+    ExecutionControlResult decoded;
+    Check(ExecutionServiceProtocol::DecodeControlResponse(
+              response, decoded, reason),
+          "decode v11 terminal response");
+    Check(decoded.status == ExecutionCommandStatus::Accepted &&
+          decoded.commandId == "terminal-wire" &&
+          decoded.targetCommandId == "terminal-finalization",
+          "terminal narrowing changed command identity");
+    Check(decoded.ownerAccount == request.control.context.account &&
+          decoded.ownerExecutionDomain ==
+              request.control.context.executionDomain,
+          "terminal result lost owner binding");
+    Check(decoded.terminalRuntimeVerified &&
+          decoded.terminalMutationGateClosed &&
+          decoded.terminalBrokerEventIngressHalted &&
+          decoded.terminalBrokerCallbackQueueDrained &&
+          decoded.terminalLatchDurable &&
+          decoded.terminalRuntimeLatchLoaded &&
+          !decoded.terminalBrokerTransportConnected &&
+          !decoded.terminalBrokerReconnectPermitted &&
+          decoded.terminalBrokerCallbacksInFlight == 0,
+          "terminal witness did not survive compatibility encoding");
+    Check(!decoded.ownerAuditAuthoritative &&
+          !decoded.ownerAuditComplete &&
+          decoded.ownerActiveOrderCount == 0 &&
+          decoded.ownerUncertainCommandCount == 0 &&
+          decoded.brokerActiveGeneration == 0 &&
+          decoded.brokerTerminalGeneration == 0,
+          "terminal result manufactured owner-audit authority");
+}
+
 void IdleWorkersAlwaysObserveShutdown() {
     Fixture f;
     for (unsigned cycle = 0; cycle < 100; ++cycle) {
@@ -188,7 +267,8 @@ void PartialFramesDoNotOccupyWorkers() {
 void SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry() {
     Fixture f(250); const auto identity = f.server.ServiceIdentity();
     auto mutation = std::async(std::launch::async, [&] {
-        UnixExecutionServiceClient client(f.path, 1500);
+        UnixExecutionServiceClient client(
+            f.path, 1500, 32768, std::set<std::uint32_t>(), 250);
         return client.CancelIbOrderWithIdentity(Cancel("slow", 1), identity);
     });
     f.authority.gate.Wait();
@@ -205,6 +285,31 @@ void SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry() {
     f.authority.gate.Release();
     Check(latency < 500000, "identity blocked behind slow authority");
     std::cout << "IPC_SLOW_AUTHORITY_IDENTITY_US=" << latency << '\n';
+}
+void ExecutingAuthorityGetsFreshResponseWindow() {
+    Fixture f(100);
+    const auto identity = f.server.ServiceIdentity();
+    auto mutation = std::async(std::launch::async, [&] {
+        UnixExecutionServiceClient client(
+            f.path, 500, 32768, std::set<std::uint32_t>(), 1500);
+        return client.CancelIbOrderWithIdentity(
+            Cancel("slow-success", 91), identity);
+    });
+    f.authority.gate.Wait();
+    // Exceed the server's framing/queue budget after dispatch. The executing
+    // authority must not lose its reply channel because that earlier phase's
+    // clock elapsed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    f.authority.gate.Release();
+    Check(mutation.wait_for(std::chrono::seconds(2)) ==
+              std::future_status::ready,
+          "executing authority did not complete inside caller response budget");
+    const ExecutionCommandResult result = mutation.get();
+    Check(result.status == ExecutionCommandStatus::Accepted &&
+              result.orderId == 91,
+          "executing authority lost its fresh response window");
+    Check(f.authority.cancels == 1,
+          "slow successful authority was retried");
 }
 void SaturatedOrdinaryQueueDoesNotBlockExitLane() {
     Fixture f(3000);
@@ -402,9 +507,11 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
 int main() {
     try {
         OrdinaryControlWireCannotCarryAuditOrTerminalEvidence();
+        TerminalWireCarriesOnlyOwnerBoundWitness();
         IdleWorkersAlwaysObserveShutdown();
         PartialFramesDoNotOccupyWorkers();
         SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry();
+        ExecutingAuthorityGetsFreshResponseWindow();
         SaturatedOrdinaryQueueDoesNotBlockExitLane();
         ExpiredQueuedCommandNeverDispatches();
         StopDoesNotDeadlockCallbackOrAbandonAuthority();

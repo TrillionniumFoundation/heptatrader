@@ -30,7 +30,7 @@ include(CTest)
 # Instrumented libraries must retain RTTI for UBSan's vptr checks. Detect both
 # compile and link flags because supported validation profiles set both, while
 # custom sanitizer builds may specify only one side. The ordinary Release
-# executable keeps its reviewed optimization and advisory symbol count.
+# executable keeps its reviewed optimization and observed symbol inventory.
 set(HEPTA_INSTRUMENTED_BUILD OFF)
 set(_hepta_instrumentation_flags
     "${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_RELEASE} ${CMAKE_EXE_LINKER_FLAGS} ${CMAKE_EXE_LINKER_FLAGS_RELEASE} ${CMAKE_SHARED_LINKER_FLAGS} ${CMAKE_SHARED_LINKER_FLAGS_RELEASE}")

@@ -316,7 +316,11 @@ header path, privileged dependency or production capability is added.
 
 ## Reproducible native-path latency observations
 
-The existing `hepta_research_native_execution_tests` now measures the actual
+The native Execution binary now exposes behavior-owned CTest outcomes instead
+of one oversized all-purpose job. `hepta_research_native_execution_tests` owns
+the ordinary lifecycle; separate process-crash, durable-raw, durable-prepared and
+application tests own their exact recovery domains. The separate
+`hepta_research_native_execution_latency_tests` measures the actual
 NativeStrategyClient -> Tool Gateway -> separately exec-launched Execution
 Service path. It uses eight independent, freshly initialized synthetic fixtures,
 each with one warmup and three measured serial place/cancel cycles. This respects
@@ -362,9 +366,12 @@ process, and all use the same test UID. This does **not** qualify different-UID
 host isolation, LIVE/CTP, broker latency, exchange callbacks, HFT performance or an
 SLO. Build instrumentation and host contention can materially change results.
 
-For targeted reproduction, the same executable accepts `--latency-only`; a raw
-standalone run is diagnostic and cannot replace the complete CTest/JUnit input
-required by the report exporter. Local reconstructed Git commits must not be
+For targeted reproduction, the same executable accepts `--latency-only`; the
+canonical CTest registers each functional domain and that mode separately so
+crash recovery, durable-client recovery, application behavior and the 24-row
+observation have independent bounded timeouts. A raw standalone run is
+diagnostic and cannot replace the complete CTest/JUnit input required by the
+report exporter. Local reconstructed Git commits must not be
 relabelled as remote source identities. The original source and external-consumer
 retirement boundaries in the [integration record](../technical/heptadll-integration.md)
 remain unchanged.

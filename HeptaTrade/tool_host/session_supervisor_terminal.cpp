@@ -624,7 +624,7 @@ bool UnixSessionSupervisorServer::HandlePaperTerminalWitnessPrepare(
 		return false;
 	}
 
-	ExecutionControlResult terminal;
+	ExecutionTerminalResult terminal;
 	std::string terminalReason;
 	const bool localTerminal =
 		m_controlPlane.TerminalizeFinalizedRecoveryOwner(

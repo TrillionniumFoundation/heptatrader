@@ -11,9 +11,11 @@ using namespace HeptaExecutionServiceInternal;
 UnixExecutionServiceClient::UnixExecutionServiceClient(const std::string& socketPath,
                                                        int ioTimeoutMs,
                                                        std::size_t maxResponseBytes,
-                                                       const std::set<std::uint32_t>& allowedServerUids)
-    : m_socketPath(socketPath), m_ioTimeoutMs(ioTimeoutMs), m_maxResponseBytes(maxResponseBytes),
-      m_allowedServerUids(allowedServerUids)
+                                                       const std::set<std::uint32_t>& allowedServerUids,
+                                                       int responseTimeoutMs)
+    : m_socketPath(socketPath), m_ioTimeoutMs(ioTimeoutMs),
+      m_responseTimeoutMs(responseTimeoutMs > 0 ? responseTimeoutMs : ioTimeoutMs),
+      m_maxResponseBytes(maxResponseBytes), m_allowedServerUids(allowedServerUids)
 {
     if (m_allowedServerUids.empty())
         m_allowedServerUids.insert(static_cast<std::uint32_t>(::geteuid()));
@@ -84,7 +86,8 @@ ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatus(
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return QueryCommandStatusWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatusWithIdentity(
@@ -95,7 +98,8 @@ ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatusWithI
         command.recoveryIngressFence == 0 ?
         ExecutionServiceOperation::QueryCommandStatus :
         ExecutionServiceOperation::RecoveryQueryCommandStatus;
-    return DispatchControlWithIdentity(command, identity, operation);
+    return NarrowControlStatusResult(
+        DispatchControlWithIdentity(command, identity, operation));
 }
 ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
@@ -103,33 +107,35 @@ ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowOwnerAuditResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return RecoveryAuditOwnerWithIdentity(command, identity);
 }
 ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(
-        command, identity, ExecutionServiceOperation::RecoveryAuditOwner);
+    return NarrowOwnerAuditResult(DispatchControlWithIdentity(
+        command, identity, ExecutionServiceOperation::RecoveryAuditOwner));
 }
-ExecutionControlResult UnixExecutionServiceClient::TerminalizeRecoveryOwner(
+ExecutionTerminalResult UnixExecutionServiceClient::TerminalizeRecoveryOwner(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowTerminalResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return TerminalizeRecoveryOwnerWithIdentity(command, identity);
 }
-ExecutionControlResult
+ExecutionTerminalResult
 UnixExecutionServiceClient::TerminalizeRecoveryOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(
+    return NarrowTerminalResult(DispatchControlWithIdentity(
         command, identity,
-        ExecutionServiceOperation::TerminalizeRecoveryOwner);
+        ExecutionServiceOperation::TerminalizeRecoveryOwner));
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
     const ExecutionControlCommand& command)
@@ -137,15 +143,16 @@ ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return FenceSessionOwnerWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(
-        command, identity, ExecutionServiceOperation::FenceSessionOwner);
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity, ExecutionServiceOperation::FenceSessionOwner));
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFence(
     const ExecutionControlCommand& command)
@@ -153,15 +160,17 @@ ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFenc
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return ReleaseSessionOwnerFenceWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFenceWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(command, identity,
-        ExecutionServiceOperation::ReleaseSessionOwnerFence);
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity,
+        ExecutionServiceOperation::ReleaseSessionOwnerFence));
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeState(
     const ExecutionControlCommand& command)
@@ -169,15 +178,17 @@ ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeS
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return ReconcileAuthoritativeStateWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeStateWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(command, identity,
-        ExecutionServiceOperation::ReconcileAuthoritativeState);
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity,
+        ExecutionServiceOperation::ReconcileAuthoritativeState));
 }
 ExecutionControlResult UnixExecutionServiceClient::DispatchControlWithIdentity(
     const ExecutionControlCommand& command,
@@ -310,7 +321,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
                                                         const ExecutionServiceIdentity&
                                                             expectedIdentity)
 {
-    const IoDeadline deadline = DeadlineAfter(m_ioTimeoutMs);
+    const IoDeadline requestDeadline = DeadlineAfter(m_ioTimeoutMs);
     struct sockaddr_un address;
     std::string reason;
     if (!BuildAddress(m_socketPath, address, reason)) return TransportFailure(commandId, reason);
@@ -319,7 +330,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
     int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&address), sizeof(address));
     if (rc != 0 && errno == EINPROGRESS)
     {
-        if (!WaitFd(fd, POLLOUT, deadline))
+        if (!WaitFd(fd, POLLOUT, requestDeadline))
         {
             ::close(fd);
             return TransportFailure(commandId, "connect timeout");
@@ -351,13 +362,17 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
             return TransportFailure(commandId, "execution service peer uid rejected");
         }
     }
-    if (!WriteFrame(fd, requestBody, deadline))
+    if (!WriteFrame(fd, requestBody, requestDeadline))
     {
         ::close(fd);
         return TransportFailure(commandId, "request write failed");
     }
+    // Once a complete request is written, waiting for its durable authority
+    // result has a separate bound from connect/framing. Expiry remains a
+    // conservative transport failure and never triggers an automatic retry.
+    const IoDeadline responseDeadline = DeadlineAfter(m_responseTimeoutMs);
     std::string responseBody;
-    if (!ReadFrame(fd, m_maxResponseBytes, deadline, responseBody))
+    if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
     {
         ::close(fd);
         return TransportFailure(commandId, "response read failed");
@@ -383,7 +398,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     const std::string& requestBody,
     const ExecutionServiceIdentity& expectedIdentity)
 {
-    const IoDeadline deadline = DeadlineAfter(m_ioTimeoutMs);
+    const IoDeadline requestDeadline = DeadlineAfter(m_ioTimeoutMs);
     struct sockaddr_un address;
     std::string reason;
     if (!BuildAddress(m_socketPath, address, reason))
@@ -393,7 +408,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&address), sizeof(address));
     if (rc != 0 && errno == EINPROGRESS)
     {
-        if (!WaitFd(fd, POLLOUT, deadline))
+        if (!WaitFd(fd, POLLOUT, requestDeadline))
         {
             ::close(fd);
             return ControlTransportFailure(commandId, "connect timeout");
@@ -423,13 +438,17 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
         ::close(fd);
         return ControlTransportFailure(commandId, "execution service peer uid rejected");
     }
-    if (!WriteFrame(fd, requestBody, deadline))
+    if (!WriteFrame(fd, requestBody, requestDeadline))
     {
         ::close(fd);
         return ControlTransportFailure(commandId, "request write failed");
     }
+    // Once a complete request is written, waiting for its durable authority
+    // result has a separate bound from connect/framing. Expiry remains a
+    // conservative transport failure and never triggers an automatic retry.
+    const IoDeadline responseDeadline = DeadlineAfter(m_responseTimeoutMs);
     std::string responseBody;
-    if (!ReadFrame(fd, m_maxResponseBytes, deadline, responseBody))
+    if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
     {
         ::close(fd);
         return ControlTransportFailure(commandId, "response read failed");
