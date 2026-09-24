@@ -265,7 +265,20 @@ int InspectGenerationProbe(const std::string& path, std::int64_t expiry,
 int RunGenerationGrowthProbe(unsigned requested, const std::string& executable)
 {
     assert(requested > 0 && requested <= 100000);
-    const std::string path = TempJournalPath(), store = path + ".generations";
+    // Explicit diagnostic fixture placement; ordinary tests retain /tmp.
+    // TMPDIR may be volatile: observations must retain filesystem context and
+    // cannot be promoted to physical-durability evidence.
+    const char* temporaryRoot = std::getenv("TMPDIR");
+    std::string path;
+    if (temporaryRoot != nullptr && temporaryRoot[0] == '/')
+    {
+        const std::string pattern = std::string(temporaryRoot) + "/hepta-growth-XXXXXX";
+        std::vector<char> bytes(pattern.begin(), pattern.end()); bytes.push_back(0);
+        const int fd = ::mkstemp(bytes.data()); assert(fd >= 0); ::close(fd);
+        path = bytes.data();
+    }
+    else path = TempJournalPath();
+    const std::string store = path + ".generations";
     const std::string lifecycle = std::string(HEPTA_SOURCE_ROOT) + "/scripts/hepta_oms_lifecycle.py";
     const std::int64_t expiry = OmsJournal::NowEpochMs() + 86400000;
     const unsigned batchSize = std::min(4096U, std::max(1U, requested / 4));

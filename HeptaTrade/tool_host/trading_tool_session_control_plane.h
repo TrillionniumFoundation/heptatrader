@@ -47,7 +47,9 @@ public:
         std::string& reason,
         ExecutionOwnerAuditResult* ownerAudit = nullptr,
         std::uint64_t recoveryExpiresAtMs = 0,
-        const std::string& durableCurrentToken = std::string())
+        const std::string& durableCurrentToken = std::string(),
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max())
     {
         TradingToolHostSessionBinding identity;
         identity.token = token;
@@ -60,7 +62,7 @@ public:
         return m_host.EnterRecoveryOnlyAndQuery(
             token, expectedGeneration, targetCommandId, leaseStore,
             durableRecord, result, reason, nullptr, nullptr,
-            ownerAudit, recoveryExpiresAtMs, durableCurrentToken);
+            ownerAudit, recoveryExpiresAtMs, durableCurrentToken, deadline);
     }
     bool FinalizeRecoveryOnlyOwner(
         const std::string& issuer,

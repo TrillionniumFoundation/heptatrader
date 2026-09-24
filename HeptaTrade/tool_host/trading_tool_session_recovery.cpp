@@ -35,14 +35,15 @@ bool TradingToolHost::EnterRecoveryOnlyAndQuery(
     void* committedHookContext,
     ExecutionOwnerAuditResult* ownerAudit,
     std::uint64_t recoveryExpiresAtMs,
-    const std::string& durableCurrentToken)
+    const std::string& durableCurrentToken,
+    std::chrono::steady_clock::time_point deadline)
 {
     result = ExecutionControlStatusResult();
     if (!ValidRequest(token, expectedGeneration, targetCommandId,
             ownerAudit != nullptr))
         return RecoveryFailure(reason, "SESSION_RECOVERY_QUERY_INVALID");
     // Wait for earlier synchronous dispatch and exclude every queued entry.
-    std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
+    std::unique_lock<std::mutex> dispatchLock(m_mutationDispatchMutex);
     TradingToolHostSessionBinding binding;
     ExecutionControlAuthority* authority = nullptr;
     if (!PrepareRecoveryOnlyBinding(
@@ -65,12 +66,35 @@ bool TradingToolHost::EnterRecoveryOnlyAndQuery(
     // a durable recovery-only lease.
     if (authority == nullptr)
         return RecoveryFailure(reason, "SESSION_RECOVERY_QUERY_UNAVAILABLE");
+    // Local and durable recovery-only are now committed. Remote observation
+    // cannot re-enable entry and need not serialize unrelated owner dispatch.
+    dispatchLock.unlock();
+    const auto expired = [&] { return std::chrono::steady_clock::now() >= deadline; };
+    if (expired()) return RecoveryFailure(reason, "SUPERVISOR_WORK_BUDGET_EXHAUSTED");
     if (ownerAudit != nullptr)
-        *ownerAudit = authority->RecoveryAuditOwner(
-            AuditCommand(binding, expectedGeneration));
-    if (!targetCommandId.empty())
-        result = authority->QueryCommandStatus(QueryCommand(
-            binding, targetCommandId, expectedGeneration));
+    {
+        auto command = AuditCommand(binding, expectedGeneration);
+        command.localDeadline = deadline;
+        *ownerAudit = authority->RecoveryAuditOwner(command);
+    }
+    if (!targetCommandId.empty() && !expired())
+    {
+        auto command = QueryCommand(binding, targetCommandId, expectedGeneration);
+        command.localDeadline = deadline;
+        result = authority->QueryCommandStatus(command);
+    }
+    // A late response must not be adopted after any local owner/generation
+    // change, or after its caller's total work budget. No response grants a lease.
+    TradingToolHostSessionBinding current;
+    const bool currentBinding = GetSession(token, current) && current.enabled &&
+        current.recoveryOnly && BindingMatchesRecord(current, durableRecord);
+    if (!currentBinding || expired())
+    {
+        result = ExecutionControlStatusResult();
+        if (ownerAudit != nullptr) *ownerAudit = ExecutionOwnerAuditResult();
+        return RecoveryFailure(reason, currentBinding ?
+            "SUPERVISOR_WORK_BUDGET_EXHAUSTED" : "SESSION_RECOVERY_FENCE_STATE_CHANGED");
+    }
     reason.clear();
     return true;
 }

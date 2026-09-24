@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "../HeptaTrade/execution/execution_coordinator.h"
 #include "compat/oms_recover.h"
 
@@ -43,11 +44,14 @@ namespace {
 
 std::string TempJournalPath()
 {
-    char path[] = "/tmp/hepta-execution-coordinator-XXXXXX";
-    const int fd = mkstemp(path);
+    const char* root = std::getenv("TMPDIR");
+    const std::string pattern = std::string(root != nullptr && root[0] == '/' ? root : "/tmp") +
+        "/hepta-execution-coordinator-XXXXXX";
+    std::vector<char> path(pattern.begin(), pattern.end()); path.push_back(0);
+    const int fd = mkstemp(path.data());
     assert(fd >= 0);
     close(fd);
-    return std::string(path);
+    return std::string(path.data());
 }
 
 IbPlaceOrderCommand MakePlace(const std::string& callId, const std::string& agentId = "agent-a")

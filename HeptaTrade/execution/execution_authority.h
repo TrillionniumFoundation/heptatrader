@@ -3,6 +3,7 @@
 #include "trading_contract.h"
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <string>
 
@@ -165,6 +166,10 @@ struct ExecutionControlCommand
     // preliminary HSL7 AUDIT_SEALED diagnostic receipt; targetCommandId is
     // the finalization id for this operation.
     std::string terminalPreliminaryReceiptSha256;
+    // Caller-side work deadline only. Never serialized on HEX1 or persisted;
+    // expiration after send is uncertainty, not cancellation or resend authority.
+    std::chrono::steady_clock::time_point localDeadline =
+        std::chrono::steady_clock::time_point::max();
 };
 
 // Common outcome of status/fence/reconcile operations. It cannot carry an

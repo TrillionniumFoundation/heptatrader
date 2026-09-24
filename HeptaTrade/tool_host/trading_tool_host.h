@@ -91,7 +91,9 @@ public:
         void* committedHookContext = nullptr,
         ExecutionOwnerAuditResult* ownerAudit = nullptr,
         std::uint64_t recoveryExpiresAtMs = 0,
-        const std::string& durableCurrentToken = std::string());
+        const std::string& durableCurrentToken = std::string(),
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max());
     bool FinalizeRecoveryOnlyOwner(
         const std::string& token,
         std::uint64_t expectedGeneration,

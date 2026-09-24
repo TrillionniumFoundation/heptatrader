@@ -35,6 +35,36 @@ def sample(t=1000, epoch='gw-one', delivered=3, failed=0):
 
 
 class GatewayObservabilityTests(unittest.TestCase):
+    def test_lease_capacity_is_optional_and_hostile_accounting_rejects(self):
+        value = sample()
+        old = report.gateway_prometheus(value, report.gateway_report([value], 1000))
+        self.assertIn("hepta_supervisor_lease_capacity_present 0", old)
+        lease = dict(schema_version=1, known=True, persistence_indeterminate=False,
+            lease_records=4, active_leases=1, fenced_leases=1, recovery_leases=1,
+            finalizing_leases=1, acknowledgement_groups=16, lease_plaintext_bytes=1000,
+            acknowledgement_plaintext_bytes=100000, encoded_bytes=202074,
+            projected_encoded_bytes=202074, maximum_bytes=2097152, exit_reserve_bytes=139264,
+            admission_headroom_bytes=1755814, persist_latency=metric(3))
+        value["lease_store"] = lease
+        self.assertEqual(report.validate_gateway(value), value)
+        text = report.gateway_prometheus(value, report.gateway_report([value], 1000))
+        self.assertIn("hepta_supervisor_acknowledgement_groups 16", text)
+        self.assertIn("hepta_supervisor_lease_persist_seconds_count 3", text)
+        for key, bad in (("known", 1), ("lease_records", 5), ("encoded_bytes", 2097153),
+                         ("projected_encoded_bytes", 1), ("admission_headroom_bytes", 0),
+                         ("schema_version", True), ("acknowledgement_groups", -1)):
+            altered = copy.deepcopy(value); altered["lease_store"][key] = bad
+            with self.subTest(key=key), self.assertRaises(ValueError):
+                report.validate_gateway(altered)
+        lease["persistence_indeterminate"] = True
+        with self.assertRaises(ValueError): report.validate_gateway(value)
+        lease["known"] = False
+        summary = report.gateway_report([value], 1000)
+        self.assertIn("SUPERVISOR_LEASE_PERSISTENCE_INDETERMINATE", [a["rule_id"] for a in summary["alerts"]])
+        text = report.gateway_prometheus(value, summary)
+        self.assertIn("hepta_supervisor_lease_capacity_known 0", text)
+        self.assertNotIn("hepta_supervisor_encoded_bytes ", text)
+
     def test_actual_accounting_shapes_reject_inconsistency(self):
         value=sample()
         self.assertEqual(report.validate_gateway(value), value)

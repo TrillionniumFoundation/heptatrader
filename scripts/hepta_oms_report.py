@@ -441,6 +441,38 @@ def prometheus(latest, summary):
     return "\n".join(lines) + "\n"
 
 
+LEASE_CAPACITY_GAUGES = (
+    "lease_records", "active_leases", "fenced_leases", "recovery_leases", "finalizing_leases",
+    "acknowledgement_groups", "lease_plaintext_bytes", "acknowledgement_plaintext_bytes",
+    "encoded_bytes", "projected_encoded_bytes", "maximum_bytes", "exit_reserve_bytes",
+    "admission_headroom_bytes",
+)
+
+
+def validate_lease_capacity(value):
+    if not isinstance(value, dict) or type(value.get("schema_version")) is not int or value["schema_version"] != 1:
+        raise ValueError("unsupported lease capacity telemetry")
+    for key in ("known", "persistence_indeterminate"):
+        if type(value.get(key)) is not bool:
+            raise ValueError("invalid lease capacity state")
+    for key in LEASE_CAPACITY_GAUGES:
+        uint(value.get(key))
+    validate_latency(value.get("persist_latency"))
+    if value["known"] and value["persistence_indeterminate"]:
+        raise ValueError("indeterminate lease capacity cannot be known")
+    if value["lease_records"] != sum(value[key] for key in
+            ("active_leases", "fenced_leases", "recovery_leases", "finalizing_leases")):
+        raise ValueError("lease state accounting mismatch")
+    if value["known"]:
+        maximum, reserve = value["maximum_bytes"], value["exit_reserve_bytes"]
+        projected = 64 + 2 * (5 + value["lease_plaintext_bytes"] + value["acknowledgement_plaintext_bytes"])
+        if (maximum != 2 * 1024 * 1024 or not 96 * 1024 <= reserve <= maximum or
+                value["encoded_bytes"] > maximum or value["projected_encoded_bytes"] != projected or
+                value["admission_headroom_bytes"] != max(0, maximum - reserve - projected)):
+            raise ValueError("lease capacity byte accounting mismatch")
+    return value
+
+
 def validate_gateway(sample):
     if not isinstance(sample, dict) or sample.get("schema") != GATEWAY_SCHEMA:
         raise ValueError("unsupported gateway telemetry")
@@ -467,6 +499,8 @@ def validate_gateway(sample):
         latency = sample["response_write_latency"]
         if not latency["saturated"] and latency["samples"] != total:
             raise ValueError("gateway delivery measurement mismatch")
+    if "lease_store" in sample:
+        validate_lease_capacity(sample["lease_store"])
     return sample
 
 
@@ -487,6 +521,14 @@ def gateway_report(samples, now_ms, max_age_ms=15000):
         alert("GATEWAY_METRICS_SATURATED")
     if last["pending_connections"] >= last["max_pending_connections"]:
         alert("GATEWAY_QUEUE_SATURATED")
+    lease = last.get("lease_store")
+    if lease is not None:
+        if lease["persistence_indeterminate"]:
+            alert("SUPERVISOR_LEASE_PERSISTENCE_INDETERMINATE")
+        elif not lease["known"]:
+            alert("SUPERVISOR_LEASE_CAPACITY_UNKNOWN")
+        elif lease["admission_headroom_bytes"] == 0:
+            alert("SUPERVISOR_LEASE_ADMISSION_PAUSED")
     deltas = None
     if fresh and len(samples) >= 2 and not last["metrics_saturated"]:
         prev = samples[-2]
@@ -501,7 +543,7 @@ def gateway_report(samples, now_ms, max_age_ms=15000):
                 alert("GATEWAY_BACKPRESSURE")
     return {"schema": "heptatrader.gateway-operational-report.v1", "fresh": fresh,
             "sample_age_ms": age, "service_epoch": last["service_epoch"],
-            "interval_deltas": deltas,
+            "interval_deltas": deltas, "lease_capacity": lease,
             "latencies": {k: {"samples": last[k]["samples"],
                 "p99_upper_ns": quantile_upper(last[k]),
                 "p999_upper_ns": quantile_upper(last[k], 999, 1000) if last[k]["samples"] >= 1000 else None}
@@ -512,6 +554,19 @@ def gateway_report(samples, now_ms, max_age_ms=15000):
 def gateway_prometheus(latest, summary):
     lines = [f"hepta_gateway_telemetry_fresh {int(summary['fresh'])}",
              f"hepta_gateway_metrics_saturated {int(latest['metrics_saturated'])}"]
+    lease = latest.get("lease_store")
+    lines.append(f"hepta_supervisor_lease_capacity_present {int(lease is not None)}")
+    if lease is not None:
+        lines.append(f"hepta_supervisor_lease_capacity_known {int(lease['known'])}")
+        lines.append(f"hepta_supervisor_lease_persistence_indeterminate {int(lease['persistence_indeterminate'])}")
+        if lease["known"]:
+            for key in LEASE_CAPACITY_GAUGES:
+                lines.append(f"hepta_supervisor_{key} {lease[key]}")
+        latency = lease["persist_latency"]
+        if not latency["saturated"]:
+            lines.append(f"hepta_supervisor_lease_persist_seconds_count {latency['samples']}")
+            lines.append(f"hepta_supervisor_lease_persist_seconds_sum {latency['total_ns'] / 1e9}")
+            lines.append(f"hepta_supervisor_lease_persist_seconds_max {latency['max_ns'] / 1e9}")
     for key in GATEWAY_GAUGES:
         lines += [f"# TYPE hepta_gateway_{key} gauge", f"hepta_gateway_{key} {latest[key]}"]
     if not latest["metrics_saturated"]:

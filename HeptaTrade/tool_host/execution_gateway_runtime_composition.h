@@ -73,7 +73,9 @@ private:
     ExecutionControlStatusResult RemoteIdentityRejected(
         const ExecutionControlCommand& command, const std::string& reason) const;
     bool ResolveRemoteIdentity(ExecutionServiceIdentity& identity,
-                               std::string& reason);
+                               std::string& reason,
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max());
     void InvalidateRemoteIdentity(const ExecutionServiceIdentity& identity);
     void NotifyTestStage(const char* stage) const;
     bool ReadEligibleLocalEvent(const AgentExecutionContext& owner,
@@ -93,8 +95,6 @@ private:
     std::unique_ptr<UnixExecutionServiceClient> m_executionClient;
     std::unique_ptr<UnixExecutionEventFeedClient> m_eventClient;
     std::unique_ptr<ExecutionEventRelay> m_relay;
-    std::mutex m_remoteIdentityMutex;
-    ExecutionServiceIdentity m_remoteIdentity;
     std::mutex m_statesMutex;
     std::unordered_map<std::string, std::shared_ptr<RelayState> > m_states;
 };

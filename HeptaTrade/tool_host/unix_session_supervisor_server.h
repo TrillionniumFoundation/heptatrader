@@ -69,7 +69,10 @@ private:
 		const std::string& targetCommandId,
 		ExecutionControlStatusResult& commandResult,
 		ExecutionOwnerAuditResult& ownerAudit,
-		std::string& reason);
+		std::string& reason,
+        std::unique_lock<std::timed_mutex>* serialization = nullptr,
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max());
 	bool FinalizePaperRecovery(
 		const SessionSupervisorLeaseRecord& record,
 		ExecutionOwnerAuditResult& ownerAudit,
@@ -119,6 +122,7 @@ private:
 			const std::vector<SessionSupervisorLeaseRecord>&
 				watchTransactionRecords,
 			const std::string& watchTransactionId, std::string& reason);
+	bool WorkInFlight(const SessionSupervisorRequest& request) const;
 	bool HasPendingOwner(const std::string& agentId,
 		const std::string& sessionId) const;
 
@@ -139,7 +143,11 @@ private:
 	SessionSupervisorAuditJournal* m_auditJournal;
 	CrashPointHook m_crashPointHook;
 	std::uint32_t m_rootCustodianUid;
-	std::mutex m_operationMutex;
+    std::timed_mutex m_operationMutex;
+    std::mutex m_reapMutex;
+    std::string m_reapCursor;
+    // Protected by m_operationMutex; group terminal operations remain exclusive.
+    std::set<std::pair<std::string, std::string>> m_recoveryOwnersInFlight;
 	std::mutex m_clientMutex;
 	std::condition_variable m_clientChanged;
 	std::deque<int> m_pendingClients;

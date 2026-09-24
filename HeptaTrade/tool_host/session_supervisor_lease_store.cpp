@@ -25,6 +25,50 @@ using namespace HeptaSessionLeaseCodec;
 
 namespace {
 
+bool ValidMutableLeaseRecord(const SessionSupervisorLeaseRecord& record)
+{
+    const bool hasPredecessor =
+        !record.predecessorToken.empty() || record.predecessorGeneration != 0;
+    if (record.token.size() < 24 ||
+        (record.templateId != "watch" && record.templateId != "paper") ||
+        record.issuer.empty() ||
+        record.agentId.empty() || record.sessionId.empty() || record.expiresAtMs == 0 ||
+        record.leaseGeneration == 0 ||
+        (record.templateId == "watch" &&
+         (!record.ownerAccount.empty() ||
+          !record.ownerExecutionDomain.empty())) ||
+        (record.recoveryOnly && record.templateId != "paper") ||
+        (record.templateId == "paper" &&
+         (record.ownerAccount.empty() || record.ownerAccount.size() > 128 ||
+          record.ownerExecutionDomain.empty() ||
+          record.ownerExecutionDomain.size() > 128)) ||
+        ((!record.predecessorToken.empty()) !=
+         (record.predecessorGeneration != 0)) ||
+        (hasPredecessor &&
+         (!((record.templateId == "watch" && record.fencePending &&
+             record.fenceReason == "session_revoked") ||
+            (record.templateId == "paper" &&
+             ((record.fencePending &&
+               record.fenceReason == "session_revoked") ||
+              (record.recoveryOnly && !record.fencePending)))) ||
+          record.predecessorToken.size() < 24 ||
+          record.predecessorGeneration ==
+            std::numeric_limits<std::uint64_t>::max() ||
+          record.leaseGeneration != record.predecessorGeneration + 1)) ||
+        (record.fenceComplete &&
+         (!record.fencePending || record.templateId != "watch")) ||
+        (record.fencePending &&
+         record.fenceReason != "session_revoked" &&
+         record.fenceReason != "session_expired") ||
+        (!record.fencePending &&
+         (record.fenceComplete || !record.fenceReason.empty())) ||
+        (!record.recoveryOnly && !record.recoveryCommandId.empty()) ||
+        record.recoveryCommandId.size() > 128 ||
+        !ValidPaperFinalizationRecord(record))
+        return false;
+    return true;
+}
+
 const std::size_t kMaximumLeaseStoreBytes = 2 * 1024 * 1024;
 const std::size_t kMaximumLeaseKeyBytes = 65;
 // Ordinary lease admission must not consume the bytes needed to fence/revoke
@@ -717,6 +761,8 @@ bool SessionSupervisorLeaseStore::InitStoreState(const std::string& path,
     m_paperFinalizationAcks.clear();
     m_sourceMetadataValid = false;
     m_persistenceIndeterminate = false;
+    m_capacity = SessionSupervisorLeaseCapacity();
+    m_persistLatency = OmsLatencySummary();
     m_createMetadataValid = false;
     std::string plaintext;
     bool missing = false;
@@ -775,6 +821,8 @@ bool SessionSupervisorLeaseStore::MigrateHsl5PaperForTerminalCleanup(
     m_paperFinalizationAcks.clear();
     m_sourceMetadataValid = false;
     m_persistenceIndeterminate = false;
+    m_capacity = SessionSupervisorLeaseCapacity();
+    m_persistLatency = OmsLatencySummary();
     m_createMetadataValid = false;
     std::string plaintext;
     std::string encoded;
@@ -923,47 +971,8 @@ bool SessionSupervisorLeaseStore::MigrateHsl5PaperForTerminalCleanup(
 
 bool SessionSupervisorLeaseStore::Put(const SessionSupervisorLeaseRecord& record, std::string& reason)
 {
-    const bool hasPredecessor =
-        !record.predecessorToken.empty() || record.predecessorGeneration != 0;
-    if (record.token.size() < 24 ||
-        (record.templateId != "watch" && record.templateId != "paper") ||
-        record.issuer.empty() ||
-        record.agentId.empty() || record.sessionId.empty() || record.expiresAtMs == 0 ||
-        record.leaseGeneration == 0 ||
-        (record.templateId == "watch" &&
-         (!record.ownerAccount.empty() ||
-          !record.ownerExecutionDomain.empty())) ||
-        (record.recoveryOnly && record.templateId != "paper") ||
-        (record.templateId == "paper" &&
-         (record.ownerAccount.empty() || record.ownerAccount.size() > 128 ||
-          record.ownerExecutionDomain.empty() ||
-          record.ownerExecutionDomain.size() > 128)) ||
-        ((!record.predecessorToken.empty()) !=
-         (record.predecessorGeneration != 0)) ||
-        (hasPredecessor &&
-         (!((record.templateId == "watch" && record.fencePending &&
-             record.fenceReason == "session_revoked") ||
-            (record.templateId == "paper" &&
-             ((record.fencePending &&
-               record.fenceReason == "session_revoked") ||
-              (record.recoveryOnly && !record.fencePending)))) ||
-          record.predecessorToken.size() < 24 ||
-          record.predecessorGeneration ==
-            std::numeric_limits<std::uint64_t>::max() ||
-          record.leaseGeneration != record.predecessorGeneration + 1)) ||
-        (record.fenceComplete &&
-         (!record.fencePending || record.templateId != "watch")) ||
-        (record.fencePending &&
-         record.fenceReason != "session_revoked" &&
-         record.fenceReason != "session_expired") ||
-        (!record.fencePending &&
-         (record.fenceComplete || !record.fenceReason.empty())) ||
-        (!record.recoveryOnly && !record.recoveryCommandId.empty()) ||
-        record.recoveryCommandId.size() > 128 ||
-        record.paperFinalizationRequired ||
-        !ValidPaperFinalizationRecord(record) ||
-        record.paperFinalizationState !=
-            SessionSupervisorPaperFinalizationState::None)
+    if (!ValidMutableLeaseRecord(record) || record.paperFinalizationRequired ||
+        record.paperFinalizationState != SessionSupervisorPaperFinalizationState::None)
     { reason = "LEASE_STORE_RECORD_INVALID"; return false; }
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!MutationAllowedLocked(reason)) return false;
@@ -1035,44 +1044,7 @@ bool SessionSupervisorLeaseStore::Remove(const std::string& token, std::string& 
 bool SessionSupervisorLeaseStore::Replace(const std::string& currentToken,
     const SessionSupervisorLeaseRecord& record, std::string& reason)
 {
-    const bool hasPredecessor =
-        !record.predecessorToken.empty() || record.predecessorGeneration != 0;
-    if (record.token.size() < 24 ||
-        (record.templateId != "watch" && record.templateId != "paper") ||
-        record.issuer.empty() ||
-        record.agentId.empty() || record.sessionId.empty() || record.expiresAtMs == 0 ||
-        record.leaseGeneration == 0 ||
-        (record.templateId == "watch" &&
-         (!record.ownerAccount.empty() ||
-          !record.ownerExecutionDomain.empty())) ||
-        (record.recoveryOnly && record.templateId != "paper") ||
-        (record.templateId == "paper" &&
-         (record.ownerAccount.empty() || record.ownerAccount.size() > 128 ||
-          record.ownerExecutionDomain.empty() ||
-          record.ownerExecutionDomain.size() > 128)) ||
-        ((!record.predecessorToken.empty()) !=
-         (record.predecessorGeneration != 0)) ||
-        (hasPredecessor &&
-         (!((record.templateId == "watch" && record.fencePending &&
-             record.fenceReason == "session_revoked") ||
-            (record.templateId == "paper" &&
-             ((record.fencePending &&
-               record.fenceReason == "session_revoked") ||
-              (record.recoveryOnly && !record.fencePending)))) ||
-          record.predecessorToken.size() < 24 ||
-          record.predecessorGeneration ==
-            std::numeric_limits<std::uint64_t>::max() ||
-          record.leaseGeneration != record.predecessorGeneration + 1)) ||
-        (record.fenceComplete &&
-         (!record.fencePending || record.templateId != "watch")) ||
-        (record.fencePending &&
-         record.fenceReason != "session_revoked" &&
-         record.fenceReason != "session_expired") ||
-        (!record.fencePending &&
-         (record.fenceComplete || !record.fenceReason.empty())) ||
-        (!record.recoveryOnly && !record.recoveryCommandId.empty()) ||
-        record.recoveryCommandId.size() > 128 ||
-        !ValidPaperFinalizationRecord(record))
+    if (!ValidMutableLeaseRecord(record))
     { reason = "LEASE_STORE_RECORD_INVALID"; return false; }
     std::lock_guard<std::mutex> lock(m_mutex);
     if (!MutationAllowedLocked(reason)) return false;
@@ -1395,24 +1367,25 @@ bool SessionSupervisorLeaseStore::SealPaperFinalizationGroup(
 }
 
 bool SessionSupervisorLeaseStore::AcknowledgeAndPurgePaperFinalizationGroup(
-    const std::string& recoveryId,
-    const std::string& finalizationId,
-    const std::string& expectedOwnerSetSha256,
-    std::uint64_t expectedOwnerCount,
-    const std::string& receiptSha256,
-	const std::string& terminalReceiptSha256,
-	const std::string& terminalReceipt,
-    const std::string& acknowledgingOwnerTokenSha256,
-    std::uint64_t acknowledgingOwnerGeneration,
-	const std::string& acknowledgingOwnerIssuer,
-	const std::string& terminalizingOwnerAgentId,
-	const std::string& terminalizingOwnerSessionId,
-	const std::string& terminalizingOwnerAccount,
-	const std::string& terminalizingOwnerExecutionDomain,
+    const SessionSupervisorTerminalAckRequest& request,
     SessionSupervisorPaperFinalizationAck& acknowledgement,
     bool& alreadyAcknowledged,
     std::string& reason)
 {
+    const auto& recoveryId = request.finalization.recoveryId;
+    const auto& finalizationId = request.finalization.finalizationId;
+    const auto& expectedOwnerSetSha256 = request.finalization.expectedOwnerSetSha256;
+    const auto expectedOwnerCount = request.finalization.expectedOwnerCount;
+    const auto& receiptSha256 = request.finalization.receiptSha256;
+    const auto& terminalReceiptSha256 = request.terminalReceiptSha256;
+    const auto& terminalReceipt = request.terminalReceipt;
+    const auto& acknowledgingOwnerTokenSha256 = request.owner.tokenSha256;
+    const auto acknowledgingOwnerGeneration = request.owner.generation;
+    const auto& acknowledgingOwnerIssuer = request.owner.issuer;
+    const auto& terminalizingOwnerAgentId = request.owner.agentId;
+    const auto& terminalizingOwnerSessionId = request.owner.sessionId;
+    const auto& terminalizingOwnerAccount = request.owner.account;
+    const auto& terminalizingOwnerExecutionDomain = request.owner.executionDomain;
     acknowledgement = SessionSupervisorPaperFinalizationAck();
     alreadyAcknowledged = false;
     if (!FinalizationText(recoveryId, 128) ||
@@ -1806,10 +1779,47 @@ bool SessionSupervisorLeaseStore::MutationAllowedLocked(
     return false;
 }
 
+void SessionSupervisorLeaseStore::CompleteCapacity(
+    SessionSupervisorLeaseCapacity& capacity, std::uint64_t paperRecords)
+{
+    capacity.maximumBytes = kMaximumLeaseStoreBytes;
+    const std::uint64_t available = kMaximumLeaseStoreBytes - kLeaseStoreExitBaseReserveBytes;
+    capacity.exitReserveBytes = paperRecords > available / kLeaseStorePaperExitReserveBytes
+        ? kMaximumLeaseStoreBytes
+        : kLeaseStoreExitBaseReserveBytes + paperRecords * kLeaseStorePaperExitReserveBytes;
+    const auto admissionLimit = capacity.maximumBytes - capacity.exitReserveBytes;
+    capacity.admissionHeadroomBytes = capacity.projectedEncodedBytes < admissionLimit
+        ? admissionLimit - capacity.projectedEncodedBytes : 0;
+}
+
+std::vector<SessionSupervisorLeaseRecord> SessionSupervisorLeaseStore::ListAfter(
+    const std::string& token, std::size_t limit) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    std::vector<SessionSupervisorLeaseRecord> result;
+    limit = std::min<std::size_t>(limit, 64);
+    result.reserve(limit);
+    for (auto it = m_records.upper_bound(token);
+         it != m_records.end() && result.size() < limit; ++it)
+        result.push_back(it->second);
+    return result;
+}
+
+SessionSupervisorLeaseCapacity SessionSupervisorLeaseStore::CapacitySnapshot() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto result = m_capacity;
+    result.known = m_capacity.known && m_sourceMetadataValid && !m_persistenceIndeterminate;
+    result.persistenceIndeterminate = m_persistenceIndeterminate;
+    result.persistLatency = m_persistLatency;
+    return result;
+}
+
 SessionSupervisorLeaseStore::PersistOutcome
 SessionSupervisorLeaseStore::PersistLocked(
     std::string& reason, std::string* storeSha256, PersistIntent intent)
 {
+    OmsScopedLatencySample latency(m_persistLatency);
     if (!MutationAllowedLocked(reason))
         return PersistOutcome::PublishedIndeterminate;
     if (m_path.empty() || m_key.size() != 32)
@@ -1818,7 +1828,14 @@ SessionSupervisorLeaseStore::PersistLocked(
         return PersistOutcome::NotPublished;
     }
 
-    const std::string plaintext = SerializePlaintext();
+    SessionSupervisorLeaseCapacity nextCapacity;
+    const std::string plaintext = SerializePlaintext(&nextCapacity);
+    // Reject oversized canonical bytes before encryption or any file I/O.
+    if (nextCapacity.projectedEncodedBytes > kMaximumLeaseStoreBytes)
+    {
+        reason = "LEASE_STORE_CAPACITY_EXHAUSTED";
+        return PersistOutcome::NotPublished;
+    }
     std::string ciphertext;
     std::string nonce;
     std::string tag;
@@ -1838,21 +1855,8 @@ SessionSupervisorLeaseStore::PersistLocked(
     }
     if (intent == PersistIntent::Admission)
     {
-        std::size_t exitReserve = kLeaseStoreExitBaseReserveBytes;
-        for (std::map<std::string, SessionSupervisorLeaseRecord>::const_iterator
-                 it = m_records.begin(); it != m_records.end(); ++it)
-        {
-            if (it->second.templateId != "paper") continue;
-            if (exitReserve >
-                kMaximumLeaseStoreBytes - kLeaseStorePaperExitReserveBytes)
-            {
-                exitReserve = kMaximumLeaseStoreBytes;
-                break;
-            }
-            exitReserve += kLeaseStorePaperExitReserveBytes;
-        }
         const std::size_t admissionLimit =
-            kMaximumLeaseStoreBytes - exitReserve;
+            kMaximumLeaseStoreBytes - nextCapacity.exitReserveBytes;
         // Existing stores from an older version may already occupy the
         // reserve. Allow a non-growing rotation, but never let new admission
         // consume more of the exit budget.
@@ -1920,7 +1924,10 @@ SessionSupervisorLeaseStore::PersistLocked(
         return true;
     };
     if (!sourceUnchanged(reason))
+    {
+        m_capacity.known = false;
         return PersistOutcome::NotPublished;
+    }
 
     std::string temporary;
     std::string suffix;
@@ -1985,6 +1992,7 @@ SessionSupervisorLeaseStore::PersistLocked(
     }
     if (!sourceUnchanged(reason))
     {
+        m_capacity.known = false;
         ::unlink(temporary.c_str());
         return PersistOutcome::NotPublished;
     }
@@ -1997,6 +2005,9 @@ SessionSupervisorLeaseStore::PersistLocked(
 
     // From this point on the new inode is visible at the authoritative path.
     // Any failure is therefore not safe to report as an ordinary rollback.
+    m_capacity = nextCapacity;
+    m_capacity.encodedBytes = content.size();
+    m_capacity.known = true;
     const bool directorySynced = FsyncParentDirectory(m_path);
     std::string persisted;
     struct stat persistedMetadata;

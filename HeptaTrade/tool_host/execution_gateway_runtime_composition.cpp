@@ -271,9 +271,8 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::RemoteIdentityR
 
 bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
     ExecutionServiceIdentity& identity,
-    std::string& reason)
+    std::string& reason, std::chrono::steady_clock::time_point deadline)
 {
-    std::lock_guard<std::mutex> identityLock(m_remoteIdentityMutex);
     identity = ExecutionServiceIdentity();
     if (!m_executionClient || !m_eventClient)
     {
@@ -281,16 +280,14 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
         return false;
     }
     ExecutionServiceIdentity mutationIdentity;
-    if (!m_executionClient->GetServiceIdentity(mutationIdentity, reason))
+    if (!m_executionClient->GetServiceIdentity(mutationIdentity, reason, deadline))
     {
-        m_remoteIdentity = ExecutionServiceIdentity();
         return false;
     }
-    const ExecutionEventReadResult eventIdentity = m_eventClient->GetServiceIdentity();
+    const ExecutionEventReadResult eventIdentity = m_eventClient->GetServiceIdentity(deadline);
     if (eventIdentity.status != ExecutionEventReadStatus::ServiceIdentity ||
         !ValidIdentity(eventIdentity.serviceIdentity))
     {
-        m_remoteIdentity = ExecutionServiceIdentity();
         reason = eventIdentity.reasonCode.empty() ?
             "EXECUTION_GATEWAY_EVENT_IDENTITY_INVALID" : eventIdentity.reasonCode;
         return false;
@@ -300,11 +297,9 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
         // Compare-and-invalidate only the pair observed by this call. A
         // concurrent thread may already have installed the next identity.
         m_executionClient->InvalidateServiceIdentity(mutationIdentity);
-        m_remoteIdentity = ExecutionServiceIdentity();
         reason = "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH";
         return false;
     }
-    m_remoteIdentity = mutationIdentity;
     identity = mutationIdentity;
     reason.clear();
     return true;
@@ -313,11 +308,6 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
 void ExecutionGatewayRuntimeComposition::InvalidateRemoteIdentity(
     const ExecutionServiceIdentity& identity)
 {
-    {
-        std::lock_guard<std::mutex> lock(m_remoteIdentityMutex);
-        if (SameIdentity(m_remoteIdentity, identity))
-            m_remoteIdentity = ExecutionServiceIdentity();
-    }
     if (m_executionClient)
         m_executionClient->InvalidateServiceIdentity(identity);
 }
@@ -340,7 +330,7 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::QueryCommandSta
     if (!Enabled()) return RemoteDisabled(command);
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!ResolveRemoteIdentity(identity, reason))
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
         return RemoteIdentityRejected(command, reason);
     const ExecutionControlStatusResult result =
         m_executionClient->QueryCommandStatusWithIdentity(command, identity);
@@ -357,7 +347,7 @@ ExecutionOwnerAuditResult ExecutionGatewayRuntimeComposition::RecoveryAuditOwner
     if (!Enabled()) return ExecutionOwnerAuditResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!ResolveRemoteIdentity(identity, reason))
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
         return ExecutionOwnerAuditResult(RemoteIdentityRejected(command, reason));
     const ExecutionOwnerAuditResult result =
         m_executionClient->RecoveryAuditOwnerWithIdentity(command, identity);
@@ -375,7 +365,7 @@ ExecutionGatewayRuntimeComposition::TerminalizeRecoveryOwner(
     if (!Enabled()) return ExecutionTerminalResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!ResolveRemoteIdentity(identity, reason))
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
         return ExecutionTerminalResult(RemoteIdentityRejected(command, reason));
     const ExecutionTerminalResult result =
         m_executionClient->TerminalizeRecoveryOwnerWithIdentity(
@@ -392,7 +382,7 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::FenceSessionOwn
     if (!Enabled()) return RemoteDisabled(command);
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!ResolveRemoteIdentity(identity, reason))
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
         return RemoteIdentityRejected(command, reason);
     const ExecutionControlStatusResult result =
         m_executionClient->FenceSessionOwnerWithIdentity(command, identity);
@@ -408,7 +398,7 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::ReleaseSessionO
     if (!Enabled()) return RemoteDisabled(command);
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!ResolveRemoteIdentity(identity, reason))
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
         return RemoteIdentityRejected(command, reason);
     const ExecutionControlStatusResult result =
         m_executionClient->ReleaseSessionOwnerFenceWithIdentity(command, identity);
@@ -426,7 +416,7 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::ReconcileAuthor
     std::lock_guard<std::mutex> lock(state->mutex);
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!ResolveRemoteIdentity(identity, reason))
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
         return RemoteIdentityRejected(command, reason);
     const ExecutionControlStatusResult result =
         m_executionClient->ReconcileAuthoritativeStateWithIdentity(command, identity);

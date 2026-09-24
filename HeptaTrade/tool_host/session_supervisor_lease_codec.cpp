@@ -654,9 +654,12 @@ bool SessionSupervisorLeaseStore::HexDecode(const std::string& value, std::strin
     return true;
 }
 
-std::string SessionSupervisorLeaseStore::SerializePlaintext() const
+std::string SessionSupervisorLeaseStore::SerializePlaintext(
+    SessionSupervisorLeaseCapacity* capacity) const
 {
     std::ostringstream output;
+    SessionSupervisorLeaseCapacity observed;
+    std::uint64_t paperRecords = 0;
     // The encrypted envelope remains HSL2-compatible. HSL8 retains the HSL7
     // tombstone records but upgrades the acknowledgement ledger so success is
     // bound to both the preliminary audit and the independently durable
@@ -667,6 +670,13 @@ std::string SessionSupervisorLeaseStore::SerializePlaintext() const
          it != m_records.end(); ++it)
     {
         const SessionSupervisorLeaseRecord& record = it->second;
+        ++observed.leaseRecords;
+        if (record.templateId == "paper") ++paperRecords;
+        if (record.paperFinalizationState != SessionSupervisorPaperFinalizationState::None)
+            ++observed.finalizingLeases;
+        else if (record.recoveryOnly) ++observed.recoveryLeases;
+        else if (record.fencePending) ++observed.fencedLeases;
+        else ++observed.activeLeases;
         output << "R\t" << HexEncode(record.templateId) << '\t' << HexEncode(record.issuer) << '\t'
                << HexEncode(record.token) << '\t' << HexEncode(record.agentId) << '\t'
                << HexEncode(record.sessionId) << '\t' << record.peerUid << '\t'
@@ -691,6 +701,7 @@ std::string SessionSupervisorLeaseStore::SerializePlaintext() const
                << HexEncode(record.finalizationReceiptSha256) << '\t'
                << HexEncode(record.finalizationReceipt) << '\n';
     }
+    observed.leasePlaintextBytes = static_cast<std::uint64_t>(output.tellp()) - 5;
     for (std::map<std::string,
              SessionSupervisorPaperFinalizationAck>::const_iterator it =
              m_paperFinalizationAcks.begin();
@@ -717,12 +728,25 @@ std::string SessionSupervisorLeaseStore::SerializePlaintext() const
                     acknowledgement.terminalizingOwnerExecutionDomain)
                << '\n';
     }
-    return output.str();
+    const std::string plaintext = output.str();
+    if (capacity != nullptr)
+    {
+        observed.acknowledgementGroups = m_paperFinalizationAcks.size();
+        observed.acknowledgementPlaintextBytes = plaintext.size() - 5 - observed.leasePlaintextBytes;
+        observed.projectedEncodedBytes = 64 + 2 * static_cast<std::uint64_t>(plaintext.size());
+        CompleteCapacity(observed, paperRecords);
+        *capacity = observed;
+    }
+    return plaintext;
 }
 
 bool SessionSupervisorLeaseStore::ParsePlaintext(const std::string& plaintext, std::string& reason)
 {
-    return ParsePlaintextImpl(plaintext, nullptr, 0, nullptr, reason);
+    if (!ParsePlaintextImpl(plaintext, nullptr, 0, nullptr, reason)) return false;
+    SerializePlaintext(&m_capacity);
+    m_capacity.encodedBytes = m_sourceSize;
+    m_capacity.known = true;
+    return true;
 }
 
 bool SessionSupervisorLeaseStore::ParsePlaintextForTerminalCleanup(

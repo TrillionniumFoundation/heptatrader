@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "../HeptaTrade/tool_host/session_supervisor_lease_store.h"
 
 #include <cassert>
@@ -6,6 +7,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <limits>
+#include <iostream>
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 #include <algorithm>
@@ -524,8 +526,11 @@ class Fixture
 public:
     Fixture()
     {
-        char pattern[] = "/tmp/hepta-hsl5-cleanup-XXXXXX";
-        char* created = ::mkdtemp(pattern);
+        const char* root = std::getenv("TMPDIR");
+        const std::string pattern = std::string(root != nullptr && root[0] == '/' ? root : "/tmp") +
+            "/hepta-hsl5-cleanup-XXXXXX";
+        std::vector<char> buffer(pattern.begin(), pattern.end()); buffer.push_back(0);
+        char* created = ::mkdtemp(buffer.data());
         assert(created != nullptr);
         directory = created;
         store = directory + "/session-leases.hsl2";
@@ -661,6 +666,8 @@ void TestPublishedDirectorySyncFailureIsIndeterminate()
     g_failNextLeaseStoreDirectoryFsync = true;
     assert(!store.Put(second, reason));
     assert(reason == "LEASE_STORE_DIRECTORY_SYNC_INDETERMINATE");
+    assert(!store.CapacitySnapshot().known);
+    assert(store.CapacitySnapshot().persistenceIndeterminate);
     assert(store.List().size() == 2);
 
     // The new inode is already visible. The original owner must keep that
@@ -748,6 +755,122 @@ void TestCapacityRejectsBeforePublicationAndKeepsExitReserve()
         SessionSupervisorLeaseStore reopened;
         assert(fixture.Init(reopened, reason));
         assert(reopened.List().empty());
+    }
+}
+
+SessionSupervisorPaperFinalizationAck HistoryAck(unsigned index)
+{
+    const std::string suffix = std::to_string(index);
+    auto owner = OwnedPaper("capacity-history-owner-token-" + suffix,
+        "capacity-agent-" + suffix, "capacity-session-" + suffix);
+    owner.recoveryOnly = true;
+    owner.paperFinalizationRequired = true;
+    owner.paperFinalizationState = SessionSupervisorPaperFinalizationState::AuditSealed;
+    owner.recoveryId = "history-recovery-" + suffix;
+    owner.finalizationId = "history-finalization-" + suffix;
+    owner.expectedOwnerCount = 1;
+    owner.ownerTokenSha256 = OwnerTokenSha256(owner.token);
+    const std::vector<SessionSupervisorLeaseRecord> records(1, owner);
+    owner.expectedOwnerSetSha256 = "sha256:" + Sha256(OwnerSetCanonical(records));
+    SessionSupervisorPaperFinalizationAck ack;
+    ack.recoveryId = owner.recoveryId;
+    ack.finalizationId = owner.finalizationId;
+    ack.expectedOwnerSetSha256 = owner.expectedOwnerSetSha256;
+    ack.expectedOwnerCount = 1;
+    ack.receipt = FinalizationReceipt(records, ack.recoveryId, ack.finalizationId, ack.expectedOwnerSetSha256);
+    ack.receiptSha256 = "sha256:" + Sha256(ack.receipt);
+    ack.terminalReceipt = TerminalAckReceipt(records, ack.recoveryId, ack.finalizationId,
+        ack.expectedOwnerSetSha256, ack.receiptSha256);
+    ack.terminalReceiptSha256 = "sha256:" + Sha256(ack.terminalReceipt);
+    ack.acknowledgingOwnerTokenSha256 = owner.ownerTokenSha256;
+    ack.acknowledgingOwnerGeneration = owner.leaseGeneration;
+    ack.acknowledgingOwnerIssuer = owner.issuer;
+    ack.terminalizingOwnerAgentId = owner.agentId;
+    ack.terminalizingOwnerSessionId = owner.sessionId;
+    ack.terminalizingOwnerAccount = owner.ownerAccount;
+    ack.terminalizingOwnerExecutionDomain = owner.ownerExecutionDomain;
+    return ack;
+}
+
+void TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity()
+{
+    Fixture fixture;
+    WriteFile(fixture.store, EncryptEnvelope("HSL8\ninvalid-record\n", fixture.keyBytes), 0600);
+    SessionSupervisorLeaseStore store;
+    std::string reason;
+    assert(!fixture.Init(store, reason));
+    assert(!store.CapacitySnapshot().known);
+}
+
+void TestLeaseHistoryCapacityLifecycle()
+{
+    std::string history;
+    unsigned count = 0;
+    for (;;)
+    {
+        const std::string next = Hsl8Ack(HistoryAck(count));
+        // Leave room for one valid active lease, but deliberately enter the
+        // ordinary-admission reserve in the last old-store migration fixture.
+        if (64 + 2 * (5 + history.size() + next.size()) > 2 * 1024 * 1024 - 4096) break;
+        history += next;
+        ++count;
+    }
+    assert(count > 8);
+    for (unsigned target : {1U, 8U, count})
+    {
+        Fixture fixture;
+        std::string rows;
+        for (unsigned i = 0; i < target; ++i) rows += Hsl8Ack(HistoryAck(i));
+        auto watch = Watch("capacity-active-owner-token-0001");
+        watch.agentId = "capacity-watch-agent";
+        watch.sessionId = "capacity-watch-session";
+        const std::string encoded = EncryptEnvelope("HSL8\n" + Hsl7Record(watch) + rows, fixture.keyBytes);
+        WriteFile(fixture.store, encoded, 0600);
+        SessionSupervisorLeaseStore store;
+        std::string reason;
+        const auto start = std::chrono::steady_clock::now();
+        assert(fixture.Init(store, reason));
+        const auto reopenNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        auto observation = store.CapacitySnapshot();
+        assert(observation.known && observation.leaseRecords == 1 && observation.activeLeases == 1);
+        assert(observation.acknowledgementGroups == target);
+        assert(observation.acknowledgementPlaintextBytes == rows.size());
+        assert(observation.encodedBytes == encoded.size());
+        assert(observation.projectedEncodedBytes == encoded.size());
+        assert(store.ListAfter("", 1).size() == 1 && store.ListAfter(watch.token, 1).empty());
+        assert(store.ListAfter("", 0).empty());
+        if (target == count)
+        {
+            assert(observation.admissionHeadroomBytes == 0);
+            auto extra = Watch("capacity-additional-owner-token-0001");
+            extra.agentId = "capacity-other-agent"; extra.sessionId = "capacity-other-session";
+            assert(!store.Put(extra, reason));
+            assert(reason == "LEASE_STORE_EXIT_RESERVE_REQUIRED");
+            assert(ReadFile(fixture.store) == encoded);
+        }
+        // Revoke/fence and removal still commit at near-full historical capacity.
+        watch.fencePending = true; watch.fenceReason = "session_revoked";
+        assert(store.Replace(watch.token, watch, reason));
+        observation = store.CapacitySnapshot();
+        assert(observation.fencedLeases == 1 && observation.activeLeases == 0);
+        assert(store.Remove(watch.token, reason));
+        observation = store.CapacitySnapshot();
+        assert(observation.leaseRecords == 0 && observation.acknowledgementGroups == target);
+        assert(observation.persistLatency.samples == 2 + (target == count ? 1 : 0));
+        SessionSupervisorLeaseStore reopened;
+        assert(fixture.Init(reopened, reason));
+        SessionSupervisorPaperFinalizationAck oldest;
+        assert(reopened.GetPaperFinalizationAck("history-finalization-0", oldest));
+        assert(oldest.receipt == HistoryAck(0).receipt);
+        auto resurrection = OwnedPaper("capacity-history-owner-token-0", "new-agent", "new-session");
+        assert(!reopened.Put(resurrection, reason));
+        assert(reason == "LEASE_STORE_PAPER_FINALIZATION_OWNER_RETIRED");
+        std::cout << "{\"schema\":\"heptatrader.lease-history-cost.v1\",\"synthetic\":true,"
+            << "\"broker_io\":false,\"reopen_ns\":" << reopenNs
+            << ",\"oldest_owner_reuse_rejected\":true,\"capacity\":";
+        WriteSessionSupervisorLeaseCapacityJson(std::cout, observation);
+        std::cout << "}\n";
     }
 }
 
@@ -1507,24 +1630,32 @@ void TestHsl7FinalizationStoreStateMachineAndAckReplay()
 
     SessionSupervisorPaperFinalizationAck acknowledgement;
     bool alreadyAcknowledged = false;
+    SessionSupervisorTerminalAckRequest commit;
+    commit.finalization.recoveryId = recoveryId;
+    commit.finalization.finalizationId = finalizationId;
+    commit.finalization.expectedOwnerSetSha256 = ownerSetSha256;
+    commit.finalization.expectedOwnerCount = 2;
+    commit.finalization.receiptSha256 = receiptSha256;
+    commit.terminalReceiptSha256 = terminalReceiptSha256;
+    commit.terminalReceipt = terminalReceipt;
+    commit.owner.tokenSha256 = owners[0].ownerTokenSha256;
+    commit.owner.generation = owners[0].leaseGeneration;
+    commit.owner.issuer = owners[0].issuer;
+    commit.owner.agentId = owners[0].agentId;
+    commit.owner.sessionId = owners[0].sessionId;
+    commit.owner.account = owners[0].ownerAccount;
+    commit.owner.executionDomain = owners[0].ownerExecutionDomain;
+    auto invalid = commit;
+    invalid.finalization.receiptSha256 = "sha256:" + std::string(64, '0');
     assert(!store.AcknowledgeAndPurgePaperFinalizationGroup(
-        recoveryId, finalizationId, ownerSetSha256, 2,
-        "sha256:" + std::string(64, '0'),
-        terminalReceiptSha256, terminalReceipt,
-        owners[0].ownerTokenSha256, owners[0].leaseGeneration,
-        owners[0].issuer, owners[0].agentId, owners[0].sessionId,
-        owners[0].ownerAccount, owners[0].ownerExecutionDomain,
-        acknowledgement, alreadyAcknowledged, reason));
+        invalid, acknowledgement, alreadyAcknowledged, reason));
     assert(store.List().size() == 2);
     const std::string oversizedTerminalReceipt(12289, 'x');
+    invalid = commit;
+    invalid.terminalReceipt = oversizedTerminalReceipt;
+    invalid.terminalReceiptSha256 = "sha256:" + Sha256(oversizedTerminalReceipt);
     assert(!store.AcknowledgeAndPurgePaperFinalizationGroup(
-        recoveryId, finalizationId, ownerSetSha256, 2,
-        receiptSha256, "sha256:" + Sha256(oversizedTerminalReceipt),
-        oversizedTerminalReceipt, owners[0].ownerTokenSha256,
-        owners[0].leaseGeneration, owners[0].issuer,
-        owners[0].agentId, owners[0].sessionId,
-        owners[0].ownerAccount, owners[0].ownerExecutionDomain,
-        acknowledgement, alreadyAcknowledged, reason));
+        invalid, acknowledgement, alreadyAcknowledged, reason));
     assert(reason == "LEASE_STORE_PAPER_FINALIZATION_ACK_INVALID");
     assert(store.List().size() == 2);
     std::string legacyTerminalReceipt = terminalReceipt;
@@ -1543,25 +1674,33 @@ void TestHsl7FinalizationStoreStateMachineAndAckReplay()
         std::string("version=3\n").size(), "version=2\n");
     const std::string legacyTerminalReceiptSha256 =
         "sha256:" + Sha256(legacyTerminalReceipt);
+    invalid = commit;
+    invalid.terminalReceipt = legacyTerminalReceipt;
+    invalid.terminalReceiptSha256 = legacyTerminalReceiptSha256;
     assert(!store.AcknowledgeAndPurgePaperFinalizationGroup(
-        recoveryId, finalizationId, ownerSetSha256, 2,
-        receiptSha256, legacyTerminalReceiptSha256,
-        legacyTerminalReceipt, owners[0].ownerTokenSha256,
-        owners[0].leaseGeneration, owners[0].issuer,
-        owners[0].agentId, owners[0].sessionId,
-        owners[0].ownerAccount, owners[0].ownerExecutionDomain,
-        acknowledgement, alreadyAcknowledged, reason));
+        invalid, acknowledgement, alreadyAcknowledged, reason));
     assert(reason == "LEASE_STORE_PAPER_TERMINAL_ACK_RECEIPT_INVALID");
     assert(store.List().size() == 2);
+    const std::string preAckBytes = ReadFile(fixture.store);
+    for (unsigned field = 0; field < 7; ++field)
+    {
+        invalid = commit;
+        switch (field)
+        {
+        case 0: invalid.owner.tokenSha256 = "sha256:" + std::string(64, 'f'); break;
+        case 1: ++invalid.owner.generation; break;
+        case 2: invalid.owner.issuer = "foreign-issuer"; break;
+        case 3: invalid.owner.agentId = "foreign-agent"; break;
+        case 4: invalid.owner.sessionId = "foreign-session"; break;
+        case 5: invalid.owner.account = "foreign-account"; break;
+        case 6: invalid.owner.executionDomain = "foreign-domain"; break;
+        }
+        assert(!store.AcknowledgeAndPurgePaperFinalizationGroup(
+            invalid, acknowledgement, alreadyAcknowledged, reason));
+        assert(ReadFile(fixture.store) == preAckBytes);
+    }
     assert(store.AcknowledgeAndPurgePaperFinalizationGroup(
-        recoveryId, finalizationId, ownerSetSha256, 2,
-        receiptSha256, terminalReceiptSha256, terminalReceipt,
-        owners[0].ownerTokenSha256,
-        owners[0].leaseGeneration,
-        owners[0].issuer, owners[0].agentId, owners[0].sessionId,
-        owners[0].ownerAccount, owners[0].ownerExecutionDomain,
-        acknowledgement,
-        alreadyAcknowledged, reason));
+        commit, acknowledgement, alreadyAcknowledged, reason));
     assert(!alreadyAcknowledged && store.List().empty());
     assert(acknowledgement.receipt == receipt);
 
@@ -1572,13 +1711,7 @@ void TestHsl7FinalizationStoreStateMachineAndAckReplay()
     assert(durableAck.receipt == receipt &&
         durableAck.receiptSha256 == receiptSha256);
     assert(reopened.AcknowledgeAndPurgePaperFinalizationGroup(
-        recoveryId, finalizationId, ownerSetSha256, 2,
-        receiptSha256, terminalReceiptSha256, terminalReceipt,
-        owners[0].ownerTokenSha256, owners[0].leaseGeneration,
-        owners[0].issuer, owners[0].agentId, owners[0].sessionId,
-        owners[0].ownerAccount, owners[0].ownerExecutionDomain,
-        acknowledgement,
-        alreadyAcknowledged, reason));
+        commit, acknowledgement, alreadyAcknowledged, reason));
     assert(alreadyAcknowledged && acknowledgement.receipt == receipt);
     SessionSupervisorLeaseRecord retiredReuse = OwnedPaper(
         owners[0].token, "retired-owner-reuse", "retired-session-reuse");
@@ -1632,14 +1765,22 @@ void TestHsl7FinalizationStoreStateMachineAndAckReplay()
         singlePending.recoveryId, singlePending.finalizationId,
         singleOwnerSetSha256, 1, singleReceiptSha256,
         singleReceipt, reason));
+    commit.finalization.recoveryId = singlePending.recoveryId;
+    commit.finalization.finalizationId = singlePending.finalizationId;
+    commit.finalization.expectedOwnerSetSha256 = singleOwnerSetSha256;
+    commit.finalization.expectedOwnerCount = 1;
+    commit.finalization.receiptSha256 = singleReceiptSha256;
+    commit.terminalReceiptSha256 = singleTerminalReceiptSha256;
+    commit.terminalReceipt = singleTerminalReceipt;
+    commit.owner.tokenSha256 = singlePending.ownerTokenSha256;
+    commit.owner.generation = single.leaseGeneration;
+    commit.owner.issuer = single.issuer;
+    commit.owner.agentId = single.agentId;
+    commit.owner.sessionId = single.sessionId;
+    commit.owner.account = single.ownerAccount;
+    commit.owner.executionDomain = single.ownerExecutionDomain;
     assert(reopened.AcknowledgeAndPurgePaperFinalizationGroup(
-        singlePending.recoveryId, singlePending.finalizationId,
-        singleOwnerSetSha256, 1, singleReceiptSha256,
-        singleTerminalReceiptSha256, singleTerminalReceipt,
-        singlePending.ownerTokenSha256, single.leaseGeneration,
-        single.issuer, single.agentId, single.sessionId,
-        single.ownerAccount, single.ownerExecutionDomain,
-        acknowledgement, alreadyAcknowledged, reason));
+        commit, acknowledgement, alreadyAcknowledged, reason));
     assert(!alreadyAcknowledged && reopened.List().empty());
     assert(acknowledgement.receipt == singleReceipt);
 }
@@ -1854,8 +1995,13 @@ void TestLinuxOPathOpensSearchOnlyLockParent()
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--lease-history-growth")
+    { TestLeaseHistoryCapacityLifecycle(); return 0; }
+    assert(argc == 1);
+    TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity();
+    TestLeaseHistoryCapacityLifecycle();
     TestPublishedDirectorySyncFailureIsIndeterminate();
     TestCapacityRejectsBeforePublicationAndKeepsExitReserve();
     TestNormalInitRejectsOwnerlessHsl5Paper();

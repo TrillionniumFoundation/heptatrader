@@ -91,7 +91,9 @@ public:
         const ExecutionServiceIdentity& identity);
 
     bool GetServiceIdentity(ExecutionServiceIdentity& identity,
-                            std::string& reason);
+                            std::string& reason,
+                            std::chrono::steady_clock::time_point deadline =
+                                std::chrono::steady_clock::time_point::max());
     void InvalidateServiceIdentity(const ExecutionServiceIdentity& identity);
 
 private:
@@ -102,17 +104,21 @@ private:
     ExecutionCommandResult Call(
         const std::string& commandId,
         const std::string& requestBody,
-        const ExecutionServiceIdentity& expectedIdentity);
+        const ExecutionServiceIdentity& expectedIdentity,
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max());
     ExecutionControlResult CallControl(
         const std::string& commandId,
         const std::string& requestBody,
-        const ExecutionServiceIdentity& expectedIdentity);
+        const ExecutionServiceIdentity& expectedIdentity,
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max());
 
     std::string m_socketPath;
     int m_ioTimeoutMs;
     int m_responseTimeoutMs;
     std::size_t m_maxResponseBytes;
     std::set<std::uint32_t> m_allowedServerUids;
-    std::mutex m_serviceIdentityMutex;
+    std::timed_mutex m_serviceIdentityMutex;
     ExecutionServiceIdentity m_serviceIdentity;
 };

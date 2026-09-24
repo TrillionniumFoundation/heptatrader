@@ -253,14 +253,34 @@ void UnixSessionSupervisorServer::SetCrashPointHook(const CrashPointHook& hook)
 bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
 	std::size_t& reaped, std::string& reason)
 {
-	std::lock_guard<std::mutex> operationLock(m_operationMutex);
-	reaped = 0;
+	std::unique_lock<std::mutex> reapLock(m_reapMutex, std::try_to_lock);
+    std::unique_lock<std::timed_mutex> operationLock(m_operationMutex, std::try_to_lock);
+    reaped = 0;
+    if (!reapLock.owns_lock() || !operationLock.owns_lock())
+    {
+        reason = "SUPERVISOR_MAINTENANCE_BUSY";
+        return false;
+    }
+    const auto workDeadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(100);
 	if (m_leaseStore != nullptr)
 	{
-		const std::vector<SessionSupervisorLeaseRecord> records = m_leaseStore->List();
+        auto records = m_leaseStore->ListAfter(m_reapCursor, 16);
+        if (records.empty())
+        {
+            m_reapCursor.clear();
+            records = m_leaseStore->ListAfter(m_reapCursor, 16);
+        }
 		std::string firstFailure;
 		for (std::size_t i = 0; i < records.size(); ++i)
 		{
+            if (std::chrono::steady_clock::now() >= workDeadline) break;
+            m_reapCursor = records[i].token;
+            SessionSupervisorLeaseRecord current;
+            if (!m_leaseStore->Get(records[i].token, current) ||
+                current.leaseGeneration != records[i].leaseGeneration) continue;
+            records[i] = current;
+            if (m_recoveryOwnersInFlight.count({current.agentId, current.sessionId})) continue;
 			if (records[i].paperFinalizationState !=
 				SessionSupervisorPaperFinalizationState::None)
 				continue;
@@ -273,7 +293,7 @@ bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
 				ExecutionOwnerAuditResult ownerAudit;
 				std::string recoveryReason;
 				if (!EnterPaperRecovery(recovery, nowMs, std::string(),
-						commandResult, ownerAudit, recoveryReason))
+						commandResult, ownerAudit, recoveryReason, &operationLock))
 				{
 					if (firstFailure.empty()) firstFailure = recoveryReason;
 					continue;
@@ -674,6 +694,27 @@ bool UnixSessionSupervisorServer::FenceCommittedMutation(
 	return FenceStoredRecord(pendingRecord, false, reason);
 }
 
+bool UnixSessionSupervisorServer::WorkInFlight(
+    const SessionSupervisorRequest& request) const
+{
+    if (m_recoveryOwnersInFlight.empty()) return false;
+    switch (request.operation)
+    {
+    case SessionSupervisorOperation::PaperFinalize:
+    case SessionSupervisorOperation::PaperFinalizeAck:
+    case SessionSupervisorOperation::PaperTerminalizeAck:
+    case SessionSupervisorOperation::PaperTerminalWitnessPrepare:
+    case SessionSupervisorOperation::PaperTerminalWitnessAck:
+        return true;
+    default: break;
+    }
+    if (request.operation == SessionSupervisorOperation::Provision)
+        return m_recoveryOwnersInFlight.count({request.agentId, request.sessionId}) != 0;
+    SessionSupervisorLeaseRecord record;
+    return m_leaseStore != nullptr && m_leaseStore->Get(request.token, record) &&
+        m_recoveryOwnersInFlight.count({record.agentId, record.sessionId}) != 0;
+}
+
 bool UnixSessionSupervisorServer::HasPendingOwner(
 	const std::string& agentId,
 	const std::string& sessionId) const
@@ -697,9 +738,15 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 	const std::uint64_t nowMs = static_cast<std::uint64_t>(
 		std::chrono::duration_cast<std::chrono::milliseconds>(
 			std::chrono::system_clock::now().time_since_epoch()).count());
+    const auto retryDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
 	const std::vector<SessionSupervisorLeaseRecord> records = m_leaseStore->List();
 	for (std::size_t i = 0; i < records.size(); ++i)
-	{
+    {
+        if (std::chrono::steady_clock::now() >= retryDeadline)
+        {
+            reason = "SUPERVISOR_RESTORE_WORK_BUDGET_EXHAUSTED";
+            return false;
+        }
 		if (!IsIssuerAllowed(records[i].issuer))
 		{
 			reason = "LEASE_STORE_ISSUER_NOT_ALLOWLISTED";
@@ -732,9 +779,6 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 			// owner audit still has to return authoritative, complete, flat
 			// evidence; no safety result is accepted merely because it is being
 			// retried.
-			const std::chrono::steady_clock::time_point retryDeadline =
-				std::chrono::steady_clock::now() +
-				std::chrono::seconds(60);
 			for (;;)
 			{
 				const std::uint64_t recoveryNowMs =
@@ -744,7 +788,7 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 				ExecutionControlStatusResult commandResult;
 				ExecutionOwnerAuditResult ownerAudit;
 				if (!EnterPaperRecovery(record, recoveryNowMs, std::string(),
-						commandResult, ownerAudit, reason))
+						commandResult, ownerAudit, reason, nullptr, retryDeadline))
 				{
 					if (!IsTransientPaperRecoveryAuditReason(reason) ||
 						std::chrono::steady_clock::now() >= retryDeadline)
@@ -969,8 +1013,9 @@ void UnixSessionSupervisorServer::ClientLoop()
 
 void UnixSessionSupervisorServer::HandleClient(int clientFd)
 {
-	std::unique_lock<std::mutex> operationLock(
+	std::unique_lock<std::timed_mutex> operationLock(
 		m_operationMutex, std::defer_lock);
+    auto workDeadline = std::chrono::steady_clock::time_point::max();
 	SessionSupervisorResult result;
 	SessionSupervisorRequest request;
 	std::string issuerName;
@@ -991,7 +1036,18 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 		std::string body;
 		std::string reason;
 		const auto decodeRequest = [&]() {
-			operationLock.lock();
+            workDeadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(m_ioTimeoutMs);
+            if (!operationLock.try_lock_until(workDeadline))
+            {
+                reason = "SUPERVISOR_OPERATION_BUDGET_EXHAUSTED";
+                return false;
+            }
+            if (m_stop.load())
+            {
+                reason = "SUPERVISOR_STOPPING";
+                return false;
+            }
 			return SessionSupervisorProtocol::DecodeRequest(
 				body, request, reason);
 		};
@@ -1014,6 +1070,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 					SessionSupervisorOperation::PaperTerminalWitnessAck) &&
 			static_cast<std::uint32_t>(credentials.uid) != m_rootCustodianUid)
 			result.ReasonCode() = "SUPERVISOR_ROOT_CUSTODIAN_REQUIRED";
+        else if (WorkInFlight(request))
+            result.ReasonCode() = "SUPERVISOR_OWNER_WORK_PENDING";
 		else if (request.ttlMs > m_maxSessionTtlMs)
 			result.ReasonCode() = "SUPERVISOR_TTL_EXCEEDS_LIMIT";
 		else if (m_auditJournal != nullptr &&
@@ -1094,7 +1152,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 						std::chrono::system_clock::now().time_since_epoch()).count());
 				if (!EnterPaperRecovery(previous, nowMs,
 						request.targetCommandId, commandResult,
-						ownerAudit, queryReason))
+						ownerAudit, queryReason, &operationLock, workDeadline))
 				{
 					result.ReasonCode() = queryReason.empty() ?
 						"SESSION_RECOVERY_QUERY_FAILED" : queryReason;
@@ -1230,7 +1288,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 					ExecutionOwnerAuditResult ownerAudit;
 					if (!EnterPaperRecovery(previous, nowMs, std::string(),
 							commandResult, ownerAudit,
-							result.ReasonCode()))
+							result.ReasonCode(), &operationLock, workDeadline))
 						result.accepted = false;
 					else if (m_crashPointHook &&
 						m_crashPointHook("after_lease_commit"))
@@ -1423,7 +1481,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 						std::string recoveryReason;
 						if (!EnterPaperRecovery(recovery, nowMs,
 								std::string(), commandResult, ownerAudit,
-								recoveryReason))
+								recoveryReason, &operationLock, workDeadline))
 							result.ReasonCode() = recoveryReason;
 						else
 							result.ReasonCode() =
@@ -1517,7 +1575,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 						std::string recoveryReason;
 						if (!EnterPaperRecovery(recovery, nowMs,
 								std::string(), commandResult, ownerAudit,
-								recoveryReason))
+								recoveryReason, &operationLock, workDeadline))
 							result.ReasonCode() = recoveryReason;
 						else
 							result.ReasonCode() = rejectionReason;
@@ -1584,7 +1642,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							std::string recoveryReason;
 							if (!EnterPaperRecovery(recovery, nowMs,
 									std::string(), commandResult, ownerAudit,
-									recoveryReason))
+									recoveryReason, &operationLock, workDeadline))
 								result.ReasonCode() = recoveryReason;
 							else
 								result.ReasonCode() = persistReason;
@@ -1715,7 +1773,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							ExecutionOwnerAuditResult ownerAudit;
 							std::string recoveryReason;
 							if (!EnterPaperRecovery(record, nowMs, std::string(),
-									commandResult, ownerAudit, recoveryReason))
+									commandResult, ownerAudit, recoveryReason, &operationLock))
 								result.ReasonCode() = recoveryReason;
 							else
 								result.ReasonCode() = rejectionReason;
@@ -1773,7 +1831,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 								std::string recoveryReason;
 								if (!EnterPaperRecovery(record, nowMs,
 										std::string(), commandResult, ownerAudit,
-										recoveryReason))
+										recoveryReason, &operationLock, workDeadline))
 									result.ReasonCode() = recoveryReason;
 								else
 									result.ReasonCode() = persistReason;

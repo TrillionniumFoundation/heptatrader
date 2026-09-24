@@ -3,6 +3,7 @@
 #include "execution_event_feed_contract.h"
 
 #include <cstddef>
+#include <chrono>
 #include <cstdint>
 #include <set>
 #include <string>
@@ -18,12 +19,16 @@ public:
         const std::set<std::uint32_t>& allowedServerUids =
             std::set<std::uint32_t>());
 
-    ExecutionEventReadResult GetServiceIdentity() const;
+    ExecutionEventReadResult GetServiceIdentity(
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max()) const;
     ExecutionEventReadResult Wait(const ExecutionEventFeedRequest& request) const;
 
 private:
     ExecutionEventReadResult Call(
-        const ExecutionEventFeedRequest& request) const;
+        const ExecutionEventFeedRequest& request,
+        std::chrono::steady_clock::time_point deadline =
+            std::chrono::steady_clock::time_point::max()) const;
 
     std::string m_socketPath;
     int m_ioTimeoutMs;
