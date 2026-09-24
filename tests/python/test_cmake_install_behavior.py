@@ -50,7 +50,16 @@ def installed_fixture(*, readme: bool = False):
         write("scripts/hepta_preflight.py", "# public fixture, never run as preflight\n")
         write("scripts/hepta_preflight_core.py", "# private fixture implementation\n")
         for helper in HELPERS:
-            write(helper, "# inert packaging fixture\n")
+            if helper in {
+                "scripts/hepta_agent_mcp_launcher.py",
+                "scripts/hepta_agent_trust_domain.py",
+                "adapters/mcp/hepta_mcp_server.py",
+            }:
+                target = source / helper
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(ROOT / helper, target)
+            else:
+                write(helper, "# inert packaging fixture\n")
         for name in ("capabilities.json", "ib-paper-profile-policy-v1.json", "preflight-policy-v1.json"):
             write("docs/" + name, '{"fixture_only":true}\n')
         write("docs/developer.md", "# installed fixture documentation\n")
@@ -117,6 +126,17 @@ class CMakeInstallBehaviorTests(unittest.TestCase):
             self.assertTrue(os.access(tree / "bin/hepta-preflight", os.X_OK))
             self.assertFalse((tree / "lib/systemd/system/hepta-execution-ib-paper.service").exists())
             self.assertFalse((tree / "lib/systemd/system/hepta-broker-egress-policy.service").exists())
+
+    def test_agent_launcher_resolves_the_installed_private_mcp_bridge(self) -> None:
+        with installed_fixture() as tree:
+            launcher = tree / "libexec/heptatrader/hepta_agent_mcp_launcher.py"
+            bridge = tree / "libexec/heptatrader/hepta_mcp_server.py"
+            spec = importlib.util.spec_from_file_location("installed_agent_launcher", launcher)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self.assertEqual(Path(module.MCP_SERVER), bridge.resolve())
+            self.assertTrue(bridge.is_file())
+            self.assertFalse((tree / "libexec/hepta-mcp-server").exists())
 
     def test_collectors_and_oms_generation_helper_are_executable_but_observer_unit_remains_inert(self):
         with installed_fixture() as tree:

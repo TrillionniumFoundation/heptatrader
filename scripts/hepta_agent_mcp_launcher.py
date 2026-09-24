@@ -16,7 +16,7 @@ from hepta_agent_trust_domain import (
 
 AGENT_UID = 2004
 AGENT_GID = 2004
-MCP_SERVER = "/usr/libexec/hepta-mcp-server"
+MCP_SERVER = str(Path(__file__).resolve().with_name("hepta_mcp_server.py"))
 DOMAIN_CONFIG_ROOT = Path("/etc/heptatrader/trust-domains")
 
 
