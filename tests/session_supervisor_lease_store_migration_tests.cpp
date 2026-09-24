@@ -792,6 +792,16 @@ SessionSupervisorPaperFinalizationAck HistoryAck(unsigned index)
     return ack;
 }
 
+void TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity()
+{
+    Fixture fixture;
+    WriteFile(fixture.store, EncryptEnvelope("HSL8\ninvalid-record\n", fixture.keyBytes), 0600);
+    SessionSupervisorLeaseStore store;
+    std::string reason;
+    assert(!fixture.Init(store, reason));
+    assert(!store.CapacitySnapshot().known);
+}
+
 void TestLeaseHistoryCapacityLifecycle()
 {
     std::string history;
@@ -1990,6 +2000,7 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--lease-history-growth")
     { TestLeaseHistoryCapacityLifecycle(); return 0; }
     assert(argc == 1);
+    TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity();
     TestLeaseHistoryCapacityLifecycle();
     TestPublishedDirectorySyncFailureIsIndeterminate();
     TestCapacityRejectsBeforePublicationAndKeepsExitReserve();

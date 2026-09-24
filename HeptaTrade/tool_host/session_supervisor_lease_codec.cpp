@@ -745,6 +745,7 @@ bool SessionSupervisorLeaseStore::ParsePlaintext(const std::string& plaintext, s
     if (!ParsePlaintextImpl(plaintext, nullptr, 0, nullptr, reason)) return false;
     SerializePlaintext(&m_capacity);
     m_capacity.encodedBytes = m_sourceSize;
+    m_capacity.known = true;
     return true;
 }
 

@@ -1809,7 +1809,7 @@ SessionSupervisorLeaseCapacity SessionSupervisorLeaseStore::CapacitySnapshot() c
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     auto result = m_capacity;
-    result.known = m_sourceMetadataValid && !m_persistenceIndeterminate;
+    result.known = m_capacity.known && m_sourceMetadataValid && !m_persistenceIndeterminate;
     result.persistenceIndeterminate = m_persistenceIndeterminate;
     result.persistLatency = m_persistLatency;
     return result;
@@ -1924,7 +1924,10 @@ SessionSupervisorLeaseStore::PersistLocked(
         return true;
     };
     if (!sourceUnchanged(reason))
+    {
+        m_capacity.known = false;
         return PersistOutcome::NotPublished;
+    }
 
     std::string temporary;
     std::string suffix;
@@ -1989,6 +1992,7 @@ SessionSupervisorLeaseStore::PersistLocked(
     }
     if (!sourceUnchanged(reason))
     {
+        m_capacity.known = false;
         ::unlink(temporary.c_str());
         return PersistOutcome::NotPublished;
     }
@@ -2003,6 +2007,7 @@ SessionSupervisorLeaseStore::PersistLocked(
     // Any failure is therefore not safe to report as an ordinary rollback.
     m_capacity = nextCapacity;
     m_capacity.encodedBytes = content.size();
+    m_capacity.known = true;
     const bool directorySynced = FsyncParentDirectory(m_path);
     std::string persisted;
     struct stat persistedMetadata;
