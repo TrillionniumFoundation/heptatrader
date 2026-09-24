@@ -211,8 +211,22 @@ private:
                  std::string& nonce, std::string& tag) const;
     bool Decrypt(const std::string& ciphertext, const std::string& nonce,
                  const std::string& tag, std::string& plaintext) const;
-    bool PersistLocked(std::string& reason,
-                       std::string* storeSha256 = nullptr);
+    enum class PersistIntent
+    {
+        Maintenance,
+        Admission
+    };
+    enum class PersistOutcome
+    {
+        Committed,
+        NotPublished,
+        PublishedIndeterminate
+    };
+    bool MutationAllowedLocked(std::string& reason) const;
+    PersistOutcome PersistLocked(
+        std::string& reason,
+        std::string* storeSha256 = nullptr,
+        PersistIntent intent = PersistIntent::Maintenance);
 
     mutable std::mutex m_mutex;
     std::string m_path;
@@ -233,6 +247,7 @@ private:
     std::int64_t m_sourceCtimeSec = 0;
     std::int64_t m_sourceCtimeNsec = 0;
     std::string m_sourceSha256;
+    bool m_persistenceIndeterminate = false;
     int m_cleanupLockFd = -1;
     bool m_createMetadataValid = false;
     std::uint64_t m_createUid = 0;

@@ -38,7 +38,7 @@ Any ambiguous durable or cross-service result -> UNCERTAIN / fail closed
 
 The lease store is authoritative for session metadata. Records bind Agent identity, session ID, generation, capability set, execution domain, expiry, and recovery/fence information. Store migration must be explicit and crash safe; a newer or malformed format is rejected.
 
-Writes must use a durable temporary file, file `fsync`, atomic rename, and directory `fsync` where supported. A partially committed generation may not be guessed from the token file.
+Writes use a durable temporary file, file `fsync`, atomic rename, and directory `fsync`. The complete encrypted envelope is checked against the reader's 2 MiB bound before rename, and ordinary admission leaves bounded space for revoke/fence/PAPER terminal evidence. Once rename has published a new inode, a later directory-sync or post-write verification failure is **indeterminate**, not an ordinary rollback: the store keeps the published in-memory view and refuses further mutations until a fresh owner reopens and validates durable state.
 
 ## Operator interface
 

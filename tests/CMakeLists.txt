@@ -112,6 +112,10 @@ add_executable(hepta_session_supervisor_lease_store_migration_tests
     session_supervisor_lease_store_migration_tests.cpp)
 target_link_libraries(hepta_session_supervisor_lease_store_migration_tests
     hepta_agent_os_core)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_link_options(hepta_session_supervisor_lease_store_migration_tests
+        PRIVATE -Wl,--wrap=fsync)
+endif()
 hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
 
 add_executable(hepta_agent_simulator_e2e_tests
