@@ -7,16 +7,16 @@ Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentati
 
 ## Responsibilities
 
-Repository control defines the source-side admission contract: exact revision checkout, module and capability truth, build-target ownership, component coverage, gap evidence, release verification, and the optional qualification workflow boundary. It does not create Broker authority.
+Repository control defines the source-side admission contract: exact revision checkout, module and capability truth, live build ownership, component coverage, gap evidence, release verification, and the optional qualification workflow boundary. It does not create Broker authority.
 
 The component-coverage verifier discovers production paths from the exact Git index and compares them with module implementation ownership. A new tracked production path therefore cannot disappear merely because it was omitted from a hand-maintained catalog.
 
 ## Public interfaces
 
-- `scripts/check_component_coverage.py` validates Git-discovered production ownership and CMake translation-unit owner agreement.
+- `scripts/check_component_coverage.py` validates Git-discovered production ownership without duplicating CMake's target graph.
 - `scripts/check_documentation.py` validates module metadata, capabilities, links and the catalog-generated index; `--write-index` explicitly regenerates navigation. It does not score technical prose depth.
 - `scripts/check_gap_register.py` validates an extensible issue inventory and authorization invariants. Open issues are allowed; only an explicit `--release-profile` check rejects its scoped unresolved blockers.
-- `scripts/verify_build_ownership.py` compares fresh CMake File API output with `docs/build-targets.json`.
+- `scripts/verify_build_ownership.py` validates the selected live CMake File API model against module ownership and tracked-source reachability; optional reports are generated evidence, not checked-in truth.
 - Maintained workflows execute those controls on pull-request, main, and merge-group subjects as applicable.
 
 ## State and persistence
@@ -25,7 +25,7 @@ Canonical source truth is stored in versioned JSON and Markdown under `docs/` an
 
 ## Failure semantics
 
-Missing ownership, an unknown module, ambiguous longest-path ownership, build-inventory owner drift, an omitted module document, invalid JSON, a stale capability claim, or a missing required check fails the source gate. No failure is converted into PAPER or LIVE authorization.
+Missing ownership, an unknown module, ambiguous longest-path ownership, an owned C/C++ source missing from the live build without an explicit `unbuilt` disposition, an omitted module document, invalid JSON, a stale capability claim, or a missing required check fails the source gate. No failure is converted into PAPER or LIVE authorization.
 
 Capability truth uses schema v2's separate `transport_implemented`,
 `advertisable`, and `authorized` fields. An implemented transport is evidence
@@ -50,7 +50,7 @@ The repository is maintained as an owner-operated project. Under that operating 
 
 This is **not** implemented by inventing a source-side “approval” file, dummy reviewer, duplicate CI gate or token check. Those would recreate the same formalism in another layer without adding independent judgment.
 
-The live GitHub Ruleset is an external server fact. If it still contains the approval or Merge Queue requirements, `OWNER-RULESET-002` remains OPEN even when the source-side plan and tests are green. Applying the transition requires an authenticated GitHub administrative action followed by readback; the repository must not claim completion from a planner output alone.
+The live GitHub Ruleset is an external server fact. The 2026-09-23 readback recorded in `technical/owner-ruleset-transition.md` showed only deletion and non-fast-forward protection; the former approval/Merge Queue blocker was removed rather than kept as stale project work. Future server changes require fresh authenticated readback and must not be inferred from source-side planner output.
 
 ## Observability
 

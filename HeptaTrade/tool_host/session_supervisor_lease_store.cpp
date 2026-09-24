@@ -27,6 +27,12 @@ namespace {
 
 const std::size_t kMaximumLeaseStoreBytes = 2 * 1024 * 1024;
 const std::size_t kMaximumLeaseKeyBytes = 65;
+// Ordinary lease admission must not consume the bytes needed to fence/revoke
+// existing owners and persist PAPER terminal evidence. HSL8 hex-encodes fields
+// inside the plaintext and the encrypted envelope is hex-encoded again, so the
+// receipt expansion is roughly four encoded bytes per receipt byte.
+const std::size_t kLeaseStoreExitBaseReserveBytes = 96 * 1024;
+const std::size_t kLeaseStorePaperExitReserveBytes = 20 * 1024;
 
 void SnapshotTimes(const struct stat& metadata,
     std::int64_t& mtimeSec, std::int64_t& mtimeNsec,
@@ -710,13 +716,14 @@ bool SessionSupervisorLeaseStore::InitStoreState(const std::string& path,
     m_records.clear();
     m_paperFinalizationAcks.clear();
     m_sourceMetadataValid = false;
+    m_persistenceIndeterminate = false;
     m_createMetadataValid = false;
     std::string plaintext;
     bool missing = false;
     if (!LoadEncryptedPlaintextLocked(path, plaintext, missing, reason)) return false;
     if (missing)
     {
-        if (!PersistLocked(reason)) return false;
+        if (PersistLocked(reason) != PersistOutcome::Committed) return false;
     }
     else if (!ParsePlaintext(plaintext, reason)) return false;
     reason.clear();
@@ -767,6 +774,7 @@ bool SessionSupervisorLeaseStore::MigrateHsl5PaperForTerminalCleanup(
     m_records.clear();
     m_paperFinalizationAcks.clear();
     m_sourceMetadataValid = false;
+    m_persistenceIndeterminate = false;
     m_createMetadataValid = false;
     std::string plaintext;
     std::string encoded;
@@ -830,7 +838,8 @@ bool SessionSupervisorLeaseStore::MigrateHsl5PaperForTerminalCleanup(
             return false;
         }
         workingResult.preStoreSha256 = currentSha256;
-        if (!PersistLocked(reason, &workingResult.postStoreSha256))
+        if (PersistLocked(reason, &workingResult.postStoreSha256) !=
+            PersistOutcome::Committed)
             return false;
         workingResult.alreadyMigrated = false;
         result = workingResult;
@@ -872,7 +881,8 @@ bool SessionSupervisorLeaseStore::MigrateHsl5PaperForTerminalCleanup(
         m_createGid = request.expectedSourceGid;
         m_createMode = request.expectedSourceMode;
         m_records = expectedPreservedRecords;
-        if (!PersistLocked(reason, &workingResult.postStoreSha256))
+        if (PersistLocked(reason, &workingResult.postStoreSha256) !=
+            PersistOutcome::Committed)
             return false;
         workingResult.alreadyMigrated = false;
         result = workingResult;
@@ -887,7 +897,8 @@ bool SessionSupervisorLeaseStore::MigrateHsl5PaperForTerminalCleanup(
             return false;
         }
         m_records = expectedPreservedRecords;
-        if (!PersistLocked(reason, &workingResult.postStoreSha256))
+        if (PersistLocked(reason, &workingResult.postStoreSha256) !=
+            PersistOutcome::Committed)
             return false;
         workingResult.alreadyMigrated = false;
         result = workingResult;
@@ -955,6 +966,7 @@ bool SessionSupervisorLeaseStore::Put(const SessionSupervisorLeaseRecord& record
             SessionSupervisorPaperFinalizationState::None)
     { reason = "LEASE_STORE_RECORD_INVALID"; return false; }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (!MutationAllowedLocked(reason)) return false;
     if (record.templateId == "paper" &&
         RetiredPaperOwner(m_paperFinalizationAcks, record.token))
     {
@@ -987,14 +999,21 @@ bool SessionSupervisorLeaseStore::Put(const SessionSupervisorLeaseRecord& record
                 return false;
             }
     m_records[record.token] = record;
-    if (PersistLocked(reason)) return true;
-    m_records.erase(record.token);
+    const PersistIntent persistIntent =
+        (record.fencePending || record.recoveryOnly) ?
+            PersistIntent::Maintenance : PersistIntent::Admission;
+    const PersistOutcome outcome =
+        PersistLocked(reason, nullptr, persistIntent);
+    if (outcome == PersistOutcome::Committed) return true;
+    if (outcome == PersistOutcome::NotPublished)
+        m_records.erase(record.token);
     return false;
 }
 
 bool SessionSupervisorLeaseStore::Remove(const std::string& token, std::string& reason)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (!MutationAllowedLocked(reason)) return false;
     const std::map<std::string, SessionSupervisorLeaseRecord>::iterator found = m_records.find(token);
     if (found == m_records.end()) { reason = "LEASE_STORE_TOKEN_NOT_FOUND"; return false; }
     if (found->second.paperFinalizationRequired ||
@@ -1006,8 +1025,10 @@ bool SessionSupervisorLeaseStore::Remove(const std::string& token, std::string& 
     }
     const SessionSupervisorLeaseRecord previous = found->second;
     m_records.erase(found);
-    if (PersistLocked(reason)) return true;
-    m_records[token] = previous;
+    const PersistOutcome outcome = PersistLocked(reason);
+    if (outcome == PersistOutcome::Committed) return true;
+    if (outcome == PersistOutcome::NotPublished)
+        m_records[token] = previous;
     return false;
 }
 
@@ -1054,6 +1075,7 @@ bool SessionSupervisorLeaseStore::Replace(const std::string& currentToken,
         !ValidPaperFinalizationRecord(record))
     { reason = "LEASE_STORE_RECORD_INVALID"; return false; }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (!MutationAllowedLocked(reason)) return false;
     const std::map<std::string, SessionSupervisorLeaseRecord>::iterator found = m_records.find(currentToken);
     if (found == m_records.end()) { reason = "LEASE_STORE_TOKEN_NOT_FOUND"; return false; }
     if (record.templateId == "paper" && record.token != currentToken &&
@@ -1091,11 +1113,22 @@ bool SessionSupervisorLeaseStore::Replace(const std::string& currentToken,
                 return false;
             }
     const SessionSupervisorLeaseRecord previous = found->second;
+    const bool exitTransition =
+        previous.fencePending || previous.fenceComplete ||
+        previous.recoveryOnly || previous.paperFinalizationRequired ||
+        record.fencePending || record.fenceComplete ||
+        record.recoveryOnly || record.paperFinalizationRequired;
     m_records.erase(found);
     m_records[record.token] = record;
-    if (PersistLocked(reason)) return true;
-    m_records.erase(record.token);
-    m_records[currentToken] = previous;
+    const PersistOutcome outcome = PersistLocked(
+        reason, nullptr, exitTransition ?
+            PersistIntent::Maintenance : PersistIntent::Admission);
+    if (outcome == PersistOutcome::Committed) return true;
+    if (outcome == PersistOutcome::NotPublished)
+    {
+        m_records.erase(record.token);
+        m_records[currentToken] = previous;
+    }
     return false;
 }
 
@@ -1177,6 +1210,7 @@ bool SessionSupervisorLeaseStore::AdvancePaperFinalization(
         return false;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (!MutationAllowedLocked(reason)) return false;
     const std::map<std::string, SessionSupervisorLeaseRecord>::iterator found =
         m_records.find(token);
     if (found == m_records.end())
@@ -1239,8 +1273,10 @@ bool SessionSupervisorLeaseStore::AdvancePaperFinalization(
         return false;
     }
     m_records[token] = replacement;
-    if (PersistLocked(reason)) return true;
-    m_records[token] = previous;
+    const PersistOutcome outcome = PersistLocked(reason);
+    if (outcome == PersistOutcome::Committed) return true;
+    if (outcome == PersistOutcome::NotPublished)
+        m_records[token] = previous;
     return false;
 }
 
@@ -1266,6 +1302,7 @@ bool SessionSupervisorLeaseStore::SealPaperFinalizationGroup(
         return false;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (!MutationAllowedLocked(reason)) return false;
     std::vector<SessionSupervisorLeaseRecord> paper;
     bool allSealed = true;
     std::string ownerAccount;
@@ -1350,8 +1387,10 @@ bool SessionSupervisorLeaseStore::SealPaperFinalizationGroup(
         it->second.finalizationReceiptSha256 = receiptSha256;
         it->second.finalizationReceipt = receipt;
     }
-    if (PersistLocked(reason)) return true;
-    m_records = previous;
+    const PersistOutcome outcome = PersistLocked(reason);
+    if (outcome == PersistOutcome::Committed) return true;
+    if (outcome == PersistOutcome::NotPublished)
+        m_records = previous;
     return false;
 }
 
@@ -1395,6 +1434,7 @@ bool SessionSupervisorLeaseStore::AcknowledgeAndPurgePaperFinalizationGroup(
         return false;
     }
     std::lock_guard<std::mutex> lock(m_mutex);
+    if (!MutationAllowedLocked(reason)) return false;
     const std::map<std::string,
         SessionSupervisorPaperFinalizationAck>::const_iterator acknowledged =
             m_paperFinalizationAcks.find(finalizationId);
@@ -1556,14 +1596,18 @@ bool SessionSupervisorLeaseStore::AcknowledgeAndPurgePaperFinalizationGroup(
             ++it;
     }
     m_paperFinalizationAcks[finalizationId] = created;
-    if (PersistLocked(reason))
+    const PersistOutcome outcome = PersistLocked(reason);
+    if (outcome == PersistOutcome::Committed)
     {
         acknowledgement = created;
         reason.clear();
         return true;
     }
-    m_records = oldRecords;
-    m_paperFinalizationAcks = oldAcknowledgements;
+    if (outcome == PersistOutcome::NotPublished)
+    {
+        m_records = oldRecords;
+        m_paperFinalizationAcks = oldAcknowledgements;
+    }
     return false;
 }
 
@@ -1754,22 +1798,77 @@ bool SessionSupervisorLeaseStore::DecodeEncryptedPlaintext(
     return true;
 }
 
-bool SessionSupervisorLeaseStore::PersistLocked(
-    std::string& reason, std::string* storeSha256)
+bool SessionSupervisorLeaseStore::MutationAllowedLocked(
+    std::string& reason) const
 {
-    if (m_path.empty() || m_key.size() != 32) { reason = "LEASE_STORE_NOT_INITIALIZED"; return false; }
+    if (!m_persistenceIndeterminate) return true;
+    reason = "LEASE_STORE_PERSISTENCE_INDETERMINATE";
+    return false;
+}
+
+SessionSupervisorLeaseStore::PersistOutcome
+SessionSupervisorLeaseStore::PersistLocked(
+    std::string& reason, std::string* storeSha256, PersistIntent intent)
+{
+    if (!MutationAllowedLocked(reason))
+        return PersistOutcome::PublishedIndeterminate;
+    if (m_path.empty() || m_key.size() != 32)
+    {
+        reason = "LEASE_STORE_NOT_INITIALIZED";
+        return PersistOutcome::NotPublished;
+    }
+
+    const std::string plaintext = SerializePlaintext();
     std::string ciphertext;
     std::string nonce;
     std::string tag;
-    if (!Encrypt(SerializePlaintext(), ciphertext, nonce, tag))
-    { reason = "LEASE_STORE_ENCRYPT_FAILED"; return false; }
-    const std::string content = "HSL2\n" + HexEncode(nonce) + "\n" + HexEncode(tag) +
-        "\n" + HexEncode(ciphertext) + "\n";
+    if (!Encrypt(plaintext, ciphertext, nonce, tag))
+    {
+        reason = "LEASE_STORE_ENCRYPT_FAILED";
+        return PersistOutcome::NotPublished;
+    }
+    const std::string content = "HSL2\n" + HexEncode(nonce) + "\n" +
+        HexEncode(tag) + "\n" + HexEncode(ciphertext) + "\n";
+
+    // A writer must never publish bytes that its own reader will reject.
+    if (content.size() > kMaximumLeaseStoreBytes)
+    {
+        reason = "LEASE_STORE_CAPACITY_EXHAUSTED";
+        return PersistOutcome::NotPublished;
+    }
+    if (intent == PersistIntent::Admission)
+    {
+        std::size_t exitReserve = kLeaseStoreExitBaseReserveBytes;
+        for (std::map<std::string, SessionSupervisorLeaseRecord>::const_iterator
+                 it = m_records.begin(); it != m_records.end(); ++it)
+        {
+            if (it->second.templateId != "paper") continue;
+            if (exitReserve >
+                kMaximumLeaseStoreBytes - kLeaseStorePaperExitReserveBytes)
+            {
+                exitReserve = kMaximumLeaseStoreBytes;
+                break;
+            }
+            exitReserve += kLeaseStorePaperExitReserveBytes;
+        }
+        const std::size_t admissionLimit =
+            kMaximumLeaseStoreBytes - exitReserve;
+        // Existing stores from an older version may already occupy the
+        // reserve. Allow a non-growing rotation, but never let new admission
+        // consume more of the exit budget.
+        if (content.size() > admissionLimit &&
+            (!m_sourceMetadataValid || content.size() > m_sourceSize))
+        {
+            reason = "LEASE_STORE_EXIT_RESERVE_REQUIRED";
+            return PersistOutcome::NotPublished;
+        }
+    }
+
     std::string contentSha256;
     if (!Sha256Hex(content, contentSha256))
     {
         reason = "LEASE_STORE_HASH_FAILED";
-        return false;
+        return PersistOutcome::NotPublished;
     }
 
     const auto sourceUnchanged = [this](std::string& failureReason) {
@@ -1820,7 +1919,8 @@ bool SessionSupervisorLeaseStore::PersistLocked(
         }
         return true;
     };
-    if (!sourceUnchanged(reason)) return false;
+    if (!sourceUnchanged(reason))
+        return PersistOutcome::NotPublished;
 
     std::string temporary;
     std::string suffix;
@@ -1836,8 +1936,9 @@ bool SessionSupervisorLeaseStore::PersistLocked(
     if (fd < 0)
     {
         reason = "LEASE_STORE_TEMP_CREATE_FAILED";
-        return false;
+        return PersistOutcome::NotPublished;
     }
+
     bool ok = true;
     struct stat temporaryMetadata;
     const std::uint64_t desiredUid = m_sourceMetadataValid ?
@@ -1880,20 +1981,22 @@ bool SessionSupervisorLeaseStore::PersistLocked(
     {
         ::unlink(temporary.c_str());
         reason = "LEASE_STORE_PERSIST_FAILED";
-        return false;
+        return PersistOutcome::NotPublished;
     }
     if (!sourceUnchanged(reason))
     {
         ::unlink(temporary.c_str());
-        return false;
+        return PersistOutcome::NotPublished;
     }
     if (::rename(temporary.c_str(), m_path.c_str()) != 0)
     {
         ::unlink(temporary.c_str());
         reason = "LEASE_STORE_RENAME_FAILED";
-        return false;
+        return PersistOutcome::NotPublished;
     }
 
+    // From this point on the new inode is visible at the authoritative path.
+    // Any failure is therefore not safe to report as an ordinary rollback.
     const bool directorySynced = FsyncParentDirectory(m_path);
     std::string persisted;
     struct stat persistedMetadata;
@@ -1905,16 +2008,16 @@ bool SessionSupervisorLeaseStore::PersistLocked(
             static_cast<std::uint64_t>(temporaryMetadata.st_dev) ||
         static_cast<std::uint64_t>(persistedMetadata.st_ino) !=
             static_cast<std::uint64_t>(temporaryMetadata.st_ino) ||
-        static_cast<std::uint64_t>(persistedMetadata.st_uid) !=
-            desiredUid ||
-        static_cast<std::uint64_t>(persistedMetadata.st_gid) !=
-            desiredGid ||
+        static_cast<std::uint64_t>(persistedMetadata.st_uid) != desiredUid ||
+        static_cast<std::uint64_t>(persistedMetadata.st_gid) != desiredGid ||
         static_cast<std::uint32_t>(persistedMetadata.st_mode & 07777) !=
             desiredMode || persistedMetadata.st_nlink != 1)
     {
-        reason = "LEASE_STORE_POST_WRITE_VERIFY_FAILED";
-        return false;
+        m_persistenceIndeterminate = true;
+        reason = "LEASE_STORE_POST_WRITE_VERIFY_INDETERMINATE";
+        return PersistOutcome::PublishedIndeterminate;
     }
+
     m_sourceMetadataValid = true;
     m_sourceDevice = static_cast<std::uint64_t>(persistedMetadata.st_dev);
     m_sourceInode = static_cast<std::uint64_t>(persistedMetadata.st_ino);
@@ -1928,12 +2031,14 @@ bool SessionSupervisorLeaseStore::PersistLocked(
         m_sourceCtimeSec, m_sourceCtimeNsec);
     m_sourceSha256 = contentSha256;
     m_createMetadataValid = false;
+
     if (!directorySynced)
     {
-        reason = "LEASE_STORE_DIRECTORY_SYNC_FAILED";
-        return false;
+        m_persistenceIndeterminate = true;
+        reason = "LEASE_STORE_DIRECTORY_SYNC_INDETERMINATE";
+        return PersistOutcome::PublishedIndeterminate;
     }
     if (storeSha256 != nullptr) *storeSha256 = contentSha256;
     reason.clear();
-    return true;
+    return PersistOutcome::Committed;
 }

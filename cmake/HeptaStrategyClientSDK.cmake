@@ -17,9 +17,10 @@ set(_sdk_include "${CMAKE_INSTALL_INCLUDEDIR}/HeptaStrategyClient")
 set(_sdk_config "${CMAKE_INSTALL_LIBDIR}/cmake/HeptaStrategyClient")
 set_target_properties(hepta_research_native_client PROPERTIES EXPORT_NAME Client)
 set_target_properties(hepta_typed_tool_protocol PROPERTIES EXPORT_NAME ToolProtocol)
+set_target_properties(hepta_unix_tool_client PROPERTIES EXPORT_NAME UnixToolClient)
 set_property(TARGET hepta_research_native_client PROPERTY INTERFACE_INCLUDE_DIRECTORIES
     "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/research/include>;$<INSTALL_INTERFACE:${_sdk_include}>")
-foreach(_target hepta_native_tool_client hepta_typed_tool_protocol)
+foreach(_target hepta_native_tool_client hepta_typed_tool_protocol hepta_unix_tool_client)
     set_property(TARGET ${_target} PROPERTY INTERFACE_INCLUDE_DIRECTORIES
         "$<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/HeptaTrade>;$<INSTALL_INTERFACE:${_sdk_include}>")
 endforeach()
@@ -52,7 +53,7 @@ write_basic_package_version_file("${CMAKE_CURRENT_BINARY_DIR}/HeptaStrategyClien
 configure_file("${CMAKE_CURRENT_LIST_DIR}/strategy-client-build-info.txt.in"
     "${CMAKE_CURRENT_BINARY_DIR}/strategy-client-build-info.txt" @ONLY)
 
-install(TARGETS hepta_research_native_client hepta_native_tool_client hepta_typed_tool_protocol
+install(TARGETS hepta_research_native_client hepta_native_tool_client hepta_typed_tool_protocol hepta_unix_tool_client
     EXPORT HeptaStrategyClientTargets
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
     COMPONENT StrategyClientSDK EXCLUDE_FROM_ALL)

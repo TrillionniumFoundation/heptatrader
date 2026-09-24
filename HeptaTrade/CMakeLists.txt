@@ -198,10 +198,26 @@ target_link_libraries(hepta_execution_server
 
 add_library(hepta_agent_execution_support STATIC
     agent/decision_lease_manager.cpp
-    events/execution_event_hub.cpp)
+    events/execution_event_hub.cpp
+    events/owner_scoped_health_publisher.cpp)
 target_include_directories(hepta_agent_execution_support
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_agent_execution_support PUBLIC Threads::Threads)
+
+# Authoritative state is one compiled implementation shared by production and tests.
+add_library(hepta_authoritative_state STATIC
+    state/authoritative_trading_snapshot_store.cpp
+    state/snapshot_refresh_coordinator.cpp
+    state/ib_authoritative_quote_subscription_set.cpp
+    state/ib_contract_identity.cpp)
+target_include_directories(hepta_authoritative_state PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_authoritative_state PUBLIC Threads::Threads)
+
+add_library(hepta_execution_event_relay STATIC
+    tool_host/execution_event_relay.cpp)
+target_include_directories(hepta_execution_event_relay PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_execution_event_relay PUBLIC
+    hepta_execution_contract hepta_agent_execution_support)
 
 # One production object per profile; tests link the same journal implementation.
 add_library(hepta_oms_journal STATIC oms_journal.cpp)
@@ -224,11 +240,11 @@ target_link_libraries(hepta_execution_core PUBLIC
     OpenSSL::Crypto ZLIB::ZLIB)
 
 add_library(hepta_trading_tool_core STATIC
-    state/ib_contract_identity.cpp
     tools/trading_tool_registry.cpp)
 target_include_directories(hepta_trading_tool_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(hepta_trading_tool_core PUBLIC OpenSSL::Crypto)
+target_link_libraries(hepta_trading_tool_core PUBLIC
+    hepta_authoritative_state OpenSSL::Crypto)
 
 # One compiled implementation of the public tool framing/protocol/result codec
 # is shared by the privileged Gateway and unprivileged Native Client.
@@ -239,6 +255,11 @@ target_include_directories(hepta_typed_tool_protocol
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(hepta_typed_tool_protocol PUBLIC cxx_std_11)
+
+add_library(hepta_unix_tool_client STATIC tool_host/unix_tool_client.cpp)
+target_include_directories(hepta_unix_tool_client PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_unix_tool_client PUBLIC
+    hepta_typed_tool_protocol Threads::Threads)
 
 # Lease persistence and the session wire protocol are likewise shared rather
 # than compiled with potentially different flags into Gateway and sessionctl.
@@ -256,7 +277,6 @@ add_library(hepta_agent_os_core STATIC
     tool_host/agent_os_runtime_config.cpp
     tool_host/execution_gateway_runtime_composition.cpp
     tool_host/execution_gateway_runtime_config.cpp
-    tool_host/execution_event_relay.cpp
     tool_host/session_supervisor_audit_journal.cpp
     tool_host/tool_decision_audit.cpp
     ${HEPTA_TOOL_HOST_CORE_SOURCES}
@@ -275,6 +295,7 @@ target_link_libraries(hepta_agent_os_core PUBLIC
     hepta_trading_tool_core
     hepta_typed_tool_protocol
     hepta_session_supervisor_core
+    hepta_execution_event_relay
     hepta_execution_client
     hepta_agent_execution_support
     Threads::Threads
@@ -311,14 +332,13 @@ endif()
 
 add_library(hepta_native_tool_client STATIC
     client/native_tool_discovery_contract.cpp
-    client/native_tool_client.cpp
-    tool_host/unix_tool_client.cpp)
+    client/native_tool_client.cpp)
 target_include_directories(hepta_native_tool_client PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 target_compile_features(hepta_native_tool_client PUBLIC cxx_std_11)
 target_link_libraries(hepta_native_tool_client
-    PUBLIC hepta_typed_tool_protocol Threads::Threads)
+    PUBLIC hepta_typed_tool_protocol hepta_unix_tool_client Threads::Threads)
 set_target_properties(hepta_native_tool_client PROPERTIES
     EXPORT_NAME NativeToolClient)
 
@@ -390,10 +410,38 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         VERBATIM)
 endif()
 
+# Experimental capability adapters have no broker mutation transport. Compile
+# them once per profile so capability tests exercise the same implementation
+# objects as any future repository-owned consumer rather than a private copy.
+add_library(hepta_venue_capability_adapters STATIC
+    adapter_ctp/ctp_gateway_adapter.cpp
+    adapter_xt/xt_gateway_adapter.cpp)
+target_include_directories(hepta_venue_capability_adapters PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_library(hepta_risk_engine STATIC
     risk/pre_trade_risk_engine.cpp
     risk/portfolio_risk_snapshot_builder.cpp)
 target_include_directories(hepta_risk_engine PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+add_library(hepta_ib_order_state STATIC
+    adapter_ib/ib_order_lifecycle.cpp
+    adapter_ib/ib_venue_correlation.cpp)
+target_include_directories(hepta_ib_order_state PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
+
+add_library(hepta_ib_adapter_runtime STATIC
+    adapter_ib/ib_api_wrapper.cpp
+    ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES})
+target_include_directories(hepta_ib_adapter_runtime PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
+target_link_libraries(hepta_ib_adapter_runtime PUBLIC
+    hepta_ib_order_state hepta_authoritative_state hepta_risk_engine
+    Threads::Threads OpenSSL::Crypto)
+if(HEPTA_ENABLE_IBAPI)
+    target_compile_definitions(hepta_ib_adapter_runtime PRIVATE HEPTA_ENABLE_IBAPI)
+    target_link_libraries(hepta_ib_adapter_runtime PUBLIC hepta_ibapi_client)
+endif()
 
 add_library(hepta_ib_paper_policy STATIC
     execution/ib_paper_execution_profile.cpp
@@ -438,18 +486,13 @@ add_executable(hepta_ib_executiond
     execution/ib_paper_execution_runtime_policy.cpp
     execution/ib_paper_execution_runtime_terminal.cpp
     execution/ib_paper_execution_runtime_flatten.cpp
-    execution/ib_paper_execution_hook_authority.cpp
-    adapter_ib/ib_api_wrapper.cpp
-    ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
-    adapter_ib/ib_order_lifecycle.cpp
-    adapter_ib/ib_venue_correlation.cpp
-    state/authoritative_trading_snapshot_store.cpp
-    state/ib_authoritative_quote_subscription_set.cpp
-    state/ib_contract_identity.cpp)
+    execution/ib_paper_execution_hook_authority.cpp)
 target_include_directories(hepta_ib_executiond PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
-target_link_libraries(hepta_ib_executiond PRIVATE hepta_execution_core hepta_ib_paper_policy hepta_risk_engine)
+target_link_libraries(hepta_ib_executiond PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_ib_adapter_runtime
+    hepta_authoritative_state hepta_risk_engine)
 if(HEPTA_ENABLE_IBAPI)
     # Only broker-owning targets select the native SDK implementation. Agent
     # contracts, clients, Gateway and simulator never inherit this definition.

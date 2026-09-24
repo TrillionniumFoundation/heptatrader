@@ -20,6 +20,10 @@
 #include "session_supervisor_internal.h"
 using namespace HeptaSessionSupervisorInternal;
 
+namespace {
+const std::size_t kSupervisorIngressWorkers = 8;
+const std::size_t kSupervisorPendingClients = 32;
+}
 
 UnixSessionSupervisorServer::UnixSessionSupervisorServer(
 	TradingToolSessionControlPlane& controlPlane)
@@ -154,10 +158,22 @@ bool UnixSessionSupervisorServer::Activate(int listenFd, const std::string& sock
 		return false;
 	}
 	m_stop.store(false);
-	try { m_acceptThread = std::thread(&UnixSessionSupervisorServer::AcceptLoop, this); }
+	try
+	{
+		m_clientThreads.reserve(kSupervisorIngressWorkers);
+		for (std::size_t i = 0; i < kSupervisorIngressWorkers; ++i)
+			m_clientThreads.push_back(
+				std::thread(&UnixSessionSupervisorServer::ClientLoop, this));
+		m_acceptThread =
+			std::thread(&UnixSessionSupervisorServer::AcceptLoop, this);
+	}
 	catch (...)
 	{
 		m_stop.store(true);
+		m_clientChanged.notify_all();
+		for (std::size_t i = 0; i < m_clientThreads.size(); ++i)
+			if (m_clientThreads[i].joinable()) m_clientThreads[i].join();
+		m_clientThreads.clear();
 		const int failedFd = m_listenFd.exchange(-1);
 		if (failedFd >= 0) ::close(failedFd);
 		m_socketPath.clear();
@@ -174,6 +190,23 @@ void UnixSessionSupervisorServer::Stop()
 {
 	if (m_stop.exchange(true)) return;
 	if (m_acceptThread.joinable()) m_acceptThread.join();
+	{
+		std::lock_guard<std::mutex> lock(m_clientMutex);
+		while (!m_pendingClients.empty())
+		{
+			::shutdown(m_pendingClients.front(), SHUT_RDWR);
+			::close(m_pendingClients.front());
+			m_pendingClients.pop_front();
+		}
+		for (std::set<int>::const_iterator client =
+				m_activeClients.begin(); client != m_activeClients.end();
+			 ++client)
+			::shutdown(*client, SHUT_RDWR);
+	}
+	m_clientChanged.notify_all();
+	for (std::size_t i = 0; i < m_clientThreads.size(); ++i)
+		if (m_clientThreads[i].joinable()) m_clientThreads[i].join();
+	m_clientThreads.clear();
 	const int listenFd = m_listenFd.exchange(-1);
 	struct stat listenerIdentity;
 	const bool listenerIdentityValid = listenFd >= 0 &&
@@ -869,13 +902,75 @@ void UnixSessionSupervisorServer::AcceptLoop()
 			if (m_stop.load() || errno == EBADF || errno == EINVAL) break;
 			continue;
 		}
+		bool queued = false;
+		{
+			std::lock_guard<std::mutex> lock(m_clientMutex);
+			if (!m_stop.load() &&
+				m_pendingClients.size() < kSupervisorPendingClients)
+			{
+				try
+				{
+					m_pendingClients.push_back(clientFd);
+					queued = true;
+				}
+				catch (...) {}
+			}
+		}
+		if (queued)
+			m_clientChanged.notify_one();
+		else
+		{
+			::shutdown(clientFd, SHUT_RDWR);
+			::close(clientFd);
+		}
+	}
+}
+
+void UnixSessionSupervisorServer::ClientLoop()
+{
+	while (true)
+	{
+		int clientFd = -1;
+		{
+			std::unique_lock<std::mutex> lock(m_clientMutex);
+			m_clientChanged.wait(lock, [this] {
+				return m_stop.load() || !m_pendingClients.empty();
+			});
+			if (m_pendingClients.empty())
+			{
+				if (m_stop.load()) return;
+				continue;
+			}
+			clientFd = m_pendingClients.front();
+			m_pendingClients.pop_front();
+			try
+			{
+				m_activeClients.insert(clientFd);
+			}
+			catch (...)
+			{
+				::shutdown(clientFd, SHUT_RDWR);
+				::close(clientFd);
+				clientFd = -1;
+			}
+		}
+		if (clientFd < 0) continue;
+
 		HandleClient(clientFd);
+
+		{
+			std::lock_guard<std::mutex> lock(m_clientMutex);
+			m_activeClients.erase(clientFd);
+		}
+		::shutdown(clientFd, SHUT_RDWR);
+		::close(clientFd);
 	}
 }
 
 void UnixSessionSupervisorServer::HandleClient(int clientFd)
 {
-	std::lock_guard<std::mutex> operationLock(m_operationMutex);
+	std::unique_lock<std::mutex> operationLock(
+		m_operationMutex, std::defer_lock);
 	SessionSupervisorResult result;
 	SessionSupervisorRequest request;
 	std::string issuerName;
@@ -895,9 +990,15 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 		issuerName = issuer->second;
 		std::string body;
 		std::string reason;
-		if (!TypedToolProtocol::ReadFrame(clientFd, m_maxRequestBytes, m_ioTimeoutMs, body, reason))
+		const auto decodeRequest = [&]() {
+			operationLock.lock();
+			return SessionSupervisorProtocol::DecodeRequest(
+				body, request, reason);
+		};
+		if (!TypedToolProtocol::ReadFrame(
+				clientFd, m_maxRequestBytes, m_ioTimeoutMs, body, reason))
 			result.ReasonCode() = "SUPERVISOR_INVALID_FRAME:" + reason;
-		else if (!SessionSupervisorProtocol::DecodeRequest(body, request, reason))
+		else if (!decodeRequest())
 			result.ReasonCode() = reason;
 		else if ((request.operation ==
 				SessionSupervisorOperation::RecoveryQuery ||
@@ -1736,9 +1837,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 				"SUPERVISOR_AUDIT_OUTCOME_FAILED";
 		}
 	}
+	if (operationLock.owns_lock()) operationLock.unlock();
 	std::string reason;
 	TypedToolProtocol::WriteFrame(clientFd,
 		SessionSupervisorProtocol::EncodeResult(result), m_ioTimeoutMs, reason);
-	::shutdown(clientFd, SHUT_RDWR);
-	::close(clientFd);
 }

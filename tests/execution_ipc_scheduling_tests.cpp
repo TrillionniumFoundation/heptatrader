@@ -49,7 +49,13 @@ CancelOrderCommand Cancel(const std::string& id, long order) {
     CancelOrderCommand c; c.context = Owner(id); c.orderId = order; return c;
 }
 struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadAuthority {
-    Gate gate; std::atomic<int> cancels{0}; std::function<void()> afterBlock;
+    Gate gate;
+    Gate commandGate;
+    std::atomic<int> cancels{0};
+    std::atomic<int> reconciles{0};
+    std::function<void()> afterBlock;
+    std::atomic<bool> blockFirstCancel{true};
+    std::atomic<bool> blockReconcile{false};
     std::atomic<bool> injectUnrelatedEvidence{false};
     std::mutex orderMutex; std::vector<long> order;
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& c) override {
@@ -58,7 +64,9 @@ struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadA
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& c) override {
         const int number = ++cancels;
         { std::lock_guard<std::mutex> lock(orderMutex); order.push_back(c.orderId); }
-        if (number == 1) { gate.Block(); if (afterBlock) afterBlock(); }
+        if (number == 1 && blockFirstCancel.load()) {
+            gate.Block(); if (afterBlock) afterBlock();
+        }
         ExecutionCommandResult r; r.commandId = c.context.toolCallId;
         r.status = ExecutionCommandStatus::Accepted; r.orderId = c.orderId; return r;
     }
@@ -75,8 +83,16 @@ struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadA
     ExecutionControlStatusResult QueryCommandStatus(const ExecutionControlCommand& c) override { return Reply(c); }
     ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& c) override { return Reply(c); }
     ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& c) override { return Reply(c); }
-    ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& c) override { return Reply(c); }
-    ExecutionCommandResult PreviewOrder(const PlaceOrderCommand& c) override { return PlaceOrder(c); }
+    ExecutionControlStatusResult ReconcileAuthoritativeState(
+        const ExecutionControlCommand& c) override {
+        ++reconciles;
+        if (blockReconcile.load()) commandGate.Block();
+        return Reply(c);
+    }
+    ExecutionCommandResult PreviewOrder(const PlaceOrderCommand& c) override {
+        ExecutionCommandResult r; r.commandId = c.context.toolCallId;
+        r.status = ExecutionCommandStatus::Accepted; r.detail = "{}"; return r;
+    }
     ExecutionCommandResult ReadAuthoritativeState(const ExecutionReadCommand& c) override {
         ExecutionCommandResult r; r.status = ExecutionCommandStatus::Accepted;
         r.commandId = c.context.toolCallId; r.detail = "{}"; return r;
@@ -90,7 +106,13 @@ struct Fixture {
         std::string reason;
         Check(server.Start(path, {static_cast<std::uint32_t>(::geteuid())}, reason, 32768, timeout), reason.c_str());
     }
-    ~Fixture() { authority.gate.Release(); server.Stop(); ::unlink((path + ".lock").c_str()); ::rmdir(directory.c_str()); }
+    ~Fixture() {
+        authority.gate.Release();
+        authority.commandGate.Release();
+        server.Stop();
+        ::unlink((path + ".lock").c_str());
+        ::rmdir(directory.c_str());
+    }
     int Connect() {
         int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
         Check(fd >= 0, "socket"); sockaddr_un address{}; address.sun_family = AF_UNIX;
@@ -184,6 +206,66 @@ void SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry() {
     Check(latency < 500000, "identity blocked behind slow authority");
     std::cout << "IPC_SLOW_AUTHORITY_IDENTITY_US=" << latency << '\n';
 }
+void SaturatedOrdinaryQueueDoesNotBlockExitLane() {
+    Fixture f(3000);
+    const auto identity = f.server.ServiceIdentity();
+    f.authority.blockFirstCancel.store(false);
+    f.authority.blockReconcile.store(true);
+
+    auto reconcile = [&](const std::string& id) {
+        UnixExecutionServiceClient client(f.path, 4000);
+        return client.ReconcileAuthoritativeStateWithIdentity(
+            Control(id), identity);
+    };
+    auto first = std::async(std::launch::async, [&] {
+        return reconcile("blocked-command-0");
+    });
+    f.authority.commandGate.Wait();
+
+    std::vector<std::future<ExecutionControlStatusResult>> backlog;
+    for (unsigned int i = 1; i <= 30; ++i) {
+        backlog.push_back(std::async(std::launch::async, [&, i] {
+            return reconcile("blocked-command-" + std::to_string(i));
+        }));
+    }
+
+    // One request is executing and the command lane admits only 24 queued
+    // requests. Observe at least one conservative transport failure before
+    // releasing the authority to prove that the ordinary queue is saturated.
+    const auto saturationDeadline = Clock::now() + std::chrono::seconds(1);
+    bool saturated = false;
+    while (Clock::now() < saturationDeadline && !saturated) {
+        for (auto& pending : backlog)
+            if (pending.wait_for(std::chrono::milliseconds(0)) ==
+                std::future_status::ready) {
+                saturated = true;
+                break;
+            }
+        if (!saturated)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    Check(saturated, "ordinary command queue did not reach bounded saturation");
+    Check(f.authority.reconciles == 1,
+          "serialized ordinary lane dispatched through the blocked authority");
+
+    UnixExecutionServiceClient exitClient(f.path, 1000);
+    const auto exitStarted = Clock::now();
+    const ExecutionCommandResult cancel =
+        exitClient.CancelIbOrderWithIdentity(
+            Cancel("exit-during-saturation", 77), identity);
+    const long long exitLatency = Micros(exitStarted);
+    Check(cancel.status == ExecutionCommandStatus::Accepted,
+          "cancel did not bypass saturated ordinary command queue");
+    Check(exitLatency < 500000,
+          "cancel was head-of-line blocked by ordinary command queue");
+    Check(f.authority.cancels == 1, "cancel retried or was not dispatched");
+
+    f.authority.commandGate.Release();
+    first.get();
+    for (auto& pending : backlog) pending.get();
+    std::cout << "IPC_SATURATED_COMMAND_CANCEL_US=" << exitLatency << '\n';
+}
+
 void ExpiredQueuedCommandNeverDispatches() {
     Fixture f(250); const auto identity = f.server.ServiceIdentity();
     auto call = [&](const char* id, long order) {
@@ -323,6 +405,7 @@ int main() {
         IdleWorkersAlwaysObserveShutdown();
         PartialFramesDoNotOccupyWorkers();
         SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry();
+        SaturatedOrdinaryQueueDoesNotBlockExitLane();
         ExpiredQueuedCommandNeverDispatches();
         StopDoesNotDeadlockCallbackOrAbandonAuthority();
         RealCoordinatorFenceSeesInFlightAndRemainsDurable();

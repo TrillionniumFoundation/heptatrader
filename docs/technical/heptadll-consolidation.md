@@ -365,7 +365,7 @@ current support decisions are in the consumer register.
 The added executable is an unprivileged SDK command, not a fourth framework.
 Client package allowlists are extended only for its explicit executable/module/
 launcher/contract; original header/archive/symbol and default-install assertions
-remain. The build inventory's core graph is regenerated from actual CMake; the
+remain. Live core/IB build ownership is observed from actual CMake; the
 IB profile receives only the identical SDK-independent target delta. This does
 not claim an executed external-IB-SDK build or broker campaign. Actual exact-head
 CI/SDK outcomes are recorded in PR #113, not inferred from a previous green run.

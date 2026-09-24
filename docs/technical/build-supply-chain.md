@@ -5,7 +5,7 @@ Applies to: CMake, build ownership, vendored compatibility inputs, IB SDK inputs
 
 ## Canonical profiles
 
-The maintained Linux core profile disables the legacy monolith, legacy simulator, IB API, IB probe, and deprecated bridge. The IB profile is a separately supplied, pinned SDK build and remains qualification-gated. CMake File API output is compared with `docs/build-targets.json`; implementation translation units have one module owner.
+The maintained Linux core profile disables the legacy monolith, legacy simulator, IB API, IB probe, and deprecated bridge. The IB profile is a separately supplied, pinned SDK build and remains qualification-gated. Build ownership is derived from the selected live CMake File API model and `docs/module-catalog.json`; there is no checked-in expansion of every CMake target/dependency/translation unit.
 
 ## Inputs
 
@@ -17,7 +17,7 @@ A tested build produces one canonical install tree. Packaging snapshots regular 
 
 ## Drift controls
 
-A new CMake target or implementation translation unit fails build-ownership validation until inventoried. A new Git-tracked production path fails component coverage until assigned to a documented module. A new install file is included in the package manifest and installed-tree comparison; a local rebuild creates a new candidate.
+A new CMake target may use already-owned sources without a metadata ceremony. A new implementation translation unit must have one canonical module owner, and every tracked owned C/C++ source must be reachable from the selected live CMake graph or explicitly declared `unbuilt`. A new Git-tracked production path fails component coverage until assigned to a documented module. A new install file is included in the package manifest and installed-tree comparison; a local rebuild creates a new candidate.
 
 ## Reproducibility and limitations
 

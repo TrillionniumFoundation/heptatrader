@@ -17,6 +17,24 @@
 #include <unistd.h>
 #include <vector>
 
+#if defined(__linux__)
+static bool g_failNextLeaseStoreDirectoryFsync = false;
+
+extern "C" int __real_fsync(int fd);
+extern "C" int __wrap_fsync(int fd)
+{
+    struct stat metadata;
+    if (g_failNextLeaseStoreDirectoryFsync &&
+        ::fstat(fd, &metadata) == 0 && S_ISDIR(metadata.st_mode))
+    {
+        g_failNextLeaseStoreDirectoryFsync = false;
+        errno = EIO;
+        return -1;
+    }
+    return __real_fsync(fd);
+}
+#endif
+
 namespace {
 
 const char* kAad = "HeptaTrader supervisor lease store HSL2";
@@ -621,6 +639,117 @@ public:
     std::string cleanupLock;
     const std::string keyBytes = std::string(32, 'K');
 };
+
+void TestPublishedDirectorySyncFailureIsIndeterminate()
+{
+#if defined(__linux__)
+    Fixture fixture;
+    SessionSupervisorLeaseStore store;
+    std::string reason;
+    assert(fixture.Init(store, reason));
+
+    SessionSupervisorLeaseRecord first =
+        Watch("directory-sync-owner-token-0001");
+    first.agentId = "directory-sync-agent-1";
+    first.sessionId = "directory-sync-session-1";
+    assert(store.Put(first, reason));
+
+    SessionSupervisorLeaseRecord second =
+        Watch("directory-sync-owner-token-0002");
+    second.agentId = "directory-sync-agent-2";
+    second.sessionId = "directory-sync-session-2";
+    g_failNextLeaseStoreDirectoryFsync = true;
+    assert(!store.Put(second, reason));
+    assert(reason == "LEASE_STORE_DIRECTORY_SYNC_INDETERMINATE");
+    assert(store.List().size() == 2);
+
+    // The new inode is already visible. The original owner must keep that
+    // published view and refuse another mutation instead of rolling memory
+    // back and later overwriting the published second lease.
+    SessionSupervisorLeaseRecord third =
+        Watch("directory-sync-owner-token-0003");
+    third.agentId = "directory-sync-agent-3";
+    third.sessionId = "directory-sync-session-3";
+    assert(!store.Put(third, reason));
+    assert(reason == "LEASE_STORE_PERSISTENCE_INDETERMINATE");
+    assert(store.List().size() == 2);
+
+    SessionSupervisorLeaseStore reopened;
+    assert(fixture.Init(reopened, reason));
+    SessionSupervisorLeaseRecord durable;
+    assert(reopened.Get(second.token, durable));
+    assert(reopened.List().size() == 2);
+    assert(reopened.Put(third, reason));
+
+    SessionSupervisorLeaseStore finalView;
+    assert(fixture.Init(finalView, reason));
+    assert(finalView.List().size() == 3);
+#endif
+}
+
+void TestCapacityRejectsBeforePublicationAndKeepsExitReserve()
+{
+    {
+        Fixture fixture;
+        SessionSupervisorLeaseStore store;
+        std::string reason;
+        assert(fixture.Init(store, reason));
+
+        SessionSupervisorLeaseRecord baseline =
+            Watch("capacity-baseline-owner-token-0001");
+        baseline.agentId = "capacity-baseline-agent";
+        baseline.sessionId = "capacity-baseline-session";
+        assert(store.Put(baseline, reason));
+        const std::string before = ReadFile(fixture.store);
+
+        SessionSupervisorLeaseRecord tooLarge =
+            Watch("capacity-overflow-owner-token-0001");
+        tooLarge.agentId = "capacity-overflow-agent";
+        tooLarge.sessionId.assign(530000, 'x');
+        assert(!store.Put(tooLarge, reason));
+        assert(reason == "LEASE_STORE_CAPACITY_EXHAUSTED");
+        assert(ReadFile(fixture.store) == before);
+        assert(store.List().size() == 1);
+
+        SessionSupervisorLeaseStore reopened;
+        assert(fixture.Init(reopened, reason));
+        assert(reopened.List().size() == 1);
+
+        // This candidate still fits the absolute 2 MiB reader bound, but it
+        // would consume the bytes reserved for revoke/fence/terminal evidence.
+        SessionSupervisorLeaseRecord reserveEater =
+            Watch("capacity-reserve-owner-token-0001");
+        reserveEater.agentId = "capacity-reserve-agent";
+        reserveEater.sessionId.assign(500000, 'r');
+        assert(!reopened.Put(reserveEater, reason));
+        assert(reason == "LEASE_STORE_EXIT_RESERVE_REQUIRED");
+        assert(ReadFile(fixture.store) == before);
+    }
+
+    {
+        // A store produced by an older build may already occupy the current
+        // admission reserve. It must still be possible to remove an owner.
+        Fixture fixture;
+        SessionSupervisorLeaseRecord legacyLarge =
+            Watch("capacity-legacy-large-owner-token-0001");
+        legacyLarge.agentId = "capacity-legacy-large-agent";
+        legacyLarge.sessionId.assign(500000, 'l');
+        const std::string encoded = EncryptEnvelope(
+            "HSL8\n" + Hsl7Record(legacyLarge), fixture.keyBytes);
+        assert(encoded.size() > 2000000);
+        assert(encoded.size() < 2 * 1024 * 1024);
+        WriteFile(fixture.store, encoded, 0600);
+
+        SessionSupervisorLeaseStore store;
+        std::string reason;
+        assert(fixture.Init(store, reason));
+        assert(store.Remove(legacyLarge.token, reason));
+
+        SessionSupervisorLeaseStore reopened;
+        assert(fixture.Init(reopened, reason));
+        assert(reopened.List().empty());
+    }
+}
 
 void TestNormalInitRejectsOwnerlessHsl5Paper()
 {
@@ -1727,6 +1856,8 @@ void TestLinuxOPathOpensSearchOnlyLockParent()
 
 int main()
 {
+    TestPublishedDirectorySyncFailureIsIndeterminate();
+    TestCapacityRejectsBeforePublicationAndKeepsExitReserve();
     TestNormalInitRejectsOwnerlessHsl5Paper();
     TestNormalInitRejectsOwnerlessHsl4Paper();
     TestHappyPathPreservesWatchMetadataAndIsIdempotent();

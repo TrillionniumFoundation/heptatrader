@@ -67,7 +67,9 @@ permissions, durable replacement or rollback requirements.
 
 | Interruption | Required recovery behavior |
 |---|---|
-| Before durable lease commit | do not publish a usable token or successful generation |
+| Proposed encrypted store exceeds the reader bound or ordinary admission would consume the exit reserve | reject before rename; retain the exact previous file and in-memory state |
+| Failure before rename | roll back the proposed in-memory transition; the authoritative file is unchanged |
+| Rename succeeded but directory sync or post-write verification failed | mark persistence indeterminate, retain the published in-memory transition, and refuse further mutations until a fresh owner reopens/validates the store |
 | Durable generation exists but token publication is incomplete | inspect durable generation; never guess a more permissive state from the token |
 | Fencing RPC is unavailable or ambiguous | retain fence/recovery-only state; no risk increase |
 | Restart with a finalization tombstone | continue the one-way finalization; do not rotate or reprovision |

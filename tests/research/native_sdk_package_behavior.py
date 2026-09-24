@@ -24,11 +24,11 @@ foreach(forbidden hepta_agent_os_core hepta_execution_core hepta_execution_serve
         message(FATAL_ERROR "Privileged SDK target: ${forbidden}")
     endif()
 endforeach()
-foreach(name Client NativeToolClient ToolProtocol)
+foreach(name Client NativeToolClient ToolProtocol UnixToolClient)
     get_target_property(links HeptaStrategyClient::${name} INTERFACE_LINK_LIBRARIES)
     if(links AND NOT links STREQUAL "links-NOTFOUND")
         foreach(link IN LISTS links)
-            if(NOT link MATCHES "^(HeptaStrategyClient::(NativeToolClient|ToolProtocol)|Threads::Threads)$")
+            if(NOT link MATCHES "^(HeptaStrategyClient::(NativeToolClient|ToolProtocol|UnixToolClient)|Threads::Threads)$")
                 message(FATAL_ERROR "Unreviewed client link dependency: ${link}")
             endif()
         endforeach()
@@ -50,7 +50,7 @@ HEADERS = {
     "tools/trading_tool_wire_contract.h", "hepta/research/native_strategy_client.h",
 }
 LIBRARIES = {"libhepta_research_native_client.a", "libhepta_native_tool_client.a",
-             "libhepta_typed_tool_protocol.a"}
+             "libhepta_typed_tool_protocol.a", "libhepta_unix_tool_client.a"}
 
 
 def main() -> None:
@@ -93,7 +93,7 @@ def main() -> None:
         archives = list(relocated.rglob("*.a"))
         if {p.name for p in archives} != LIBRARIES or len(archives) != len(LIBRARIES):
             raise RuntimeError("client archive closure differs")
-        # Only the three canonical archives, eight public headers, config and
+        # Only the four canonical archives, eight public headers, config and
         # explicit package metadata/docs may be in this developer component.
         for path in relocated.rglob("*"):
             if path.is_symlink():

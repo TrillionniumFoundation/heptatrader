@@ -751,6 +751,33 @@ void ExerciseDisconnectPhases(const std::string& socketPath)
 	close(client);
 }
 
+void ExerciseSlowIngressIsolation(const std::string& socketPath)
+{
+	const int slowClient = Connect(socketPath);
+	const std::uint32_t networkLength = htonl(64);
+	assert(write(slowClient, &networkLength, 2) == 2);
+
+	SessionSupervisorRequest query;
+	query.operation = SessionSupervisorOperation::Renew;
+	query.token = "slow-ingress-unrelated-token-0001";
+	query.expectedGeneration = 1;
+	query.ttlMs = 60000;
+	const std::chrono::steady_clock::time_point started =
+		std::chrono::steady_clock::now();
+	const SessionSupervisorResult result = Call(socketPath, query);
+	const long elapsedMs = static_cast<long>(
+		std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - started).count());
+
+	// The server in this fixture has a 1 s frame timeout. The unrelated
+	// complete request must finish while the deliberately incomplete peer is
+	// still inside that timeout rather than queue behind it.
+	assert(elapsedMs < 700);
+	assert(!result.accepted);
+	assert(result.ReasonCode() == "SESSION_NOT_FOUND");
+	close(slowClient);
+}
+
 void TestAuditJournalSecurity()
 {
 	const std::string path =
@@ -955,6 +982,7 @@ void TestSupervisorPeerCredentialAndLifecycle()
 	assert(lstat(socketPath.c_str(), &socketMetadata) == 0);
 	assert((socketMetadata.st_mode & 0777) == 0600);
 	ExerciseDisconnectPhases(socketPath);
+	ExerciseSlowIngressIsolation(socketPath);
 
 	SessionSupervisorRequest provision;
 	provision.operation = SessionSupervisorOperation::Provision;

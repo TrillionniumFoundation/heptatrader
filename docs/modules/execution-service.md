@@ -134,18 +134,20 @@ The [flatten result contract](../technical/venue-flatten-contract.md) completes 
 
 ## Bounded IPC scheduling
 
-The command socket now uses one nonblocking framing/reply reactor (64 live
-connections, at most 1 MiB per configured request) and two FIFO authority lanes
-(24 queued requests per lane). Partial frames and slow readers consume bounded
-connection slots, not authority workers. The same accept-time steady deadline
-covers framing, queueing and reply; expired queued calls never enter authority.
-Overload closes the connection without fabricating a command result.
+The command socket uses one nonblocking framing/reply reactor (64 live
+connections, at most 1 MiB per configured request) and three FIFO authority
+lanes (24 queued requests per lane). Partial frames and slow readers consume
+bounded connection slots, not authority workers. The same accept-time steady
+deadline covers framing, queueing and reply; expired queued calls never enter
+authority. Overload closes the connection without fabricating a command result.
 
 Identity, command status, recovery status and owner fence/release share the
-control lane. General authoritative reads stay on the ordinary lane so a slow
-snapshot provider cannot occupy the reserved control worker. Other operations retain a single ordered
-lane. Fence/release stay in the same FIFO so an old release cannot overtake a
-completed newer fence. Identity, trust-domain binding and readiness are checked
+short control lane. Guarded cancel and authoritative flatten use a separate exit
+lane, so an ordinary command backlog cannot place them behind risk-increasing
+work; they still retain their ordinary journal, owner, adapter and uncertainty
+checks and may themselves wait on the venue/provider boundary. General
+authoritative reads and other operations stay on the ordinary lane. Fence/release
+stay in the same FIFO so an old release cannot overtake a completed newer fence. Identity, trust-domain binding and readiness are checked
 again at dispatch. The coordinator remains the only durable mutation owner.
 IB status/fence no longer take the policy dispatch mutex; IB fence release uses
 try-lock and returns `IB_PAPER_CONTROL_BUSY` without removing the fence while a
@@ -160,8 +162,8 @@ Local journal/fsync and control callbacks must themselves be bounded for an
 operational latency SLO; this scheduler is not a hard-real-time claim.
 
 `tests/execution_ipc_scheduling_tests.cpp` exercises partial-frame concurrency,
-slow authority with query/fence access, queued expiry, lost replies, concurrent
-Stop/callback Stop and restart. Its real coordinator/socket fixture proves that
+slow authority with query/fence access, ordinary-lane saturation with independent
+cancel dispatch, queued expiry, lost replies, concurrent Stop/callback Stop and restart. Its real coordinator/socket fixture proves that
 an in-flight venue call remains visible to fencing, fence release is rejected,
 exact-ID replay sends once and the owner fence survives journal recovery.
 

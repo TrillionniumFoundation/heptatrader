@@ -38,7 +38,7 @@ Any ambiguous durable or cross-service result -> UNCERTAIN / fail closed
 
 The lease store is authoritative for session metadata. Records bind Agent identity, session ID, generation, capability set, execution domain, expiry, and recovery/fence information. Store migration must be explicit and crash safe; a newer or malformed format is rejected.
 
-Writes must use a durable temporary file, file `fsync`, atomic rename, and directory `fsync` where supported. A partially committed generation may not be guessed from the token file.
+Writes use a durable temporary file, file `fsync`, atomic rename, and directory `fsync`. The complete encrypted envelope is checked against the reader's 2 MiB bound before rename, and ordinary admission leaves bounded space for revoke/fence/PAPER terminal evidence. Once rename has published a new inode, a later directory-sync or post-write verification failure is **indeterminate**, not an ordinary rollback: the store keeps the published in-memory view and refuses further mutations until a fresh owner reopens and validates durable state.
 
 ## Operator interface
 
@@ -49,6 +49,14 @@ The repository intentionally does not provide an automatic PAPER campaign opener
 ## Concurrency and fencing
 
 Each mutation of a lease is serialized against the durable generation. Repeated commands are idempotent by their command identity. A lower or stale generation is rejected. Expiry, revoke, or ambiguous cleanup must cause the Gateway and Execution Service to reject new risk before external side effects are possible.
+
+Socket ingress is separated from the mutation serializer. A bounded worker set
+reads and authenticates complete frames without holding the operation mutex;
+only decoded operations enter the serialized state transition, and the mutex is
+released after outcome audit before a potentially slow socket reply. The accept
+queue is bounded and overload is closed before any lease operation is invoked.
+A slow or partial authorized peer therefore consumes one bounded ingress slot,
+not the global lease-state lock.
 
 The supervisor must not hold store locks while waiting indefinitely for an external service. Cross-service work is bounded and represented as explicit intermediate or uncertain state.
 

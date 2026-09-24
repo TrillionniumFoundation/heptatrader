@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import copy
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,7 +13,7 @@ import verify_build_ownership as ownership  # noqa: E402
 
 
 class BuildOwnershipTests(unittest.TestCase):
-    def fixture(self, directory: str) -> tuple[Path, dict]:
+    def fixture(self, directory: str) -> Path:
         root = Path(directory)
         (root / "HeptaTrade").mkdir()
         (root / "tests").mkdir()
@@ -36,181 +36,162 @@ class BuildOwnershipTests(unittest.TestCase):
             "id": "component", "document": "docs/modules/component.md",
             "implementation": ["HeptaTrade"]}]}
         (root / "docs/module-catalog.json").write_text(json.dumps(catalog))
-        core = ownership.observe(root, "core")
-        ib = copy.deepcopy(core)
-        ib["requires_ib_sdk"] = True
-        ib["options"] = ownership.profile_options("ib")
-        inventory = {"schema": ownership.SCHEMA, "coverage": ownership.COVERAGE,
-                     "profiles": {"core": core, "ib": ib}}
-        return root, inventory
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        subprocess.run(["git", "-C", str(root), "add", "."], check=True)
+        return root
 
-    def implementation(self, inventory: dict) -> dict:
-        return next(source for target in inventory["profiles"]["core"]["targets"]
-                    for source in target["translation_units"] if source["kind"] == "implementation")
+    @staticmethod
+    def track(root: Path, path: Path) -> None:
+        subprocess.run(["git", "-C", str(root), "add", path.relative_to(root)], check=True)
 
-    def test_repository_core_matches_fresh_cmake_model(self) -> None:
-        ownership.verify(ROOT, ownership.load_json(ROOT / "docs/build-targets.json"))
+    def test_repository_core_matches_live_cmake_model(self) -> None:
+        observed = ownership.verify(ROOT)
+        self.assertTrue(observed["targets"])
 
-    def test_real_cmake_fixture_matches(self) -> None:
+    def test_real_cmake_fixture_matches_without_reviewed_graph(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            ownership.verify(root, inventory)
+            root = self.fixture(temporary)
+            observed = ownership.verify(root)
+            self.assertTrue(any(t["name"] == "component" for t in observed["targets"]))
 
-    def test_new_target_is_detected(self) -> None:
+    def test_new_target_using_owned_source_needs_no_inventory_ceremony(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
+            root = self.fixture(temporary)
             with (root / "HeptaTrade/CMakeLists.txt").open("a") as stream:
-                stream.write("add_library(unreviewed STATIC component.cpp)\n")
-            with self.assertRaisesRegex(ownership.OwnershipError, "inventory drift"):
-                ownership.verify(root, inventory)
+                stream.write("add_library(additional STATIC component.cpp)\n")
+            observed = ownership.verify(root)
+            self.assertTrue(any(t["name"] == "additional" for t in observed["targets"]))
 
-    def test_new_translation_unit_expanded_from_variable_is_detected(self) -> None:
+    def test_new_owned_translation_unit_is_accepted_when_live_build_reaches_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            (root / "HeptaTrade/extra.cpp").write_text("int extra() { return 2; }\n")
+            root = self.fixture(temporary)
+            extra = root / "HeptaTrade/extra.cpp"
+            extra.write_text("int extra() { return 2; }\n")
+            self.track(root, extra)
             cmake = root / "HeptaTrade/CMakeLists.txt"
             cmake.write_text(cmake.read_text().replace("component.cpp)", "component.cpp extra.cpp)"))
-            with self.assertRaisesRegex(ownership.OwnershipError, "inventory drift"):
-                ownership.verify(root, inventory)
+            ownership.verify(root)
+
+    def test_owned_translation_unit_missing_from_live_build_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.fixture(temporary)
+            extra = root / "HeptaTrade/extra.cpp"
+            extra.write_text("int extra() { return 2; }\n")
+            self.track(root, extra)
+            with self.assertRaisesRegex(ownership.OwnershipError, "absent from the selected live CMake graph"):
+                ownership.verify(root)
+
+    def test_explicit_unbuilt_source_is_allowed_but_stale_unbuilt_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.fixture(temporary)
+            extra = root / "HeptaTrade/extra.cpp"
+            extra.write_text("int extra() { return 2; }\n")
+            self.track(root, extra)
+            path = root / "docs/module-catalog.json"
+            catalog = json.loads(path.read_text())
+            catalog["modules"][0]["unbuilt"] = ["HeptaTrade/extra.cpp"]
+            path.write_text(json.dumps(catalog))
+            self.track(root, path)
+            ownership.verify(root)
+            cmake = root / "HeptaTrade/CMakeLists.txt"
+            cmake.write_text(cmake.read_text() + "target_sources(component PRIVATE extra.cpp)\n")
+            with self.assertRaisesRegex(ownership.OwnershipError, "marks live CMake sources as unbuilt"):
+                ownership.verify(root)
 
     def test_unmapped_translation_unit_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            (root / "orphan.cpp").write_text("int orphan() { return 3; }\n")
+            root = self.fixture(temporary)
+            orphan = root / "orphan.cpp"
+            orphan.write_text("int orphan() { return 3; }\n")
+            self.track(root, orphan)
             with (root / "HeptaTrade/CMakeLists.txt").open("a") as stream:
                 stream.write("target_sources(component PRIVATE ../orphan.cpp)\n")
             with self.assertRaisesRegex(ownership.OwnershipError, "canonical module owner"):
-                ownership.verify(root, inventory)
+                ownership.verify(root)
 
     def test_unclassified_generated_translation_unit_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
+            root = self.fixture(temporary)
             with (root / "HeptaTrade/CMakeLists.txt").open("a") as stream:
                 stream.write('file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated.cpp" "int generated() { return 5; }\\n")\n'
                              'target_sources(component PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated.cpp")\n')
-            with self.assertRaisesRegex(ownership.OwnershipError, "unclassified.*translation unit"):
-                ownership.verify(root, inventory)
-
-    def test_unknown_owner_is_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            self.implementation(inventory)["owner"] = "imaginary-module"
-            with self.assertRaisesRegex(ownership.OwnershipError, "owner mismatch"):
-                ownership.verify(root, inventory)
+            with self.assertRaisesRegex(ownership.OwnershipError, "unclassified generated translation unit"):
+                ownership.verify(root)
 
     def test_ambiguous_catalog_ownership_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
+            root = self.fixture(temporary)
             path = root / "docs/module-catalog.json"
             catalog = json.loads(path.read_text())
             duplicate = dict(catalog["modules"][0], id="conflicting-component")
             catalog["modules"].append(duplicate)
             path.write_text(json.dumps(catalog))
+            self.track(root, path)
             with self.assertRaisesRegex(ownership.OwnershipError, "canonical module owner"):
-                ownership.verify(root, inventory)
+                ownership.verify(root)
 
-    def test_catalog_owner_rename_invalidates_reviewed_inventory(self) -> None:
+    def test_catalog_owner_rename_needs_no_generated_graph_update(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
+            root = self.fixture(temporary)
             path = root / "docs/module-catalog.json"
-            catalog = json.loads(path.read_text());catalog["modules"][0]["id"] = "renamed-component"
+            catalog = json.loads(path.read_text())
+            catalog["modules"][0]["id"] = "renamed-component"
             path.write_text(json.dumps(catalog))
-            with self.assertRaisesRegex(ownership.OwnershipError, "owner mismatch"):
-                ownership.verify(root, inventory)
+            self.track(root, path)
+            observed = ownership.verify(root)
+            implementation = next(
+                source for target in observed["targets"]
+                for source in target["translation_units"]
+                if source["kind"] == "implementation")
+            self.assertEqual(implementation["owner"], "renamed-component")
 
-    def test_duplicate_target_and_translation_unit_are_rejected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            repeated = copy.deepcopy(inventory)
-            targets = repeated["profiles"]["core"]["targets"]
-            targets.append(copy.deepcopy(targets[0]))
-            with self.assertRaisesRegex(ownership.OwnershipError, "duplicate target"):
-                ownership.verify(root, repeated)
-            repeated = copy.deepcopy(inventory)
-            sources = repeated["profiles"]["core"]["targets"][0]["translation_units"]
-            sources.append(copy.deepcopy(sources[0]))
-            with self.assertRaisesRegex(ownership.OwnershipError, "duplicate translation unit"):
-                ownership.verify(root, repeated)
-
-    def test_missing_reviewed_target_is_detected(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            targets = inventory["profiles"]["core"]["targets"]
-            targets[:] = [target for target in targets if target["name"] != "component_tests"]
-            with self.assertRaisesRegex(ownership.OwnershipError, "inventory drift"):
-                ownership.verify(root, inventory)
-
-    def test_core_cannot_claim_external_sdk_ownership(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            source = self.implementation(inventory)
-            source["kind"] = "external_ib_sdk";source["owner"] = None
-            with self.assertRaisesRegex(ownership.OwnershipError, "external SDK"):
-                ownership.verify(root, inventory)
-
-    def test_ib_external_source_is_not_a_repository_owned_translation_unit(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            sdk = root / "fixture-sdk";sdk.mkdir()
-            decimal = sdk / "fixture.a";decimal.write_text("test fixture; not a real archive")
+    def test_ib_external_source_has_no_repository_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary, tempfile.TemporaryDirectory() as sdk_dir:
+            root = self.fixture(temporary)
+            sdk = Path(sdk_dir)
             (sdk / "sdk.cpp").write_text("int sdk_fixture() { return 4; }\n")
-            # It must be outside the repository to model a real external SDK.
-            with tempfile.TemporaryDirectory() as external_directory:
-                external = Path(external_directory)
-                (external / "sdk.cpp").write_text((sdk / "sdk.cpp").read_text())
-                with (root / "HeptaTrade/CMakeLists.txt").open("a") as stream:
-                    stream.write('if(HEPTA_ENABLE_IBAPI)\nadd_library(ib_fixture STATIC "${IBAPI_ROOT}/sdk.cpp")\nendif()\n')
-                inventory["profiles"]["ib"] = ownership.observe(root, "ib", external, decimal)
-                source = next(source for target in inventory["profiles"]["ib"]["targets"]
-                              for source in target["translation_units"] if source["kind"] == "external_ib_sdk")
-                self.assertIsNone(source["owner"])
-                ownership.verify(root, inventory, "ib", external, decimal)
-                source["owner"] = "component"
-                with self.assertRaisesRegex(ownership.OwnershipError, "external SDK"):
-                    ownership.verify(root, inventory, "ib", external, decimal)
+            decimal = sdk / "fixture.a"
+            decimal.write_text("configure-only fixture")
+            with (root / "HeptaTrade/CMakeLists.txt").open("a") as stream:
+                stream.write('if(HEPTA_ENABLE_IBAPI)\nadd_library(ib_fixture STATIC "${IBAPI_ROOT}/sdk.cpp")\nendif()\n')
+            observed = ownership.verify(root, "ib", sdk, decimal)
+            external = next(
+                source for target in observed["targets"]
+                for source in target["translation_units"]
+                if source["kind"] == "external_ib_sdk")
+            self.assertIsNone(external["owner"])
 
     def test_symlinked_repository_source_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
+            root = self.fixture(temporary)
             source = root / "HeptaTrade/component.cpp"
-            original = root / "HeptaTrade/original.cpp";source.rename(original);source.symlink_to(original)
+            original = root / "HeptaTrade/original.cpp"
+            source.rename(original)
+            source.symlink_to(original.name)
+            subprocess.run(["git", "-C", str(root), "add", "-A"], check=True)
             with self.assertRaisesRegex(ownership.OwnershipError, "symlinked"):
-                ownership.verify(root, inventory)
+                ownership.verify(root)
 
     def test_duplicate_json_keys_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "inventory.json"
+            path = Path(temporary) / "catalog.json"
             path.write_text('{"schema":"first","schema":"second"}')
             with self.assertRaisesRegex(ownership.OwnershipError, "duplicate JSON key"):
                 ownership.load_json(path)
 
-    def test_core_only_generation_needs_no_sdk_and_preserves_ib_snapshot(self):
+    def test_core_report_needs_no_sdk_and_failed_all_does_not_replace_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            root, inventory = self.fixture(temporary)
-            path = root / "docs/build-targets.json"
-            # A stale unselected profile is not recertified or used to block core.
-            inventory["profiles"]["ib"]["targets"][0]["declared_in"] = "retired/CMakeLists.txt"
-            old_ib = copy.deepcopy(inventory["profiles"]["ib"])
-            path.write_text(json.dumps(inventory))
-            ownership.generate(root, path, {"core"})
-            generated = ownership.load_json(path)
-            self.assertEqual(generated["profiles"]["ib"], old_ib)
-            ownership.verify(root, generated, "core")
-            with self.assertRaises(ownership.OwnershipError):
-                ownership.validate_inventory(root, generated, {"ib"})
-
-    def test_new_core_inventory_and_failed_all_generation_are_atomic(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root, _ = self.fixture(temporary)
-            path = root / "docs/new-inventory.json"
-            self.assertEqual(ownership.main(["--root", str(root), "--inventory", str(path),
-                                            "--generate", "--profile", "core"]), 0)
-            self.assertEqual(set(ownership.load_json(path)["profiles"]), {"core"})
-            previous = path.read_bytes()
-            self.assertEqual(ownership.main(["--root", str(root), "--inventory", str(path),
-                                            "--generate", "--profile", "all"]), 1)
-            self.assertEqual(path.read_bytes(), previous)
-            self.assertFalse(list(path.parent.glob("*.tmp")))
+            root = self.fixture(temporary)
+            report = root / "observation.json"
+            self.assertEqual(ownership.main(["--root", str(root), "--report", str(report)]), 0)
+            value = json.loads(report.read_text())
+            self.assertEqual(value["schema"], ownership.REPORT_SCHEMA)
+            self.assertEqual(set(value["profiles"]), {"core"})
+            previous = report.read_bytes()
+            self.assertEqual(ownership.main(["--root", str(root), "--profile", "all",
+                                            "--report", str(report)]), 1)
+            self.assertEqual(report.read_bytes(), previous)
+            self.assertFalse(list(report.parent.glob("observation.json.*.tmp")))
 
 
 if __name__ == "__main__":
