@@ -67,10 +67,10 @@ private:
         ExecutionEventRelayCursor cursor;
     };
     std::shared_ptr<RelayState> StateFor(const AgentExecutionContext& owner);
-    ExecutionControlResult RemoteDisabled(const ExecutionControlCommand& command) const;
+    ExecutionControlStatusResult RemoteDisabled(const ExecutionControlCommand& command) const;
     ExecutionCommandResult RemoteIdentityRejected(
         const AgentExecutionContext& context, const std::string& reason) const;
-    ExecutionControlResult RemoteIdentityRejected(
+    ExecutionControlStatusResult RemoteIdentityRejected(
         const ExecutionControlCommand& command, const std::string& reason) const;
     bool ResolveRemoteIdentity(ExecutionServiceIdentity& identity,
                                std::string& reason);
@@ -84,7 +84,7 @@ private:
                                 std::string& reason);
     bool ContextAllowed(const AgentExecutionContext& context) const;
     ExecutionCommandResult ContextRejected(const AgentExecutionContext& context) const;
-    ExecutionControlResult ContextRejected(const ExecutionControlCommand& command) const;
+    ExecutionControlStatusResult ContextRejected(const ExecutionControlCommand& command) const;
 
     ExecutionAuthority& m_localAuthority;
     ExecutionEventHub& m_localEventHub;

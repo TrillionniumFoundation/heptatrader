@@ -11,9 +11,11 @@ using namespace HeptaExecutionServiceInternal;
 UnixExecutionServiceClient::UnixExecutionServiceClient(const std::string& socketPath,
                                                        int ioTimeoutMs,
                                                        std::size_t maxResponseBytes,
-                                                       const std::set<std::uint32_t>& allowedServerUids)
-    : m_socketPath(socketPath), m_ioTimeoutMs(ioTimeoutMs), m_maxResponseBytes(maxResponseBytes),
-      m_allowedServerUids(allowedServerUids)
+                                                       const std::set<std::uint32_t>& allowedServerUids,
+                                                       int responseTimeoutMs)
+    : m_socketPath(socketPath), m_ioTimeoutMs(ioTimeoutMs),
+      m_responseTimeoutMs(responseTimeoutMs > 0 ? responseTimeoutMs : ioTimeoutMs),
+      m_maxResponseBytes(maxResponseBytes), m_allowedServerUids(allowedServerUids)
 {
     if (m_allowedServerUids.empty())
         m_allowedServerUids.insert(static_cast<std::uint32_t>(::geteuid()));
@@ -319,7 +321,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
                                                         const ExecutionServiceIdentity&
                                                             expectedIdentity)
 {
-    const IoDeadline deadline = DeadlineAfter(m_ioTimeoutMs);
+    const IoDeadline requestDeadline = DeadlineAfter(m_ioTimeoutMs);
     struct sockaddr_un address;
     std::string reason;
     if (!BuildAddress(m_socketPath, address, reason)) return TransportFailure(commandId, reason);
@@ -328,7 +330,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
     int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&address), sizeof(address));
     if (rc != 0 && errno == EINPROGRESS)
     {
-        if (!WaitFd(fd, POLLOUT, deadline))
+        if (!WaitFd(fd, POLLOUT, requestDeadline))
         {
             ::close(fd);
             return TransportFailure(commandId, "connect timeout");
@@ -360,13 +362,17 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
             return TransportFailure(commandId, "execution service peer uid rejected");
         }
     }
-    if (!WriteFrame(fd, requestBody, deadline))
+    if (!WriteFrame(fd, requestBody, requestDeadline))
     {
         ::close(fd);
         return TransportFailure(commandId, "request write failed");
     }
+    // Once a complete request is written, waiting for its durable authority
+    // result has a separate bound from connect/framing. Expiry remains a
+    // conservative transport failure and never triggers an automatic retry.
+    const IoDeadline responseDeadline = DeadlineAfter(m_responseTimeoutMs);
     std::string responseBody;
-    if (!ReadFrame(fd, m_maxResponseBytes, deadline, responseBody))
+    if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
     {
         ::close(fd);
         return TransportFailure(commandId, "response read failed");
@@ -392,7 +398,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     const std::string& requestBody,
     const ExecutionServiceIdentity& expectedIdentity)
 {
-    const IoDeadline deadline = DeadlineAfter(m_ioTimeoutMs);
+    const IoDeadline requestDeadline = DeadlineAfter(m_ioTimeoutMs);
     struct sockaddr_un address;
     std::string reason;
     if (!BuildAddress(m_socketPath, address, reason))
@@ -402,7 +408,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     int rc = ::connect(fd, reinterpret_cast<struct sockaddr*>(&address), sizeof(address));
     if (rc != 0 && errno == EINPROGRESS)
     {
-        if (!WaitFd(fd, POLLOUT, deadline))
+        if (!WaitFd(fd, POLLOUT, requestDeadline))
         {
             ::close(fd);
             return ControlTransportFailure(commandId, "connect timeout");
@@ -432,13 +438,17 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
         ::close(fd);
         return ControlTransportFailure(commandId, "execution service peer uid rejected");
     }
-    if (!WriteFrame(fd, requestBody, deadline))
+    if (!WriteFrame(fd, requestBody, requestDeadline))
     {
         ::close(fd);
         return ControlTransportFailure(commandId, "request write failed");
     }
+    // Once a complete request is written, waiting for its durable authority
+    // result has a separate bound from connect/framing. Expiry remains a
+    // conservative transport failure and never triggers an automatic retry.
+    const IoDeadline responseDeadline = DeadlineAfter(m_responseTimeoutMs);
     std::string responseBody;
-    if (!ReadFrame(fd, m_maxResponseBytes, deadline, responseBody))
+    if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
     {
         ::close(fd);
         return ControlTransportFailure(commandId, "response read failed");

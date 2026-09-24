@@ -24,7 +24,8 @@ public:
                                         std::size_t maxResponseBytes = 32768,
                                         const std::set<std::uint32_t>&
                                             allowedServerUids =
-                                                std::set<std::uint32_t>());
+                                                std::set<std::uint32_t>(),
+                                        int responseTimeoutMs = 0);
 
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override;
     ExecutionCommandResult CancelOrder(const CancelOrderCommand& command) override;
@@ -109,6 +110,7 @@ private:
 
     std::string m_socketPath;
     int m_ioTimeoutMs;
+    int m_responseTimeoutMs;
     std::size_t m_maxResponseBytes;
     std::set<std::uint32_t> m_allowedServerUids;
     std::mutex m_serviceIdentityMutex;

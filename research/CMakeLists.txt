@@ -67,13 +67,41 @@ if(BUILD_TESTING)
         hepta_research_test(hepta_research_native_gateway_tests ../tests/research/native_gateway_tests.cpp)
         target_link_libraries(hepta_research_native_gateway_tests PRIVATE
             hepta_research_native_client hepta_agent_os_core)
-        hepta_research_test(hepta_research_native_execution_tests ../tests/research/native_execution_tests.cpp
-            --application-client "${Python3_EXECUTABLE}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/application_execution_driver.py"
-            "${CMAKE_CURRENT_SOURCE_DIR}/strategy_gateway.py" "$<TARGET_FILE:hepta_strategy_client_cli>")
+        hepta_research_test(hepta_research_native_execution_tests
+            ../tests/research/native_execution_tests.cpp --lifecycle-only)
         target_link_libraries(hepta_research_native_execution_tests PRIVATE
             hepta_research_native_client hepta_agent_os_core hepta_execution_service_runtime)
         add_dependencies(hepta_research_native_execution_tests hepta_strategy_client_cli)
+        # One real binary owns all paths, but CTest records behavior separately.
+        # The shared resource lock prevents independent fsync-heavy fixtures from
+        # manufacturing preview expiry through test-runner contention.
+        set(_hepta_native_execution_lock hepta_native_execution_runtime)
+        set_tests_properties(hepta_research_native_execution_tests PROPERTIES
+            TIMEOUT 90 RESOURCE_LOCK ${_hepta_native_execution_lock})
+        add_test(NAME hepta_research_native_execution_process_crash_tests
+            COMMAND hepta_research_native_execution_tests --process-crashes-only)
+        add_test(NAME hepta_research_native_execution_durable_raw_tests
+            COMMAND hepta_research_native_execution_tests --durable-raw-only)
+        add_test(NAME hepta_research_native_execution_durable_prepared_tests
+            COMMAND hepta_research_native_execution_tests --durable-prepared-only)
+        add_test(NAME hepta_research_native_execution_application_tests
+            COMMAND hepta_research_native_execution_tests --application-only
+            "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/application_execution_driver.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/strategy_gateway.py"
+            "$<TARGET_FILE:hepta_strategy_client_cli>")
+        add_test(NAME hepta_research_native_execution_latency_tests
+            COMMAND hepta_research_native_execution_tests --latency-only)
+        foreach(_hepta_native_execution_test
+                hepta_research_native_execution_process_crash_tests
+                hepta_research_native_execution_durable_raw_tests
+                hepta_research_native_execution_durable_prepared_tests
+                hepta_research_native_execution_application_tests
+                hepta_research_native_execution_latency_tests)
+            set_tests_properties(${_hepta_native_execution_test} PROPERTIES
+                LABELS "core;research" TIMEOUT 90
+                RESOURCE_LOCK ${_hepta_native_execution_lock})
+        endforeach()
         add_test(NAME hepta_research_application_policy COMMAND "${Python3_EXECUTABLE}" -I -B
             "${CMAKE_CURRENT_SOURCE_DIR}/../tests/research/strategy_gateway_behavior.py"
             --adapter "${CMAKE_CURRENT_SOURCE_DIR}/strategy_gateway.py"

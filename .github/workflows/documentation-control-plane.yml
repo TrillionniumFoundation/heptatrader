@@ -36,6 +36,37 @@ jobs:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Classify monitoring acceptance scope
+        id: monitoring-scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          monitoring_required=true
+          if [ "$EVENT_NAME" = pull_request ]; then
+            test -n "$BASE_SHA"
+            test -n "$BASE_REPOSITORY"
+            test -n "$SERVER_URL"
+            if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+              git fetch --no-tags --depth=1 "$SERVER_URL/$BASE_REPOSITORY.git" "$BASE_SHA"
+            fi
+            monitoring_required=false
+            while IFS= read -r path; do
+              case "$path" in
+                README.md|docs/*|doc/*|pic/*)
+                  ;;
+                *)
+                  monitoring_required=true
+                  break
+                  ;;
+              esac
+            done < <(git diff --name-only "$BASE_SHA" HEAD --)
+          fi
+          printf 'required=%s\n' "$monitoring_required" >> "$GITHUB_OUTPUT"
+
       - name: Install build-model validation dependencies
         run: |
           sudo apt-get update
@@ -70,6 +101,7 @@ jobs:
           python3 scripts/run_python_tests.py --lane source
 
       - name: Extract monitoring test tools without enabling host services
+        if: steps.monitoring-scope.outputs.required == 'true'
         run: |
           set -euo pipefail
           tools="$RUNNER_TEMP/hepta-monitoring-tools"
@@ -91,6 +123,7 @@ jobs:
           done
 
       - name: Exercise real textfile scrape and alert delivery
+        if: steps.monitoring-scope.outputs.required == 'true'
         run: |
           set -euo pipefail
           python3 tests/monitoring/process_smoke.py \
@@ -98,6 +131,7 @@ jobs:
             --output "$RUNNER_TEMP/hepta-monitoring-chain.json"
 
       - name: Retain scoped monitoring acceptance
+        if: steps.monitoring-scope.outputs.required == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: monitoring-evidence-${{ github.run_id }}-${{ github.run_attempt }}

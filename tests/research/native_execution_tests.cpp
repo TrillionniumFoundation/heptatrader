@@ -116,9 +116,16 @@ public:
     }
     ~DropReplyProxy() { stopped_.store(true); if (thread_.joinable()) thread_.join(); }
     void CheckOneAttempt() {
-        std::lock_guard<std::mutex> lock(mutex_);
+        std::unique_lock<std::mutex> lock(mutex_);
+        const bool completed = changed_.wait_for(
+            lock, std::chrono::seconds(15), [this] {
+                return !error_.empty() ||
+                    (dropped_.load() && attempts_.load() == 1);
+            });
+        Require(completed, "reply-drop proxy did not observe the accepted reply");
         Require(error_.empty(), "reply-drop proxy failed: " + error_);
-        Require(dropped_.load() && attempts_.load() == 1, "lost reply caused an automatic mutation retry");
+        Require(dropped_.load() && attempts_.load() == 1,
+                "lost reply caused an automatic mutation retry");
     }
 private:
     void Pump() {
@@ -141,8 +148,13 @@ private:
                 std::memcpy(address.sun_path, upstream_.c_str(), upstream_.size() + 1);
                 Require(upstream.Get() >= 0 && ::connect(upstream.Get(),
                     reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0, "proxy connect failed");
-                Require(TypedToolProtocol::WriteFrame(upstream.Get(), body, 3000, reason), reason);
-                Require(TypedToolProtocol::ReadFrame(upstream.Get(), 1048576, 3000, response, reason), reason);
+                Require(TypedToolProtocol::WriteFrame(upstream.Get(), body, 5000, reason), reason);
+                // The real Gateway has an independent post-delivery authority
+                // response budget. This fault proxy must wait longer than that
+                // budget so it drops an actual accepted response rather than
+                // manufacturing its own upstream timeout.
+                Require(TypedToolProtocol::ReadFrame(
+                    upstream.Get(), 1048576, 10000, response, reason), reason);
                 if (request.call.name == callName_ && (commandId_.empty() || request.toolCallId == commandId_)) {
                     ++attempts_;
                     if (!dropped_.load()) {
@@ -151,14 +163,18 @@ private:
                         Require(result.status == "ok", "proxy target was not actually accepted");
                         if (beforeDrop_) beforeDrop_();
                         dropped_.store(true);
+                        changed_.notify_all();
                         continue; // RAII closes the client socket without its accepted response.
                     }
                 }
                 Require(TypedToolProtocol::WriteFrame(downstream.Get(), response, 3000, reason), reason);
             }
         } catch (const std::exception& error) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            error_ = error.what();
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                error_ = error.what();
+            }
+            changed_.notify_all();
         }
     }
     Fd listener_;
@@ -168,6 +184,7 @@ private:
     std::atomic<bool> stopped_{false}, dropped_{false};
     std::atomic<unsigned int> attempts_{0};
     std::mutex mutex_;
+    std::condition_variable changed_;
     std::string error_;
     std::thread thread_;
 };
@@ -264,6 +281,7 @@ public:
         gatewayConfig.executionServiceUidConfigured = true;
         gatewayConfig.mutationToolsEnabled = true;
         gatewayConfig.ioTimeoutMs = 1000;
+        gatewayConfig.responseTimeoutMs = 4000;
         agentConfig.toolSocket = root.path + "/tools.sock";
         agentConfig.supervisorSocket = root.path + "/supervisor.sock";
         agentConfig.agentUid = agentConfig.supervisorUid = static_cast<std::uint32_t>(::geteuid());
@@ -334,7 +352,7 @@ void TestNativeExecutionLifecycle() {
     PreparedOrder marketable("EUR.USD", Contract(), "BUY", 10, 1.1002, 1.1001, expiry);
     NativeToolClientResult result; std::string reason;
     const auto start = std::chrono::steady_clock::now();
-    const auto auth = Preview(client, marketable, "research-actual-preview-1");
+    const auto legacyAuth = Preview(client, marketable, "research-legacy-hro1-preview");
 
     // A retained HRO1 record may be queried, but cannot become a mutation
     // source. Exercise the real Gateway/Execution path before the command has
@@ -342,48 +360,48 @@ void TestNativeExecutionLifecycle() {
     // there is still exactly one place_send_attempt after the explicit submit.
     const std::string legacyDirectory = f.root.path + "/legacy-hro1";
     Require(::mkdir(legacyDirectory.c_str(), 0700) == 0, "legacy HRO1 directory");
-    auto legacyRequest = marketable.SubmissionRequest(auth.commandId, auth.permit);
+    auto legacyRequest = marketable.SubmissionRequest(legacyAuth.commandId, legacyAuth.permit);
     legacyRequest.sessionToken = "hepta-research-outbox-v1-not-a-credential";
     std::string legacyWire;
     Require(TypedToolProtocol::EncodeRequest(legacyRequest, legacyWire, reason), reason);
-    const std::string legacyPath = legacyDirectory + "/" + auth.commandId + ".hro";
-    const std::string legacyBytes = "HRO1" + legacyWire;
-    WritePrivateFile(legacyPath, legacyBytes, 0600);
-    const auto legacyUnchanged = [&]() {
-        std::ifstream input(legacyPath, std::ios::binary);
+    const std::string legacySourcePath = legacyDirectory + "/" + legacyAuth.commandId + ".hro";
+    const std::string legacySourceBytes = "HRO1" + legacyWire;
+    WritePrivateFile(legacySourcePath, legacySourceBytes, 0600);
+    const auto legacySourceUnchanged = [&]() {
+        std::ifstream input(legacySourcePath, std::ios::binary);
         Require(input.good(), "legacy source record disappeared");
         std::ostringstream retained; retained << input.rdbuf();
-        Require(!input.bad() && retained.str() == legacyBytes,
+        Require(!input.bad() && retained.str() == legacySourceBytes,
                 "read-only reconciliation rewrote legacy request bytes");
         struct stat info;
-        Require(::lstat(legacyPath.c_str(), &info) == 0 && S_ISREG(info.st_mode) &&
+        Require(::lstat(legacySourcePath.c_str(), &info) == 0 && S_ISREG(info.st_mode) &&
                 (info.st_mode & 0777) == 0600 && info.st_nlink == 1,
                 "legacy record safety changed during reconciliation");
         errno = 0;
-        Require(::access((legacyDirectory + "/" + auth.commandId + ".hsr").c_str(), F_OK) != 0 &&
+        Require(::access((legacyDirectory + "/" + legacyAuth.commandId + ".hsr").c_str(), F_OK) != 0 &&
                 errno == ENOENT, "legacy reconciliation created canonical mutation state");
     };
 
-    Require(client.InspectLegacyHro1(legacyDirectory, auth.commandId,
+    Require(client.InspectLegacyHro1(legacyDirectory, legacyAuth.commandId,
                                     "research-legacy-hro1-query-001", result, reason),
             "legacy HRO1 status transport failed: " + reason);
     Require(f.execution->Venue().AdmittedOrderCount() == 0,
             "legacy HRO1 inspection admitted an order");
     errno = 0;
-    Require(::access((legacyDirectory + "/" + auth.commandId + ".hsr").c_str(), F_OK) != 0 &&
+    Require(::access((legacyDirectory + "/" + legacyAuth.commandId + ".hsr").c_str(), F_OK) != 0 &&
             errno == ENOENT, "legacy HRO1 inspection created HSR1 state");
 
     Require(result.envelope.toolName == "execution.get_command_status",
             "legacy inspection returned a mutation envelope");
-    legacyUnchanged();
+    legacySourceUnchanged();
     PreparedStrategyCommand legacyPrepared;
-    Require(!client.Restore(legacyDirectory, auth.commandId, legacyPrepared, reason) &&
+    Require(!client.Restore(legacyDirectory, legacyAuth.commandId, legacyPrepared, reason) &&
             !legacyPrepared.Ready() && !legacyPrepared.Durable(),
             "HRO1 entered the canonical restore/submit lifecycle");
     // A real unknown command stays rejected, not a new preview or send. The
     // synthetic record is deliberately never submitted at any point in this test.
     const std::string neverId = "research-legacy-never-submitted";
-    auto neverRequest = marketable.SubmissionRequest(neverId, auth.permit);
+    auto neverRequest = marketable.SubmissionRequest(neverId, legacyAuth.permit);
     neverRequest.sessionToken = "hepta-research-outbox-v1-not-a-credential";
     std::string neverWire;
     Require(TypedToolProtocol::EncodeRequest(neverRequest, neverWire, reason), reason);
@@ -398,7 +416,42 @@ void TestNativeExecutionLifecycle() {
             "unknown HRO1 command was not preserved as not found: " + result.responseJson);
     Require(f.execution->Venue().AdmittedOrderCount() == 0,
             "unknown legacy command triggered a venue send");
-    legacyUnchanged();
+    legacySourceUnchanged();
+
+    // Preview permits are intentionally short-lived and single-use. The
+    // never-submitted HRO1 checks above must not hold production mutation
+    // authority while they perform unrelated reads/fsyncs. Obtain the real
+    // mutation identity immediately before preserving its read-only HRO1 copy
+    // and submitting it through the canonical path.
+    const auto auth = Preview(client, marketable, "research-actual-preview-1");
+    auto executedLegacyRequest =
+        marketable.SubmissionRequest(auth.commandId, auth.permit);
+    executedLegacyRequest.sessionToken =
+        "hepta-research-outbox-v1-not-a-credential";
+    std::string executedLegacyWire;
+    Require(TypedToolProtocol::EncodeRequest(
+                executedLegacyRequest, executedLegacyWire, reason),
+            reason);
+    const std::string legacyPath =
+        legacyDirectory + "/" + auth.commandId + ".hro";
+    const std::string legacyBytes = "HRO1" + executedLegacyWire;
+    WritePrivateFile(legacyPath, legacyBytes, 0600);
+    const auto legacyUnchanged = [&]() {
+        std::ifstream input(legacyPath, std::ios::binary);
+        Require(input.good(), "executed legacy source record disappeared");
+        std::ostringstream retained; retained << input.rdbuf();
+        Require(!input.bad() && retained.str() == legacyBytes,
+                "executed legacy reconciliation rewrote request bytes");
+        struct stat info;
+        Require(::lstat(legacyPath.c_str(), &info) == 0 &&
+                S_ISREG(info.st_mode) && (info.st_mode & 0777) == 0600 &&
+                info.st_nlink == 1,
+                "executed legacy record safety changed during reconciliation");
+        errno = 0;
+        Require(::access((legacyDirectory + "/" + auth.commandId +
+                         ".hsr").c_str(), F_OK) != 0 && errno == ENOENT,
+                "executed legacy reconciliation created canonical client state");
+    };
 
     Require(client.Submit(marketable, auth.commandId, auth.permit, result, reason), reason);
     Require(result.envelope.status == "ok", "real submit rejected: " + result.responseJson);
@@ -551,6 +604,7 @@ void TestNativeExecutionLifecycle() {
     errno = 0;
     Require(::access((legacyDirectory + "/" + neverId + ".hsr").c_str(), F_OK) != 0 &&
             errno == ENOENT, "unknown legacy command acquired canonical mutation state");
+    legacySourceUnchanged();
 
 
     f.gateway->Stop(); f.gateway.reset(); f.execution->Stop();
@@ -565,7 +619,9 @@ void TestNativeExecutionLifecycle() {
             placeAttempts[lostAuth.commandId] == 1 && placeAttempts.size() == 3 &&
             cancelAttempts["research-actual-cancel-1"] == 1 &&
             cancelAttempts.size() == 1, "journal contains duplicate or bypass sends");
-    Require(placeAttempts.count(neverId) == 0, "unsent legacy command appears in send journal");
+    Require(placeAttempts.count(neverId) == 0 &&
+            placeAttempts.count(legacyAuth.commandId) == 0,
+            "unsent legacy command appears in send journal");
     std::uint64_t auditRecords = 0;
     Require(SessionSupervisorAuditJournal::Verify(f.agentConfig.supervisorAuditJournalPath, auditRecords, reason),
             "real Gateway audit verification: " + reason);
@@ -941,13 +997,19 @@ int RunOutboxChild(const std::string& root, const std::string& socket,
         NativeToolClientResult result;
         if (preparedMode) {
             PreparedStrategyCommand prepared;
-            Require(client.Restore(directory, commandId, prepared, reason) && prepared.Durable(), reason);
-            Require(inspection ? client.Inspect(prepared, queryId, result, reason) :
-                                 client.Submit(prepared, result, reason), "child prepared call: " + reason);
+            Require(client.Restore(directory, commandId, prepared, reason) &&
+                        prepared.Durable(),
+                    reason);
+            const bool called = inspection ?
+                client.Inspect(prepared, queryId, result, reason) :
+                client.Submit(prepared, result, reason);
+            Require(called, "child prepared call: " + reason);
         } else {
-            Require(inspection ? client.InspectStored(directory, commandId, queryId, result, reason) :
-                                 client.SubmitStored(directory, commandId, result, reason),
-                    "child stored call: " + reason);
+            const bool called = inspection ?
+                client.InspectStored(
+                    directory, commandId, queryId, result, reason) :
+                client.SubmitStored(directory, commandId, result, reason);
+            Require(called, "child stored call: " + reason);
         }
         if (inspection) Require(result.envelope.toolName == "execution.get_command_status",
                                 "inspection sent a mutation or preview instead of a query");
@@ -1311,7 +1373,10 @@ void TestNativeExecutionLatency() {
         output << '}';
     }
     output << "]}";
-    std::cout << output.str() << '\n';
+    // CTest truncates passing output unless the test explicitly requests full
+    // retention. The report consumer binds the complete record from JUnit to
+    // LastTest.log, so partial success-shaped JSON must never be accepted.
+    std::cout << "CTEST_FULL_OUTPUT\n" << output.str() << '\n';
     Require(static_cast<bool>(std::cout), "latency output failed");
 }
 
@@ -1444,8 +1509,24 @@ int main(int argc, char** argv) {
         if (argc == 3 && std::string(argv[1]) == "--execution-child") return RunExecutionChild(argv[2]);
         if (argc == 7 && std::string(argv[1]) == "--outbox-child")
             return RunOutboxChild(argv[2], argv[3], argv[4], argv[5], argv[6]);
+        if (argc == 2 && std::string(argv[1]) == "--lifecycle-only") {
+            TestNativeExecutionLifecycle();
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--process-crashes-only") {
+            TestNativeExecutionProcessCrashes();
+            return 0;
+        }
         if (argc == 2 && std::string(argv[1]) == "--latency-only") {
             TestNativeExecutionLatency();
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--durable-raw-only") {
+            TestDurableClientProcessRecovery();
+            return 0;
+        }
+        if (argc == 2 && std::string(argv[1]) == "--durable-prepared-only") {
+            TestDurableClientProcessRecovery(true);
             return 0;
         }
         const bool application = argc == 6 && (std::string(argv[1]) == "--application-client" ||
@@ -1460,7 +1541,8 @@ int main(int argc, char** argv) {
         TestDurableClientProcessRecovery();
         TestDurableClientProcessRecovery(true);
         TestNativeExecutionLatency();
-        if (application) TestApplicationKeyRecovery(argv[2], argv[3], argv[4], argv[5]);
+        if (application)
+            TestApplicationKeyRecovery(argv[2], argv[3], argv[4], argv[5]);
         std::cout << "PASS real Native/Gateway/Execution lifecycle and SIGKILL recovery\n";
         return 0;
     }

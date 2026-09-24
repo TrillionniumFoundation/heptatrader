@@ -207,7 +207,7 @@ latency, complete historical API/ABI migration or source-repository retirement.
 
 The existing `Canonical Full Suite` GCC and Clang sanitizer jobs build the real
 core aggregate and execute its nonempty `core` CTest selection. They also require
-five successful consecutive runs of `hepta_research_native_execution_tests`;
+five successful consecutive runs of `hepta_research_native_execution_process_crash_tests`;
 a missing test or any failed repetition fails the job. This reuses the existing
 three SIGKILL/re-exec scenarios rather than adding a mock acceptance executable.
 The test's per-invocation timeout and unprivileged-user requirement are unchanged.

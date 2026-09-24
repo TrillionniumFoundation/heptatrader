@@ -135,6 +135,8 @@ bool ExecutionGatewayRuntimeConfig::Validate(std::string& reason) const
     // (mutation identity, event identity, then the command). Keep each
     // exchange tightly bounded so discovery timeouts remain truthful.
     if (!limitsValid || ioTimeoutMs < 100 || ioTimeoutMs > 2500 ||
+        responseTimeoutMs < 500 || responseTimeoutMs > 30000 ||
+        responseTimeoutMs < ioTimeoutMs ||
         maxResponseBytes < 1024 || maxResponseBytes > 1048576)
     {
         reason = "EXECUTION_GATEWAY_LIMIT_INVALID";
@@ -149,7 +151,9 @@ ExecutionGatewayRuntimeConfig ExecutionGatewayRuntimeConfig::FromEnvironment()
     static const char* keys[] = {
         "HEPTA_EXECUTION_REMOTE_MODE", "HEPTA_EXECUTION_SOCKET",
         "HEPTA_EXECUTION_EVENT_SOCKET", "HEPTA_EXECUTION_SERVICE_UID",
-        "HEPTA_EXECUTION_IO_TIMEOUT_MS", "HEPTA_EXECUTION_MAX_RESPONSE_BYTES",
+        "HEPTA_EXECUTION_IO_TIMEOUT_MS",
+        "HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS",
+        "HEPTA_EXECUTION_MAX_RESPONSE_BYTES",
         "HEPTA_TOOL_ALLOW_TRADE",
         "HEPTA_EXECUTION_EXTERNAL_P1_CANARY_LMT_DAY"
     };
@@ -178,6 +182,8 @@ ExecutionGatewayRuntimeConfig ExecutionGatewayRuntimeConfig::FromValues(
     int responseBytes = 32768;
     config.limitsValid = StrictInt(Read(values, "HEPTA_EXECUTION_IO_TIMEOUT_MS"),
         1000, 100, 2500, config.ioTimeoutMs) &&
+        StrictInt(Read(values, "HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS"),
+            4000, 500, 30000, config.responseTimeoutMs) &&
         StrictInt(Read(values, "HEPTA_EXECUTION_MAX_RESPONSE_BYTES"),
             32768, 1024, 1048576, responseBytes);
     config.flagsValid = StrictBool(Read(values, "HEPTA_TOOL_ALLOW_TRADE"),

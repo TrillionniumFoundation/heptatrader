@@ -82,6 +82,111 @@ class SourceWorkflowCommandTests(unittest.TestCase):
             self.assert_controls_execute(block)
 
 
+class MonitoringScopeWorkflowTests(unittest.TestCase):
+    def block(self) -> str:
+        value = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
+        steps = value["jobs"]["documentation"]["steps"]
+        matches = [step["run"] for step in steps
+                   if step.get("name") == "Classify monitoring acceptance scope"]
+        self.assertEqual(len(matches), 1)
+        return matches[0]
+
+    def run_scope(self, changed_path: str, *, event: str = "pull_request"):
+        with tempfile.TemporaryDirectory(prefix="hepta-monitoring-scope-") as folder:
+            root = Path(folder)
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=root, check=True,
+                                      capture_output=True, text=True, timeout=10).stdout.strip()
+            git("init", "-q")
+            git("config", "user.name", "CI test fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            (root / "base.txt").write_text("base\n", encoding="utf-8")
+            git("add", ".")
+            git("-c", "commit.gpgsign=false", "commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            target = root / changed_path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("change\n", encoding="utf-8")
+            git("add", ".")
+            git("-c", "commit.gpgsign=false", "commit", "-qm", "head")
+            output = root / "github-output"
+            result = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", "-c", self.block()],
+                cwd=root,
+                env=dict(os.environ, EVENT_NAME=event,
+                         BASE_SHA=base if event == "pull_request" else "",
+                         BASE_REPOSITORY="unused/base",
+                         SERVER_URL="file:///unused",
+                         GITHUB_OUTPUT=str(output)),
+                capture_output=True, text=True, timeout=10)
+            value = output.read_text(encoding="utf-8").strip() if output.exists() else ""
+            return result, value
+
+    def test_docs_only_pr_skips_only_monitoring_process_chain(self):
+        for path in ("README.md", "docs/change.md", "doc/change.md", "pic/change.txt"):
+            with self.subTest(path=path):
+                result, value = self.run_scope(path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(value, "required=false")
+
+    def test_source_or_workflow_pr_retains_monitoring_acceptance(self):
+        for path in ("HeptaTrade/change.cpp", ".github/workflows/change.yml", "scripts/change.py"):
+            with self.subTest(path=path):
+                result, value = self.run_scope(path)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(value, "required=true")
+
+    def test_push_never_skips_monitoring_acceptance(self):
+        result, value = self.run_scope("docs/change.md", event="push")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(value, "required=true")
+
+    def test_fork_checkout_fetches_missing_base_commit(self):
+        with tempfile.TemporaryDirectory(prefix="hepta-monitoring-fork-") as folder:
+            root = Path(folder)
+            server = root / "server"
+            server.mkdir()
+            base_work = root / "base-work"
+            base_work.mkdir()
+            def git(cwd: Path, *args: str) -> str:
+                return subprocess.run(["git", *args], cwd=cwd, check=True,
+                                      capture_output=True, text=True,
+                                      timeout=10).stdout.strip()
+            git(base_work, "init", "-q")
+            git(base_work, "config", "user.name", "CI base fixture")
+            git(base_work, "config", "user.email", "base@example.invalid")
+            (base_work / "README.md").write_text("base\n", encoding="utf-8")
+            git(base_work, "add", ".")
+            git(base_work, "-c", "commit.gpgsign=false", "commit", "-qm", "base")
+            base = git(base_work, "rev-parse", "HEAD")
+            subprocess.run(["git", "clone", "--bare", "-q", str(base_work),
+                            str(server / "base.git")], check=True, timeout=10)
+
+            head = root / "head"
+            head.mkdir()
+            git(head, "init", "-q")
+            git(head, "config", "user.name", "CI head fixture")
+            git(head, "config", "user.email", "head@example.invalid")
+            (head / "README.md").write_text("changed\n", encoding="utf-8")
+            git(head, "add", ".")
+            git(head, "-c", "commit.gpgsign=false", "commit", "-qm", "head")
+            self.assertNotEqual(
+                subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"],
+                               cwd=head, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL).returncode, 0)
+            output = root / "github-output"
+            result = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", "-c", self.block()],
+                cwd=head,
+                env=dict(os.environ, EVENT_NAME="pull_request",
+                         BASE_SHA=base, BASE_REPOSITORY="base",
+                         SERVER_URL=server.as_uri(), GITHUB_OUTPUT=str(output)),
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(output.read_text(encoding="utf-8").strip(),
+                             "required=false")
+            git(head, "cat-file", "-e", f"{base}^{{commit}}")
+
 class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
     """Execute CI shell blocks with real CTest and deliberately tiny fixtures.
 
@@ -118,7 +223,7 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
             entries = []
             for test, enabled, counter, failure in (
                 ("automation_core_fixture", core, "core-count", int(fail_core)),
-                ("hepta_research_native_execution_tests", recovery,
+                ("hepta_research_native_execution_process_crash_tests", recovery,
                  "recovery-count", fail_at),
             ):
                 if not enabled:
@@ -167,7 +272,7 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(counts, {"core-count": 0, "recovery-count": 5})
         self.assertEqual(ET.fromstring(outputs["research-recovery-results.xml"]).attrib["failures"], "0")
-        self.assertIn("hepta_research_native_execution_tests", outputs["research-recovery-ctest.log"])
+        self.assertIn("hepta_research_native_execution_process_crash_tests", outputs["research-recovery-ctest.log"])
         result, counts, outputs = self.run_ctest_block(name, fail_at=3)
         self.assertNotEqual(result.returncode, 0, "third repetition failure must fail CI")
         self.assertEqual(counts["recovery-count"], 3)

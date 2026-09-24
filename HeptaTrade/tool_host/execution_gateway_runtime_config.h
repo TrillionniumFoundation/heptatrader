@@ -20,7 +20,11 @@ struct ExecutionGatewayRuntimeConfig
     std::string eventSocket;
     std::uint32_t executionServiceUid = 0;
     bool executionServiceUidConfigured = false;
+    // Connect and frame I/O remain tightly bounded. A separately bounded
+    // authority-response wait covers durable fsync/provider work after the
+    // complete request has already reached Execution.
     int ioTimeoutMs = 1000;
+    int responseTimeoutMs = 4000;
     std::size_t maxResponseBytes = 32768;
     bool limitsValid = true;
     bool mutationToolsEnabled = false;

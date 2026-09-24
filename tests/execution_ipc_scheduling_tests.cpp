@@ -267,7 +267,8 @@ void PartialFramesDoNotOccupyWorkers() {
 void SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry() {
     Fixture f(250); const auto identity = f.server.ServiceIdentity();
     auto mutation = std::async(std::launch::async, [&] {
-        UnixExecutionServiceClient client(f.path, 1500);
+        UnixExecutionServiceClient client(
+            f.path, 1500, 32768, std::set<std::uint32_t>(), 250);
         return client.CancelIbOrderWithIdentity(Cancel("slow", 1), identity);
     });
     f.authority.gate.Wait();
@@ -284,6 +285,31 @@ void SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry() {
     f.authority.gate.Release();
     Check(latency < 500000, "identity blocked behind slow authority");
     std::cout << "IPC_SLOW_AUTHORITY_IDENTITY_US=" << latency << '\n';
+}
+void ExecutingAuthorityGetsFreshResponseWindow() {
+    Fixture f(100);
+    const auto identity = f.server.ServiceIdentity();
+    auto mutation = std::async(std::launch::async, [&] {
+        UnixExecutionServiceClient client(
+            f.path, 500, 32768, std::set<std::uint32_t>(), 1500);
+        return client.CancelIbOrderWithIdentity(
+            Cancel("slow-success", 91), identity);
+    });
+    f.authority.gate.Wait();
+    // Exceed the server's framing/queue budget after dispatch. The executing
+    // authority must not lose its reply channel because that earlier phase's
+    // clock elapsed.
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+    f.authority.gate.Release();
+    Check(mutation.wait_for(std::chrono::seconds(2)) ==
+              std::future_status::ready,
+          "executing authority did not complete inside caller response budget");
+    const ExecutionCommandResult result = mutation.get();
+    Check(result.status == ExecutionCommandStatus::Accepted &&
+              result.orderId == 91,
+          "executing authority lost its fresh response window");
+    Check(f.authority.cancels == 1,
+          "slow successful authority was retried");
 }
 void SaturatedOrdinaryQueueDoesNotBlockExitLane() {
     Fixture f(3000);
@@ -485,6 +511,7 @@ int main() {
         IdleWorkersAlwaysObserveShutdown();
         PartialFramesDoNotOccupyWorkers();
         SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry();
+        ExecutingAuthorityGetsFreshResponseWindow();
         SaturatedOrdinaryQueueDoesNotBlockExitLane();
         ExpiredQueuedCommandNeverDispatches();
         StopDoesNotDeadlockCallbackOrAbandonAuthority();

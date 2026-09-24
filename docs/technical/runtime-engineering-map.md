@@ -106,6 +106,13 @@ Behavior-bearing evidence is intentionally assigned once:
 - **Source and Monitoring CI** owns documentation structure, component/build ownership, capability truth and source-gap contracts and its disjoint source Python partition.
 - **IB PAPER qualification** is an explicit owner-dispatched external Broker campaign and is not a routine merge gate.
 
+A pull request whose changed paths are confined to `README.md`, `docs/`, `doc/`
+or `pic/` still runs the complete source-truth/documentation partition, but skips
+the Prometheus/Alertmanager process chain. Pushes, merge candidates and any source,
+script, systemd, monitoring or workflow change retain that process acceptance.
+Skipping an unrelated process chain does not inherit or manufacture monitoring
+evidence for the documentation-only revision.
+
 The required-check inventory contains only behavior-bearing contexts. Historical compatibility shims were removed so branch protection cannot mistake an empty job for engineering evidence.
 
 A new invariant belongs in the smallest behavior test that can falsify it. Repeating the same deterministic suite in another workflow is not independent evidence.

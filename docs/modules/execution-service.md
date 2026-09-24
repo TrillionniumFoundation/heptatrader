@@ -45,6 +45,16 @@ The exact implementation has more detailed records, but the invariants are:
 
 Protocol fields and reason codes are versioned. Unknown fields, unsupported versions, and oversized frames are rejected.
 
+Gateway–Execution transport uses distinct clocks. `HEPTA_EXECUTION_IO_TIMEOUT_MS`
+bounds connect and individual framing phases, while
+`HEPTA_EXECUTION_RESPONSE_TIMEOUT_MS` bounds the wait after a complete request has
+been delivered to the Execution authority. Server input, queue residence and
+response writing each receive their own bounded window. Once authority dispatch
+starts, an expired input/queue clock cannot cancel it or close its reply channel;
+the caller may still exhaust its independent response wait and must then treat a
+possibly durable mutation as `UNCERTAIN`, query the same command ID and never
+retry under a new identity.
+
 ## Persistence and recovery
 
 Placement persists the unchanged `order_intent` and `place_send_attempt` as an

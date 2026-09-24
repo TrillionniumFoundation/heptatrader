@@ -95,7 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           ctest --test-dir "$BUILD_DIR" --output-on-failure --no-tests=error \
-            -R '^hepta_research_native_execution_tests$' --repeat until-fail:5 \
+            -R '^hepta_research_native_execution_process_crash_tests$' --repeat until-fail:5 \
             --output-junit "$PWD/$BUILD_DIR/research-recovery-results.xml" \
             --output-log "$PWD/$BUILD_DIR/research-recovery-ctest.log"
       - name: Retain exact-head sanitizer and recovery diagnostics

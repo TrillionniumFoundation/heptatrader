@@ -5,7 +5,7 @@ Applies to: native local clients, Gateway–Execution and operator session contr
 
 ## Framing, values and authority
 
-A Unix stream frame prefixes the body with a four-byte unsigned big-endian byte length. Clients must enforce the transport's configured frame limit before allocating. The codecs below do not replace peer UID, session capability, account/domain or risk checks. Parsing a valid request never grants authority. Do not send examples to a Broker service: the golden-vector test decodes memory buffers only.
+A Unix stream frame prefixes the body with a four-byte unsigned big-endian byte length. Clients must enforce the transport's configured frame limit before allocating. Connect/request framing and the post-delivery authority-response wait are separately bounded; a caller response timeout is not Execution cancellation and cannot authorize a retry. Server read, queue and response-write phases also have independent deadlines, while an already-dispatched authority completes exactly once. The codecs below do not replace peer UID, session capability, account/domain or risk checks. Parsing a valid request never grants authority. Do not send examples to a Broker service: the golden-vector test decodes memory buffers only.
 
 `HSS1` has four magic bytes followed immediately by TLVs. Each TLV is a big-endian uint16 tag, a big-endian uint32 byte length and that many value bytes. It has no additional numeric version/operation header; operation is text in field 1. Each value is at most 4096 bytes except `TerminalEvidence` and `FinalizationReceipt` (12288). Duplicate tags and truncated values fail. Text validation rejects control bytes; producer-side limits below are byte limits, not Unicode character counts.
 
