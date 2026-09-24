@@ -20,12 +20,21 @@ bool ControlLane(ExecutionServiceOperation operation)
 {
     // Fence release shares the fence lane: an earlier queued release must
     // never overtake a later completed fence. These are local snapshot/control
-    // calls, not Broker I/O. All other authority operations retain FIFO order.
+    // calls, not Broker I/O.
     return operation == ExecutionServiceOperation::GetServiceIdentity ||
         operation == ExecutionServiceOperation::QueryCommandStatus ||
         operation == ExecutionServiceOperation::RecoveryQueryCommandStatus ||
         operation == ExecutionServiceOperation::FenceSessionOwner ||
         operation == ExecutionServiceOperation::ReleaseSessionOwnerFence;
+}
+
+bool ExitLane(ExecutionServiceOperation operation)
+{
+    // Guarded exit operations may perform venue I/O, so they must not share
+    // the short control lane. Give them their own FIFO instead of placing them
+    // behind risk-increasing placement work.
+    return operation == ExecutionServiceOperation::CancelIbOrder ||
+        operation == ExecutionServiceOperation::FlattenPosition;
 }
 }
 
@@ -78,9 +87,14 @@ void UnixExecutionServiceServer::StartScheduler()
     if (m_wakeFd < 0) throw std::runtime_error("cannot create Execution reactor wakeup");
     try
     {
-        m_controlThread = std::thread(&UnixExecutionServiceServer::AuthorityLoop, this, true);
-        m_commandThread = std::thread(&UnixExecutionServiceServer::AuthorityLoop, this, false);
-        m_acceptThread = std::thread(&UnixExecutionServiceServer::AcceptLoop, this);
+        m_controlThread = std::thread(
+            &UnixExecutionServiceServer::AuthorityLoop, this, true, false);
+        m_exitThread = std::thread(
+            &UnixExecutionServiceServer::AuthorityLoop, this, false, true);
+        m_commandThread = std::thread(
+            &UnixExecutionServiceServer::AuthorityLoop, this, false, false);
+        m_acceptThread =
+            std::thread(&UnixExecutionServiceServer::AcceptLoop, this);
     }
     catch (...)
     {
@@ -96,11 +110,13 @@ void UnixExecutionServiceServer::JoinScheduler()
 {
     if (m_acceptThread.joinable()) m_acceptThread.join();
     if (m_commandThread.joinable()) m_commandThread.join();
+    if (m_exitThread.joinable()) m_exitThread.join();
     if (m_controlThread.joinable()) m_controlThread.join();
     std::lock_guard<std::mutex> lock(m_schedulerMutex);
     for (const auto& client : m_clients) CloseClient(client);
     m_clients.clear();
     m_controlQueue.clear();
+    m_exitQueue.clear();
     m_commandQueue.clear();
 }
 
@@ -174,8 +190,13 @@ void UnixExecutionServiceServer::ReceiveClient(const std::shared_ptr<ClientJob>&
             else CloseClient(client);
             return;
         }
-        auto& queue = ControlLane(client->request.operation) ? m_controlQueue : m_commandQueue;
-        if (queue.size() >= kMaxQueuedPerLane)
+        std::deque<std::shared_ptr<ClientJob>>* queue =
+            &m_commandQueue;
+        if (ControlLane(client->request.operation))
+            queue = &m_controlQueue;
+        else if (ExitLane(client->request.operation))
+            queue = &m_exitQueue;
+        if (queue->size() >= kMaxQueuedPerLane)
         {
             // No authority has been called. Transport failure is conservative
             // for all caller operations and cannot fabricate a mutation result.
@@ -183,7 +204,7 @@ void UnixExecutionServiceServer::ReceiveClient(const std::shared_ptr<ClientJob>&
             return;
         }
         client->state = ClientJob::Queued;
-        queue.push_back(client);
+        queue->push_back(client);
         m_schedulerChanged.notify_all();
     }
 }
@@ -203,12 +224,14 @@ void UnixExecutionServiceServer::WriteClient(const std::shared_ptr<ClientJob>& c
     CloseClient(client);
 }
 
-void UnixExecutionServiceServer::AuthorityLoop(bool controlLane)
+void UnixExecutionServiceServer::AuthorityLoop(
+    bool controlLane, bool exitLane)
 {
     schedulerOwner = this;
     try
     {
-        auto& queue = controlLane ? m_controlQueue : m_commandQueue;
+        auto& queue = controlLane ? m_controlQueue :
+            (exitLane ? m_exitQueue : m_commandQueue);
         while (!m_stop.load())
         {
             std::shared_ptr<ClientJob> client;

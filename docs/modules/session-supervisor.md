@@ -50,6 +50,14 @@ The repository intentionally does not provide an automatic PAPER campaign opener
 
 Each mutation of a lease is serialized against the durable generation. Repeated commands are idempotent by their command identity. A lower or stale generation is rejected. Expiry, revoke, or ambiguous cleanup must cause the Gateway and Execution Service to reject new risk before external side effects are possible.
 
+Socket ingress is separated from the mutation serializer. A bounded worker set
+reads and authenticates complete frames without holding the operation mutex;
+only decoded operations enter the serialized state transition, and the mutex is
+released after outcome audit before a potentially slow socket reply. The accept
+queue is bounded and overload is closed before any lease operation is invoked.
+A slow or partial authorized peer therefore consumes one bounded ingress slot,
+not the global lease-state lock.
+
 The supervisor must not hold store locks while waiting indefinitely for an external service. Cross-service work is bounded and represented as explicit intermediate or uncertain state.
 
 ## Failure semantics

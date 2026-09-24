@@ -6,12 +6,16 @@
 #include "trading_tool_session_control_plane.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 class UnixSessionSupervisorServer
 {
@@ -49,6 +53,7 @@ public:
 
 private:
 	void AcceptLoop();
+	void ClientLoop();
 	void HandleClient(int clientFd);
 	bool Activate(int listenFd, const std::string& socketPath, bool unlinkOnStop,
 		const std::map<std::uint32_t, std::string>& authorizedIssuers,
@@ -135,5 +140,10 @@ private:
 	CrashPointHook m_crashPointHook;
 	std::uint32_t m_rootCustodianUid;
 	std::mutex m_operationMutex;
+	std::mutex m_clientMutex;
+	std::condition_variable m_clientChanged;
+	std::deque<int> m_pendingClients;
+	std::set<int> m_activeClients;
+	std::vector<std::thread> m_clientThreads;
 	std::thread m_acceptThread;
 };

@@ -97,8 +97,10 @@ private:
         std::string flattenPlanBinding;
     };
 
-    // A bounded nonblocking framing reactor feeds two serialized lanes.
-    // Only owner/status controls may overlap an ordinary authority call.
+    // A bounded nonblocking framing reactor feeds three serialized lanes.
+    // Owner/status controls, guarded exits and ordinary authority calls have
+    // distinct FIFO queues so slow risk-increasing work cannot create queue
+    // head-of-line blocking for fence/status or cancel/flatten requests.
     struct ClientJob;
     void StartScheduler();
     void RequestSchedulerStop();
@@ -106,7 +108,7 @@ private:
     bool IsSchedulerThread() const;
     void WakeScheduler();
     void AcceptLoop();
-    void AuthorityLoop(bool controlLane);
+    void AuthorityLoop(bool controlLane, bool exitLane);
     void ReceiveClient(const std::shared_ptr<ClientJob>& client);
     void WriteClient(const std::shared_ptr<ClientJob>& client);
     void CloseClient(const std::shared_ptr<ClientJob>& client);
@@ -185,6 +187,7 @@ private:
     std::shared_ptr<ExecutionServiceLifecycleGate> m_lifecycleGate;
     std::thread m_acceptThread;
     std::thread m_controlThread;
+    std::thread m_exitThread;
     std::thread m_commandThread;
     int m_wakeFd = -1;
     mutable std::mutex m_lifecycleMutex;
@@ -194,6 +197,7 @@ private:
     std::condition_variable m_schedulerChanged;
     std::vector<std::shared_ptr<ClientJob>> m_clients;
     std::deque<std::shared_ptr<ClientJob>> m_controlQueue;
+    std::deque<std::shared_ptr<ClientJob>> m_exitQueue;
     std::deque<std::shared_ptr<ClientJob>> m_commandQueue;
     mutable std::mutex m_previewMutex;
     std::unordered_map<std::string, PreviewPermitRecord> m_previewPermits;
