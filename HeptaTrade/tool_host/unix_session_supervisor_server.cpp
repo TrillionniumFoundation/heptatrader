@@ -293,7 +293,8 @@ bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
 				ExecutionOwnerAuditResult ownerAudit;
 				std::string recoveryReason;
 				if (!EnterPaperRecovery(recovery, nowMs, std::string(),
-						commandResult, ownerAudit, recoveryReason, &operationLock))
+						commandResult, ownerAudit, recoveryReason, &operationLock,
+                        std::chrono::steady_clock::time_point::max()))
 				{
 					if (firstFailure.empty()) firstFailure = recoveryReason;
 					continue;
@@ -1773,7 +1774,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							ExecutionOwnerAuditResult ownerAudit;
 							std::string recoveryReason;
 							if (!EnterPaperRecovery(record, nowMs, std::string(),
-									commandResult, ownerAudit, recoveryReason, &operationLock))
+									commandResult, ownerAudit, recoveryReason, &operationLock, workDeadline))
 								result.ReasonCode() = recoveryReason;
 							else
 								result.ReasonCode() = rejectionReason;

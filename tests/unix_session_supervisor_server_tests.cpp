@@ -4145,6 +4145,97 @@ void TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner()
     std::remove(storePath.c_str()); std::remove(keyPath.c_str()); std::remove(journalPath.c_str());
 }
 
+// Exercise the actual failed-Provision recovery path. A slow local authorizer
+// may exhaust the work interval, but durable/local fencing must still complete.
+// It must not replenish the interval and start another remote observation.
+void TestFailedPaperActivationRetainsOriginalWorkDeadline()
+{
+    for (const bool exhaustBudget : {false, true})
+    {
+        const std::string journalPath = TempPath("/tmp/hepta-activation-budget-journal-XXXXXX");
+        const std::string socketPath = TempPath("/tmp/hepta-activation-budget-socket-XXXXXX");
+        const std::string storePath = TempPath("/tmp/hepta-activation-budget-store-XXXXXX");
+        const std::string keyPath = TempKeyPath();
+        SessionSupervisorLeaseStore store;
+        std::string reason;
+        assert(store.Init(storePath, keyPath, reason));
+        OmsJournal journal;
+        assert(journal.Init(journalPath));
+        ExecutionCoordinatorCallbacks callbacks;
+        ExecutionCoordinator execution(journal, callbacks);
+        TradingToolRegistry registry(execution);
+        TradingToolHost host(registry);
+        RecoveryControlAuthority authority;
+        std::atomic<unsigned> audits{0};
+        authority.ownerAudit = [&](const ExecutionControlCommand& command) {
+            ++audits;
+            assert(command.localDeadline != std::chrono::steady_clock::time_point::max());
+            ExecutionControlResult result;
+            result.commandId = command.context.toolCallId;
+            result.status = ExecutionCommandStatus::Uncertain;
+            result.reasonCode = "TEST_RECOVERY_OBSERVATION_PENDING";
+            return result;
+        };
+        host.SetRecoveryControlAuthority(&authority);
+        const int workIntervalMs = 1000;
+        TradingToolSessionControlPlane control(host,
+            [&](const std::string&, const TradingToolHostSessionBinding& binding,
+                std::string& failure) {
+                if (binding.session.environment == "PAPER" && !binding.recoveryOnly)
+                {
+                    if (exhaustBudget)
+                        std::this_thread::sleep_for(std::chrono::milliseconds(workIntervalMs + 50));
+                    failure = "TEST_ACTIVATION_DENIED";
+                    return false;
+                }
+                return true;
+            });
+        UnixSessionSupervisorServer server(control);
+        server.SetLeaseStore(&store);
+        std::map<std::uint32_t, std::string> issuers;
+        issuers[::getuid()] = "activation-budget-issuer";
+        assert(server.Start(socketPath, issuers,
+            [](const SessionSupervisorRequest& request,
+                TradingToolHostSessionBinding& binding, std::string&) {
+                binding.token = request.token;
+                binding.peerUid = request.peerUid;
+                binding.session.executionContext.agentId = request.agentId;
+                binding.session.executionContext.sessionId = request.sessionId;
+                binding.session.executionContext.account = "DU123";
+                binding.session.environment = "PAPER";
+                binding.executionDomain = "IB-PAPER";
+                binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+                return true;
+            }, reason, 16384, workIntervalMs));
+        SessionSupervisorRequest provision;
+        provision.operation = SessionSupervisorOperation::Provision;
+        provision.templateId = "paper";
+        provision.token = "activation-budget-paper-owner-token-0001";
+        provision.agentId = "activation-budget-agent";
+        provision.sessionId = "activation-budget-session";
+        provision.peerUid = ::getuid();
+        provision.ttlMs = 60000;
+        const auto result = Call(socketPath, provision);
+        server.Stop();
+        TradingToolHostSessionBinding local;
+        assert(host.GetSession(provision.token, local) && local.recoveryOnly);
+        assert(store.Init(storePath, keyPath, reason));
+        SessionSupervisorLeaseRecord durable;
+        assert(store.Get(provision.token, durable) && durable.recoveryOnly);
+        assert(durable.leaseGeneration == local.leaseGeneration && !durable.fencePending);
+        std::cout << "SUPERVISOR_ACTIVATION_BUDGET exhausted=" << exhaustBudget
+                  << " remote_audits=" << audits.load()
+                  << " recovery_fence_reopened=true reason=" << result.ReasonCode() << std::endl;
+        std::remove(storePath.c_str());
+        std::remove(keyPath.c_str());
+        std::remove(journalPath.c_str());
+        assert(!result.accepted);
+        assert(audits.load() == (exhaustBudget ? 0U : 1U));
+        assert(result.ReasonCode() == (exhaustBudget ?
+            "SUPERVISOR_WORK_BUDGET_EXHAUSTED" : "TEST_ACTIVATION_DENIED"));
+    }
+}
+
 void TestExistingSupervisorSocketIsNeverUnlinked()
 {
 	const std::string journalPath =
@@ -4197,9 +4288,13 @@ void TestExistingSupervisorSocketIsNeverUnlinked()
 
 int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--activation-budget-only")
+    { TestFailedPaperActivationRetainsOriginalWorkDeadline(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--work-budget-only")
-    { TestReapPagesAdvancePastUnexpiredOwners(); TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner(); return 0; }
+    { TestReapPagesAdvancePastUnexpiredOwners(); TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner();
+      TestFailedPaperActivationRetainsOriginalWorkDeadline(); return 0; }
     assert(argc == 1);
+    TestFailedPaperActivationRetainsOriginalWorkDeadline();
     TestReapPagesAdvancePastUnexpiredOwners();
     TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner();
 	TestPaperFinalizationProtocol();
