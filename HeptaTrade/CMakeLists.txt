@@ -198,7 +198,8 @@ target_link_libraries(hepta_execution_server
 
 add_library(hepta_agent_execution_support STATIC
     agent/decision_lease_manager.cpp
-    events/execution_event_hub.cpp)
+    events/execution_event_hub.cpp
+    events/owner_scoped_health_publisher.cpp)
 target_include_directories(hepta_agent_execution_support
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_agent_execution_support PUBLIC Threads::Threads)
@@ -408,6 +409,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMENT "Verifying Agent Gateway privileged-symbol boundary"
         VERBATIM)
 endif()
+
+# Experimental capability adapters have no broker mutation transport. Compile
+# them once per profile so capability tests exercise the same implementation
+# objects as any future repository-owned consumer rather than a private copy.
+add_library(hepta_venue_capability_adapters STATIC
+    adapter_ctp/ctp_gateway_adapter.cpp
+    adapter_xt/xt_gateway_adapter.cpp)
+target_include_directories(hepta_venue_capability_adapters PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_library(hepta_risk_engine STATIC
     risk/pre_trade_risk_engine.cpp

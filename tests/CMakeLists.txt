@@ -64,8 +64,7 @@ target_link_libraries(hepta_trading_tool_registry_tests
 hepta_register_core_test(hepta_trading_tool_registry_tests)
 
 add_executable(hepta_execution_event_hub_tests
-    execution_event_hub_tests.cpp
-    ../HeptaTrade/events/owner_scoped_health_publisher.cpp)
+    execution_event_hub_tests.cpp)
 target_link_libraries(hepta_execution_event_hub_tests
     hepta_execution_core)
 hepta_register_core_test(hepta_execution_event_hub_tests)
@@ -185,9 +184,9 @@ target_link_libraries(hepta_portfolio_risk_snapshot_builder_tests PRIVATE hepta_
 hepta_register_core_test(hepta_portfolio_risk_snapshot_builder_tests)
 
 add_executable(hepta_venue_capability_tests
-    venue_capability_tests.cpp
-    ../HeptaTrade/adapter_ctp/ctp_gateway_adapter.cpp
-    ../HeptaTrade/adapter_xt/xt_gateway_adapter.cpp)
+    venue_capability_tests.cpp)
+target_link_libraries(hepta_venue_capability_tests PRIVATE
+    hepta_venue_capability_adapters)
 hepta_register_core_test(hepta_venue_capability_tests)
 
 add_executable(hepta_execution_ipc_scheduling_tests execution_ipc_scheduling_tests.cpp)
