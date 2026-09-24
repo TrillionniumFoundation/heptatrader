@@ -1549,11 +1549,11 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     return result;
 }
 
-ExecutionControlResult
+ExecutionTerminalResult
 IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
     const ExecutionControlCommand& command)
 {
-    ExecutionControlResult result(BeginControl(command));
+    ExecutionTerminalResult result(BeginControl(command));
     result.targetCommandId = command.targetCommandId;
     result.ownerAccount = command.context.account;
     result.ownerExecutionDomain = command.context.executionDomain;
@@ -1597,7 +1597,7 @@ IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
         }
     }
     IBAuthoritativeRecoveryAuditSnapshot frozen;
-    ExecutionControlResult terminalState;
+    ExecutionTerminalResult terminalState;
     std::string reason;
     if (!m_callbacks.beginTerminalRecoveryAudit(
             command, frozen, terminalState, reason))
@@ -1620,17 +1620,21 @@ IbPaperExecutionPolicyAuthority::TerminalizeRecoveryOwner(
         terminalState.terminalReplay = true;
         return terminalState;
     }
+    ExecutionOwnerAuditResult audit;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
-        static_cast<ExecutionOwnerAuditResult&>(result) =
-            AuditRecoveryOwner(command, frozen);
+        audit = AuditRecoveryOwner(command, frozen);
     }
+    result = ExecutionTerminalResult(
+        static_cast<const ExecutionControlStatusResult&>(audit));
     result.targetCommandId = command.targetCommandId;
+    result.ownerAccount = audit.ownerAccount;
+    result.ownerExecutionDomain = audit.ownerExecutionDomain;
     if (result.status != ExecutionCommandStatus::Accepted)
         return result;
-    ExecutionControlResult committed;
+    ExecutionTerminalResult committed;
     if (!m_callbacks.commitTerminalRecoveryAudit(
-            command, result, committed, reason))
+            command, audit, committed, reason))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = reason.empty() ?

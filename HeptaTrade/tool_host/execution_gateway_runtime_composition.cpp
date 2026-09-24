@@ -335,12 +335,15 @@ ExecutionControlResult ExecutionGatewayRuntimeComposition::RemoteDisabled(
 ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::QueryCommandStatus(
     const ExecutionControlCommand& command)
 {
-    if (Enabled() && !ContextAllowed(command.context)) return ContextRejected(command);
-    if (!Enabled()) return RemoteDisabled(command);
+    if (Enabled() && !ContextAllowed(command.context))
+        return NarrowControlStatusResult(ContextRejected(command));
+    if (!Enabled())
+        return NarrowControlStatusResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!ResolveRemoteIdentity(identity, reason))
-        return RemoteIdentityRejected(command, reason);
+        return NarrowControlStatusResult(
+            RemoteIdentityRejected(command, reason));
     const ExecutionControlStatusResult result =
         m_executionClient->QueryCommandStatusWithIdentity(command, identity);
     if (IsIdentityMismatchReason(result.reasonCode))
@@ -352,12 +355,14 @@ ExecutionOwnerAuditResult ExecutionGatewayRuntimeComposition::RecoveryAuditOwner
     const ExecutionControlCommand& command)
 {
     if (Enabled() && !ContextAllowed(command.context))
-        return ContextRejected(command);
-    if (!Enabled()) return RemoteDisabled(command);
+        return NarrowOwnerAuditResult(ContextRejected(command));
+    if (!Enabled())
+        return NarrowOwnerAuditResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!ResolveRemoteIdentity(identity, reason))
-        return RemoteIdentityRejected(command, reason);
+        return NarrowOwnerAuditResult(
+            RemoteIdentityRejected(command, reason));
     const ExecutionOwnerAuditResult result =
         m_executionClient->RecoveryAuditOwnerWithIdentity(command, identity);
     if (IsIdentityMismatchReason(result.reasonCode))
@@ -365,18 +370,20 @@ ExecutionOwnerAuditResult ExecutionGatewayRuntimeComposition::RecoveryAuditOwner
     return result;
 }
 
-ExecutionControlResult
+ExecutionTerminalResult
 ExecutionGatewayRuntimeComposition::TerminalizeRecoveryOwner(
     const ExecutionControlCommand& command)
 {
     if (Enabled() && !ContextAllowed(command.context))
-        return ContextRejected(command);
-    if (!Enabled()) return RemoteDisabled(command);
+        return NarrowTerminalResult(ContextRejected(command));
+    if (!Enabled())
+        return NarrowTerminalResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!ResolveRemoteIdentity(identity, reason))
-        return RemoteIdentityRejected(command, reason);
-    const ExecutionControlResult result =
+        return NarrowTerminalResult(
+            RemoteIdentityRejected(command, reason));
+    const ExecutionTerminalResult result =
         m_executionClient->TerminalizeRecoveryOwnerWithIdentity(
             command, identity);
     if (IsIdentityMismatchReason(result.reasonCode))
@@ -387,12 +394,15 @@ ExecutionGatewayRuntimeComposition::TerminalizeRecoveryOwner(
 ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::FenceSessionOwner(
     const ExecutionControlCommand& command)
 {
-    if (Enabled() && !ContextAllowed(command.context)) return ContextRejected(command);
-    if (!Enabled()) return RemoteDisabled(command);
+    if (Enabled() && !ContextAllowed(command.context))
+        return NarrowControlStatusResult(ContextRejected(command));
+    if (!Enabled())
+        return NarrowControlStatusResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!ResolveRemoteIdentity(identity, reason))
-        return RemoteIdentityRejected(command, reason);
+        return NarrowControlStatusResult(
+            RemoteIdentityRejected(command, reason));
     const ExecutionControlStatusResult result =
         m_executionClient->FenceSessionOwnerWithIdentity(command, identity);
     if (IsIdentityMismatchReason(result.reasonCode))
@@ -403,12 +413,15 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::FenceSessionOwn
 ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::ReleaseSessionOwnerFence(
     const ExecutionControlCommand& command)
 {
-    if (Enabled() && !ContextAllowed(command.context)) return ContextRejected(command);
-    if (!Enabled()) return RemoteDisabled(command);
+    if (Enabled() && !ContextAllowed(command.context))
+        return NarrowControlStatusResult(ContextRejected(command));
+    if (!Enabled())
+        return NarrowControlStatusResult(RemoteDisabled(command));
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!ResolveRemoteIdentity(identity, reason))
-        return RemoteIdentityRejected(command, reason);
+        return NarrowControlStatusResult(
+            RemoteIdentityRejected(command, reason));
     const ExecutionControlStatusResult result =
         m_executionClient->ReleaseSessionOwnerFenceWithIdentity(command, identity);
     if (IsIdentityMismatchReason(result.reasonCode))
@@ -419,14 +432,17 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::ReleaseSessionO
 ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::ReconcileAuthoritativeState(
     const ExecutionControlCommand& command)
 {
-    if (Enabled() && !ContextAllowed(command.context)) return ContextRejected(command);
-    if (!Enabled()) return RemoteDisabled(command);
+    if (Enabled() && !ContextAllowed(command.context))
+        return NarrowControlStatusResult(ContextRejected(command));
+    if (!Enabled())
+        return NarrowControlStatusResult(RemoteDisabled(command));
     const std::shared_ptr<RelayState> state = StateFor(command.context);
     std::lock_guard<std::mutex> lock(state->mutex);
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!ResolveRemoteIdentity(identity, reason))
-        return RemoteIdentityRejected(command, reason);
+        return NarrowControlStatusResult(
+            RemoteIdentityRejected(command, reason));
     const ExecutionControlStatusResult result =
         m_executionClient->ReconcileAuthoritativeStateWithIdentity(command, identity);
     if (IsIdentityMismatchReason(result.reasonCode))

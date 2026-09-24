@@ -89,6 +89,31 @@ struct Authority : ExecutionAuthority, ExecutionControlAuthority, ExecutionReadA
         if (blockReconcile.load()) commandGate.Block();
         return Reply(c);
     }
+    ExecutionTerminalResult TerminalizeRecoveryOwner(
+        const ExecutionControlCommand& c) override {
+        ExecutionTerminalResult r;
+        r.status = ExecutionCommandStatus::Accepted;
+        r.commandId = c.context.toolCallId;
+        r.targetCommandId = c.targetCommandId;
+        r.mutationBlocked = true;
+        r.reasonCode = "TEST_TERMINAL_HALTED";
+        r.ownerAccount = c.context.account;
+        r.ownerExecutionDomain = c.context.executionDomain;
+        r.terminalizationServiceEpoch = "test-terminal-service";
+        r.terminalizationServiceFencingGeneration = 5;
+        r.terminalizationGeneration = 1;
+        r.terminalLatchSha256 = "sha256:" + std::string(64, 'a');
+        r.terminalMutationGateClosed = true;
+        r.terminalBrokerTransportConnected = false;
+        r.terminalBrokerEventIngressHalted = true;
+        r.terminalBrokerCallbackQueueDrained = true;
+        r.terminalBrokerCallbacksInFlight = 0;
+        r.terminalBrokerReconnectPermitted = false;
+        r.terminalLatchDurable = true;
+        r.terminalRuntimeLatchLoaded = true;
+        r.terminalRuntimeVerified = true;
+        return r;
+    }
     ExecutionCommandResult PreviewOrder(const PlaceOrderCommand& c) override {
         ExecutionCommandResult r; r.commandId = c.context.toolCallId;
         r.status = ExecutionCommandStatus::Accepted; r.detail = "{}"; return r;
@@ -157,6 +182,60 @@ void OrdinaryControlWireCannotCarryAuditOrTerminalEvidence() {
           decoded.ownerActiveOrderCount == 0 && !decoded.terminalMutationGateClosed &&
           !decoded.terminalLatchDurable && !decoded.terminalRuntimeVerified,
           "ordinary status leaked unrelated authority into the compatibility wire");
+}
+
+void TerminalWireCarriesOnlyOwnerBoundWitness() {
+    Fixture f;
+    ExecutionServiceRequest request;
+    request.operation = ExecutionServiceOperation::TerminalizeRecoveryOwner;
+    request.control = Control("terminal-wire");
+    request.control.targetCommandId = "terminal-finalization";
+    request.control.recoveryIngressFence = 7;
+    request.control.terminalPreliminaryReceiptSha256 =
+        "sha256:" + std::string(64, 'b');
+    const auto identity = f.server.ServiceIdentity();
+    request.expectedServiceEpoch = identity.serviceEpoch;
+    request.expectedServiceFencingGeneration = identity.serviceFencingGeneration;
+    std::string body, response, reason;
+    Check(ExecutionServiceProtocol::EncodeRequest(request, body, reason),
+          "encode terminal request");
+    const int fd = f.Connect();
+    const auto deadline = Clock::now() + std::chrono::seconds(2);
+    const bool transported =
+        HeptaExecutionServiceInternal::WriteFrame(fd, body, deadline) &&
+        HeptaExecutionServiceInternal::ReadFrame(
+            fd, 32768, deadline, response);
+    ::close(fd);
+    Check(transported, "raw terminal roundtrip");
+    ExecutionControlResult decoded;
+    Check(ExecutionServiceProtocol::DecodeControlResponse(
+              response, decoded, reason),
+          "decode v11 terminal response");
+    Check(decoded.status == ExecutionCommandStatus::Accepted &&
+          decoded.commandId == "terminal-wire" &&
+          decoded.targetCommandId == "terminal-finalization",
+          "terminal narrowing changed command identity");
+    Check(decoded.ownerAccount == request.control.context.account &&
+          decoded.ownerExecutionDomain ==
+              request.control.context.executionDomain,
+          "terminal result lost owner binding");
+    Check(decoded.terminalRuntimeVerified &&
+          decoded.terminalMutationGateClosed &&
+          decoded.terminalBrokerEventIngressHalted &&
+          decoded.terminalBrokerCallbackQueueDrained &&
+          decoded.terminalLatchDurable &&
+          decoded.terminalRuntimeLatchLoaded &&
+          !decoded.terminalBrokerTransportConnected &&
+          !decoded.terminalBrokerReconnectPermitted &&
+          decoded.terminalBrokerCallbacksInFlight == 0,
+          "terminal witness did not survive compatibility encoding");
+    Check(!decoded.ownerAuditAuthoritative &&
+          !decoded.ownerAuditComplete &&
+          decoded.ownerActiveOrderCount == 0 &&
+          decoded.ownerUncertainCommandCount == 0 &&
+          decoded.brokerActiveGeneration == 0 &&
+          decoded.brokerTerminalGeneration == 0,
+          "terminal result manufactured owner-audit authority");
 }
 
 void IdleWorkersAlwaysObserveShutdown() {
@@ -402,6 +481,7 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
 int main() {
     try {
         OrdinaryControlWireCannotCarryAuditOrTerminalEvidence();
+        TerminalWireCarriesOnlyOwnerBoundWitness();
         IdleWorkersAlwaysObserveShutdown();
         PartialFramesDoNotOccupyWorkers();
         SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry();

@@ -11,10 +11,17 @@ static_assert(std::is_same<decltype(std::declval<ExecutionControlAuthority&>().F
 static_assert(std::is_same<decltype(std::declval<ExecutionControlAuthority&>().RecoveryAuditOwner(
     std::declval<const ExecutionControlCommand&>())), ExecutionOwnerAuditResult>::value,
     "recovery audit must not return terminal evidence");
+static_assert(std::is_same<decltype(std::declval<ExecutionControlAuthority&>().TerminalizeRecoveryOwner(
+    std::declval<const ExecutionControlCommand&>())), ExecutionTerminalResult>::value,
+    "terminalization must not return owner-audit counters");
 static_assert(!std::is_convertible<ExecutionControlStatusResult, ExecutionControlResult>::value,
     "wire widening must be explicit and start with non-authorizing defaults");
 static_assert(!std::is_convertible<ExecutionOwnerAuditResult, ExecutionTerminalWitness>::value,
     "owner audit does not prove terminal shutdown");
+static_assert(!std::is_convertible<ExecutionOwnerAuditResult, ExecutionTerminalResult>::value,
+    "an accepted audit must not become terminal evidence implicitly");
+static_assert(!std::is_convertible<ExecutionTerminalResult, ExecutionOwnerAuditResult>::value,
+    "terminal evidence must not manufacture an owner audit");
 
 #include "../HeptaTrade/execution/trading_contract.h"
 
@@ -57,5 +64,32 @@ int main()
     assert(!quote.IsFresh(2001));
     quote.state = MarketSubscriptionState::Stale;
     assert(!quote.IsFresh(1500));
+
+    ExecutionControlResult wire;
+    wire.status = ExecutionCommandStatus::Accepted;
+    wire.commandId = "terminal-command";
+    wire.targetCommandId = "finalization-id";
+    wire.ownerAccount = "DU123";
+    wire.ownerExecutionDomain = "PAPER:ONE";
+    wire.ownerAuditAuthoritative = true;
+    wire.ownerAuditComplete = true;
+    wire.brokerActiveGeneration = 9;
+    wire.terminalizationServiceEpoch = "service-epoch";
+    wire.terminalizationServiceFencingGeneration = 7;
+    wire.terminalizationGeneration = 1;
+    wire.terminalLatchSha256 = "sha256:" + std::string(64, 'a');
+    wire.terminalRuntimeVerified = true;
+
+    const ExecutionTerminalResult terminal = NarrowTerminalResult(wire);
+    assert(terminal.status == ExecutionCommandStatus::Accepted);
+    assert(terminal.ownerAccount == "DU123");
+    assert(terminal.ownerExecutionDomain == "PAPER:ONE");
+    assert(terminal.terminalRuntimeVerified);
+    const ExecutionControlResult widened(terminal);
+    assert(widened.ownerAccount == "DU123");
+    assert(widened.terminalRuntimeVerified);
+    assert(!widened.ownerAuditAuthoritative);
+    assert(!widened.ownerAuditComplete);
+    assert(widened.brokerActiveGeneration == 0);
     return 0;
 }

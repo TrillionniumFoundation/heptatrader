@@ -116,8 +116,8 @@ private:
         const ExecutionControlCommand& command, std::string& reason);
     bool PersistPaperTerminalHaltedLatch(
         const ExecutionControlCommand& command,
-        const ExecutionControlResult& audit,
-        ExecutionControlResult& terminal,
+        const ExecutionOwnerAuditResult& audit,
+        ExecutionTerminalResult& terminal,
         std::string& reason);
     bool LoadFenceCredential(std::string& reason);
     bool ValidateStartupContract(std::string& reason);
@@ -132,17 +132,17 @@ private:
     bool BeginTerminalRecoveryAudit(
         const ExecutionControlCommand& command,
         IBAuthoritativeRecoveryAuditSnapshot& snapshot,
-        ExecutionControlResult& terminalState,
+        ExecutionTerminalResult& terminalState,
         std::string& reason);
     bool CommitTerminalRecoveryAudit(
         const ExecutionControlCommand& command,
-        const ExecutionControlResult& audit,
-        ExecutionControlResult& terminalState,
+        const ExecutionOwnerAuditResult& audit,
+        ExecutionTerminalResult& terminalState,
         std::string& reason);
     bool CompleteTerminalTransportAudit(
         IBAuthoritativeRecoveryAuditSnapshot& frozen,
         IBAuthoritativeRecoveryAuditSnapshot& snapshot,
-        ExecutionControlResult& terminalState,
+        ExecutionTerminalResult& terminalState,
         std::string& reason);
     IbPaperAuthoritativeRiskSnapshot PolicyRiskSnapshot() const;
     IbPaperAuthoritativePositionSnapshot PolicyPositionSnapshot(
@@ -453,7 +453,7 @@ private:
     std::uint64_t m_terminalRecoveryIngressFence = 0;
     PaperTerminalFenceBinding m_terminalFenceBinding;
     PaperTerminalMutationManifest m_terminalMutationManifest;
-    ExecutionControlResult m_terminalResult;
+    ExecutionTerminalResult m_terminalResult;
     std::map<long, RecentBrokerOrder> m_recentBrokerOrders;
     mutable std::mutex m_lifecycleStateMutex;
     mutable std::mutex m_fatalMutex;

@@ -1130,7 +1130,7 @@ bool ReadSelfStartTicks(std::uint64_t& ticks)
 }
 
 void AppendTerminalAudit(
-    std::ostringstream& out, const ExecutionControlResult& audit)
+    std::ostringstream& out, const ExecutionOwnerAuditResult& audit)
 {
     out << "broker_active_generation=" << audit.brokerActiveGeneration << '\n'
         << "broker_terminal_generation=" << audit.brokerTerminalGeneration << '\n'

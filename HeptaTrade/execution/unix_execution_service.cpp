@@ -928,8 +928,8 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
             request.control.context.sessionId);
         m_decisionLeases->FenceOwner(request.control.context.agentId,
             request.control.context.sessionId);
-        return m_controlAuthority->TerminalizeRecoveryOwner(
-            request.control);
+        return ExecutionControlResult(
+            m_controlAuthority->TerminalizeRecoveryOwner(request.control));
     }
     return ExecutionControlResult(m_controlAuthority->ReconcileAuthoritativeState(request.control));
 }

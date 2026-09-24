@@ -926,7 +926,7 @@ bool IbPaperExecutionRuntimeComposition::RebuildRecentBrokerOrders(
 bool IbPaperExecutionRuntimeComposition::CompleteTerminalTransportAudit(
     IBAuthoritativeRecoveryAuditSnapshot& frozen,
     IBAuthoritativeRecoveryAuditSnapshot& snapshot,
-    ExecutionControlResult& terminalState,
+    ExecutionTerminalResult& terminalState,
     std::string& reason)
 {
     frozen.postFillRiskReconciliationPending =

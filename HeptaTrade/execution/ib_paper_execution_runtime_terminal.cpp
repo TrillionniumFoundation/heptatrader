@@ -24,15 +24,15 @@ void IbPaperExecutionRuntimeComposition::BindTerminalPolicyCallbacks(
     callbacks.beginTerminalRecoveryAudit = [this](
         const ExecutionControlCommand& command,
         IBAuthoritativeRecoveryAuditSnapshot& snapshot,
-        ExecutionControlResult& terminal,
+        ExecutionTerminalResult& terminal,
         std::string& callbackReason) {
             return BeginTerminalRecoveryAudit(
                 command, snapshot, terminal, callbackReason);
         };
     callbacks.commitTerminalRecoveryAudit = [this](
         const ExecutionControlCommand& command,
-        const ExecutionControlResult& audit,
-        ExecutionControlResult& terminal,
+        const ExecutionOwnerAuditResult& audit,
+        ExecutionTerminalResult& terminal,
         std::string& callbackReason) {
             return CommitTerminalRecoveryAudit(
                 command, audit, terminal, callbackReason);
@@ -61,12 +61,12 @@ bool IbPaperExecutionRuntimeComposition::BuildTerminalControlAuthority(
 bool IbPaperExecutionRuntimeComposition::BeginTerminalRecoveryAudit(
     const ExecutionControlCommand& command,
     IBAuthoritativeRecoveryAuditSnapshot& snapshot,
-    ExecutionControlResult& terminalState,
+    ExecutionTerminalResult& terminalState,
     std::string& reason)
 {
     std::unique_lock<std::mutex> terminalLock(m_terminalizationMutex);
     snapshot = IBAuthoritativeRecoveryAuditSnapshot();
-    terminalState = ExecutionControlResult();
+    terminalState = ExecutionTerminalResult();
 
     if (m_terminalLatchPresent)
     {
@@ -233,8 +233,8 @@ bool IbPaperExecutionRuntimeComposition::BeginTerminalRecoveryAudit(
 
 bool IbPaperExecutionRuntimeComposition::CommitTerminalRecoveryAudit(
     const ExecutionControlCommand& command,
-    const ExecutionControlResult& audit,
-    ExecutionControlResult& terminalState,
+    const ExecutionOwnerAuditResult& audit,
+    ExecutionTerminalResult& terminalState,
     std::string& reason)
 {
     std::lock_guard<std::mutex> terminalLock(m_terminalizationMutex);

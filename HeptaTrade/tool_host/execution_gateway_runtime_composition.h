@@ -48,7 +48,7 @@ public:
     ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult TerminalizeRecoveryOwner(
+    ExecutionTerminalResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command) override;
     ExecutionCommandResult PreviewOrder(
         const PlaceOrderCommand& command) override;

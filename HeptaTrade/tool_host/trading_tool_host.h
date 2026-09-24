@@ -113,7 +113,7 @@ public:
 	bool TerminalizeFinalizedRecoveryOwner(
 		const SessionSupervisorLeaseRecord& durableRecord,
 		const std::string& preliminaryReceiptSha256,
-		ExecutionControlResult& terminalResult,
+		ExecutionTerminalResult& terminalResult,
 		std::string& reason);
     bool PurgeFinalizedRecoveryOwner(
         const SessionSupervisorLeaseRecord& durableRecord,

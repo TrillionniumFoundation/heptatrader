@@ -290,7 +290,7 @@ bool UnixSessionSupervisorServer::ReapExpired(std::uint64_t nowMs,
 						// recovery-only binding until HSL7 finalize + ACK.
 						continue;
 					}
-					ExecutionControlResult finalAudit;
+					ExecutionOwnerAuditResult finalAudit;
 					if (FinalizePaperRecovery(
 							recovery, finalAudit, recoveryReason))
 						++reaped;
@@ -761,7 +761,7 @@ bool UnixSessionSupervisorServer::RestoreLeases(std::string& reason)
 				{
 					if (!record.paperFinalizationRequired)
 					{
-						ExecutionControlResult finalAudit;
+						ExecutionOwnerAuditResult finalAudit;
 						if (!FinalizePaperRecovery(record, finalAudit, reason) &&
 							reason != "SESSION_OWNER_RECOVERY_REQUIRED")
 							return false;
@@ -1254,7 +1254,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 						}
 						else
 						{
-							ExecutionControlResult finalAudit;
+							ExecutionOwnerAuditResult finalAudit;
 							result.accepted = FinalizePaperRecovery(
 								previous, finalAudit,
 								result.ReasonCode());

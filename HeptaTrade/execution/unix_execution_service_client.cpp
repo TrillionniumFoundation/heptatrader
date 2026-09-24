@@ -84,7 +84,8 @@ ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatus(
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return QueryCommandStatusWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatusWithIdentity(
@@ -95,7 +96,8 @@ ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatusWithI
         command.recoveryIngressFence == 0 ?
         ExecutionServiceOperation::QueryCommandStatus :
         ExecutionServiceOperation::RecoveryQueryCommandStatus;
-    return DispatchControlWithIdentity(command, identity, operation);
+    return NarrowControlStatusResult(
+        DispatchControlWithIdentity(command, identity, operation));
 }
 ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
@@ -103,33 +105,35 @@ ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowOwnerAuditResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return RecoveryAuditOwnerWithIdentity(command, identity);
 }
 ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(
-        command, identity, ExecutionServiceOperation::RecoveryAuditOwner);
+    return NarrowOwnerAuditResult(DispatchControlWithIdentity(
+        command, identity, ExecutionServiceOperation::RecoveryAuditOwner));
 }
-ExecutionControlResult UnixExecutionServiceClient::TerminalizeRecoveryOwner(
+ExecutionTerminalResult UnixExecutionServiceClient::TerminalizeRecoveryOwner(
     const ExecutionControlCommand& command)
 {
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowTerminalResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return TerminalizeRecoveryOwnerWithIdentity(command, identity);
 }
-ExecutionControlResult
+ExecutionTerminalResult
 UnixExecutionServiceClient::TerminalizeRecoveryOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(
+    return NarrowTerminalResult(DispatchControlWithIdentity(
         command, identity,
-        ExecutionServiceOperation::TerminalizeRecoveryOwner);
+        ExecutionServiceOperation::TerminalizeRecoveryOwner));
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
     const ExecutionControlCommand& command)
@@ -137,15 +141,16 @@ ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return FenceSessionOwnerWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwnerWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(
-        command, identity, ExecutionServiceOperation::FenceSessionOwner);
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity, ExecutionServiceOperation::FenceSessionOwner));
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFence(
     const ExecutionControlCommand& command)
@@ -153,15 +158,17 @@ ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFenc
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return ReleaseSessionOwnerFenceWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFenceWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(command, identity,
-        ExecutionServiceOperation::ReleaseSessionOwnerFence);
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity,
+        ExecutionServiceOperation::ReleaseSessionOwnerFence));
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeState(
     const ExecutionControlCommand& command)
@@ -169,15 +176,17 @@ ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeS
     ExecutionServiceIdentity identity;
     std::string reason;
     if (!GetServiceIdentity(identity, reason))
-        return ControlTransportFailure(command.context.toolCallId, reason);
+        return NarrowControlStatusResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
     return ReconcileAuthoritativeStateWithIdentity(command, identity);
 }
 ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeStateWithIdentity(
     const ExecutionControlCommand& command,
     const ExecutionServiceIdentity& identity)
 {
-    return DispatchControlWithIdentity(command, identity,
-        ExecutionServiceOperation::ReconcileAuthoritativeState);
+    return NarrowControlStatusResult(DispatchControlWithIdentity(
+        command, identity,
+        ExecutionServiceOperation::ReconcileAuthoritativeState));
 }
 ExecutionControlResult UnixExecutionServiceClient::DispatchControlWithIdentity(
     const ExecutionControlCommand& command,

@@ -105,7 +105,7 @@ std::string TerminalLatchPrefix(
     const PaperTerminalMutationManifest* manifest);
 bool ReadSelfStartTicks(std::uint64_t& ticks);
 void AppendTerminalAudit(
-    std::ostringstream& out, const ExecutionControlResult& audit);
+    std::ostringstream& out, const ExecutionOwnerAuditResult& audit);
 
 // Decoded, schema-validated HPT2 state used by the runtime replay path.  The
 // manifest/core layer owns parsing and cross-file binding so the runtime

@@ -40,7 +40,7 @@ public:
         const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
-    ExecutionControlResult TerminalizeRecoveryOwner(
+    ExecutionTerminalResult TerminalizeRecoveryOwner(
         const ExecutionControlCommand& command) override;
     ExecutionCommandResult ReadAuthoritativeState(
         const ExecutionReadCommand& command) override;
@@ -76,7 +76,7 @@ public:
     ExecutionOwnerAuditResult RecoveryAuditOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
-    ExecutionControlResult TerminalizeRecoveryOwnerWithIdentity(
+    ExecutionTerminalResult TerminalizeRecoveryOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
     ExecutionCommandResult ReadAuthoritativeStateWithIdentity(
