@@ -286,6 +286,39 @@ void SlowAuthorityKeepsControlAvailableAndTimeoutDoesNotRetry() {
     Check(latency < 500000, "identity blocked behind slow authority");
     std::cout << "IPC_SLOW_AUTHORITY_IDENTITY_US=" << latency << '\n';
 }
+void LocalControlDeadlineIsNotWireAuthorityOrRetry()
+{
+    Fixture f;
+    UnixExecutionServiceClient client(f.path, 1500);
+    const auto identity = f.server.ServiceIdentity();
+    auto command = Control("budgeted-control");
+    command.localDeadline = Clock::now() - std::chrono::milliseconds(1);
+    const auto unsent = client.ReconcileAuthoritativeStateWithIdentity(command, identity);
+    Check(unsent.status != ExecutionCommandStatus::Accepted && f.authority.reconciles == 0,
+          "expired local control was dispatched");
+    ExecutionServiceRequest wire; wire.operation = ExecutionServiceOperation::ReconcileAuthoritativeState;
+    wire.control = command; wire.expectedServiceEpoch = identity.serviceEpoch;
+    wire.expectedServiceFencingGeneration = identity.serviceFencingGeneration;
+    std::string before, after, reason;
+    Check(ExecutionServiceProtocol::EncodeRequest(wire, before, reason), "encode expired local budget");
+    wire.control.localDeadline = Clock::time_point::max();
+    Check(ExecutionServiceProtocol::EncodeRequest(wire, after, reason) && before == after,
+          "caller work budget altered authoritative wire identity");
+    f.authority.blockReconcile.store(true);
+    command.localDeadline = Clock::now() + std::chrono::milliseconds(100);
+    const auto start = Clock::now();
+    auto wait = std::async(std::launch::async, [&] {
+        return client.ReconcileAuthoritativeStateWithIdentity(command, identity);
+    });
+    f.authority.commandGate.Wait();
+    const bool bounded = wait.wait_for(std::chrono::milliseconds(500)) == std::future_status::ready;
+    f.authority.commandGate.Release();
+    const auto result = wait.get();
+    Check(bounded && result.status == ExecutionCommandStatus::Uncertain, "control wait budget not enforced");
+    Check(f.authority.reconciles == 1, "uncertain control automatically resent");
+    std::cout << "CONTROL_BUDGET_OBSERVATION elapsed_us=" << Micros(start) << " sends=1\n";
+}
+
 void ExecutingAuthorityGetsFreshResponseWindow() {
     Fixture f(100);
     const auto identity = f.server.ServiceIdentity();
@@ -506,6 +539,7 @@ void RealCoordinatorFenceSeesInFlightAndRemainsDurable() {
 }
 int main() {
     try {
+        LocalControlDeadlineIsNotWireAuthorityOrRetry();
         OrdinaryControlWireCannotCarryAuditOrTerminalEvidence();
         TerminalWireCarriesOnlyOwnerBoundWitness();
         IdleWorkersAlwaysObserveShutdown();

@@ -198,3 +198,30 @@ send attempt per actual admission. Latency samples include the slow operations.
 Core/extended behavior remains unchanged. All installed generation tests retain
 bounded daemon logs and source/artifact-bound diagnostics after shutdown, even
 on failure; diagnostic capture cannot publish an acceptance result.
+
+## Choosing a maintenance cadence from existing measurements
+
+Use the existing `--generation-growth N` diagnostic on the intended filesystem,
+recording compiler/source identity, storage device, concurrent host load, all seal
+and rebase stages, fresh-reader RSS/recovery and ancient duplicate/conflict checks.
+Standard absolute `TMPDIR` selects only the owned synthetic fixture location.
+The probe retains every sync and identity check; a volatile filesystem must be
+labelled as such. An interrupted or timed-out run is a failed observation, not a
+smaller successful curve. Installed extended/capacity workloads remain separate
+whole-daemon acceptance and are not replaced by the coordinator probe.
+
+Keep the current stopped-state generation design until measured operating limits
+justify a storage change. Seal before the unchanged active-tail 80% admission
+pause, based on observed event/byte growth and the available maintenance window.
+Do not rebase after every seal: first compare cumulative retained bytes with the
+logical ledger and current indexes, then choose a storage/lineage trigger and
+verify its stop/restore cost. Reserve space for both the old lineage and the new
+complete generation until publication and verification permit pruning. Rebase
+can reduce retained bytes without reducing a particular observed recovery time.
+Neither one fast run nor a host-specific threshold changes the runtime limits.
+
+Lease acknowledgement capacity has a different lifecycle: the Supervisor's
+2 MiB bound includes permanent anti-resurrection evidence and cannot be relieved
+by deleting old acknowledgements. Its independent history-growth fixture and
+capacity metrics must drive capacity planning; OMS rebase is not a lease-store
+compactor. These decisions add no routine capacity campaign or approval gate.

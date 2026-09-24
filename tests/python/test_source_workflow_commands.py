@@ -91,7 +91,7 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
         self.assertEqual(len(matches), 1)
         return matches[0]
 
-    def run_scope(self, changed_path: str, *, event: str = "pull_request"):
+    def run_scope(self, changed_path, *, event: str = "pull_request", invalid_base: bool = False):
         with tempfile.TemporaryDirectory(prefix="hepta-monitoring-scope-") as folder:
             root = Path(folder)
             def git(*args):
@@ -104,9 +104,11 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
             git("add", ".")
             git("-c", "commit.gpgsign=false", "commit", "-qm", "base")
             base = git("rev-parse", "HEAD")
-            target = root / changed_path
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("change\n", encoding="utf-8")
+            paths = [changed_path] if isinstance(changed_path, str) else changed_path
+            for path in paths:
+                target = root / path
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("change\n", encoding="utf-8")
             git("add", ".")
             git("-c", "commit.gpgsign=false", "commit", "-qm", "head")
             output = root / "github-output"
@@ -114,7 +116,7 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
                 ["/bin/bash", "--noprofile", "--norc", "-c", self.block()],
                 cwd=root,
                 env=dict(os.environ, EVENT_NAME=event,
-                         BASE_SHA=base if event == "pull_request" else "",
+                         BASE_SHA=("not-a-commit" if invalid_base else base) if event == "pull_request" else "",
                          BASE_REPOSITORY="unused/base",
                          SERVER_URL="file:///unused",
                          GITHUB_OUTPUT=str(output)),
@@ -135,6 +137,30 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
                 result, value = self.run_scope(path)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertEqual(value, "required=true")
+
+    def test_only_explicit_offline_modules_skip_monitoring(self):
+        for path in ("research/src/market_data.cpp", "research/src/analytics.cpp",
+                     "research/src/replay.cpp", "research/src/strategy.cpp"):
+            result, value = self.run_scope(path)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(value, "required=false")
+        for paths in (("research/src/replay.cpp", "HeptaTrade/oms_journal.cpp"),
+                      ("research/src/native_strategy_client.cpp",),
+                      ("research/CMakeLists.txt",), ("research/src/new_module.cpp",),
+                      ("research/src/replay.cpp\nHeptaTrade/anything.cpp",)):
+            result, value = self.run_scope(paths)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(value, "required=true")
+
+    def test_failed_base_resolution_never_grants_exemption(self):
+        result, value = self.run_scope("docs/change.md", invalid_base=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotEqual(value, "required=false")
+
+    def test_merge_candidate_never_skips_monitoring_acceptance(self):
+        result, value = self.run_scope("research/src/replay.cpp", event="merge_group")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value, "required=true")
 
     def test_push_never_skips_monitoring_acceptance(self):
         result, value = self.run_scope("docs/change.md", event="push")

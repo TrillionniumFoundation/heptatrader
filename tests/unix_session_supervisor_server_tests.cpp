@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "../HeptaTrade/tool_host/session_supervisor_protocol.h"
 #include "../HeptaTrade/execution/execution_coordinator.h"
 #include "../HeptaTrade/tool_host/agent_os_runtime_config.h"
@@ -14,6 +15,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <map>
@@ -584,7 +586,10 @@ private:
 
 std::string TempPath(const char* pattern)
 {
-	std::string value(pattern);
+    std::string value(pattern);
+    const char* root = std::getenv("TMPDIR");
+    if (root != nullptr && root[0] == '/' && value.compare(0, 5, "/tmp/") == 0)
+        value = std::string(root) + value.substr(4);
 	std::vector<char> buffer(value.begin(), value.end());
 	buffer.push_back('\0');
 	const int fd = mkstemp(buffer.data());
@@ -1511,12 +1516,13 @@ void TestReapSerializesWithRenewCommit()
 		reapFinished.store(true);
 	});
 	usleep(50000);
-	assert(!reapFinished.load());
+	assert(reapFinished.load());
 	releaseCommit.store(true);
 	renewThread.join();
 	reapThread.join();
 	assert(renewed.accepted && renewed.leaseGeneration == 2);
-	assert(reapAccepted && reaped == 0);
+    assert(!reapAccepted && reaped == 0 && reapReason == "SUPERVISOR_MAINTENANCE_BUSY");
+    assert(server.ReapExpired(oldExpiry + 1, reaped, reapReason) && reaped == 0);
 	assert(store.List().size() == 1 && !store.List()[0].fencePending);
 	assert(store.List()[0].leaseGeneration == 2);
 	TradingToolHostSessionBinding active;
@@ -3973,6 +3979,172 @@ void TestPaperFinalizationMultiOwnerStateMachineAndCrashReplay()
 	std::remove(ownerBTokenFile.c_str());
 }
 
+void TestReapPagesAdvancePastUnexpiredOwners()
+{
+    const std::string journalPath = TempPath("/tmp/hepta-reap-page-journal-XXXXXX");
+    const std::string socketPath = TempPath("/tmp/hepta-reap-page-socket-XXXXXX");
+    const std::string storePath = TempPath("/tmp/hepta-reap-page-store-XXXXXX");
+    const std::string keyPath = TempKeyPath();
+    SessionSupervisorLeaseStore store; std::string reason;
+    assert(store.Init(storePath, keyPath, reason));
+    OmsJournal journal; assert(journal.Init(journalPath));
+    ExecutionCoordinatorCallbacks callbacks; ExecutionCoordinator execution(journal, callbacks);
+    TradingToolRegistry registry(execution); TradingToolHost host(registry);
+    unsigned fences = 0;
+    host.SetSessionRevokedObserver([&](const TradingToolHostSessionBinding& binding,
+        const std::string&, std::string&) {
+        assert(!binding.enabled); ++fences; return true;
+    });
+    TradingToolSessionControlPlane control(host,
+        [](const std::string&, const TradingToolHostSessionBinding&, std::string&) { return true; });
+    UnixSessionSupervisorServer server(control); server.SetLeaseStore(&store);
+    std::map<std::uint32_t, std::string> issuers; issuers[::getuid()] = "page-issuer";
+    assert(server.Start(socketPath, issuers,
+        [](const SessionSupervisorRequest& request, TradingToolHostSessionBinding& binding, std::string&) {
+            binding.token = request.token; binding.peerUid = request.peerUid;
+            binding.session.executionContext.agentId = request.agentId;
+            binding.session.executionContext.sessionId = request.sessionId;
+            binding.session.executionContext.account = "DU123";
+            binding.session.environment = "WATCH"; binding.executionDomain = "IB-PAPER";
+            binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+            return true;
+        }, reason, 4096, 1000));
+    const auto now = static_cast<std::uint64_t>(OmsJournal::NowEpochMs());
+    for (unsigned i = 0; i < 40; ++i)
+    {
+        const std::string id = (i < 10 ? "0" : "") + std::to_string(i);
+        SessionSupervisorLeaseRecord record;
+        record.templateId = "watch"; record.issuer = "page-issuer";
+        record.token = "reap-page-owner-token-000-" + id;
+        record.agentId = "page-agent"; record.sessionId = "page-session-" + id;
+        record.peerUid = ::getuid(); record.leaseGeneration = 1;
+        record.expiresAtMs = i >= 38 ? now - 1 : now + 600000;
+        assert(store.Put(record, reason));
+    }
+    unsigned passes = 0; std::size_t total = 0;
+    while (total < 2 && passes < 8)
+    {
+        std::size_t reaped = 0;
+        assert(server.ReapExpired(now, reaped, reason));
+        if (passes < 2) assert(reaped == 0);
+        total += reaped; ++passes;
+    }
+    assert(total == 2 && fences == 2 && store.List().size() == 38);
+    server.Stop();
+    std::cout << "SUPERVISOR_REAP_PAGES passes=" << passes << " expired=2 preserved=38\n";
+    std::remove(storePath.c_str()); std::remove(keyPath.c_str()); std::remove(journalPath.c_str());
+}
+
+void TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner()
+{
+    const std::string journalPath = TempPath("/tmp/hepta-work-budget-journal-XXXXXX");
+    const std::string socketPath = TempPath("/tmp/hepta-work-budget-socket-XXXXXX");
+    const std::string storePath = TempPath("/tmp/hepta-work-budget-store-XXXXXX");
+    const std::string keyPath = TempKeyPath();
+    SessionSupervisorLeaseStore store; std::string reason;
+    assert(store.Init(storePath, keyPath, reason));
+    OmsJournal journal; assert(journal.Init(journalPath));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator execution(journal, callbacks);
+    TradingToolRegistry registry(execution); TradingToolHost host(registry);
+    RecoveryControlAuthority authority;
+    std::atomic<bool> entered{false}, release{false};
+    authority.ownerAudit = [&](const ExecutionControlCommand& command) {
+        assert(command.localDeadline != std::chrono::steady_clock::time_point::max());
+        entered.store(true);
+        while (!release.load() && std::chrono::steady_clock::now() < command.localDeadline)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        ExecutionControlResult result;
+        result.status = ExecutionCommandStatus::Uncertain;
+        result.commandId = command.context.toolCallId;
+        result.reasonCode = "TEST_OWNER_AUDIT_PENDING";
+        return result;
+    };
+    authority.query = [](const ExecutionControlCommand& command) {
+        ExecutionControlResult result; result.commandId = command.context.toolCallId;
+        result.targetCommandId = command.targetCommandId;
+        result.status = ExecutionCommandStatus::Uncertain; return result;
+    };
+    host.SetRecoveryControlAuthority(&authority);
+    TradingToolSessionControlPlane control(host,
+        [](const std::string& issuer, const TradingToolHostSessionBinding&, std::string&) {
+            return issuer == "hepta.os.uid";
+        });
+    UnixSessionSupervisorServer server(control);
+    server.SetLeaseStore(&store); server.SetRootCustodianUidForTests(::getuid());
+    std::map<std::uint32_t, std::string> issuers;
+    issuers[::getuid()] = "hepta.os.uid";
+    assert(server.Start(socketPath, issuers,
+        [](const SessionSupervisorRequest& request, TradingToolHostSessionBinding& binding, std::string&) {
+            binding.token = request.token; binding.peerUid = request.peerUid;
+            binding.session.executionContext.agentId = request.agentId;
+            binding.session.executionContext.sessionId = request.sessionId;
+            binding.session.executionContext.account = "DU123";
+            binding.session.environment = request.templateId == "paper" ? "PAPER" : "WATCH";
+            binding.executionDomain = "IB-PAPER";
+            binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+            return true;
+        }, reason, 16384, 1500));
+    SessionSupervisorRequest provision; provision.operation = SessionSupervisorOperation::Provision;
+    provision.templateId = "paper"; provision.token = "work-budget-paper-owner-token-0001";
+    provision.agentId = "work-agent"; provision.sessionId = "slow-owner";
+    provision.peerUid = ::getuid(); provision.ttlMs = 60000;
+    assert(Call(socketPath, provision).accepted);
+    SessionSupervisorRequest recovery; recovery.operation = SessionSupervisorOperation::RecoveryQuery;
+    recovery.token = provision.token; recovery.expectedGeneration = 1;
+    recovery.targetCommandId = "work-budget-command";
+    auto pending = std::async(std::launch::async, [&] { return Call(socketPath, recovery); });
+    const auto waitDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!entered.load() && std::chrono::steady_clock::now() < waitDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(entered.load());
+    SessionSupervisorRequest sameOwner = recovery;
+    sameOwner.operation = SessionSupervisorOperation::Renew;
+    sameOwner.targetCommandId.clear(); sameOwner.ttlMs = 60000;
+    const auto start = std::chrono::steady_clock::now();
+    const auto denied = Call(socketPath, sameOwner);
+    auto unrelated = provision; unrelated.templateId = "watch";
+    unrelated.token = "work-budget-watch-owner-token-0001";
+    unrelated.sessionId = "independent-owner";
+    const auto independent = Call(socketPath, unrelated);
+    const bool completedWhileSlow = !release.load() &&
+        pending.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready;
+    const auto controlNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start).count();
+    release.store(true);
+    const auto recovered = pending.get();
+    assert(!denied.accepted && denied.ReasonCode() == "SUPERVISOR_OWNER_WORK_PENDING");
+    assert(independent.accepted && completedWhileSlow);
+    assert(!recovered.accepted);
+    TradingToolHostSessionBinding retained;
+    assert(host.GetSession(provision.token, retained) && retained.recoveryOnly);
+    // Stop while a second recovery observation is genuinely in flight. The
+    // fake authority obeys the same monotonic deadline as the real IPC client.
+    entered.store(false); release.store(false);
+    const int raw = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    assert(raw >= 0);
+    sockaddr_un address{}; address.sun_family = AF_UNIX;
+    assert(socketPath.size() < sizeof(address.sun_path));
+    std::memcpy(address.sun_path, socketPath.c_str(), socketPath.size() + 1);
+    assert(::connect(raw, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+    std::string requestBody;
+    assert(SessionSupervisorProtocol::EncodeRequest(recovery, requestBody, reason));
+    assert(TypedToolProtocol::WriteFrame(raw, requestBody, 1000, reason));
+    const auto secondDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    while (!entered.load() && std::chrono::steady_clock::now() < secondDeadline)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    assert(entered.load());
+    const auto stopStart = std::chrono::steady_clock::now(); server.Stop();
+    ::close(raw);
+    const auto stopNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - stopStart).count();
+    assert(controlNs < 1500000000LL && stopNs < 2000000000LL);
+    std::cout << "{\"schema\":\"heptatrader.supervisor-work-cost.v1\",\"synthetic\":true,"
+        << "\"independent_owner_completed_while_slow\":true,\"same_owner_rejected\":true,"
+        << "\"control_ns\":" << controlNs << ",\"stop_ns\":" << stopNs << ",\"stop_during_recovery\":true}\n";
+    std::remove(storePath.c_str()); std::remove(keyPath.c_str()); std::remove(journalPath.c_str());
+}
+
 void TestExistingSupervisorSocketIsNeverUnlinked()
 {
 	const std::string journalPath =
@@ -4023,8 +4195,13 @@ void TestExistingSupervisorSocketIsNeverUnlinked()
 
 } // namespace
 
-int main()
+int main(int argc, char** argv)
 {
+    if (argc == 2 && std::string(argv[1]) == "--work-budget-only")
+    { TestReapPagesAdvancePastUnexpiredOwners(); TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner(); return 0; }
+    assert(argc == 1);
+    TestReapPagesAdvancePastUnexpiredOwners();
+    TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner();
 	TestPaperFinalizationProtocol();
 	TestAuditJournalSecurity();
 	TestAuditJournalCacheAndGrowthBounds();

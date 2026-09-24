@@ -28,6 +28,8 @@ public:
     TradingToolSessionControlPlane& ControlPlane();
     UnixToolServer& ToolServer();
     UnixSessionSupervisorServer& Supervisor();
+    SessionSupervisorLeaseCapacity LeaseCapacity() const
+    { return m_leaseStore.CapacitySnapshot(); }
 
 private:
     bool EnsureAuditJournal(std::string& reason);

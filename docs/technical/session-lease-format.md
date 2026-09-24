@@ -57,7 +57,7 @@ provisioned as a live lease.
 | Plaintext HSL7 | tagged lease/tombstone records; obsolete HSL7 acknowledgement rows are rejected |
 | Plaintext HSL8 | current writer: `R` lease/tombstone rows and `A` acknowledgement rows binding preliminary audit and Execution terminal receipt |
 
-`SerializePlaintext` in `session_supervisor_lease_store.cpp` is the exact field
+`SerializePlaintext` in `session_supervisor_lease_codec.cpp` is the exact field
 ordering reference. New writers must not reuse an older tag for a changed
 layout. Unknown/malformed versions fail closed. The store is bounded to 2 MiB;
 key input is bounded to 65 bytes. Encryption does not remove file identity,
@@ -91,3 +91,9 @@ The complete request field/operation reference is
 [`wire-operation-contracts.md`](wire-operation-contracts.md), with generated
 numeric tags and producer bindings. Existing historical migration tests remain
 required behavior; format support is not removed by this documentation cleanup.
+
+The internal terminal acknowledgement method now takes one named request grouping
+finalization and owner bindings. There is no HSL/HSS version change. The optional
+capacity observation is diagnostic, not a persistent-format extension. See the
+[Supervisor contract](../modules/session-supervisor.md#lease-history-capacity-and-typed-terminal-commits)
+for historical-capacity accounting and anti-resurrection retention.

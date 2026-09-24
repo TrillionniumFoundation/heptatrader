@@ -41,3 +41,21 @@ Historical source remains at `6cdae64e04a92d234852aa14670a54538e9e5f9c`.
 `check_qualification_trust_boundary.py`, `build_ib_candidate_artifact.sh`, `verify_ib_candidate_artifact.py`, `run_ib_paper_artifact_qualification.sh`, `verify_ib_paper_qualification.py`, and `verify_canonical_ib_paper_profile.py` are trusted-main qualification components. They do not make external runners, credentials, Broker sessions or receipts exist; the verifiers fail when those controls are absent.
 
 Do not add developer-specific paths, untrusted `eval`/`source`, Broker secrets, encoded transfer payloads, an alternate order path, or a branch-mutating remediation carrier to this directory.
+
+## Incremental native development
+
+Use the existing CMake targets and CTest names; no second registration system is
+needed. For example, after a risk-only change:
+
+```sh
+cmake --build build/core --target hepta_pre_trade_risk_engine_tests --parallel 2
+ctest --test-dir build/core -R '^hepta_pre_trade_risk_engine_tests$' --output-on-failure
+```
+
+The canonical `dev_core.sh` remains final candidate acceptance. Historical
+HeptaDLL JSON validation runs once in `run_python_tests.py --lane source`, while
+native old-record/client/privilege tests remain in core. The lease-store and
+Supervisor test fixtures accept standard absolute `TMPDIR` for owned temporary
+state. Their defaults remain `/tmp`; record filesystem context for measurements.
+The existing coordinator `--generation-growth N` diagnostic likewise accepts
+`TMPDIR`. A tmpfs run measures software cost, not physical storage durability.

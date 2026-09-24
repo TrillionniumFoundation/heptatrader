@@ -105,3 +105,12 @@ revision's promotion, not an already qualified immutable artifact. Evidence of
 a compromised running artifact or safety boundary remains a stop/fence issue.
 No metrics file may disarm a kill switch, mint a session or authorize trading.
 Never export credentials, tokens, encrypted-store plaintext or Broker secrets.
+
+### Supervisor lease capacity extension
+
+The existing Gateway stream/report additionally carries optional lease-capacity
+presence/known/indeterminate flags, state counts, acknowledgement-history counts
+and bytes, current/canonical encoded bytes, exit reserve and admission headroom.
+Persistence count/sum/max are process-local observations. Unknown capacity never
+exports synthetic healthy values; no token/account/receipt enters metric labels.
+See [the Gateway observation contract](technical/gateway-runtime-observability.md#optional-supervisor-lease-capacity).

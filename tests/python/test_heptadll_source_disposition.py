@@ -8,6 +8,7 @@ import json
 import pathlib
 import re
 import sys
+import unittest
 
 ALLOWED_DISPOSITIONS = {
     "canonicalized",
@@ -23,10 +24,7 @@ def load(path):
     with pathlib.Path(path).open("r", encoding="utf-8") as handle:
         return json.load(handle)
 
-def main():
-    disposition = load(sys.argv[1])
-    root = pathlib.Path(sys.argv[2]).resolve()
-    migrations = load(sys.argv[3])
+def validate(disposition, root, migrations):
 
     assert disposition["schema_version"] == 1
     assert disposition["legacy_repository"] == "TrillionniumFoundation/HeptaDLL-main"
@@ -105,7 +103,16 @@ def main():
     assert by_path["heptaHeptaDLL/TradingSession.xml"] == "retained_reference_data"
     assert by_path["heptaHeptaDLL/heptaTradeCommonDefine.h"] == "retained_compatibility_abi"
 
-    print("heptadll_source_disposition: PASS")
+
+class HistoricalDispositionTests(unittest.TestCase):
+    def test_pinned_source_inventory(self):
+        root = pathlib.Path(__file__).resolve().parents[2]
+        validate(load(root / "docs/technical/heptadll-source-disposition.json"), root,
+                 load(root / "docs/technical/heptadll-consumer-migrations.json"))
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) == 4:
+        validate(load(sys.argv[1]), pathlib.Path(sys.argv[2]).resolve(), load(sys.argv[3]))
+        print("heptadll_source_disposition: PASS (historical metadata only)")
+    else:
+        unittest.main()

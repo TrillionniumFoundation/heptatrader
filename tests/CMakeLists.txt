@@ -212,20 +212,5 @@ if(TARGET hepta_paper_terminal_latch_committer)
     add_dependencies(hepta_core_test_binaries hepta_paper_terminal_latch_committer)
 endif()
 
-
-add_test(NAME hepta_heptadll_migration_state
-    COMMAND "${Python3_EXECUTABLE}" -I -B
-        "${CMAKE_CURRENT_SOURCE_DIR}/python/test_heptadll_migration_state.py"
-        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-consumer-migrations.json"
-        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-lifecycle-status.json")
-set_tests_properties(hepta_heptadll_migration_state PROPERTIES
-    LABELS "core;source" TIMEOUT 30)
-
-add_test(NAME hepta_heptadll_source_disposition
-    COMMAND "${Python3_EXECUTABLE}" -I -B
-        "${CMAKE_CURRENT_SOURCE_DIR}/python/test_heptadll_source_disposition.py"
-        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-source-disposition.json"
-        "${CMAKE_SOURCE_DIR}"
-        "${CMAKE_SOURCE_DIR}/docs/technical/heptadll-consumer-migrations.json")
-set_tests_properties(hepta_heptadll_source_disposition PROPERTIES
-    LABELS "core;source" TIMEOUT 30)
+# Historical HeptaDLL metadata is owned by the source Python partition.
+# Runtime compatibility, client isolation and old-record behavior remain native tests.

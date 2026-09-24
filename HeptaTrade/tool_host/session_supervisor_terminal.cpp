@@ -26,7 +26,9 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 	const std::string& targetCommandId,
 	ExecutionControlStatusResult& commandResult,
 	ExecutionOwnerAuditResult& ownerAudit,
-	std::string& reason)
+    std::string& reason,
+    std::unique_lock<std::timed_mutex>* serialization,
+    std::chrono::steady_clock::time_point deadline)
 {
 	if (m_leaseStore == nullptr || record.templateId != "paper" ||
 		record.paperFinalizationState !=
@@ -101,10 +103,34 @@ bool UnixSessionSupervisorServer::EnterPaperRecovery(
 		// still entry-enabled.
 		record = recovery;
 	}
+    const auto owner = std::make_pair(record.agentId, record.sessionId);
+    if (serialization != nullptr && !m_recoveryOwnersInFlight.insert(owner).second)
+    {
+        reason = "SUPERVISOR_OWNER_WORK_PENDING";
+        return false;
+    }
+    // Reservation excludes same-owner requests and group finalization. The
+    // host commits its durable/local fence before releasing dispatch. Re-lock
+    // on every return/exception before the caller consumes the observation.
+    struct RemoteObservationWindow
+    {
+        std::unique_lock<std::timed_mutex>* lock;
+        std::set<std::pair<std::string, std::string>>& owners;
+        const std::pair<std::string, std::string>& owner;
+        RemoteObservationWindow(std::unique_lock<std::timed_mutex>* serializer,
+            std::set<std::pair<std::string, std::string>>& active,
+            const std::pair<std::string, std::string>& subject)
+            : lock(serializer), owners(active), owner(subject)
+        { if (lock != nullptr) lock->unlock(); }
+        ~RemoteObservationWindow()
+        { if (lock != nullptr) { lock->lock(); owners.erase(owner); } }
+    } window(serialization, m_recoveryOwnersInFlight, owner);
+    deadline = std::min(deadline, std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(m_ioTimeoutMs));
 	return m_controlPlane.EnterRecoveryOnlyAndQuery(
 		record.issuer, record.token, record.leaseGeneration,
 		targetCommandId, *m_leaseStore, record, commandResult, reason,
-		&ownerAudit, recovery.expiresAtMs, durableCurrentToken);
+		&ownerAudit, recovery.expiresAtMs, durableCurrentToken, deadline);
 }
 
 bool UnixSessionSupervisorServer::FinalizePaperRecovery(
@@ -905,15 +931,24 @@ bool UnixSessionSupervisorServer::HandlePaperTerminalWitnessAck(
 	}
 	SessionSupervisorPaperFinalizationAck acknowledgement;
 	bool alreadyAcknowledged = false;
-	if (!m_leaseStore->AcknowledgeAndPurgePaperFinalizationGroup(
-			request.recoveryId, request.finalizationId,
-			request.expectedOwnerSetSha256, request.expectedOwnerCount,
-			request.receiptSha256, terminalReceiptSha256, terminalReceipt,
-			result.OwnerTokenSha256(), request.expectedGeneration,
-			terminalOwner.issuer, terminalOwner.agentId,
-			terminalOwner.sessionId, terminalOwner.ownerAccount,
-			terminalOwner.ownerExecutionDomain, acknowledgement,
-			alreadyAcknowledged, result.ReasonCode())) return false;
+    SessionSupervisorTerminalAckRequest commit;
+    commit.finalization.recoveryId = request.recoveryId;
+    commit.finalization.finalizationId = request.finalizationId;
+    commit.finalization.expectedOwnerSetSha256 = request.expectedOwnerSetSha256;
+    commit.finalization.expectedOwnerCount = request.expectedOwnerCount;
+    commit.finalization.receiptSha256 = request.receiptSha256;
+    commit.terminalReceiptSha256 = terminalReceiptSha256;
+    commit.terminalReceipt = terminalReceipt;
+    commit.owner.tokenSha256 = result.OwnerTokenSha256();
+    commit.owner.generation = request.expectedGeneration;
+    commit.owner.issuer = terminalOwner.issuer;
+    commit.owner.agentId = terminalOwner.agentId;
+    commit.owner.sessionId = terminalOwner.sessionId;
+    commit.owner.account = terminalOwner.ownerAccount;
+    commit.owner.executionDomain = terminalOwner.ownerExecutionDomain;
+    if (!m_leaseStore->AcknowledgeAndPurgePaperFinalizationGroup(
+            commit, acknowledgement, alreadyAcknowledged, result.ReasonCode()))
+        return false;
 	(void)alreadyAcknowledged;
 	if (acknowledgement.terminalReceiptSha256 != terminalReceiptSha256 ||
 		acknowledgement.terminalReceipt != terminalReceipt)

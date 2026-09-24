@@ -2,6 +2,7 @@
 #include "execution_service_protocol.h"
 #include "unix_execution_service_internal.h"
 #include <cerrno>
+#include <algorithm>
 #include <mutex>
 #include <poll.h>
 #include <sys/socket.h>
@@ -85,7 +86,7 @@ ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatus(
 {
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!GetServiceIdentity(identity, reason))
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
         return NarrowControlStatusResult(
             ControlTransportFailure(command.context.toolCallId, reason));
     return QueryCommandStatusWithIdentity(command, identity);
@@ -106,7 +107,7 @@ ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
 {
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!GetServiceIdentity(identity, reason))
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
         return NarrowOwnerAuditResult(
             ControlTransportFailure(command.context.toolCallId, reason));
     return RecoveryAuditOwnerWithIdentity(command, identity);
@@ -123,7 +124,7 @@ ExecutionTerminalResult UnixExecutionServiceClient::TerminalizeRecoveryOwner(
 {
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!GetServiceIdentity(identity, reason))
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
         return NarrowTerminalResult(
             ControlTransportFailure(command.context.toolCallId, reason));
     return TerminalizeRecoveryOwnerWithIdentity(command, identity);
@@ -142,7 +143,7 @@ ExecutionControlStatusResult UnixExecutionServiceClient::FenceSessionOwner(
 {
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!GetServiceIdentity(identity, reason))
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
         return NarrowControlStatusResult(
             ControlTransportFailure(command.context.toolCallId, reason));
     return FenceSessionOwnerWithIdentity(command, identity);
@@ -159,7 +160,7 @@ ExecutionControlStatusResult UnixExecutionServiceClient::ReleaseSessionOwnerFenc
 {
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!GetServiceIdentity(identity, reason))
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
         return NarrowControlStatusResult(
             ControlTransportFailure(command.context.toolCallId, reason));
     return ReleaseSessionOwnerFenceWithIdentity(command, identity);
@@ -177,7 +178,7 @@ ExecutionControlStatusResult UnixExecutionServiceClient::ReconcileAuthoritativeS
 {
     ExecutionServiceIdentity identity;
     std::string reason;
-    if (!GetServiceIdentity(identity, reason))
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
         return NarrowControlStatusResult(
             ControlTransportFailure(command.context.toolCallId, reason));
     return ReconcileAuthoritativeStateWithIdentity(command, identity);
@@ -208,7 +209,7 @@ ExecutionControlResult UnixExecutionServiceClient::DispatchControlWithIdentity(
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason))
         return ControlTransportFailure(command.context.toolCallId, reason);
     const ExecutionControlResult result =
-        CallControl(command.context.toolCallId, body, identity);
+        CallControl(command.context.toolCallId, body, identity, command.localDeadline);
     if (result.reasonCode == "EXECUTION_SERVICE_EPOCH_MISMATCH" ||
         result.reasonCode == "EXECUTION_SERVICE_EPOCH_CHANGED")
         InvalidateServiceIdentity(identity);
@@ -280,9 +281,15 @@ ExecutionCommandResult UnixExecutionServiceClient::ReadAuthoritativeStateWithIde
 }
 bool UnixExecutionServiceClient::GetServiceIdentity(
     ExecutionServiceIdentity& identity,
-    std::string& reason)
+    std::string& reason, std::chrono::steady_clock::time_point deadline)
 {
-    std::lock_guard<std::mutex> lock(m_serviceIdentityMutex);
+    std::unique_lock<std::timed_mutex> lock(m_serviceIdentityMutex, std::defer_lock);
+    if (deadline == std::chrono::steady_clock::time_point::max()) lock.lock();
+    else if (!lock.try_lock_until(deadline))
+    {
+        reason = "EXECUTION_CONTROL_WORK_BUDGET_EXHAUSTED";
+        return false;
+    }
     if (ValidIdentity(m_serviceIdentity))
     {
         identity = m_serviceIdentity;
@@ -294,7 +301,7 @@ bool UnixExecutionServiceClient::GetServiceIdentity(
     std::string body;
     if (!ExecutionServiceProtocol::EncodeRequest(request, body, reason)) return false;
     const ExecutionCommandResult result = Call(
-        "__service_identity__", body, ExecutionServiceIdentity());
+        "__service_identity__", body, ExecutionServiceIdentity(), deadline);
     ExecutionServiceIdentity received;
     received.serviceEpoch = result.serviceEpoch;
     received.serviceFencingGeneration = result.serviceFencingGeneration;
@@ -312,16 +319,19 @@ bool UnixExecutionServiceClient::GetServiceIdentity(
 void UnixExecutionServiceClient::InvalidateServiceIdentity(
     const ExecutionServiceIdentity& identity)
 {
-    std::lock_guard<std::mutex> lock(m_serviceIdentityMutex);
+    std::lock_guard<std::timed_mutex> lock(m_serviceIdentityMutex);
     if (SameIdentity(m_serviceIdentity, identity))
         m_serviceIdentity = ExecutionServiceIdentity();
 }
 ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& commandId,
                                                         const std::string& requestBody,
                                                         const ExecutionServiceIdentity&
-                                                            expectedIdentity)
+                                                            expectedIdentity,
+                                                        std::chrono::steady_clock::time_point deadline)
 {
-    const IoDeadline requestDeadline = DeadlineAfter(m_ioTimeoutMs);
+    if (std::chrono::steady_clock::now() >= deadline)
+        return TransportFailure(commandId, "EXECUTION_CONTROL_WORK_BUDGET_EXHAUSTED");
+    const IoDeadline requestDeadline = std::min(DeadlineAfter(m_ioTimeoutMs), deadline);
     struct sockaddr_un address;
     std::string reason;
     if (!BuildAddress(m_socketPath, address, reason)) return TransportFailure(commandId, reason);
@@ -370,7 +380,7 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
     // Once a complete request is written, waiting for its durable authority
     // result has a separate bound from connect/framing. Expiry remains a
     // conservative transport failure and never triggers an automatic retry.
-    const IoDeadline responseDeadline = DeadlineAfter(m_responseTimeoutMs);
+    const IoDeadline responseDeadline = std::min(DeadlineAfter(m_responseTimeoutMs), deadline);
     std::string responseBody;
     if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
     {
@@ -396,9 +406,12 @@ ExecutionCommandResult UnixExecutionServiceClient::Call(const std::string& comma
 ExecutionControlResult UnixExecutionServiceClient::CallControl(
     const std::string& commandId,
     const std::string& requestBody,
-    const ExecutionServiceIdentity& expectedIdentity)
+    const ExecutionServiceIdentity& expectedIdentity,
+    std::chrono::steady_clock::time_point deadline)
 {
-    const IoDeadline requestDeadline = DeadlineAfter(m_ioTimeoutMs);
+    if (std::chrono::steady_clock::now() >= deadline)
+        return ControlTransportFailure(commandId, "EXECUTION_CONTROL_WORK_BUDGET_EXHAUSTED");
+    const IoDeadline requestDeadline = std::min(DeadlineAfter(m_ioTimeoutMs), deadline);
     struct sockaddr_un address;
     std::string reason;
     if (!BuildAddress(m_socketPath, address, reason))
@@ -446,7 +459,7 @@ ExecutionControlResult UnixExecutionServiceClient::CallControl(
     // Once a complete request is written, waiting for its durable authority
     // result has a separate bound from connect/framing. Expiry remains a
     // conservative transport failure and never triggers an automatic retry.
-    const IoDeadline responseDeadline = DeadlineAfter(m_responseTimeoutMs);
+    const IoDeadline responseDeadline = std::min(DeadlineAfter(m_responseTimeoutMs), deadline);
     std::string responseBody;
     if (!ReadFrame(fd, m_maxResponseBytes, responseDeadline, responseBody))
     {

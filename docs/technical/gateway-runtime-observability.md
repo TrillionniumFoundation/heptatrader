@@ -79,3 +79,24 @@ runs the actual packaged Gateway and packaged reporter with distinct UIDs.
 This does not implement all portfolio/PnL/quote/connection metric series or
 prove host collection, notification delivery or an operational SLO. Those
 remain external or unimplemented requirements in the observability inventory.
+
+## Optional Supervisor lease capacity
+
+Current Gateway producers append `lease_store.schema_version=1` without changing
+the gateway-metrics v1 authority model. The native serializer and installed
+reporter validate distinct active/fence/recovery/finalizing counts, acknowledgement
+history bytes/groups and exact canonical envelope/headroom arithmetic. The source
+of these counters is the lease store's cached serialization observation. Old
+producers omit this object and export `hepta_supervisor_lease_capacity_present 0`.
+
+Known capacity exports fixed `hepta_supervisor_*` gauges. Unknown/indeterminate
+capacity omits numeric gauges instead of publishing apparently healthy zeroes.
+`hepta_supervisor_lease_persist_seconds_count`, `_sum` and `_max` describe complete
+persist attempts (including failure), not committed operations. They reset on
+restart and are omitted when saturated. The report distinguishes indeterminate
+persistence, unavailable capacity and paused admission. None authorizes trading.
+
+The lease history fixture emits `heptatrader.lease-history-cost.v1` observations
+for small and near-reader-limit synthetic HSL8 histories. It exercises real
+reopen, fence, removal and oldest-token rejection; it is not a qualified Broker
+receipt producer or evidence of physical power-loss survival.

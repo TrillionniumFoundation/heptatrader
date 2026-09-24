@@ -108,7 +108,11 @@ Behavior-bearing evidence is intentionally assigned once:
 
 A pull request whose changed paths are confined to `README.md`, `docs/`, `doc/`
 or `pic/` still runs the complete source-truth/documentation partition, but skips
-the Prometheus/Alertmanager process chain. Pushes, merge candidates and any source,
+the Prometheus/Alertmanager process chain. The same narrow exemption applies to
+exact Data/Analytics/Replay/Strategy computation files and their declared public
+headers. Native clients, build/package graphs, unknown research paths and mixed
+changes retain monitoring acceptance. The complete NUL-delimited Git diff must
+succeed before an exemption is considered; filenames cannot inject another row. Pushes, merge candidates and any source,
 script, systemd, monitoring or workflow change retain that process acceptance.
 Skipping an unrelated process chain does not inherit or manufacture monitoring
 evidence for the documentation-only revision.
@@ -146,3 +150,8 @@ Performance changes must preserve the safety invariants above. Host-specific low
 | strategy/research | deterministic replay + no-lookahead + cost/capacity evidence; no authority promotion |
 
 The objective is to preserve behavior-bearing defenses while keeping source, CI and deployment evidence as small and direct as the invariant allows.
+
+Historical HeptaDLL inventory consistency belongs only to the Python source
+partition. It is not repeated in native/sanitizer CTest and no longer requires
+particular English explanation phrases. Canonical old-record decoding, retired
+interface rejection and unprivileged-client boundary tests remain native behavior.

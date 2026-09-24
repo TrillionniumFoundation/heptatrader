@@ -3,6 +3,7 @@
 #include "execution_event_feed_transport.h"
 
 #include <cerrno>
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <poll.h>
@@ -44,11 +45,12 @@ UnixExecutionEventFeedClient::UnixExecutionEventFeedClient(
         m_allowedServerUids.insert(static_cast<std::uint32_t>(::geteuid()));
 }
 
-ExecutionEventReadResult UnixExecutionEventFeedClient::GetServiceIdentity() const
+ExecutionEventReadResult UnixExecutionEventFeedClient::GetServiceIdentity(
+    std::chrono::steady_clock::time_point deadline) const
 {
     ExecutionEventFeedRequest request;
     request.operation = ExecutionEventFeedOperation::GetServiceIdentity;
-    const ExecutionEventReadResult result = Call(request);
+    const ExecutionEventReadResult result = Call(request, deadline);
     if (ValidIdentity(result.serviceIdentity) &&
         result.status != ExecutionEventReadStatus::ServiceIdentity &&
         result.status != ExecutionEventReadStatus::ServiceNotReady &&
@@ -87,7 +89,8 @@ ExecutionEventReadResult UnixExecutionEventFeedClient::Wait(
 }
 
 ExecutionEventReadResult UnixExecutionEventFeedClient::Call(
-    const ExecutionEventFeedRequest& request) const
+    const ExecutionEventFeedRequest& request,
+    std::chrono::steady_clock::time_point workDeadline) const
 {
     std::string requestBody;
     std::string reason;
@@ -95,8 +98,10 @@ ExecutionEventReadResult UnixExecutionEventFeedClient::Call(
         return TransportFailure(reason);
     const int waitTimeout = request.operation == ExecutionEventFeedOperation::Wait ?
         request.timeoutMs : 0;
-    const Deadline deadline = std::chrono::steady_clock::now() +
-        std::chrono::milliseconds(m_ioTimeoutMs + waitTimeout);
+    if (std::chrono::steady_clock::now() >= workDeadline)
+        return TransportFailure("EXECUTION_CONTROL_WORK_BUDGET_EXHAUSTED");
+    const Deadline deadline = std::min(workDeadline, std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(m_ioTimeoutMs + waitTimeout));
     const int fd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
     if (fd < 0) return TransportFailure("EXECUTION_EVENT_SOCKET_CREATE_FAILED");
     struct sockaddr_un address;

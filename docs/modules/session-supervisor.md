@@ -102,3 +102,66 @@ method bodies after extraction; no durable boundary is split across owners.
 This extraction does not claim that every logical state has been redesigned.
 Format consolidation or a new state machine would require separate migration
 and recovery evidence, not a line-count target.
+
+## Bounded control work and unrelated owners
+
+Complete-frame operation admission uses the configured Supervisor I/O interval as
+one monotonic lock-wait/recovery-observation budget. Queue timeout rejects before
+intent or lease mutation. The local deadline is never an HSS1/HEX1 field, permit,
+lease extension or cancellation of an already-dispatched authority operation.
+Execution identity/event-identity checks, request writes and response reads share
+that deadline for recovery observation; a lost/late result remains uncertain.
+
+PAPER recovery reserves its exact `(agent_id, session_id)`, commits the durable
+and local recovery-only fence, then releases the Gateway mutation-dispatch lock
+while observing Execution. Supervisor serialization is also released for that
+reserved owner's recovery call. The same owner and group terminal operations
+are refused while it is in flight; unrelated owners may proceed. Before adopting
+a response, the host checks the current binding/generation and local deadline.
+Exception unwinding restores the Supervisor serializer and releases the owner
+reservation. Terminal group commits remain exclusive, not general parallel work.
+
+Ordinary cleanup takes at most 16 ordered lease records per page, resumes with a
+fair token cursor, and stops starting another owner after a 100 ms selection
+budget. An already-selected recovery owner retains its configured I/O work
+interval, rather than starving forever if durable fencing consumes 100 ms.
+This is not a claim that the entire pass finishes in 100 ms.
+It does not wait behind a control operation: `SUPERVISOR_MAINTENANCE_BUSY` leaves
+state untouched for the next pass. Each copied record is re-read before mutation.
+Startup restoration shares one 60-second budget across owners rather than a new
+60-second retry window for every owner. Existing exact-authority checks remain.
+
+These are cooperative application/transport budgets, **not** a hard real-time
+promise for filesystem sync, arbitrary in-process callbacks, scheduler stalls or
+exclusive terminal commits. A disk-stalled syscall cannot safely be abandoned by
+detaching a writer thread. Such host failures require process-manager containment
+and recovery; they must not be reported as a successful clean shutdown.
+
+## Lease history capacity and typed terminal commits
+
+The existing Gateway observation includes an optional, cached `lease_store`
+object. It separates unfenced stored leases, fenced/recovery/finalizing records,
+permanent acknowledgement groups, plaintext bytes by family, actual encrypted
+bytes, canonical rewrite bytes, admission headroom and exit reserve. Counts do
+not certify that a lease is currently unexpired or authorized. A published-but-
+indeterminate write has `known=false`; reports must not export its byte values as
+healthy capacity. Fixed-cardinality persistence timing is process-local only.
+
+Capacity accounting is calculated during the existing serialization/migration,
+not by rescanning receipt history on every telemetry tick. Oversized canonical
+output rejects before encryption and file I/O. The 2 MiB reader bound, 96 KiB
+base exit reserve and 20 KiB per PAPER record reserve are unchanged. A history-
+heavy old store can still fence/remove active records, but cannot grow ordinary
+admission into its exit reserve. No acknowledgement or retired identity expires.
+
+Operators should observe history growth and remaining headroom before admission
+pauses. No automatic deletion/compaction is supplied for acknowledgement history:
+an arbitrary TTL would permit retired owner-token reuse. Any future cold-history
+store must preserve exact rejection/replay semantics across restart and failure.
+
+`SessionSupervisorTerminalAckRequest` groups finalization and terminal-owner
+bindings by name. The store validates all fields against the original receipts;
+seven independent owner-field substitutions are regression-tested before commit.
+This is an internal C++ interface cleanup, not a change to HSL8, HSS1 or HEX1.
+`Put` and `Replace` share mutable-record shape validation; historical decoding
+keeps its version-specific restrictions. All prior migration tests remain.
