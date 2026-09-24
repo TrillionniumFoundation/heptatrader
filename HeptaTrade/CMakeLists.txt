@@ -198,7 +198,8 @@ target_link_libraries(hepta_execution_server
 
 add_library(hepta_agent_execution_support STATIC
     agent/decision_lease_manager.cpp
-    events/execution_event_hub.cpp)
+    events/execution_event_hub.cpp
+    events/owner_scoped_health_publisher.cpp)
 target_include_directories(hepta_agent_execution_support
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_agent_execution_support PUBLIC Threads::Threads)
@@ -223,12 +224,24 @@ target_link_libraries(hepta_execution_core PUBLIC
     Threads::Threads
     OpenSSL::Crypto ZLIB::ZLIB)
 
-add_library(hepta_trading_tool_core STATIC
+# Canonical authoritative-state implementation shared by runtime and tests.
+# Keeping these translation units behind one target prevents profile-local
+# recompilation from drifting compile options or silently testing a different
+# implementation than the daemon links.
+add_library(hepta_authoritative_state STATIC
+    state/authoritative_trading_snapshot_store.cpp
+    state/snapshot_refresh_coordinator.cpp
     state/ib_contract_identity.cpp
+    state/ib_authoritative_quote_subscription_set.cpp)
+target_include_directories(hepta_authoritative_state PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_authoritative_state PUBLIC Threads::Threads)
+
+add_library(hepta_trading_tool_core STATIC
     tools/trading_tool_registry.cpp)
 target_include_directories(hepta_trading_tool_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(hepta_trading_tool_core PUBLIC OpenSSL::Crypto)
+target_link_libraries(hepta_trading_tool_core PUBLIC
+    hepta_authoritative_state OpenSSL::Crypto)
 
 # One compiled implementation of the public tool framing/protocol/result codec
 # is shared by the privileged Gateway and unprivileged Native Client.
@@ -404,6 +417,21 @@ add_library(hepta_ib_paper_policy STATIC
 target_include_directories(hepta_ib_paper_policy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_ib_paper_policy PUBLIC hepta_execution_core OpenSSL::Crypto)
 
+# Venue behavior that is independent of the native IB SDK is compiled once
+# and shared by the broker daemon and regression tests. The SDK-owning wrapper
+# remains profile-specific so tests do not accidentally acquire broker I/O.
+add_library(hepta_ib_adapter_common STATIC
+    adapter_ib/ib_order_lifecycle.cpp
+    adapter_ib/ib_venue_correlation.cpp)
+target_include_directories(hepta_ib_adapter_common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Experimental capability adapters have no mutation transport. Build their
+# shared behavior once rather than recompiling the same source inside tests.
+add_library(hepta_venue_capability_adapters STATIC
+    adapter_ctp/ctp_gateway_adapter.cpp
+    adapter_xt/xt_gateway_adapter.cpp)
+target_include_directories(hepta_venue_capability_adapters PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+
 add_library(hepta_simulator_runtime STATIC simulator/deterministic_execution_venue.cpp)
 target_link_libraries(hepta_simulator_runtime PUBLIC hepta_risk_engine)
 target_include_directories(hepta_simulator_runtime PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -440,16 +468,13 @@ add_executable(hepta_ib_executiond
     execution/ib_paper_execution_runtime_flatten.cpp
     execution/ib_paper_execution_hook_authority.cpp
     adapter_ib/ib_api_wrapper.cpp
-    ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES}
-    adapter_ib/ib_order_lifecycle.cpp
-    adapter_ib/ib_venue_correlation.cpp
-    state/authoritative_trading_snapshot_store.cpp
-    state/ib_authoritative_quote_subscription_set.cpp
-    state/ib_contract_identity.cpp)
+    ${HEPTA_IB_GATEWAY_ADAPTER_SOURCES})
 target_include_directories(hepta_ib_executiond PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/adapter_ib)
-target_link_libraries(hepta_ib_executiond PRIVATE hepta_execution_core hepta_ib_paper_policy hepta_risk_engine)
+target_link_libraries(hepta_ib_executiond PRIVATE
+    hepta_execution_core hepta_ib_paper_policy hepta_risk_engine
+    hepta_authoritative_state hepta_ib_adapter_common)
 if(HEPTA_ENABLE_IBAPI)
     # Only broker-owning targets select the native SDK implementation. Agent
     # contracts, clients, Gateway and simulator never inherit this definition.
