@@ -87,6 +87,10 @@ def run_campaign(artifact: Path, source_sha: str, attempt: Path, *,
         raise QualificationError("expected candidate SHA must be canonical")
     if env.get("HEPTA_QUALIFICATION_MUTATIONS") != "1":
         raise QualificationError("explicit HEPTA_QUALIFICATION_MUTATIONS=1 is required")
+    broker_host = env.get("HEPTA_IB_PAPER_BROKER_HOST", "")
+    broker_port = env.get("HEPTA_IB_PAPER_BROKER_PORT", "")
+    if (broker_host, broker_port) != ("127.0.0.1", "4002"):
+        raise QualificationError("desktop PAPER requires the explicit 127.0.0.1:4002 endpoint")
     harness_digest = env.get("HEPTA_IB_PAPER_QUALIFIER_SHA256", "")
     if SHA256.fullmatch(harness_digest) is None:
         raise QualificationError("the external harness must be digest-pinned")
@@ -169,6 +173,8 @@ def run_campaign(artifact: Path, source_sha: str, attempt: Path, *,
             "HEPTA_QUALIFICATION_REQUIRED_SCENARIOS": scenarios,
             "HEPTA_QUALIFICATION_RESULT_PATH": str(result),
             "HEPTA_QUALIFICATION_MUTATIONS": "1",
+            "HEPTA_QUALIFICATION_EXPECTED_BROKER_HOST": broker_host,
+            "HEPTA_QUALIFICATION_EXPECTED_BROKER_PORT": broker_port,
         }
         command = [str(harness), "--execution-binary", str(binary),
                    "--expected-binary-sha256", binary_digest,
@@ -178,6 +184,7 @@ def run_campaign(artifact: Path, source_sha: str, attempt: Path, *,
                    "--candidate-environment", "cleared",
                    "--candidate-network-policy", "broker-proxy-only",
                    "--credential-delivery", "harness-only",
+                   "--broker-host", broker_host, "--broker-port", broker_port,
                    "--evidence-dir", str(evidence), "--result", str(result),
                    "--mode", "bounded-mutations"]
         record["state"] = "RUNNING"

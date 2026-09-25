@@ -27,6 +27,29 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
         self.assertIn("on", self.workflow)
         self.assertNotIn(True, self.workflow)
 
+    def test_desktop_route_cannot_fall_back_to_x230_or_generic_role(self) -> None:
+        for labels in (["self-hosted", "linux", "x64", "heptatrader-ib-paper"],
+                       ["self-hosted", "linux", "x64", "x230-ib-paper"],
+                       ["self-hosted", "linux", "x64", "heptatrader-ib-builder"]):
+            with self.subTest(labels=labels):
+                candidate = copy.deepcopy(self.workflow)
+                candidate["jobs"]["qualify"]["runs-on"]["labels"] = labels
+                self.assertTrue(boundary.validate_workflow(candidate))
+
+    def test_desktop_endpoint_cannot_be_missing_remote_or_live(self) -> None:
+        for key, values in (("HEPTA_IB_PAPER_BROKER_HOST", (None, "localhost", "192.0.2.1")),
+                            ("HEPTA_IB_PAPER_BROKER_PORT", (None, "4001", "7496", "7497"))):
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    candidate = copy.deepcopy(self.workflow)
+                    env = next(s for s in candidate["jobs"]["qualify"]["steps"]
+                               if s.get("id") == "run-campaign")["env"]
+                    if value is None:
+                        del env[key]
+                    else:
+                        env[key] = value
+                    self.assertTrue(boundary.validate_workflow(candidate))
+
     def test_human_names_and_comments_are_not_security_contracts(self) -> None:
         self.workflow["name"] = "CODEOWNERS candidate/scripts/ ordinary human label"
         for job in self.workflow["jobs"].values():

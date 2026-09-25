@@ -44,6 +44,21 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
                               cwd=self.root, env={**self.env, "STUB_STATUS": str(status)},
                               capture_output=True, timeout=5)
 
+    def test_real_owner_phase_rejects_wrong_desktop_or_role(self) -> None:
+        for job_name, runner in (("build-candidate", "desktop-ib-builder"),
+                                 ("qualify", "desktop-ib-paper")):
+            phase = next(s for s in self.workflow["jobs"][job_name]["steps"]
+                         if s.get("id") == "bind-owner")
+            env = {**self.env, "DISPATCH_ACTOR": "ProfHepta",
+                   "DISPATCH_ACTOR_ID": "102159240", "TRIGGERING_ACTOR": "ProfHepta",
+                   "RUNNER_NAME": runner, "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64"}
+            for name in (runner, "x230-ib-paper", "desktop", "wrong-role"):
+                with self.subTest(job=job_name, runner=name):
+                    result = subprocess.run(["/bin/bash", "-e", "-o", "pipefail", "-c", phase["run"]],
+                                            cwd=self.root, env={**env, "RUNNER_NAME": name},
+                                            capture_output=True, timeout=5)
+                    self.assertEqual(result.returncode == 0, name == runner, result.stderr)
+
     def test_all_verification_phases_execute_and_propagate_failure(self) -> None:
         for job in self.workflow["jobs"].values():
             for step in job["steps"]:

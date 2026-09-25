@@ -46,6 +46,9 @@ jobs:
           test "$DISPATCH_ACTOR" = 'ProfHepta'
           test "$DISPATCH_ACTOR_ID" = '102159240'
           test "$TRIGGERING_ACTOR" = 'ProfHepta'
+          test "$RUNNER_NAME" = 'desktop-ib-builder'
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
 
       - name: Checkout trusted dispatch-main builder
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -110,7 +113,7 @@ jobs:
       id-token: write
     runs-on:
       group: trillionnium-ib-paper
-      labels: [self-hosted, linux, x64, heptatrader-ib-paper]
+      labels: [self-hosted, linux, x64, heptatrader-ib-paper, desktop-ib-paper]
     timeout-minutes: 90
     env:
       PYTHONDONTWRITEBYTECODE: '1'
@@ -127,6 +130,9 @@ jobs:
           test "$DISPATCH_ACTOR" = 'ProfHepta'
           test "$DISPATCH_ACTOR_ID" = '102159240'
           test "$TRIGGERING_ACTOR" = 'ProfHepta'
+          test "$RUNNER_NAME" = 'desktop-ib-paper'
+          test "$RUNNER_OS" = Linux
+          test "$RUNNER_ARCH" = X64
 
       - name: Checkout trusted dispatch-main qualification harness
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -172,6 +178,8 @@ jobs:
           HEPTA_IB_PAPER_QUALIFIER: ${{ vars.HEPTA_IB_PAPER_QUALIFIER }}
           HEPTA_IB_PAPER_QUALIFIER_SHA256: ${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}
           HEPTA_QUALIFICATION_MUTATIONS: '1'
+          HEPTA_IB_PAPER_BROKER_HOST: '127.0.0.1'
+          HEPTA_IB_PAPER_BROKER_PORT: '4002'
         run: trusted/scripts/run_ib_paper_artifact_qualification.sh "$ARTIFACT_DIR" "$GITHUB_SHA" "$EVIDENCE_DIR"
 
       - name: Reverify immutable trusted harness after Broker campaign

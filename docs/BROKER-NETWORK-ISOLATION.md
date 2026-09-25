@@ -1,7 +1,7 @@
 # Broker network isolation
 
 Status: CURRENT  
-Applies to: canonical IB PAPER deployment and the bounded x230 qualification host
+Applies to: canonical desktop IB PAPER deployment; retained X230 mapping is compatibility-only
 
 ## 目标
 
@@ -26,7 +26,28 @@ The failure path is independent of the untrusted policy contents: it attempts th
 
 Table existence and final policy state are determined from `nft -j` machine output, never localized stderr text. Each attempt renders one deterministic create-or-replace transaction from the observed table state; present/absent races are retried only within a compiled bound. Activation or deny-all succeeds only after structural JSON readback proves the exact table, output chain, hook priority/policy and complete commented IPv4/IPv6 rule set with no extra permissive rule.
 
-## x230 qualification-host mapping
+## Desktop qualification route
+
+The active PAPER workflows select `desktop-ib-paper` in runner group
+`trillionnium-ib-paper`, with the `heptatrader-ib-paper` and `desktop-ib-paper`
+labels. Candidate construction checks the existing `desktop-ib-builder` role;
+it does not inherit the qualifier's credentials or direct Broker access.
+The campaign controller requires `127.0.0.1:4002` explicitly and forwards it to
+the pinned harness. The host must verify that this is its approved PAPER session.
+
+The checkout-free availability job passes logical and runtime execution UID
+`2003` and the actual runner UID to the pinned root-owned host probe. It first
+requires the runner's direct Broker connection to fail. The probe must verify
+the canonical root-owned desktop policy; it must not accept the supplied UID
+as authorization. No X230 UID remapping is used on the desktop.
+
+Registering the dedicated desktop qualifier, restricting its runner-group
+access, installing the matching root-owned host probe/harness and their digest
+variables are host administration. A queued workflow or a listening port proves
+none of those conditions. There is no fallback to the generic `desktop` runner
+or to the no-secret builder when the qualifier is unavailable.
+
+## Retained X230 qualification-host mapping
 
 The bounded x230 qualification host intentionally runs the external Broker-owning process under a host-local principal rather than pretending that host UID `995` is the canonical UID `2003`.
 
@@ -38,7 +59,7 @@ The bounded x230 qualification host intentionally runs the external Broker-ownin
 - scope `ib-paper-qualification-only`;
 - `live_authorized=false`.
 
-The checkout-free `self-hosted-ib-availability.yml` workflow passes the exact SHA-256 of this reviewed map, both logical and host execution UIDs, and the actual runner UID to a separately pinned root-owned host probe. The runner must first prove that it cannot reach `127.0.0.1:4002`; the root probe then validates only non-secret host-boundary health against its root-owned host policy.
+Historical X230 qualification used this map with its separately pinned host probe. The current desktop workflow does not pass this map or select an X230 runner. The retained mapping remains available only for interpreting that distinct host boundary; it is not desktop readiness evidence.
 
 The repository's canonical policy remains keyed to logical UID `2003`. Any host-specific nftables policy that permits UID `995` is an external root-owned deployment input and must bind the reviewed identity-map digest. It is not accepted by the canonical service helper merely by changing `--policy`. The workflow, map, or unit tests do not install that policy, grant credentials, open a kill switch, place an order, or qualify PAPER.
 

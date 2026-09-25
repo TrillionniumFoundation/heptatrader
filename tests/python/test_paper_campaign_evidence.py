@@ -35,13 +35,15 @@ class PaperCampaignEvidenceTests(unittest.TestCase):
             "isolation": dict(campaign.ISOLATION),
         }
         (self.artifact / "manifest.json").write_text(json.dumps(self.manifest))
+        (self.artifact / "manifest.json").chmod(0o600)
         self.attempt = self.root / "attempt"
         self.harness = self.root / "harness"
-        self.env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "SHOULD_NOT_REACH_CHILD": "secret"}
+        self.env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C", "SHOULD_NOT_REACH_CHILD": "secret",
+                    "HEPTA_IB_PAPER_BROKER_HOST": "127.0.0.1", "HEPTA_IB_PAPER_BROKER_PORT": "4002"}
         self.set_harness('printf "{}\\n" > "$HEPTA_QUALIFICATION_RESULT_PATH"\n')
 
     def set_harness(self, body: str) -> None:
-        self.harness.write_text("#!/bin/sh\nset -eu\n" + body)
+        self.harness.write_text("#!/bin/sh\nset -eu\numask 077\n" + body)
         self.harness.chmod(0o700)
         self.env.update(HEPTA_IB_PAPER_QUALIFIER=str(self.harness),
                         HEPTA_IB_PAPER_QUALIFIER_SHA256=hashlib.sha256(self.harness.read_bytes()).hexdigest(),
@@ -67,6 +69,43 @@ class PaperCampaignEvidenceTests(unittest.TestCase):
 
     def assert_private_cleanup(self) -> None:
         self.assertEqual(list(self.root.glob(".hepta-paper-private-*")), [])
+
+    def test_workflow_endpoint_reaches_real_controller_and_harness(self) -> None:
+        import check_qualification_trust_boundary as boundary
+        workflow = boundary.load_workflow(ROOT / boundary.WORKFLOW)
+        phase = next(s for s in workflow["jobs"]["qualify"]["steps"]
+                     if s.get("id") == "run-campaign")
+        for key in ("HEPTA_IB_PAPER_BROKER_HOST", "HEPTA_IB_PAPER_BROKER_PORT"):
+            self.env[key] = phase["env"][key]
+        self.set_harness('test "$HEPTA_QUALIFICATION_EXPECTED_BROKER_HOST" = 127.0.0.1\n'
+                         'test "$HEPTA_QUALIFICATION_EXPECTED_BROKER_PORT" = 4002\n'
+                         'test -z "${SHOULD_NOT_REACH_CHILD:-}"\n'
+                         'printf "%s\\n" "$@" > "$(dirname "$HEPTA_QUALIFICATION_RESULT_PATH")/argv"\n'
+                         'printf "{}\\n" > "$HEPTA_QUALIFICATION_RESULT_PATH"\n')
+        result = self.run_wrapper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        argv = (self.attempt / "evidence/argv").read_text().splitlines()
+        self.assertEqual(argv.count("--broker-host"), 1)
+        self.assertEqual(argv.count("--broker-port"), 1)
+        self.assertEqual(argv[argv.index("--broker-host") + 1], "127.0.0.1")
+        self.assertEqual(argv[argv.index("--broker-port") + 1], "4002")
+        self.assertFalse(self.record()["paper_authorized"])
+
+    def test_invalid_or_omitted_endpoint_never_reserves_or_spawns(self) -> None:
+        for key, values in (("HEPTA_IB_PAPER_BROKER_HOST", (None, "", "localhost", "192.0.2.1", "::1")),
+                            ("HEPTA_IB_PAPER_BROKER_PORT", (None, "", "4001", "7496", "7497", "04002", "4002 "))):
+            for value in values:
+                with self.subTest(key=key, value=value):
+                    env = dict(self.env)
+                    if value is None:
+                        env.pop(key)
+                    else:
+                        env[key] = value
+                    with mock.patch.object(campaign.subprocess, "Popen") as spawn:
+                        with self.assertRaises(campaign.QualificationError):
+                            campaign.run_campaign(self.artifact, "a" * 40, self.attempt, environ=env)
+                        spawn.assert_not_called()
+                    self.assertFalse(self.attempt.exists())
 
     def test_failure_preserves_evidence_without_authorization(self) -> None:
         self.set_harness('printf "event\\n" > "$(dirname "$HEPTA_QUALIFICATION_RESULT_PATH")/events.jsonl"\nexit 42\n')
