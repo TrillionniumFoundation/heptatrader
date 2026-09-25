@@ -96,6 +96,8 @@ class IbWorkflowInterfaceTests(unittest.TestCase):
         self.assertEqual(flags["--evidence-root"], "/private/attempt-1/evidence")
         self.assertEqual(flags["--publication-archive"], "/private/attempt-1/verified-evidence.tar")
         self.assertEqual(flags["--expected-git-sha"], "a" * 40)
+        self.assertEqual(flags["--expected-broker-host"], "127.0.0.1")
+        self.assertEqual(flags["--expected-broker-port"], "4002")
 
 
 if __name__ == "__main__":

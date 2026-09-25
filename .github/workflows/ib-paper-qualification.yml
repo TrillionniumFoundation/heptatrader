@@ -201,6 +201,7 @@ jobs:
           --expected-git-sha "$GITHUB_SHA"
           --expected-binary "$ARTIFACT_DIR/hepta-ib-executiond"
           --expected-harness "$HEPTA_IB_PAPER_QUALIFIER"
+          --expected-broker-host 127.0.0.1 --expected-broker-port 4002
           --receipt "$EVIDENCE_DIR/evidence/qualification-verification.json"
           --attempt "$EVIDENCE_DIR/attempt.json"
           --publication-archive "$EVIDENCE_DIR/verified-evidence.tar"

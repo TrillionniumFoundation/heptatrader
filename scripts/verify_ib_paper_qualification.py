@@ -20,6 +20,12 @@ from typing import Any
 
 SCHEMA = "hepta.ib-paper-qualification.v1"
 RECEIPT_SCHEMA = "hepta.ib-paper-qualification-verification.v1"
+# V1 remains readable for historical, endpoint-unbound evidence. A current
+# desktop campaign must use V2 and bind both requested and observed endpoints.
+ENDPOINT_SCHEMA = "hepta.ib-paper-qualification.v2"
+ENDPOINT_RECEIPT_SCHEMA = "hepta.ib-paper-qualification-verification.v2"
+DESKTOP_BROKER_HOST = "127.0.0.1"
+DESKTOP_BROKER_PORT = 4002
 MAX_QUALIFICATION_DURATION_MS = 6 * 60 * 60 * 1000
 MAX_EVIDENCE_FILE_BYTES = 512 * 1024 * 1024
 MAX_RESULT_BYTES = 4 * 1024 * 1024
@@ -416,6 +422,15 @@ def verify_tool(path: Path, label: str) -> tuple[str, str]:
     return Path(path).name, file_digest(data)
 
 
+def desktop_endpoint(value: Any) -> dict[str, Any]:
+    endpoint = exact_keys(value, frozenset({"host", "port"}), "broker endpoint")
+    if (endpoint["host"] != DESKTOP_BROKER_HOST
+            or type(endpoint["port"]) is not int
+            or endpoint["port"] != DESKTOP_BROKER_PORT):
+        raise QualificationError("broker endpoint must be the desktop 127.0.0.1:4002 endpoint")
+    return dict(endpoint)
+
+
 def validate_result(
     payload: dict[str, Any],
     *,
@@ -426,10 +441,15 @@ def validate_result(
     binary_sha256: str,
     harness_name: str,
     harness_sha256: str,
+    expected_broker_endpoint: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     exact_keys(payload, TOP_LEVEL_KEYS, "qualification result")
-    if payload["schema"] != SCHEMA:
+    if payload["schema"] not in (SCHEMA, ENDPOINT_SCHEMA):
         raise QualificationError(f"unsupported qualification schema: {payload['schema']!r}")
+    if expected_broker_endpoint is not None:
+        expected_broker_endpoint = desktop_endpoint(expected_broker_endpoint)
+        if payload["schema"] != ENDPOINT_SCHEMA:
+            raise QualificationError("desktop endpoint qualification requires a V2 observed endpoint")
     if payload["qualified"] is not True:
         raise QualificationError("qualification result must explicitly set qualified=true")
     if payload["mode"] != "bounded-mutations":
@@ -444,7 +464,13 @@ def validate_result(
     if harness["name"] != harness_name or harness["sha256"] != harness_sha256:
         raise QualificationError("qualification harness identity does not match the invoked file")
 
-    broker = exact_keys(payload["broker"], BROKER_KEYS, "broker")
+    endpoint_bound = payload["schema"] == ENDPOINT_SCHEMA
+    broker = exact_keys(payload["broker"],
+                        BROKER_KEYS | {"endpoint"} if endpoint_bound else BROKER_KEYS,
+                        "broker")
+    observed_endpoint = desktop_endpoint(broker["endpoint"]) if endpoint_bound else None
+    if expected_broker_endpoint is not None and observed_endpoint != expected_broker_endpoint:
+        raise QualificationError("observed broker endpoint does not match this campaign")
     if broker["venue"] != "IB" or broker["environment"] != "PAPER":
         raise QualificationError("qualification must target the IB PAPER environment")
     if broker["transport"] != "TWS_API":
@@ -600,7 +626,7 @@ def validate_result(
             raise QualificationError(f"unreferenced evidence file: {relative}")
 
     return {
-        "schema": RECEIPT_SCHEMA,
+        "schema": ENDPOINT_RECEIPT_SCHEMA if endpoint_bound else RECEIPT_SCHEMA,
         "verified": True,
         "qualified": True,
         "git_sha": expected_git_sha,
@@ -613,6 +639,7 @@ def validate_result(
             "session_id": broker["session_id"],
             "account_fingerprint": broker["account_fingerprint"],
             "host_fingerprint": broker["host_fingerprint"],
+            **({"endpoint": observed_endpoint} if endpoint_bound else {}),
         },
         "started_at_ms": started,
         "completed_at_ms": completed,
@@ -724,6 +751,8 @@ def main() -> int:
     parser.add_argument("--expected-git-sha", required=True)
     parser.add_argument("--expected-binary", type=Path, required=True)
     parser.add_argument("--expected-harness", type=Path, required=True)
+    parser.add_argument("--expected-broker-host")
+    parser.add_argument("--expected-broker-port", type=int)
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--attempt", type=Path, help="bind workflow verification to a completed controller attempt")
     parser.add_argument("--publication-archive", type=Path,
@@ -731,6 +760,12 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        expected_endpoint = None
+        if args.expected_broker_host is not None or args.expected_broker_port is not None:
+            expected_endpoint = desktop_endpoint(
+                {"host": args.expected_broker_host, "port": args.expected_broker_port})
+        if args.attempt is not None and expected_endpoint is None:
+            raise QualificationError("controller attempt verification requires explicit desktop broker endpoint arguments")
         root, root_before = secure_evidence_root(args.evidence_root)
         result_path = Path(os.path.abspath(os.fspath(args.result)))
         try:
@@ -762,6 +797,7 @@ def main() -> int:
             binary_sha256=binary_sha256,
             harness_name=harness_name,
             harness_sha256=harness_sha256,
+            expected_broker_endpoint=expected_endpoint,
         )
         root_after = root.lstat()
         if root_before.st_dev != root_after.st_dev or root_before.st_ino != root_after.st_ino:
@@ -774,7 +810,7 @@ def main() -> int:
                 args.attempt, label="controller attempt", maximum=64 * 1024,
                 allowed_owners=frozenset({os.geteuid()}))
             attempt = parse_json(attempt_data, "controller attempt")
-            if (attempt.get("schema") != "hepta.ib-paper-attempt.v1"
+            if (attempt.get("schema") != "hepta.ib-paper-attempt.v2"
                     or attempt.get("state") != "HARNESS_SUCCEEDED_AWAITING_VERIFICATION"
                     or type(attempt.get("returncode")) is not int or attempt["returncode"] != 0
                     or attempt.get("private_cleanup_failed", False) is not False
@@ -784,6 +820,8 @@ def main() -> int:
                     or attempt.get("binary_sha256") != binary_sha256
                     or attempt.get("harness_sha256") != harness_sha256):
                 raise QualificationError("controller attempt is incomplete, failed or has different immutable bindings")
+            if desktop_endpoint(attempt.get("broker_endpoint")) != receipt["broker"].get("endpoint"):
+                raise QualificationError("controller and observed broker endpoints differ")
         receipt_path = args.receipt or root / "qualification-verification.json"
         receipt_path = Path(os.path.abspath(os.fspath(receipt_path)))
         if receipt_path != root / "qualification-verification.json":
