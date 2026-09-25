@@ -399,5 +399,76 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
             git("add", "tracked")
             self.assertNotEqual(run(clean).returncode, 0, "staged source edit must fail")
 
+
+class FocusedDevelopmentRunnerTests(unittest.TestCase):
+    def invoke(self, *arguments, fail="", jobs="2"):
+        with tempfile.TemporaryDirectory(prefix="hepta-dev-entry-") as directory:
+            root = Path(directory)
+            binary, build, calls = root / "bin", root / "build with spaces", root / "calls.jsonl"
+            binary.mkdir()
+            stub = "#!" + sys.executable + "\n" + (
+                "import json, os, pathlib, sys\n"
+                "name = pathlib.Path(sys.argv[0]).name\n"
+                "with open(os.environ['HEPTA_TEST_CALLS'], 'a') as log:\n"
+                "    log.write(json.dumps([name] + sys.argv[1:]) + '\\n')\n"
+                "phase = ('build' if '--build' in sys.argv else 'configure') if name == 'cmake' else 'test'\n"
+                "if phase == os.environ['HEPTA_TEST_FAIL']: sys.exit(37)\n"
+                "if phase == 'configure': pathlib.Path(sys.argv[sys.argv.index('-B')+1]).mkdir(parents=True)\n"
+            )
+            for name in ("cmake", "ctest"):
+                executable = binary / name
+                executable.write_text(stub, encoding="utf-8")
+                executable.chmod(0o755)
+            result = subprocess.run(
+                ["/bin/bash", "--noprofile", "--norc", str(ROOT / "scripts/dev_core.sh"), *arguments],
+                env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ.get("PATH", os.defpath),
+                         BASH_ENV="/dev/null", HEPTA_BUILD_DIR=str(build), HEPTA_JOBS=jobs,
+                         HEPTA_TEST_CALLS=str(calls), HEPTA_TEST_FAIL=fail),
+                capture_output=True, text=True, timeout=10)
+            recorded = [json.loads(row) for row in calls.read_text().splitlines()] if calls.exists() else []
+            return result, recorded
+
+    def test_default_still_builds_and_executes_complete_core(self):
+        result, calls = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("hepta_core_test_binaries", calls[1])
+        self.assertEqual(calls[2][calls[2].index("-L") + 1], "core")
+        self.assertIn("--no-tests=error", calls[2])
+        self.assertTrue(calls[2][calls[2].index("--output-junit") + 1].endswith("/core-results.xml"))
+
+    def test_storage_build_and_test_selection_are_exactly_the_same(self):
+        import re
+        result, calls = self.invoke("--storage")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        targets = calls[1][calls[1].index("--target") + 1:calls[1].index("--parallel")]
+        self.assertEqual(set(targets), {
+            "hepta_session_supervisor_lease_store_migration_tests", "hepta_audit_journal_lifecycle_tests",
+            "hepta_oms_journal_durability_tests", "hepta_oms_journal_schema_v4_tests"})
+        expression = calls[2][calls[2].index("-R") + 1]
+        for target in targets:
+            self.assertIsNotNone(re.fullmatch(expression, target))
+            self.assertIsNone(re.fullmatch(expression, target + "_extra"))
+        self.assertIsNone(re.fullmatch(expression, "hepta_unix_tool_server_tests"))
+        self.assertIn("--no-tests=error", calls[2])
+        self.assertNotIn("-L", calls[2])
+        self.assertTrue(calls[2][calls[2].index("--output-junit") + 1].endswith("/storage-results.xml"))
+        self.assertTrue(calls[2][calls[2].index("--output-log") + 1].endswith("/storage-ctest.log"))
+
+    def test_no_phase_failure_is_hidden(self):
+        for phase, expected_calls in (("configure", 1), ("build", 2), ("test", 3)):
+            with self.subTest(phase=phase):
+                result, calls = self.invoke("--storage", fail=phase)
+                self.assertEqual(result.returncode, 37, result.stderr)
+                self.assertEqual(len(calls), expected_calls)
+
+    def test_invalid_selection_or_parallelism_fails_before_configuration(self):
+        for args, jobs in ((("--unknown",), "2"), (("--storage", "extra"), "2"),
+                           (("--storage",), "0"), (("--storage",), "-1"),
+                           (("--storage",), "2;true")):
+            with self.subTest(args=args, jobs=jobs):
+                result, calls = self.invoke(*args, jobs=jobs)
+                self.assertEqual(result.returncode, 64, result.stderr)
+                self.assertEqual(calls, [])
+
 if __name__ == "__main__":
     unittest.main()
