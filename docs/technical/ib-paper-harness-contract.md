@@ -39,7 +39,8 @@ before the private build workspace is removed. The status reports the phase,
 exit code, full log byte count, truncation and the retained slice's digest.
 Candidate log text is never replayed into the Actions command stream; source trees,
 SDK directories and host environment dumps are not uploaded. These diagnostic files
-are not a qualification receipt. Failures before the private workspace exists
+are not a qualification receipt; failure to retain diagnostics warns without
+changing the compiler/build exit status. Failures before the private workspace exists
 remain explicit step errors and may have no diagnostic artifact.
 
 ## Invocation contract

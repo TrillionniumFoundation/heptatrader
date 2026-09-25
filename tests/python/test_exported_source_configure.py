@@ -213,11 +213,11 @@ class BuilderDiagnosticsTests(unittest.TestCase):
                 value = json.loads((diagnostic / "build-status.json").read_text())
                 self.assertEqual(value["exit_code"], status)
 
-    def test_cleanup_diagnostic_failure_never_turns_build_failure_into_success(self):
+    def test_diagnostics_failure_preserves_original_build_status(self):
         text = BUILDER.read_text()
         begin = text.index("cleanup() {\n")
         end = text.index('SOURCE_ROOT="$WORK_ROOT/source"', begin)
-        for status, expected in ((70, 70), (0, 74)):
+        for status, expected in ((70, 70), (0, 0)):
             work = self.root / f"conflict-work-{status}"
             work.mkdir()
             output = self.root / f"conflict-{status}.tar"

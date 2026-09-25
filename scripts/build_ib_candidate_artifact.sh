@@ -101,7 +101,7 @@ cleanup() {
       --phase "$BUILD_PHASE" --exit-code "$result" \
       --output "$ARTIFACT_OUTPUT.diagnostics"; then
     echo "builder diagnostics could not be retained" >&2
-    if [[ "$result" == 0 ]]; then result=74; fi
+    # Debug output does not change build success or authorize Broker work.
   fi
   if [[ -n "${WORK_ROOT:-}" && -d "$WORK_ROOT" ]]; then
     chmod -R u+rwX -- "$WORK_ROOT" 2>/dev/null || true
