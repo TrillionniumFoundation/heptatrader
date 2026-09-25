@@ -291,6 +291,11 @@ def _read_policy(
 
         _clear_nonblocking(policy_descriptor)
         raw = _read_bounded_policy(policy_descriptor)
+        # Same-size pwrite may share the original filesystem timestamp tick.
+        # Re-read the bounded pinned descriptor: metadata equality alone cannot
+        # establish stable policy bytes. The compiled digest still authenticates
+        # the accepted snapshot; this does not freeze a root writer after return.
+        confirmed_raw = _read_bounded_policy(policy_descriptor)
         after = os.fstat(policy_descriptor)
         current_after = os.stat(
             DEFAULT_POLICY.name,
@@ -299,6 +304,7 @@ def _read_policy(
         )
         if (
             len(raw) != pinned.st_size
+            or confirmed_raw != raw
             or not _same_metadata(pinned, after)
             or not _same_metadata(pinned, current_after)
         ):

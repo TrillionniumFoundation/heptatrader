@@ -203,6 +203,31 @@ class BrokerEgressRulesetTests(unittest.TestCase):
                     self.read_fixture(root)
             self.assertTrue(changed)
 
+    def test_same_metadata_tick_does_not_hide_policy_byte_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root, path = self.canonical_policy_root(directory)
+            original = POLICY._read_bounded_policy
+            reads = 0
+
+            def mutate_after_first_read(descriptor: int) -> bytes:
+                nonlocal reads
+                raw = original(descriptor)
+                reads += 1
+                if reads == 1:
+                    with path.open("r+b") as stream:
+                        stream.write(self.policy_raw.replace(b"2003", b"2004"))
+                        stream.flush()
+                        os.fsync(stream.fileno())
+                return raw
+
+            # Model the real target's timestamp collision independently of its
+            # current clock granularity. Byte revalidation must reject anyway.
+            with mock.patch.object(POLICY, "_same_metadata", return_value=True), \
+                    mock.patch.object(POLICY, "_read_bounded_policy", side_effect=mutate_after_first_read):
+                with self.assertRaisesRegex(POLICY.PolicyError, "changed while being read"):
+                    self.read_fixture(root)
+            self.assertEqual(reads, 2)
+
     def test_policy_final_replacement_during_read_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root, path = self.canonical_policy_root(directory)
