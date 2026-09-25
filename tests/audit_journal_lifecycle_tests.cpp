@@ -157,6 +157,11 @@ void TestLegacyOnlySegmentsAndInitialPublication()
     SessionSupervisorAuditJournal empty;
     assert(!empty.Init(f.path, reason));
     assert(reason == "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_EMPTY");
+    std::uint64_t records = 0;
+    assert(!SessionSupervisorAuditJournal::Verify(f.path, records, reason));
+    assert(reason == "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_EMPTY");
+    assert(!SessionSupervisorAuditJournal::SealSegment(f.path, reason));
+    assert(reason == "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_EMPTY");
 }
 
 void TestSyncFailuresAndRetry()

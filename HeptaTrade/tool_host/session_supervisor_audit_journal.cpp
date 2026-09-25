@@ -845,7 +845,16 @@ bool SessionSupervisorAuditJournal::VerifyHistory(int activeFd, const std::strin
     std::uint64_t expected = 0;
     if (!AuditAnchor(activeFd, digest, expected))
     { reason = "SUPERVISOR_AUDIT_SEGMENT_ANCHOR_INVALID"; return false; }
-    if (digest.empty()) return true;
+    if (digest.empty())
+    {
+        struct stat active, retained;
+        if (::fstat(activeFd, &active) != 0)
+        { reason = "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_STAT_FAILED"; return false; }
+        if (active.st_size == 0 &&
+            (::lstat((path + ".segments").c_str(), &retained) == 0 || errno != ENOENT))
+        { reason = "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_EMPTY"; return false; }
+        return true;
+    }
     records = expected;
     AuditFd directory(::open((path + ".segments").c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
     struct stat metadata;

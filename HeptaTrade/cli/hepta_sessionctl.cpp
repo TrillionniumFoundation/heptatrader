@@ -46,7 +46,9 @@ int main(int argc, char** argv)
         const bool ok = sealing ? SessionSupervisorAuditJournal::SealSegment(argv[2], reason) :
             SessionSupervisorAuditJournal::Verify(argv[2], records, reason);
         if (!ok) { std::cerr << reason << '\n'; return 1; }
-        std::cout << "audit " << (sealing ? "sealed" : "verified") << " records=" << records << '\n';
+        std::cout << "audit " << (sealing ? "sealed" : "verified");
+        if (!sealing) std::cout << " records=" << records;
+        std::cout << '\n';
         return 0;
     }
     if (HeptaSessionCtlTerminalCleanup::IsCommand(argc, argv))
