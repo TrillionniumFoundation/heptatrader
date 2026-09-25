@@ -92,6 +92,9 @@ ToolDecisionAuditRecord Record(const std::string& tool)
 {
     ToolDecisionAuditRecord r;
     r.observational = tool.compare(0, 6, "trade.") != 0;
+    // This journal-only fixture supplies explicit trusted classification;
+    // real binding eligibility is tested through ToolDecisionAudit/Gateway.
+    r.safetyReserveEligible = tool == "trade.cancel_order" || tool == "trade.flatten_position";
     r.peerCredentialAvailable = true; r.peerUid = ::geteuid();
     r.agentId = "synthetic-agent"; r.sessionId = "synthetic-session";
     r.toolName = tool; r.phase = "outcome"; r.outcome = "ok";
@@ -189,6 +192,10 @@ void TestCapacityAndExitReserve()
     while (journal.AppendToolDecision(place, reason)) { assert(++admitted < 100); }
     assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
     auto exit = Record("trade.cancel_order");
+    exit.safetyReserveEligible = false;
+    assert(!journal.AppendToolDecision(exit, reason));
+    assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+    exit.safetyReserveEligible = true;
     assert(journal.AppendToolDecision(exit, reason));
     assert(journal.CapacitySnapshot().bytes <= 16384);
     unsigned exits = 0;

@@ -27,18 +27,27 @@ Wire validation is centralized in `trading_tool_wire_contract.h`. The typed prot
 
 ## Authorization order
 
-A call is admitted in this order:
+Ingress validates peer identity, bounded framing and wire shape, then looks
+up the presented session and registered tool effect. For a registered mutation,
+the server records a durable audit intent before queueing and calling
+`TradingToolHost::Invoke`. A lookup is not authorization: attempted requests
+may subsequently be denied by the Host.
 
-1. socket peer identity and framing;
-2. session-token lookup;
-3. session state, owner, generation, expiry, and recovery-only/fenced state;
-4. capability and execution-domain binding;
-5. advertised schema hash and field-level validation;
-6. bounded rate/quantity policy;
-7. tool decision audit;
-8. forwarding to the Execution Service.
+At dispatch, the Host checks current session state, peer ownership, expiry,
+profile, capabilities, schema, instrument, quantity, rate and applicable fences.
+Execution then applies its own authoritative state, risk and durability checks.
+The server audits the outcome before replying. Routine reads have no mutation
+intent barrier; their final authorization result is audited.
 
-Passing the Gateway does not mean an order is authorized. Execution applies authoritative quote, position, active-order, kill-switch, persistence, and broker-specific checks again.
+Exit-reserve eligibility requires an enabled, matching-peer server binding,
+a recognized trading/reduce-only profile and the specific exit capability.
+WATCH, missing/wrong capabilities, unknown profiles and disabled bindings stay
+ordinary admission records. The journal defaults missing eligibility to ordinary
+admission. This classification is internal and cannot authorize execution.
+Recovery-only eligible exits retain intent and outcome space. Outcome logging
+uses the captured binding even when a running operation crosses expiry or
+revocation; actual execution still obeys current Host/Execution checks. Denied
+records preserve both the observed peer and the presented owner for diagnosis.
 
 ## State and persistence
 

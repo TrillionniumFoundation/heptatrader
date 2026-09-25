@@ -708,7 +708,7 @@ void TestWatchRejectionAndDescriptorEffectAudit()
         static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) + 60000;
     std::string reason;
     assert(host.RegisterSession(binding, reason));
-    SessionSupervisorAuditJournal audit;
+    SessionSupervisorAuditJournal audit(16384, 4096);
     assert(audit.Init(auditPath, reason));
     UnixToolServer server(host);
     server.SetDecisionAuditJournal(&audit);
@@ -733,6 +733,31 @@ void TestWatchRejectionAndDescriptorEffectAudit()
     unknownPrefix.call.name = "trade.not_registered";
     const std::string unknownResponse = CallTool(socketPath, unknownPrefix);
     assert(unknownResponse.find("UNKNOWN_TOOL") != std::string::npos);
+
+    // Fill only ordinary admission. A real same-UID WATCH request must not
+    // enter the safety reserve merely by naming a registered exit tool.
+    ToolDecisionAuditRecord filler;
+    filler.toolName = "trade.place_order";
+    filler.phase = "outcome"; filler.outcome = "ok";
+    unsigned filled = 0;
+    while (audit.AppendToolDecision(filler, reason)) assert(++filled < 100);
+    assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+    const auto boundedBytes = audit.CapacitySnapshot().bytes;
+    watchMutation.toolCallId = "watch-exit-denied-at-capacity";
+    assert(CallTool(socketPath, watchMutation).find("DECISION_AUDIT_WRITE_FAILED") != std::string::npos);
+    assert(audit.CapacitySnapshot().bytes == boundedBytes);
+    assert(dispatches.load() == 0);
+
+    auto noExit = binding;
+    noExit.token = "paper-without-exit-capability-token";
+    noExit.session.executionContext.sessionId = "paper-no-exit-session";
+    noExit.session.environment = "PAPER";
+    assert(host.RegisterSession(noExit, reason));
+    watchMutation.sessionToken = noExit.token;
+    watchMutation.toolCallId = "paper-no-exit-denied-at-capacity";
+    assert(CallTool(socketPath, watchMutation).find("DECISION_AUDIT_WRITE_FAILED") != std::string::npos);
+    assert(audit.CapacitySnapshot().bytes == boundedBytes);
+    assert(dispatches.load() == 0);
     server.Stop();
 
     std::uint64_t records = 0;
@@ -1625,6 +1650,8 @@ void TestAuditReserveRequiresMatchingPeer()
     binding.peerUid = static_cast<std::uint32_t>(::geteuid());
     binding.session.executionContext.agentId = "bound-agent";
     binding.session.executionContext.sessionId = "bound-session";
+    binding.session.environment = "PAPER";
+    binding.session.capabilities.insert("trade.cancel");
     TradingToolHostRequest request;
     request.toolCallId = "peer-reserve-check-0001";
     request.call.name = "trade.cancel_order";
@@ -1643,9 +1670,117 @@ void TestAuditReserveRequiresMatchingPeer()
     std::remove(path.c_str());
 }
 
-int main()
+// Audit classification, not an execution-permission grant. These fixtures
+// invoke the real audit writer and never a Broker or execution callback.
+void TestAuditReserveRequiresExitCapability()
 {
+    for (const char* tool : {"trade.cancel_order", "trade.flatten_position"})
+    {
+        const std::string path = TempPath("/tmp/hepta-audit-capability-reserve-XXXXXX");
+        SessionSupervisorAuditJournal journal(16384, 4096);
+        std::string reason;
+        assert(journal.Init(path, reason));
+        ToolDecisionAuditRecord filler;
+        filler.toolName = "trade.place_order";
+        filler.phase = "outcome"; filler.outcome = "ok";
+        unsigned count = 0;
+        while (journal.AppendToolDecision(filler, reason)) assert(++count < 100);
+        assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+        const auto before = journal.CapacitySnapshot().bytes;
+        ToolDecisionAudit audit; audit.SetJournal(&journal);
+        TradingToolHostSessionBinding binding;
+        binding.peerUid = static_cast<std::uint32_t>(::geteuid());
+        binding.session.executionContext.agentId = "capability-agent";
+        binding.session.executionContext.sessionId = "capability-session";
+        binding.enabled = true;
+        binding.expiresAtMs = static_cast<std::uint64_t>(OmsJournal::NowEpochMs()) + 60000;
+        const std::string capability = std::string(tool) == "trade.cancel_order" ?
+            "trade.cancel" : "trade.flatten";
+        TradingToolHostRequest request;
+        request.toolCallId = "exit-capability-check-0001";
+        request.call.name = tool; request.call.orderId = 1;
+        request.call.instrument = "EUR.USD";
+        for (unsigned invalid = 0; invalid < 5; ++invalid)
+        {
+            binding.enabled = invalid != 4;
+            binding.session.environment = invalid == 0 ? "WATCH" :
+                (invalid == 3 ? "UNKNOWN_PROFILE" : "PAPER");
+            binding.session.capabilities.clear();
+            if (invalid != 1) binding.session.capabilities.insert(
+                invalid == 2 ? (capability == "trade.cancel" ? "trade.flatten" : "trade.cancel") : capability);
+            if (audit.AppendIntent(true, binding.peerUid, request, &binding, true, reason))
+            {
+                std::cerr << "audit safety reserve incorrectly admitted tool=" << tool
+                          << " invalid_binding=" << invalid << std::endl;
+                assert(false);
+            }
+            assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+            assert(journal.CapacitySnapshot().bytes == before);
+            TradingToolResult denied;
+            denied.status = TradingToolCallStatus::PermissionDenied;
+            audit.AppendOutcome(true, binding.peerUid, &request, &binding, true, denied);
+            assert(journal.CapacitySnapshot().bytes == before);
+        }
+        // A capability-bearing recovery session still retains exit audit space.
+        binding.enabled = true; binding.recoveryOnly = true;
+        binding.session.environment = "PAPER";
+        binding.session.capabilities.clear(); binding.session.capabilities.insert(capability);
+        assert(audit.AppendIntent(true, binding.peerUid, request, &binding, true, reason));
+        TradingToolResult result; result.status = TradingToolCallStatus::Uncertain;
+        audit.AppendOutcome(true, binding.peerUid, &request, &binding, true, result);
+        assert(result.reasonCode != "DECISION_AUDIT_OUTCOME_UNCERTAIN");
+        std::uint64_t records = 0;
+        assert(SessionSupervisorAuditJournal::Verify(path, records, reason));
+        assert(records == count + 2);
+        const auto committed = journal.CapacitySnapshot();
+        assert(committed.known);
+        SessionSupervisorAuditJournal reopened(16384, 4096);
+        assert(reopened.Init(path, reason));
+        // Init synchronizes/revalidates metadata, invalidating an older
+        // instance's cached observation. Compare against the committed view.
+        assert(reopened.CapacitySnapshot().known);
+        assert(reopened.CapacitySnapshot().bytes == committed.bytes);
+        assert(SessionSupervisorAuditJournal::Verify(path, records, reason));
+        assert(records == count + 2);
+        std::remove(path.c_str());
+    }
+}
+
+void TestDeniedAuditRetainsPeerAndPresentedOwner()
+{
+    const std::string path = TempPath("/tmp/hepta-audit-denied-identity-XXXXXX");
+    SessionSupervisorAuditJournal journal;
+    std::string reason;
+    assert(journal.Init(path, reason));
+    ToolDecisionAudit audit; audit.SetJournal(&journal);
+    TradingToolHostSessionBinding binding;
+    binding.peerUid = static_cast<std::uint32_t>(::geteuid());
+    binding.session.executionContext.agentId = "presented-owner-agent";
+    binding.session.executionContext.sessionId = "presented-owner-session";
+    binding.session.environment = "PAPER";
+    binding.session.capabilities.insert("trade.cancel");
+    TradingToolHostRequest request;
+    request.toolCallId = "mismatched-peer-audit-0001";
+    request.call.name = "trade.cancel_order"; request.call.orderId = 1;
+    assert(audit.AppendIntent(true, binding.peerUid + 1, request, &binding, true, reason));
+    const auto payload = AuditPayloads(path);
+    assert(payload.find("peer_uid=" + std::to_string(binding.peerUid + 1)) != std::string::npos);
+    assert(payload.find("agent_id=presented-owner-agent") != std::string::npos);
+    assert(payload.find("session_id=presented-owner-session") != std::string::npos);
+    std::uint64_t count = 0;
+    assert(SessionSupervisorAuditJournal::Verify(path, count, reason));
+    assert(count == 1);
+    std::remove(path.c_str());
+}
+
+int main(int argc, char** argv)
+{
+    if (argc == 2 && std::string(argv[1]) == "--audit-exit-capability")
+    { TestAuditReserveRequiresExitCapability(); return 0; }
+    assert(argc == 1);
+    TestAuditReserveRequiresExitCapability();
     TestAuditReserveRequiresMatchingPeer();
+    TestDeniedAuditRetainsPeerAndPresentedOwner();
     TestSocketRoundTripAndStrictProtocol();
     TestGlobalQueueBackpressureDecisionAudit();
     TestWatchRejectionAndDescriptorEffectAudit();
