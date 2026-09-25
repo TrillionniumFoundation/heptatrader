@@ -1606,8 +1606,46 @@ void TestStartValidationFailureCleansSocket()
 
 } // namespace
 
+void TestAuditReserveRequiresMatchingPeer()
+{
+    const std::string path = TempPath("/tmp/hepta-audit-peer-reserve-XXXXXX");
+    SessionSupervisorAuditJournal journal(16384, 4096);
+    std::string reason;
+    assert(journal.Init(path, reason));
+    ToolDecisionAuditRecord filler;
+    filler.toolName = "trade.place_order";
+    filler.phase = "outcome"; filler.outcome = "ok";
+    unsigned count = 0;
+    while (journal.AppendToolDecision(filler, reason)) assert(++count < 100);
+    assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+
+    ToolDecisionAudit audit;
+    audit.SetJournal(&journal);
+    TradingToolHostSessionBinding binding;
+    binding.peerUid = static_cast<std::uint32_t>(::geteuid());
+    binding.session.executionContext.agentId = "bound-agent";
+    binding.session.executionContext.sessionId = "bound-session";
+    TradingToolHostRequest request;
+    request.toolCallId = "peer-reserve-check-0001";
+    request.call.name = "trade.cancel_order";
+    request.call.orderId = 1;
+    const auto before = journal.CapacitySnapshot().bytes;
+    assert(!audit.AppendIntent(true, binding.peerUid + 1, request, &binding, true, reason));
+    assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+    assert(journal.CapacitySnapshot().bytes == before);
+    TradingToolResult result;
+    result.status = TradingToolCallStatus::Ok;
+    audit.AppendOutcome(true, binding.peerUid + 1, &request, &binding, true, result);
+    assert(result.status == TradingToolCallStatus::Uncertain);
+    assert(journal.CapacitySnapshot().bytes == before);
+    assert(audit.AppendIntent(true, binding.peerUid, request, &binding, true, reason));
+    assert(journal.CapacitySnapshot().bytes > before);
+    std::remove(path.c_str());
+}
+
 int main()
 {
+    TestAuditReserveRequiresMatchingPeer();
     TestSocketRoundTripAndStrictProtocol();
     TestGlobalQueueBackpressureDecisionAudit();
     TestWatchRejectionAndDescriptorEffectAudit();

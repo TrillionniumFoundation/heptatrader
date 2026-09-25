@@ -124,7 +124,7 @@ bool ToolDecisionAudit::Append(
     record.peerCredentialAvailable = peerCredentialAvailable;
     record.peerUid = peerUid;
     record.daemonIdentity = "hepta-unix-tool-gateway/v1";
-    if (binding != nullptr)
+    if (binding != nullptr && peerCredentialAvailable && binding->peerUid == peerUid)
     {
         record.executionDomain = binding->executionDomain;
         record.agentId = binding->session.executionContext.agentId;

@@ -100,3 +100,15 @@ The lease history fixture emits `heptatrader.lease-history-cost.v1` observations
 for small and near-reader-limit synthetic HSL8 histories. It exercises real
 reopen, fence, removal and oldest-token rejection; it is not a qualified Broker
 receipt producer or evidence of physical power-loss survival.
+
+## Audit capacity
+
+The optional `audit_log` producer carries `known`, `bytes`, `maximum_bytes`,
+`safety_reserve_bytes` and process-local `observations_shed`. The existing
+reporter rejects malformed bounds/booleans/counters. It exports
+`hepta_gateway_audit_capacity_present`, `hepta_gateway_audit_capacity_known`,
+`hepta_gateway_audit_observations_shed_total` and known-only byte gauges.
+Unknown is not zero capacity. Read-volume shedding is explicit and never
+counts as a durable audit receipt. Operational alerts separate unknown,
+maintenance threshold, admission pause and observation shedding. These alerts
+are local report outputs, not a claim that an external operator received them.

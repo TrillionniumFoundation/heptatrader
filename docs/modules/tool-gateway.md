@@ -59,7 +59,10 @@ read result is preserved, no durable receipt is invented, and the process-local
 `audit_log.observations_shed` counter increases. Mutation persistence failures
 retain rejection-before-dispatch or uncertainty-after-dispatch semantics. The
 Gateway observation also reports active bytes, limit, reserve and known state.
-These are raw fixed-cardinality observations, not proof of external alert delivery.
+The existing OMS/Gateway reporter validates these optional fields, emits fixed
+Prometheus capacity/shed counters, and reports unknown capacity, maintenance,
+admission pause and shed-observation alerts. Old producers report absence, not
+healthy zero. This source-side collection is not proof of external alert delivery.
 Disk failure still fails closed; the reserve is not a disk-space reservation or
 permission to skip authorization. An abusive valid exit caller can consume a
 finite reserve, so it is not an unlimited emergency-service guarantee.

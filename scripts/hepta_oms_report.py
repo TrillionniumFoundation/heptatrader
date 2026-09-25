@@ -473,6 +473,19 @@ def validate_lease_capacity(value):
     return value
 
 
+def validate_audit_capacity(value):
+    if not isinstance(value, dict) or type(value.get("known")) is not bool:
+        raise ValueError("invalid audit capacity presence")
+    for key in ("bytes", "maximum_bytes", "safety_reserve_bytes", "observations_shed"):
+        uint(value.get(key))
+    maximum, reserve = value["maximum_bytes"], value["safety_reserve_bytes"]
+    if (not 0 < maximum <= 1073741824 or not 0 < reserve < maximum // 2 or
+            (value["known"] and value["bytes"] > maximum) or
+            (not value["known"] and value["bytes"] != 0)):
+        raise ValueError("invalid audit capacity bounds")
+    return value
+
+
 def validate_gateway(sample):
     if not isinstance(sample, dict) or sample.get("schema") != GATEWAY_SCHEMA:
         raise ValueError("unsupported gateway telemetry")
@@ -499,6 +512,8 @@ def validate_gateway(sample):
         latency = sample["response_write_latency"]
         if not latency["saturated"] and latency["samples"] != total:
             raise ValueError("gateway delivery measurement mismatch")
+    if "audit_log" in sample:
+        validate_audit_capacity(sample["audit_log"])
     if "lease_store" in sample:
         validate_lease_capacity(sample["lease_store"])
     return sample
@@ -529,6 +544,16 @@ def gateway_report(samples, now_ms, max_age_ms=15000):
             alert("SUPERVISOR_LEASE_CAPACITY_UNKNOWN")
         elif lease["admission_headroom_bytes"] == 0:
             alert("SUPERVISOR_LEASE_ADMISSION_PAUSED")
+    audit = last.get("audit_log")
+    if audit is not None:
+        if not audit["known"]:
+            alert("GATEWAY_AUDIT_CAPACITY_UNKNOWN")
+        elif audit["bytes"] >= audit["maximum_bytes"] - audit["safety_reserve_bytes"]:
+            alert("GATEWAY_AUDIT_ADMISSION_PAUSED")
+        elif audit["bytes"] >= audit["maximum_bytes"] - 2 * audit["safety_reserve_bytes"]:
+            alert("GATEWAY_AUDIT_MAINTENANCE_REQUIRED")
+        if audit["observations_shed"]:
+            alert("GATEWAY_AUDIT_OBSERVATIONS_SHED")
     deltas = None
     if fresh and len(samples) >= 2 and not last["metrics_saturated"]:
         prev = samples[-2]
@@ -543,7 +568,7 @@ def gateway_report(samples, now_ms, max_age_ms=15000):
                 alert("GATEWAY_BACKPRESSURE")
     return {"schema": "heptatrader.gateway-operational-report.v1", "fresh": fresh,
             "sample_age_ms": age, "service_epoch": last["service_epoch"],
-            "interval_deltas": deltas, "lease_capacity": lease,
+            "interval_deltas": deltas, "lease_capacity": lease, "audit_capacity": audit,
             "latencies": {k: {"samples": last[k]["samples"],
                 "p99_upper_ns": quantile_upper(last[k]),
                 "p999_upper_ns": quantile_upper(last[k], 999, 1000) if last[k]["samples"] >= 1000 else None}
@@ -554,6 +579,15 @@ def gateway_report(samples, now_ms, max_age_ms=15000):
 def gateway_prometheus(latest, summary):
     lines = [f"hepta_gateway_telemetry_fresh {int(summary['fresh'])}",
              f"hepta_gateway_metrics_saturated {int(latest['metrics_saturated'])}"]
+    audit = latest.get("audit_log")
+    lines.append(f"hepta_gateway_audit_capacity_present {int(audit is not None)}")
+    if audit is not None:
+        validate_audit_capacity(audit)
+        lines.append(f"hepta_gateway_audit_capacity_known {int(audit['known'])}")
+        lines.append(f"hepta_gateway_audit_observations_shed_total {audit['observations_shed']}")
+        if audit["known"]:
+            for key in ("bytes", "maximum_bytes", "safety_reserve_bytes"):
+                lines.append(f"hepta_gateway_audit_{key} {audit[key]}")
     lease = latest.get("lease_store")
     lines.append(f"hepta_supervisor_lease_capacity_present {int(lease is not None)}")
     if lease is not None:
