@@ -94,6 +94,8 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
     def run_scope(self, changed_path, *, event: str = "pull_request", invalid_base: bool = False):
         with tempfile.TemporaryDirectory(prefix="hepta-monitoring-scope-") as folder:
             root = Path(folder)
+            (root / "scripts").mkdir()
+            shutil.copy2(ROOT / "scripts/ci_change_scope.py", root / "scripts/ci_change_scope.py")
             def git(*args):
                 return subprocess.run(["git", *args], cwd=root, check=True,
                                       capture_output=True, text=True, timeout=10).stdout.strip()
@@ -174,6 +176,8 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
             server.mkdir()
             base_work = root / "base-work"
             base_work.mkdir()
+            (base_work / "scripts").mkdir()
+            shutil.copy2(ROOT / "scripts/ci_change_scope.py", base_work / "scripts/ci_change_scope.py")
             def git(cwd: Path, *args: str) -> str:
                 return subprocess.run(["git", *args], cwd=cwd, check=True,
                                       capture_output=True, text=True,
@@ -190,6 +194,8 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
 
             head = root / "head"
             head.mkdir()
+            (head / "scripts").mkdir()
+            shutil.copy2(ROOT / "scripts/ci_change_scope.py", head / "scripts/ci_change_scope.py")
             git(head, "init", "-q")
             git(head, "config", "user.name", "CI head fixture")
             git(head, "config", "user.email", "head@example.invalid")
@@ -212,6 +218,27 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
             self.assertEqual(output.read_text(encoding="utf-8").strip(),
                              "required=false")
             git(head, "cat-file", "-e", f"{base}^{{commit}}")
+
+class CoreReleaseScopeWorkflowTests(MonitoringScopeWorkflowTests):
+    def block(self) -> str:
+        value = yaml.safe_load((ROOT / ".github/workflows/core-ci.yml").read_text(encoding="utf-8"))
+        matches = [step["run"] for step in value["jobs"]["core"]["steps"]
+                   if step.get("name") == "Classify release acceptance scope"]
+        self.assertEqual(len(matches), 1)
+        return matches[0]
+
+    def test_runtime_policy_json_retains_full_acceptance(self):
+        result, value = self.run_scope("docs/preflight-policy-v1.json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(value, "required=true")
+
+    def test_actual_acceptance_step_uses_scope_but_native_tests_remain(self):
+        value = yaml.safe_load((ROOT / ".github/workflows/core-ci.yml").read_text())
+        steps = value["jobs"]["core"]["steps"]
+        acceptance = next(s for s in steps if s.get("id") == "accept-core-artifact")
+        self.assertEqual(acceptance["if"], "steps.release-scope.outputs.required == 'true'")
+        native = next(s for s in steps if s.get("name") == "Build and run canonical core tests")
+        self.assertNotIn("if", native)
 
 class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
     """Execute CI shell blocks with real CTest and deliberately tiny fixtures.

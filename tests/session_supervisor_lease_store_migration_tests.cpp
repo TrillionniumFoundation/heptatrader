@@ -18,6 +18,10 @@
 #include <sys/wait.h>
 #include <unistd.h>
 #include <vector>
+#include <thread>
+#include <atomic>
+#include <condition_variable>
+#include <mutex>
 
 #if defined(__linux__)
 static bool g_failNextLeaseStoreDirectoryFsync = false;
@@ -34,6 +38,29 @@ extern "C" int __wrap_fsync(int fd)
         return -1;
     }
     return __real_fsync(fd);
+}
+#endif
+
+#if defined(__linux__)
+static std::mutex g_renameGate;
+static std::condition_variable g_renameChanged;
+static bool g_pauseRename = false;
+static bool g_atRename = false;
+static bool g_continueRename = false;
+extern "C" int __real_rename(const char*, const char*);
+extern "C" int __wrap_rename(const char* from, const char* to)
+{
+    std::unique_lock<std::mutex> lock(g_renameGate);
+    if (g_pauseRename)
+    {
+        g_atRename = true;
+        g_renameChanged.notify_all();
+        if (!g_renameChanged.wait_for(lock, std::chrono::seconds(10),
+                [] { return g_continueRename; }))
+        { errno = ETIMEDOUT; return -1; }
+    }
+    lock.unlock();
+    return __real_rename(from, to);
 }
 #endif
 
@@ -1968,6 +1995,79 @@ void TestHsl7TornCorruptAndDuplicateLedgerFailClosed()
     }
 }
 
+void TestCommitWriterExclusionAndReopen()
+{
+#if defined(__linux__)
+    Fixture fixture;
+    SessionSupervisorLeaseStore first, stale;
+    std::string reason;
+    assert(fixture.Init(first, reason));
+    assert(fixture.Init(stale, reason));
+    auto a = Watch("concurrent-writer-token-first-0001");
+    auto b = Watch("concurrent-writer-token-second-0001");
+    b.agentId = "second-agent"; b.sessionId = "second-session";
+    {
+        std::lock_guard<std::mutex> lock(g_renameGate);
+        g_pauseRename = true; g_atRename = false; g_continueRename = false;
+    }
+    bool accepted = false;
+    std::string firstReason;
+    std::thread writer([&] { accepted = first.Put(a, firstReason); });
+    {
+        std::unique_lock<std::mutex> lock(g_renameGate);
+        assert(g_renameChanged.wait_for(lock, std::chrono::seconds(10),
+            [] { return g_atRename; }));
+    }
+    // B cannot pass its comparison while A is in the old check/rename window.
+    assert(!stale.Put(b, reason));
+    assert(reason == "LEASE_STORE_WRITER_BUSY_OR_UNAVAILABLE");
+    {
+        std::lock_guard<std::mutex> lock(g_renameGate);
+        g_continueRename = true; g_renameChanged.notify_all();
+    }
+    writer.join();
+    g_pauseRename = false;
+    assert(accepted);
+    assert(!stale.Put(b, reason));
+    assert(reason == "LEASE_STORE_SOURCE_CHANGED");
+    assert(fixture.Init(stale, reason));
+    assert(stale.Put(b, reason));
+    SessionSupervisorLeaseStore reopened;
+    assert(fixture.Init(reopened, reason));
+    assert(reopened.List().size() == 2);
+
+    // A distinct process holds the same directory lock. Process death releases
+    // it; the surviving owner then continues against the exact durable state.
+    int ready[2], finish[2];
+    assert(::pipe(ready) == 0 && ::pipe(finish) == 0);
+    const pid_t child = ::fork();
+    assert(child >= 0);
+    if (child == 0)
+    {
+        ::close(ready[0]); ::close(finish[1]);
+        const int fd = ::open(fixture.directory.c_str(), O_RDONLY | O_DIRECTORY);
+        if (fd < 0 || ::flock(fd, LOCK_EX | LOCK_NB) != 0) ::_exit(31);
+        if (::write(ready[1], "x", 1) != 1) ::_exit(32);
+        char value; if (::read(finish[0], &value, 1) != 1) ::_exit(33);
+        ::_exit(0); // No unlock helper: the kernel must release the commit lock.
+    }
+    ::close(ready[1]); ::close(finish[0]);
+    char value; assert(::read(ready[0], &value, 1) == 1);
+    assert(!reopened.Remove(a.token, reason));
+    assert(reason == "LEASE_STORE_WRITER_BUSY_OR_UNAVAILABLE");
+    assert(::write(finish[1], "x", 1) == 1);
+    int status = 0; assert(::waitpid(child, &status, 0) == child);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    ::close(ready[0]); ::close(finish[1]);
+    assert(reopened.Remove(a.token, reason));
+    SessionSupervisorLeaseStore handoff;
+    assert(fixture.Init(handoff, reason));
+    assert(handoff.List().size() == 1);
+    SessionSupervisorLeaseRecord retained;
+    assert(handoff.Get(b.token, retained));
+#endif
+}
+
 void TestLinuxOPathOpensSearchOnlyLockParent()
 {
 #if defined(__linux__)
@@ -1999,7 +2099,10 @@ int main(int argc, char** argv)
 {
     if (argc == 2 && std::string(argv[1]) == "--lease-history-growth")
     { TestLeaseHistoryCapacityLifecycle(); return 0; }
+    if (argc == 2 && std::string(argv[1]) == "--writer-exclusion")
+    { TestCommitWriterExclusionAndReopen(); return 0; }
     assert(argc == 1);
+    TestCommitWriterExclusionAndReopen();
     TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity();
     TestLeaseHistoryCapacityLifecycle();
     TestPublishedDirectorySyncFailureIsIndeterminate();

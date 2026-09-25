@@ -1,3 +1,4 @@
+#include "../tool_host/session_supervisor_audit_journal.h"
 #include "hepta_sessionctl_command.h"
 #include "hepta_sessionctl_terminal_cleanup.h"
 #include "../tool_host/unix_session_supervisor_client.h"
@@ -36,6 +37,18 @@ std::string JsonEscape(const std::string& value)
 
 int main(int argc, char** argv)
 {
+    if (argc == 3 && (std::string(argv[1]) == "--audit-seal-stopped" ||
+                     std::string(argv[1]) == "--audit-verify"))
+    {
+        std::string reason;
+        std::uint64_t records = 0;
+        const bool sealing = std::string(argv[1]) == "--audit-seal-stopped";
+        const bool ok = sealing ? SessionSupervisorAuditJournal::SealSegment(argv[2], reason) :
+            SessionSupervisorAuditJournal::Verify(argv[2], records, reason);
+        if (!ok) { std::cerr << reason << '\n'; return 1; }
+        std::cout << "audit " << (sealing ? "sealed" : "verified") << " records=" << records << '\n';
+        return 0;
+    }
     if (HeptaSessionCtlTerminalCleanup::IsCommand(argc, argv))
         return HeptaSessionCtlTerminalCleanup::Run(argc, argv);
     HeptaSessionCtlCommand command;

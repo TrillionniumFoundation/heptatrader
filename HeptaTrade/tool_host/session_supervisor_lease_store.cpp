@@ -1828,6 +1828,30 @@ SessionSupervisorLeaseStore::PersistLocked(
         return PersistOutcome::NotPublished;
     }
 
+    // The encrypted store inode is replaced at commit, so locking that inode
+    // would not serialize its successor. Lock the stable containing directory
+    // for the complete compare/write/rename/verify transaction instead. Each
+    // call opens a fresh description: separate instances and forked callers
+    // cannot inherit ownership of this commit lock. Never unlink a lock file.
+    const std::string writerDirectory = ParentDirectory(m_path);
+    ScopedFd writerLock(::open(writerDirectory.c_str(),
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    struct stat writerDirectoryIdentity, namedWriterDirectory;
+    if (writerLock.Get() < 0 ||
+        ::flock(writerLock.Get(), LOCK_EX | LOCK_NB) != 0)
+    {
+        reason = "LEASE_STORE_WRITER_BUSY_OR_UNAVAILABLE";
+        return PersistOutcome::NotPublished;
+    }
+    if (::fstat(writerLock.Get(), &writerDirectoryIdentity) != 0 ||
+        ::lstat(writerDirectory.c_str(), &namedWriterDirectory) != 0 ||
+        !S_ISDIR(namedWriterDirectory.st_mode) ||
+        !SameIdentity(writerDirectoryIdentity, namedWriterDirectory))
+    {
+        reason = "LEASE_STORE_WRITER_DIRECTORY_CHANGED";
+        return PersistOutcome::NotPublished;
+    }
+
     SessionSupervisorLeaseCapacity nextCapacity;
     const std::string plaintext = SerializePlaintext(&nextCapacity);
     // Reject oversized canonical bytes before encryption or any file I/O.
@@ -1994,6 +2018,14 @@ SessionSupervisorLeaseStore::PersistLocked(
     {
         m_capacity.known = false;
         ::unlink(temporary.c_str());
+        return PersistOutcome::NotPublished;
+    }
+    if (::lstat(writerDirectory.c_str(), &namedWriterDirectory) != 0 ||
+        !S_ISDIR(namedWriterDirectory.st_mode) ||
+        !SameIdentity(writerDirectoryIdentity, namedWriterDirectory))
+    {
+        ::unlink(temporary.c_str());
+        reason = "LEASE_STORE_WRITER_DIRECTORY_CHANGED";
         return PersistOutcome::NotPublished;
     }
     if (::rename(temporary.c_str(), m_path.c_str()) != 0)

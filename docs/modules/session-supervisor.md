@@ -48,6 +48,17 @@ The repository intentionally does not provide an automatic PAPER campaign opener
 
 ## Concurrency and fencing
 
+Each commit opens and exclusively locks the stable store-parent directory before
+serialization, source comparison, temporary-file sync, rename and post-write
+verification. The replaceable store inode is not the lock authority. Lock
+contention rejects without publication; an instance loaded before another
+commit must reject its stale source and explicitly reopen. Distinct Store
+instances and processes use fresh lock descriptions per commit, including after
+fork. The lock is released on scope exit/process death and creates no sidecar.
+Other lease stores in the same directory serialize too; supported local Linux
+filesystems must implement advisory directory flock. Trusted parent ownership
+and the separate migration-cleanup lock remain required.
+
 Each mutation of a lease is serialized against the durable generation. Repeated commands are idempotent by their command identity. A lower or stale generation is rejected. Expiry, revoke, or ambiguous cleanup must cause the Gateway and Execution Service to reject new risk before external side effects are possible.
 
 Socket ingress is separated from the mutation serializer. A bounded worker set

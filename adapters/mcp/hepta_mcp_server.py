@@ -29,6 +29,7 @@ DESCRIPTOR_FIELDS = {
     "name", "description", "required_capability", "effect", "timeout_ms",
     "schema_hash", "input_schema", "result_schema",
 }
+# generated-tool-fields:begin
 FIELD_IDS = {
     "session_token": 1,
     "tool_call_id": 2,
@@ -57,6 +58,7 @@ FIELD_IDS = {
     "preview_permit": 25,
     "command_id": 26,
 }
+# generated-tool-fields:end
 
 CLIENT_COMMAND_ID_SCHEMA = {
     "type": "string",

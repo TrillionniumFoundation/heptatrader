@@ -39,6 +39,15 @@ jobs:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
+      - name: Classify release acceptance scope
+        id: release-scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          SERVER_URL: ${{ github.server_url }}
+        run: python3 scripts/ci_change_scope.py >> "$GITHUB_OUTPUT"
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -74,12 +83,13 @@ jobs:
 
       - name: Accept the exact core artifact through installed processes and systemd
         id: accept-core-artifact
+        if: steps.release-scope.outputs.required == 'true'
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: python3 scripts/accept_core_release.py --build-dir build/core --output-dir dist --source-sha "$EXPECTED_SHA"
 
       - name: Retain lifecycle diagnostics even on failure
-        if: always()
+        if: always() && steps.release-scope.outputs.required == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: core-lifecycle-evidence-${{ github.run_id }}-${{ github.run_attempt }}

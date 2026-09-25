@@ -10,6 +10,7 @@ Retain, with restricted access and integrity digests:
 - exact source and binary artifact identity;
 - OMS journal and durable command/fence state;
 - session lease store and schema version;
+- Gateway audit file **and all** of its `.segments/` predecessors;
 - terminal recovery witnesses;
 - non-secret profile and policy files;
 - configuration and installed-file manifests;
@@ -43,3 +44,17 @@ See [lossless stopped-state maintenance](../technical/oms-archive-lifecycle.md) 
 writer exclusion, decoded recovery budgets, crash handling and explicit
 expansion before downgrade. It preserves all event bytes and command identities;
 it is not online truncation or a general N-1 compatibility claim.
+
+## Audit maintenance
+
+After fencing/reconciliation, stop Gateway before running the installed
+`hepta-sessionctl --audit-seal-stopped /absolute/audit-path` as its audit-file
+owner. Run `hepta-sessionctl --audit-verify /absolute/audit-path` before restart.
+Sealing retains every old byte, reserves no new trading authority and never
+truncates a live descriptor. Preserve orphan staging files after an interrupted
+operation for investigation; do not restore a prior active file over a newer
+anchor. See the [audit persistence contract](../modules/tool-gateway.md#state-and-persistence).
+
+HJA3 segmentation requires the current verifier. Old binaries accepting the
+anchor as arbitrary legacy text do not verify the retained predecessor chain;
+that is not supported downgrade evidence.

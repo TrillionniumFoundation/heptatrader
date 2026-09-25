@@ -12,6 +12,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
+#include <limits>
+#include <set>
+#include <cstdio>
+#include <sys/syscall.h>
+#if defined(__linux__)
+#include <linux/fs.h>
+#endif
 
 namespace
 {
@@ -59,8 +66,9 @@ std::vector<std::string> SplitTabs(const std::string& line)
 }
 }
 
-SessionSupervisorAuditJournal::SessionSupervisorAuditJournal()
-    : m_fd(-1), m_device(0), m_inode(0), m_nextSequence(1),
+SessionSupervisorAuditJournal::SessionSupervisorAuditJournal(
+    std::uint64_t maximumBytes, std::uint64_t safetyReserveBytes)
+    : m_maximumBytes(maximumBytes), m_safetyReserveBytes(safetyReserveBytes), m_fd(-1), m_device(0), m_inode(0), m_nextSequence(1),
       m_chainedRecords(0), m_previousHash(kZeroHash), m_cacheValid(false)
 {
 }
@@ -74,8 +82,15 @@ SessionSupervisorAuditJournal::~SessionSupervisorAuditJournal()
 bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& reason)
 {
     if (path.empty()) { reason = "SUPERVISOR_AUDIT_PATH_REQUIRED"; return false; }
+    if (m_maximumBytes == 0 || m_maximumBytes > kMaximumAuditJournalBytes ||
+        m_safetyReserveBytes == 0 || m_safetyReserveBytes >= m_maximumBytes / 2)
+    { reason = "SUPERVISOR_AUDIT_CAPACITY_INVALID"; return false; }
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fd >= 0) { reason = "SUPERVISOR_AUDIT_ALREADY_INITIALIZED"; return false; }
+    struct stat existingActive, existingHistory;
+    if (::lstat(path.c_str(), &existingActive) != 0 && errno == ENOENT &&
+        (::lstat((path + ".segments").c_str(), &existingHistory) == 0 || errno != ENOENT))
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_MISSING"; return false; }
     const int fd = ::open(path.c_str(),
         O_RDWR | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (fd < 0) { reason = std::strerror(errno); return false; }
@@ -145,6 +160,8 @@ bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& r
             }
         }
     }
+    std::uint64_t archivedRecords = 0;
+    if (ok) ok = VerifyHistory(fd, path, archivedRecords, reason);
     if (ok)
         ok = LoadChain(fd, verifiedState.fileSize, nextSequence,
             previousHash, chainedRecords, reason);
@@ -202,7 +219,10 @@ bool SessionSupervisorAuditJournal::Append(const SessionSupervisorRequest& reque
         "session_id=" + request.sessionId + "\n" +
         "lease_generation=" + std::to_string(leaseGeneration) +
         recoveryTarget;
-    return AppendRecord("session-supervisor", payload, reason);
+    const bool admission = request.operation == SessionSupervisorOperation::Provision ||
+        request.operation == SessionSupervisorOperation::Rotate;
+    return AppendRecord("session-supervisor", payload, reason,
+        admission ? RecordClass::Admission : RecordClass::Safety);
 }
 
 bool SessionSupervisorAuditJournal::AppendToolDecision(
@@ -225,11 +245,17 @@ bool SessionSupervisorAuditJournal::AppendToolDecision(
         "phase=" + record.phase + "\n" +
         "outcome=" + record.outcome + "\n" +
         "reason_code=" + record.reasonCode;
-    return AppendRecord("tool-decision", payload, reason);
+    const bool observation = record.observational && record.phase == "outcome";
+    const bool boundExit = !observation && record.peerCredentialAvailable && !record.agentId.empty() &&
+        !record.sessionId.empty() && (record.toolName == "trade.cancel_order" ||
+        record.toolName == "trade.flatten_position");
+    return AppendRecord("tool-decision", payload, reason,
+        boundExit ? RecordClass::Safety : (observation ? RecordClass::Observation : RecordClass::Admission));
 }
 
 bool SessionSupervisorAuditJournal::AppendRecord(
-    const std::string& recordType, const std::string& payload, std::string& reason)
+    const std::string& recordType, const std::string& payload, std::string& reason,
+    RecordClass recordClass)
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fd < 0) { reason = "SUPERVISOR_AUDIT_NOT_INITIALIZED"; return false; }
@@ -279,6 +305,8 @@ bool SessionSupervisorAuditJournal::AppendRecord(
         std::to_string(nowMs) + "\t" + recordType + "\t" + HexEncode(payload);
     const std::string recordHash = Sha256Hex(unsignedLine);
     const std::string line = unsignedLine + "\t" + recordHash + "\n";
+    if (ok && nextSequence == std::numeric_limits<std::uint64_t>::max())
+    { reason = "SUPERVISOR_AUDIT_SEQUENCE_EXHAUSTED"; ok = false; }
     if (ok && recordHash.empty())
     {
         reason = "SUPERVISOR_AUDIT_DIGEST_FAILED";
@@ -294,6 +322,24 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     {
         reason = "SUPERVISOR_AUDIT_SIZE_LIMIT";
         ok = false;
+    }
+    const std::uint64_t reserve = recordClass == RecordClass::Safety ? 0 :
+        (recordClass == RecordClass::Admission ? m_safetyReserveBytes : 2 * m_safetyReserveBytes);
+    const std::uint64_t limit = m_maximumBytes - reserve;
+    if (ok && (currentState.fileSize > limit || line.size() > limit - currentState.fileSize))
+    {
+        ::flock(m_fd, LOCK_UN);
+        if (recordClass == RecordClass::Observation)
+        {
+            // Only routine observation is shed. This is explicitly counted,
+            // not represented as a durable record or a false failed read.
+            if (m_observationsShed != std::numeric_limits<std::uint64_t>::max()) ++m_observationsShed;
+            reason = "SUPERVISOR_AUDIT_OBSERVATION_SHED";
+            return true;
+        }
+        reason = recordClass == RecordClass::Admission ?
+            "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED" : "SUPERVISOR_AUDIT_SIZE_LIMIT";
+        return false;
     }
     bool writeAttempted = false;
     std::size_t offset = 0;
@@ -551,6 +597,8 @@ bool SessionSupervisorAuditJournal::Verify(
             ok = false;
         }
     }
+    std::uint64_t archivedRecords = 0;
+    if (ok) ok = VerifyHistory(fd, path, archivedRecords, reason);
     if (ok)
         ok = LoadChain(fd, verifiedState.fileSize, nextSequence,
             previousHash, chainedRecords, reason);
@@ -566,7 +614,9 @@ bool SessionSupervisorAuditJournal::Verify(
     }
     if (locked) ::flock(fd, LOCK_UN);
     ::close(fd);
-    if (ok) reason.clear();
+    if (ok && archivedRecords > std::numeric_limits<std::uint64_t>::max() - chainedRecords)
+    { reason = "SUPERVISOR_AUDIT_HISTORY_COUNT_OVERFLOW"; ok = false; }
+    if (ok) { chainedRecords += archivedRecords; reason.clear(); }
     return ok;
 }
 
@@ -682,4 +732,222 @@ std::string SessionSupervisorAuditJournal::Sha256Hex(const std::string& value)
     EVP_MD_CTX_free(context);
     if (!ok) return std::string();
     return HexEncode(std::string(reinterpret_cast<char*>(digest), length));
+}
+
+namespace {
+class AuditFd
+{
+public:
+    explicit AuditFd(int value = -1) : fd(value) {}
+    ~AuditFd() { if (fd >= 0) ::close(fd); }
+    AuditFd(const AuditFd&) = delete;
+    AuditFd& operator=(const AuditFd&) = delete;
+    int fd;
+};
+
+bool AuditPrivateFile(int fd, struct stat& metadata)
+{
+    return fd >= 0 && ::fstat(fd, &metadata) == 0 && S_ISREG(metadata.st_mode) &&
+        metadata.st_nlink == 1 && metadata.st_uid == ::geteuid() &&
+        (metadata.st_mode & 0077) == 0 && metadata.st_size >= 0 &&
+        static_cast<std::uint64_t>(metadata.st_size) <= kMaximumAuditJournalBytes;
+}
+
+bool AuditHashFile(int fd, std::uint64_t size, std::string& hash, int copyFd = -1)
+{
+    EVP_MD_CTX* context = EVP_MD_CTX_new();
+    if (!context) return false;
+    bool ok = EVP_DigestInit_ex(context, EVP_sha256(), nullptr) == 1;
+    std::uint64_t offset = 0;
+    char bytes[65536];
+    while (ok && offset < size)
+    {
+        const ssize_t count = ::pread(fd, bytes, std::min<std::uint64_t>(sizeof(bytes), size - offset), offset);
+        if (count < 0 && errno == EINTR) continue;
+        if (count <= 0) { ok = false; break; }
+        ok = EVP_DigestUpdate(context, bytes, count) == 1;
+        std::size_t written = 0;
+        while (ok && copyFd >= 0 && written < static_cast<std::size_t>(count))
+        {
+            const ssize_t n = ::write(copyFd, bytes + written, count - written);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { ok = false; break; }
+            written += n;
+        }
+        offset += count;
+    }
+    unsigned char digest[EVP_MAX_MD_SIZE]; unsigned int length = 0;
+    if (ok) ok = EVP_DigestFinal_ex(context, digest, &length) == 1 && length == 32;
+    EVP_MD_CTX_free(context);
+    hash.clear();
+    if (ok)
+    {
+        const char hex[] = "0123456789abcdef";
+        for (unsigned i = 0; i < length; ++i)
+        { hash.push_back(hex[digest[i] >> 4]); hash.push_back(hex[digest[i] & 15]); }
+    }
+    return ok;
+}
+
+// Each new active file starts with one legacy-compatible anchor. HJA2 hashes
+// bind that exact anchor; current readers also require its full retained chain.
+bool AuditAnchor(int fd, std::string& digest, std::uint64_t& records)
+{
+    char data[192]; ssize_t count;
+    do { count = ::pread(fd, data, sizeof(data), 0); } while (count < 0 && errno == EINTR);
+    if (count < 0) return false;
+    std::string prefix(data, static_cast<std::size_t>(count));
+    digest.clear(); records = 0;
+    if (prefix.compare(0, 4, "HJA3") != 0) return true;
+    const auto end = prefix.find('\n');
+    if (end == std::string::npos) return false;
+    const auto fields = SplitTabs(prefix.substr(0, end));
+    if (fields.size() != 3 || fields[0] != "HJA3" ||
+        !IsLowerHex(fields[1], 64) || !ParseUnsigned(fields[2], records) || records == 0)
+        return false;
+    digest = fields[1];
+    return true;
+}
+}
+
+SessionSupervisorAuditCapacity SessionSupervisorAuditJournal::CapacitySnapshot() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    SessionSupervisorAuditCapacity result;
+    FileState state; std::string reason;
+    result.known = m_fd >= 0 && m_cacheValid && ValidateOpenFile(state, reason) &&
+        SameFileState(state, m_fileState);
+    result.bytes = result.known ? state.fileSize : 0;
+    result.maximumBytes = m_maximumBytes;
+    result.safetyReserveBytes = m_safetyReserveBytes;
+    result.observationsShed = m_observationsShed;
+    return result;
+}
+
+bool SessionSupervisorAuditJournal::VerifyHistory(int activeFd, const std::string& path,
+    std::uint64_t& records, std::string& reason)
+{
+    records = 0;
+    std::string digest;
+    std::uint64_t expected = 0;
+    if (!AuditAnchor(activeFd, digest, expected))
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_ANCHOR_INVALID"; return false; }
+    if (digest.empty()) return true;
+    records = expected;
+    AuditFd directory(::open((path + ".segments").c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    struct stat metadata;
+    if (directory.fd < 0 || ::fstat(directory.fd, &metadata) != 0 ||
+        metadata.st_uid != ::geteuid() || (metadata.st_mode & 0077) != 0)
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_DIRECTORY_UNSAFE"; return false; }
+    std::set<std::string> visited;
+    while (!digest.empty())
+    {
+        if (!visited.insert(digest).second)
+        { reason = "SUPERVISOR_AUDIT_SEGMENT_CYCLE"; return false; }
+        AuditFd segment(::openat(directory.fd, (digest + ".hja2").c_str(),
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+        struct stat before, after;
+        std::string actual, previous;
+        std::uint64_t next = 0, count = 0, parentCount = 0;
+        if (!AuditPrivateFile(segment.fd, before) ||
+            !AuditHashFile(segment.fd, before.st_size, actual) || actual != digest ||
+            !LoadChain(segment.fd, before.st_size, next, previous, count, reason) ||
+            !AuditAnchor(segment.fd, digest, parentCount) ||
+            parentCount > expected || count != expected - parentCount ||
+            !AuditPrivateFile(segment.fd, after) ||
+            !SameFileState(CaptureFileState(before), CaptureFileState(after)))
+        { reason = "SUPERVISOR_AUDIT_SEGMENT_INVALID"; return false; }
+        expected = parentCount;
+    }
+    if (expected != 0) { reason = "SUPERVISOR_AUDIT_SEGMENT_COUNT_INVALID"; return false; }
+    reason.clear();
+    return true;
+}
+
+bool SessionSupervisorAuditJournal::SealSegment(const std::string& path, std::string& reason)
+{
+#if !defined(__linux__) || !defined(SYS_renameat2)
+    (void)path; reason = "SUPERVISOR_AUDIT_SEAL_PLATFORM_UNSUPPORTED"; return false;
+#else
+    if (path.empty() || path[0] != '/' || path.back() == '/')
+    { reason = "SUPERVISOR_AUDIT_ABSOLUTE_PATH_REQUIRED"; return false; }
+    const auto separator = path.rfind('/');
+    const std::string parent = separator == 0 ? "/" : path.substr(0, separator);
+    AuditFd directory(::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    if (directory.fd < 0 || ::flock(directory.fd, LOCK_EX | LOCK_NB) != 0)
+    { reason = "SUPERVISOR_AUDIT_MAINTENANCE_BUSY"; return false; }
+    AuditFd source(::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK));
+    struct stat before, named;
+    if (!AuditPrivateFile(source.fd, before) || ::flock(source.fd, LOCK_EX | LOCK_NB) != 0 ||
+        ::lstat(path.c_str(), &named) != 0 || before.st_dev != named.st_dev || before.st_ino != named.st_ino)
+    { reason = "SUPERVISOR_AUDIT_UNSAFE_OR_BUSY"; return false; }
+    std::uint64_t archived = 0, local = 0, next = 0;
+    std::string previous;
+    if (!VerifyHistory(source.fd, path, archived, reason) ||
+        !LoadChain(source.fd, before.st_size, next, previous, local, reason)) return false;
+    if (local == 0)
+    {
+        // Retrying a published-but-unsynced anchor must complete directory
+        // durability instead of turning the no-op into an unearned success.
+        if (::fsync(directory.fd) != 0)
+        { reason = "SUPERVISOR_AUDIT_PUBLICATION_INDETERMINATE"; return false; }
+        reason.clear(); return true;
+    }
+    if (archived > std::numeric_limits<std::uint64_t>::max() - local)
+    { reason = "SUPERVISOR_AUDIT_HISTORY_COUNT_OVERFLOW"; return false; }
+    const std::string archivePath = path + ".segments";
+    if (::mkdir(archivePath.c_str(), 0700) != 0 && errno != EEXIST)
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_CREATE_FAILED"; return false; }
+    AuditFd archiveDir(::open(archivePath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW));
+    struct stat archiveMetadata;
+    if (archiveDir.fd < 0 || ::fstat(archiveDir.fd, &archiveMetadata) != 0 ||
+        archiveMetadata.st_uid != ::geteuid() || (archiveMetadata.st_mode & 0077) != 0)
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_DIRECTORY_UNSAFE"; return false; }
+    std::string stageName = archivePath + "/.stage-XXXXXX";
+    std::vector<char> stage(stageName.begin(), stageName.end()); stage.push_back(0);
+    AuditFd copy(::mkstemp(stage.data()));
+    std::string digest;
+    if (copy.fd < 0 || ::fcntl(copy.fd, F_SETFD, FD_CLOEXEC) != 0 ||
+        !AuditHashFile(source.fd, before.st_size, digest, copy.fd) || ::fsync(copy.fd) != 0)
+    { ::unlink(stage.data()); reason = "SUPERVISOR_AUDIT_SEGMENT_SYNC_FAILED"; return false; }
+    const std::string sealed = archivePath + "/" + digest + ".hja2";
+    if (::syscall(SYS_renameat2, AT_FDCWD, stage.data(), AT_FDCWD, sealed.c_str(), RENAME_NOREPLACE) != 0)
+    {
+        const int error = errno; ::unlink(stage.data());
+        AuditFd existing(::open(sealed.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK));
+        struct stat current; std::string existingHash;
+        if (error != EEXIST || !AuditPrivateFile(existing.fd, current) ||
+            !AuditHashFile(existing.fd, current.st_size, existingHash) || existingHash != digest)
+        { reason = "SUPERVISOR_AUDIT_SEGMENT_PUBLICATION_FAILED"; return false; }
+    }
+    // The archive and its directory are durable before replacing the active
+    // path. A crash can leave an unreferenced segment, never missing history.
+    if (::fsync(archiveDir.fd) != 0 || ::fsync(directory.fd) != 0)
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_DIRECTORY_SYNC_FAILED"; return false; }
+    const std::string anchor = "HJA3\t" + digest + "\t" + std::to_string(archived + local) + "\n";
+    stageName = path + ".rotate-XXXXXX";
+    stage.assign(stageName.begin(), stageName.end()); stage.push_back(0);
+    AuditFd active(::mkstemp(stage.data()));
+    if (active.fd < 0 || ::fcntl(active.fd, F_SETFD, FD_CLOEXEC) != 0)
+    { ::unlink(stage.data()); reason = "SUPERVISOR_AUDIT_ACTIVE_STAGE_FAILED"; return false; }
+    std::size_t written = 0;
+    while (written < anchor.size())
+    {
+        const ssize_t n = ::write(active.fd, anchor.data() + written, anchor.size() - written);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) { ::unlink(stage.data()); reason = "SUPERVISOR_AUDIT_ACTIVE_WRITE_FAILED"; return false; }
+        written += n;
+    }
+    struct stat after;
+    if (::fsync(active.fd) != 0 || ::fstat(source.fd, &after) != 0 ||
+        !SameFileState(CaptureFileState(before), CaptureFileState(after)) ||
+        ::lstat(path.c_str(), &named) != 0 || before.st_dev != named.st_dev || before.st_ino != named.st_ino)
+    { ::unlink(stage.data()); reason = "SUPERVISOR_AUDIT_SOURCE_CHANGED_OR_SYNC_FAILED"; return false; }
+    if (::rename(stage.data(), path.c_str()) != 0)
+    { ::unlink(stage.data()); reason = "SUPERVISOR_AUDIT_ACTIVE_RENAME_FAILED"; return false; }
+    if (::fsync(directory.fd) != 0)
+    { reason = "SUPERVISOR_AUDIT_PUBLICATION_INDETERMINATE"; return false; }
+    reason.clear();
+    return true;
+#endif
 }

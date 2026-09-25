@@ -147,9 +147,9 @@ The [flatten result contract](../technical/venue-flatten-contract.md) completes 
 The command socket uses one nonblocking framing/reply reactor (64 live
 connections, at most 1 MiB per configured request) and three FIFO authority
 lanes (24 queued requests per lane). Partial frames and slow readers consume
-bounded connection slots, not authority workers. The same accept-time steady
-deadline covers framing, queueing and reply; expired queued calls never enter
-authority. Overload closes the connection without fabricating a command result.
+bounded connection slots, not authority workers. Framing, queue residence and reply writing use separate bounded monotonic
+windows. Expired queued calls never enter authority; after dispatch, completion
+receives a fresh reply-write window and cannot be cancelled by the old queue clock. Overload closes the connection without fabricating a command result.
 
 Identity, command status, recovery status and owner fence/release share the
 short control lane. Guarded cancel and authoritative flatten use a separate exit
