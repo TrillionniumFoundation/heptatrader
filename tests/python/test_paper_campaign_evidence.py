@@ -89,6 +89,8 @@ class PaperCampaignEvidenceTests(unittest.TestCase):
         self.assertEqual(argv.count("--broker-port"), 1)
         self.assertEqual(argv[argv.index("--broker-host") + 1], "127.0.0.1")
         self.assertEqual(argv[argv.index("--broker-port") + 1], "4002")
+        self.assertEqual(self.record()["schema"], "hepta.ib-paper-attempt.v2")
+        self.assertEqual(self.record()["broker_endpoint"], {"host": "127.0.0.1", "port": 4002})
         self.assertFalse(self.record()["paper_authorized"])
 
     def test_invalid_or_omitted_endpoint_never_reserves_or_spawns(self) -> None:

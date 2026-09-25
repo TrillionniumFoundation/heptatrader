@@ -61,6 +61,22 @@ The harness writes `qualification-result.json` only after scenario execution. Ev
 
 Raw secret values must never appear in evidence. Account and host identity use bounded fingerprints. Broker callbacks, authoritative snapshots, execution events and OMS journal extracts should retain the minimum fields needed to prove the asserted state transition while omitting credentials and session tokens.
 
+### Broker endpoint in the result
+
+New desktop campaigns use `hepta.ib-paper-attempt.v2` and
+`hepta.ib-paper-qualification.v2`. The controller persists `broker_endpoint`
+before launching the harness; the harness reports its actually observed
+`broker.endpoint` as `{"host":"127.0.0.1","port":4002}`. The verifier compares
+both with the explicit workflow endpoint and retains the binding in the V2
+verification receipt. A missing endpoint, hostname, remote address, wrong port
+or non-integer port cannot produce a desktop qualification receipt.
+
+V1 results remain readable only as historical endpoint-unbound evidence. They
+cannot satisfy a current controller attempt or explicit endpoint verification.
+The harness must observe the connection it used, not merely copy the requested
+arguments. Endpoint agreement does not replace the existing account-mode,
+identity, scenario, terminal-state or independent host-policy checks.
+
 ## Terminal state
 
 A qualifying run is incomplete until every possible mutation is resolved and the bounded PAPER account is authoritatively reconciled. Any active/unresolved order, uncertain send, unexplained execution, position divergence, incomplete refresh barrier, unsafe kill-switch state or changed source/artifact/harness identity makes the campaign fail.

@@ -21,19 +21,24 @@ class PaperEvidencePublicationTests(unittest.TestCase):
         self.archive = self.root / "verified-evidence.tar"
 
     def verify(self, *extra: str) -> subprocess.CompletedProcess:
+        endpoint = ("--expected-broker-host", "127.0.0.1", "--expected-broker-port", "4002") if "--attempt" in extra else ()
         return subprocess.run([
             sys.executable, str(Path(VERIFIER.__file__)),
             "--result", str(self.fixture.result), "--evidence-root", str(self.fixture.root),
             "--expected-git-sha", self.fixture.git_sha,
             "--expected-binary", str(self.fixture.binary),
             "--expected-harness", str(self.fixture.harness),
-            "--publication-archive", str(self.archive), *extra,
+            "--publication-archive", str(self.archive), *endpoint, *extra,
         ], capture_output=True, timeout=10)
 
     def attempt(self, **changes) -> Path:
         _, binary = VERIFIER.verify_tool(self.fixture.binary, "binary")
         _, harness = VERIFIER.verify_tool(self.fixture.harness, "harness")
-        value = dict(schema="hepta.ib-paper-attempt.v1",
+        self.fixture.payload["schema"] = VERIFIER.ENDPOINT_SCHEMA
+        self.fixture.payload["broker"]["endpoint"] = {"host": "127.0.0.1", "port": 4002}
+        self.fixture.write_result()
+        value = dict(schema="hepta.ib-paper-attempt.v2",
+                     broker_endpoint={"host": "127.0.0.1", "port": 4002},
                      state="HARNESS_SUCCEEDED_AWAITING_VERIFICATION", returncode=0,
                      source_sha=self.fixture.git_sha, binary_sha256=binary,
                      harness_sha256=harness, paper_authorized=False, live_authorized=False)
@@ -50,12 +55,26 @@ class PaperEvidencePublicationTests(unittest.TestCase):
         cases = ({"state":"RESERVED"}, {"state":"RUNNING"}, {"state":"INTERRUPTED"},
                  {"returncode":42}, {"returncode":False}, {"private_cleanup_failed":True},
                  {"source_sha":"f"*40}, {"binary_sha256":"f"*64},
-                 {"harness_sha256":"f"*64}, {"paper_authorized":True}, {"live_authorized":True})
+                 {"harness_sha256":"f"*64}, {"paper_authorized":True}, {"live_authorized":True},
+                 {"schema":"hepta.ib-paper-attempt.v1"}, {"broker_endpoint":None},
+                 {"broker_endpoint":{"host":"192.0.2.10","port":4002}},
+                 {"broker_endpoint":{"host":"127.0.0.1","port":4001}},
+                 {"broker_endpoint":{"host":"127.0.0.1","port":"4002"}})
         for changes in cases:
             with self.subTest(changes=changes):
                 result = self.verify("--attempt", str(self.attempt(**changes)))
                 self.assertNotEqual(result.returncode, 0)
                 self.assertFalse(self.archive.exists())
+
+    def test_attempt_requires_explicit_endpoint_without_legacy_fallback(self) -> None:
+        attempt = self.attempt()
+        result = subprocess.run([
+            sys.executable, str(Path(VERIFIER.__file__)), "--result", str(self.fixture.result),
+            "--evidence-root", str(self.fixture.root), "--expected-git-sha", self.fixture.git_sha,
+            "--expected-binary", str(self.fixture.binary), "--expected-harness", str(self.fixture.harness),
+            "--attempt", str(attempt)], capture_output=True, timeout=10)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.fixture.root / "qualification-verification.json").exists())
 
     def test_unrelated_attempt_path_is_rejected(self) -> None:
         path = self.attempt()

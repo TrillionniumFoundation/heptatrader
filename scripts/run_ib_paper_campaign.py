@@ -23,6 +23,7 @@ from typing import Mapping
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from verify_ib_paper_qualification import (  # noqa: E402
     FULL_SHA, SHA256, MAX_RESULT_BYTES, REQUIRED_SCENARIOS, QualificationError,
+    DESKTOP_BROKER_HOST, DESKTOP_BROKER_PORT,
     atomic_private_json, parse_json, stable_regular_bytes, verify_tool,
 )
 
@@ -89,7 +90,7 @@ def run_campaign(artifact: Path, source_sha: str, attempt: Path, *,
         raise QualificationError("explicit HEPTA_QUALIFICATION_MUTATIONS=1 is required")
     broker_host = env.get("HEPTA_IB_PAPER_BROKER_HOST", "")
     broker_port = env.get("HEPTA_IB_PAPER_BROKER_PORT", "")
-    if (broker_host, broker_port) != ("127.0.0.1", "4002"):
+    if (broker_host, broker_port) != (DESKTOP_BROKER_HOST, str(DESKTOP_BROKER_PORT)):
         raise QualificationError("desktop PAPER requires the explicit 127.0.0.1:4002 endpoint")
     harness_digest = env.get("HEPTA_IB_PAPER_QUALIFIER_SHA256", "")
     if SHA256.fullmatch(harness_digest) is None:
@@ -138,7 +139,8 @@ def run_campaign(artifact: Path, source_sha: str, attempt: Path, *,
     finally:
         os.close(parent_fd)
     record = {
-        "schema": "hepta.ib-paper-attempt.v1", "state": "RESERVED",
+        "schema": "hepta.ib-paper-attempt.v2", "state": "RESERVED",
+        "broker_endpoint": {"host": broker_host, "port": int(broker_port)},
         "source_sha": source_sha, "binary_sha256": binary_digest,
         "harness_sha256": harness_digest, "started_at_ms": _milliseconds(),
         "timeout_seconds": timeout_seconds, "returncode": None,

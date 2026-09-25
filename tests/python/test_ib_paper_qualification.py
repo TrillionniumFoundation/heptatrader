@@ -140,7 +140,7 @@ class QualificationFixture:
             ),
         )
 
-    def verify(self) -> subprocess.CompletedProcess[str]:
+    def verify(self, *extra: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
                 sys.executable,
@@ -157,6 +157,7 @@ class QualificationFixture:
                 str(self.harness),
                 "--receipt",
                 str(self.root / "qualification-verification.json"),
+                *extra,
             ],
             text=True,
             stdout=subprocess.PIPE,
@@ -166,6 +167,67 @@ class QualificationFixture:
 
 
 class IbPaperQualificationTests(unittest.TestCase):
+    def test_desktop_endpoint_is_preserved_in_verified_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = QualificationFixture(Path(directory))
+            fixture.payload["schema"] = VERIFIER.ENDPOINT_SCHEMA
+            fixture.payload["broker"]["endpoint"] = {"host": "127.0.0.1", "port": 4002}
+            fixture.write_result()
+            result = fixture.verify("--expected-broker-host", "127.0.0.1",
+                                    "--expected-broker-port", "4002")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads((fixture.root / "qualification-verification.json").read_text())
+            self.assertEqual(receipt["schema"], VERIFIER.ENDPOINT_RECEIPT_SCHEMA)
+            self.assertEqual(receipt["broker"]["endpoint"], {"host": "127.0.0.1", "port": 4002})
+
+    def test_legacy_evidence_cannot_qualify_the_desktop_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = QualificationFixture(Path(directory))
+            result = fixture.verify("--expected-broker-host", "127.0.0.1",
+                                    "--expected-broker-port", "4002")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((fixture.root / "qualification-verification.json").exists())
+            # The historical V1 format remains independently inspectable.
+            result = fixture.verify()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            receipt = json.loads((fixture.root / "qualification-verification.json").read_text())
+            self.assertEqual(receipt["schema"], VERIFIER.RECEIPT_SCHEMA)
+            self.assertNotIn("endpoint", receipt["broker"])
+
+    def test_invalid_observed_endpoints_never_publish(self) -> None:
+        cases = (None, {}, {"host": "127.0.0.1"},
+                 {"host": "localhost", "port": 4002},
+                 {"host": "192.0.2.10", "port": 4002},
+                 {"host": "127.0.0.1", "port": 4001},
+                 {"host": "127.0.0.1", "port": "4002"},
+                 {"host": "127.0.0.1", "port": 4002.0},
+                 {"host": "127.0.0.1", "port": True},
+                 {"host": "127.0.0.1", "port": 4002, "fallback": "x230"})
+        for endpoint in cases:
+            with self.subTest(endpoint=endpoint), tempfile.TemporaryDirectory() as directory:
+                fixture = QualificationFixture(Path(directory))
+                fixture.payload["schema"] = VERIFIER.ENDPOINT_SCHEMA
+                if endpoint is not None:
+                    fixture.payload["broker"]["endpoint"] = endpoint
+                fixture.write_result()
+                result = fixture.verify("--expected-broker-host", "127.0.0.1",
+                                        "--expected-broker-port", "4002")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertFalse((fixture.root / "qualification-verification.json").exists())
+
+    def test_expected_endpoint_arguments_cannot_be_partial_or_wrong(self) -> None:
+        for flags in (("--expected-broker-host", "127.0.0.1"),
+                      ("--expected-broker-port", "4002"),
+                      ("--expected-broker-host", "localhost", "--expected-broker-port", "4002"),
+                      ("--expected-broker-host", "127.0.0.1", "--expected-broker-port", "4001")):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as directory:
+                fixture = QualificationFixture(Path(directory))
+                fixture.payload["schema"] = VERIFIER.ENDPOINT_SCHEMA
+                fixture.payload["broker"]["endpoint"] = {"host": "127.0.0.1", "port": 4002}
+                fixture.write_result()
+                self.assertNotEqual(fixture.verify(*flags).returncode, 0)
+                self.assertFalse((fixture.root / "qualification-verification.json").exists())
+
     @unittest.skipUnless(os.name == "posix", "qualification metadata requires POSIX")
     def test_private_evidence_is_accepted_under_permissive_umask(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

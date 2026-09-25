@@ -225,3 +225,35 @@ Lease acknowledgement capacity has a different lifecycle: the Supervisor's
 by deleting old acknowledgements. Its independent history-growth fixture and
 capacity metrics must drive capacity planning; OMS rebase is not a lease-store
 compactor. These decisions add no routine capacity campaign or approval gate.
+
+## Desktop observations (2026-09-25)
+
+The ordinary coordinator diagnostic completed 256, 1,024 and 8,192 synthetic
+orders on the desktop ext4 filesystem. The diagnostic binary was built from
+`3ea97731097d7a220951a2fc3a4d1e140934a436`, whose complete source tree
+`537f10995e33bf2d62359cfdf42ad4720bf7a2bf` is identical to merged main
+`b1ae6c9d05ae90bc69bd25b966b294ee70e78784`. Release GCC, ordinary syncs and
+unchanged runtime limits were used. Every final sealed and rebased fresh-process
+reader rejected ancient conflicting identities and produced zero resends.
+
+| Orders | Sealed recovery (ms) | Rebased recovery (ms) | Rebased peak RSS (MiB) | Retained storage before / after rebase (MiB) | Rebase (s) |
+|---:|---:|---:|---:|---:|---:|
+| 256 | 4.80 | 7.23 | 7.49 | 1.76 / 1.26 | 0.301 |
+| 1,024 | 11.75 | 21.45 | 7.62 | 7.02 / 5.04 | 0.650 |
+| 8,192 | 72.59 | 149.14 | 7.75 | 56.34 / 40.47 | 3.165 |
+
+These are single-run, warm-cache-uncontrolled observations on a shared host, not
+a production SLO or a maximum supported history. They demonstrate that rebase
+reduced retained bytes in this workload but increased the measured fresh-process
+recovery interval; deleting history or raising limits is not justified. The
+fixture uses a synthetic venue callback, not installed multi-UID daemons or IB.
+The installed capacity workload, multi-day operation and physical power-loss
+qualification remain separate. No Broker mutation or trading authorization was
+performed by these measurements.
+
+The same desktop native suite exercised lease stores with 1, 8 and 88 retained
+acknowledgement groups (23,572, 188,058 and 2,071,018 encoded bytes). Observed
+reopen times were 1.77, 13.32 and 147.21 ms. Every case retained the oldest
+acknowledgement, rejected retired-owner reuse after reopen and completed the
+existing fence/remove checks; the near-full case refused growing admission.
+These bounded fixtures do not establish indefinite acknowledgement capacity.
