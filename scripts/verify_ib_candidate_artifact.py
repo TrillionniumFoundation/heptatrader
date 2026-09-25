@@ -535,6 +535,77 @@ def _write_private(path: Path, data: bytes) -> None:
         os.fsync(stream.fileno())
 
 
+
+MAX_DIAGNOSTIC_LOG_BYTES = 1024 * 1024
+BUILD_PHASES = frozenset({"setup", "source", "sdk", "toolchain", "configure",
+                         "compile", "probe", "integrity", "package", "completed"})
+
+
+def capture_builder_diagnostics(build_log: Path, candidate_sha: str,
+                                phase: str, exit_code: int, output: Path) -> None:
+    """Retain inert, bounded build output, never a qualification receipt.
+
+    Only the compiler/probe log from the broker-disabled container is accepted.
+    No source, SDK, environment, credentials or host files are collected.
+    The log is not replayed on stdout: candidate text cannot issue Actions commands.
+    """
+    _validate_hex(candidate_sha, FULL_SHA, "candidate SHA")
+    if phase not in BUILD_PHASES or type(exit_code) is not int or not 0 <= exit_code <= 255:
+        raise ArtifactError("invalid builder diagnostic phase or exit code")
+    data = b""
+    source_bytes = None
+    try:
+        fd = os.open(build_log, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        pass  # Setup can fail before the compiler log is created.
+    else:
+        try:
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1 or
+                    before.st_uid != os.geteuid() or before.st_mode & 0o077):
+                raise ArtifactError("builder diagnostic log must be a private regular file")
+            source_bytes = before.st_size
+            offset = max(0, source_bytes - MAX_DIAGNOSTIC_LOG_BYTES)
+            remaining = source_bytes - offset
+            chunks = []
+            while remaining:
+                chunk = os.pread(fd, min(65536, remaining), offset)
+                if not chunk:
+                    raise ArtifactError("builder diagnostic log changed while reading")
+                chunks.append(chunk)
+                offset += len(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(fd)
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_mode,
+                                     info.st_nlink, info.st_uid, info.st_gid,
+                                     info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if identity(before) != identity(after):
+                raise ArtifactError("builder diagnostic log changed while reading")
+            data = b"".join(chunks)
+        finally:
+            os.close(fd)
+    status = {
+        "schema": "heptatrader.ib-builder-diagnostics.v1",
+        "candidate_sha": candidate_sha, "phase": phase, "exit_code": exit_code,
+        "source_log_bytes": source_bytes, "retained_log_bytes": len(data),
+        "log_truncated": source_bytes is not None and source_bytes > len(data),
+        "retained_log_sha256": _sha256_bytes(data),
+    }
+    # Do not resolve the final component: even a dangling symlink must be refused.
+    output.parent.mkdir(parents=True, exist_ok=True)
+    os.mkdir(output, 0o700)
+    directory = os.open(output, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for name, value in (("candidate-build.log", data),
+                            ("build-status.json", _canonical_bytes(status))):
+            descriptor = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                 0o600, dir_fd=directory)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(value)
+    finally:
+        os.close(directory)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -564,6 +635,12 @@ def main(argv: list[str] | None = None) -> int:
     verify_parser.add_argument("--expected-builder-image")
     verify_parser.add_argument("--trusted-root", type=Path)
     verify_parser.add_argument("--destination", required=True, type=Path)
+    diagnostics = subparsers.add_parser("diagnostics")
+    diagnostics.add_argument("--build-log", required=True, type=Path)
+    diagnostics.add_argument("--candidate-sha", required=True)
+    diagnostics.add_argument("--phase", required=True, choices=sorted(BUILD_PHASES))
+    diagnostics.add_argument("--exit-code", required=True, type=int)
+    diagnostics.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "hash-tree":
@@ -580,6 +657,9 @@ def main(argv: list[str] | None = None) -> int:
             )
             _write_private(args.output, _canonical_bytes(value))
             print(value["bundle_sha256"])
+        elif args.command == "diagnostics":
+            capture_builder_diagnostics(args.build_log, args.candidate_sha,
+                                        args.phase, args.exit_code, args.output)
         elif args.command == "pack":
             provenance_value = _json_load(args.builder_provenance.read_bytes(), "builder provenance")
             builder = validate_builder(provenance_value)

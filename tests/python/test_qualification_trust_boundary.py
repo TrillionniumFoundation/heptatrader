@@ -27,6 +27,52 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
         self.assertIn("on", self.workflow)
         self.assertNotIn(True, self.workflow)
 
+    def test_no_trade_dispatch_runs_builder_but_never_qualifier(self) -> None:
+        values = {"github.event_name": "workflow_dispatch", "github.ref": "refs/heads/main",
+                  "github.repository": "TrillionniumFoundation/heptatrader",
+                  "github.actor": "ProfHepta", "github.actor_id": 102159240,
+                  "github.triggering_actor": "ProfHepta", "github.sha": "a" * 40,
+                  "inputs.candidate_sha": "a" * 40}
+        def operand(token):
+            if token.startswith("'"): return token[1:-1]
+            if token == "true": return True
+            if token == "false": return False
+            if token.isdigit(): return int(token)
+            return values[token]
+        def admitted(job):
+            return all(operand(a) == operand(b) for a, b in
+                       boundary.admission_terms(self.workflow["jobs"][job]["if"]))
+        for mutation in (False, True):
+            values["inputs.mutation_mode"] = mutation
+            self.assertTrue(admitted("build-candidate"))
+            self.assertEqual(admitted("qualify"), mutation)
+            for key, bad in (("github.actor_id", 1), ("github.ref", "refs/heads/other"),
+                             ("inputs.candidate_sha", "b" * 40)):
+                original = values[key]
+                values[key] = bad
+                self.assertFalse(admitted("build-candidate"))
+                self.assertFalse(admitted("qualify"))
+                values[key] = original
+
+    def test_builder_approval_cannot_be_confused_with_broker_permission(self) -> None:
+        self.workflow["jobs"]["qualify"]["if"] = self.workflow["jobs"]["build-candidate"]["if"]
+        self.assert_rejected()
+
+    def test_build_diagnostics_remain_always_inert_and_attempt_bound(self) -> None:
+        for key, value in (("if", "success()"), ("uses", None)):
+            mutant = copy.deepcopy(self.workflow)
+            phase = next(s for s in mutant["jobs"]["build-candidate"]["steps"]
+                         if s.get("id") == "upload-build-diagnostics")
+            if value is None: phase.pop(key)
+            else: phase[key] = value
+            self.assertTrue(boundary.validate_workflow(mutant))
+        for key, value in (("path", "${{ runner.temp }}/"), ("name", "unbound")):
+            mutant = copy.deepcopy(self.workflow)
+            phase = next(s for s in mutant["jobs"]["build-candidate"]["steps"]
+                         if s.get("id") == "upload-build-diagnostics")
+            phase["with"][key] = value
+            self.assertTrue(boundary.validate_workflow(mutant))
+
     def test_desktop_route_cannot_fall_back_to_x230_or_generic_role(self) -> None:
         for labels in (["self-hosted", "linux", "x64", "heptatrader-ib-paper"],
                        ["self-hosted", "linux", "x64", "x230-ib-paper"],
