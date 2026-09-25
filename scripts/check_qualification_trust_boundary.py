@@ -224,7 +224,9 @@ def phase_environment(job: str, phase: str) -> dict[str, str]:
                   "HEPTA_IB_PAPER_QUALIFIER": "${{ vars.HEPTA_IB_PAPER_QUALIFIER }}"}
         if phase == "run-campaign":
             result.update(HEPTA_IB_PAPER_QUALIFIER_SHA256="${{ vars.HEPTA_IB_PAPER_QUALIFIER_SHA256 }}",
-                          HEPTA_QUALIFICATION_MUTATIONS="1")
+                          HEPTA_QUALIFICATION_MUTATIONS="1",
+                          HEPTA_IB_PAPER_BROKER_HOST="127.0.0.1",
+                          HEPTA_IB_PAPER_BROKER_PORT="4002")
         return result
     return {}
 
@@ -249,8 +251,11 @@ def validate_workflow(workflow: dict) -> list[str]:
             _require(admission_terms(job.get("if")) == EXPECTED_ADMISSION,
                      "immutable owner dispatch authority and exact dispatch-main candidate are required")
             _require("defaults" not in job and job.get("continue-on-error", False) is False, "job failure must remain fatal")
-            _require(job.get("runs-on") == {"group": "trillionnium-ib-paper", "labels": ["self-hosted", "linux", "x64", role]},
-                     "builder and PAPER runner custody must be separate")
+            labels = ["self-hosted", "linux", "x64", role]
+            if name == "qualify":
+                labels.append("desktop-ib-paper")
+            _require(job.get("runs-on") == {"group": "trillionnium-ib-paper", "labels": labels},
+                     "desktop PAPER routing and separate builder custody are required")
             expected_permissions = ({"actions": "read", "contents": "read", "attestations": "write", "id-token": "write"}
                                     if name == "qualify" else None)
             _require(job.get("permissions") == expected_permissions, "job credential scope changed")
@@ -290,7 +295,10 @@ def validate_workflow(workflow: dict) -> list[str]:
                 _require(options.get("ref") == "${{ github.sha }}" and options.get("repository") == "${{ github.repository }}"
                          and options.get("persist-credentials") is False and options.get("clean") is True,
                          "checkouts must be exact dispatch source without persisted credentials")
-            owner_index = _phase(steps, "bind-owner", OWNER_COMMANDS)
+            runner = "desktop-ib-builder" if name == "build-candidate" else "desktop-ib-paper"
+            owner_index = _phase(steps, "bind-owner", OWNER_COMMANDS + [
+                f'test "$RUNNER_NAME" = {runner}',
+                'test "$RUNNER_OS" = Linux', 'test "$RUNNER_ARCH" = X64'])
             _require(owner_index < min(i for i, _ in checkouts), "owner check must precede checkout")
             verify = "python3 trusted/scripts/verify_exact_git_index.py --root "
             if name == "build-candidate":

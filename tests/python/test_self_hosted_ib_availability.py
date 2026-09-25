@@ -23,7 +23,7 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
         self.assertEqual(self.job["permissions"], {})
         self.assertEqual(self.job["runs-on"]["group"], "trillionnium-ib-paper")
         self.assertEqual(set(self.job["runs-on"]["labels"]),
-                         {"self-hosted", "linux", "x64", "x230-ib-paper"})
+                         {"self-hosted", "linux", "x64", "heptatrader-ib-paper", "desktop-ib-paper"})
         self.assertFalse(any("uses" in item for item in self.job["steps"]))
         self.assertEqual({term.strip() for term in self.job["if"].split("&&")},
                          {"github.event_name == 'workflow_dispatch'", "github.ref == 'refs/heads/main'"})
@@ -35,7 +35,7 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
 
     def dispatch(self, **overrides):
         env = {"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF": "refs/heads/main",
-               "RUNNER_NAME": "x230-ib-paper", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64",
+               "RUNNER_NAME": "desktop-ib-paper", "RUNNER_OS": "Linux", "RUNNER_ARCH": "X64",
                "PROBE_REASON": "operator-check", **overrides}
         with tempfile.TemporaryDirectory() as directory:
             return shell(step(self.job, "check-dispatch")["run"], Path(directory), env)
@@ -43,7 +43,8 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
     def test_dispatch_authority_and_reason_are_executed(self):
         self.assertEqual(self.dispatch().returncode, 0)
         for field, value in (("GITHUB_EVENT_NAME", "push"), ("GITHUB_REF", "refs/heads/other"),
-                             ("RUNNER_NAME", "other"), ("RUNNER_OS", "Windows"),
+                             ("RUNNER_NAME", "other"), ("RUNNER_NAME", "x230-ib-paper"),
+                             ("RUNNER_NAME", "desktop-ib-builder"), ("RUNNER_OS", "Windows"),
                              ("RUNNER_ARCH", "ARM64"), ("PROBE_REASON", "$(touch injected)"),
                              ("PROBE_REASON", ""), ("PROBE_REASON", "a" * 81)):
             with self.subTest(field=field, value=value):
@@ -94,14 +95,12 @@ class SelfHostedIbAvailabilityWorkflowTests(unittest.TestCase):
         self.assert_isolation(step(self.job, "check-isolation")["run"])
 
     def test_unreachable_paths_delegate_exact_identity_and_propagate_failure(self):
-        mapping = (ROOT / "systemd/hepta-x230-paper-host-identity-map-v1.json").read_bytes()
-        digest = hashlib.sha256(mapping).hexdigest()
         for use_nc in (True, False):
             result, trace = self.probe(use_nc=use_nc)
             self.assertEqual(result.returncode, 0, result.stderr)
             argv = json.loads(next(line for line in trace if line.startswith("[")))
             self.assertEqual(argv, ["--paper-port", "4002", "--logical-execution-uid", "2003",
-                                    "--execution-uid", "995", "--identity-map-sha256", digest,
+                                    "--execution-uid", "2003",
                                     "--runner-uid", "994"])
             self.assertNotEqual(self.probe(use_nc=use_nc, helper_exit=23)[0].returncode, 0)
 

@@ -14,7 +14,12 @@ The canonical scenario list is [`../ib-paper-qualification-scenarios-v1.json`](.
 The qualification workflow has two distinct principals:
 
 1. a no-secret builder produces and verifies an immutable candidate artifact from the exact `main` revision selected at owner-authorized workflow dispatch;
-2. a PAPER host executes only that verified candidate through an independently pinned qualifier.
+2. the dedicated `desktop-ib-paper` runner executes only that verified candidate through an independently pinned qualifier on the desktop.
+
+The builder is `desktop-ib-builder`; the qualifier additionally requires the
+`desktop-ib-paper` runner label and exact runner name. Both retain the
+`trillionnium-ib-paper` group and their distinct existing role labels.
+The generic desktop runner and X230 are not fallback qualification hosts.
 
 The requested candidate SHA must equal the dispatch event's immutable `github.sha` before either self-hosted runner is allocated. That converts a moving branch pointer into an immutable source/artifact identity at admission. Once the candidate artifact exists, later movement of `refs/heads/main` is intentionally irrelevant to that campaign: it cannot change the source SHA, executable digest, harness, profile, Broker account, host or evidence already bound to the qualification subject. A changed bound input requires a new campaign.
 
@@ -32,9 +37,17 @@ Candidate code must not inherit Actions credentials, repository write credential
 - `candidate-environment=cleared`;
 - `candidate-network-policy=broker-proxy-only`;
 - `credential-delivery=harness-only`;
+- `broker-host=127.0.0.1` and `broker-port=4002`, forwarded explicitly by the controller;
 - `mode=bounded-mutations`.
 
 The harness may not silently expand the operation set, run a different executable, substitute another account/environment, or reuse a stale evidence directory.
+The controller rejects missing, remote, hostname-based or different-port endpoint
+bindings before reserving an attempt or spawning the harness. Its cleared child
+environment repeats the binding in `HEPTA_QUALIFICATION_EXPECTED_BROKER_HOST` and
+`HEPTA_QUALIFICATION_EXPECTED_BROKER_PORT`. The independently pinned desktop
+harness must consume the new `--broker-host`/`--broker-port` arguments and reject
+any mismatch with its protected host policy; an older harness is not implicitly
+compatible. Port 4002 alone never establishes account mode or PAPER readiness.
 
 ## Scenario execution semantics
 
