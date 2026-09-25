@@ -1104,6 +1104,104 @@ void TestSupervisorPeerCredentialAndLifecycle()
 	std::remove(journalPath.c_str());
 }
 
+// Real local HSS1 server and encrypted lease store, WATCH-only. There is
+// no Broker transport, PAPER session or order submission in this fixture.
+void TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation()
+{
+    char pattern[] = "/tmp/hepta-supervisor-audit-reserve-XXXXXX";
+    const char* created = ::mkdtemp(pattern); assert(created != nullptr);
+    const std::string root = created;
+    const std::string socketPath = root + "/supervisor.sock";
+    const std::string journalPath = root + "/oms";
+    const std::string storePath = root + "/leases";
+    const std::string auditPath = root + "/audit";
+    const std::string keyPath = TempKeyPath();
+    {
+        std::string reason;
+        SessionSupervisorLeaseStore store;
+        assert(store.Init(storePath, keyPath, reason));
+        SessionSupervisorAuditJournal audit(16384, 4096);
+        assert(audit.Init(auditPath, reason));
+        OmsJournal journal; assert(journal.Init(journalPath));
+        ExecutionCoordinator execution(journal, ExecutionCoordinatorCallbacks());
+        TradingToolRegistry registry(execution);
+        TradingToolHost host(registry);
+        TradingToolSessionControlPlane control(host,
+            [](const std::string& issuer, const TradingToolHostSessionBinding&, std::string&) {
+                return issuer == "hepta.os.uid";
+            });
+        UnixSessionSupervisorServer server(control);
+        server.SetLeaseStore(&store);
+        server.SetAuditJournal(&audit);
+        std::map<std::uint32_t, std::string> issuers;
+        issuers[static_cast<std::uint32_t>(::getuid())] = "hepta.os.uid";
+        assert(server.Start(socketPath, issuers,
+            [](const SessionSupervisorRequest& request, TradingToolHostSessionBinding& binding,
+               std::string&) {
+                if (request.templateId != "watch" || request.peerUid != ::getuid()) return false;
+                binding.token = request.token;
+                binding.peerUid = request.peerUid;
+                binding.session.executionContext.agentId = request.agentId;
+                binding.session.executionContext.sessionId = request.sessionId;
+                binding.session.executionContext.account = "SYNTHETIC";
+                binding.session.executionContext.venue = "SIM";
+                binding.session.environment = "WATCH";
+                binding.session.capabilities.insert("market.read");
+                binding.executionDomain = "SIM-AUDIT-RESERVE";
+                binding.expiresAtMs = OmsJournal::NowEpochMs() + request.ttlMs;
+                return true;
+            }, reason, 4096, 1000));
+        SessionSupervisorRequest provision;
+        provision.operation = SessionSupervisorOperation::Provision;
+        provision.templateId = "watch";
+        provision.token = "synthetic-audit-reserve-watch-token-0001";
+        provision.agentId = "synthetic-audit-agent";
+        provision.sessionId = "synthetic-audit-session";
+        provision.peerUid = ::getuid();
+        provision.ttlMs = 60000;
+        const auto initial = Call(socketPath, provision);
+        assert(initial.accepted && initial.leaseGeneration == 1);
+        SessionSupervisorLeaseRecord before, after;
+        assert(store.Get(provision.token, before));
+        SessionSupervisorRequest renew;
+        renew.operation = SessionSupervisorOperation::Renew;
+        renew.token = provision.token;
+        renew.expectedGeneration = 1;
+        renew.ttlMs = 120000;
+        unsigned records = 0;
+        while (audit.Append(renew, "hepta.os.uid", "intent", "pending", 1, reason))
+            assert(++records < 100);
+        assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+        const auto denied = Call(socketPath, renew);
+        assert(!denied.accepted);
+        assert(denied.ReasonCode() ==
+            "SUPERVISOR_AUDIT_INTENT_FAILED:SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+        assert(store.Get(provision.token, after));
+        assert(after.leaseGeneration == before.leaseGeneration);
+        assert(after.expiresAtMs == before.expiresAtMs);
+        TradingToolHostSessionBinding live;
+        assert(host.GetSession(provision.token, live));
+        assert(live.leaseGeneration == before.leaseGeneration && live.expiresAtMs == before.expiresAtMs);
+        SessionSupervisorRequest revoke;
+        revoke.operation = SessionSupervisorOperation::Revoke;
+        revoke.token = provision.token;
+        revoke.expectedGeneration = 1;
+        const auto exited = Call(socketPath, revoke);
+        assert(exited.accepted);
+        assert(store.List().empty() && host.SessionCount() == 0);
+        server.Stop();
+        SessionSupervisorLeaseStore reopened;
+        assert(reopened.Init(storePath, keyPath, reason));
+        assert(reopened.List().empty());
+        std::uint64_t auditRecords = 0;
+        assert(SessionSupervisorAuditJournal::Verify(auditPath, auditRecords, reason));
+        assert(auditRecords == records + 4); // provision + revoke intent/outcome pairs
+    }
+    for (const auto& path : {journalPath, storePath, auditPath, keyPath})
+        assert(::unlink(path.c_str()) == 0);
+    assert(::rmdir(root.c_str()) == 0);
+}
+
 void TestDurableLiveExpiryReap()
 {
 	const std::string journalPath = TempPath("/tmp/hepta-supervisor-reap-journal-XXXXXX");
@@ -4293,7 +4391,10 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--work-budget-only")
     { TestReapPagesAdvancePastUnexpiredOwners(); TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner();
       TestFailedPaperActivationRetainsOriginalWorkDeadline(); return 0; }
+    if (argc == 2 && std::string(argv[1]) == "--audit-reserve-only")
+    { TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation(); return 0; }
     assert(argc == 1);
+    TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation();
     TestFailedPaperActivationRetainsOriginalWorkDeadline();
     TestReapPagesAdvancePastUnexpiredOwners();
     TestSlowRecoveryOwnerDoesNotBlockUnrelatedOwner();
