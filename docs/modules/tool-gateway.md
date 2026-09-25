@@ -56,8 +56,12 @@ under the file lock; this is not isolation against a compromised same-UID proces
 rewriting through mmap or deliberately ignoring that protocol. Untrusted Agents
 must retain separate OS identities and no access to the audit directory. Its default active limit is 1 GiB. Routine observation stops consuming
 space at limit minus 32 MiB; new-risk/session-admission records stop at limit
-minus 16 MiB. Bound cancellation/flatten and Supervisor recovery/terminal records
-may use that final reserve, but cannot exceed the absolute limit. Classification
+minus 16 MiB. Session provision, renewal and rotation are all admission records;
+extending a lease cannot consume the exit reserve. Bound cancellation/flatten
+and the explicit Supervisor revoke/recovery/terminal operation set may use that
+final reserve, but cannot exceed the absolute limit. Unknown Supervisor
+operations are rejected before appending; new enum members do not inherit safety
+capacity implicitly. Classification
 comes from the trusted registry and peer/session binding, not client input.
 Unknown mutation records are conservatively admission-class, never observations.
 

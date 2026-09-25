@@ -127,6 +127,51 @@ void TestSameMetadataRewriteInvalidatesCache()
     }
 }
 
+// Journal-only synthetic fixture: no session server, credentials or Broker.
+void TestSupervisorAdmissionPreservesExitReserve()
+{
+    for (auto operation : {SessionSupervisorOperation::Provision,
+                           SessionSupervisorOperation::Renew,
+                           SessionSupervisorOperation::Rotate})
+    {
+        for (const char* phase : {"intent", "outcome"})
+        {
+            Fixture f; SessionSupervisorAuditJournal journal(16384, 4096);
+            std::string reason;
+            assert(journal.Init(f.path, reason));
+            SessionSupervisorRequest request;
+            request.operation = operation;
+            request.agentId = "synthetic-agent";
+            request.sessionId = "synthetic-session";
+            unsigned admitted = 0;
+            while (journal.Append(request, "fixture-issuer", phase, "accepted", 1, reason))
+                assert(++admitted < 100);
+            assert(admitted > 0);
+            if (reason != "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED")
+                std::cerr << "admission operation=" << static_cast<int>(operation)
+                          << " phase=" << phase << " reason=" << reason << std::endl;
+            assert(reason == "SUPERVISOR_AUDIT_EXIT_RESERVE_REQUIRED");
+            const auto bounded = journal.CapacitySnapshot();
+            assert(bounded.known && bounded.bytes <= 12288);
+            request.operation = SessionSupervisorOperation::Revoke;
+            assert(journal.Append(request, "fixture-issuer", "intent", "pending", 1, reason));
+            assert(journal.Append(request, "fixture-issuer", "outcome", "accepted", 1, reason));
+            VerifyCount(f.path, admitted + 2);
+        }
+    }
+}
+void TestUnknownSupervisorOperationCannotClaimSafetyCapacity()
+{
+    Fixture f; SessionSupervisorAuditJournal journal; std::string reason;
+    assert(journal.Init(f.path, reason));
+    SessionSupervisorRequest request;
+    request.operation = static_cast<SessionSupervisorOperation>(999);
+    assert(!journal.Append(request, "fixture-issuer", "intent", "pending", 1, reason));
+    assert(reason == "SUPERVISOR_AUDIT_OPERATION_INVALID");
+    assert(journal.CapacitySnapshot().bytes == 0);
+    VerifyCount(f.path, 0);
+}
+
 void TestCapacityAndExitReserve()
 {
     Fixture f; SessionSupervisorAuditJournal journal(16384, 4096); std::string reason;
@@ -274,6 +319,8 @@ void TestMissingAndCorruptHistory()
 int main()
 {
     TestSameMetadataRewriteInvalidatesCache();
+    TestSupervisorAdmissionPreservesExitReserve();
+    TestUnknownSupervisorOperationCannotClaimSafetyCapacity();
     TestCapacityAndExitReserve();
     TestSegmentsAndWriterHandoff();
     TestLegacyOnlySegmentsAndInitialPublication();

@@ -245,10 +245,31 @@ bool SessionSupervisorAuditJournal::Append(const SessionSupervisorRequest& reque
         "session_id=" + request.sessionId + "\n" +
         "lease_generation=" + std::to_string(leaseGeneration) +
         recoveryTarget;
-    const bool admission = request.operation == SessionSupervisorOperation::Provision ||
-        request.operation == SessionSupervisorOperation::Rotate;
-    return AppendRecord("session-supervisor", payload, reason,
-        admission ? RecordClass::Admission : RecordClass::Safety);
+    // Extending a lease authorizes more work; it must not spend the bytes
+    // reserved for revoke/recovery/terminal evidence. Keep the safety set
+    // explicit so a new or invalid operation cannot inherit that privilege.
+    RecordClass recordClass;
+    switch (request.operation)
+    {
+    case SessionSupervisorOperation::Provision:
+    case SessionSupervisorOperation::Renew:
+    case SessionSupervisorOperation::Rotate:
+        recordClass = RecordClass::Admission;
+        break;
+    case SessionSupervisorOperation::Revoke:
+    case SessionSupervisorOperation::RecoveryQuery:
+    case SessionSupervisorOperation::PaperFinalize:
+    case SessionSupervisorOperation::PaperFinalizeAck:
+    case SessionSupervisorOperation::PaperTerminalizeAck:
+    case SessionSupervisorOperation::PaperTerminalWitnessPrepare:
+    case SessionSupervisorOperation::PaperTerminalWitnessAck:
+        recordClass = RecordClass::Safety;
+        break;
+    default:
+        reason = "SUPERVISOR_AUDIT_OPERATION_INVALID";
+        return false;
+    }
+    return AppendRecord("session-supervisor", payload, reason, recordClass);
 }
 
 bool SessionSupervisorAuditJournal::AppendToolDecision(
