@@ -47,7 +47,14 @@ Gateway runtime configuration is immutable after startup. Session state is suppl
 The Gateway maintains bounded worker and request state only. Execution command truth remains in the Execution Service journal.
 
 The HJA2 audit retains synchronous mutation intent/outcome and Supervisor
-records. Its default active limit is 1 GiB. Routine observation stops consuming
+records. Active-chain caching requires unchanged file identity/metadata **and**
+a healthy inode-bound Linux change watch. Same-size writes within one filesystem
+timestamp tick invalidate it. Unsupported/failed/overflowed watches use complete
+active-chain verification instead of metadata-only trust. Existing full-chain
+verification and corruption tests remain unchanged. The supported writers append
+under the file lock; this is not isolation against a compromised same-UID process
+rewriting through mmap or deliberately ignoring that protocol. Untrusted Agents
+must retain separate OS identities and no access to the audit directory. Its default active limit is 1 GiB. Routine observation stops consuming
 space at limit minus 32 MiB; new-risk/session-admission records stop at limit
 minus 16 MiB. Bound cancellation/flatten and Supervisor recovery/terminal records
 may use that final reserve, but cannot exceed the absolute limit. Classification

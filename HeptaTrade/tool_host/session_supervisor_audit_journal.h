@@ -82,6 +82,8 @@ private:
                           std::string& previousHash,
                           std::uint64_t& chainedRecords,
                           std::string& reason);
+    void StartChangeWatch(int fd);
+    bool ConsumeChanges();
     static bool VerifyHistory(int activeFd, const std::string& path,
                               std::uint64_t& records, std::string& reason);
     enum class RecordClass { Observation, Admission, Safety };
@@ -93,6 +95,7 @@ private:
     std::uint64_t m_maximumBytes;
     std::uint64_t m_safetyReserveBytes;
     std::uint64_t m_observationsShed = 0;
+    int m_changeFd = -1;
     int m_fd;
     std::string m_path;
     std::string m_canonicalPath;

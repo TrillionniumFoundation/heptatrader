@@ -36,6 +36,32 @@ extern "C" int __wrap_rename(const char* from, const char* to)
     return result;
 }
 
+static bool failChangeWatch = false;
+extern "C" int __real_inotify_init1(int);
+extern "C" int __wrap_inotify_init1(int flags)
+{
+    if (failChangeWatch) { errno = EMFILE; return -1; }
+    return __real_inotify_init1(flags);
+}
+
+static bool maskTimes = false;
+static struct stat maskedIdentity;
+static void MaskTimes(struct stat* value)
+{
+    if (maskTimes && value->st_dev == maskedIdentity.st_dev && value->st_ino == maskedIdentity.st_ino)
+    { value->st_mtim = maskedIdentity.st_mtim; value->st_ctim = maskedIdentity.st_ctim; }
+}
+extern "C" int __real_fstat(int, struct stat*);
+extern "C" int __wrap_fstat(int fd, struct stat* value)
+{
+    const int result = __real_fstat(fd, value); if (!result) MaskTimes(value); return result;
+}
+extern "C" int __real_lstat(const char*, struct stat*);
+extern "C" int __wrap_lstat(const char* path, struct stat* value)
+{
+    const int result = __real_lstat(path, value); if (!result) MaskTimes(value); return result;
+}
+
 struct Fixture
 {
     std::string root, path;
@@ -79,6 +105,28 @@ void VerifyCount(const std::string& path, std::uint64_t expected)
     assert(SessionSupervisorAuditJournal::Verify(path, records, reason));
     assert(records == expected);
 }
+void TestSameMetadataRewriteInvalidatesCache()
+{
+    for (int unavailable = 0; unavailable < 2; ++unavailable)
+    {
+    Fixture f; SessionSupervisorAuditJournal journal; std::string reason;
+    failChangeWatch = unavailable != 0;
+    assert(journal.Init(f.path, reason));
+    failChangeWatch = false;
+    assert(journal.AppendToolDecision(Record("trade.place_order"), reason));
+    assert(::stat(f.path.c_str(), &maskedIdentity) == 0);
+    const int fd = ::open(f.path.c_str(), O_WRONLY | O_CLOEXEC); assert(fd >= 0);
+    assert(::pwrite(fd, "2", 1, 5) == 1); assert(::fsync(fd) == 0); ::close(fd);
+    // Force exactly the metadata collision observed on the real target. The
+    // ordinary pwrite still generates its actual kernel invalidation event.
+    maskTimes = true;
+    assert(!journal.AppendToolDecision(Record("trade.cancel_order"), reason));
+    maskTimes = false;
+    std::uint64_t count = 0;
+    assert(!SessionSupervisorAuditJournal::Verify(f.path, count, reason));
+    }
+}
+
 void TestCapacityAndExitReserve()
 {
     Fixture f; SessionSupervisorAuditJournal journal(16384, 4096); std::string reason;
@@ -225,6 +273,7 @@ void TestMissingAndCorruptHistory()
 }
 int main()
 {
+    TestSameMetadataRewriteInvalidatesCache();
     TestCapacityAndExitReserve();
     TestSegmentsAndWriterHandoff();
     TestLegacyOnlySegmentsAndInitialPublication();

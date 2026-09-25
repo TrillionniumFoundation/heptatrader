@@ -18,6 +18,7 @@
 #include <sys/syscall.h>
 #if defined(__linux__)
 #include <linux/fs.h>
+#include <sys/inotify.h>
 #endif
 
 namespace
@@ -77,6 +78,7 @@ SessionSupervisorAuditJournal::~SessionSupervisorAuditJournal()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     if (m_fd >= 0) ::close(m_fd);
+    if (m_changeFd >= 0) ::close(m_changeFd);
 }
 
 bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& reason)
@@ -166,6 +168,7 @@ bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& r
             }
         }
     }
+    if (ok) StartChangeWatch(fd);
     std::uint64_t archivedRecords = 0;
     if (ok) ok = VerifyHistory(fd, path, archivedRecords, reason);
     if (ok)
@@ -194,9 +197,13 @@ bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& r
         if (parentFd >= 0) ::close(parentFd);
         if (!synced) { reason = "SUPERVISOR_AUDIT_INIT_DIRECTORY_SYNC_FAILED"; ok = false; }
     }
+    if (ok && m_changeFd >= 0 && ConsumeChanges())
+    { reason = "SUPERVISOR_AUDIT_CONCURRENT_MODIFICATION"; ok = false; }
     if (locked) ::flock(fd, LOCK_UN);
     if (!ok)
     {
+        if (m_changeFd >= 0) ::close(m_changeFd);
+        m_changeFd = -1;
         ::close(fd);
         if (reason.empty())
             reason = saved == 0 ?
@@ -280,16 +287,20 @@ bool SessionSupervisorAuditJournal::AppendRecord(
     if (m_fd < 0) { reason = "SUPERVISOR_AUDIT_NOT_INITIALIZED"; return false; }
     if (::flock(m_fd, LOCK_EX) != 0) { reason = std::strerror(errno); return false; }
 
+    // Nanosecond stat fields can still share one filesystem timestamp tick.
+    // Kernel change notification invalidates the cache even for same-size,
+    // same-timestamp pwrite. Without a working watch, verify the entire active
+    // chain rather than treating metadata equality as proof of unchanged bytes.
+    if (ConsumeChanges()) m_cacheValid = false;
     FileState currentState;
     bool ok = ValidateOpenFile(currentState, reason);
     std::uint64_t nextSequence = m_nextSequence;
     std::uint64_t chainedRecords = m_chainedRecords;
     std::string previousHash = m_previousHash;
-    bool cacheStateVerified = ok && m_cacheValid &&
+    bool cacheStateVerified = ok && m_cacheValid && m_changeFd >= 0 &&
         SameFileState(currentState, m_fileState);
-    // Normal appends reuse the verified chain head.  Any peer writer,
-    // truncation, or same-size rewrite changes the observed file state and
-    // forces a full chain verification before another append is accepted.
+    // A cached chain requires both unchanged identity/metadata and an empty
+    // change stream. Kernel watch failure/overflow never grants cache trust.
     const bool fullVerificationRequired = ok && !cacheStateVerified;
     if (fullVerificationRequired)
     {
@@ -305,6 +316,8 @@ bool SessionSupervisorAuditJournal::AppendRecord(
             reason = "SUPERVISOR_AUDIT_CONCURRENT_MODIFICATION";
             ok = false;
         }
+        if (ok && m_changeFd >= 0 && ConsumeChanges())
+        { reason = "SUPERVISOR_AUDIT_CONCURRENT_MODIFICATION"; ok = false; }
         if (ok)
         {
             currentState = afterVerification;
@@ -394,6 +407,11 @@ bool SessionSupervisorAuditJournal::AppendRecord(
         ok = false;
     }
     const int saved = errno;
+    // Consume this writer's notification only after exact append readback and
+    // while still excluding cooperative peer writers. Changes after unlocking
+    // remain queued for the next admission. This is not isolation from a
+    // compromised same-UID writer ignoring the supported append-only protocol.
+    if (ok) ConsumeChanges();
     ::flock(m_fd, LOCK_UN);
     if (!ok)
     {
@@ -821,6 +839,59 @@ bool AuditAnchor(int fd, std::string& digest, std::uint64_t& records)
     digest = fields[1];
     return true;
 }
+}
+
+void SessionSupervisorAuditJournal::StartChangeWatch(int fd)
+{
+    if (m_changeFd >= 0) ::close(m_changeFd);
+    m_changeFd = -1;
+#if defined(__linux__)
+    const int watch = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    if (watch < 0) return;
+    // The proc descriptor path binds the watch to the already-validated inode,
+    // not a second lookup of a concurrently replaceable user-supplied path.
+    const std::string descriptor = "/proc/self/fd/" + std::to_string(fd);
+    if (::inotify_add_watch(watch, descriptor.c_str(),
+            IN_MODIFY | IN_ATTRIB | IN_DELETE_SELF | IN_MOVE_SELF | IN_CLOSE_WRITE) < 0)
+    { ::close(watch); return; }
+    m_changeFd = watch;
+#else
+    (void)fd;
+#endif
+}
+
+bool SessionSupervisorAuditJournal::ConsumeChanges()
+{
+#if defined(__linux__)
+    if (m_changeFd < 0) return false;
+    bool changed = false;
+    char buffer[4096];
+    for (unsigned pass = 0; pass < 16; ++pass)
+    {
+        const ssize_t count = ::read(m_changeFd, buffer, sizeof(buffer));
+        if (count < 0 && errno == EINTR) continue;
+        if (count < 0 && errno == EAGAIN) return changed;
+        if (count <= 0) break;
+        changed = true;
+        std::size_t offset = 0;
+        while (offset + sizeof(inotify_event) <= static_cast<std::size_t>(count))
+        {
+            inotify_event event;
+            std::memcpy(&event, buffer + offset, sizeof(event));
+            if (event.mask & (IN_IGNORED | IN_UNMOUNT | IN_Q_OVERFLOW))
+            { ::close(m_changeFd); m_changeFd = -1; return true; }
+            if (event.len > static_cast<std::size_t>(count) - offset - sizeof(event)) break;
+            offset += sizeof(event) + event.len;
+        }
+        if (offset != static_cast<std::size_t>(count)) break;
+    }
+    // Unavailable, malformed or persistently overflowing notification streams
+    // switch to full active-chain verification; they never silently enable cache.
+    ::close(m_changeFd); m_changeFd = -1;
+    return true;
+#else
+    return false;
+#endif
 }
 
 SessionSupervisorAuditCapacity SessionSupervisorAuditJournal::CapacitySnapshot() const

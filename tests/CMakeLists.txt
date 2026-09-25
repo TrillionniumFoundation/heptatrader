@@ -202,7 +202,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(hepta_audit_journal_lifecycle_tests audit_journal_lifecycle_tests.cpp)
     target_link_libraries(hepta_audit_journal_lifecycle_tests PRIVATE hepta_session_audit)
     target_link_options(hepta_audit_journal_lifecycle_tests PRIVATE
-        -Wl,--wrap=fsync -Wl,--wrap=fdatasync -Wl,--wrap=rename)
+        -Wl,--wrap=fsync -Wl,--wrap=fdatasync -Wl,--wrap=rename
+        -Wl,--wrap=fstat -Wl,--wrap=lstat -Wl,--wrap=inotify_init1)
     hepta_register_core_test(hepta_audit_journal_lifecycle_tests)
     set_tests_properties(hepta_audit_journal_lifecycle_tests PROPERTIES TIMEOUT 90)
 endif()
