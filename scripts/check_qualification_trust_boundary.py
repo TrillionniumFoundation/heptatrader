@@ -243,6 +243,14 @@ def validate_workflow(workflow: dict) -> list[str]:
                  "mutations must default to disabled")
         _require("defaults" not in workflow, "workflow-wide shell overrides require explicit review")
         _require(workflow.get("concurrency", {}).get("cancel-in-progress") is False, "do not cancel a running Broker campaign")
+        group = workflow.get("concurrency", {}).get("group", "")
+        _require(isinstance(group, str), "concurrency group must be an expression")
+        group = group.strip()
+        _require(group.startswith("${{") and group.endswith("}}"),
+                 "build-only work must not wait for Broker campaign approval")
+        _require(shlex.split(group[3:-2]) == ["inputs.mutation_mode", "&&",
+                 "heptatrader-ib-paper-qualification", "||", "heptatrader-ib-candidate-build"],
+                 "retain the legacy Broker mutex and separate the no-trade build queue")
         _require(workflow.get("permissions") == {"actions": "read", "contents": "read"}, "workflow credentials must remain read-only")
         _require("env" not in workflow, "workflow-wide environment overrides require explicit review")
         jobs = workflow.get("jobs", {})

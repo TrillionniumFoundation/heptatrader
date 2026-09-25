@@ -21,7 +21,11 @@ IB candidate build and synthetic probe tests. It does not allocate the PAPER
 runner, enter the Broker environment, run a campaign or issue qualification.
 `mutation_mode=true` adds the existing separately gated qualification job; a
 successful build alone never approves orders. This keeps compiler feedback
-independent from approval to exercise a real PAPER session.
+independent from approval to exercise a real PAPER session. Build-only dispatches
+also use their own concurrency group: an older PAPER campaign waiting for
+protected-environment approval cannot occupy the build queue. Real campaigns
+retain the original `heptatrader-ib-paper-qualification` group, including mutual
+exclusion with already-queued runs from older workflow revisions.
 
 The builder is `desktop-ib-builder`; the qualifier additionally requires the
 `desktop-ib-paper` runner label and exact runner name. Both retain the

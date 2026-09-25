@@ -54,6 +54,20 @@ class QualificationTrustBoundaryTests(unittest.TestCase):
                 self.assertFalse(admitted("qualify"))
                 values[key] = original
 
+    def test_no_trade_build_queue_is_independent_of_pending_broker_approval(self) -> None:
+        import shlex
+        expression = self.workflow["concurrency"]["group"]
+        tokens = shlex.split(expression.strip()[3:-2])
+        # The same boolean accepted by actual job admission selects these queues.
+        groups = {True: tokens[2], False: tokens[4]}
+        self.assertEqual(groups[True], "heptatrader-ib-paper-qualification")
+        self.assertNotEqual(groups[False], groups[True])
+        for expression in (None, False, [], "heptatrader-ib-paper-qualification",
+                           "${{ inputs.mutation_mode && 'heptatrader-ib-paper-qualification' || 'heptatrader-ib-paper-qualification' }}",
+                           "${{ inputs.mutation_mode && 'new-broker-mutex' || 'heptatrader-ib-candidate-build' }}"):
+            self.workflow["concurrency"]["group"] = expression
+            self.assert_rejected()
+
     def test_builder_approval_cannot_be_confused_with_broker_permission(self) -> None:
         self.workflow["jobs"]["qualify"]["if"] = self.workflow["jobs"]["build-candidate"]["if"]
         self.assert_rejected()
