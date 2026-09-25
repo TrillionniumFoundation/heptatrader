@@ -215,6 +215,7 @@ if ! timeout --signal=TERM --kill-after=30s 45m \
   cmake -S /src -B /build/work -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DBUILD_TESTING=OFF \
+    -DBUILD_IB_PROBE=ON \
     -DHEPTA_DOCUMENTATION_SOURCE_SHA="$EXPECTED_SHA" \
     -DHEPTA_ENABLE_IBAPI=ON \
     -DIBAPI_ROOT=/sdk \
@@ -226,9 +227,21 @@ if ! timeout --signal=TERM --kill-after=30s 45m \
 fi
 if ! timeout --signal=TERM --kill-after=30s 45m \
   "${COMMON_DOCKER[@]}" "$BUILDER_IMAGE" \
-  cmake --build /build/work --parallel 2 --target hepta_ib_executiond \
+  cmake --build /build/work --parallel 2 --target hepta_ib_executiond ib_connection_probe \
     >>"$BUILD_LOG" 2>&1; then
   printf 'candidate build failed; captured-log-sha256=%s\n' \
+    "$(sha256sum -- "$BUILD_LOG" | awk '{print $1}')" >&2
+  exit 70
+fi
+
+# Probe behavior uses the same SDK objects in the no-network candidate container.
+# Only a synthetic loopback peer is used; this does not inspect a Broker account.
+if ! timeout --signal=TERM --kill-after=5s 60s \
+  "${COMMON_DOCKER[@]}" "$BUILDER_IMAGE" \
+  python3 -I -B /src/tests/ib_connection_probe_behavior.py \
+    --probe /build/work/docs/ib_probe/ib_connection_probe \
+    >>"$BUILD_LOG" 2>&1; then
+  printf 'read-only probe behavior failed; captured-log-sha256=%s\n' \
     "$(sha256sum -- "$BUILD_LOG" | awk '{print $1}')" >&2
   exit 70
 fi

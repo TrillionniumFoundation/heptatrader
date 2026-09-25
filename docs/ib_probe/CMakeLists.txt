@@ -14,9 +14,23 @@ if(NOT TARGET hepta_ibapi_client)
     "IBAPI_ROOT and IBAPI_DECIMAL_LIBRARY used by the execution candidate")
 endif()
 
+find_package(Threads REQUIRED)
+
 add_executable(ib_connection_probe
   ${CMAKE_CURRENT_LIST_DIR}/../ib-connection-probe.cpp)
-target_link_libraries(ib_connection_probe PRIVATE hepta_ibapi_client)
+target_link_libraries(ib_connection_probe PRIVATE hepta_ibapi_client Threads::Threads)
 target_compile_features(ib_connection_probe PRIVATE cxx_std_17)
 
 message(STATUS "[ib_probe] reusing canonical hepta_ibapi_client")
+
+# Synthetic loopback server, real pinned SDK and diagnostic executable. No
+# Broker endpoint, account login, privileged identity or mutation is used.
+if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  add_test(NAME hepta_ib_connection_probe_behavior
+    COMMAND "${Python3_EXECUTABLE}"
+      "${CMAKE_CURRENT_LIST_DIR}/../../tests/ib_connection_probe_behavior.py"
+      --probe "$<TARGET_FILE:ib_connection_probe>")
+  set_tests_properties(hepta_ib_connection_probe_behavior PROPERTIES
+    LABELS "ib;connectivity" TIMEOUT 45)
+endif()

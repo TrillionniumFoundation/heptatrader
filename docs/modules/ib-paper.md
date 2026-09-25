@@ -3,7 +3,7 @@
 Status: QUALIFICATION_REQUIRED  
 Applies to: repository HEAD  
 Implementation: `HeptaTrade/adapter_ib`, `HeptaTrade/execution/hepta_ib_executiond.cpp`, `.github/workflows/ib-paper-qualification.yml`, `.github/workflows/self-hosted-ib-availability.yml`, `scripts/build_ib_candidate_artifact.sh`, `scripts/verify_ib_candidate_artifact.py`, `scripts/run_ib_paper_artifact_qualification.sh`, `scripts/verify_ib_paper_qualification.py`, `scripts/check_qualification_trust_boundary.py`, `scripts/hepta_broker_egress_policy.py`, `systemd/hepta-execution-ib-paper.service`, `systemd/hepta-broker-network-policy-v1.json`, `systemd/hepta-x230-paper-host-identity-map-v1.json`, `docs/ib-paper-profile-policy-v1.json`, `scripts/verify_canonical_ib_paper_profile.py`, `scripts/run_ib_paper_campaign.py`, `scripts/hepta_ib_runtime_report.py`
-Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`, `tests/python/test_exported_source_configure.py`, `tests/python/test_ib_runtime_observation.py`
+Tests: `tests/ib_order_lifecycle_tests.cpp`, `tests/ib_paper_kill_switch_tests.cpp`, `tests/ib_paper_execution_profile_tests.cpp`, `tests/ib_live_terminal_reconciliation_tests.cpp`, `tests/execution_coordinator_tests.cpp`, `tests/python/test_canonical_ib_paper_profile.py`, `tests/python/test_ib_paper_qualification.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_paper_campaign_evidence.py`, `tests/python/test_paper_evidence_publication.py`, `tests/python/test_campaign_provenance.py`, `tests/python/test_exported_source_configure.py`, `tests/python/test_ib_runtime_observation.py`, `tests/ib_connection_probe_behavior.py`
 
 ## Scope
 
@@ -138,3 +138,48 @@ The adapter returns [typed cancellation results](../technical/venue-cancellation
 ## Authoritative-flatten result boundary
 
 [Typed flatten results](../technical/venue-flatten-contract.md) retain the existing position/quote/kill-switch checks while removing the unlocked mutable error read. SDK-entry false returns and exceptions remain uncertain; allocation failure in post-send duplicate-signature construction no longer silently reports success. Synthetic adapter regressions are not real SDK/Broker qualification.
+
+## Read-only connectivity diagnostic
+
+The optional `ib_connection_probe` is a diagnostic, not an execution or
+qualification entry point. Build it from the root with `BUILD_IB_PROBE=ON`,
+`HEPTA_ENABLE_IBAPI=ON` and the same explicit SDK/BID inputs as the candidate.
+It reuses `hepta_ibapi_client`; no alternate SDK source inventory is maintained.
+
+```sh
+cmake --build build/ib --target ib_connection_probe --parallel 2
+build/ib/docs/ib_probe/ib_connection_probe 127.0.0.1 4002 101 8000
+ctest --test-dir build/ib -R '^hepta_ib_connection_probe_behavior$' --output-on-failure --no-tests=error
+```
+
+The positional arguments are loopback host, port, positive client ID and total
+milliseconds (default 8000, maximum 30000). Client ID zero, non-loopback hosts,
+malformed numeric input and conventional LIVE ports 4001/7496 reject before
+connecting. An alternate local port may serve a synthetic fixture or a separately
+configured PAPER endpoint; its number does not verify the account mode.
+
+One monotonic process deadline starts before `eConnect` and covers negotiation,
+startup callbacks, the read request and SDK cleanup. A stalled SDK terminates
+this isolated read-only process; the same design must not be copied into a
+possibly-effectful order daemon. Normal success requires a nonnegative next ID,
+nonempty managed-account callback and a response to the subsequent current-time
+request. No order, cancel, account mutation or subscription is sent. This is a
+small connectivity observation, not a proof of account-wide economic state.
+
+Output is one `heptatrader.ib-connectivity.v1` JSON object. It contains fixed
+reason/status vocabulary, callback-presence flags and a numeric SDK error code,
+not account IDs, order IDs, raw Broker error text or credentials. Exit status is
+0 for a completed read-only round trip, 2 for deadline expiry, 64 for arguments,
+and another nonzero value for connection/disconnection/SDK failure. Every record
+retains `broker_mode_verified=false`, `paper_authorized=false`,
+`live_authorized=false` and `broker_mutations=0`. A port listener or READY result
+cannot replace the independently pinned external PAPER campaign.
+
+The real SDK-linked executable is tested against a synthetic fragmented local
+peer, stalled negotiation, partial startup, missing read response, disconnects,
+invalid arguments and secret-canary callback text. The optional CTest entry is
+registered only in the SDK-enabled probe build; the no-secret candidate builder
+runs the same behavior test inside its existing network-isolated container before
+packaging. Ordinary SDK-free core builds are unchanged. Deployment must run the
+diagnostic under an already authorized host identity; it does not change UID,
+firewall policy, kill-switch state or Broker credentials to gain access.
