@@ -80,8 +80,10 @@ An active empty anchor makes a retry idempotent but still syncs its directory.
 Failure before active replacement leaves the old file authoritative. Failure
 of directory sync after replacement is reported as publication-indeterminate;
 retry/verify the same state, never restore an older audit. Startup rejects a
-missing or corrupt referenced segment and a missing active file beside retained
-segments. Crash leftovers are not automatic deletion candidates. Backup/restore
+missing or corrupt referenced segment and a missing/empty active file beside
+retained segments. Legacy-only bytes can be sealed with zero HJA2 records; zero
+is not permission to discard those bytes. Initial open also synchronizes the
+parent directory before reporting readiness. Crash leftovers are not automatic deletion candidates. Backup/restore
 must preserve the active file and the entire `.segments` directory together.
 Older binaries that merely treat HJA3 as legacy text are **not** compatible
 verifiers after segmentation. There is no automatic online rotation or pruning.

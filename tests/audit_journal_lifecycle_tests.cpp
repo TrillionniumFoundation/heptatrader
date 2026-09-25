@@ -136,6 +136,29 @@ void TestSegmentsAndWriterHandoff()
     assert(next.AppendToolDecision(Record("system.get_health"), reason));
     VerifyCount(f.path, 3);
 }
+void TestLegacyOnlySegmentsAndInitialPublication()
+{
+    Fixture f; std::string reason;
+    SessionSupervisorAuditJournal failed;
+    failSyncAt = 2; // File sync succeeds, initial parent-directory sync fails.
+    assert(!failed.Init(f.path, reason));
+    assert(reason == "SUPERVISOR_AUDIT_INIT_DIRECTORY_SYNC_FAILED");
+    { std::ofstream legacy(f.path.c_str()); legacy << "retained-legacy-audit-record\n"; }
+    assert(SessionSupervisorAuditJournal::SealSegment(f.path, reason));
+    assert(Read(f.path).find("HJA3\t") == 0);
+    VerifyCount(f.path, 0); // Legacy bytes are retained but are not HJA2 records.
+    SessionSupervisorAuditJournal current;
+    assert(current.Init(f.path, reason));
+    assert(current.AppendToolDecision(Record("trade.cancel_order"), reason));
+    VerifyCount(f.path, 1);
+    assert(SessionSupervisorAuditJournal::SealSegment(f.path, reason));
+    VerifyCount(f.path, 1);
+    assert(::truncate(f.path.c_str(), 0) == 0);
+    SessionSupervisorAuditJournal empty;
+    assert(!empty.Init(f.path, reason));
+    assert(reason == "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_EMPTY");
+}
+
 void TestSyncFailuresAndRetry()
 {
     Fixture f; std::string reason; SessionSupervisorAuditJournal journal;
@@ -199,6 +222,7 @@ int main()
 {
     TestCapacityAndExitReserve();
     TestSegmentsAndWriterHandoff();
+    TestLegacyOnlySegmentsAndInitialPublication();
     TestSyncFailuresAndRetry();
     TestCrashCuts();
     TestMissingAndCorruptHistory();

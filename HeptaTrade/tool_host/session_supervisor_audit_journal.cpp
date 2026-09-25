@@ -109,6 +109,12 @@ bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& r
         reason = "SUPERVISOR_AUDIT_UNSAFE_FILE";
         ok = false;
     }
+    else if (metadata.st_size == 0 &&
+        (::lstat((path + ".segments").c_str(), &existingHistory) == 0 || errno != ENOENT))
+    {
+        reason = "SUPERVISOR_AUDIT_SEGMENT_ACTIVE_EMPTY";
+        ok = false;
+    }
     else if (::realpath(path.c_str(), canonical) == nullptr)
     {
         reason = "SUPERVISOR_AUDIT_REALPATH_FAILED";
@@ -174,6 +180,19 @@ bool SessionSupervisorAuditJournal::Init(const std::string& path, std::string& r
             reason = "SUPERVISOR_AUDIT_CONCURRENT_MODIFICATION";
             ok = false;
         }
+    }
+    if (ok)
+    {
+        // A synchronized file is not durably named until its parent directory
+        // is synchronized too. Retry this on every successful open, including
+        // recovery after an earlier failed initial publication.
+        const auto slash = path.rfind('/');
+        const std::string parent = slash == std::string::npos ? "." :
+            (slash == 0 ? "/" : path.substr(0, slash));
+        const int parentFd = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        const bool synced = parentFd >= 0 && ::fsync(parentFd) == 0;
+        if (parentFd >= 0) ::close(parentFd);
+        if (!synced) { reason = "SUPERVISOR_AUDIT_INIT_DIRECTORY_SYNC_FAILED"; ok = false; }
     }
     if (locked) ::flock(fd, LOCK_UN);
     if (!ok)
@@ -797,7 +816,7 @@ bool AuditAnchor(int fd, std::string& digest, std::uint64_t& records)
     if (end == std::string::npos) return false;
     const auto fields = SplitTabs(prefix.substr(0, end));
     if (fields.size() != 3 || fields[0] != "HJA3" ||
-        !IsLowerHex(fields[1], 64) || !ParseUnsigned(fields[2], records) || records == 0)
+        !IsLowerHex(fields[1], 64) || !ParseUnsigned(fields[2], records))
         return false;
     digest = fields[1];
     return true;
@@ -879,7 +898,14 @@ bool SessionSupervisorAuditJournal::SealSegment(const std::string& path, std::st
     std::string previous;
     if (!VerifyHistory(source.fd, path, archived, reason) ||
         !LoadChain(source.fd, before.st_size, next, previous, local, reason)) return false;
-    if (local == 0)
+    std::string activePredecessor;
+    std::uint64_t activePredecessorCount = 0;
+    if (!AuditAnchor(source.fd, activePredecessor, activePredecessorCount))
+    { reason = "SUPERVISOR_AUDIT_SEGMENT_ANCHOR_INVALID"; return false; }
+    const std::string currentAnchor = "HJA3\t" + activePredecessor + "\t" +
+        std::to_string(activePredecessorCount) + "\n";
+    if (local == 0 && (before.st_size == 0 ||
+        (!activePredecessor.empty() && static_cast<std::uint64_t>(before.st_size) == currentAnchor.size())))
     {
         // Retrying a published-but-unsynced anchor must complete directory
         // durability instead of turning the no-op into an unearned success.
