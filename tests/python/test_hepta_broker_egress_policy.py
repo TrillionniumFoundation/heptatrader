@@ -270,6 +270,10 @@ class BrokerEgressRulesetTests(unittest.TestCase):
             def replacing_parent(descriptor: int) -> bytes:
                 nonlocal replaced
                 raw = original(descriptor)
+                # Inject one namespace swap. A confirmation read must observe
+                # the already-swapped namespace, not replay the injector itself.
+                if replaced:
+                    return raw
                 original_parent.rename(displaced)
                 original_parent.mkdir()
                 original_parent.chmod(0o755)
