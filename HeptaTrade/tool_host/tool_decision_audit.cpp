@@ -124,8 +124,10 @@ bool ToolDecisionAudit::Append(
     record.peerCredentialAvailable = peerCredentialAvailable;
     record.peerUid = peerUid;
     record.daemonIdentity = "hepta-unix-tool-gateway/v1";
-    if (binding != nullptr && peerCredentialAvailable && binding->peerUid == peerUid)
+    if (binding != nullptr)
     {
+        // Preserve the observed peer and the presented server-side owner even
+        // on a denied call. Do not erase audit identity to encode privilege.
         record.executionDomain = binding->executionDomain;
         record.agentId = binding->session.executionContext.agentId;
         record.sessionId = binding->session.executionContext.sessionId;
@@ -144,6 +146,23 @@ bool ToolDecisionAudit::Append(
             reason = "TOOL_DECISION_FINGERPRINT_FAILED";
             return false;
         }
+    }
+    if (mutation && request != nullptr && binding != nullptr &&
+        peerCredentialAvailable && binding->peerUid == peerUid && binding->enabled)
+    {
+        const auto& session = binding->session;
+        const bool exitProfile = session.environment == "PAPER" ||
+            session.environment == "LIVE_CAPPED" ||
+            session.environment == "LIVE_REDUCE_ONLY";
+        const char* capability = request->call.name == "trade.cancel_order" ?
+            "trade.cancel" : (request->call.name == "trade.flatten_position" ?
+            "trade.flatten" : nullptr);
+        record.safetyReserveEligible = exitProfile && capability != nullptr &&
+            session.capabilities.count(capability) != 0;
+        // Use the request's captured binding for both intent and outcome.
+        // Recovery-only exits retain capacity, and expiry/revocation while an
+        // admitted effect runs cannot erase its outcome audit. Currentness,
+        // schema, ownership and final risk remain the Host/Execution checks.
     }
     record.phase = phase;
     record.outcome = outcome;

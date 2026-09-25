@@ -12,6 +12,9 @@ struct ToolDecisionAuditRecord
 {
     // Only the trusted registry classification may mark a routine observation.
     bool observational = false;
+    // Trusted Gateway classification only, never a wire field or execution
+    // permission. Missing eligibility must not consume the exit reserve.
+    bool safetyReserveEligible = false;
     bool peerCredentialAvailable = false;
     std::uint32_t peerUid = 0;
     std::string daemonIdentity;

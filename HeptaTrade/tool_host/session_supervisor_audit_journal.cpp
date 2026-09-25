@@ -293,7 +293,9 @@ bool SessionSupervisorAuditJournal::AppendToolDecision(
         "outcome=" + record.outcome + "\n" +
         "reason_code=" + record.reasonCode;
     const bool observation = record.observational && record.phase == "outcome";
-    const bool boundExit = !observation && record.peerCredentialAvailable && !record.agentId.empty() &&
+    const bool boundExit = record.safetyReserveEligible && !record.observational &&
+        (record.phase == "intent" || record.phase == "outcome") &&
+        record.peerCredentialAvailable && !record.agentId.empty() &&
         !record.sessionId.empty() && (record.toolName == "trade.cancel_order" ||
         record.toolName == "trade.flatten_position");
     return AppendRecord("tool-decision", payload, reason,
