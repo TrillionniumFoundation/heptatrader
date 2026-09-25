@@ -17,11 +17,22 @@ OFFLINE_PATHS = frozenset(
     for prefix, suffix in (("src", ".cpp"), ("include/hepta/research", ".h"))
 )
 
+# These tests link only the existing offline Data/Analytics/Replay/Strategy
+# libraries. Do not exempt tests/research as a directory: it also contains real
+# Gateway/Execution, process-recovery and installed-package acceptance.
+OFFLINE_TEST_PATHS = frozenset({
+    "tests/research/market_data_tests.cpp",
+    "tests/research/analytics_tests.cpp",
+    "tests/research/replay_tests.cpp",
+    "tests/research/replay_model_cases.h",
+})
+
 def needs_acceptance(paths: list[str], event: str) -> bool:
     if event != "pull_request" or not paths:
         return True
     def safe(path: str) -> bool:
-        return (path in OFFLINE_PATHS or path == "README.md" or
+        return (path in OFFLINE_PATHS or path in OFFLINE_TEST_PATHS or
+                path == "README.md" or
                 (path.startswith("docs/") and path.endswith(".md")) or
                 path.startswith(("doc/", "pic/")))
     return not all(safe(path) for path in paths)

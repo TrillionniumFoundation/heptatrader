@@ -110,8 +110,12 @@ A pull request whose changed paths are confined to `README.md`, Markdown under `
 or `pic/` still runs the complete source-truth/documentation partition, but skips
 the Prometheus/Alertmanager process chain. The same narrow exemption applies to
 exact Data/Analytics/Replay/Strategy computation files and their declared public
-headers. Native clients, build/package graphs, unknown research paths and mixed
-changes retain monitoring acceptance. The complete NUL-delimited Git diff must
+headers. The four existing offline regression files (`market_data_tests.cpp`,
+`analytics_tests.cpp`, `replay_tests.cpp`, and `replay_model_cases.h` under
+`tests/research/`) share this exemption, including when changed with their
+algorithm. The exemption never skips their native tests. Native clients,
+build/package graphs, installed-SDK and process tests, unknown research paths
+and mixed changes retain monitoring and release acceptance. The complete NUL-delimited Git diff must
 succeed before an exemption is considered; filenames cannot inject another row. Pushes, merge candidates and any source,
 script, systemd, monitoring or workflow change retain that process acceptance.
 The same classifier now scopes installed release acceptance; policy JSON remains full-scope. Skipping an unrelated process chain does not inherit or manufacture monitoring

@@ -154,6 +154,37 @@ class MonitoringScopeWorkflowTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(value, "required=true")
 
+    def test_offline_algorithm_and_its_regressions_do_not_trigger_host_acceptance(self):
+        for source, test in (
+                ("research/src/market_data.cpp", "tests/research/market_data_tests.cpp"),
+                ("research/src/analytics.cpp", "tests/research/analytics_tests.cpp"),
+                ("research/src/replay.cpp", "tests/research/replay_tests.cpp"),
+                ("research/src/replay.cpp", "tests/research/replay_model_cases.h")):
+            for paths in ((source, test), (test,)):
+                with self.subTest(paths=paths):
+                    result, value = self.run_scope(paths)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(value, "required=false")
+
+    def test_native_install_unknown_and_mixed_test_changes_keep_host_acceptance(self):
+        for test in ("tests/research/native_client_tests.cpp",
+                     "tests/research/native_execution_tests.cpp",
+                     "tests/research/native_sdk_package_behavior.py",
+                     "tests/research/sdk_package_behavior.py",
+                     "tests/research/new_tests.cpp",
+                     "tests/CMakeLists.txt",
+                     "tests/python/test_installed_runtime_processes.py"):
+            with self.subTest(test=test):
+                result, value = self.run_scope(("tests/research/replay_tests.cpp", test))
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(value, "required=true")
+
+    def test_main_and_merge_keep_full_acceptance_for_offline_test_changes(self):
+        for event in ("push", "merge_group"):
+            result, value = self.run_scope("tests/research/replay_tests.cpp", event=event)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(value, "required=true")
+
     def test_failed_base_resolution_never_grants_exemption(self):
         result, value = self.run_scope("docs/change.md", invalid_base=True)
         self.assertNotEqual(result.returncode, 0)
