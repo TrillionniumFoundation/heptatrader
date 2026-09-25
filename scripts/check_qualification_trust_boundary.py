@@ -131,6 +131,7 @@ EXPECTED_ADMISSION = admission_terms(
     "github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && "
     "github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && "
     "inputs.mutation_mode == true && inputs.candidate_sha == github.sha")
+BUILDER_ADMISSION = EXPECTED_ADMISSION - admission_terms("inputs.mutation_mode == true")
 
 
 def simple_commands(text: str) -> list[tuple[str, ...]]:
@@ -248,8 +249,9 @@ def validate_workflow(workflow: dict) -> list[str]:
         _require(set(jobs) == {"build-candidate", "qualify"}, "unexpected qualification jobs")
         for name, role in (("build-candidate", "heptatrader-ib-builder"), ("qualify", "heptatrader-ib-paper")):
             job = jobs[name]
-            _require(admission_terms(job.get("if")) == EXPECTED_ADMISSION,
-                     "immutable owner dispatch authority and exact dispatch-main candidate are required")
+            expected_admission = BUILDER_ADMISSION if name == "build-candidate" else EXPECTED_ADMISSION
+            _require(admission_terms(job.get("if")) == expected_admission,
+                     "exact owner/source admission is required; only Broker execution requires mutation approval")
             _require("defaults" not in job and job.get("continue-on-error", False) is False, "job failure must remain fatal")
             labels = ["self-hosted", "linux", "x64", role]
             if name == "qualify":
@@ -276,7 +278,8 @@ def validate_workflow(workflow: dict) -> list[str]:
                 if "uses" in step:
                     action, separator, revision = step["uses"].partition("@")
                     _require(bool(separator) and ACTION_SHA.fullmatch(revision) is not None, "actions must be SHA-pinned")
-                    action_roles = ({"upload-candidate": "actions/upload-artifact"}
+                    action_roles = ({"upload-candidate": "actions/upload-artifact",
+                                     "upload-build-diagnostics": "actions/upload-artifact"}
                                     if name == "build-candidate" else {
                                         "download-candidate": "actions/download-artifact",
                                         "attest-ib-paper-receipt": "actions/attest",
@@ -314,6 +317,21 @@ def validate_workflow(workflow: dict) -> list[str]:
                 _require(upload_index > after and candidate_upload.get("uses", "").startswith("actions/upload-artifact@"), "candidate upload must follow post-build verification")
                 _require(candidate_upload.get("with", {}).get("name") == "ib-paper-candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}", "candidate publication must bind the same run and attempt")
                 _require(candidate_upload.get("with", {}).get("path") == "${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar", "candidate upload must not include source or private files")
+                diagnostics = [(i, s) for i, s in enumerate(steps)
+                               if s.get("id") == "upload-build-diagnostics"]
+                _require(len(diagnostics) == 1, "bounded build diagnostics must be retained")
+                diagnostic_index, diagnostic_upload = diagnostics[0]
+                _require(diagnostic_index > build and
+                         diagnostic_upload.get("uses", "").startswith("actions/upload-artifact@") and
+                         diagnostic_upload.get("if") in ("always()", "${{ always() }}"),
+                         "build failures must retain their diagnostic log")
+                prefix = "${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar.diagnostics/"
+                _require(set(diagnostic_upload.get("with", {}).get("path", "").splitlines()) ==
+                         {prefix + "build-status.json", prefix + "candidate-build.log"},
+                         "builder diagnostics must not upload the workspace or host files")
+                _require(diagnostic_upload.get("with", {}).get("name") ==
+                         "ib-builder-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}",
+                         "builder diagnostics must identify the exact source/run/attempt")
             else:
                 _require(job.get("needs") in ("build-candidate", ["build-candidate"]), "qualification must depend on candidate build")
                 _require(job.get("environment") == "ib-paper", "protected ib-paper environment is required")

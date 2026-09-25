@@ -89,28 +89,47 @@ docker image inspect --format '{{json .RepoDigests}}' "$BUILDER_IMAGE" \
 
 WORK_ROOT="$(mktemp -d --tmpdir="$QUOTA_ROOT" .hepta-ib-build.XXXXXX)"
 chmod 0700 "$WORK_ROOT"
+BUILD_LOG="$WORK_ROOT/candidate-build.log"
+BUILD_PHASE=setup
 cleanup() {
-  if [[ -n "${WORK_ROOT:-}" && -d "$WORK_ROOT" ]]; then
-    # Source and SDK snapshots are intentionally made read-only before the
-    # untrusted build. Restore only their owner's permissions so the trusted
-    # wrapper can remove its private quota-directory workspace on every exit.
-    chmod -R u+rwX -- "$WORK_ROOT" 2>/dev/null || true
-    rm -rf -- "$WORK_ROOT"
+  local result=$?
+  trap - EXIT INT TERM HUP
+  # Preserve the actual compiler/probe error before removing the private quota
+  # workspace. This is inert debugging output, not a Broker qualification result.
+  if ! python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_artifact.py" diagnostics \
+      --build-log "$BUILD_LOG" --candidate-sha "$EXPECTED_SHA" \
+      --phase "$BUILD_PHASE" --exit-code "$result" \
+      --output "$ARTIFACT_OUTPUT.diagnostics"; then
+    echo "builder diagnostics could not be retained" >&2
+    # Debug output does not change build success or authorize Broker work.
   fi
+  if [[ -n "${WORK_ROOT:-}" && -d "$WORK_ROOT" ]]; then
+    chmod -R u+rwX -- "$WORK_ROOT" 2>/dev/null || true
+    if ! rm -rf -- "$WORK_ROOT"; then
+      echo "builder quota workspace cleanup failed" >&2
+      if [[ "$result" == 0 ]]; then result=74; fi
+    fi
+  fi
+  exit "$result"
 }
-trap cleanup EXIT INT TERM HUP
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 SOURCE_ROOT="$WORK_ROOT/source"
 SDK_SNAPSHOT="$WORK_ROOT/sdk"
 BUILD_ROOT="$WORK_ROOT/build"
 HOME_ROOT="$WORK_ROOT/home"
 mkdir -m 0700 "$SOURCE_ROOT" "$BUILD_ROOT" "$HOME_ROOT"
 
+BUILD_PHASE=source
 env -u GIT_DIR -u GIT_WORK_TREE -u GIT_CONFIG -u GIT_CONFIG_GLOBAL \
   -u GIT_CONFIG_SYSTEM git -C "$CANDIDATE_ROOT" archive --format=tar "$EXPECTED_SHA" \
   | tar --extract --directory "$SOURCE_ROOT" --no-same-owner --no-same-permissions
 chmod -R a-w "$SOURCE_ROOT"
 SOURCE_TREE_SHA256="$(python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_artifact.py" hash-tree --root "$SOURCE_ROOT")"
 
+BUILD_PHASE=sdk
 SDK_SOURCE_BEFORE="$(python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_artifact.py" hash-tree --root "$SDK_ROOT")"
 SDK_SNAPSHOT_SHA256="$(python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_artifact.py" snapshot-tree \
   --source "$SDK_ROOT" --destination "$SDK_SNAPSHOT")"
@@ -181,6 +200,7 @@ COMMON_DOCKER=(
   --workdir /build
 )
 
+BUILD_PHASE=toolchain
 TOOLCHAIN_RAW="$WORK_ROOT/toolchain.txt"
 "${COMMON_DOCKER[@]}" "$BUILDER_IMAGE" /bin/sh -ceu '
   for tool in cmake ninja c++ g++ clang++ ld; do
@@ -207,7 +227,7 @@ BUILDER_BUNDLE_SHA256="$(python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_arti
   --output "$PROVENANCE")"
 [[ "$BUILDER_BUNDLE_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 70
 
-BUILD_LOG="$WORK_ROOT/candidate-build.log"
+BUILD_PHASE=configure
 : > "$BUILD_LOG"
 chmod 0600 "$BUILD_LOG"
 if ! timeout --signal=TERM --kill-after=30s 45m \
@@ -225,6 +245,7 @@ if ! timeout --signal=TERM --kill-after=30s 45m \
     "$(sha256sum -- "$BUILD_LOG" | awk '{print $1}')" >&2
   exit 70
 fi
+BUILD_PHASE=compile
 if ! timeout --signal=TERM --kill-after=30s 45m \
   "${COMMON_DOCKER[@]}" "$BUILDER_IMAGE" \
   cmake --build /build/work --parallel 2 --target hepta_ib_executiond ib_connection_probe \
@@ -236,6 +257,7 @@ fi
 
 # Probe behavior uses the same SDK objects in the no-network candidate container.
 # Only a synthetic loopback peer is used; this does not inspect a Broker account.
+BUILD_PHASE=probe
 if ! timeout --signal=TERM --kill-after=5s 60s \
   "${COMMON_DOCKER[@]}" "$BUILDER_IMAGE" \
   python3 -I -B /src/tests/ib_connection_probe_behavior.py \
@@ -246,6 +268,7 @@ if ! timeout --signal=TERM --kill-after=5s 60s \
   exit 70
 fi
 
+BUILD_PHASE=integrity
 SDK_SNAPSHOT_AFTER="$(python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_artifact.py" hash-tree --root "$SDK_SNAPSHOT")"
 [[ "$SDK_SNAPSHOT_AFTER" == "$SDK_SNAPSHOT_SHA256" ]] || {
   echo "immutable SDK snapshot changed during candidate build" >&2
@@ -262,6 +285,7 @@ BINARY="$(realpath -e -- "${BINARIES[0]}")"
 case "$BINARY" in "$BUILD_ROOT"/work/*) ;; *) exit 66 ;; esac
 [[ -f "$BINARY" && ! -L "$BINARY" ]] || exit 66
 
+BUILD_PHASE=package
 python3 "$TRUSTED_ROOT/scripts/verify_ib_candidate_artifact.py" pack \
   --binary "$BINARY" \
   --candidate-sha "$EXPECTED_SHA" \
@@ -273,3 +297,5 @@ chmod 0600 "$ARTIFACT_OUTPUT"
 printf 'candidate artifact created: artifact_sha256=%s candidate=%s sdk=%s builder=%s image=%s\n' \
   "$(sha256sum -- "$ARTIFACT_OUTPUT" | awk '{print $1}')" \
   "$EXPECTED_SHA" "$SDK_SNAPSHOT_SHA256" "$BUILDER_BUNDLE_SHA256" "$BUILDER_IMAGE"
+
+BUILD_PHASE=completed

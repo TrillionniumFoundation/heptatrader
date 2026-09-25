@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       mutation_mode:
-        description: Explicitly approve the bounded real PAPER campaign
+        description: false builds/tests only; true also approves the bounded PAPER campaign
         required: true
         type: boolean
         default: false
@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   build-candidate:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.candidate_sha == github.sha
     name: ib-paper-candidate-artifact-build
     runs-on:
       group: trillionnium-ib-paper
@@ -100,6 +100,19 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
+
+
+      - name: Retain bounded compiler and probe diagnostics
+        id: upload-build-diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ib-builder-diagnostics-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar.diagnostics/build-status.json
+            ${{ runner.temp }}/ib-paper-candidate-${{ github.sha }}.tar.diagnostics/candidate-build.log
+          if-no-files-found: warn
+          retention-days: 14
 
   qualify:
     if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.repository == 'TrillionniumFoundation/heptatrader' && github.actor == 'ProfHepta' && github.actor_id == 102159240 && github.triggering_actor == 'ProfHepta' && inputs.mutation_mode == true && inputs.candidate_sha == github.sha

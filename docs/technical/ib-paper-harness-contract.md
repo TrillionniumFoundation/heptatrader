@@ -16,6 +16,13 @@ The qualification workflow has two distinct principals:
 1. a no-secret builder produces and verifies an immutable candidate artifact from the exact `main` revision selected at owner-authorized workflow dispatch;
 2. the dedicated `desktop-ib-paper` runner executes only that verified candidate through an independently pinned qualifier on the desktop.
 
+A dispatch with `mutation_mode=false` runs only the exact-source, network-disabled
+IB candidate build and synthetic probe tests. It does not allocate the PAPER
+runner, enter the Broker environment, run a campaign or issue qualification.
+`mutation_mode=true` adds the existing separately gated qualification job; a
+successful build alone never approves orders. This keeps compiler feedback
+independent from approval to exercise a real PAPER session.
+
 The builder is `desktop-ib-builder`; the qualifier additionally requires the
 `desktop-ib-paper` runner label and exact runner name. Both retain the
 `trillionnium-ib-paper` group and their distinct existing role labels.
@@ -24,6 +31,17 @@ The generic desktop runner and X230 are not fallback qualification hosts.
 The requested candidate SHA must equal the dispatch event's immutable `github.sha` before either self-hosted runner is allocated. That converts a moving branch pointer into an immutable source/artifact identity at admission. Once the candidate artifact exists, later movement of `refs/heads/main` is intentionally irrelevant to that campaign: it cannot change the source SHA, executable digest, harness, profile, Broker account, host or evidence already bound to the qualification subject. A changed bound input requires a new campaign.
 
 Candidate code must not inherit Actions credentials, repository write credentials or raw Broker credentials. The qualifier is responsible for Broker login/session custody and for constraining candidate networking to the approved PAPER path.
+
+
+Build/probe errors retain `build-status.json` and at most the final 1 MiB of
+`candidate-build.log` in the run/attempt-bound builder diagnostics artifact,
+before the private build workspace is removed. The status reports the phase,
+exit code, full log byte count, truncation and the retained slice's digest.
+Candidate log text is never replayed into the Actions command stream; source trees,
+SDK directories and host environment dumps are not uploaded. These diagnostic files
+are not a qualification receipt; failure to retain diagnostics warns without
+changing the compiler/build exit status. Failures before the private workspace exists
+remain explicit step errors and may have no diagnostic artifact.
 
 ## Invocation contract
 
