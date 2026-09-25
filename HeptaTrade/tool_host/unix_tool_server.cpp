@@ -483,7 +483,7 @@ void UnixToolServer::DecodeAndQueue(int clientFd)
             pending.binding.session.executionContext.sessionId :
         "peer\n" + std::to_string(pending.peerUid);
     if (!m_decisionAudit.AppendIntent(true, pending.peerUid, request,
-            hasBinding ? &pending.binding : nullptr, pending.mutation, reason))
+            peerMatches ? &pending.binding : nullptr, pending.mutation, reason))
     {
         {
             std::lock_guard<std::mutex> lock(m_queueMutex);

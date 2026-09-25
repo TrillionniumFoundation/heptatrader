@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.github`, `.agents`, `scripts/README.md`, `scripts/check_component_coverage.py`, `scripts/check_documentation.py`, `scripts/check_gap_register.py`, `scripts/dev_core.sh`, `scripts/verify_build_ownership.py`, `scripts/verify_exact_git_index.py`, `scripts/run_python_tests.py`, `scripts/render_protocol_reference.py`, `scripts/plan_owner_ruleset.py`, `scripts/source_json.py`
+Implementation: `.github`, `.agents`, `scripts/README.md`, `scripts/check_component_coverage.py`, `scripts/check_documentation.py`, `scripts/check_gap_register.py`, `scripts/dev_core.sh`, `scripts/verify_build_ownership.py`, `scripts/verify_exact_git_index.py`, `scripts/run_python_tests.py`, `scripts/render_protocol_reference.py`, `scripts/plan_owner_ruleset.py`, `scripts/source_json.py`, `scripts/ci_change_scope.py`
 Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_gap_register.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_documentation_structure.py`, `tests/python/test_python_test_partition.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_protocol_reference.py`, `tests/python/test_owner_ruleset_plan.py`, `tests/python/test_source_workflow_commands.py`, `tests/python/test_source_json.py`
 
 ## Responsibilities
@@ -68,8 +68,15 @@ GitHub-side review, Ruleset, Merge Queue, environment, and runner controls remai
 
 Python ownership is defined once by `scripts/run_python_tests.py`: core,
 source, install and isolated process are disjoint and exhaustive partitions.
-Core Runtime CI executes core/install/process plus native and real systemd
-acceptance; Source and Monitoring CI executes source plus structural checks.
+Core Runtime CI always retains native tests. Main, merge candidates and runtime,
+release, policy, build, unknown or mixed-path changes also execute core/install/
+process and real systemd acceptance. A PR confined to the eight explicit offline
+Data/Analytics/Replay/Strategy computation/header paths or inert documentation
+skips only that costly release acceptance. Source and Monitoring CI retains source
+and structural checks and uses the same classifier for monitoring process scope.
+`scripts/ci_change_scope.py` owns the whitelist once; complete NUL-delimited Git
+diffs, base fetch/identity failures and unknown paths never grant exemptions.
+Python and runtime tests cannot be waived by a CI event or client field.
 Source and Monitoring CI also owns the shell-syntax and before/after
 exact-index observations; the standalone Qualification Source Audit is retired. GCC and Clang sanitizers remain independent
 native executions, not duplicate Python discovery.

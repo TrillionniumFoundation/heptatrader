@@ -14,55 +14,18 @@ namespace {
 
 enum FieldId
 {
-    SessionToken = 1, ToolCallId = 2, ToolName = 3, Instrument = 4, OrderId = 5,
-    Symbol = 6, Currency = 7, SecType = 8, Exchange = 9, Side = 10,
-    OrderType = 11, Quantity = 12, LimitPrice = 13, ReferencePrice = 14,
-    ExpiresAtMs = 15, WaitTimeoutMs = 16, AfterEventSequence = 17, TimeInForce = 18,
-    QueueDeadlineAtMs = 19, CancelToolCallId = 20, TargetToolName = 21,
-    ProtocolMinVersion = 22, ProtocolMaxVersion = 23, ExpectedSchemaHash = 24,
-    PreviewPermit = 25, TargetCommandId = 26,
-    PrimaryExchange = 27, ContractMonth = 28, Right = 29, Strike = 30,
-    Multiplier = 31, TradingClass = 32, LocalSymbol = 33, PositionEffect = 34
+#define HEPTA_TOOL_FIELD(symbol, number, name, mcp) symbol = number,
+#include "typed_tool_fields.def"
+#undef HEPTA_TOOL_FIELD
 };
 
 const char* FieldName(unsigned int id)
 {
     switch (id)
     {
-    case SessionToken: return "session_token";
-    case ToolCallId: return "tool_call_id";
-    case ToolName: return "tool_name";
-    case Instrument: return "instrument";
-    case OrderId: return "order_id";
-    case Symbol: return "symbol";
-    case Currency: return "currency";
-    case SecType: return "sec_type";
-    case Exchange: return "exchange";
-    case Side: return "side";
-    case OrderType: return "order_type";
-    case Quantity: return "quantity";
-    case LimitPrice: return "limit_price";
-    case ReferencePrice: return "reference_price";
-    case ExpiresAtMs: return "expires_at_ms";
-    case WaitTimeoutMs: return "timeout_ms";
-    case AfterEventSequence: return "after_sequence";
-    case TimeInForce: return "tif";
-    case QueueDeadlineAtMs: return "queue_deadline_at_ms";
-    case CancelToolCallId: return "cancel_tool_call_id";
-    case TargetToolName: return "target_tool_name";
-    case ProtocolMinVersion: return "protocol_min_version";
-    case ProtocolMaxVersion: return "protocol_max_version";
-    case ExpectedSchemaHash: return "expected_schema_hash";
-    case PreviewPermit: return "preview_permit";
-    case TargetCommandId: return "command_id";
-    case PrimaryExchange: return "primary_exchange";
-    case ContractMonth: return "last_trade_date_or_contract_month";
-    case Right: return "right";
-    case Strike: return "strike";
-    case Multiplier: return "multiplier";
-    case TradingClass: return "trading_class";
-    case LocalSymbol: return "local_symbol";
-    case PositionEffect: return "position_effect";
+#define HEPTA_TOOL_FIELD(symbol, number, name, mcp) case symbol: return name;
+#include "typed_tool_fields.def"
+#undef HEPTA_TOOL_FIELD
     }
     return "unknown";
 }

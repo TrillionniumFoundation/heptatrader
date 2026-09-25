@@ -114,7 +114,7 @@ target_link_libraries(hepta_session_supervisor_lease_store_migration_tests
     hepta_agent_os_core)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     target_link_options(hepta_session_supervisor_lease_store_migration_tests
-        PRIVATE -Wl,--wrap=fsync)
+        PRIVATE -Wl,--wrap=fsync -Wl,--wrap=rename)
 endif()
 hepta_register_core_test(hepta_session_supervisor_lease_store_migration_tests)
 
@@ -197,6 +197,16 @@ add_executable(hepta_execution_ipc_scheduling_tests execution_ipc_scheduling_tes
 target_link_libraries(hepta_execution_ipc_scheduling_tests PRIVATE hepta_execution_core)
 hepta_register_core_test(hepta_execution_ipc_scheduling_tests)
 set_tests_properties(hepta_execution_ipc_scheduling_tests PROPERTIES TIMEOUT 30)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(hepta_audit_journal_lifecycle_tests audit_journal_lifecycle_tests.cpp)
+    target_link_libraries(hepta_audit_journal_lifecycle_tests PRIVATE hepta_session_audit)
+    target_link_options(hepta_audit_journal_lifecycle_tests PRIVATE
+        -Wl,--wrap=fsync -Wl,--wrap=fdatasync -Wl,--wrap=rename
+        -Wl,--wrap=fstat -Wl,--wrap=lstat -Wl,--wrap=inotify_init1)
+    hepta_register_core_test(hepta_audit_journal_lifecycle_tests)
+    set_tests_properties(hepta_audit_journal_lifecycle_tests PROPERTIES TIMEOUT 90)
+endif()
 
 add_custom_target(hepta_core_test_binaries
     DEPENDS ${HEPTA_CORE_TEST_TARGETS}

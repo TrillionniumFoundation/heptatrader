@@ -43,40 +43,7 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
           SERVER_URL: ${{ github.server_url }}
-        run: |
-          set -euo pipefail
-          monitoring_required=true
-          if [ "$EVENT_NAME" = pull_request ]; then
-            test -n "$BASE_SHA"
-            test -n "$BASE_REPOSITORY"
-            test -n "$SERVER_URL"
-            if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
-              git fetch --no-tags --depth=1 "$SERVER_URL/$BASE_REPOSITORY.git" "$BASE_SHA"
-            fi
-            changed_paths="$(mktemp)"
-            trap 'rm -f "$changed_paths"' EXIT
-            # Materialize a successful, NUL-delimited complete diff. A failed
-            # diff must never become an empty list granting a scope exemption.
-            git diff --no-renames --name-only -z "$BASE_SHA" HEAD -- > "$changed_paths"
-            monitoring_required=false
-            while IFS= read -r -d '' path; do
-              case "$path" in
-                README.md|docs/*|doc/*|pic/*|\
-                research/src/market_data.cpp|research/src/analytics.cpp|\
-                research/src/replay.cpp|research/src/strategy.cpp|\
-                research/include/hepta/research/market_data.h|\
-                research/include/hepta/research/analytics.h|\
-                research/include/hepta/research/replay.h|\
-                research/include/hepta/research/strategy.h)
-                  ;;
-                *)
-                  monitoring_required=true
-                  break
-                  ;;
-              esac
-            done < "$changed_paths"
-          fi
-          printf 'required=%s\n' "$monitoring_required" >> "$GITHUB_OUTPUT"
+        run: python3 scripts/ci_change_scope.py >> "$GITHUB_OUTPUT"
 
       - name: Install build-model validation dependencies
         run: |

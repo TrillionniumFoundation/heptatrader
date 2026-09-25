@@ -28,6 +28,8 @@ public:
     TradingToolSessionControlPlane& ControlPlane();
     UnixToolServer& ToolServer();
     UnixSessionSupervisorServer& Supervisor();
+    SessionSupervisorAuditCapacity AuditCapacity() const
+    { return m_auditJournal.CapacitySnapshot(); }
     SessionSupervisorLeaseCapacity LeaseCapacity() const
     { return m_leaseStore.CapacitySnapshot(); }
 

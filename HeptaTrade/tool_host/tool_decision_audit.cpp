@@ -76,7 +76,7 @@ bool ToolDecisionAudit::AppendIntent(
         reason.clear();
         return true;
     }
-    return Append(peerCredentialAvailable, peerUid, &request, binding,
+    return Append(peerCredentialAvailable, peerUid, &request, binding, mutation,
         "intent", "pending", std::string(), reason);
 }
 
@@ -88,7 +88,7 @@ void ToolDecisionAudit::AppendOutcome(
     TradingToolResult& result) const
 {
     std::string auditReason;
-    if (Append(peerCredentialAvailable, peerUid, request, binding,
+    if (Append(peerCredentialAvailable, peerUid, request, binding, mutation,
         "outcome", TradingToolRegistry::StatusName(result.status),
         result.reasonCode, auditReason))
         return;
@@ -108,6 +108,7 @@ bool ToolDecisionAudit::Append(
     bool peerCredentialAvailable, std::uint32_t peerUid,
     const TradingToolHostRequest* request,
     const TradingToolHostSessionBinding* binding,
+    bool mutation,
     const std::string& phase,
     const std::string& outcome,
     const std::string& reasonCode,
@@ -119,10 +120,11 @@ bool ToolDecisionAudit::Append(
         return m_allowMissingForTests;
     }
     ToolDecisionAuditRecord record;
+    record.observational = !mutation;
     record.peerCredentialAvailable = peerCredentialAvailable;
     record.peerUid = peerUid;
     record.daemonIdentity = "hepta-unix-tool-gateway/v1";
-    if (binding != nullptr)
+    if (binding != nullptr && peerCredentialAvailable && binding->peerUid == peerUid)
     {
         record.executionDomain = binding->executionDomain;
         record.agentId = binding->session.executionContext.agentId;

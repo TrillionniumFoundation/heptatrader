@@ -10,6 +10,8 @@ struct stat;
 
 struct ToolDecisionAuditRecord
 {
+    // Only the trusted registry classification may mark a routine observation.
+    bool observational = false;
     bool peerCredentialAvailable = false;
     std::uint32_t peerUid = 0;
     std::string daemonIdentity;
@@ -28,18 +30,35 @@ struct ToolDecisionAuditRecord
     std::string reasonCode;
 };
 
+struct SessionSupervisorAuditCapacity
+{
+    bool known = false;
+    std::uint64_t bytes = 0;
+    std::uint64_t maximumBytes = 0;
+    std::uint64_t safetyReserveBytes = 0;
+    std::uint64_t observationsShed = 0;
+};
+
 class SessionSupervisorAuditJournal
 {
 public:
-    SessionSupervisorAuditJournal();
+    explicit SessionSupervisorAuditJournal(
+        std::uint64_t maximumBytes = 1073741824ULL,
+        std::uint64_t safetyReserveBytes = 16777216ULL);
     ~SessionSupervisorAuditJournal();
 
     bool Init(const std::string& path, std::string& reason);
     bool Append(const SessionSupervisorRequest& request, const std::string& issuer,
                 const std::string& phase, const std::string& outcome,
                 std::uint64_t leaseGeneration, std::string& reason);
+    // A shed observation returns true with OBSERVATION_SHED and a counter,
+    // never a durable receipt. Mutation/unknown records are never shed.
     bool AppendToolDecision(const ToolDecisionAuditRecord& record, std::string& reason);
 
+    SessionSupervisorAuditCapacity CapacitySnapshot() const;
+    // Offline maintenance only. Existing open writers become fenced by inode
+    // replacement. No history is deleted and no execution authority is issued.
+    static bool SealSegment(const std::string& path, std::string& reason);
     static bool Verify(const std::string& path, std::uint64_t& chainedRecords,
                        std::string& reason);
 
@@ -63,11 +82,20 @@ private:
                           std::string& previousHash,
                           std::uint64_t& chainedRecords,
                           std::string& reason);
+    void StartChangeWatch(int fd);
+    bool ConsumeChanges();
+    static bool VerifyHistory(int activeFd, const std::string& path,
+                              std::uint64_t& records, std::string& reason);
+    enum class RecordClass { Observation, Admission, Safety };
     bool AppendRecord(const std::string& recordType, const std::string& payload,
-                      std::string& reason);
+                      std::string& reason, RecordClass recordClass);
     bool ValidateOpenFile(FileState& state, std::string& reason) const;
 
-    std::mutex m_mutex;
+    mutable std::mutex m_mutex;
+    std::uint64_t m_maximumBytes;
+    std::uint64_t m_safetyReserveBytes;
+    std::uint64_t m_observationsShed = 0;
+    int m_changeFd = -1;
     int m_fd;
     std::string m_path;
     std::string m_canonicalPath;

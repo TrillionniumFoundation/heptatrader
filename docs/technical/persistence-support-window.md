@@ -136,3 +136,61 @@ physical durability, multiday operating cost and future schema retirement remain
 separate deployment decisions under the external host gaps. A future persistent
 format change must add old/new migration and rollback evidence before support for
 an existing reader is retired.
+
+## X230 bounded growth observations — 2026-09-25
+
+Measured source: `287b5c5e12b57b6cf241bbdfa678fbde85535d58`, tree
+`e203c912bab6d761ccf8aa451a57d19867c2758d`. This is the measured candidate,
+not an assertion about any later HEAD. Host: ThinkPad X230, Intel i5-3230M,
+Linux 6.8.0-139, ext4 `/dev/sda5`, GCC 13.3.0, CMake Release, IB API disabled.
+The existing native probes ran as an ordinary user on the actual filesystem.
+Inputs and venue callbacks are synthetic; these are not Broker executions.
+Fresh-process RSS is measured without dropping the filesystem page cache.
+
+| Retained lease acknowledgement groups | Encrypted bytes after cleanup | Reopen ms | Largest sampled persistence ms |
+|---:|---:|---:|---:|
+| 1 | 23572 | 1.530 | 1.261 |
+| 8 | 188058 | 13.886 | 9.667 |
+| 88 | 2071018 | 123.207 | 48.682 |
+
+At the 88-group fixture, ordinary admission was refused while fence/removal
+still committed; oldest retired-owner reuse was rejected after reopening.
+Its 2 MiB format bound is unchanged. Two/three persistence observations are
+not a p99 estimate or a storage SLO.
+
+| Synthetic orders | State | Recovery ms | Peak RSS KiB | Maintenance ms | Retained bytes |
+|---:|---|---:|---:|---:|---:|
+| 32 | sealed | 2.136 | 7936 | 102.536 | 240896 |
+| 32 | rebased | 2.502 | 8064 | 127.957 | 167981 |
+| 128 | sealed | 2.921 | 8064 | 125.894 | 927479 |
+| 128 | rebased | 4.205 | 8192 | 167.398 | 662136 |
+| 512 | sealed | 6.175 | 8064 | 254.322 | 3683122 |
+| 512 | rebased | 11.368 | 8064 | 378.469 | 2644133 |
+| 8192 | sealed | 76.672 | 8064 | 2086.130 | 59081662 |
+| 8192 | rebased | 144.037 | 8064 | 3441.121 | 42432333 |
+
+Every stage checked ancient same-ID duplicates, changed-payload conflicts and
+zero resends in a fresh process. The 8,192-order run has four intermediate seals
+(2,048/4,096/6,144/8,192), followed by rebase; this is not 8,192 live Broker orders.
+Rebase reduces retained duplicate indexes but does not make recovery time constant:
+the final parentless history still requires integrity I/O. No claim is made for
+larger histories, physical power failure, unattended multiday operation, remote
+filesystems, high concurrency or production latency. The measured envelope is
+a development-host observation, not a new maximum supported workload.
+
+Reproduction uses the existing test executables, after building the same source:
+
+```sh
+build/tests/hepta_session_supervisor_lease_store_migration_tests --writer-exclusion
+build/tests/hepta_audit_journal_lifecycle_tests
+build/tests/hepta_session_supervisor_lease_store_migration_tests --lease-history-growth
+build/tests/hepta_execution_coordinator_tests --generation-growth 8192
+```
+
+Raw JSONL SHA-256 (retained with the implementation-session evidence, not runtime authority):
+
+- `lease-cost.jsonl`: `99ca46f365e2bb124bbfa5b8eeb24ceeb2f62a0b138ac1593626a3991d4c65ee`
+- `oms-32.jsonl`: `345528dae02bd7508c9ec9b5d1f156a01bd9e6655cffd3f4ef6d350c7c3cec4f`
+- `oms-128.jsonl`: `ddc0dcefda4337ecd68e52ccb2bfd98f94d5234c0d932f21e5803436d8e01884`
+- `oms-512.jsonl`: `c0942ba9a1b47af9620733d9105d7e439f6495ad94813d0c56bf1a017baab8b4`
+- `oms-8192.jsonl`: `40d0acfd06c5b61db0e167830a4eb162049de5df1df33000aa092857355d3226`

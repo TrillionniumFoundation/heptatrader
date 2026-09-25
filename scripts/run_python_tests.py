@@ -14,6 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_TESTS = frozenset({
+    "test_protocol_reference.py",
     "test_heptadll_migration_state.py",
     "test_heptadll_source_disposition.py",
     "test_documentation_control_plane.py",

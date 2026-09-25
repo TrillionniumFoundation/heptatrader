@@ -49,7 +49,8 @@
         "tests/trading_tool_registry_tests.cpp",
         "tests/unix_tool_server_tests.cpp",
         "tests/python/test_gateway_observability.py",
-        "tests/python/test_installed_runtime_processes.py"
+        "tests/python/test_installed_runtime_processes.py",
+        "tests/audit_journal_lifecycle_tests.cpp"
       ],
       "broker_mutation": "FORWARD_ONLY",
       "production_authorized": false
@@ -401,7 +402,8 @@
         "scripts/run_python_tests.py",
         "scripts/render_protocol_reference.py",
         "scripts/plan_owner_ruleset.py",
-        "scripts/source_json.py"
+        "scripts/source_json.py",
+        "scripts/ci_change_scope.py"
       ],
       "tests": [
         "tests/python/test_component_coverage.py",

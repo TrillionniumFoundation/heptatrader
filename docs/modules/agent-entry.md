@@ -192,7 +192,7 @@ approves risk, manufactures a broker ID, supplies a fill, or restores a position
 The pre-existing component lifecycle, WATCH/revocation and unsupported-flatten
 checks remain intact. No CMake target, translation unit, production dependency,
 protocol, ownership inventory or installed artifact is added by these cases.
-The existing nonempty CTest selection and 30-second timeout remain enforced.
+The existing nonempty CTest selection uses separate 90-second runtime-domain timeouts.
 Readiness, observation and wait/reap operations have bounded waits; RAII removes
 private fixtures and terminates children on ordinary assertion failures. The
 final child exits normally so sanitizer exit/leak checks can execute; SIGKILL'd
@@ -206,7 +206,7 @@ latency, complete historical API/ABI migration or source-repository retirement.
 ## Exact-head sanitizer evidence
 
 The existing `Canonical Full Suite` GCC and Clang sanitizer jobs build the real
-core aggregate and execute its nonempty `core` CTest selection. They also require
+core aggregate and execute its nonempty `core` CTest selection. On main and merge candidates they also require
 five successful consecutive runs of `hepta_research_native_execution_process_crash_tests`;
 a missing test or any failed repetition fails the job. This reuses the existing
 three SIGKILL/re-exec scenarios rather than adding a mock acceptance executable.

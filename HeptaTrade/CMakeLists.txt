@@ -270,6 +270,10 @@ target_include_directories(hepta_session_supervisor_core
 target_link_libraries(hepta_session_supervisor_core
     PUBLIC Threads::Threads OpenSSL::Crypto)
 
+add_library(hepta_session_audit STATIC tool_host/session_supervisor_audit_journal.cpp)
+target_include_directories(hepta_session_audit PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(hepta_session_audit PUBLIC Threads::Threads OpenSSL::Crypto)
+
 add_library(hepta_agent_os_core STATIC
     tool_host/tool_gateway_runtime_composition.cpp
     tool_host/tool_gateway_session_policy.cpp
@@ -277,7 +281,6 @@ add_library(hepta_agent_os_core STATIC
     tool_host/agent_os_runtime_config.cpp
     tool_host/execution_gateway_runtime_composition.cpp
     tool_host/execution_gateway_runtime_config.cpp
-    tool_host/session_supervisor_audit_journal.cpp
     tool_host/tool_decision_audit.cpp
     ${HEPTA_TOOL_HOST_CORE_SOURCES}
     tool_host/trading_tool_session_lifecycle.cpp
@@ -292,6 +295,7 @@ add_library(hepta_agent_os_core STATIC
 target_include_directories(hepta_agent_os_core
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_agent_os_core PUBLIC
+    hepta_session_audit
     hepta_trading_tool_core
     hepta_typed_tool_protocol
     hepta_session_supervisor_core
@@ -361,6 +365,7 @@ set_target_properties(hepta_sessionctl PROPERTIES
 target_include_directories(hepta_sessionctl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(hepta_sessionctl PRIVATE
+    hepta_session_audit
     hepta_session_supervisor_core
     Threads::Threads
     OpenSSL::Crypto ZLIB::ZLIB)

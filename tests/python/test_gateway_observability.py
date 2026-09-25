@@ -35,6 +35,32 @@ def sample(t=1000, epoch='gw-one', delivered=3, failed=0):
 
 
 class GatewayObservabilityTests(unittest.TestCase):
+    def test_audit_capacity_observation_and_hostile_values(self):
+        value = sample()
+        text = report.gateway_prometheus(value, report.gateway_report([value], 1000))
+        self.assertIn("hepta_gateway_audit_capacity_present 0", text)
+        value["audit_log"] = dict(known=True, bytes=8192, maximum_bytes=16384,
+                                  safety_reserve_bytes=4096, observations_shed=2)
+        summary = report.gateway_report([value], 1000)
+        rules = {item["rule_id"] for item in summary["alerts"]}
+        self.assertIn("GATEWAY_AUDIT_MAINTENANCE_REQUIRED", rules)
+        self.assertIn("GATEWAY_AUDIT_OBSERVATIONS_SHED", rules)
+        text = report.gateway_prometheus(value, summary)
+        self.assertIn("hepta_gateway_audit_bytes 8192", text)
+        self.assertIn("hepta_gateway_audit_observations_shed_total 2", text)
+        for key, bad in (("known", 1), ("bytes", -1), ("bytes", 16385),
+                         ("maximum_bytes", 0), ("safety_reserve_bytes", 8192),
+                         ("observations_shed", True)):
+            altered = copy.deepcopy(value); altered["audit_log"][key] = bad
+            with self.subTest(key=key, bad=bad), self.assertRaises(ValueError):
+                report.validate_gateway(altered)
+        value["audit_log"]["bytes"] = 12288
+        self.assertIn("GATEWAY_AUDIT_ADMISSION_PAUSED", {a["rule_id"] for a in report.gateway_report([value], 1000)["alerts"]})
+        value["audit_log"].update(known=False, bytes=0)
+        summary = report.gateway_report([value], 1000)
+        self.assertIn("GATEWAY_AUDIT_CAPACITY_UNKNOWN", {a["rule_id"] for a in summary["alerts"]})
+        self.assertNotIn("hepta_gateway_audit_bytes ", report.gateway_prometheus(value, summary))
+
     def test_lease_capacity_is_optional_and_hostile_accounting_rejects(self):
         value = sample()
         old = report.gateway_prometheus(value, report.gateway_report([value], 1000))

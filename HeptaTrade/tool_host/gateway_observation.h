@@ -1,6 +1,7 @@
 #pragma once
 #include "unix_tool_server.h"
 #include "session_supervisor_lease_store.h"
+#include "session_supervisor_audit_journal.h"
 #include <locale>
 #include <sstream>
 
@@ -8,7 +9,8 @@
 // label. Invalid input is rejected instead of interpolated into log JSON.
 inline std::string GatewayObservation(const UnixToolServerHealth& h,
     const std::string& epoch, std::uint64_t wallMs, std::uint64_t steadyMs,
-    const SessionSupervisorLeaseCapacity* leaseCapacity = nullptr)
+    const SessionSupervisorLeaseCapacity* leaseCapacity = nullptr,
+    const SessionSupervisorAuditCapacity* auditCapacity = nullptr)
 {
     if (epoch.empty() || epoch.size() > 128 ||
         epoch.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:-") != std::string::npos)
@@ -42,6 +44,14 @@ inline std::string GatewayObservation(const UnixToolServerHealth& h,
     {
         out << ",\"lease_store\":";
         WriteSessionSupervisorLeaseCapacityJson(out, *leaseCapacity);
+    }
+    if (auditCapacity != nullptr)
+    {
+        out << ",\"audit_log\":{\"known\":" << (auditCapacity->known ? "true" : "false")
+            << ",\"bytes\":" << auditCapacity->bytes
+            << ",\"maximum_bytes\":" << auditCapacity->maximumBytes
+            << ",\"safety_reserve_bytes\":" << auditCapacity->safetyReserveBytes
+            << ",\"observations_shed\":" << auditCapacity->observationsShed << '}';
     }
     out << '}';
     return out.str();

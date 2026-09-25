@@ -32,6 +32,7 @@ private:
     bool Append(bool peerCredentialAvailable, std::uint32_t peerUid,
                 const TradingToolHostRequest* request,
                 const TradingToolHostSessionBinding* binding,
+                bool mutation,
                 const std::string& phase,
                 const std::string& outcome,
                 const std::string& reasonCode,

@@ -696,5 +696,6 @@ std::string ToolGatewayRuntimeComposition::Observation(
 {
     if (!m_agentOs || !m_agentOs->ToolServer().IsRunning()) return std::string();
     const auto capacity = m_agentOs->LeaseCapacity();
-    return GatewayObservation(m_agentOs->ToolServer().GetHealth(), m_gatewayEpoch, wallMs, steadyMs, &capacity);
+    const auto audit = m_agentOs->AuditCapacity();
+    return GatewayObservation(m_agentOs->ToolServer().GetHealth(), m_gatewayEpoch, wallMs, steadyMs, &capacity, &audit);
 }
