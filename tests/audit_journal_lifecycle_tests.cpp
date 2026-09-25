@@ -98,6 +98,13 @@ void TestCapacityAndExitReserve()
     auto exit = Record("trade.cancel_order");
     assert(journal.AppendToolDecision(exit, reason));
     assert(journal.CapacitySnapshot().bytes <= 16384);
+    unsigned exits = 0;
+    while (journal.AppendToolDecision(exit, reason)) assert(++exits < 100);
+    assert(reason == "SUPERVISOR_AUDIT_SIZE_LIMIT");
+    const auto fullBytes = journal.CapacitySnapshot().bytes;
+    assert(journal.AppendToolDecision(read, reason));
+    assert(reason == "SUPERVISOR_AUDIT_OBSERVATION_SHED");
+    assert(journal.CapacitySnapshot().bytes == fullBytes);
     // A record without an authenticated owner cannot claim the exit reserve.
     exit.agentId.clear();
     assert(!journal.AppendToolDecision(exit, reason));

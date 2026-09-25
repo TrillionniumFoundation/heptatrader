@@ -317,12 +317,6 @@ bool SessionSupervisorAuditJournal::AppendRecord(
         reason = "SUPERVISOR_AUDIT_RECORD_TOO_LARGE";
         ok = false;
     }
-    if (ok && (currentState.fileSize > kMaximumAuditJournalBytes ||
-        line.size() > kMaximumAuditJournalBytes - currentState.fileSize))
-    {
-        reason = "SUPERVISOR_AUDIT_SIZE_LIMIT";
-        ok = false;
-    }
     const std::uint64_t reserve = recordClass == RecordClass::Safety ? 0 :
         (recordClass == RecordClass::Admission ? m_safetyReserveBytes : 2 * m_safetyReserveBytes);
     const std::uint64_t limit = m_maximumBytes - reserve;

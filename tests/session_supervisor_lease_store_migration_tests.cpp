@@ -2068,6 +2068,64 @@ void TestCommitWriterExclusionAndReopen()
 #endif
 }
 
+void TestSeparateProcessWritersPreserveConfirmedCommits()
+{
+    Fixture fixture;
+    std::string reason;
+    { SessionSupervisorLeaseStore bootstrap; assert(fixture.Init(bootstrap, reason)); }
+    int ready[2], release[2];
+    assert(::pipe(ready) == 0 && ::pipe(release) == 0);
+    pid_t children[2];
+    for (int index = 0; index < 2; ++index)
+    {
+        children[index] = ::fork(); assert(children[index] >= 0);
+        if (children[index] == 0)
+        {
+            ::close(ready[0]); ::close(release[1]);
+            SessionSupervisorLeaseStore store;
+            if (!fixture.Init(store, reason)) ::_exit(51);
+            if (::write(ready[1], "r", 1) != 1) ::_exit(52);
+            char signal; if (::read(release[0], &signal, 1) != 1) ::_exit(53);
+            auto record = Watch("process-writer-owner-token-000" + std::to_string(index));
+            record.agentId += std::to_string(index); record.sessionId += std::to_string(index);
+            if (store.Put(record, reason)) ::_exit(0);
+            ::_exit(reason == "LEASE_STORE_WRITER_BUSY_OR_UNAVAILABLE" ||
+                reason == "LEASE_STORE_SOURCE_CHANGED" ? 42 : 54);
+        }
+    }
+    ::close(ready[1]); ::close(release[0]);
+    char signal;
+    assert(::read(ready[0], &signal, 1) == 1);
+    assert(::read(ready[0], &signal, 1) == 1);
+    assert(::write(release[1], "go", 2) == 2);
+    unsigned accepted = 0, rejected = 0;
+    for (pid_t child : children)
+    {
+        int status = 0; assert(::waitpid(child, &status, 0) == child);
+        assert(WIFEXITED(status));
+        if (WEXITSTATUS(status) == 0) ++accepted;
+        else { assert(WEXITSTATUS(status) == 42); ++rejected; }
+    }
+    ::close(ready[0]); ::close(release[1]);
+    assert(accepted == 1 && rejected == 1);
+    // A new process can reopen the winner's committed state and add another
+    // record after both original processes exit. Neither confirmed write is lost.
+    const pid_t successor = ::fork(); assert(successor >= 0);
+    if (successor == 0)
+    {
+        SessionSupervisorLeaseStore store;
+        if (!fixture.Init(store, reason)) ::_exit(55);
+        auto record = Watch("process-successor-owner-token-0001");
+        record.agentId = "successor-agent"; record.sessionId = "successor-session";
+        ::_exit(store.Put(record, reason) ? 0 : 56);
+    }
+    int status = 0; assert(::waitpid(successor, &status, 0) == successor);
+    assert(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    SessionSupervisorLeaseStore recovered;
+    assert(fixture.Init(recovered, reason));
+    assert(recovered.List().size() == 2);
+}
+
 void TestLinuxOPathOpensSearchOnlyLockParent()
 {
 #if defined(__linux__)
@@ -2100,9 +2158,10 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--lease-history-growth")
     { TestLeaseHistoryCapacityLifecycle(); return 0; }
     if (argc == 2 && std::string(argv[1]) == "--writer-exclusion")
-    { TestCommitWriterExclusionAndReopen(); return 0; }
+    { TestCommitWriterExclusionAndReopen(); TestSeparateProcessWritersPreserveConfirmedCommits(); return 0; }
     assert(argc == 1);
     TestCommitWriterExclusionAndReopen();
+    TestSeparateProcessWritersPreserveConfirmedCommits();
     TestInvalidLoadedStoreDoesNotAdvertiseKnownCapacity();
     TestLeaseHistoryCapacityLifecycle();
     TestPublishedDirectorySyncFailureIsIndeterminate();
