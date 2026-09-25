@@ -239,7 +239,8 @@
         "tests/python/test_paper_evidence_publication.py",
         "tests/python/test_campaign_provenance.py",
         "tests/python/test_exported_source_configure.py",
-        "tests/python/test_ib_runtime_observation.py"
+        "tests/python/test_ib_runtime_observation.py",
+        "tests/ib_connection_probe_behavior.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false

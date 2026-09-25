@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import re
+import os
 import subprocess
 import tarfile
 import tempfile
@@ -35,6 +36,32 @@ class ExportedSourceConfigureTests(unittest.TestCase):
         self.assertIn('--ulimit nproc="$NPROC_LIMIT:$NPROC_LIMIT"', text)
         self.assertNotIn('--ulimit nproc="$PIDS_LIMIT:$PIDS_LIMIT"', text)
         self.assertIn('"nproc_rlimit": int(nproc)', text)
+
+    def test_readonly_probe_build_phase_propagates_behavior_failure(self) -> None:
+        text = BUILDER.read_text(encoding="utf-8")
+        phase = re.search(r"if ! timeout --signal=TERM --kill-after=5s 60s .*?\nfi", text, re.S)
+        self.assertIsNotNone(phase)
+        with tempfile.TemporaryDirectory(prefix="hepta-probe-build-phase-") as folder:
+            root = Path(folder)
+            stub, calls, log = root / "docker", root / "calls", root / "build.log"
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$RECORD"\nexit "$STUB_STATUS"\n')
+            stub.chmod(0o700)
+            for status in (0, 37):
+                with self.subTest(status=status):
+                    log.write_text("")
+                    script = 'set -euo pipefail\nCOMMON_DOCKER=("$STUB" --network none)\n'
+                    script += phase.group(0) + '\nprintf "PHASE_COMPLETED\\n"\n'
+                    result = subprocess.run(["bash", "-c", script], capture_output=True,
+                        text=True, timeout=5, env={**os.environ, "STUB": str(stub),
+                            "RECORD": str(calls), "STUB_STATUS": str(status),
+                            "BUILD_LOG": str(log), "BUILDER_IMAGE": "synthetic-image"})
+                    self.assertEqual(result.returncode, 0 if status == 0 else 70,
+                                     result.stdout + result.stderr)
+                    self.assertEqual("PHASE_COMPLETED" in result.stdout, status == 0)
+                    self.assertEqual(calls.read_text().splitlines(), [
+                        "--network", "none", "synthetic-image", "python3", "-I", "-B",
+                        "/src/tests/ib_connection_probe_behavior.py", "--probe",
+                        "/build/work/docs/ib_probe/ib_connection_probe"])
 
     def test_real_exported_source_configures_without_git_metadata(self) -> None:
         source_sha = subprocess.run(
