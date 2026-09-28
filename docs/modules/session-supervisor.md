@@ -3,7 +3,7 @@
 Status: CURRENT
 Applies to: repository HEAD
 Implementation: `HeptaTrade/tool_host/session_supervisor_protocol.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_store.cpp`, `HeptaTrade/tool_host/unix_session_supervisor_server.cpp`, `HeptaTrade/cli/hepta_sessionctl.cpp`, `HeptaTrade/tool_host/session_supervisor_internal.h`, `HeptaTrade/tool_host/session_supervisor_support.cpp`, `HeptaTrade/tool_host/session_supervisor_terminal.cpp`, `HeptaTrade/tool_host/session_supervisor_lease_codec_internal.h`, `HeptaTrade/tool_host/session_supervisor_lease_codec.cpp`
-Tests: `tests/unix_session_supervisor_server_tests.cpp`, `tests/session_supervisor_lease_store_migration_tests.cpp`
+Tests: `tests/unix_session_supervisor_server_tests.cpp`, `tests/session_supervisor_lease_store_migration_tests.cpp`, `tests/unix_session_supervisor_test_support.cpp`, `tests/unix_session_supervisor_protocol_audit_tests.cpp`, `tests/unix_session_supervisor_lifecycle_tests.cpp`, `tests/unix_session_supervisor_generation_watch_tests.cpp`, `tests/unix_session_supervisor_terminal_control_tests.cpp`
 
 ## Responsibilities
 
@@ -86,6 +86,12 @@ Emit structured state transitions with Agent ID, session ID, generation, executi
 ## Test expectations
 
 Tests cover provisioning, expiry, rotation, migration, stale-generation rejection, duplicate commands, fencing, recovery-only behavior, restart points around atomic writes, Unix peer checks, terminal cleanup, and failed/ambiguous Execution coordination.
+
+The Unix server matrix remains one `hepta_unix_session_supervisor_server_tests`
+executable and one CTest contract. Its unchanged cases are compiled from shared
+support plus protocol/audit, lifecycle, generation/watch and terminal/control
+translation units so ordinary builds can parallelize the previous single-file
+compiler hotspot without duplicating fixtures or weakening test selection.
 
 ## Known limitations
 
