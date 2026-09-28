@@ -2,8 +2,8 @@
 
 Status: EXPERIMENTAL
 Applies to: source-built research, offline developer SDK and forward-only client integration
-Implementation: `research`
-Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/legacy_bundle_behavior.py`, `tests/research/sdk_package_behavior.py`
+Implementation: `research`, `research/examples/paper_command_main.cpp`
+Tests: `tests/research/market_data_tests.cpp`, `tests/research/analytics_tests.cpp`, `tests/research/replay_tests.cpp`, `tests/research/cli_behavior.py`, `tests/research/legacy_bundle_behavior.py`, `tests/research/sdk_package_behavior.py`, `tests/research/paper_command_behavior.py`
 
 ## Ownership and execution boundary
 
@@ -394,3 +394,9 @@ consumer/retirement history remains in the
 [integration record](../technical/heptadll-integration.md). One lane's result is
 not evidence for another platform and none of these checks grants Broker
 qualification or PAPER/LIVE authority.
+
+## Bounded market CASH command adapter
+
+The [durable PAPER command client](../technical/paper-command-client.md) reuses
+NativeStrategyClient for explicit market-CASH preparation, stored submission and
+status-only recovery. It is an opt-in source client, not a resident strategy.

@@ -73,6 +73,19 @@ PreparedOrder::PreparedOrder(const std::string& instrument, const InstrumentRef&
     call_.expiresAtMs = expiry;
     Validate(call_);
 }
+PreparedOrder PreparedOrder::MarketCash(const std::string& instrument,
+    const InstrumentRef& contract, const std::string& side, double quantity,
+    double reference, std::int64_t expiry) {
+    if (contract.secType != "CASH" || contract.exchange != "IDEALPRO" ||
+        contract.symbol != "EUR" || contract.currency != "USD" ||
+        instrument != "EUR.USD" || quantity > 25000.0)
+        throw std::invalid_argument("RESEARCH_PAPER_MARKET_CASH_SCOPE_INVALID");
+    PreparedOrder result(instrument, contract, side, quantity, reference, reference, expiry);
+    result.call_.ibOrder.orderType = "MKT";
+    result.call_.ibOrder.lmtPrice = 0.0;
+    Validate(result.call_);
+    return result;
+}
 TradingToolHostRequest PreparedOrder::PreviewRequest(const std::string& id) const {
     CheckId(id);
     TradingToolHostRequest request;

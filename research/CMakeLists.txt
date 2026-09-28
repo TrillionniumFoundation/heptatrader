@@ -39,6 +39,13 @@ if(NOT HEPTA_RESEARCH_STANDALONE)
     set_target_properties(hepta_strategy_client_cli PROPERTIES OUTPUT_NAME "hepta-strategy-native")
     target_compile_features(hepta_strategy_client_cli PRIVATE cxx_std_11)
     target_link_libraries(hepta_strategy_client_cli PRIVATE hepta_research_native_client)
+    add_executable(hepta_paper_command examples/paper_command_main.cpp)
+    set_target_properties(hepta_paper_command PROPERTIES OUTPUT_NAME "hepta-paper-command")
+    target_compile_features(hepta_paper_command PRIVATE cxx_std_11)
+    target_link_libraries(hepta_paper_command PRIVATE hepta_research_native_client)
+    install(TARGETS hepta_paper_command RUNTIME DESTINATION bin
+        COMPONENT UserPaperClient EXCLUDE_FROM_ALL)
+
 endif()
 
 add_executable(hepta_research_replay_cli examples/replay_main.cpp)
@@ -64,6 +71,13 @@ if(BUILD_TESTING)
     if(NOT HEPTA_RESEARCH_STANDALONE)
         hepta_research_test(hepta_research_native_client_tests ../tests/research/native_client_tests.cpp)
         target_link_libraries(hepta_research_native_client_tests PRIVATE hepta_research_native_client)
+        add_dependencies(hepta_research_native_client_tests hepta_paper_command)
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        add_test(NAME hepta_paper_command_behavior
+            COMMAND ${Python3_EXECUTABLE} -I -B ${PROJECT_SOURCE_DIR}/tests/research/paper_command_behavior.py
+                    $<TARGET_FILE:hepta_paper_command>)
+        set_tests_properties(hepta_paper_command_behavior PROPERTIES LABELS "core;research" TIMEOUT 20)
+
         hepta_research_test(hepta_research_native_gateway_tests ../tests/research/native_gateway_tests.cpp)
         target_link_libraries(hepta_research_native_gateway_tests PRIVATE
             hepta_research_native_client hepta_agent_os_core)

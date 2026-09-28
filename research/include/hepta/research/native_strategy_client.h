@@ -20,6 +20,11 @@ public:
                   const std::string& timeInForce, const std::string& positionEffect,
                   double quantity, double limitPrice, double referencePrice,
                   std::int64_t expiresAtMs);
+    // Explicit market CASH proposal for the bounded local PAPER test caller.
+    // This does not change the historical LMT-only constructor or grant authority.
+    static PreparedOrder MarketCash(const std::string& instrument,
+        const InstrumentRef& contract, const std::string& side, double quantity,
+        double referencePrice, std::int64_t expiresAtMs);
     TradingToolHostRequest PreviewRequest(const std::string& previewCallId) const;
     TradingToolHostRequest SubmissionRequest(const std::string& executionCommandId,
                                              const std::string& previewPermit) const;

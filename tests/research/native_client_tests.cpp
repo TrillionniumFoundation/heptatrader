@@ -155,6 +155,63 @@ NativeToolClientConfig OutboxConfig() {
     config.timeoutMs = 100;
     return config;
 }
+void MarketCashProposalTests() {
+    InstrumentRef contract; contract.symbol="EUR"; contract.secType="CASH";
+    contract.exchange="IDEALPRO"; contract.currency="USD";
+    const std::string id="paper-test-command-001", permit="sha256:"+std::string(64,'a');
+    const std::int64_t expiry=1900000000000LL;
+    for (const std::string side : {"BUY", "SELL"}) {
+        auto proposal=PreparedOrder::MarketCash("EUR.USD",contract,side,25000,1.12,expiry);
+        auto preview=proposal.PreviewRequest("paper-test-preview-001");
+        Check(preview.call.ibOrder.orderType=="MKT" && preview.call.ibOrder.lmtPrice==0 &&
+              preview.call.ibOrder.totalQuantity==25000 && preview.call.timeInForce=="DAY" &&
+              preview.call.ibOrder.action==side, "market CASH proposal widened fields");
+        auto request=proposal.SubmissionRequest(id,permit);
+        Check(request.call.name=="trade.place_order" && request.toolCallId==id &&
+              request.call.previewPermit==permit, "market CASH binding changed");
+        Check(!Wire(request).empty(), "market CASH codec round trip");
+        preview.call.ibOrder.totalQuantity=999999;
+        Check(proposal.PreviewRequest("paper-test-preview-002").call.ibOrder.totalQuantity==25000,
+              "returned copy mutated market proposal");
+    }
+    for (double quantity : {0.0, -1.0, 25001.0, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()})
+        Throws([&] { PreparedOrder::MarketCash("EUR.USD",contract,"BUY",quantity,1.12,expiry); });
+    for (double price : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                         std::numeric_limits<double>::quiet_NaN()})
+        Throws([&] { PreparedOrder::MarketCash("EUR.USD",contract,"BUY",25000,price,expiry); });
+    Throws([&] { PreparedOrder::MarketCash("EUR.USD",contract,"HOLD",25000,1.12,expiry); });
+    Throws([&] { PreparedOrder::MarketCash("EUR.USD",contract,"BUY",25000,1.12,0); });
+    Throws([&] { PreparedOrder::MarketCash("GBP.USD",contract,"BUY",25000,1.12,expiry); });
+    for (int variation=0;variation<5;++variation) {
+        InstrumentRef other=contract;
+        if(variation==0) other.secType="STK";
+        if(variation==1) other.exchange="SMART";
+        if(variation==2) other.symbol="GBP";
+        if(variation==3) other.currency="JPY";
+        if(variation==4) other.primaryExchange="NOT_ALLOWED";
+        Throws([&] { PreparedOrder::MarketCash("EUR.USD",other,"BUY",25000,1.12,expiry); });
+    }
+    PreparedOrder legacy("EUR.USD",contract,"BUY",1,1.1,1.1,expiry);
+    Check(legacy.PreviewRequest("paper-legacy-001").call.ibOrder.orderType=="LMT",
+          "historical constructor no longer limit-only");
+    OutboxTestRoot root;
+    const auto config=OutboxConfig(); NativeToolClient native(config); NativeStrategyClient client(native);
+    auto proposal=PreparedOrder::MarketCash("EUR.USD",contract,"BUY",25000,1.12,expiry);
+    std::string reason; TradingToolHostRequest restored;
+    Check(client.Persist(root.path,proposal,id,permit,reason),"market CASH durable storage");
+    const std::string path=root.path+"/"+id+".hsr", bytes=ReadBytes(path);
+    Check(bytes.find(config.sessionToken)==std::string::npos,"market request leaked bearer token");
+    Check(client.LoadStored(root.path,id,restored,reason) &&
+          Wire(restored)==Wire(proposal.SubmissionRequest(id,permit)),"market outbox changed wire bytes");
+    auto changed=PreparedOrder::MarketCash("EUR.USD",contract,"SELL",25000,1.12,expiry);
+    Check(!client.Persist(root.path,changed,id,permit,reason) && ReadBytes(path)==bytes,
+          "conflicting market side overwrote original HSR1");
+    NativeToolClientConfig different=config; different.sessionToken="different-synthetic-token";
+    NativeToolClient other(different); NativeStrategyClient rebound(other);
+    Check(!rebound.LoadStored(root.path,id,restored,reason),"market request allowed credential rebinding");
+}
+
 void OutboxTests() {
     Check(NativeToolDiscoveryContract::ContentDigest("") ==
         "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA empty oracle");
@@ -909,4 +966,4 @@ void Tests() {
     Check(result.envelope.status.empty(), "local validation failure retained old success");
 }
 }
-int main() { return Run(Tests); }
+int main() { return Run([] { MarketCashProposalTests(); Tests(); }); }
