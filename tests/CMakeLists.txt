@@ -40,6 +40,10 @@ hepta_register_core_test(hepta_native_tool_client_tests)
 
 add_executable(hepta_execution_coordinator_tests
     execution_coordinator_tests.cpp
+    execution_coordinator_test_support.cpp
+    execution_coordinator_placement_recovery_tests.cpp
+    execution_coordinator_flatten_tests.cpp
+    execution_coordinator_session_concurrency_tests.cpp
     compat/oms_recover.cpp)
 target_link_libraries(hepta_execution_coordinator_tests
     hepta_execution_core)
