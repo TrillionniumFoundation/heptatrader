@@ -21,6 +21,7 @@ SOURCE_TESTS = frozenset({
     "test_documentation_control_plane.py",
     "test_documentation_structure.py",
     "test_source_workflow_commands.py",
+    "test_required_check_admission.py",
     "test_source_json.py",
     "test_component_coverage.py",
     "test_systemd_units.py",

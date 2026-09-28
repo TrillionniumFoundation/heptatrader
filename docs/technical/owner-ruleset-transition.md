@@ -3,36 +3,38 @@
 Status: CURRENT
 Applies to: explicit repository-owner administration, not runtime authorization
 
-## Policy and live observation are different
+## Live observation and intended minimum
 
-Repository operation does not require manufactured independent reviewers or a
-merge queue. Deletion and non-fast-forward protection should remain enabled.
-CI results certify their own exact source/artifact; they do not authorize trading.
-[ADR 0002](../adr/0002-owner-operated-repository.md) records the operating intent.
+An authenticated read on 2026-09-28 observed Ruleset `22597364` active on the
+default branch with only `deletion` and `non_fast_forward`, no bypass actors,
+required reviews or Merge Queue. That protects history but does not prevent an
+owner from merging while exact-head engineering checks are missing or pending.
 
-A read on 2026-09-23 observed Ruleset `22597364` with only `deletion` and
-`non_fast_forward`. Effective rules for `main` matched. The former claim that
-two approvals, Code Owner review and Merge Queue were still mandatory is obsolete;
-`OWNER-RULESET-002` was removed from the actionable gap register. This is a dated
-observation, not a promise about future hosted configuration. No server setting
-was changed by this source cleanup.
+The intended minimum is therefore:
 
-Read current facts before any administrative operation:
+- retain deletion and non-fast-forward protection;
+- require exactly `canonical-admission-exact-head`, bound to GitHub Actions app
+  integration `15368` with strict up-to-date branch semantics;
+- keep required approvals, CODEOWNER review and Merge Queue absent unless a
+  genuinely independent process later justifies them.
 
-```bash
-gh api repos/TrillionniumFoundation/heptatrader/rulesets/22597364
-gh api repos/TrillionniumFoundation/heptatrader/rules/branches/main
-```
+The admission job is always event-reachable. For a documentation-only pull
+request it verifies the exact source/documentation job. For code, `main` and
+merge-group subjects it additionally requires exact-head Core Runtime plus GCC
+and Clang sanitizer jobs, including declared workflow, job and source identity.
+Missing, skipped, failed, spoofed or differently bound checks never pass.
 
-## Historical migration helper
+## Application and readback
 
-`scripts/plan_owner_ruleset.py` remains a narrowly scoped, offline migration
-helper for the older four-required-check baseline. It is not a recurring gate,
-not a valid plan for arbitrary newer rulesets, and not evidence that a PUT ran.
-It must reject an unsupported baseline instead of inventing permission. Its
-historical tests do not require restoring the old review/queue restrictions.
+`scripts/plan_owner_ruleset.py` accepts the exact live ruleset identity and
+scope, preserves unrelated rules, removes stale review/queue/status rules, and
+emits one no-overwrite JSON payload. It performs no network write. Apply that
+payload only after the admission workflow has merged to `main`, using repository
+Administration permission, then fetch Ruleset `22597364` again and validate the
+readback with `--verify-after`.
 
-Temporary tool access in a development session is not a persistent product gap.
-Changes to hosted permissions require a fresh read, explicit owner authority,
-a reviewed change and post-change readback. PAPER environment custody, account,
-kill switch, credentials and runtime authorization remain separate and unchanged.
+Source tests, a generated payload or an HTTP success response are not readback.
+If the live ruleset identity, conditions, bypass actors or baseline protections
+change, the planner rejects and requires fresh review rather than adapting
+silently. This repository governance never grants Broker, PAPER or LIVE
+authority.
