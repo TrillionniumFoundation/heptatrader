@@ -82,6 +82,39 @@ class SourceWorkflowCommandTests(unittest.TestCase):
             self.assert_controls_execute(block)
 
 
+class RequiredContextReachabilityTests(unittest.TestCase):
+    def test_required_contexts_are_unconditionally_event_reachable(self):
+        policy = json.loads(
+            (ROOT / ".github/required-check-contexts-v1.json").read_text(encoding="utf-8"))
+        self.assertTrue(policy["policy"]["required_contexts_must_be_event_reachable"])
+        self.assertTrue(policy["policy"]["skipped_or_missing_is_not_success"])
+        required = {
+            "pull_request": set(policy["required_pull_request_contexts"]),
+            "push": set(policy["required_branch_contexts"]),
+            "merge_group": set(policy["required_merge_group_contexts"]),
+        }
+        self.assertEqual(required["pull_request"], required["push"])
+        self.assertEqual(required["pull_request"], required["merge_group"])
+        provenance = policy["required_check_provenance"]
+        self.assertEqual(provenance["integration_id"], 15368)
+        contexts = provenance["contexts"]
+        self.assertEqual(set(contexts), required["pull_request"])
+        for event, expected_contexts in required.items():
+            for context in expected_contexts:
+                with self.subTest(event=event, context=context):
+                    item = contexts[context]
+                    workflow = yaml.load(
+                        (ROOT / item["workflow_path"]).read_text(encoding="utf-8"),
+                        Loader=yaml.BaseLoader)
+                    triggers = workflow["on"]
+                    self.assertIn(event, triggers)
+                    event_config = triggers[event]
+                    if isinstance(event_config, dict):
+                        self.assertNotIn("paths", event_config)
+                        self.assertNotIn("paths-ignore", event_config)
+
+
+
 class MonitoringScopeWorkflowTests(unittest.TestCase):
     def block(self) -> str:
         value = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))

@@ -3,11 +3,6 @@ name: Core Runtime CI
 on:
   pull_request:
     branches: [main]
-    paths-ignore:
-      - 'README.md'
-      - 'docs/**/*.md'
-      - 'doc/**'
-      - 'pic/**'
   push:
     branches: [main]
   merge_group:

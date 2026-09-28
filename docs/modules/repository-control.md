@@ -77,6 +77,10 @@ and structural checks and uses the same classifier for monitoring process scope.
 `scripts/ci_change_scope.py` owns the whitelist once; complete NUL-delimited Git
 diffs, base fetch/identity failures and unknown paths never grant exemptions.
 Python and runtime tests cannot be waived by a CI event or client field.
+The four contexts in `.github/required-check-contexts-v1.json` are reachable for
+every pull request, default-branch push and merge-group subject. Scope
+classification may omit an internal host/process phase, but it may not suppress
+an entire required workflow: a missing or skipped context is not success.
 Source and Monitoring CI also owns the shell-syntax and before/after
 exact-index observations; the standalone Qualification Source Audit is retired. GCC and Clang sanitizers remain independent
 native executions, not duplicate Python discovery.
