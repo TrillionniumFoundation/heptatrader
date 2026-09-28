@@ -12,6 +12,16 @@ import check_systemd_units as units  # noqa: E402
 
 
 class SystemdUnitTests(unittest.TestCase):
+    def test_user_paper_driver_orders_after_runtime_services_without_target_cycle(self):
+        path = ROOT / "systemd/user/heptatrader-paper-driver.service"
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("WantedBy=heptatrader.target", text)
+        self.assertIn("PartOf=heptatrader.target", text)
+        self.assertIn("Requires=heptatrader-execution.service heptatrader-gateway.service", text)
+        self.assertIn("After=heptatrader-execution.service heptatrader-gateway.service", text)
+        self.assertNotIn("After=heptatrader.target", text)
+        self.assertNotIn("Requires=heptatrader.target", text)
+
     def test_repository_units_satisfy_readiness_contract(self) -> None:
         self.assertEqual(units.validate(ROOT), [])
 
