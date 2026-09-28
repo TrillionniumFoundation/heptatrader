@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-import argparse,fcntl,json,math,os,signal,stat,subprocess,tempfile,time,uuid
+import argparse,fcntl,json,math,os,signal,stat,subprocess,tempfile,threading,time,uuid
 from pathlib import Path
 
 INSTRUMENT="EUR.USD"; QTY=25000.0; CONF=0.62; MAX_ADVERSE=0.002
@@ -155,6 +155,23 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
     atomic_json(path,state)
 
+class ModelWorker:
+    def __init__(self,codex,state_dir,history,position):
+        self.position=float(position); self.observed_at_ms=int(history[-1]["observed_at_ms"])
+        self._decision=None; self._error=None; self._done=threading.Event()
+        snapshot=[dict(x) for x in history]
+        def target():
+            try: self._decision=model_decision(codex,state_dir,snapshot,self.position)
+            except BaseException as error: self._error=error
+            finally: self._done.set()
+        self._thread=threading.Thread(target=target,name="heptatrader-paper-model",daemon=True)
+        self._thread.start()
+    def done(self): return self._done.is_set()
+    def result(self):
+        if not self.done(): raise DriverError("model result requested before completion")
+        if self._error is not None: raise self._error
+        return self._decision
+
 def model_decision(codex,state_dir,history,position):
     schema=state_dir/"decision-schema.json"
     schema_value={"type":"object","required":["action","confidence","rationale"],
@@ -220,7 +237,11 @@ def main():
     def stopping(_sig,_frame):
         nonlocal stop; stop=True
     signal.signal(signal.SIGTERM,stopping); signal.signal(signal.SIGINT,stopping)
-    state=load_state(state_path); atomic_json(state_path,state)
+    state=load_state(state_path)
+    if state.get("lease_renewal_state")=="POSSIBLY_SENT":
+        state["lease_uncertain"]=True; state["halt_new_entries"]=True
+        state["last_error"]="session renewal outcome uncertain after restart"
+    atomic_json(state_path,state); model_worker=None
     while not stop:
         started=time.monotonic()
         try:
@@ -232,21 +253,44 @@ def main():
                 inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
             else:
                 state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid())
-                decision=None; due=now_ms()-int(state.get("last_decision_ms",0))>=int(DECISION_SEC*1000)
-                if due and len(state["history"])>=6:
-                    decision=model_decision(codex,state_dir,state["history"],pos)
-                    state["last_decision_ms"]=now_ms(); state["decisions"]+=1; state["last_decision"]=decision
+                decision=None
+                # Safety exits are evaluated on every sample and never wait for the model.
+                if not snap["active"] and abs(pos)>1e-9:
+                    close,why=should_close(state,pos,q,None)
+                    if close:
+                        state["last_exit_reason"]=why; atomic_json(state_path,state)
+                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+                        atomic_json(state_path,state)
+                        if args.once: break
+                        time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                if model_worker is not None and model_worker.done():
+                    try:
+                        candidate=model_worker.result()
+                        age=now_ms()-model_worker.observed_at_ms
+                        if abs(pos-model_worker.position)>1e-9:
+                            raise DriverError("model decision discarded after authoritative position change")
+                        if age<0 or age>60000:
+                            raise DriverError("model decision discarded after market snapshot expiry")
+                        decision=candidate; state["decisions"]+=1; state["last_decision"]=decision
+                        state["last_decision_ms"]=now_ms(); state["last_error"]=""
+                    except Exception as error:
+                        state["last_error"]=("model HOLD: "+str(error))[:500]
+                    model_worker=None
                 if snap["active"]:
                     state["last_error"]="active broker order present; observing only"
-                elif abs(pos)>1e-9:
+                elif abs(pos)>1e-9 and decision is not None:
                     close,why=should_close(state,pos,q,decision)
                     if close:
                         state["last_exit_reason"]=why; atomic_json(state_path,state)
                         prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
-                elif not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in {"BUY","SELL"}:
+                elif abs(pos)<=1e-9 and not state.get("halt_new_entries") and decision and decision["confidence"]>=CONF and decision["action"] in {"BUY","SELL"}:
                     guard=run([cli,"paper-on"],10)
                     if guard.returncode!=0: raise DriverError("paper guard release failed")
                     prepare_send(state,state_path,binary,socket,token,str(outbox),"OPEN",q,decision["action"])
+                due=now_ms()-int(state.get("last_decision_attempt_ms",state.get("last_decision_ms",0)))>=int(DECISION_SEC*1000)
+                if model_worker is None and due and len(state["history"])>=6:
+                    state["last_decision_attempt_ms"]=now_ms(); atomic_json(state_path,state)
+                    model_worker=ModelWorker(codex,state_dir,state["history"],pos)
                 atomic_json(state_path,state)
         except Exception as e:
             state["last_error"]=str(e)[:500]; atomic_json(state_path,state)

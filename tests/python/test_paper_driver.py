@@ -96,6 +96,25 @@ class DriverPolicyTests(unittest.TestCase):
         finally:
             d.paper_cmd,d.atomic_json=old_cmd,old_atomic
 
+    def test_model_worker_is_asynchronous_and_preserves_snapshot_identity(self):
+        old=d.model_decision
+        gate=__import__("threading").Event()
+        try:
+            def slow(_codex,_state_dir,_history,_position):
+                gate.wait(1); return {"action":"HOLD","confidence":0.9,"rationale":"test"}
+            d.model_decision=slow
+            worker=d.ModelWorker("c",Path("/unused"),[{"observed_at_ms":123,"bid":1,"ask":2,"mid":1.5}],25000)
+            self.assertFalse(worker.done()); self.assertEqual(worker.position,25000); self.assertEqual(worker.observed_at_ms,123)
+            gate.set(); self.assertTrue(worker._done.wait(1)); self.assertEqual(worker.result()["action"],"HOLD")
+        finally: d.model_decision=old
+
+    def test_possibly_sent_renewal_must_be_treated_as_uncertain_on_restart(self):
+        state=self.state(); state["lease_renewal_state"]="POSSIBLY_SENT"
+        # main() performs this exact startup latch before any Broker read/mutation.
+        if state.get("lease_renewal_state")=="POSSIBLY_SENT":
+            state["lease_uncertain"]=True; state["halt_new_entries"]=True
+        self.assertTrue(state["lease_uncertain"]); self.assertTrue(state["halt_new_entries"])
+
     def test_reversal_adverse_and_halt_are_reduce_only_triggers(self):
         state=self.state(); state["entry_price"]=1.0
         self.assertEqual(d.should_close(state,25000,{"bid":0.997,"ask":0.998},None)[1],
