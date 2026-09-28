@@ -376,37 +376,21 @@ relabelled as remote source identities. The original source and external-consume
 retirement boundaries in the [integration record](../technical/heptadll-integration.md)
 remain unchanged.
 
-## Legacy file bundle and EOF continuation
+## Specialized contracts and CI ownership
 
-The existing Data SDK now receives the selected #106 BIN/XML profiles through
-an import-only adapter; it does not acquire a parallel Python bar/ledger/client.
-The existing BarBuilder adds explicit incomplete-tail EOF finalization from
-#108, and the existing native replay accepts explicit capital, multiplier and
-per-unit fees and rejects buffered output failure. Source and installed/relocated
-tests exercise the same implementations. See [contract and remaining differences](../../research/LEGACY-BUNDLE.md).
-These capabilities do not certify full historical parity, external consumer
-retirement, remote exact-head CI, main merge or old-repository archival.
+The [legacy BIN/XML and EOF contract](../../research/LEGACY-BUNDLE.md) owns its
+byte layouts, clock evidence, capture bounds, import-only boundary and retained
+differences. The [offline model contract](../../research/MODELS.md) separately
+owns order-flow, observed-next-open, slippage and accounting semantics. Both use
+the canonical Data/Analytics/Replay/Strategy implementations; neither creates a
+second production runtime or certifies unknown historical consumers.
 
-## Distinct offline model continuation
-
-`research/MODELS.md` defines the new explicit order-flow and observed next-open
-contracts, bounded grid slippage, and signed-price accounting opt-in. They are
-implemented in the existing Replay/Analytics translation units, using one native
-ledger/portfolio. The original positive Data codecs, NativeStrategyClient and
-production installation remain unchanged. `tests/research/replay_model_cases.h`
-is compiled by the existing replay test and by the installed/relocated external
-SDK consumer; it adds no compiled target or runtime registration. Source-level
-model ports are not certification of the alternative Python CLI, wide Decimal
-domain, old client-record formats or unknown legacy consumers.
-
-## CI ownership after integration
-
-Core Runtime CI builds and tests the canonical native client boundary once,
-exports its measured latency from that same CTest run and stages the separate
-StrategyClientSDK from that same build. The old additional canonical-client
-job is removed. The standalone offline SDK retains independent compiler and
-macOS/MSVC jobs, now also triggered on main and merge candidates. The GCC SDK
-artifact carries the exact source archive; no separate source-only job is needed.
-Sanitizer builds remain independent; their five-run recovery repetition runs
-on main/merge candidates instead of every PR iteration. No Broker evidence or
-platform result is inferred from another profile's successful build.
+Core Runtime CI owns the root-built native client boundary and its packaged
+StrategyClientSDK. The path-scoped
+[`HeptaDLL Modular Integration`](../../.github/workflows/heptadll-integration.yml)
+workflow owns the standalone SDK and cross-platform package checks. Exact run
+outcomes and source identities belong to those checks and pull requests, while
+consumer/retirement history remains in the
+[integration record](../technical/heptadll-integration.md). One lane's result is
+not evidence for another platform and none of these checks grants Broker
+qualification or PAPER/LIVE authority.

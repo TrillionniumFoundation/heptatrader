@@ -203,22 +203,16 @@ It does **not** establish host power-loss durability, an arbitrary instruction
 crash campaign, different-UID/systemd deployment, broker recovery, production
 latency, complete historical API/ABI migration or source-repository retirement.
 
-## Exact-head sanitizer evidence
+## Reliability evidence ownership
 
-The existing `Canonical Full Suite` GCC and Clang sanitizer jobs build the real
-core aggregate and execute its nonempty `core` CTest selection. On main and merge candidates they also require
-five successful consecutive runs of `hepta_research_native_execution_process_crash_tests`;
-a missing test or any failed repetition fails the job. This reuses the existing
-three SIGKILL/re-exec scenarios rather than adding a mock acceptance executable.
-The test's per-invocation timeout and unprivileged-user requirement are unchanged.
-
-Each job records the checked-out commit and tree, actual CTest inventory, JUnit
-results, separate core/recovery CTest logs and temporary test diagnostics. The
-artifact is identified by compiler build, source SHA, run and attempt. Source
-identity and tracked-file cleanliness are rechecked after execution. Uploading
-logs with `always()` preserves failures; neither an uploaded artifact nor a
-queued workflow establishes test success. The existing installed-process,
-SDK-package, ownership and broker-qualification checks remain separate claims.
+The process-death scenarios above are behavior contracts. Exact checkout,
+sanitizer matrix, repetition policy, diagnostic retention and source-cleanliness
+checks are owned by [repository control](repository-control.md) and the actual
+[`Canonical Full Suite`](../../.github/workflows/canonical-full-suite.yml).
+Per-run outcomes belong to the corresponding pull request and workflow run;
+copying them into this module contract would not make a candidate accepted.
+Installed-process, SDK-package, ownership and Broker-qualification evidence
+remain separate claims.
 
 ## Installable forward-only developer SDK
 

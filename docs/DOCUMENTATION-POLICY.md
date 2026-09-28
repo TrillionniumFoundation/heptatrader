@@ -32,6 +32,10 @@ state transitions, durability boundaries, concurrency, failures, compatibility
 and representative tests. Topics that genuinely do not apply can say so. A
 scaffold should explain what is absent rather than describe a future design as
 implemented. A legacy boundary document is not a claim of full legacy support.
+Stable module contracts may define required acceptance behavior, but exact SHAs,
+workflow-run outcomes and one-off convergence narratives belong to the associated
+pull request, run evidence or an explicitly historical record rather than being
+copied into every current module page.
 
 No byte, paragraph, keyword or heading-count score establishes design quality.
 Structural lint may pass a concise document; review must still determine whether
