@@ -82,3 +82,22 @@ A target restart re-creates an engaged guard, so deliberate re-enablement is
 explicit and password-free. Neither command changes the system profile.
 The runtime-directory preparation unit has no default dependency on basic.target;
 it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.
+
+## Resident autonomous PAPER driver
+
+The user-owned runtime may enable `heptatrader-paper-driver.service`. It restores
+only the behavior loop from the historical local AI PAPER agent: 10-second quote
+sampling, 120-second `gpt-6-luna` direction decisions, 0.62 reversal threshold,
+25,000-unit EUR.USD MKT entries, 0.2% adverse-move reduce-only exits, and continuous
+restart recovery. The model process has no HeptaTrader MCP server and cannot send
+orders; it emits only BUY/SELL/HOLD JSON. All mutations use the existing
+`hepta-paper-command` / `NativeStrategyClient` / HSR1 / Tool Gateway / Execution
+path.
+
+Before the only send attempt, the driver durably records `POSSIBLY_SENT`. A crash,
+timeout or restart after that boundary performs only `execution.get_command_status`
+for the original command and authoritative Broker reconciliation; it never obtains
+a replacement preview or sends under a new command ID. Active Broker orders block
+new decisions. Existing exposure can only be reduced by authoritative flatten.
+Session renewal is generational and a renewal uncertainty permanently disables new
+entries while retaining reduce-only exit behavior. LIVE is never selected.

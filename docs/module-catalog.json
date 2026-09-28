@@ -379,7 +379,9 @@
         "scripts/resolve_hepta_config.py",
         "scripts/check_systemd_units.py",
         "scripts/hepta_telemetry_collect.py",
-        "scripts/heptatrader-user"
+        "scripts/heptatrader-user",
+        "scripts/heptatrader_paper_driver.py",
+        "systemd/user/heptatrader-paper-driver.service"
       ],
       "tests": [
         "tests/python/test_documentation_control_plane.py",
@@ -392,7 +394,8 @@
         "tests/systemd_simulator_smoke.py",
         "tests/python/test_systemd_smoke_admission.py",
         "tests/python/test_telemetry_collection.py",
-        "tests/monitoring/process_smoke.py"
+        "tests/monitoring/process_smoke.py",
+        "tests/python/test_paper_driver.py"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

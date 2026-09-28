@@ -29,6 +29,9 @@ endif()
 if(TARGET hepta_paper_terminal_latch_committer)
     list(APPEND _hepta_runtime_targets hepta_paper_terminal_latch_committer)
 endif()
+if(TARGET hepta_paper_command)
+    list(APPEND _hepta_runtime_targets hepta_paper_command)
+endif()
 
 foreach(_hepta_target IN LISTS _hepta_runtime_targets)
     if(NOT TARGET "${_hepta_target}")
@@ -64,6 +67,7 @@ install(FILES
 
 set(_hepta_runtime_helpers
     scripts/heptatrader-user
+    scripts/heptatrader_paper_driver.py
     scripts/hepta-user-mcp
     scripts/hepta_agent_mcp_launcher.py
     scripts/hepta_agent_trust_domain.py

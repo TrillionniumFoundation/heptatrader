@@ -16,7 +16,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
-    "scripts/heptatrader-user", "scripts/hepta-user-mcp",
+    "scripts/heptatrader-user", "scripts/hepta-user-mcp", "scripts/heptatrader_paper_driver.py",
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
     "scripts/hepta_broker_egress_policy.py", "scripts/resolve_hepta_config.py",
     "scripts/run_release_simulator_smoke.py",
