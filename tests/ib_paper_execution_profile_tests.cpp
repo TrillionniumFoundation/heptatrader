@@ -1,4 +1,5 @@
 #include "execution/ib_paper_execution_profile.h"
+#include "execution/ib_paper_execution_runtime_config.h"
 
 #include <cassert>
 #include <chrono>
@@ -39,6 +40,26 @@ std::map<std::string, std::string> QualificationValues()
     values["CREDENTIALS_DIRECTORY"] =
         "/run/credentials/hepta-qualification";
     return values;
+}
+
+void TestProductionIdentityUsesSelectedCustody()
+{
+    IbPaperExecutionRuntimeConfig config;
+    config.mode = IbPaperExecutionRuntimeMode::Paper;
+    std::string reason;
+    const std::uint32_t uid = static_cast<std::uint32_t>(::geteuid());
+    config.allowedGatewayUids.insert(uid);
+    assert(!config.ValidateProductionIdentity(uid, reason));
+    config.profile.userScope = true;
+    assert(config.ValidateProductionIdentity(uid, reason) == (uid != 0));
+    config.allowedGatewayUids.clear();
+    config.allowedGatewayUids.insert(uid + 1);
+    assert(!config.ValidateProductionIdentity(uid, reason));
+    config.profile.userScope = false;
+    assert(config.ValidateProductionIdentity(uid, reason) == (uid != 0));
+    config.profile.userScope = true;
+    assert(!config.ValidateProductionIdentity(uid + 1, reason));
+    assert(!config.ValidateProductionIdentity(0, reason));
 }
 
 void TestUserPaperCustodyIsExplicitAndBounded()
@@ -371,6 +392,7 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 
 int main()
 {
+    TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();

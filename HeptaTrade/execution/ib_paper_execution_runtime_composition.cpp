@@ -374,8 +374,8 @@ bool IbPaperExecutionRuntimeComposition::ValidateStartupContract(
     { if (reason.empty()) reason = "IB_PAPER_RUNTIME_DISABLED"; CloseUnconsumedListenFds(); return false; }
 #if defined(HEPTA_ENABLE_IBAPI)
     // The IB-disabled binary is a non-installable process-test stub. Every real
-    // broker-capable build enforces numeric UID separation at runtime, in
-    // addition to the unit and provisioned-host name/UID contract.
+    // broker-capable build validates its selected custody: separate UIDs for
+    // system services, exact owning UID for explicit single-user PAPER.
     if (!validation.ValidateProductionIdentity(
             static_cast<std::uint32_t>(::geteuid()), reason))
     {

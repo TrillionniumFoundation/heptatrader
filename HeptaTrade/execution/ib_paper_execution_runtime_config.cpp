@@ -480,7 +480,10 @@ bool IbPaperExecutionRuntimeConfig::ValidateProductionIdentity(
         return false;
     }
     if (allowedGatewayUids.size() != 1 ||
-        *allowedGatewayUids.begin() == effectiveServiceUid)
+        (profile.userScope ?
+            (effectiveServiceUid != ::geteuid() ||
+             *allowedGatewayUids.begin() != effectiveServiceUid) :
+            *allowedGatewayUids.begin() == effectiveServiceUid))
     {
         reason = "IB_PAPER_GATEWAY_UID_NOT_ISOLATED";
         return false;
