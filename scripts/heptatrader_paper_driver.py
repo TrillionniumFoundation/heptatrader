@@ -82,7 +82,9 @@ def recent_fill(orders,oid):
     for row in orders.get("recent_orders",[]):
         if row.get("order_id")==oid and row.get("economic_fill") is True:
             price=float(row.get("average_fill_price",0)); qty=float(row.get("filled_quantity",0))
-            if price>0 and qty>0 and math.isfinite(price) and math.isfinite(qty): return price
+            if price>0 and qty>0 and math.isfinite(price) and math.isfinite(qty):
+                return {"price":price,"quantity":qty,"terminal":row.get("terminal") is True,
+                    "side":row.get("side")}
     return None
 
 def terminal_nonfill(orders,oid):
@@ -123,16 +125,32 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         payload=inspected["result"].get("payload") or {}
         if isinstance(payload.get("order_id"),int) and payload["order_id"]>=0: p["broker_order_id"]=payload["order_id"]
     oid=p.get("broker_order_id"); pos=float(snap["position"]); active=snap["active"]; fill=recent_fill(snap["orders"],oid)
+    fill_price=fill.get("price") if fill else None
     p["last_status"]={"at_ms":now_ms(),"command_status":payload.get("command_status"),"reason_code":payload.get("reason_code","")}
-    if p["kind"]=="OPEN" and abs(pos)>=QTY-1e-9 and not active:
-        state["position"]=pos; state["entries"]+=1; state["entry_price"]=fill or p.get("reference_price")
-        state["entry_price_basis"]="broker_average_fill_price" if fill else "preview_reference_fallback"
-        state["entry_at_ms"]=now_ms(); state["pending"]=None; state["last_error"]=""
+    expected_sign=1.0 if p.get("side")=="BUY" else -1.0 if p.get("side")=="SELL" else 0.0
+    open_position_matches=(p["kind"]=="OPEN" and not active and abs(pos)>1e-9 and
+        abs(pos)<=QTY+1e-9 and expected_sign*pos>0)
+    if open_position_matches:
+        state["position"]=pos; state["entries"]+=1
+        state["entry_price"]=fill_price
+        state["entry_price_basis"]="broker_average_fill_price" if fill else "unavailable"
+        state["entry_at_ms"]=now_ms(); state["pending"]=None
+        if abs(pos)<QTY-1e-9 or not fill:
+            state["halt_new_entries"]=True
+            state["last_error"]="partial or price-unproven entry adopted; reduce-only exit required"
+        else:
+            state["last_error"]=""
     elif p["kind"]=="CLOSE" and abs(pos)<1e-9 and not active:
         entry=state.get("entry_price"); old=float(state.get("position",0))
-        if fill and entry and old: state["gross_pnl"]+=((fill-entry)*QTY if old>0 else (entry-fill)*QTY)
+        if fill_price and entry and old:
+            closed_qty=min(abs(old),float(fill.get("quantity",QTY)))
+            state["gross_pnl"]+=((fill_price-entry)*closed_qty if old>0 else (entry-fill_price)*closed_qty)
         state.update(position=0.0,entry_price=None,entry_price_basis=None,entry_at_ms=None,pending=None,last_error="")
         state["exits"]+=1; state["closed_trades"]+=1
+    elif (p["kind"]=="CLOSE" and not active and fill and fill.get("terminal") and
+          abs(pos)>1e-9 and abs(pos)<abs(float(state.get("position",0)))-1e-9):
+        state["position"]=pos; state["pending"]=None; state["halt_new_entries"]=True
+        state["last_error"]="partial flatten terminal; remaining exposure requires next exact reduce-only flatten"
     elif (payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],oid)) and not active:
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
     atomic_json(path,state)

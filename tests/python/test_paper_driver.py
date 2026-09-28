@@ -52,7 +52,7 @@ class DriverPolicyTests(unittest.TestCase):
             d.paper_cmd=lambda *_args,**_kw: {"ok":True,"result":{"payload":{
                 "command_status":"accepted","order_id":42,"reason_code":""}}}
             state=self.state(); state["pending"]={"kind":"OPEN","command_id":"execution-command-0001",
-                "broker_order_id":42,"reference_price":1.1}
+                "broker_order_id":42,"reference_price":1.1,"side":"BUY"}
             orders={"recent_orders":[{"order_id":42,"economic_fill":True,
                 "filled_quantity":25000,"average_fill_price":1.101,"terminal":True}]}
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",
@@ -67,6 +67,32 @@ class DriverPolicyTests(unittest.TestCase):
                 {"position":0.0,"active":[],"orders":orders})
             self.assertIsNone(state["pending"]); self.assertEqual(state["exits"],1)
             self.assertEqual(state["closed_trades"],1)
+        finally:
+            d.paper_cmd,d.atomic_json=old_cmd,old_atomic
+
+    def test_partial_entry_latches_reduce_only_and_partial_close_continues(self):
+        old_cmd,old_atomic=d.paper_cmd,d.atomic_json
+        try:
+            d.atomic_json=lambda *_: None
+            def inspect(_b,_s,_t,_o,_op,extra):
+                oid=53 if "execution-command-0053" in extra else 52
+                return {"ok":True,"result":{"payload":{"command_status":"accepted","order_id":oid,"reason_code":""}}}
+            d.paper_cmd=inspect
+            state=self.state(); state["pending"]={"kind":"OPEN","command_id":"execution-command-0052",
+                "broker_order_id":52,"reference_price":1.1,"side":"BUY"}
+            orders={"recent_orders":[{"order_id":52,"economic_fill":True,"filled_quantity":10000,
+                "average_fill_price":1.101,"terminal":True}]}
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",
+                {"position":10000.0,"active":[],"orders":orders})
+            self.assertIsNone(state["pending"]); self.assertTrue(state["halt_new_entries"])
+            self.assertEqual(state["position"],10000.0)
+            state["pending"]={"kind":"CLOSE","command_id":"execution-command-0053","broker_order_id":53}
+            orders={"recent_orders":[{"order_id":53,"economic_fill":True,"filled_quantity":4000,
+                "average_fill_price":1.102,"terminal":True}]}
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",
+                {"position":6000.0,"active":[],"orders":orders})
+            self.assertIsNone(state["pending"]); self.assertEqual(state["position"],6000.0)
+            self.assertIn("remaining exposure",state["last_error"])
         finally:
             d.paper_cmd,d.atomic_json=old_cmd,old_atomic
 
