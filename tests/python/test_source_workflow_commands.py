@@ -401,11 +401,14 @@ class CanonicalSanitizerWorkflowCommandTests(unittest.TestCase):
 
 
 class FocusedDevelopmentRunnerTests(unittest.TestCase):
-    def invoke(self, *arguments, fail="", jobs="2"):
+    def invoke(self, *arguments, fail="", jobs="2", tools=("cmake", "ctest")):
         with tempfile.TemporaryDirectory(prefix="hepta-dev-entry-") as directory:
             root = Path(directory)
             binary, build, calls = root / "bin", root / "build with spaces", root / "calls.jsonl"
             binary.mkdir()
+            dirname = shutil.which("dirname")
+            self.assertIsNotNone(dirname)
+            (binary / "dirname").symlink_to(dirname)
             stub = "#!" + sys.executable + "\n" + (
                 "import json, os, pathlib, sys\n"
                 "name = pathlib.Path(sys.argv[0]).name\n"
@@ -415,13 +418,13 @@ class FocusedDevelopmentRunnerTests(unittest.TestCase):
                 "if phase == os.environ['HEPTA_TEST_FAIL']: sys.exit(37)\n"
                 "if phase == 'configure': pathlib.Path(sys.argv[sys.argv.index('-B')+1]).mkdir(parents=True)\n"
             )
-            for name in ("cmake", "ctest"):
+            for name in tools:
                 executable = binary / name
                 executable.write_text(stub, encoding="utf-8")
                 executable.chmod(0o755)
             result = subprocess.run(
                 ["/bin/bash", "--noprofile", "--norc", str(ROOT / "scripts/dev_core.sh"), *arguments],
-                env=dict(os.environ, PATH=str(binary) + os.pathsep + os.environ.get("PATH", os.defpath),
+                env=dict(os.environ, PATH=str(binary),
                          BASH_ENV="/dev/null", HEPTA_BUILD_DIR=str(build), HEPTA_JOBS=jobs,
                          HEPTA_TEST_CALLS=str(calls), HEPTA_TEST_FAIL=fail),
                 capture_output=True, text=True, timeout=10)
@@ -460,6 +463,12 @@ class FocusedDevelopmentRunnerTests(unittest.TestCase):
                 result, calls = self.invoke("--storage", fail=phase)
                 self.assertEqual(result.returncode, 37, result.stderr)
                 self.assertEqual(len(calls), expected_calls)
+
+    def test_missing_tool_fails_once_before_configuration(self):
+        result, calls = self.invoke("--storage", tools=("cmake",))
+        self.assertEqual(result.returncode, 69, result.stderr)
+        self.assertIn("Missing required development tool(s) on PATH: ctest", result.stderr)
+        self.assertEqual(calls, [])
 
     def test_invalid_selection_or_parallelism_fails_before_configuration(self):
         for args, jobs in ((("--unknown",), "2"), (("--storage", "extra"), "2"),

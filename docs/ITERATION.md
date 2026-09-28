@@ -3,6 +3,11 @@
 Status: CURRENT
 Applies to: canonical source development
 
+Local native and source validation requires `cmake`, `ctest`, a C++ compiler and
+Python 3 on `PATH`; Ninja is used when present. The canonical entry points reject
+missing CMake/CTest before loading tests or starting a build, so an incomplete
+workstation does not produce a page of misleading product failures.
+
 `./scripts/dev_core.sh` configures the broker-disabled/default-off legacy profile,
 builds canonical native targets and runs the core CTest label. Python test
 ownership is defined once by `scripts/run_python_tests.py`; core, source, install
