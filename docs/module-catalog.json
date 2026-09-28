@@ -408,6 +408,7 @@
         "scripts/run_python_tests.py",
         "scripts/render_protocol_reference.py",
         "scripts/plan_owner_ruleset.py",
+        "scripts/verify_required_checks.py",
         "scripts/source_json.py",
         "scripts/ci_change_scope.py"
       ],
@@ -421,6 +422,7 @@
         "tests/python/test_ib_workflow_interfaces.py",
         "tests/python/test_protocol_reference.py",
         "tests/python/test_owner_ruleset_plan.py",
+        "tests/python/test_required_check_admission.py",
         "tests/python/test_source_workflow_commands.py",
         "tests/python/test_source_json.py"
       ],

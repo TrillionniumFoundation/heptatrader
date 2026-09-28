@@ -11,22 +11,13 @@
     "check_run_must_bind_workflow_and_non_empty_job": true
   },
   "required_branch_contexts": [
-    "documentation-control-plane-exact-head",
-    "core-runtime-exact-head",
-    "canonical-full-suite-reliability (g++)",
-    "canonical-full-suite-reliability (clang++)"
+    "canonical-admission-exact-head"
   ],
   "required_pull_request_contexts": [
-    "documentation-control-plane-exact-head",
-    "core-runtime-exact-head",
-    "canonical-full-suite-reliability (g++)",
-    "canonical-full-suite-reliability (clang++)"
+    "canonical-admission-exact-head"
   ],
   "required_merge_group_contexts": [
-    "documentation-control-plane-exact-head",
-    "core-runtime-exact-head",
-    "canonical-full-suite-reliability (g++)",
-    "canonical-full-suite-reliability (clang++)"
+    "canonical-admission-exact-head"
   ],
   "required_check_provenance": {
     "integration_id": 15368,
@@ -50,6 +41,11 @@
         "workflow_id": 346064356,
         "workflow_path": ".github/workflows/canonical-full-suite.yml",
         "job_name": "canonical-full-suite-reliability (clang++)"
+      },
+      "canonical-admission-exact-head": {
+        "workflow_id": 346626270,
+        "workflow_path": ".github/workflows/documentation-control-plane.yml",
+        "job_name": "canonical-admission-exact-head"
       }
     }
   },
@@ -59,5 +55,16 @@
   "non_required_observation_contexts": [
     "ib-paper-candidate-artifact-build",
     "X230 IB runner probe"
-  ]
+  ],
+  "admission_profiles": {
+    "documentation_only_pull_request": [
+      "documentation-control-plane-exact-head"
+    ],
+    "full": [
+      "documentation-control-plane-exact-head",
+      "core-runtime-exact-head",
+      "canonical-full-suite-reliability (g++)",
+      "canonical-full-suite-reliability (clang++)"
+    ]
+  }
 }

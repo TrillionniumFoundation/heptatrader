@@ -2,8 +2,8 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.github`, `.agents`, `scripts/README.md`, `scripts/check_component_coverage.py`, `scripts/check_documentation.py`, `scripts/check_gap_register.py`, `scripts/dev_core.sh`, `scripts/verify_build_ownership.py`, `scripts/verify_exact_git_index.py`, `scripts/run_python_tests.py`, `scripts/render_protocol_reference.py`, `scripts/plan_owner_ruleset.py`, `scripts/source_json.py`, `scripts/ci_change_scope.py`
-Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_gap_register.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_documentation_structure.py`, `tests/python/test_python_test_partition.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_protocol_reference.py`, `tests/python/test_owner_ruleset_plan.py`, `tests/python/test_source_workflow_commands.py`, `tests/python/test_source_json.py`
+Implementation: `.github`, `.agents`, `scripts/README.md`, `scripts/check_component_coverage.py`, `scripts/check_documentation.py`, `scripts/check_gap_register.py`, `scripts/dev_core.sh`, `scripts/verify_build_ownership.py`, `scripts/verify_exact_git_index.py`, `scripts/run_python_tests.py`, `scripts/render_protocol_reference.py`, `scripts/plan_owner_ruleset.py`, `scripts/verify_required_checks.py`, `scripts/source_json.py`, `scripts/ci_change_scope.py`
+Tests: `tests/python/test_component_coverage.py`, `tests/python/test_documentation_control_plane.py`, `tests/python/test_gap_register.py`, `tests/python/test_qualification_trust_boundary.py`, `tests/python/test_documentation_structure.py`, `tests/python/test_python_test_partition.py`, `tests/python/test_ib_workflow_interfaces.py`, `tests/python/test_protocol_reference.py`, `tests/python/test_owner_ruleset_plan.py`, `tests/python/test_required_check_admission.py`, `tests/python/test_source_workflow_commands.py`, `tests/python/test_source_json.py`
 
 ## Responsibilities
 
@@ -18,6 +18,7 @@ The component-coverage verifier discovers production paths from the exact Git in
 - `scripts/check_gap_register.py` validates an extensible issue inventory and authorization invariants. Open issues are allowed; only an explicit `--release-profile` check rejects its scoped unresolved blockers.
 - `scripts/verify_build_ownership.py` validates the selected live CMake File API model against module ownership and tracked-source reachability; optional reports are generated evidence, not checked-in truth.
 - Maintained workflows execute those controls on pull-request, main, and merge-group subjects as applicable.
+- `scripts/verify_required_checks.py` produces the single always-present `canonical-admission-exact-head` result after validating the applicable exact-head evidence profile and its GitHub Actions provenance.
 
 ## State and persistence
 
@@ -42,15 +43,15 @@ Repository credentials, review settings, CI status, host credentials, runner cus
 
 The repository is maintained as an owner-operated project. Under that operating model, source admission should spend human effort on executable evidence rather than manufactured approval counts. `scripts/plan_owner_ruleset.py` therefore defines a read-only transition plan with the following intended server-side result:
 
-- retain the four canonical exact-head status checks;
 - retain deletion and non-fast-forward protection;
+- require one always-present `canonical-admission-exact-head` context bound to GitHub Actions;
+- have that context verify source evidence alone for documentation-only pull requests and source + core + GCC/Clang sanitizer evidence for code, main and merge-group subjects;
 - remove required approval count, CODEOWNER approval, last-push approval and stale-review churn when there is no genuinely independent reviewer performing those roles;
-- remove Merge Queue when it adds no real concurrent-integration value for the current owner-operated flow;
-- keep exact-head evidence semantics through the remaining checks. Removing the `pull_request` rule also removes that Ruleset's server-enforced merge-method restriction; squash-only history is therefore not claimed by this transition unless repository merge settings are changed separately and read back.
+- omit Merge Queue when it adds no real concurrent-integration value for the current owner-operated flow.
 
 This is **not** implemented by inventing a source-side “approval” file, dummy reviewer, duplicate CI gate or token check. Those would recreate the same formalism in another layer without adding independent judgment.
 
-The live GitHub Ruleset is an external server fact. The 2026-09-23 readback recorded in `technical/owner-ruleset-transition.md` showed only deletion and non-fast-forward protection; the former approval/Merge Queue blocker was removed rather than kept as stale project work. Future server changes require fresh authenticated readback and must not be inferred from source-side planner output.
+The live GitHub Ruleset is an external server fact. The 2026-09-28 readback recorded in `technical/owner-ruleset-transition.md` still showed only deletion and non-fast-forward protection. This source change makes the admission context executable and prepares an exact payload; it does not claim the server update occurred. Applying it requires fresh authenticated readback after the workflow exists on `main`, followed by exact post-change verification.
 
 ## Observability
 
@@ -82,6 +83,8 @@ exact-index observations; the standalone Qualification Source Audit is retired. 
 native executions, not duplicate Python discovery.
 
 The canonical ordinary development entry is `./scripts/dev_core.sh` plus the explicit `core` and `source` Python lanes. Install/process acceptance keeps its stronger isolated-host and release-artifact prerequisites and is invoked by the release acceptance path. An unscoped `unittest discover` command is not the project-wide acceptance interface, and targeted debugging commands do not substitute for their owning lane.
+
+The ruleset does not directly require four conditionally present job names. The always-present admission job validates the exact source job for documentation-only changes and otherwise waits for and provenance-checks the source, core and both sanitizer jobs. This preserves narrow feedback without allowing a path filter, skipped job, lookalike check app or different workflow run to satisfy branch admission.
 
 The optional PAPER workflow is parsed as YAML by
 `scripts/check_qualification_trust_boundary.py` (development dependency:

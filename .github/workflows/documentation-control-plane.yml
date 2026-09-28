@@ -9,6 +9,8 @@ on:
     types: [checks_requested]
 
 permissions:
+  actions: read
+  checks: read
   contents: read
 
 concurrency:
@@ -128,3 +130,52 @@ jobs:
           git diff --exit-code -- .
           git diff --cached --exit-code -- .
           python3 scripts/verify_exact_git_index.py --root .
+
+
+  admission:
+    name: canonical-admission-exact-head
+    needs: documentation
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Checkout exact event subject without credentials
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact-head evidence profile
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RESULT: ${{ needs.documentation.result }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REPOSITORY: ${{ github.event.pull_request.base.repo.full_name }}
+          SERVER_URL: ${{ github.server_url }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_required_checks.py \
+            --root . \
+            --event-name "$EVENT_NAME" \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --base-repository "$BASE_REPOSITORY" \
+            --server-url "$SERVER_URL" \
+            --repository "$REPOSITORY" \
+            --source-result "$SOURCE_RESULT"
+
+      - name: Reassert clean exact source
+        if: always()
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          git diff --check
+          git diff --exit-code -- .
+          git diff --cached --exit-code -- .
