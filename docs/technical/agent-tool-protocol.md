@@ -103,3 +103,8 @@ fragmented responses, repeated uncertain/duplicate mutation identity, discovery
 hashes, malformed values, token links and line bounds. Its synthetic gateway
 is a protocol fixture, not a Broker. The native client, registry and Unix server
 C++ tests independently exercise the opposite side and authority checks.
+
+MCP `system.tools.describe` requires an exact tool name from the admitted catalog,
+without its MCP server prefix. The bridge rejects non-visible targets before
+forwarding and validates successful descriptions against that same catalog; it
+never relaxes response-tool or schema binding to conceal a malformed request.

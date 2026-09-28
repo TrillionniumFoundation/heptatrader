@@ -67,6 +67,36 @@ class McpBridgeTests(unittest.TestCase):
         gateway._call_native = mock.Mock(return_value=envelope("system.tools.list", payload or discovery()))
         return gateway
 
+    def test_description_target_does_not_replace_operation_identity(self) -> None:
+        fields = decode_fields(mcp.encode_request("token", "system.tools.describe", "describe-0001",
+            {"tool_name": "market.get_quote"}, ""))
+        self.assertEqual(fields[3], "system.tools.describe")
+        self.assertEqual(fields[21], "market.get_quote")
+
+    def test_description_binds_visible_target_and_current_catalog(self) -> None:
+        target = descriptor()
+        described = copy.deepcopy(target)
+        described.update(name="system.tools.describe", description="Describe a tool",
+            required_capability="system.read", effect="read", input_schema={
+                "type":"object", "required":["tool_name"], "properties":{"tool_name":{"type":"string"}},
+                "additionalProperties":False})
+        described["schema_hash"] = mcp.descriptor_schema_hash(described)
+        gateway = self.gateway()
+        gateway.descriptors = {target["name"]:target, described["name"]:described}
+        gateway.catalog_hash = mcp.catalog_schema_hash(list(gateway.descriptors.values()))
+        payload = {"protocol":mcp.PROTOCOL_NAME, "catalog_schema_hash":gateway.catalog_hash, "tool":target}
+        gateway._call_native.return_value = envelope("system.tools.describe", payload)
+        self.assertEqual(gateway.call("system.tools.describe", {"tool_name":target["name"]})["status"], "ok")
+        for wrong in ("heptatrader/"+target["name"], "unknown.tool", True):
+            gateway._call_native.reset_mock()
+            with self.assertRaises(ValueError): gateway.call("system.tools.describe", {"tool_name":wrong})
+            gateway._call_native.assert_not_called()
+        changed = copy.deepcopy(target); changed["description"] = "substituted"
+        changed["schema_hash"] = mcp.descriptor_schema_hash(changed)
+        gateway._call_native.return_value = envelope("system.tools.describe", dict(payload, tool=changed))
+        with self.assertRaisesRegex(RuntimeError, "admitted catalog"):
+            gateway.call("system.tools.describe", {"tool_name":target["name"]})
+
     def test_wire_vector_and_reserved_fields(self) -> None:
         actual = mcp.encode_request("token", "trade.cancel_order", "command-0001", {"order_id": 42}, "")
         expected_fields = {1: "token", 2: "command-0001", 3: "trade.cancel_order", 5: "42", 22: "1", 23: "1"}

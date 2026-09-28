@@ -448,8 +448,23 @@ class NativeToolGateway:
         if schema.get("additionalProperties") is False and any(
                 key not in properties for key in native_arguments):
             raise ValueError("tool arguments contain an unknown property")
-        return self._call_native(
+        target = None
+        if name == "system.tools.describe":
+            target = native_arguments.get("tool_name")
+            if not isinstance(target, str) or target not in self.descriptors:
+                raise ValueError("tool_name must be an exact visible catalog name, without an MCP server prefix")
+        result = self._call_native(
             name, native_arguments, descriptor["schema_hash"], command_id)
+        if target is not None and result["status"] == "ok":
+            payload = result.get("payload")
+            if not isinstance(payload, dict) or payload.get("protocol") != PROTOCOL_NAME or \
+                    payload.get("catalog_schema_hash") != self.catalog_hash:
+                raise RuntimeError("tool description catalog mismatch")
+            described = payload.get("tool")
+            descriptor_schema_hash(described)
+            if described != self.descriptors[target]:
+                raise RuntimeError("tool description differs from the admitted catalog")
+        return result
 
 
 def success(request_id, result):
