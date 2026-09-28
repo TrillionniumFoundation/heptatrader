@@ -229,3 +229,11 @@ endif()
 
 # Historical HeptaDLL metadata is owned by the source Python partition.
 # Runtime compatibility, client isolation and old-record behavior remain native tests.
+
+# The local-operator utility is built from the same policy objects as Execution.
+add_dependencies(hepta_ib_paper_execution_profile_tests hepta_ib_profile)
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME hepta_user_profile_cli_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/user_profile_cli_tests.py
+            $<TARGET_FILE:hepta_ib_profile>)
+set_tests_properties(hepta_user_profile_cli_tests PROPERTIES LABELS "core" TIMEOUT 20)

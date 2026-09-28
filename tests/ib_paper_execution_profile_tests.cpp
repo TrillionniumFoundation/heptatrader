@@ -41,6 +41,53 @@ std::map<std::string, std::string> QualificationValues()
     return values;
 }
 
+void TestUserPaperCustodyIsExplicitAndBounded()
+{
+    auto values = QualificationValues();
+    values.erase("HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY");
+    values.erase("HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL");
+    values["HEPTA_IB_PAPER_USER_SCOPE"] = "1";
+    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "25000";
+    values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"] = "35000";
+    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "25000";
+    values["HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE"] = "2";
+    values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"] = IbPaperExecutionProfileConfig::UserControlDirectoryPath();
+    IbPaperExecutionProfileConfig profile;
+    std::string reason, credential;
+    const bool admitted = IbPaperExecutionProfileConfig::FromValues(values, profile, reason);
+    if (::geteuid() == 0 || ::getegid() == 0)
+    { assert(!admitted); return; }
+    assert(admitted && profile.userScope);
+    assert(profile.BuildAuthorizationCredential(credential, reason));
+    assert(credential.find("PAPER-USER-V1:sha256:") == 0);
+    const std::string original = credential;
+    auto changed = values;
+    changed["HEPTA_IB_PAPER_QUOTE_CONTRACTS"] = "GBP.USD|GBP|CASH|IDEALPRO|USD";
+    changed["HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT"] = "GBP.USD";
+    assert(IbPaperExecutionProfileConfig::FromValues(changed, profile, reason));
+    assert(profile.BuildAuthorizationCredential(credential, reason) && credential != original);
+    const std::pair<const char*, const char*> bad[] = {
+        {"HEPTA_IB_PAPER_USER_SCOPE", "yes"}, {"HEPTA_IB_PAPER_USER_SCOPE", "0"},
+        {"HEPTA_IB_EXECUTION_MODE", "LIVE"}, {"HEPTA_IB_EXECUTION_MODE", "DISABLED"},
+        {"HEPTA_IB_PAPER_ACCOUNT", "U12345"}, {"HEPTA_IB_PAPER_PORT", "4001"},
+        {"HEPTA_IB_PAPER_HOST", "192.0.2.1"},
+        {"HEPTA_IB_PAPER_CONTROL_DIRECTORY", "/run/user/1/heptatrader/control"},
+        {"HEPTA_IB_PAPER_MAX_ACTIVE_ORDERS", "2"},
+        {"HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE", "3"},
+        {"HEPTA_IB_PAPER_MAX_ORDER_QTY", "25001"},
+        {"HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL", "35001"},
+        {"HEPTA_IB_PAPER_MAX_GROSS_POSITION", "25001"},
+        {"HEPTA_IB_PAPER_QUOTE_MAX_AGE_MS", "5001"},
+        {"HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT", "GBP.USD"}};
+    for (const auto& item : bad)
+    {
+        changed = values; changed[item.first] = item.second;
+        assert(!IbPaperExecutionProfileConfig::FromValues(changed, profile, reason));
+    }
+    changed = QualificationValues(); changed["HEPTA_IB_PAPER_USER_SCOPE"] = "1";
+    assert(!IbPaperExecutionProfileConfig::FromValues(changed, profile, reason));
+}
+
 void TestQualificationProfileIsDistinctAndBounded()
 {
     const std::map<std::string, std::string> values = QualificationValues();
@@ -324,6 +371,7 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 
 int main()
 {
+    TestUserPaperCustodyIsExplicitAndBounded();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();
     TestQualificationProfileRejectsWiderOrAmbiguousAuthority();

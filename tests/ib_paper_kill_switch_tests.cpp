@@ -55,6 +55,27 @@ void ExpectState(const std::shared_ptr<IbPaperKillSwitch>& monitor,
     assert(reason == expectedReason);
 }
 
+void TestExplicitUserReaderPreservesStateAndOwnerChecks()
+{
+    const std::string control = MakeControlDirectory("hepta-user-paper");
+    std::shared_ptr<IbPaperKillSwitch> reader;
+    std::string reason;
+    const bool opened = IbPaperKillSwitch::OpenAndPinUserOwned(control, reader, reason);
+    if (::geteuid() == 0 || ::getegid() == 0)
+    { assert(!opened); assert(::rmdir(control.c_str()) == 0); return; }
+    assert(opened);
+    ExpectState(reader, IbPaperKillSwitchState::Disarmed, "");
+    CreateMarker(control);
+    ExpectState(reader, IbPaperKillSwitchState::Engaged, "IB_PAPER_KILL_SWITCH_ENGAGED");
+    assert(::chmod(control.c_str(), 0770) == 0);
+    ExpectState(reader, IbPaperKillSwitchState::Uncertain, "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::chmod(control.c_str(), 0750) == 0);
+    // Directory uncertainty remains sticky even after restoring permissions.
+    ExpectState(reader, IbPaperKillSwitchState::Uncertain, "IB_PAPER_KILL_SWITCH_STATE_UNCERTAIN");
+    assert(::unlink((control + "/kill-switch").c_str()) == 0);
+    assert(::rmdir(control.c_str()) == 0);
+}
+
 void TestMarkerStatesAndMetadata()
 {
     const std::string control = MakeControlDirectory("hepta-paper-control");
@@ -138,6 +159,7 @@ void TestSymlinkTraversalAndProductionOwnershipFailClosed()
 
 int main()
 {
+    TestExplicitUserReaderPreservesStateAndOwnerChecks();
     TestMarkerStatesAndMetadata();
     TestDirectoryReplacementIsStickyUncertain();
     TestSymlinkTraversalAndProductionOwnershipFailClosed();

@@ -2,7 +2,7 @@
 
 Status: CURRENT  
 Applies to: repository HEAD  
-Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`
+Implementation: `.env.hepta.example`, `systemd`, `tmpfiles.d`, `scripts/resolve_hepta_config.py`, `scripts/check_systemd_units.py`, `scripts/hepta_telemetry_collect.py`, `scripts/heptatrader-user`
 Tests: `tests/python/test_documentation_control_plane.py`, `tests/python/test_systemd_units.py`, `tests/python/test_hepta_broker_egress_policy.py`, `tests/python/test_self_hosted_ib_availability.py`, `tests/python/test_hepta_broker_egress_policy_atomic.py`, `tests/python/test_release_simulator_smoke.py`, `tests/python/test_installed_runtime_processes.py`, `tests/systemd_simulator_smoke.py`, `tests/python/test_systemd_smoke_admission.py`, `tests/python/test_telemetry_collection.py`, `tests/monitoring/process_smoke.py`
 
 ## Scope
@@ -75,3 +75,9 @@ installs no IB authority units or IB tmpfiles rule. The
 uses real PID 1 on a disposable host, without copying loose build binaries,
 patching unit paths or weakening daemon sandboxing. Target-host and Broker
 acceptance remain distinct from this test.
+
+## User-owned PAPER deployment
+
+For single-operator development without system-wide installation, see the
+[user runtime contract](../technical/user-paper-runtime.md). System/independent
+qualification custody is unchanged; these are deliberately different scopes.

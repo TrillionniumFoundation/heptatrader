@@ -47,6 +47,13 @@ public:
         std::shared_ptr<IbPaperKillSwitch>& result,
         std::string& reason);
 
+    // Real single-operator user deployment, selected only by the separately
+    // bound PAPER user profile. Never silently relax the system-service path.
+    static bool OpenAndPinUserOwned(
+        const std::string& controlDirectory,
+        std::shared_ptr<IbPaperKillSwitch>& result,
+        std::string& reason);
+
     // Filesystem-only test seam. It is not referenced by the production daemon
     // and cannot be selected through environment or argv configuration.
     static bool OpenAndPinForTesting(

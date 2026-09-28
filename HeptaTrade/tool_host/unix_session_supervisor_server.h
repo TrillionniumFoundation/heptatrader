@@ -44,6 +44,9 @@ public:
 	void SetCrashPointHook(const CrashPointHook& hook);
 	// Production is fixed to uid 0.  This seam exists only so unprivileged
 	// socket tests can exercise the root-only protocol branch.
+	// Select the owning user before startup for the explicit user PAPER profile.
+	bool ConfigureUserPaperCustodian(std::string& reason);
+
 	void SetRootCustodianUidForTests(std::uint32_t uid)
 	{
 		if (!m_stop.load()) return;

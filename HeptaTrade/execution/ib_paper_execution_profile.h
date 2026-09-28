@@ -29,6 +29,12 @@ enum class IbPaperOrderMode
 struct IbPaperExecutionProfileConfig
 {
     bool enabled = false;
+    // Explicit single-operator PAPER deployment. Not multi-UID isolation and
+    // never an external-qualification or LIVE profile.
+    bool userScope = false;
+    std::string userQuoteContracts;
+    std::string userPrimaryQuoteInstrument;
+    std::uint64_t userQuoteMaxAgeMs = 0;
     std::string account;
     std::string host;
     int port = 0;
@@ -61,6 +67,7 @@ struct IbPaperExecutionProfileConfig
 
     static const char* AuthorizationCredentialName();
     static const char* ControlDirectoryPath();
+    static std::string UserControlDirectoryPath();
     static const char* AllowedSecurityTypes();
     const char* AllowedOrderTypes() const;
     static const char* OrderModeName(IbPaperOrderMode mode);

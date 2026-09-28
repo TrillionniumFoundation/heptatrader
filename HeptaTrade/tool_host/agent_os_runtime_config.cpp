@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
+#include <unistd.h>
 #include <limits>
 
 namespace
@@ -135,6 +136,7 @@ bool AgentOsRuntimeConfig::Validate(std::string& reason) const
 AgentOsRuntimeConfig AgentOsRuntimeConfig::FromEnvironment(int currentPid, std::uint32_t currentUid)
 {
     static const char* keys[] = {
+        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_EXECUTION_REMOTE_MODE",
         "HEPTA_TOOL_SOCKET",
         "HEPTA_TOOL_LISTEN_FD",
         "HEPTA_TOOL_SERVER_WORKERS",
@@ -257,5 +259,20 @@ AgentOsRuntimeConfig AgentOsRuntimeConfig::FromValues(
         MarkInvalid(config, "HEPTA_TOOL_SUPERVISOR_MAX_TTL_SEC");
     else
         config.supervisorMaxTtlMs = ttlSeconds * 1000;
+    const std::string userScope = ReadString(values, "HEPTA_IB_PAPER_USER_SCOPE");
+    if (!userScope.empty() && userScope != "0" && userScope != "1")
+        MarkInvalid(config, "HEPTA_IB_PAPER_USER_SCOPE");
+    if (userScope == "1")
+    {
+        config.userPaperScope = true;
+        if (ReadString(values, "HEPTA_EXECUTION_REMOTE_MODE") != "PAPER" ||
+            currentUid == 0 || currentUid != ::geteuid() || ::getegid() == 0 ||
+            config.supervisorUid != currentUid || config.agentUid != currentUid)
+            MarkInvalid(config, "HEPTA_IB_PAPER_USER_SCOPE");
+        config.supervisorLeaseCleanupLockPath = "/run/user/" +
+            std::to_string(currentUid) + "/heptatrader/interlock/session-cleanup.lock";
+        config.supervisorLeaseCleanupLockUid = currentUid;
+        config.supervisorLeaseCleanupLockGid = ::getegid();
+    }
     return config;
 }

@@ -1,0 +1,12 @@
+[Unit]
+Description=HeptaTrader user execution socket
+Requires=heptatrader-runtime.service
+After=heptatrader-runtime.service
+PartOf=heptatrader.target
+[Socket]
+ListenStream=%t/heptatrader/execution.sock
+FileDescriptorName=execution
+SocketMode=0600
+DirectoryMode=0700
+Service=heptatrader-execution.service
+RemoveOnStop=yes

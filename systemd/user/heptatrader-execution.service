@@ -1,0 +1,16 @@
+[Unit]
+Description=HeptaTrader user IB PAPER Execution
+Requires=heptatrader-execution.socket heptatrader-events.socket
+After=heptatrader-execution.socket heptatrader-events.socket
+PartOf=heptatrader.target
+[Service]
+Type=simple
+Sockets=heptatrader-execution.socket heptatrader-events.socket
+ExecStart=%h/.local/share/heptatrader/current/bin/hepta-ib-executiond
+EnvironmentFile=%h/.config/heptatrader/execution.env
+UMask=0077
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=35

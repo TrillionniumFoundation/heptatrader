@@ -16,6 +16,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 HELPERS = (
+    "scripts/heptatrader-user", "scripts/hepta-user-mcp",
     "scripts/hepta_agent_mcp_launcher.py", "scripts/hepta_agent_trust_domain.py",
     "scripts/hepta_broker_egress_policy.py", "scripts/resolve_hepta_config.py",
     "scripts/run_release_simulator_smoke.py",
@@ -64,6 +65,8 @@ def installed_fixture(*, readme: bool = False):
             write("docs/" + name, '{"fixture_only":true}\n')
         write("docs/developer.md", "# installed fixture documentation\n")
         write("tmpfiles.d/heptatrader-agent-os.conf", "# inert\n")
+        write("tmpfiles.d/heptatrader-user.conf", "# inert user fixture\n")
+        shutil.copytree(ROOT / "systemd/user", source / "systemd/user")
         for unit in ("hepta-execution.service", "hepta-execution-ib-paper.service", "hepta-broker-egress-policy.service"):
             write("systemd/" + unit, "[Service]\nExecStart=/bin/false\n")
         write("systemd/monitoring/hepta-telemetry@.service.example", "# inert observer example\n")
@@ -73,7 +76,7 @@ def installed_fixture(*, readme: bool = False):
         write("CMakeLists.txt", """cmake_minimum_required(VERSION 3.16)
 project(InstallFixture VERSION 0.1.0 LANGUAGES C)
 set(HEPTA_ENABLE_IBAPI OFF)
-foreach(name heptactl hepta_sessionctl hepta_tool_gatewayd hepta_executiond hepta_agent_simulator_e2e_tests)
+foreach(name heptactl hepta_ib_profile hepta_sessionctl hepta_tool_gatewayd hepta_executiond hepta_agent_simulator_e2e_tests)
   add_executable(${name} fixture.c)
 endforeach()
 include(cmake/HeptaInstall.cmake)

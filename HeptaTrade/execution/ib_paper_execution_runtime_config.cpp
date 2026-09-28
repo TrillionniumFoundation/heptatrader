@@ -194,7 +194,7 @@ bool HasDisabledResidualConfiguration(
     const std::map<std::string, std::string>& values)
 {
     static const char* keys[] = {
-        "HEPTA_IB_PAPER_ACCOUNT", "HEPTA_IB_PAPER_HOST",
+        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_PAPER_ACCOUNT", "HEPTA_IB_PAPER_HOST",
         "HEPTA_IB_PAPER_PORT", "HEPTA_IB_PAPER_CLIENT_ID",
         "HEPTA_IB_PAPER_MAX_ORDER_QTY",
         "HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL",
@@ -331,7 +331,11 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
         reason = "IB_PAPER_QUOTE_CONTRACTS_REQUIRED";
         return false;
     }
-    if (profile.UsesExternalQualificationLimitDay())
+    if (profile.userScope && (*allowedGatewayUids.begin() != ::geteuid() ||
+        gatewayContextBinding.executionDomain != "PAPER" || quoteContracts.size() != 1 ||
+        quoteMaxAgeMs != profile.userQuoteMaxAgeMs))
+    { reason = "IB_PAPER_USER_SCOPE_BINDING_INVALID"; return false; }
+    if (profile.userScope || profile.UsesExternalQualificationLimitDay())
     {
         if (quoteContracts.size() != 1)
         {
@@ -343,9 +347,10 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
         const std::string parsedBinding = only->first + "|" +
             only->second.symbol + "|" + only->second.secType + "|" +
             only->second.exchange + "|" + only->second.currency;
-        if (profile.qualificationQuoteContracts != parsedBinding ||
-            profile.qualificationPrimaryQuoteInstrument !=
-                primaryQuoteInstrument)
+        if ((profile.userScope ? profile.userQuoteContracts :
+             profile.qualificationQuoteContracts) != parsedBinding ||
+            (profile.userScope ? profile.userPrimaryQuoteInstrument :
+             profile.qualificationPrimaryQuoteInstrument) != primaryQuoteInstrument)
         {
             reason = "IB_PAPER_QUALIFICATION_CONTRACT_BINDING_MISMATCH";
             return false;
@@ -391,7 +396,8 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
     if (!ExpectedControlDirectory(
             gatewayContextBinding.executionDomain,
             expectedControlDirectory) ||
-        profile.controlDirectory != expectedControlDirectory)
+        profile.controlDirectory != (profile.userScope ?
+            IbPaperExecutionProfileConfig::UserControlDirectoryPath() : expectedControlDirectory))
     {
         reason =
             "IB_PAPER_CONTROL_DIRECTORY_DOMAIN_MISMATCH";
@@ -487,7 +493,7 @@ bool IbPaperExecutionRuntimeConfig::FromEnvironment(
     int currentPid, IbPaperExecutionRuntimeConfig& config, std::string& reason)
 {
     static const char* keys[] = {
-        "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
+        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
         "HEPTA_IB_PAPER_HOST", "HEPTA_IB_PAPER_PORT",
         "HEPTA_IB_PAPER_CLIENT_ID", "HEPTA_IB_PAPER_MAX_ORDER_QTY",
         "HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL",

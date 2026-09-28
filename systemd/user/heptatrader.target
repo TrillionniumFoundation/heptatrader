@@ -1,0 +1,5 @@
+[Unit]
+Description=HeptaTrader user runtime
+Wants=heptatrader-execution.service heptatrader-gateway.service
+[Install]
+WantedBy=default.target

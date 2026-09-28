@@ -7,6 +7,7 @@
 
 struct AgentOsRuntimeConfig
 {
+    bool userPaperScope = false;
     std::string toolSocket;
     int toolListenFd = -1;
     std::size_t toolExecutionWorkers = 4;

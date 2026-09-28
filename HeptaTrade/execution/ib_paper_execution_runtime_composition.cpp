@@ -409,8 +409,12 @@ bool IbPaperExecutionRuntimeComposition::ValidateStartupContract(
         else
         {
             std::shared_ptr<IbPaperKillSwitch> productionKillSwitch;
-            if (!IbPaperKillSwitch::OpenAndPinProduction(
-                    m_config.controlDirectory, productionKillSwitch, reason))
+            const bool opened = m_config.profile.userScope ?
+                IbPaperKillSwitch::OpenAndPinUserOwned(
+                    m_config.controlDirectory, productionKillSwitch, reason) :
+                IbPaperKillSwitch::OpenAndPinProduction(
+                    m_config.controlDirectory, productionKillSwitch, reason);
+            if (!opened)
             {
                 CloseUnconsumedListenFds();
                 return false;

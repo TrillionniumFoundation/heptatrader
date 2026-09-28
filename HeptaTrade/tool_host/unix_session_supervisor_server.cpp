@@ -40,6 +40,15 @@ UnixSessionSupervisorServer::~UnixSessionSupervisorServer()
 	Stop();
 }
 
+bool UnixSessionSupervisorServer::ConfigureUserPaperCustodian(std::string& reason)
+{
+    if (!m_stop.load() || m_listenFd >= 0 || ::geteuid() == 0 || ::getegid() == 0)
+    { reason = "SUPERVISOR_USER_CUSTODIAN_INVALID"; return false; }
+    m_rootCustodianUid = static_cast<std::uint32_t>(::geteuid());
+    reason.clear();
+    return true;
+}
+
 bool UnixSessionSupervisorServer::Start(const std::string& socketPath,
 	const std::map<std::uint32_t, std::string>& authorizedIssuers,
 	const BindingResolver& bindingResolver, std::string& reason,

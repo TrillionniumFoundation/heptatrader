@@ -19,7 +19,8 @@
         "research/examples/strategy_client_main.cpp",
         "research/strategy_gateway.py",
         "research/cmake/strategy_gateway_main.py.in",
-        "research/STRATEGY-GATEWAY.md"
+        "research/STRATEGY-GATEWAY.md",
+        "scripts/hepta-user-mcp"
       ],
       "tests": [
         "tests/native_tool_client_tests.cpp",
@@ -225,7 +226,8 @@
         "docs/ib-paper-profile-policy-v1.json",
         "scripts/verify_canonical_ib_paper_profile.py",
         "scripts/run_ib_paper_campaign.py",
-        "scripts/hepta_ib_runtime_report.py"
+        "scripts/hepta_ib_runtime_report.py",
+        "HeptaTrade/cli/hepta_ib_profile.cpp"
       ],
       "tests": [
         "tests/ib_order_lifecycle_tests.cpp",
@@ -245,7 +247,8 @@
         "tests/python/test_campaign_provenance.py",
         "tests/python/test_exported_source_configure.py",
         "tests/python/test_ib_runtime_observation.py",
-        "tests/ib_connection_probe_behavior.py"
+        "tests/ib_connection_probe_behavior.py",
+        "tests/user_profile_cli_tests.py"
       ],
       "broker_mutation": "PAPER_GATED",
       "production_authorized": false
@@ -373,7 +376,8 @@
         "tmpfiles.d",
         "scripts/resolve_hepta_config.py",
         "scripts/check_systemd_units.py",
-        "scripts/hepta_telemetry_collect.py"
+        "scripts/hepta_telemetry_collect.py",
+        "scripts/heptatrader-user"
       ],
       "tests": [
         "tests/python/test_documentation_control_plane.py",

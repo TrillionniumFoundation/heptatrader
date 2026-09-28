@@ -318,6 +318,11 @@ const char* IbPaperExecutionProfileConfig::ControlDirectoryPath()
     return "/run/hepta/ib-paper-control";
 }
 
+std::string IbPaperExecutionProfileConfig::UserControlDirectoryPath()
+{
+    return "/run/user/" + std::to_string(::geteuid()) + "/heptatrader/control";
+}
+
 const char* IbPaperExecutionProfileConfig::AllowedSecurityTypes()
 {
     return "CASH,STK";
@@ -358,7 +363,7 @@ bool IbPaperExecutionProfileConfig::FromEnvironment(
     IbPaperExecutionProfileConfig& config, std::string& reason)
 {
     static const char* keys[] = {
-        "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
+        "HEPTA_IB_PAPER_USER_SCOPE", "HEPTA_IB_EXECUTION_MODE", "HEPTA_IB_PAPER_ACCOUNT",
         "HEPTA_IB_PAPER_HOST", "HEPTA_IB_PAPER_PORT",
         "HEPTA_IB_PAPER_CLIENT_ID", "HEPTA_IB_PAPER_MAX_ORDER_QTY",
         "HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL",
@@ -388,7 +393,8 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
 {
     if (!enabled)
     {
-        if (orderMode != IbPaperOrderMode::LocalMarketDay ||
+        if (userScope || !userQuoteContracts.empty() || !userPrimaryQuoteInstrument.empty() ||
+            userQuoteMaxAgeMs != 0 || orderMode != IbPaperOrderMode::LocalMarketDay ||
             externalQuoteMaxAgeMs != 0 ||
             !qualificationQuoteContracts.empty() ||
             !qualificationPrimaryQuoteInstrument.empty())
@@ -398,6 +404,22 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
         }
         reason.clear();
         return true;
+    }
+    if (userScope && (::geteuid() == 0 || ::getegid() == 0 ||
+        UsesExternalQualificationLimitDay() || maxOrderQuantity > 25000.0 ||
+        maxOrderNotional > 35000.0 || maxGrossPosition > 25000.0 ||
+        maxActiveOrders != 1 || maxOrdersPerMinute > 2 ||
+        !QualificationContractBinding(userQuoteContracts, userPrimaryQuoteInstrument) ||
+        userQuoteMaxAgeMs < 100 || userQuoteMaxAgeMs > 5000))
+    {
+        reason = "IB_PAPER_USER_SCOPE_INVALID";
+        return false;
+    }
+    if (!userScope && (!userQuoteContracts.empty() ||
+        !userPrimaryQuoteInstrument.empty() || userQuoteMaxAgeMs != 0))
+    {
+        reason = "IB_PAPER_USER_SCOPE_RESIDUAL_CONFIGURATION";
+        return false;
     }
     if (!StrictPaperAccount(account))
     {
@@ -424,7 +446,8 @@ bool IbPaperExecutionProfileConfig::Validate(std::string& reason) const
         reason = "IB_PAPER_STATE_DIRECTORY_INVALID";
         return false;
     }
-    if (!CanonicalControlDirectory(controlDirectory) ||
+    if (!(userScope ? controlDirectory == UserControlDirectoryPath() :
+                       CanonicalControlDirectory(controlDirectory)) ||
         !SafeAbsolutePath(controlDirectory) ||
         SameOrChildPath(controlDirectory, stateDirectory) ||
         SameOrChildPath(stateDirectory, controlDirectory))
@@ -532,7 +555,7 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
     }
     if (!Validate(reason)) return false;
     std::string canonical;
-    const char* profileVersion = UsesExternalQualificationLimitDay() ? "5" :
+    const char* profileVersion = userScope ? "user-1" : UsesExternalQualificationLimitDay() ? "5" :
         (UsesExternalLimitDay() ? "4" : "3");
     AppendCanonicalField(canonical, "profile_version", profileVersion);
     AppendCanonicalField(canonical, "account", account);
@@ -566,13 +589,21 @@ bool IbPaperExecutionProfileConfig::BuildAuthorizationCredential(
         AppendCanonicalField(canonical, "primary_quote_instrument",
                              qualificationPrimaryQuoteInstrument);
     }
+    if (userScope)
+    {
+        AppendCanonicalField(canonical, "custody", "single-operator-user");
+        AppendCanonicalField(canonical, "operator_uid", std::to_string(::geteuid()));
+        AppendCanonicalField(canonical, "quote_contracts", userQuoteContracts);
+        AppendCanonicalField(canonical, "primary_quote_instrument", userPrimaryQuoteInstrument);
+        AppendCanonicalField(canonical, "quote_max_age_ms", std::to_string(userQuoteMaxAgeMs));
+    }
     const std::string digest = Sha256Hex(canonical);
     if (digest.empty())
     {
         reason = "IB_PAPER_AUTHORIZATION_PROFILE_HASH_FAILED";
         return false;
     }
-    const char* prefix = UsesExternalQualificationLimitDay() ?
+    const char* prefix = userScope ? "PAPER-USER-V1:sha256:" : UsesExternalQualificationLimitDay() ?
         "PAPER-V5:sha256:" :
         (UsesExternalLimitDay() ? "PAPER-V4:sha256:" :
          "PAPER-V3:sha256:");
@@ -587,6 +618,19 @@ bool IbPaperExecutionProfileConfig::FromValues(
 {
     config = IbPaperExecutionProfileConfig();
     const std::string mode = Read(values, "HEPTA_IB_EXECUTION_MODE");
+    const std::string userScope = Read(values, "HEPTA_IB_PAPER_USER_SCOPE");
+    if (!userScope.empty() && userScope != "0" && userScope != "1")
+    { reason = "IB_PAPER_USER_SCOPE_INVALID"; return false; }
+    config.userScope = userScope == "1";
+    if (config.userScope)
+    {
+        if (mode != "PAPER")
+        { reason = "IB_PAPER_USER_SCOPE_REQUIRES_PAPER"; return false; }
+        config.userQuoteContracts = Read(values, "HEPTA_IB_PAPER_QUOTE_CONTRACTS");
+        config.userPrimaryQuoteInstrument = Read(values, "HEPTA_IB_PAPER_PRIMARY_QUOTE_INSTRUMENT");
+        if (!ParseUnsigned(Read(values, kQuoteMaxAgeKey), 5000, config.userQuoteMaxAgeMs))
+        { reason = "IB_PAPER_USER_SCOPE_INVALID"; return false; }
+    }
     const std::map<std::string, std::string>::const_iterator externalMode =
         values.find(kExternalLimitDayKey);
     const std::map<std::string, std::string>::const_iterator externalNotional =

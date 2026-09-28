@@ -182,6 +182,14 @@ bool IbPaperKillSwitch::OpenAndPinProduction(
                       result, reason);
 }
 
+bool IbPaperKillSwitch::OpenAndPinUserOwned(
+    const std::string& controlDirectory,
+    std::shared_ptr<IbPaperKillSwitch>& result, std::string& reason)
+{
+    return OpenAndPin(controlDirectory, static_cast<std::uint32_t>(::geteuid()),
+        static_cast<std::uint32_t>(::getegid()), true, result, reason);
+}
+
 bool IbPaperKillSwitch::OpenAndPinForTesting(
     const std::string& controlDirectory,
     std::uint32_t expectedOwnerUid,

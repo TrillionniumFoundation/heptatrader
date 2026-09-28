@@ -2,7 +2,7 @@
 
 Status: CURRENT
 Applies to: repository HEAD
-Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`, `research/CLIENT_PACKAGE.md`, `research/examples/strategy_client_main.cpp`, `research/strategy_gateway.py`, `research/cmake/strategy_gateway_main.py.in`, `research/STRATEGY-GATEWAY.md`
+Implementation: `.agents/plugins`, `adapters/mcp/hepta_mcp_server.py`, `HeptaTrade/cli`, `HeptaTrade/client`, `plugins/heptatrader-agent-os`, `scripts/hepta_agent_mcp_launcher.py`, `scripts/hepta_agent_trust_domain.py`, `research/include/hepta/research/native_strategy_client.h`, `research/src/native_strategy_client.cpp`, `research/CLIENT_PACKAGE.md`, `research/examples/strategy_client_main.cpp`, `research/strategy_gateway.py`, `research/cmake/strategy_gateway_main.py.in`, `research/STRATEGY-GATEWAY.md`, `scripts/hepta-user-mcp`
 Tests: `tests/native_tool_client_tests.cpp`, `tests/unix_tool_server_tests.cpp`, `tests/python/test_mcp_bridge.py`, `tests/python/test_installed_runtime_processes.py`, `tests/research/native_client_tests.cpp`, `tests/research/native_gateway_tests.cpp`, `tests/research/native_execution_tests.cpp`, `tests/research/native_sdk_package_behavior.py`, `tests/research/strategy_gateway_behavior.py`, `tests/research/application_execution_driver.py`
 
 ## Responsibilities

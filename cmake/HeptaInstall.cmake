@@ -18,6 +18,7 @@ configure_file(
 
 set(_hepta_runtime_targets
     heptactl
+    hepta_ib_profile
     hepta_sessionctl
     hepta_tool_gatewayd
     hepta_executiond)
@@ -62,6 +63,8 @@ install(FILES
     COMPONENT runtime)
 
 set(_hepta_runtime_helpers
+    scripts/heptatrader-user
+    scripts/hepta-user-mcp
     scripts/hepta_agent_mcp_launcher.py
     scripts/hepta_agent_trust_domain.py
     scripts/hepta_broker_egress_policy.py
@@ -170,3 +173,10 @@ unset(_hepta_runtime_targets)
 unset(_hepta_runtime_helpers)
 unset(_hepta_target)
 unset(_hepta_helper)
+
+# User-manager assets are data in the selected install prefix, never enabled
+# or copied to the system manager by installation.
+install(DIRECTORY "${PROJECT_SOURCE_DIR}/systemd/user/"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/user-systemd" COMPONENT runtime)
+install(FILES "${PROJECT_SOURCE_DIR}/tmpfiles.d/heptatrader-user.conf"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/heptatrader/user-tmpfiles" COMPONENT runtime)

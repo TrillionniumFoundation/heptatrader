@@ -553,6 +553,9 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
                std::string& authorizationReason) {
             return m_sessionPolicy.Authorize(issuer, binding, authorizationReason);
         }));
+    if (m_agentOsConfig.userPaperScope &&
+        !m_agentOs->Supervisor().ConfigureUserPaperCustodian(reason))
+    { Stop(); return false; }
     if (m_rootCustodianUidTestOverride)
         m_agentOs->Supervisor().SetRootCustodianUidForTests(
             m_rootCustodianUidForTests);

@@ -346,6 +346,10 @@ target_link_libraries(hepta_native_tool_client
 set_target_properties(hepta_native_tool_client PROPERTIES
     EXPORT_NAME NativeToolClient)
 
+add_executable(hepta_ib_profile cli/hepta_ib_profile.cpp)
+target_link_libraries(hepta_ib_profile PRIVATE hepta_ib_paper_policy)
+set_target_properties(hepta_ib_profile PROPERTIES OUTPUT_NAME "hepta-ib-profile")
+
 add_executable(heptactl
     cli/heptactl.cpp
     cli/heptactl_command.cpp
