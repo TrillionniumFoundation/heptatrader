@@ -54,7 +54,7 @@ state their implemented behavior, evidence and remaining limits separately.
 | Durable recovery | [OMS event schema](OMS-EVENT-SCHEMA.md), [lease format](technical/session-lease-format.md), [recovery capacity](technical/oms-recovery-capacity.md), [coordinator recovery memory](technical/coordinator-recovery-memory.md), [persistence support](technical/persistence-support-window.md), [lossless archive](technical/oms-archive-lifecycle.md) |
 | Lifecycle and development venue | [service lifecycle](technical/service-lifecycle.md), [simulator walkthrough](technical/simulator-operator-walkthrough.md), [systemd acceptance](technical/systemd-simulator-acceptance.md) |
 | Runtime observations | [metric inventory](OBSERVABILITY-METRICS.md), [cost boundaries](technical/runtime-cost-observations.md), [live OMS capacity](technical/oms-live-capacity.md), [pending queue](technical/oms-pending-queue.md), [OMS report](technical/oms-operational-report.md), [Gateway metrics](technical/gateway-runtime-observability.md), [collection](technical/telemetry-collection.md) |
-| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md), [C++ research SDK](modules/research-sdk.md), [HeptaDLL support and behavioral acceptance](technical/heptadll-consumers.md), [integration record](technical/heptadll-integration.md), [source inventory](technical/heptadll-source-disposition.json) |
+| Research | [SHADOW pipeline contract](technical/shadow-pipeline-contract.md), [C++ research SDK](modules/research-sdk.md), [source inventory](technical/heptadll-source-disposition.json) |
 
 ## Operations and release
 
@@ -114,9 +114,12 @@ capacity, target-host multi-day acceptance and hosted Ruleset changes remain
 separate from repository tests. IB PAPER is qualification-gated and disabled by
 default; LIVE remains unavailable.
 
-## HeptaDLL consolidation and retained consumers
+## Frozen HeptaDLL historical dossier
 
 New development uses this repository's existing Data/Analytics/Replay/Strategy
-and client modules. [Consumer register and support decisions](technical/heptadll-consumers.md)
-distinguish source migration, preserved old records, unsupported ABI/platform
-claims and the original compatibility repository.
+and client modules. The frozen [integration record](technical/heptadll-integration.md),
+[consolidation record](technical/heptadll-consolidation.md), and
+[consumer/support disposition](technical/heptadll-consumers.md) preserve migration
+provenance, unsupported ABI/platform claims and archival decisions. They are not
+current feature backlogs or acceptance logs; current behavior belongs to the
+[C++ research SDK](modules/research-sdk.md) and its specialized contracts.

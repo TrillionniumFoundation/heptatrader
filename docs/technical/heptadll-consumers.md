@@ -1,6 +1,8 @@
 # HeptaDLL consumer register and support decisions
 
-Status: FINAL SUPPORT DISPOSITION; legacy repository archived, not an external deployment census
+Status: FROZEN HISTORICAL RECORD
+Disposition: FINAL SUPPORT DISPOSITION; legacy repository archived, not an external deployment census
+Current contract: [C++ research SDK](../modules/research-sdk.md)
 Canonical development: `heptatrader/main`; new development remains on main
 Historical #117 acceptance baseline (not current-head qualification): `2443722f47ffc8e880786783ed98509dd1c3f17c`, tree `632d1299eaa0a0b753dcd5d21b93cb5715bf9ac0`
 Original retained source: `HeptaDLL-main@f69de179b4d41fe1813d317673abe8116cee76e5`

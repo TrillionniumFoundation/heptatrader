@@ -1,5 +1,7 @@
 # HeptaDLL modular integration record
 
+Status: FROZEN HISTORICAL RECORD
+Current contract: [C++ research SDK](../modules/research-sdk.md)
 Canonical development: `heptatrader/main`; research API qualification remains experimental.
 Current lifecycle and support decisions: [consumer register](heptadll-consumers.md)
 and [observed lifecycle receipt](heptadll-lifecycle-status.json).

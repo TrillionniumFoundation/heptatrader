@@ -23,7 +23,7 @@ Standalone CTest additionally installs, relocates and consumes the real SDK from
 an external C++11 project. Root production packaging is unchanged.
 
 See [SDK installation and consumption](PACKAGE.md),
-[module contracts](../docs/modules/research-sdk.md) and the
+[module contracts](../docs/modules/research-sdk.md) and the frozen
 [integration/provenance record](../docs/technical/heptadll-integration.md).
 
 ## Strategy observation time

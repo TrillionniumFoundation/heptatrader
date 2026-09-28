@@ -1,6 +1,8 @@
 # HeptaDLL consolidation on the existing #107 line
 
-Status: MERGED CORE; LEGACY ABI/RUNTIME SUPPORT RETIRED; LEGACY REPOSITORY ARCHIVED
+Status: FROZEN HISTORICAL RECORD
+Disposition: MERGED CORE; LEGACY ABI/RUNTIME SUPPORT RETIRED; LEGACY REPOSITORY ARCHIVED
+Current contract: [C++ research SDK](../modules/research-sdk.md)
 Current development: `heptatrader/main`.
 Current support/evidence scope: [consumer register](heptadll-consumers.md).
 Repository archival ends active legacy support; it does not certify every

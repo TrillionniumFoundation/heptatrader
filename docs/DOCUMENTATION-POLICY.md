@@ -37,6 +37,12 @@ workflow-run outcomes and one-off convergence narratives belong to the associate
 pull request, run evidence or an explicitly historical record rather than being
 copied into every current module page.
 
+A document marked `Status: FROZEN HISTORICAL RECORD` preserves provenance rather
+than current product behavior. It may receive factual corrections, redaction or
+link repair, but it must not accumulate new feature contracts, current candidate
+SHAs, workflow outcomes or backlog. Put those facts in the owning current module
+or technical contract, the gap register, and the exact pull request or run.
+
 No byte, paragraph, keyword or heading-count score establishes design quality.
 Structural lint may pass a concise document; review must still determine whether
 a developer can change the behavior using its examples and implementation/test
