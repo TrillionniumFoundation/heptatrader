@@ -101,3 +101,5 @@ a replacement preview or sends under a new command ID. Active Broker orders bloc
 new decisions. Existing exposure can only be reduced by authoritative flatten.
 Session renewal is generational and a renewal uncertainty permanently disables new
 entries while retaining reduce-only exit behavior. LIVE is never selected.
+The user Execution service backs off for 30 seconds after startup failure so an
+upstream market-data/session fault remains fail-closed without hammering IB Gateway.

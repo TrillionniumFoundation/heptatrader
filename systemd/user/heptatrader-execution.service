@@ -12,5 +12,5 @@ UMask=0077
 NoNewPrivileges=yes
 RestrictSUIDSGID=yes
 Restart=on-failure
-RestartSec=5
+RestartSec=30
 TimeoutStopSec=35
