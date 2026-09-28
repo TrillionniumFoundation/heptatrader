@@ -74,3 +74,11 @@ preview, final risk, durable identity and uncertain-send rules still decide it.
 The profile is owner-operated PAPER development. Its installation, account
 connectivity or model availability is not hosted CI, an external qualification
 receipt, a profitable strategy, or LIVE authority.
+
+`pause` engages only the user-owned new-risk guard; it does not cancel existing
+orders or assert flatness. `paper-on` explicitly releases that guard only while
+both user services are active. Native quote/risk/identity checks remain mandatory.
+A target restart re-creates an engaged guard, so deliberate re-enablement is
+explicit and password-free. Neither command changes the system profile.
+The runtime-directory preparation unit has no default dependency on basic.target;
+it runs before sockets.target to avoid a socket/oneshot/basic ordering cycle.
