@@ -72,7 +72,12 @@
       ],
       "tests": [
         "tests/unix_session_supervisor_server_tests.cpp",
-        "tests/session_supervisor_lease_store_migration_tests.cpp"
+        "tests/session_supervisor_lease_store_migration_tests.cpp",
+        "tests/unix_session_supervisor_test_support.cpp",
+        "tests/unix_session_supervisor_protocol_audit_tests.cpp",
+        "tests/unix_session_supervisor_lifecycle_tests.cpp",
+        "tests/unix_session_supervisor_generation_watch_tests.cpp",
+        "tests/unix_session_supervisor_terminal_control_tests.cpp"
       ],
       "broker_mutation": "NONE",
       "production_authorized": false

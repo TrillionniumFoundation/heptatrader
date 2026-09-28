@@ -96,7 +96,12 @@ set_tests_properties(hepta_unix_tool_server_tests PROPERTIES
     RUN_SERIAL TRUE TIMEOUT 120)
 
 add_executable(hepta_unix_session_supervisor_server_tests
-    unix_session_supervisor_server_tests.cpp)
+    unix_session_supervisor_server_tests.cpp
+    unix_session_supervisor_test_support.cpp
+    unix_session_supervisor_protocol_audit_tests.cpp
+    unix_session_supervisor_lifecycle_tests.cpp
+    unix_session_supervisor_generation_watch_tests.cpp
+    unix_session_supervisor_terminal_control_tests.cpp)
 target_precompile_headers(hepta_unix_session_supervisor_server_tests PRIVATE
     unix_session_supervisor_test_prelude.h)
 target_link_libraries(hepta_unix_session_supervisor_server_tests
