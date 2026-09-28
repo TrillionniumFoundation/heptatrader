@@ -58,6 +58,21 @@ class PythonTestPartitionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("test_installed_runtime_processes.py", result.stdout)
 
+    def test_source_lane_reports_missing_build_tools_before_importing_tests(self):
+        with mock.patch.object(runner.shutil, "which", side_effect=lambda name: "/fixture/cmake" if name == "cmake" else None), \
+             mock.patch.object(runner, "partitions", side_effect=AssertionError("tests must not load")), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            with self.assertRaises(SystemExit) as error:
+                runner.main(["--lane", "source"])
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn("source/all requires development tools on PATH: ctest", stderr.getvalue())
+
+    def test_listing_source_lane_needs_no_build_tools(self):
+        with mock.patch.object(runner.shutil, "which", return_value=None), \
+             contextlib.redirect_stdout(io.StringIO()) as stdout:
+            self.assertEqual(runner.main(["--lane", "source", "--list"]), 0)
+            self.assertIn("test_build_ownership.py", stdout.getvalue())
+
     def test_opt_in_is_not_a_substitute_for_isolated_fixture_identity(self):
         with mock.patch.dict(os.environ, {"HEPTA_ISOLATED_PROCESS_TESTS": "1"}), \
              mock.patch.object(runner.os, "geteuid", return_value=1000), \

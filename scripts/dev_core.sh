@@ -28,6 +28,15 @@ case "${1:---core}" in
   *) echo "Usage: $0 [--core|--storage]" >&2; exit 64 ;;
 esac
 
+missing_tools=()
+for tool in cmake ctest; do
+  command -v "$tool" >/dev/null 2>&1 || missing_tools+=("$tool")
+done
+if (( ${#missing_tools[@]} )); then
+  printf 'Missing required development tool(s) on PATH: %s\n' "${missing_tools[*]}" >&2
+  exit 69
+fi
+
 generator=()
 if command -v ninja >/dev/null 2>&1; then
   generator=(-G Ninja)

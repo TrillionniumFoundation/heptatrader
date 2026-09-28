@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
+import shutil
 import sys
 import unittest
 
@@ -65,6 +66,10 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("process/all requires the isolated Linux root fixture; never a trading host")
         if args.lane in ("install", "all") and not os.environ.get("HEPTA_RELEASE_INTEGRATION_BUILD_DIR"):
             parser.error("install/all requires HEPTA_RELEASE_INTEGRATION_BUILD_DIR")
+        if args.lane in ("source", "all"):
+            missing = [tool for tool in ("cmake", "ctest") if shutil.which(tool) is None]
+            if missing:
+                parser.error("source/all requires development tools on PATH: " + ", ".join(missing))
     try:
         groups = partitions()
     except ValueError as error:
