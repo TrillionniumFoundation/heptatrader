@@ -216,12 +216,15 @@ def _provision_command(sessionctl, supervisor, token, uid):
 
 
 def _finish_renewal(state, generation):
+    lease_halted_entries = (state.get("lease_renewal_owned_halt") or
+        state.get("lease_uncertain") or
+        state.get("lease_renewal_state")=="POSSIBLY_SENT")
     state["lease_generation"]=int(generation)
     state["lease_last_renew_ms"]=now_ms()
     state["lease_renewal_state"]="IDLE"
     state["lease_uncertain"]=False
     state["lease_renewal_drain"]=False
-    if state.get("lease_renewal_owned_halt"):
+    if lease_halted_entries:
         state["halt_new_entries"]=False
     state["lease_renewal_owned_halt"]=False
     state["last_error"]=""
@@ -264,6 +267,13 @@ def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_order
                 new_generation=int(provision_value.get("lease_generation",0))
                 if new_generation>0:
                     _finish_renewal(state,new_generation); atomic_json(path,state); return
+    if value.get("reason_code") in {"RECOVERY_INGRESS_FENCE_REQUIRED", "SESSION_NOT_FOUND", "LEASE_STORE_TOKEN_NOT_FOUND"}:
+        provision=_provision_command(sessionctl,supervisor,token,uid)
+        provision_value=_parse_command_json(provision)
+        if provision.returncode==0 and provision_value.get("accepted") is True:
+            new_generation=int(provision_value.get("lease_generation",0))
+            if new_generation>0:
+                _finish_renewal(state,new_generation); atomic_json(path,state); return
     if value:
         state["halt_new_entries"]=True
         state["lease_renewal_owned_halt"]=False
@@ -348,6 +358,9 @@ def main():
     while not stop:
         started=time.monotonic()
         try:
+            if ((state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT") and
+                    state.get("pending") is None and abs(float(state.get("position",0.0)))<1e-9):
+                maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),0.0,0,None)
             snap=snapshot(cli); pos=float(snap["position"]); q=snap["quote"]; mid=(float(q["bid"])+float(q["ask"]))/2
             if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
                 state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})

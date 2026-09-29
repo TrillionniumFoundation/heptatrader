@@ -142,6 +142,29 @@ class DriverPolicyTests(unittest.TestCase):
         finally:
             d.run, d.atomic_json=old_run,old_atomic
 
+    def test_recovery_ingress_fence_reprovisions_before_native_snapshot(self):
+        state=self.state(); state.update(lease_generation=1, lease_last_renew_ms=0,
+            lease_renewal_state="POSSIBLY_SENT", lease_uncertain=True,
+            halt_new_entries=True, position=0.0, pending=None)
+        old_run,old_atomic=d.run,d.atomic_json
+        class Result:
+            def __init__(self, code, out="", err=""):
+                self.returncode=code; self.stdout=out; self.stderr=err
+        try:
+            def fake_run(argv,timeout=20):
+                if "renew" in argv:
+                    return Result(3,"{\"accepted\":false,\"reason_code\":\"RECOVERY_INGRESS_FENCE_REQUIRED\",\"lease_generation\":1}\n")
+                if "provision" in argv:
+                    return Result(0,"{\"accepted\":true,\"reason_code\":\"OK\",\"lease_generation\":1}\n")
+                raise AssertionError(argv)
+            d.run=fake_run; d.atomic_json=lambda *_args: None
+            d.maybe_renew(state,Path("/unused"),"sessionctl","supervisor","token",1000,0.0,0,None)
+            self.assertFalse(state["lease_uncertain"])
+            self.assertFalse(state["halt_new_entries"])
+            self.assertEqual(state["lease_renewal_state"],"IDLE")
+        finally:
+            d.run,d.atomic_json=old_run,old_atomic
+
     def test_reversal_adverse_and_halt_are_reduce_only_triggers(self):
         state=self.state(); state["entry_price"]=1.0
         self.assertEqual(d.should_close(state,25000,{"bid":0.997,"ask":0.998},None)[1],
