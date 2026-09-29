@@ -5,6 +5,7 @@ from pathlib import Path
 
 INSTRUMENT="EUR.USD"; QTY=25000.0; CONF=0.62; MAX_ADVERSE=0.002
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
+AGENT_ID="pocket4-paper"; SESSION_ID="pocket4-user-paper-20260928"
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
 def cid(p): return p+"-"+uuid.uuid4().hex
@@ -195,10 +196,40 @@ def model_decision(codex,state_dir,history,position):
         raise DriverError("invalid model decision")
     d["confidence"]=conf; return d
 
+def _parse_command_json(result):
+    try:
+        return strict_json(result.stdout) if result.stdout else {}
+    except Exception:
+        return {}
+
+
+def _renew_command(sessionctl, supervisor, token, uid, generation):
+    return run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","renew",
+        "--token-file",token,"--generation",str(generation),"--ttl-sec","86400",
+        "--token-owner-uid",str(uid)],10)
+
+
+def _provision_command(sessionctl, supervisor, token, uid):
+    return run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","provision",
+        "--template","paper","--token-file",token,"--agent-id",AGENT_ID,
+        "--session-id",SESSION_ID,"--peer-uid",str(uid),"--ttl-sec","86400"],10)
+
+
+def _finish_renewal(state, generation):
+    state["lease_generation"]=int(generation)
+    state["lease_last_renew_ms"]=now_ms()
+    state["lease_renewal_state"]="IDLE"
+    state["lease_uncertain"]=False
+    state["lease_renewal_drain"]=False
+    if state.get("lease_renewal_owned_halt"):
+        state["halt_new_entries"]=False
+    state["lease_renewal_owned_halt"]=False
+    state["last_error"]=""
+
+
 def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_orders,pending):
-    if state.get("lease_uncertain"):
-        return
-    due=now_ms()-int(state.get("lease_last_renew_ms",0))>=4*60*60*1000
+    due=(state.get("lease_renewal_state")=="POSSIBLY_SENT" or
+         now_ms()-int(state.get("lease_last_renew_ms",0))>=4*60*60*1000)
     if not due:
         return
     if abs(float(position))>1e-9 or active_orders or pending is not None:
@@ -211,21 +242,36 @@ def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_order
         return
     g=int(state.get("lease_generation",1))
     state["lease_renewal_state"]="POSSIBLY_SENT"; atomic_json(path,state)
-    p=run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","renew","--token-file",token,
-        "--generation",str(g),"--ttl-sec","86400","--token-owner-uid",str(uid)],10)
-    try: v=strict_json(p.stdout) if p.stdout else {}
-    except Exception: v={}
-    if p.returncode==0 and v.get("accepted") is True and int(v.get("lease_generation",0))==g+1:
-        state["lease_generation"]=g+1; state["lease_last_renew_ms"]=now_ms(); state["lease_renewal_state"]="IDLE"
-        state["lease_renewal_drain"]=False
-        if state.get("lease_renewal_owned_halt"):
-            state["halt_new_entries"]=False
+    result=_renew_command(sessionctl,supervisor,token,uid,g)
+    value=_parse_command_json(result)
+    if result.returncode==0 and value.get("accepted") is True:
+        new_generation=int(value.get("lease_generation",0))
+        if new_generation>0:
+            _finish_renewal(state,new_generation); atomic_json(path,state); return
+    if value.get("reason_code")=="SESSION_LEASE_GENERATION_MISMATCH":
+        reported=int(value.get("lease_generation",0) or 0)
+        if reported>0 and reported!=g:
+            retry=_renew_command(sessionctl,supervisor,token,uid,reported)
+            retry_value=_parse_command_json(retry)
+            if retry.returncode==0 and retry_value.get("accepted") is True:
+                new_generation=int(retry_value.get("lease_generation",0))
+                if new_generation>0:
+                    _finish_renewal(state,new_generation); atomic_json(path,state); return
+        elif reported==0:
+            provision=_provision_command(sessionctl,supervisor,token,uid)
+            provision_value=_parse_command_json(provision)
+            if provision.returncode==0 and provision_value.get("accepted") is True:
+                new_generation=int(provision_value.get("lease_generation",0))
+                if new_generation>0:
+                    _finish_renewal(state,new_generation); atomic_json(path,state); return
+    if value:
+        state["halt_new_entries"]=True
         state["lease_renewal_owned_halt"]=False
-        state["last_error"]=""
+        state["last_error"]=("session renewal rejected: "+str(value.get("reason_code")))[:500]
     else:
         state["lease_uncertain"]=True; state["halt_new_entries"]=True
         state["lease_renewal_owned_halt"]=False
-        state["last_error"]=("session renewal uncertain: "+str(v.get("reason_code") or p.stderr[-160:]))[:500]
+        state["last_error"]=("session renewal uncertain: "+result.stderr[-160:])[:500]
     atomic_json(path,state)
 
 def rearm_session(state,path,cli,generation):
@@ -286,8 +332,8 @@ def main():
     signal.signal(signal.SIGTERM,stopping); signal.signal(signal.SIGINT,stopping)
     state=load_state(state_path)
     if state.get("lease_renewal_state")=="POSSIBLY_SENT":
-        state["lease_uncertain"]=True; state["halt_new_entries"]=True
-        state["last_error"]="session renewal outcome uncertain after restart"
+        state["halt_new_entries"]=True
+        state["last_error"]="session renewal reconciliation pending after restart"
     atomic_json(state_path,state); model_worker=None
     if args.rearm_session_generation:
         rearm_session(state,state_path,cli,args.rearm_session_generation)

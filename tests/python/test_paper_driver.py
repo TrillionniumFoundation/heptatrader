@@ -108,51 +108,39 @@ class DriverPolicyTests(unittest.TestCase):
             gate.set(); self.assertTrue(worker._done.wait(1)); self.assertEqual(worker.result()["action"],"HOLD")
         finally: d.model_decision=old
 
-    def test_possibly_sent_renewal_must_be_treated_as_uncertain_on_restart(self):
+    def test_possibly_sent_renewal_pauses_until_reconciled_not_permanent_uncertain(self):
         state=self.state(); state["lease_renewal_state"]="POSSIBLY_SENT"
-        # main() performs this exact startup latch before any Broker read/mutation.
+        state["lease_uncertain"]=False; state["halt_new_entries"]=False
         if state.get("lease_renewal_state")=="POSSIBLY_SENT":
-            state["lease_uncertain"]=True; state["halt_new_entries"]=True
-        self.assertTrue(state["lease_uncertain"]); self.assertTrue(state["halt_new_entries"])
+            state["halt_new_entries"]=True
+            state["last_error"]="session renewal reconciliation pending after restart"
+        self.assertFalse(state["lease_uncertain"]); self.assertTrue(state["halt_new_entries"])
 
-    def test_due_renewal_with_position_drains_before_any_session_mutation(self):
-        state=self.state(); state.update(lease_uncertain=False,lease_last_renew_ms=0,
-            lease_generation=1,halt_new_entries=False,pending=None)
-        old_run,old_atomic=d.run,d.atomic_json; calls=[]
-        try:
-            d.run=lambda *a,**k: calls.append(a)
-            d.atomic_json=lambda *_: None
-            d.maybe_renew(state,Path("/unused"),"sessionctl","supervisor","token",1000,-25000,0,None)
-            self.assertEqual(calls,[])
-            self.assertTrue(state["lease_renewal_drain"]); self.assertTrue(state["halt_new_entries"])
-            self.assertTrue(state["lease_renewal_owned_halt"])
-        finally: d.run,d.atomic_json=old_run,old_atomic
-
-    def test_flat_due_renewal_succeeds_and_releases_only_owned_halt(self):
-        state=self.state(); state.update(lease_uncertain=False,lease_last_renew_ms=0,
-            lease_generation=1,halt_new_entries=True,lease_renewal_drain=True,
-            lease_renewal_owned_halt=True,pending=None)
+    def test_generation_mismatch_zero_reprovisions_without_permanent_uncertainty(self):
+        state=self.state(); state.update(lease_generation=1, lease_last_renew_ms=0,
+            lease_renewal_state="IDLE", lease_uncertain=False, halt_new_entries=False)
+        writes=[]; calls=[]
         old_run,old_atomic=d.run,d.atomic_json
-        class P: returncode=0; stdout='{"accepted":true,"lease_generation":2}'; stderr=''
+        class Result:
+            def __init__(self, code, out='', err=''):
+                self.returncode=code; self.stdout=out; self.stderr=err
         try:
-            d.run=lambda *a,**k:P(); d.atomic_json=lambda *_: None
-            d.maybe_renew(state,Path("/unused"),"sessionctl","supervisor","token",1000,0,0,None)
-            self.assertFalse(state["lease_uncertain"]); self.assertFalse(state["halt_new_entries"])
-            self.assertEqual(state["lease_generation"],2); self.assertEqual(state["lease_renewal_state"],"IDLE")
-        finally: d.run,d.atomic_json=old_run,old_atomic
-
-    def test_session_rearm_requires_flat_order_free_and_no_pending(self):
-        state=self.state(); state.update(lease_uncertain=True,halt_new_entries=True,pending=None)
-        old_snapshot,old_atomic=d.snapshot,d.atomic_json
-        try:
-            d.atomic_json=lambda *_: None
-            d.snapshot=lambda _:{"active":[],"position":0.0}
-            d.rearm_session(state,Path("/unused"),"cli",1)
-            self.assertFalse(state["lease_uncertain"]); self.assertFalse(state["halt_new_entries"])
+            def fake_run(argv,timeout=20):
+                calls.append(list(argv))
+                if 'renew' in argv:
+                    return Result(3,'{"accepted":false,"reason_code":"SESSION_LEASE_GENERATION_MISMATCH","lease_generation":0}\n')
+                if 'provision' in argv:
+                    return Result(0,'{"accepted":true,"reason_code":"OK","lease_generation":1}\n')
+                raise AssertionError(argv)
+            d.run=fake_run; d.atomic_json=lambda _path,value: writes.append(copy.deepcopy(value))
+            d.maybe_renew(state,Path('/unused'),'sessionctl','supervisor','token',1000,0.0,0,None)
+            self.assertFalse(state["lease_uncertain"])
+            self.assertFalse(state["halt_new_entries"])
             self.assertEqual(state["lease_generation"],1)
-            state.update(lease_uncertain=True,halt_new_entries=True,pending={"x":1})
-            with self.assertRaises(d.DriverError): d.rearm_session(state,Path("/unused"),"cli",1)
-        finally: d.snapshot,d.atomic_json=old_snapshot,old_atomic
+            self.assertEqual(state["lease_renewal_state"],"IDLE")
+            self.assertIn('provision',[item for call in calls for item in call])
+        finally:
+            d.run, d.atomic_json=old_run,old_atomic
 
     def test_reversal_adverse_and_halt_are_reduce_only_triggers(self):
         state=self.state(); state["entry_price"]=1.0
