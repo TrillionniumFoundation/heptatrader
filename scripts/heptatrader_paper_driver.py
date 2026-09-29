@@ -50,7 +50,7 @@ def load_state(path):
             "entry_price":None,"entry_price_basis":None,"last_decision_ms":0,"decisions":0,
             "entries":0,"exits":0,"closed_trades":0,"gross_pnl":0.0,"last_error":"",
             "halt_new_entries":False,"lease_generation":1,"lease_last_renew_ms":now_ms(),
-            "lease_uncertain":False}
+            "lease_uncertain":False,"lease_renewal_drain":False,"lease_renewal_owned_halt":False}
     st=path.lstat()
     if not stat.S_ISREG(st.st_mode) or st.st_uid!=os.geteuid() or st.st_nlink!=1 or stat.S_IMODE(st.st_mode)!=0o600:
         raise DriverError("unsafe state file")
@@ -195,17 +195,59 @@ def model_decision(codex,state_dir,history,position):
         raise DriverError("invalid model decision")
     d["confidence"]=conf; return d
 
-def maybe_renew(state,path,sessionctl,supervisor,token,uid):
-    if state.get("lease_uncertain") or now_ms()-int(state.get("lease_last_renew_ms",0))<4*60*60*1000: return
-    g=int(state.get("lease_generation",1)); state["lease_renewal_state"]="POSSIBLY_SENT"; atomic_json(path,state)
+def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_orders,pending):
+    if state.get("lease_uncertain"):
+        return
+    due=now_ms()-int(state.get("lease_last_renew_ms",0))>=4*60*60*1000
+    if not due:
+        return
+    if abs(float(position))>1e-9 or active_orders or pending is not None:
+        state["lease_renewal_drain"]=True
+        if not state.get("halt_new_entries"):
+            state["halt_new_entries"]=True
+            state["lease_renewal_owned_halt"]=True
+        state["last_error"]="session renewal due; drain to exact-zero before renewal"
+        atomic_json(path,state)
+        return
+    g=int(state.get("lease_generation",1))
+    state["lease_renewal_state"]="POSSIBLY_SENT"; atomic_json(path,state)
     p=run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","renew","--token-file",token,
         "--generation",str(g),"--ttl-sec","86400","--token-owner-uid",str(uid)],10)
     try: v=strict_json(p.stdout) if p.stdout else {}
     except Exception: v={}
     if p.returncode==0 and v.get("accepted") is True and int(v.get("lease_generation",0))==g+1:
         state["lease_generation"]=g+1; state["lease_last_renew_ms"]=now_ms(); state["lease_renewal_state"]="IDLE"
+        state["lease_renewal_drain"]=False
+        if state.get("lease_renewal_owned_halt"):
+            state["halt_new_entries"]=False
+        state["lease_renewal_owned_halt"]=False
+        state["last_error"]=""
     else:
-        state["lease_uncertain"]=True; state["halt_new_entries"]=True; state["last_error"]="session renewal uncertain"
+        state["lease_uncertain"]=True; state["halt_new_entries"]=True
+        state["lease_renewal_owned_halt"]=False
+        state["last_error"]=("session renewal uncertain: "+str(v.get("reason_code") or p.stderr[-160:]))[:500]
+    atomic_json(path,state)
+
+def rearm_session(state,path,cli,generation):
+    if not state.get("lease_uncertain"):
+        raise DriverError("session rearm requires persisted lease uncertainty")
+    if state.get("pending") is not None:
+        raise DriverError("session rearm requires pending mutation reconciliation")
+    snap=snapshot(cli)
+    if snap["active"] or abs(float(snap["position"]))>1e-9:
+        raise DriverError("session rearm requires authoritative flat/order-free Broker state")
+    if generation<1:
+        raise DriverError("session rearm generation invalid")
+    state["position"]=0.0
+    state["lease_generation"]=generation
+    state["lease_last_renew_ms"]=now_ms()
+    state["lease_renewal_state"]="IDLE"
+    state["lease_uncertain"]=False
+    state["lease_renewal_drain"]=False
+    state["lease_renewal_owned_halt"]=False
+    state["halt_new_entries"]=False
+    state["last_error"]=""
+    state["session_rearmed_at_ms"]=now_ms()
     atomic_json(path,state)
 
 def should_close(state,pos,quote,decision):
@@ -221,7 +263,12 @@ def should_close(state,pos,quote,decision):
     return False,""
 
 def main():
-    ap=argparse.ArgumentParser(); ap.add_argument("--once",action="store_true"); args=ap.parse_args()
+    ap=argparse.ArgumentParser(); ap.add_argument("--once",action="store_true")
+    ap.add_argument("--reconcile-only",action="store_true")
+    ap.add_argument("--rearm-session-generation",type=int,default=0)
+    args=ap.parse_args()
+    if sum(bool(x) for x in (args.once,args.reconcile_only,args.rearm_session_generation))>1:
+        raise DriverError("choose only one one-shot operator mode")
     if os.geteuid()==0: raise DriverError("driver must be non-root")
     home=Path.home(); state_dir=home/".local/state/heptatrader/paper-driver"; private_dir(state_dir)
     outbox=state_dir/"outbox"; private_dir(outbox); state_path=state_dir/"state.json"
@@ -242,6 +289,16 @@ def main():
         state["lease_uncertain"]=True; state["halt_new_entries"]=True
         state["last_error"]="session renewal outcome uncertain after restart"
     atomic_json(state_path,state); model_worker=None
+    if args.rearm_session_generation:
+        rearm_session(state,state_path,cli,args.rearm_session_generation)
+        os.close(lock); return 0
+    if args.reconcile_only:
+        snap=snapshot(cli)
+        if state.get("pending"):
+            inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
+        else:
+            state["position"]=float(snap["position"]); atomic_json(state_path,state)
+        os.close(lock); return 0
     while not stop:
         started=time.monotonic()
         try:
@@ -252,7 +309,8 @@ def main():
             if state.get("pending"):
                 inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
             else:
-                state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid())
+                state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
+                    pos,len(snap["active"]),state.get("pending"))
                 decision=None
                 # Safety exits are evaluated on every sample and never wait for the model.
                 if not snap["active"] and abs(pos)>1e-9:

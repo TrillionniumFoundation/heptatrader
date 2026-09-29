@@ -100,6 +100,23 @@ for the original command and authoritative Broker reconciliation; it never obtai
 a replacement preview or sends under a new command ID. Active Broker orders block
 new decisions. Existing exposure can only be reduced by authoritative flatten.
 Session renewal is generational and a renewal uncertainty permanently disables new
-entries while retaining reduce-only exit behavior. LIVE is never selected.
+entries while retaining reduce-only exit behavior. Renewal itself requires the
+Execution owner to pass an exact-zero audit. Therefore a due renewal never runs
+while exposure, active orders, or a pending mutation exist: the resident loop first
+latches new entries off, drives the existing position through the strict reduce-only
+flatten path, reconciles the original command, and only then renews the lease. A
+successful renewal clears only the halt that the renewal drain itself introduced.
+LIVE is never selected.
+
+If a renewal outcome is already uncertain, recovery is an explicit operator path,
+not an Agent capability. Keep the new-risk guard engaged and stop the resident
+driver; provision the same PAPER owner through `hepta-sessionctl`; run
+`heptatrader_paper_driver.py --reconcile-only` so any stored HSR1 command is
+inspected under its original command ID and Broker state is projected locally; then
+run `--rearm-session-generation <fresh-generation>`. Rearm is rejected unless the
+Broker snapshot is authoritative, flat, order-free, and the local pending mutation is
+empty. Only after that may the operator release the PAPER guard and restart the
+resident service. No state file deletion, fresh mutation ID, or LIVE transition is part
+of recovery.
 The user Execution service backs off for 30 seconds after startup failure so an
 upstream market-data/session fault remains fail-closed without hammering IB Gateway.
