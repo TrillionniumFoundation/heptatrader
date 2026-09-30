@@ -1283,6 +1283,16 @@ bool ExecutionCoordinator::AuditAndReleaseSessionOwnerFence(
     }
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::string ownerKey = OwnerKey(agentId, sessionId);
+    if (m_mutationBlocked)
+    {
+        reason = "SESSION_OWNER_RELEASE_MUTATION_BLOCKED";
+        return false;
+    }
+    if (m_recoveryOnlySessionOwners.find(ownerKey) != m_recoveryOnlySessionOwners.end())
+    {
+        reason = "SESSION_OWNER_RECOVERY_ONLY_NOT_RESUMABLE";
+        return false;
+    }
     if (m_fencedSessionOwners.find(ownerKey) == m_fencedSessionOwners.end())
     {
         reason = "SESSION_OWNER_NOT_FENCED";

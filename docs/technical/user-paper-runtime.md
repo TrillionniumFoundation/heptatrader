@@ -99,24 +99,40 @@ timeout or restart after that boundary performs only `execution.get_command_stat
 for the original command and authoritative Broker reconciliation; it never obtains
 a replacement preview or sends under a new command ID. Active Broker orders block
 new decisions. Existing exposure can only be reduced by authoritative flatten.
-Session renewal is generational and a renewal uncertainty permanently disables new
-entries while retaining reduce-only exit behavior. Renewal itself requires the
-Execution owner to pass an exact-zero audit. Therefore a due renewal never runs
-while exposure, active orders, or a pending mutation exist: the resident loop first
-latches new entries off, drives the existing position through the strict reduce-only
-flatten path, reconciles the original command, and only then renews the lease. A
-successful renewal clears only the halt that the renewal drain itself introduced.
-LIVE is never selected.
+Session renewal is generational and requires a non-fencing `AuditSessionOwner`
+using complete Execution-owned Broker snapshots. When renewal is due, the driver
+first blocks new entries, drains exposure through the existing reduce-only path,
+and reconciles the original pending command. Routine renewal must neither install
+a recovery-only fence nor release an existing owner fence.
 
-If a renewal outcome is already uncertain, recovery is an explicit operator path,
-not an Agent capability. Keep the new-risk guard engaged and stop the resident
-driver; provision the same PAPER owner through `hepta-sessionctl`; run
-`heptatrader_paper_driver.py --reconcile-only` so any stored HSR1 command is
-inspected under its original command ID and Broker state is projected locally; then
-run `--rearm-session-generation <fresh-generation>`. Rearm is rejected unless the
-Broker snapshot is authoritative, flat, order-free, and the local pending mutation is
-empty. Only after that may the operator release the PAPER guard and restart the
-resident service. No state file deletion, fresh mutation ID, or LIVE transition is part
-of recovery.
+## Audited owner-fence recovery
+
+`SESSION_OWNER_FENCED` and uncertain renewal persist an independent recovery latch
+before any further entry attempt. Health is read before quote sampling and exposes
+`execution_authoritative_health.owner_fenced`, `owner_recovery_only`,
+`mutation_ready` and `mutation_reason` for the authenticated owner. A successful
+socket/read probe is not mutation readiness; the final quote/risk/permit preview
+remains required. Transient quote errors cannot erase the persistent blocker.
+
+Recovery uses the existing user-custodian `hepta-sessionctl paper-resume` operation
+and the existing session token/generation. It never re-provisions a session or
+rotates tokens to evade a fence. The native path holds the existing mutation
+serialization boundary, audits complete active/terminal/risk/position evidence,
+reconciles original command and order owners, and invokes the existing
+`ReleaseSessionOwnerFence` / `AuditAndReleaseSessionOwnerFence`. The OMS release
+record is durable before the fence is removed. Incomplete state, exposure, an
+unresolved command, journal failure or a recovery-only/terminal owner cannot be
+resumed. A positive generation mismatch only identifies the next existing
+session generation; it is not proof of recovery.
+
+The driver remains halted after a successful resume reply until a fresh owner
+health read and an actual `risk.preview_order` on the same Execution identity
+succeed. The verification permit is discarded without order submission. Only
+halts owned by this recovery/renewal are cleared; partial-fill safety halts remain.
+A lost reply or restart repeats audit/status recovery, never a strategy send.
+`--recover-owner` performs this bounded operator check without running the model
+or submitting an order. The former direct `--rearm-session-generation` path is
+rejected; flags alone cannot establish an Execution release.
+
 The user Execution service backs off for 30 seconds after startup failure so an
 upstream market-data/session fault remains fail-closed without hammering IB Gateway.

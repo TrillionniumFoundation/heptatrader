@@ -186,6 +186,8 @@ public:
     ExecutionControlStatusResult FenceSessionOwner(const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult ReleaseSessionOwnerFence(const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult ReconcileAuthoritativeState(const ExecutionControlCommand& command) override;
+    ExecutionOwnerAuditResult AuditSessionOwner(
+        const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
     ExecutionTerminalResult TerminalizeRecoveryOwner(

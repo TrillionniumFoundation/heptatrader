@@ -226,7 +226,38 @@ ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRe
                << IbPaperExecutionProfileConfig::OrderModeName(
                       m_config.profile.orderMode)
                << "\",\"authorized_connector_count\":"
-               << authorizedConnectorCount << '}';
+               << authorizedConnectorCount;
+        // Keep external-qualification health bytes unchanged. User PAPER adds
+        // the exact authenticated owner's readiness, never a mere socket probe.
+        if (m_config.profile.userScope)
+        {
+            const bool fenced = !m_coordinator || m_coordinator->IsSessionOwnerFenced(
+                command.context.agentId, command.context.sessionId);
+            const bool recoveryOnly = !m_coordinator || m_coordinator->IsSessionOwnerRecoveryOnly(
+                command.context.agentId, command.context.sessionId);
+            std::string reason;
+            const bool blocked = !m_coordinator || m_coordinator->IsMutationBlocked(&reason);
+            const auto risk = m_adapter->GetAuthoritativeRiskSnapshot();
+            const auto orders = m_adapter->GetAuthoritativeCorrelationSnapshot();
+            const bool snapshotsReady = risk.complete && risk.coherentRefreshComplete &&
+                risk.accountComplete && risk.positionsComplete && risk.fxCashComplete &&
+                orders.complete && risk.connectionEpoch != 0 &&
+                risk.connectionEpoch == orders.connectionEpoch && !PostFillRiskRefreshPending();
+            if (fenced) reason = "SESSION_OWNER_FENCED";
+            else if (recoveryOnly) reason = "SESSION_RECOVERY_ONLY";
+            else if (blocked && reason.empty()) reason = "EXECUTION_MUTATION_BLOCKED";
+            else if (authorizedConnectorCount != 1) reason = "IB_CONNECTION_UNAVAILABLE";
+            else if (!snapshotsReady) reason = "AUTHORITATIVE_STATE_INCOMPLETE";
+            health << ",\"owner_fenced\":" << (fenced ? "true" : "false")
+                   << ",\"owner_recovery_only\":" << (recoveryOnly ? "true" : "false")
+                   << ",\"mutation_blocked\":" << (blocked ? "true" : "false")
+                   << ",\"mutation_ready\":"
+                   << (!fenced && !recoveryOnly && !blocked && snapshotsReady &&
+                       authorizedConnectorCount == 1 ? "true" : "false")
+                   << ",\"mutation_reason\":\"" << EscapeJson(reason)
+                   << "\",\"preview_required\":true";
+        }
+        health << '}';
         result.detail = health.str();
         return result;
     }

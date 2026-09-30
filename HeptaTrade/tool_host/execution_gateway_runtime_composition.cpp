@@ -339,6 +339,23 @@ ExecutionControlStatusResult ExecutionGatewayRuntimeComposition::QueryCommandSta
     return result;
 }
 
+ExecutionOwnerAuditResult ExecutionGatewayRuntimeComposition::AuditSessionOwner(
+    const ExecutionControlCommand& command)
+{
+    if (Enabled() && !ContextAllowed(command.context))
+        return ExecutionOwnerAuditResult(ContextRejected(command));
+    if (!Enabled()) return ExecutionOwnerAuditResult(RemoteDisabled(command));
+    ExecutionServiceIdentity identity;
+    std::string reason;
+    if (!ResolveRemoteIdentity(identity, reason, command.localDeadline))
+        return ExecutionOwnerAuditResult(RemoteIdentityRejected(command, reason));
+    const ExecutionOwnerAuditResult result =
+        m_executionClient->AuditSessionOwnerWithIdentity(command, identity);
+    if (IsIdentityMismatchReason(result.reasonCode))
+        InvalidateRemoteIdentity(identity);
+    return result;
+}
+
 ExecutionOwnerAuditResult ExecutionGatewayRuntimeComposition::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
 {

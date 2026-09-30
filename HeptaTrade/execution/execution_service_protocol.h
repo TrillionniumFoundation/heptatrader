@@ -19,7 +19,8 @@ enum class ExecutionServiceOperation
     FlattenPosition = 11,
     RecoveryQueryCommandStatus = 12,
     RecoveryAuditOwner = 13,
-    TerminalizeRecoveryOwner = 14
+    TerminalizeRecoveryOwner = 14,
+    AuditSessionOwner = 15
 };
 
 struct ExecutionServiceRequest

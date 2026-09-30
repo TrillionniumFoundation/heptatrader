@@ -145,6 +145,7 @@ private:
 	SessionSupervisorAuditJournal* m_auditJournal;
 	CrashPointHook m_crashPointHook;
 	std::uint32_t m_rootCustodianUid;
+    bool m_userPaperCustody = false;
     std::timed_mutex m_operationMutex;
     std::mutex m_reapMutex;
     std::string m_reapCursor;

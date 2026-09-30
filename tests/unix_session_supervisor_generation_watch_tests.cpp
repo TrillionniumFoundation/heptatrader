@@ -87,6 +87,87 @@ void TestDeterministicGenerationSchedules()
 	std::remove(journalPath.c_str());
 }
 
+void TestUserPaperResumeAuditsBeforeActivation()
+{
+    if (::geteuid() == 0 || ::getegid() == 0) return;
+    const std::string journalPath = TempPath("/tmp/hepta-resume-journal-XXXXXX");
+    const std::string socketPath = TempPath("/tmp/hepta-resume-socket-XXXXXX");
+    const std::string storePath = TempPath("/tmp/hepta-resume-store-XXXXXX");
+    const std::string auditPath = TempPath("/tmp/hepta-resume-audit-XXXXXX");
+    const std::string keyPath = TempKeyPath();
+    std::string reason;
+    SessionSupervisorLeaseStore store; assert(store.Init(storePath, keyPath, reason));
+    SessionSupervisorAuditJournal audit; assert(audit.Init(auditPath, reason));
+    OmsJournal journal; assert(journal.Init(journalPath));
+    ExecutionCoordinatorCallbacks callbacks; ExecutionCoordinator execution(journal, callbacks);
+    TradingToolRegistry registry(execution); TradingToolHost host(registry);
+    RecoveryControlAuthority authority;
+    bool complete = false; int auditCalls = 0, releaseCalls = 0;
+    authority.ownerAudit = [&](const ExecutionControlCommand& command) {
+        ++auditCalls;
+        ExecutionControlResult result;
+        result.commandId = command.context.toolCallId;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.ownerAuditAuthoritative = true; result.ownerAuditComplete = complete;
+        result.ownerAccount = command.context.account;
+        result.ownerExecutionDomain = command.context.executionDomain;
+        result.brokerConnectionEpoch = 1; result.brokerActiveGeneration = 1;
+        result.brokerTerminalGeneration = 1;
+        return result;
+    };
+    authority.release = [&](const ExecutionControlCommand& command) {
+        ++releaseCalls; assert(auditCalls > 0 && complete);
+        ExecutionControlStatusResult result; result.commandId = command.context.toolCallId;
+        std::string why;
+        assert(execution.AuditAndReleaseSessionOwnerFence("resume-agent", "resume-session", true, why));
+        result.status = ExecutionCommandStatus::Accepted;
+        result.reasonCode = "SESSION_OWNER_FENCE_RELEASED";
+        return result;
+    };
+    host.SetRecoveryControlAuthority(&authority);
+    TradingToolSessionControlPlane control(host, [](const std::string&, const TradingToolHostSessionBinding&, std::string&) {return true;});
+    UnixSessionSupervisorServer server(control); server.SetLeaseStore(&store); server.SetAuditJournal(&audit);
+    assert(server.ConfigureUserPaperCustodian(reason));
+    std::map<std::uint32_t,std::string> issuers; issuers[::geteuid()]="test.owner";
+    auto resolver=[](const SessionSupervisorRequest& request,TradingToolHostSessionBinding& binding,std::string&) {
+        binding.token=request.token; binding.peerUid=request.peerUid;
+        binding.session.executionContext.agentId=request.agentId;
+        binding.session.executionContext.sessionId=request.sessionId;
+        binding.session.executionContext.account="DU123"; binding.session.environment="PAPER";
+        binding.executionDomain="IB-PAPER";
+        binding.expiresAtMs=OmsJournal::NowEpochMs()+request.ttlMs; return true;
+    };
+    assert(server.Start(socketPath,issuers,resolver,reason,4096,2000));
+    SessionSupervisorRequest request; request.operation=SessionSupervisorOperation::Provision;
+    request.token=std::string(64,'z'); request.templateId="paper"; request.agentId="resume-agent";
+    request.sessionId="resume-session"; request.peerUid=::geteuid(); request.ttlMs=60000;
+    assert(Call(socketPath,request).accepted);
+    execution.FenceSessionOwner("resume-agent","resume-session");
+    request.operation=SessionSupervisorOperation::PaperResume; request.expectedGeneration=1;
+    const auto refused=Call(socketPath,request);
+    assert(!refused.accepted && releaseCalls==0);
+    SessionSupervisorLeaseRecord stored; assert(store.Get(request.token,stored));
+    assert(stored.leaseGeneration==1 && !stored.fencePending);
+    assert(execution.IsSessionOwnerFenced("resume-agent","resume-session"));
+    complete=true;
+    const std::string tokenPath=WriteSessionCtlTokenFile(request.token);
+    const auto accepted=RunSessionCtl({"--socket",socketPath,"paper-resume","--token-file",tokenPath,
+        "--generation","1","--ttl-sec","60","--token-owner-uid",std::to_string(::geteuid())});
+    assert(accepted.exitCode==0);
+    assert(accepted.standardOutput.find("SESSION_OWNER_RESUMED")!=std::string::npos);
+    assert(releaseCalls==1);
+    assert(store.Get(request.token,stored) && stored.leaseGeneration==2 && !stored.fencePending);
+    assert(!execution.IsSessionOwnerFenced("resume-agent","resume-session"));
+    const auto stale=Call(socketPath,request);
+    assert(!stale.accepted && stale.leaseGeneration==2 && releaseCalls==1);
+    bool found=false; for (const auto& payload:AuditPayloads(auditPath))
+        if (payload.find("operation=paper-resume")!=std::string::npos) found=true;
+    assert(found);
+    server.Stop();
+    std::remove(tokenPath.c_str()); std::remove(storePath.c_str()); std::remove(keyPath.c_str());
+    std::remove(journalPath.c_str()); std::remove(auditPath.c_str());
+}
+
 void TestRestartAtEveryPersistedGeneration()
 {
 	const std::string journalPath = TempPath("/tmp/hepta-supervisor-generation-journal-XXXXXX");

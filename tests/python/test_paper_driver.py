@@ -108,62 +108,137 @@ class DriverPolicyTests(unittest.TestCase):
             gate.set(); self.assertTrue(worker._done.wait(1)); self.assertEqual(worker.result()["action"],"HOLD")
         finally: d.model_decision=old
 
-    def test_possibly_sent_renewal_pauses_until_reconciled_not_permanent_uncertain(self):
-        state=self.state(); state["lease_renewal_state"]="POSSIBLY_SENT"
-        state["lease_uncertain"]=False; state["halt_new_entries"]=False
-        if state.get("lease_renewal_state")=="POSSIBLY_SENT":
-            state["halt_new_entries"]=True
-            state["last_error"]="session renewal reconciliation pending after restart"
-        self.assertFalse(state["lease_uncertain"]); self.assertTrue(state["halt_new_entries"])
-
-    def test_generation_mismatch_zero_reprovisions_without_permanent_uncertainty(self):
-        state=self.state(); state.update(lease_generation=1, lease_last_renew_ms=0,
-            lease_renewal_state="IDLE", lease_uncertain=False, halt_new_entries=False)
-        writes=[]; calls=[]
+    def test_uncertain_renewal_latches_without_reprovision_or_blind_retry(self):
+        state=self.state(); state.update(lease_renewal_state="POSSIBLY_SENT",lease_uncertain=True)
         old_run,old_atomic=d.run,d.atomic_json
-        class Result:
-            def __init__(self, code, out='', err=''):
-                self.returncode=code; self.stdout=out; self.stderr=err
         try:
-            def fake_run(argv,timeout=20):
-                calls.append(list(argv))
-                if 'renew' in argv:
-                    return Result(3,'{"accepted":false,"reason_code":"SESSION_LEASE_GENERATION_MISMATCH","lease_generation":0}\n')
-                if 'provision' in argv:
-                    return Result(0,'{"accepted":true,"reason_code":"OK","lease_generation":1}\n')
-                raise AssertionError(argv)
-            d.run=fake_run; d.atomic_json=lambda _path,value: writes.append(copy.deepcopy(value))
-            d.maybe_renew(state,Path('/unused'),'sessionctl','supervisor','token',1000,0.0,0,None)
-            self.assertFalse(state["lease_uncertain"])
-            self.assertFalse(state["halt_new_entries"])
-            self.assertEqual(state["lease_generation"],1)
-            self.assertEqual(state["lease_renewal_state"],"IDLE")
-            self.assertIn('provision',[item for call in calls for item in call])
-        finally:
-            d.run, d.atomic_json=old_run,old_atomic
+            d.run=lambda *_: self.fail("uncertain renewal must first enter audited recovery")
+            d.atomic_json=lambda *_: None
+            d.maybe_renew(state,Path("/unused"),"s","s","t",1000,0.0,0,None)
+            self.assertTrue(state["owner_fence_recovery_required"])
+            self.assertTrue(state["halt_new_entries"])
+        finally: d.run,d.atomic_json=old_run,old_atomic
 
-    def test_recovery_ingress_fence_reprovisions_before_native_snapshot(self):
-        state=self.state(); state.update(lease_generation=1, lease_last_renew_ms=0,
-            lease_renewal_state="POSSIBLY_SENT", lease_uncertain=True,
-            halt_new_entries=True, position=0.0, pending=None)
-        old_run,old_atomic=d.run,d.atomic_json
-        class Result:
-            def __init__(self, code, out="", err=""):
-                self.returncode=code; self.stdout=out; self.stderr=err
+    def test_generation_zero_mismatch_never_creates_a_new_session(self):
+        state=self.state();state.update(lease_generation=1,lease_last_renew_ms=0)
+        old_run,old_atomic=d.run,d.atomic_json;calls=[]
         try:
-            def fake_run(argv,timeout=20):
-                if "renew" in argv:
-                    return Result(3,"{\"accepted\":false,\"reason_code\":\"RECOVERY_INGRESS_FENCE_REQUIRED\",\"lease_generation\":1}\n")
-                if "provision" in argv:
-                    return Result(0,"{\"accepted\":true,\"reason_code\":\"OK\",\"lease_generation\":1}\n")
-                raise AssertionError(argv)
-            d.run=fake_run; d.atomic_json=lambda *_args: None
-            d.maybe_renew(state,Path("/unused"),"sessionctl","supervisor","token",1000,0.0,0,None)
-            self.assertFalse(state["lease_uncertain"])
-            self.assertFalse(state["halt_new_entries"])
-            self.assertEqual(state["lease_renewal_state"],"IDLE")
+            def run(argv,*_):
+                calls.append(argv)
+                return __import__("subprocess").CompletedProcess(argv,3,
+                    '{"accepted":false,"reason_code":"SESSION_LEASE_GENERATION_MISMATCH","lease_generation":0}',"")
+            d.run=run;d.atomic_json=lambda *_:None
+            d.maybe_renew(state,Path("/unused"),"s","s","t",1000,0.0,0,None)
+            self.assertEqual(len(calls),1);self.assertIn("renew",calls[0])
+            self.assertFalse(hasattr(d,"_provision_command"))
+            self.assertTrue(state["owner_fence_recovery_required"])
+            self.assertTrue(state["halt_new_entries"])
+        finally:d.run,d.atomic_json=old_run,old_atomic
+
+    def test_owner_fence_latches_before_any_submit_and_cannot_be_rearmed_as_a_lease(self):
+        state=self.state(); writes=[]; calls=[]
+        old_cmd,old_atomic,old_run=d.paper_cmd,d.atomic_json,d.run
+        try:
+            def refused(*args):
+                calls.append(args[4])
+                return {"ok":False,"reason":"SESSION_OWNER_FENCED"}
+            d.paper_cmd=refused
+            d.atomic_json=lambda _path,value: writes.append(copy.deepcopy(value))
+            with self.assertRaisesRegex(d.DriverError,"SESSION_OWNER_FENCED"):
+                d.prepare_send(state,Path("/unused"),"binary","socket","token","outbox","OPEN",{"bid":1.1,"ask":1.1001},"BUY")
+            self.assertEqual(calls,["prepare-open"])
+            self.assertTrue(writes[-1]["owner_fence_recovery_required"])
+            self.assertTrue(state["halt_new_entries"])
+            self.assertIsNone(state.get("pending"))
+            def forbidden(*args,**kwargs): raise AssertionError("lease control must not bypass owner recovery")
+            d.run=forbidden
+            d.maybe_renew(state,Path("/unused"),"s","s","t",1000,0.0,0,None)
+            with self.assertRaisesRegex(d.DriverError,"audited recovery"):
+                d.rearm_session(state,Path("/unused"),"cli",1)
         finally:
-            d.run,d.atomic_json=old_run,old_atomic
+            d.paper_cmd,d.atomic_json,d.run=old_cmd,old_atomic,old_run
+
+    def test_recovery_requires_current_ack_and_preview_then_clears_only_its_halt(self):
+        from unittest.mock import patch
+        import subprocess
+        state=self.state();state.update(lease_generation=1,gross_pnl=6.0)
+        history=[];calls=[]
+        def save(_p,value):history.append(copy.deepcopy(value))
+        def snap(*_):
+            return {"position":0.0,"gross_position":0.0,"active":[],"quote":{"ask":1.1},
+                "owner_health":{"owner_fenced":False,"owner_recovery_only":False,"mutation_ready":True},
+                "service_epoch":"epoch-1","service_generation":1}
+        def run(argv,*_):
+            calls.append(argv)
+            if "paper-resume" in argv:
+                self.assertEqual(history[-1]["owner_recovery_phase"],"RESUME_SENT")
+                return subprocess.CompletedProcess(argv,0,'{"accepted":true,"reason_code":"SESSION_OWNER_RESUMED","lease_generation":2}',"")
+            self.assertEqual(argv,["cli","paper-on"])
+            return subprocess.CompletedProcess(argv,0,"","")
+        def preview(*args):
+            self.assertEqual(args[1],"risk.preview_order")
+            self.assertTrue(state["halt_new_entries"])
+            self.assertEqual(history[-1]["owner_recovery_phase"],"VERIFY_PREVIEW")
+            return {"approved":True,"preview_permit":"private-test-permit","service_epoch":"epoch-1","service_fencing_generation":1}
+        with patch.object(d,"atomic_json",save),patch.object(d,"snapshot",snap),patch.object(d,"run",run),patch.object(d,"native",preview):
+            d.latch_owner_fence(state,Path("/unused"),"SESSION_OWNER_FENCED")
+            self.assertTrue(d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000))
+        self.assertFalse(state["halt_new_entries"])
+        self.assertFalse(state["owner_fence_recovery_required"])
+        self.assertEqual(state["owner_recovery_phase"],"VERIFIED")
+        self.assertEqual(state["gross_pnl"],6.0)
+        self.assertNotIn("private-test-permit",str(history))
+        self.assertEqual(len(calls),2)
+
+    def test_failed_preview_keeps_latch_and_does_not_repeat_resume_on_next_check(self):
+        from unittest.mock import patch
+        import subprocess
+        state=self.state();state.update(lease_generation=2,owner_fence_recovery_required=True,
+            owner_recovery_phase="VERIFY_PREVIEW",halt_new_entries=True)
+        snap={"position":0.0,"gross_position":0.0,"active":[],"quote":{"ask":1.1},
+            "owner_health":{"owner_fenced":False,"owner_recovery_only":False,"mutation_ready":True},
+            "service_epoch":"epoch-1","service_generation":1}
+        with patch.object(d,"atomic_json"),patch.object(d,"snapshot",return_value=snap), \
+             patch.object(d,"run",return_value=subprocess.CompletedProcess([],0,"","")) as run, \
+             patch.object(d,"native",side_effect=d.DriverError("quote stale")):
+            with self.assertRaisesRegex(d.DriverError,"quote stale"):
+                d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000)
+            run.assert_called_once_with(["cli","paper-on"],10)
+        self.assertTrue(state["owner_fence_recovery_required"])
+        self.assertTrue(state["halt_new_entries"])
+        self.assertEqual(state["owner_recovery_phase"],"VERIFY_PREVIEW")
+
+    def test_exposure_or_pending_prevents_any_resume_control(self):
+        from unittest.mock import patch
+        state=self.state();state["owner_fence_recovery_required"]=True
+        with patch.object(d,"run") as run,patch.object(d,"snapshot",return_value={"active":[],"gross_position":1.0}):
+            with self.assertRaisesRegex(d.DriverError,"zero total strategy position"):
+                d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000)
+            state["pending"]={"command_id":"original-command"}
+            with self.assertRaisesRegex(d.DriverError,"pending command"):
+                d.recover_owner(state,Path("/unused"),"cli","s","s","t",1000)
+            run.assert_not_called()
+
+    def test_renew_success_cannot_clear_an_unrelated_halt(self):
+        state=self.state();state.update(halt_new_entries=True,lease_renewal_owned_halt=False)
+        d._finish_renewal(state,2)
+        self.assertTrue(state["halt_new_entries"])
+        state.update(lease_renewal_owned_halt=True,risk_halt_reason="PARTIAL_ENTRY")
+        d._finish_renewal(state,3)
+        self.assertTrue(state["halt_new_entries"])
+
+    def test_fence_is_latched_before_quote_failure_can_hide_it(self):
+        from unittest.mock import patch
+        state=self.state()
+        def read(_cli,tool,*_):
+            if tool=="system.get_health":return {"execution_authoritative_health":{"source":"IB","authoritative":True,
+                "owner_fenced":True,"owner_recovery_only":False,"mutation_ready":False,"mutation_reason":"SESSION_OWNER_FENCED"}}
+            raise d.DriverError("AUTHORITATIVE_QUOTE_STALE")
+        with patch.object(d,"native",read),patch.object(d,"atomic_json"):
+            with self.assertRaises(d.DriverError):d.snapshot("cli",state,Path("/unused"))
+        self.assertTrue(state["owner_fence_recovery_required"])
+        self.assertTrue(state["halt_new_entries"])
+        self.assertEqual(state["owner_fence_block_reason"],"SESSION_OWNER_FENCED")
 
     def test_reversal_adverse_and_halt_are_reduce_only_triggers(self):
         state=self.state(); state["entry_price"]=1.0

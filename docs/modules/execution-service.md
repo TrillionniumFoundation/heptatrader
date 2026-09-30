@@ -195,3 +195,13 @@ explicitly with absent/default unrelated evidence; client and replay boundaries
 narrow it before domain use. Existing wire fields, HSL/OMS formats, final-use
 checks and recovery ordering are unchanged. Contract and IPC regressions verify
 that status, audit and terminal fields cannot silently manufacture one another.
+
+## Non-fencing owner audit
+
+`AuditSessionOwner` returns the existing typed `ExecutionOwnerAuditResult` over
+the exact-identity command IPC. It reuses the full service-owned recovery snapshot
+evaluator without calling `EnterRecoveryOnlyOwner`; `RecoveryAuditOwner` keeps its
+separate ingress-fencing semantics. Ordinary lease renewal uses the non-fencing
+audit. Owner-fence release independently revalidates zero positions, no active
+orders or unresolved commands, then commits `SESSION_OWNER_FENCE_RELEASED` through
+the coordinator. An earlier client read is never passed in as authority.

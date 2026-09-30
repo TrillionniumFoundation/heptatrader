@@ -63,16 +63,24 @@ public:
 	{
 		return fence ? fence(command) : Rejected(command);
 	}
+    std::function<ExecutionControlStatusResult(const ExecutionControlCommand&)> release;
 	ExecutionControlStatusResult ReleaseSessionOwnerFence(
 		const ExecutionControlCommand& command) override
 	{
-		return Rejected(command);
+        return release ? release(command) : Rejected(command);
 	}
 	ExecutionControlStatusResult ReconcileAuthoritativeState(
 		const ExecutionControlCommand& command) override
 	{
 		return Rejected(command);
 	}
+    ExecutionOwnerAuditResult AuditSessionOwner(
+        const ExecutionControlCommand& command) override
+    {
+        // Normal renewal must not request a recovery ingress transition.
+        assert(command.recoveryIngressFence == 0);
+        return ownerAudit ? ownerAudit(command) : Rejected(command);
+    }
 	ExecutionOwnerAuditResult RecoveryAuditOwner(
 		const ExecutionControlCommand& command) override
 	{
@@ -131,6 +139,7 @@ void TestReapSerializesWithRenewCommit();
 void TestDurablePendingFenceRestartRecoveryWithReviewedPolicy();
 void TestDeterministicGenerationSchedules();
 void TestRestartAtEveryPersistedGeneration();
+void TestUserPaperResumeAuditsBeforeActivation();
 void TestWatchLeaseRestartFailsClosed();
 void TestSameHostWatchRestartFencesExactLocalSession();
 void TestWatchTransactionReservationRaces();

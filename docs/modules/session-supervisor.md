@@ -186,3 +186,13 @@ seven independent owner-field substitutions are regression-tested before commit.
 This is an internal C++ interface cleanup, not a change to HSL8, HSS1 or HEX1.
 `Put` and `Replace` share mutable-record shape validation; historical decoding
 keeps its version-specific restrictions. All prior migration tests remain.
+
+## Active user-PAPER owner resumption
+
+`paper-resume` is an explicit user-custodian operation on an existing PAPER token
+and exact lease generation, not provisioning. Admission audit capacity is required
+before any state change. The existing lease write-ahead transaction, active owner
+locks and audit trail apply. A non-fencing owner audit precedes native fence release;
+failed audit preserves the prior lease while keeping entry blocked at Execution.
+Terminal/recovery-only owners are excluded. See the
+[user recovery contract](../technical/user-paper-runtime.md#audited-owner-fence-recovery).

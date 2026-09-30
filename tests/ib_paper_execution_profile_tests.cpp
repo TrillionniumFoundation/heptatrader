@@ -336,6 +336,70 @@ void TestQualificationEnvelopeAlwaysHasAnAtomicFlattenPath()
     assert(reason == "IB_PAPER_EXTERNAL_FLATTEN_POSITION_LIMIT_EXCEEDED");
 }
 
+void TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress()
+{
+    IbPaperExecutionProfileConfig config; std::string reason;
+    assert(IbPaperExecutionProfileConfig::FromValues(QualificationValues(), config, reason));
+    char path[] = "/tmp/hepta-owner-release-XXXXXX";
+    const int fd = ::mkstemp(path); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path));
+    ExecutionCoordinatorCallbacks callbacks;
+    ExecutionCoordinator coordinator(journal, callbacks);
+    IBAuthoritativeRecoveryAuditSnapshot snapshot;
+    snapshot.active.complete = true;
+    snapshot.active.connectionEpoch = 1; snapshot.active.generation = 1;
+    snapshot.terminal.complete = true;
+    snapshot.terminal.connectionEpoch = 1; snapshot.terminal.generation = 1;
+    snapshot.risk.complete = true; snapshot.risk.coherentRefreshComplete = true;
+    snapshot.risk.accountComplete = true; snapshot.risk.positionsComplete = true;
+    snapshot.risk.fxCashComplete = true; snapshot.risk.connectionEpoch = 1;
+    snapshot.risk.generation = 1; snapshot.risk.accountGeneration = 1;
+    snapshot.risk.positionsGeneration = 1; snapshot.risk.fxCashGeneration = 1;
+    snapshot.barrierComplete = true;
+    IbPaperExecutionPolicyCallbacks policyCallbacks;
+    policyCallbacks.nowMs = [] { return OmsJournal::NowEpochMs(); };
+    policyCallbacks.recoveryAuditSnapshot = [&] { return snapshot; };
+    std::shared_ptr<IbPaperKillSwitchReader> guard(new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionPolicyAuthority policy(coordinator, config, policyCallbacks, guard);
+    ExecutionControlCommand command;
+    command.context = QualificationOrder(config, "BUY", 1.0).context;
+    command.context.agentId = "resume-owner"; command.context.sessionId = "resume-session";
+    command.context.toolCallId = "owner-audit";
+    const auto audit = policy.AuditSessionOwner(command);
+    assert(audit.status == ExecutionCommandStatus::Accepted);
+    assert(audit.ownerAuditAuthoritative && audit.ownerAuditComplete);
+    assert(!coordinator.IsSessionOwnerRecoveryOnly("resume-owner", "resume-session"));
+    coordinator.FenceSessionOwner("resume-owner", "resume-session");
+    snapshot.risk.complete = false;
+    assert(policy.ReleaseSessionOwnerFence(command).status == ExecutionCommandStatus::Rejected);
+    assert(coordinator.IsSessionOwnerFenced("resume-owner", "resume-session"));
+    snapshot.risk.complete = true;
+    snapshot.positionQuantities["EUR.USD"] = 1.0;
+    snapshot.risk.grossAbsolutePosition = 1.0;
+    assert(policy.ReleaseSessionOwnerFence(command).status == ExecutionCommandStatus::Rejected);
+    assert(coordinator.IsSessionOwnerFenced("resume-owner", "resume-session"));
+    snapshot.positionQuantities.clear(); snapshot.risk.grossAbsolutePosition = 0.0;
+    snapshot.active.activeOrderIds.insert(123);
+    assert(policy.ReleaseSessionOwnerFence(command).status == ExecutionCommandStatus::Rejected);
+    snapshot.active.activeOrderIds.clear();
+    const auto released = policy.ReleaseSessionOwnerFence(command);
+    assert(released.status == ExecutionCommandStatus::Accepted);
+    assert(released.reasonCode == "SESSION_OWNER_FENCE_RELEASED");
+    assert(!coordinator.IsSessionOwnerFenced("resume-owner", "resume-session"));
+    assert(coordinator.RecoverFromJournal(reason));
+    assert(!coordinator.IsSessionOwnerFenced("resume-owner", "resume-session"));
+    // Lost reply: repeating the audited control action is harmless, not a new order.
+    const auto replay = policy.ReleaseSessionOwnerFence(command);
+    assert(replay.status == ExecutionCommandStatus::Accepted);
+    assert(replay.reasonCode == "SESSION_OWNER_NOT_FENCED");
+    coordinator.FenceSessionOwner("resume-owner", "resume-session");
+    assert(coordinator.EnterRecoveryOnlyOwner("resume-owner", "resume-session", 3, reason));
+    assert(policy.ReleaseSessionOwnerFence(command).status == ExecutionCommandStatus::Rejected);
+    assert(coordinator.IsSessionOwnerFenced("resume-owner", "resume-session"));
+    assert(coordinator.IsSessionOwnerRecoveryOnly("resume-owner", "resume-session"));
+    ::unlink(path);
+}
+
 void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 {
     IbPaperExecutionProfileConfig config; std::string reason;
@@ -394,6 +458,7 @@ int main()
 {
     TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();
+    TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();
     TestQualificationProfileRejectsWiderOrAmbiguousAuthority();

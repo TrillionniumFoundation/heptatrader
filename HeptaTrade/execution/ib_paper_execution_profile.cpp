@@ -1252,32 +1252,49 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
         result.detail = "Fence remains installed while another policy operation is active";
         return result;
     }
-    if (!m_callbacks.correlationSnapshot)
+    // The release operation must itself re-audit the same service-owned state.
+    // A caller-side flat flag or successful session provision is not evidence.
+    if (!m_callbacks.recoveryAuditSnapshot || command.recoveryIngressFence != 0)
     {
         result.status = ExecutionCommandStatus::Rejected;
-        result.reasonCode = "IB_PAPER_CORRELATION_SNAPSHOT_CALLBACK_REQUIRED";
+        result.reasonCode = "SESSION_OWNER_AUDIT_BINDING_INVALID";
         return result;
     }
-    const IBAuthoritativeCorrelationSnapshot snapshot = m_callbacks.correlationSnapshot();
-    if (!snapshot.complete)
+    const ExecutionOwnerAuditResult audit =
+        AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot());
+    if (audit.status != ExecutionCommandStatus::Accepted ||
+        !audit.ownerAuditAuthoritative || !audit.ownerAuditComplete ||
+        audit.ownerActiveOrderCount != 0 || audit.ownerUncertainCommandCount != 0 ||
+        audit.mutationBlocked)
     {
         result.status = ExecutionCommandStatus::Rejected;
-        result.reasonCode = snapshot.reasonCode.empty() ?
-            "IB_PAPER_CORRELATION_SNAPSHOT_INCOMPLETE" : snapshot.reasonCode;
+        result.reasonCode = audit.reasonCode.empty() ? "SESSION_OWNER_AUDIT_INCOMPLETE" : audit.reasonCode;
+        return result;
+    }
+    // An externally finalized/recovery-only owner is not an ordinary active
+    // session. Re-provisioning or release must never revive that owner.
+    if (m_coordinator.IsSessionOwnerRecoveryOnly(command.context.agentId, command.context.sessionId))
+    {
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = "SESSION_OWNER_RECOVERY_ONLY_NOT_RESUMABLE";
+        return result;
+    }
+    if (!m_coordinator.IsSessionOwnerFenced(command.context.agentId, command.context.sessionId))
+    {
+        result.reasonCode = "SESSION_OWNER_NOT_FENCED";
         return result;
     }
     std::size_t removed = 0;
     std::string reason;
-    if (!m_coordinator.ReconcileOrderOwners(snapshot.activeOrderIds, true, removed, reason) ||
-        !m_coordinator.AuditAndReleaseSessionOwnerFence(
+    if (!m_coordinator.AuditAndReleaseSessionOwnerFence(
             command.context.agentId, command.context.sessionId, true, reason))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = reason;
-        result.affectedCount = removed;
         result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
         return result;
     }
+    result.reasonCode = "SESSION_OWNER_FENCE_RELEASED";
     result.affectedCount = removed;
     result.mutationBlocked = m_coordinator.IsMutationBlocked(nullptr);
     return result;
@@ -1300,6 +1317,24 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReconcileAuthorita
     result.affectedCount = affected;
     result.mutationBlocked = false;
     return result;
+}
+
+ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditSessionOwner(
+    const ExecutionControlCommand& command)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    ExecutionOwnerAuditResult result(BeginControl(command));
+    result.ownerAccount = command.context.account;
+    result.ownerExecutionDomain = command.context.executionDomain;
+    if (result.status == ExecutionCommandStatus::Rejected) return result;
+    if (command.recoveryIngressFence != 0 || command.context.account != m_account ||
+        !m_callbacks.recoveryAuditSnapshot)
+    {
+        result.status = ExecutionCommandStatus::Rejected;
+        result.reasonCode = "SESSION_OWNER_AUDIT_BINDING_INVALID";
+        return result;
+    }
+    return AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot());
 }
 
 ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::RecoveryAuditOwner(

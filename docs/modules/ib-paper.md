@@ -189,3 +189,11 @@ firewall policy, kill-switch state or Broker credentials to gain access.
 The [single-operator user profile](../technical/user-paper-runtime.md) reuses
 this runtime under the current user with its own bounded credential and pinned
 control directory. It is not the system-service or external qualification profile.
+
+## User-session mutation readiness
+
+User PAPER `system.get_health` includes the authenticated Execution owner's
+fence/recovery-only state and authoritative-state mutation readiness, nested under
+`execution_authoritative_health` at the Gateway. It is not an order permit: current
+quote freshness, risk bounds and a single-use preview remain mandatory. External
+qualification health retains its existing strict wire contract.

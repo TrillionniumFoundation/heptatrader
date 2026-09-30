@@ -1107,7 +1107,7 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     std::uint64_t expiresAtMs,
     std::uint64_t& newGeneration,
     ExecutionOwnerAuditResult& ownerAudit,
-    std::string& reason)
+    std::string& reason, bool resumeOwner)
 {
     std::lock_guard<std::mutex> dispatchLock(m_mutationDispatchMutex);
     TradingToolHostSessionBinding binding;
@@ -1139,8 +1139,20 @@ bool TradingToolHost::UpdatePaperSessionLeaseAfterAudit(
     command.context.executionDomain = binding.executionDomain;
     command.context.toolCallId = "paper-renew-owner-audit-" +
         std::to_string(expectedGeneration);
-    ownerAudit = authority->RecoveryAuditOwner(command);
+    ownerAudit = authority->AuditSessionOwner(command);
     if (!ExactZeroOwnerAudit(binding, ownerAudit, reason)) return false;
+    if (resumeOwner)
+    {
+        command.context.toolCallId = "paper-resume-owner-" + std::to_string(expectedGeneration);
+        const ExecutionControlStatusResult released = authority->ReleaseSessionOwnerFence(command);
+        if (released.status != ExecutionCommandStatus::Accepted || released.mutationBlocked ||
+            (released.reasonCode != "SESSION_OWNER_FENCE_RELEASED" &&
+             released.reasonCode != "SESSION_OWNER_NOT_FENCED"))
+        {
+            reason = released.reasonCode.empty() ? "SESSION_OWNER_RELEASE_UNCERTAIN" : released.reasonCode;
+            return false;
+        }
+    }
     return UpdateSessionLeaseImpl(
         currentToken, replacementToken, expectedGeneration, expiresAtMs,
         newGeneration, nullptr, nullptr, reason, true);

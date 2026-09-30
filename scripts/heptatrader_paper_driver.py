@@ -5,7 +5,6 @@ from pathlib import Path
 
 INSTRUMENT="EUR.USD"; QTY=25000.0; CONF=0.62; MAX_ADVERSE=0.002
 SAMPLE_SEC=10.0; DECISION_SEC=120.0; MAX_HISTORY=60; MODEL="gpt-6-luna"
-AGENT_ID="pocket4-paper"; SESSION_ID="pocket4-user-paper-20260928"
 class DriverError(RuntimeError): pass
 def now_ms(): return int(time.time()*1000)
 def cid(p): return p+"-"+uuid.uuid4().hex
@@ -66,18 +65,29 @@ def native(cli,tool,*fields):
     if p.returncode!=0 or v.get("status")!="ok": raise DriverError("native rejected: "+str(v.get("reason_code")))
     return v.get("payload") or {}
 
-def snapshot(cli):
-    h=native(cli,"system.get_health"); o=native(cli,"orders.list")
-    p=native(cli,"portfolio.list_positions"); q=native(cli,"market.get_quote","instrument=EUR.USD")
-    l=native(cli,"risk.get_limits")
+def snapshot(cli,state=None,path=None):
+    h=native(cli,"system.get_health")
+    owner=h.get("execution_authoritative_health")
+    if (not isinstance(owner,dict) or owner.get("source")!="IB" or owner.get("authoritative") is not True or
+            any(type(owner.get(k)) is not bool for k in ("owner_fenced","owner_recovery_only","mutation_ready"))):
+        raise DriverError("authoritative owner mutation readiness unavailable")
+    if state is not None and (owner["owner_fenced"] or owner["owner_recovery_only"]):
+        latch_owner_fence(state,path,owner.get("mutation_reason") or "SESSION_OWNER_FENCED")
+    o=native(cli,"orders.list"); p=native(cli,"portfolio.list_positions")
+    q=native(cli,"market.get_quote","instrument=EUR.USD"); l=native(cli,"risk.get_limits")
     if (h.get("execution_mode")!="PAPER" or not h.get("gateway_ready") or not h.get("remote_execution_ready")
         or o.get("source")!="IB" or not o.get("authoritative") or not o.get("global_active_orders_complete")
         or not o.get("owner_projection_complete") or p.get("source")!="IB" or not p.get("authoritative")
+        or not isinstance(p.get("positions"),list) or not isinstance(o.get("active_order_ids"),list)
         or q.get("source")!="IB" or not q.get("authoritative") or q.get("stale") is not False
         or l.get("source")!="IB" or not l.get("authoritative")):
         raise DriverError("authoritative PAPER snapshot incomplete")
-    pos=sum(float(x.get("quantity",0)) for x in p.get("positions",[]) if x.get("instrument")==INSTRUMENT)
-    return {"orders":o,"quote":q,"position":pos,"active":[int(x) for x in o.get("active_order_ids",[])]}
+    quantities=[float(x["quantity"]) for x in p["positions"]]
+    if not all(math.isfinite(x) for x in quantities): raise DriverError("nonfinite authoritative position")
+    pos=sum(float(x["quantity"]) for x in p["positions"] if x.get("instrument")==INSTRUMENT)
+    return {"orders":o,"quote":q,"position":pos,"gross_position":sum(abs(x) for x in quantities),
+        "active":[int(x) for x in o["active_order_ids"]],"owner_health":owner,
+        "service_epoch":h.get("execution_service_epoch"),"service_generation":h.get("execution_service_fencing_generation")}
 
 def recent_fill(orders,oid):
     for row in orders.get("recent_orders",[]):
@@ -97,6 +107,15 @@ def paper_cmd(binary,socket,token,outbox,op,extra):
     if not p.stdout: return {"ok":False,"reason":"PROCESS_NO_RESPONSE"}
     v=strict_json(p.stdout); v["process_returncode"]=p.returncode; return v
 
+def latch_owner_fence(state,path,reason):
+    if not state.get("owner_fence_recovery_required"):
+        state["owner_fence_owned_halt"]=not state.get("halt_new_entries",False)
+    state["owner_fence_recovery_required"]=True
+    state["owner_fence_block_reason"]=reason
+    state["halt_new_entries"]=True
+    state["last_error"]="owner fence recovery required: "+reason
+    atomic_json(path,state)
+
 def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None):
     preview=cid("driver-preview")
     if kind=="OPEN":
@@ -106,6 +125,8 @@ def prepare_send(state,path,binary,socket,token,outbox,kind,quote=None,side=None
     else:
         ref=None; prepared=paper_cmd(binary,socket,token,outbox,"prepare-close",["--call-id",preview])
     if not prepared.get("ok") or not prepared.get("command_id"):
+        if prepared.get("reason") == "SESSION_OWNER_FENCED":
+            latch_owner_fence(state,path,"SESSION_OWNER_FENCED")
         raise DriverError("prepare failed: "+str(prepared.get("reason")))
     pending={"kind":kind,"command_id":prepared["command_id"],"send_state":"PREPARED",
         "created_at_ms":now_ms(),"broker_order_id":None,"side":side,"reference_price":ref}
@@ -138,6 +159,7 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["entry_at_ms"]=now_ms(); state["pending"]=None
         if abs(pos)<QTY-1e-9 or not fill:
             state["halt_new_entries"]=True
+            state["risk_halt_reason"]="PARTIAL_OR_UNPROVEN_ENTRY"
             state["last_error"]="partial or price-unproven entry adopted; reduce-only exit required"
         else:
             state["last_error"]=""
@@ -151,6 +173,7 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
     elif (p["kind"]=="CLOSE" and not active and fill and fill.get("terminal") and
           abs(pos)>1e-9 and abs(pos)<abs(float(state.get("position",0)))-1e-9):
         state["position"]=pos; state["pending"]=None; state["halt_new_entries"]=True
+        state["risk_halt_reason"]="PARTIAL_FLATTEN"
         state["last_error"]="partial flatten terminal; remaining exposure requires next exact reduce-only flatten"
     elif (payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],oid)) and not active:
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
@@ -209,102 +232,103 @@ def _renew_command(sessionctl, supervisor, token, uid, generation):
         "--token-owner-uid",str(uid)],10)
 
 
-def _provision_command(sessionctl, supervisor, token, uid):
-    return run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","provision",
-        "--template","paper","--token-file",token,"--agent-id",AGENT_ID,
-        "--session-id",SESSION_ID,"--peer-uid",str(uid),"--ttl-sec","86400"],10)
-
-
-def _finish_renewal(state, generation):
-    lease_halted_entries = (state.get("lease_renewal_owned_halt") or
-        state.get("lease_uncertain") or
-        state.get("lease_renewal_state")=="POSSIBLY_SENT")
-    state["lease_generation"]=int(generation)
-    state["lease_last_renew_ms"]=now_ms()
-    state["lease_renewal_state"]="IDLE"
-    state["lease_uncertain"]=False
-    state["lease_renewal_drain"]=False
-    if lease_halted_entries:
+def _finish_renewal(state,generation):
+    owned=state.get("lease_renewal_owned_halt",False)
+    state.update(lease_generation=generation,lease_last_renew_ms=now_ms(),lease_renewal_state="IDLE",
+        lease_uncertain=False,lease_renewal_drain=False,lease_renewal_owned_halt=False)
+    if owned and not state.get("owner_fence_recovery_required") and not state.get("risk_halt_reason"):
         state["halt_new_entries"]=False
-    state["lease_renewal_owned_halt"]=False
-    state["last_error"]=""
+    if not state.get("owner_fence_recovery_required"): state["last_error"]=""
 
 
 def maybe_renew(state,path,sessionctl,supervisor,token,uid,position,active_orders,pending):
-    due=(state.get("lease_renewal_state")=="POSSIBLY_SENT" or
-         now_ms()-int(state.get("lease_last_renew_ms",0))>=4*60*60*1000)
-    if not due:
-        return
+    if state.get("owner_fence_recovery_required"): return
+    if state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT":
+        latch_owner_fence(state,path,"SESSION_RENEWAL_UNCERTAIN"); return
+    if now_ms()-int(state.get("lease_last_renew_ms",0))<4*60*60*1000: return
+    if not state.get("halt_new_entries"):
+        state["lease_renewal_owned_halt"]=True
+    state["halt_new_entries"]=True
     if abs(float(position))>1e-9 or active_orders or pending is not None:
         state["lease_renewal_drain"]=True
-        if not state.get("halt_new_entries"):
-            state["halt_new_entries"]=True
-            state["lease_renewal_owned_halt"]=True
         state["last_error"]="session renewal due; drain to exact-zero before renewal"
+        atomic_json(path,state); return
+    g=int(state.get("lease_generation",1)); state["lease_renewal_state"]="POSSIBLY_SENT"; atomic_json(path,state)
+    try:
+        result=_renew_command(sessionctl,supervisor,token,uid,g); value=_parse_command_json(result)
+    except Exception:
+        state["lease_uncertain"]=True; latch_owner_fence(state,path,"SESSION_RENEWAL_UNCERTAIN"); raise
+    generation=value.get("lease_generation")
+    if result.returncode==0 and value.get("accepted") is True and type(generation) is int and generation==g+1:
+        _finish_renewal(state,generation); atomic_json(path,state); return
+    state["lease_uncertain"]=not bool(value)
+    latch_owner_fence(state,path,str(value.get("reason_code") or "SESSION_RENEWAL_UNCERTAIN"))
+
+
+def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
+    if not state.get("owner_fence_recovery_required"): return False
+    if state.get("pending") is not None: raise DriverError("recovery requires original pending command reconciliation")
+    snap=snapshot(cli,state,path)
+    if snap["active"] or snap["gross_position"]!=0.0:
+        raise DriverError("recovery requires authoritative zero orders and zero total strategy position")
+    if snap["owner_health"]["owner_recovery_only"]:
+        raise DriverError("recovery-only/terminal owner is not resumable")
+    # Never retry a strategy order here. This authenticated control operation
+    # re-audits Broker-owned snapshots even after a lost prior control reply.
+    if state.get("owner_recovery_phase")!="VERIFY_PREVIEW":
+        if now_ms()<int(state.get("owner_recovery_next_attempt_ms",0)): return False
+        g=int(state.get("lease_generation",1))
+        state["owner_recovery_phase"]="RESUME_SENT"
+        state["owner_recovery_attempts"]=int(state.get("owner_recovery_attempts",0))+1
+        state["owner_recovery_next_attempt_ms"]=now_ms()+60000
         atomic_json(path,state)
-        return
-    g=int(state.get("lease_generation",1))
-    state["lease_renewal_state"]="POSSIBLY_SENT"; atomic_json(path,state)
-    result=_renew_command(sessionctl,supervisor,token,uid,g)
-    value=_parse_command_json(result)
-    if result.returncode==0 and value.get("accepted") is True:
-        new_generation=int(value.get("lease_generation",0))
-        if new_generation>0:
-            _finish_renewal(state,new_generation); atomic_json(path,state); return
-    if value.get("reason_code")=="SESSION_LEASE_GENERATION_MISMATCH":
-        reported=int(value.get("lease_generation",0) or 0)
-        if reported>0 and reported!=g:
-            retry=_renew_command(sessionctl,supervisor,token,uid,reported)
-            retry_value=_parse_command_json(retry)
-            if retry.returncode==0 and retry_value.get("accepted") is True:
-                new_generation=int(retry_value.get("lease_generation",0))
-                if new_generation>0:
-                    _finish_renewal(state,new_generation); atomic_json(path,state); return
-        elif reported==0:
-            provision=_provision_command(sessionctl,supervisor,token,uid)
-            provision_value=_parse_command_json(provision)
-            if provision.returncode==0 and provision_value.get("accepted") is True:
-                new_generation=int(provision_value.get("lease_generation",0))
-                if new_generation>0:
-                    _finish_renewal(state,new_generation); atomic_json(path,state); return
-    if value.get("reason_code") in {"RECOVERY_INGRESS_FENCE_REQUIRED", "SESSION_NOT_FOUND", "LEASE_STORE_TOKEN_NOT_FOUND"}:
-        provision=_provision_command(sessionctl,supervisor,token,uid)
-        provision_value=_parse_command_json(provision)
-        if provision.returncode==0 and provision_value.get("accepted") is True:
-            new_generation=int(provision_value.get("lease_generation",0))
-            if new_generation>0:
-                _finish_renewal(state,new_generation); atomic_json(path,state); return
-    if value:
-        state["halt_new_entries"]=True
-        state["lease_renewal_owned_halt"]=False
-        state["last_error"]=("session renewal rejected: "+str(value.get("reason_code")))[:500]
-    else:
-        state["lease_uncertain"]=True; state["halt_new_entries"]=True
-        state["lease_renewal_owned_halt"]=False
-        state["last_error"]=("session renewal uncertain: "+result.stderr[-160:])[:500]
+        result=run([sessionctl,"--socket",supervisor,"--io-timeout-ms","4000","paper-resume",
+            "--token-file",token,"--generation",str(g),"--ttl-sec","86400","--token-owner-uid",str(uid)],10)
+        value=_parse_command_json(result); generation=value.get("lease_generation")
+        if (result.returncode!=0 or value.get("accepted") is not True or
+                value.get("reason_code")!="SESSION_OWNER_RESUMED" or type(generation) is not int or generation!=g+1):
+            if (value.get("reason_code")=="SESSION_LEASE_GENERATION_MISMATCH" and
+                    type(generation) is int and generation>g):
+                state["lease_generation"]=generation
+            state["owner_recovery_phase"]="AUDIT_REQUIRED"
+            state["owner_recovery_last_reason"]=str(value.get("reason_code") or "SESSION_RESUME_UNCERTAIN")
+            atomic_json(path,state)
+            raise DriverError("owner resume not confirmed: "+state["owner_recovery_last_reason"])
+        state["lease_generation"]=generation
+        state["owner_recovery_phase"]="VERIFY_PREVIEW"
+        state["owner_resume_confirmed_ms"]=now_ms()
+        atomic_json(path,state)
+    snap=snapshot(cli,state,path); owner=snap["owner_health"]
+    if owner["owner_fenced"]:
+        state["owner_recovery_phase"]="AUDIT_REQUIRED"; atomic_json(path,state)
+        raise DriverError("owner fenced again before verification")
+    if (owner["owner_recovery_only"] or owner["mutation_ready"] is not True or
+            snap["active"] or snap["gross_position"]!=0.0):
+        raise DriverError("post-resume authoritative mutation gate is not ready")
+    guard=run([cli,"paper-on"],10)
+    if guard.returncode!=0: raise DriverError("post-audit local PAPER guard not ready")
+    # Capability verification only: this permit is never submitted or persisted.
+    preview=native(cli,"risk.preview_order","instrument=EUR.USD","side=BUY","quantity=25000",
+        "order_type=MKT","tif=DAY","reference_price="+format(float(snap["quote"]["ask"]),".17g"),
+        "expires_at_ms="+str(now_ms()+4000))
+    if (preview.get("approved") is not True or not preview.get("preview_permit") or
+            preview.get("service_epoch")!=snap["service_epoch"] or
+            preview.get("service_fencing_generation")!=snap["service_generation"]):
+        raise DriverError("post-resume preview did not prove current service readiness")
+    clear_owned_halt=(state.get("owner_fence_owned_halt") or state.get("lease_renewal_owned_halt"))
+    state.update(owner_fence_recovery_required=False,owner_fence_owned_halt=False,
+        owner_recovery_phase="VERIFIED",owner_recovery_verified_ms=now_ms(),
+        owner_fence_block_reason="",last_transient_error="",
+        owner_recovery_service_epoch=snap["service_epoch"],owner_recovery_last_reason="",
+        lease_uncertain=False,lease_renewal_state="IDLE",lease_renewal_drain=False,
+        lease_renewal_owned_halt=False,lease_last_renew_ms=now_ms(),last_error="")
+    if clear_owned_halt and not state.get("risk_halt_reason"): state["halt_new_entries"]=False
     atomic_json(path,state)
+    return True
+
 
 def rearm_session(state,path,cli,generation):
-    if not state.get("lease_uncertain"):
-        raise DriverError("session rearm requires persisted lease uncertainty")
-    if state.get("pending") is not None:
-        raise DriverError("session rearm requires pending mutation reconciliation")
-    snap=snapshot(cli)
-    if snap["active"] or abs(float(snap["position"]))>1e-9:
-        raise DriverError("session rearm requires authoritative flat/order-free Broker state")
-    if generation<1:
-        raise DriverError("session rearm generation invalid")
-    state["position"]=0.0
-    state["lease_generation"]=generation
-    state["lease_last_renew_ms"]=now_ms()
-    state["lease_renewal_state"]="IDLE"
-    state["lease_uncertain"]=False
-    state["lease_renewal_drain"]=False
-    state["lease_renewal_owned_halt"]=False
-    state["halt_new_entries"]=False
-    state["last_error"]=""
-    state["session_rearmed_at_ms"]=now_ms()
-    atomic_json(path,state)
+    raise DriverError("session flags cannot be rearmed directly; use audited recovery")
 
 def should_close(state,pos,quote,decision):
     if state.get("halt_new_entries"): return True,"HALT_REDUCE_ONLY"
@@ -321,9 +345,10 @@ def should_close(state,pos,quote,decision):
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--once",action="store_true")
     ap.add_argument("--reconcile-only",action="store_true")
+    ap.add_argument("--recover-owner",action="store_true")
     ap.add_argument("--rearm-session-generation",type=int,default=0)
     args=ap.parse_args()
-    if sum(bool(x) for x in (args.once,args.reconcile_only,args.rearm_session_generation))>1:
+    if sum(bool(x) for x in (args.once,args.reconcile_only,args.rearm_session_generation,args.recover_owner))>1:
         raise DriverError("choose only one one-shot operator mode")
     if os.geteuid()==0: raise DriverError("driver must be non-root")
     home=Path.home(); state_dir=home/".local/state/heptatrader/paper-driver"; private_dir(state_dir)
@@ -341,10 +366,15 @@ def main():
         nonlocal stop; stop=True
     signal.signal(signal.SIGTERM,stopping); signal.signal(signal.SIGINT,stopping)
     state=load_state(state_path)
-    if state.get("lease_renewal_state")=="POSSIBLY_SENT":
-        state["halt_new_entries"]=True
-        state["last_error"]="session renewal reconciliation pending after restart"
+    if state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT":
+        latch_owner_fence(state,state_path,"SESSION_RENEWAL_UNCERTAIN")
     atomic_json(state_path,state); model_worker=None
+    if args.recover_owner:
+        latch_owner_fence(state,state_path,"OPERATOR_AUDITED_RECOVERY")
+        try:
+            return 0 if recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid()) else 1
+        finally:
+            os.close(lock)
     if args.rearm_session_generation:
         rearm_session(state,state_path,cli,args.rearm_session_generation)
         os.close(lock); return 0
@@ -358,18 +388,32 @@ def main():
     while not stop:
         started=time.monotonic()
         try:
-            if ((state.get("lease_uncertain") or state.get("lease_renewal_state")=="POSSIBLY_SENT") and
-                    state.get("pending") is None and abs(float(state.get("position",0.0)))<1e-9):
-                maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),0.0,0,None)
-            snap=snapshot(cli); pos=float(snap["position"]); q=snap["quote"]; mid=(float(q["bid"])+float(q["ask"]))/2
+            snap=snapshot(cli,state,state_path); pos=float(snap["position"]); q=snap["quote"]; mid=(float(q["bid"])+float(q["ask"]))/2
             if not state["history"] or state["history"][-1]["observed_at_ms"]!=q["observed_at_ms"]:
                 state["history"].append({"observed_at_ms":q["observed_at_ms"],"bid":q["bid"],"ask":q["ask"],"mid":mid})
                 state["history"]=state["history"][-MAX_HISTORY:]
             if state.get("pending"):
                 inspect_pending(state,state_path,binary,socket,token,str(outbox),snap)
             else:
+                if state.get("owner_fence_recovery_required"):
+                    state["position"]=pos; state["halt_new_entries"]=True
+                    model_worker=None
+                    if not snap["active"] and abs(pos)>1e-9:
+                        prepare_send(state,state_path,binary,socket,token,str(outbox),"CLOSE")
+                    elif not snap["active"] and snap["gross_position"]==0.0:
+                        recover_owner(state,state_path,cli,sessionctl,supervisor,token,os.geteuid())
+                    atomic_json(state_path,state)
+                    if args.once: break
+                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
+                    continue
                 state["position"]=pos; maybe_renew(state,state_path,sessionctl,supervisor,token,os.geteuid(),
                     pos,len(snap["active"]),state.get("pending"))
+                if state.get("owner_fence_recovery_required"):
+                    model_worker=None
+                    if args.once: break
+                    time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started))); continue
+                if abs(pos)<=1e-9 and snap["owner_health"]["mutation_ready"] is not True:
+                    raise DriverError("authoritative mutation state is not ready")
                 decision=None
                 # Safety exits are evaluated on every sample and never wait for the model.
                 if not snap["active"] and abs(pos)>1e-9:
@@ -410,7 +454,12 @@ def main():
                     model_worker=ModelWorker(codex,state_dir,state["history"],pos)
                 atomic_json(state_path,state)
         except Exception as e:
-            state["last_error"]=str(e)[:500]; atomic_json(state_path,state)
+            if state.get("owner_fence_recovery_required"):
+                state["last_transient_error"]=str(e)[:500]
+                state["last_error"]="owner fence recovery required: "+state.get("owner_fence_block_reason","SESSION_OWNER_FENCED")
+            else:
+                state["last_error"]=str(e)[:500]
+            atomic_json(state_path,state)
         if args.once: break
         time.sleep(max(0.2,SAMPLE_SEC-(time.monotonic()-started)))
     os.close(lock); return 0

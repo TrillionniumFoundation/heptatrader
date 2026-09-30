@@ -12,6 +12,7 @@ int main(int argc, char** argv)
     if (argc == 2 && std::string(argv[1]) == "--audit-reserve-only")
     { TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation(); return 0; }
     assert(argc == 1);
+    TestUserPaperResumeAuditsBeforeActivation();
     TestAuditReserveRejectsRenewalBeforeDurableLeaseMutation();
     TestFailedPaperActivationRetainsOriginalWorkDeadline();
     TestReapPagesAdvancePastUnexpiredOwners();

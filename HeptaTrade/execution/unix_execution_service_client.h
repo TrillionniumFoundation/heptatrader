@@ -39,6 +39,8 @@ public:
         const ExecutionControlCommand& command) override;
     ExecutionControlStatusResult ReconcileAuthoritativeState(
         const ExecutionControlCommand& command) override;
+    ExecutionOwnerAuditResult AuditSessionOwner(
+        const ExecutionControlCommand& command) override;
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override;
     ExecutionTerminalResult TerminalizeRecoveryOwner(
@@ -72,6 +74,9 @@ public:
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
     ExecutionControlStatusResult ReconcileAuthoritativeStateWithIdentity(
+        const ExecutionControlCommand& command,
+        const ExecutionServiceIdentity& identity);
+    ExecutionOwnerAuditResult AuditSessionOwnerWithIdentity(
         const ExecutionControlCommand& command,
         const ExecutionServiceIdentity& identity);
     ExecutionOwnerAuditResult RecoveryAuditOwnerWithIdentity(

@@ -105,7 +105,7 @@ public:
         std::uint64_t expiresAtMs,
         std::uint64_t& newGeneration,
         ExecutionOwnerAuditResult& ownerAudit,
-        std::string& reason);
+        std::string& reason, bool resumeOwner = false);
     bool Renew(const std::string& issuer,
                const std::string& token,
                std::uint64_t expectedGeneration,

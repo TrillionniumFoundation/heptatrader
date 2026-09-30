@@ -85,6 +85,7 @@ public:
     int previews = 0;
     int fences = 0;
     int reconciles = 0;
+    int sessionAudits = 0;
 
     ExecutionCommandResult PlaceOrder(const PlaceOrderCommand& command) override
     {
@@ -120,6 +121,20 @@ public:
     {
         ++reconciles;
         return Control(command, 1);
+    }
+    ExecutionOwnerAuditResult AuditSessionOwner(const ExecutionControlCommand& command) override
+    {
+        ++sessionAudits; assert(command.recoveryIngressFence == 0);
+        ExecutionOwnerAuditResult result;
+        result.status = ExecutionCommandStatus::Accepted;
+        result.commandId = command.context.toolCallId;
+        result.ownerAuditAuthoritative = true; result.ownerAuditComplete = true;
+        result.ownerAccount = command.context.account;
+        result.ownerExecutionDomain = command.context.executionDomain;
+        result.brokerConnectionEpoch = 7; result.brokerActiveGeneration = 8;
+        result.brokerTerminalGeneration = 9;
+        result.reasonCode = "RECOVERY_OWNER_ZERO_CONFIRMED";
+        return result;
     }
     ExecutionCommandResult PreviewOrder(const PlaceOrderCommand& command) override
     {
@@ -511,6 +526,17 @@ void TestRemoteAuthorityControlsAndRelay()
     fence.context = Owner("remote-fence");
     assert(gateway.FenceSessionOwner(fence).affectedCount == 2);
     assert(remote.fences == 1);
+    // Exercise the new operation through both real service identity sockets and
+    // the real HEX request/result codecs, not only an in-process mock call.
+    const auto audit = gateway.AuditSessionOwner(fence);
+    assert(audit.status == ExecutionCommandStatus::Accepted);
+    assert(audit.ownerAuditAuthoritative && audit.ownerAuditComplete);
+    assert(audit.ownerAccount == fence.context.account);
+    assert(audit.ownerExecutionDomain == fence.context.executionDomain);
+    assert(audit.serviceEpoch == identity.serviceEpoch);
+    assert(audit.serviceFencingGeneration == identity.serviceFencingGeneration);
+    assert(remote.sessionAudits == 1 && local.sessionAudits == 0 && remote.fences == 1);
+
 
     ExecutionEvent localEvent;
     localEvent.executionDomain = command.context.executionDomain;

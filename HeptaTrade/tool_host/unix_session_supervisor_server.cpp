@@ -45,6 +45,7 @@ bool UnixSessionSupervisorServer::ConfigureUserPaperCustodian(std::string& reaso
     if (!m_stop.load() || m_listenFd >= 0 || ::geteuid() == 0 || ::getegid() == 0)
     { reason = "SUPERVISOR_USER_CUSTODIAN_INVALID"; return false; }
     m_rootCustodianUid = static_cast<std::uint32_t>(::geteuid());
+    m_userPaperCustody = true;
     reason.clear();
     return true;
 }
@@ -1407,10 +1408,17 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 					result.leaseGeneration = request.expectedGeneration;
 			}
 		}
-		else if (request.operation == SessionSupervisorOperation::Renew ||
+		else if (request.operation == SessionSupervisorOperation::PaperResume ||
+            request.operation == SessionSupervisorOperation::Renew ||
 			request.operation == SessionSupervisorOperation::Rotate)
 		{
 			decodedRequest = true;
+            if (request.operation == SessionSupervisorOperation::PaperResume &&
+                (!m_userPaperCustody || m_leaseStore == nullptr))
+            {
+                result.ReasonCode() = "SESSION_USER_PAPER_RESUME_REQUIRED";
+                goto write_result;
+            }
 			const std::uint64_t nowMs = static_cast<std::uint64_t>(
 				std::chrono::duration_cast<std::chrono::milliseconds>(
 					std::chrono::system_clock::now().time_since_epoch()).count());
@@ -1422,7 +1430,15 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 			if (m_leaseStore != nullptr &&
 				(!m_leaseStore->Get(request.token, previous) ||
 				 previous.leaseGeneration != request.expectedGeneration))
-				result.ReasonCode() = "SESSION_LEASE_GENERATION_MISMATCH";
+            {
+                result.leaseGeneration = previous.leaseGeneration;
+                result.ReasonCode() = "SESSION_LEASE_GENERATION_MISMATCH";
+            }
+            else if (request.operation == SessionSupervisorOperation::PaperResume &&
+                (previous.templateId != "paper" || previous.recoveryOnly ||
+                 previous.paperFinalizationRequired || previous.paperFinalizationState !=
+                    SessionSupervisorPaperFinalizationState::None))
+                result.ReasonCode() = "SESSION_OWNER_NOT_RESUMABLE";
 			else if (m_leaseStore != nullptr &&
 				(previous.fencePending ||
 				 HasPendingOwner(previous.agentId, previous.sessionId)))
@@ -1546,7 +1562,7 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 							replacement.token, request.expectedGeneration,
 							nowMs + request.ttlMs,
 							result.leaseGeneration, ownerAudit,
-							result.ReasonCode());
+							result.ReasonCode(), request.operation == SessionSupervisorOperation::PaperResume);
 					}
 					else
 						result.accepted =
@@ -1568,7 +1584,18 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 				if (m_leaseStore != nullptr && !result.accepted)
 				{
 					const std::string rejectionReason = result.ReasonCode();
-					if (replacement.templateId == "paper")
+                    if (replacement.templateId == "paper" && m_userPaperCustody)
+                    {
+                        std::string restoreReason;
+                        if (!m_leaseStore->Replace(replacement.token, previous, restoreReason))
+                            result.ReasonCode() = "SESSION_RENEWAL_ROLLBACK_FAILED:" + restoreReason;
+                        else
+                        {
+                            result.leaseGeneration = previous.leaseGeneration;
+                            result.ReasonCode() = rejectionReason;
+                        }
+                    }
+                    else if (replacement.templateId == "paper")
 					{
 						SessionSupervisorLeaseRecord recovery = previous;
 						recovery.expiresAtMs = nowMs + m_maxSessionTtlMs;
@@ -1890,6 +1917,8 @@ void UnixSessionSupervisorServer::HandleClient(int clientFd)
 		if (result.accepted && result.ReasonCode().empty()) result.ReasonCode() = "OK";
 	}
 	write_result:
+    if (result.accepted && request.operation == SessionSupervisorOperation::PaperResume)
+        result.ReasonCode() = "SESSION_OWNER_RESUMED";
 	if (decodedRequest && m_auditJournal != nullptr)
 	{
 		std::string auditReason;

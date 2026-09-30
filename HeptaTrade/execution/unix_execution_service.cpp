@@ -913,6 +913,8 @@ ExecutionControlResult UnixExecutionServiceServer::DispatchControl(
     }
     if (request.operation == ExecutionServiceOperation::ReleaseSessionOwnerFence)
         return ExecutionControlResult(m_controlAuthority->ReleaseSessionOwnerFence(request.control));
+    if (request.operation == ExecutionServiceOperation::AuditSessionOwner)
+        return ExecutionControlResult(m_controlAuthority->AuditSessionOwner(request.control));
     if (request.operation == ExecutionServiceOperation::RecoveryAuditOwner)
     {
         RevokePreviewPermitsForOwner(request.control.context.agentId,

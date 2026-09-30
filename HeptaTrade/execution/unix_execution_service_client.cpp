@@ -102,6 +102,23 @@ ExecutionControlStatusResult UnixExecutionServiceClient::QueryCommandStatusWithI
     return NarrowControlStatusResult(
         DispatchControlWithIdentity(command, identity, operation));
 }
+ExecutionOwnerAuditResult UnixExecutionServiceClient::AuditSessionOwner(
+    const ExecutionControlCommand& command)
+{
+    ExecutionServiceIdentity identity;
+    std::string reason;
+    if (!GetServiceIdentity(identity, reason, command.localDeadline))
+        return NarrowOwnerAuditResult(
+            ControlTransportFailure(command.context.toolCallId, reason));
+    return AuditSessionOwnerWithIdentity(command, identity);
+}
+ExecutionOwnerAuditResult UnixExecutionServiceClient::AuditSessionOwnerWithIdentity(
+    const ExecutionControlCommand& command,
+    const ExecutionServiceIdentity& identity)
+{
+    return NarrowOwnerAuditResult(DispatchControlWithIdentity(
+        command, identity, ExecutionServiceOperation::AuditSessionOwner));
+}
 ExecutionOwnerAuditResult UnixExecutionServiceClient::RecoveryAuditOwner(
     const ExecutionControlCommand& command)
 {

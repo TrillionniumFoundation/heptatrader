@@ -436,7 +436,9 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
             m_executionGateway->ProbeRemoteService(identity, probeReason);
         std::string authoritativeHealth;
         std::uint32_t authorizedConnectorCount = 0;
-        if (m_executionConfig.externalP1CanaryLimitDay)
+        const bool ownerHealthRequired = m_agentOsConfig.userPaperScope ||
+            m_executionConfig.externalP1CanaryLimitDay;
+        if (ownerHealthRequired)
         {
             if (!ready)
             {
@@ -463,7 +465,7 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
                 callbackReason = "EXECUTION_AUTHORITATIVE_HEALTH_EMPTY";
                 return false;
             }
-            if (!ValidateExternalAuthoritativeHealth(
+            if (m_executionConfig.externalP1CanaryLimitDay && !ValidateExternalAuthoritativeHealth(
                     authoritativeHealth, authorizedConnectorCount))
             {
                 callbackReason = "EXECUTION_AUTHORITATIVE_HEALTH_INVALID";
@@ -490,10 +492,9 @@ bool ToolGatewayRuntimeComposition::Start(std::string& reason)
                << ",\"read_model\":\"execution_authoritative_v1\",\"paper_template_enabled\":"
                << (m_sessionPolicy.PaperEnabled() ? "true" : "false");
         if (m_executionConfig.externalP1CanaryLimitDay)
-            output << ",\"authorized_connector_count\":"
-                   << authorizedConnectorCount
-                   << ",\"execution_authoritative_health\":"
-                   << authoritativeHealth;
+            output << ",\"authorized_connector_count\":" << authorizedConnectorCount;
+        if (ownerHealthRequired)
+            output << ",\"execution_authoritative_health\":" << authoritativeHealth;
         output << "}";
         payload = output.str();
         callbackReason.clear();

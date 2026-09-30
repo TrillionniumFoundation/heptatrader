@@ -222,6 +222,16 @@ public:
         result.status = ExecutionCommandStatus::Accepted;
         return result;
     }
+    ExecutionOwnerAuditResult AuditSessionOwner(const ExecutionControlCommand& command) override
+    {
+        if (command.recoveryIngressFence != 0)
+        {
+            ExecutionOwnerAuditResult result;
+            result.reasonCode = "SESSION_OWNER_AUDIT_BINDING_INVALID";
+            return result;
+        }
+        return RecoveryAuditOwner(command);
+    }
     ExecutionOwnerAuditResult RecoveryAuditOwner(
         const ExecutionControlCommand& command) override
     {
