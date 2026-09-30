@@ -459,7 +459,7 @@ add_library(hepta_ib_paper_policy STATIC
     execution/ib_paper_execution_flatten_guard.cpp
     execution/ib_paper_flatten_plan_binding.cpp)
 target_include_directories(hepta_ib_paper_policy PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(hepta_ib_paper_policy PUBLIC hepta_execution_core OpenSSL::Crypto)
+target_link_libraries(hepta_ib_paper_policy PUBLIC hepta_execution_core hepta_ib_order_state OpenSSL::Crypto)
 
 add_library(hepta_simulator_runtime STATIC simulator/deterministic_execution_venue.cpp)
 target_link_libraries(hepta_simulator_runtime PUBLIC hepta_risk_engine)

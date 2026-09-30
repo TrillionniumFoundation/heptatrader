@@ -89,18 +89,38 @@ def snapshot(cli,state=None,path=None):
         "active":[int(x) for x in o["active_order_ids"]],"owner_health":owner,
         "service_epoch":h.get("execution_service_epoch"),"service_generation":h.get("execution_service_fencing_generation")}
 
-def recent_fill(orders,oid):
+def matching_command_rows(orders,pending,expected_side):
+    # The current snapshot epoch proves observation freshness, not which old
+    # order owned an integer. Bind to the original durable command/correlation.
+    rows=[]
     for row in orders.get("recent_orders",[]):
-        if row.get("order_id")==oid and row.get("economic_fill") is True:
-            price=float(row.get("average_fill_price",0)); qty=float(row.get("filled_quantity",0))
-            if price>0 and qty>0 and math.isfinite(price) and math.isfinite(qty):
-                return {"price":price,"quantity":qty,"terminal":row.get("terminal") is True,
-                    "side":row.get("side")}
-    return None
+        if row.get("command_id")!=pending.get("command_id"): continue
+        correlation=row.get("venue_correlation_id")
+        if (row.get("order_id")!=pending.get("broker_order_id") or
+            not isinstance(correlation,str) or not correlation.startswith("hepta-v1-sha256:") or
+            len(correlation)!=len("hepta-v1-sha256:")+64 or any(c not in "0123456789abcdef" for c in correlation[len("hepta-v1-sha256:"):]) or
+            row.get("side")!=expected_side): continue
+        if pending.get("venue_correlation_id") not in (None,correlation): continue
+        rows.append(row)
+    return rows
 
-def terminal_nonfill(orders,oid):
-    return any(row.get("order_id")==oid and row.get("terminal") is True and
-        row.get("economic_fill") is not True for row in orders.get("recent_orders",[]))
+
+def recent_fill(orders,pending,expected_side):
+    rows=[r for r in matching_command_rows(orders,pending,expected_side)
+        if r.get("economic_fill") is True]
+    if len(rows)!=1: return None
+    row=rows[0]
+    if row.get("broker_execution_ambiguous") is not False or not row.get("broker_execution_id"): return None
+    price=float(row.get("average_fill_price",0));qty=float(row.get("filled_quantity",0))
+    if price<=0 or qty<=0 or not math.isfinite(price) or not math.isfinite(qty):return None
+    return {"price":price,"quantity":qty,"terminal":row.get("terminal") is True,
+        "side":expected_side,"venue_correlation_id":row["venue_correlation_id"],
+        "broker_execution_id":row["broker_execution_id"]}
+
+
+def terminal_nonfill(orders,pending,expected_side):
+    rows=matching_command_rows(orders,pending,expected_side)
+    return len(rows)==1 and rows[0].get("terminal") is True and rows[0].get("economic_fill") is False
 
 def paper_cmd(binary,socket,token,outbox,op,extra):
     p=run([binary,op,"--socket",socket,"--token-file",token,"--directory",outbox,*extra],20)
@@ -145,13 +165,23 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
     payload={}
     if inspected.get("ok") and isinstance(inspected.get("result"),dict):
         payload=inspected["result"].get("payload") or {}
-        if isinstance(payload.get("order_id"),int) and payload["order_id"]>=0: p["broker_order_id"]=payload["order_id"]
-    oid=p.get("broker_order_id"); pos=float(snap["position"]); active=snap["active"]; fill=recent_fill(snap["orders"],oid)
+    if (payload.get("authoritative") is not True or payload.get("command_id")!=p["command_id"]):
+        p["last_status"]={"at_ms":now_ms(),"reason_code":"ORIGINAL_COMMAND_STATUS_UNAVAILABLE"}
+        atomic_json(path,state); return
+    if type(payload.get("order_id")) is int and payload["order_id"]>=0:
+        p["broker_order_id"]=payload["order_id"]
+    oid=p.get("broker_order_id");pos=float(snap["position"]);active=snap["active"]
+    expected_side=p.get("side") if p["kind"]=="OPEN" else ("SELL" if float(state.get("position",0))>0 else "BUY")
+    fill=recent_fill(snap["orders"],p,expected_side)
+    if fill:
+        p["venue_correlation_id"]=fill["venue_correlation_id"]
+        p["broker_execution_id"]=fill["broker_execution_id"]
     fill_price=fill.get("price") if fill else None
     p["last_status"]={"at_ms":now_ms(),"command_status":payload.get("command_status"),"reason_code":payload.get("reason_code","")}
     expected_sign=1.0 if p.get("side")=="BUY" else -1.0 if p.get("side")=="SELL" else 0.0
     open_position_matches=(p["kind"]=="OPEN" and not active and abs(pos)>1e-9 and
-        abs(pos)<=QTY+1e-9 and expected_sign*pos>0)
+        abs(pos)<=QTY+1e-9 and expected_sign*pos>0 and fill is not None and
+        payload.get("command_status")=="accepted")
     if open_position_matches:
         state["position"]=pos; state["entries"]+=1
         state["entry_price"]=fill_price
@@ -163,7 +193,8 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
             state["last_error"]="partial or price-unproven entry adopted; reduce-only exit required"
         else:
             state["last_error"]=""
-    elif p["kind"]=="CLOSE" and abs(pos)<1e-9 and not active:
+    elif (p["kind"]=="CLOSE" and abs(pos)<1e-9 and not active and fill is not None and
+            payload.get("command_status")=="accepted"):
         entry=state.get("entry_price"); old=float(state.get("position",0))
         if fill_price and entry and old:
             closed_qty=min(abs(old),float(fill.get("quantity",QTY)))
@@ -175,8 +206,10 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["position"]=pos; state["pending"]=None; state["halt_new_entries"]=True
         state["risk_halt_reason"]="PARTIAL_FLATTEN"
         state["last_error"]="partial flatten terminal; remaining exposure requires next exact reduce-only flatten"
-    elif (payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],oid)) and not active:
+    elif (payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],p,expected_side)) and not active:
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
+    else:
+        state["last_error"]="original command awaiting correlation-bound Broker reconciliation"
     atomic_json(path,state)
 
 class ModelWorker:

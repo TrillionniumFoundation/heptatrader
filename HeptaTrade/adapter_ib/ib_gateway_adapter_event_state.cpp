@@ -1,4 +1,5 @@
 #include "ib_gateway_adapter.h"
+#include "ib_venue_correlation.h"
 #include "../state/ib_contract_identity.h"
 
 #include <algorithm>
@@ -129,8 +130,8 @@ void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
     m_terminalCorrelationRefreshConflict = false;
     m_pendingTerminalOrderIds.clear();
     m_pendingTerminalStatuses.clear();
-    m_pendingTerminalCorrelationsByOrderId.clear();
-    m_pendingExecutionOrderIds.clear();
+    m_pendingExecutionCorrelations.clear();
+    m_pendingExecutionIdsByCorrelation.clear();
     m_terminalCorrelationSnapshot.connectionEpoch = m_connectionEpoch;
     m_terminalCorrelationSnapshot.generation =
         m_terminalCorrelationGeneration;
@@ -139,6 +140,7 @@ void HeptaIBGatewayAdapter::InvalidateTerminalCorrelationSnapshot(
     m_terminalCorrelationSnapshot.reasonCode = reason;
     m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.clear();
     m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.clear();
+    m_terminalCorrelationSnapshot.executionCorrelations.clear();
     m_terminalCorrelationSnapshot.executionOrderIds.clear();
 }
 
@@ -155,8 +157,17 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
         }
         m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.clear();
         m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.clear();
+        m_terminalCorrelationSnapshot.executionCorrelations.clear();
         m_terminalCorrelationSnapshot.executionOrderIds.clear();
         return;
+    }
+    for (const auto& execution : m_pendingExecutionIdsByCorrelation) {
+        const auto order=m_pendingTerminalOrderIds.find(execution.first);
+        if (order!=m_pendingTerminalOrderIds.end() && order->second>0 && order->second!=execution.second) {
+            InvalidateTerminalCorrelationSnapshot("IB_TERMINAL_EXECUTION_ORDER_ID_CONFLICT");
+            InvalidateRiskSnapshot("IB_TERMINAL_EXECUTION_ORDER_ID_CONFLICT");
+            return;
+        }
     }
     for (std::map<std::string, std::string>::iterator status =
              m_pendingTerminalStatuses.begin();
@@ -165,10 +176,9 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
             m_pendingTerminalOrderIds.find(status->first);
         if (status->second == "Filled" &&
             (order == m_pendingTerminalOrderIds.end() ||
-             m_pendingExecutionOrderIds.find(order->second) ==
-                 m_pendingExecutionOrderIds.end())) {
+             m_pendingExecutionCorrelations.find(status->first) ==
+                 m_pendingExecutionCorrelations.end())) {
             if (order != m_pendingTerminalOrderIds.end()) {
-                m_pendingTerminalCorrelationsByOrderId.erase(order->second);
                 m_pendingTerminalOrderIds.erase(order);
             }
             status = m_pendingTerminalStatuses.erase(status);
@@ -184,12 +194,18 @@ void HeptaIBGatewayAdapter::FinalizeTerminalCorrelationSnapshot() {
         m_pendingTerminalOrderIds;
     m_terminalCorrelationSnapshot.terminalStatusesByCorrelation =
         m_pendingTerminalStatuses;
-    m_terminalCorrelationSnapshot.executionOrderIds =
-        m_pendingExecutionOrderIds;
+    m_terminalCorrelationSnapshot.executionCorrelations =
+        m_pendingExecutionCorrelations;
+    m_terminalCorrelationSnapshot.executionOrderIds.clear();
+    for (const std::string& correlation : m_pendingExecutionCorrelations) {
+        const auto order = m_pendingTerminalOrderIds.find(correlation);
+        if (order != m_pendingTerminalOrderIds.end() && order->second > 0)
+            m_terminalCorrelationSnapshot.executionOrderIds.insert(order->second);
+    }
     m_pendingTerminalOrderIds.clear();
     m_pendingTerminalStatuses.clear();
-    m_pendingTerminalCorrelationsByOrderId.clear();
-    m_pendingExecutionOrderIds.clear();
+    m_pendingExecutionCorrelations.clear();
+    m_pendingExecutionIdsByCorrelation.clear();
     // A live callback may race the initial End markers. Preserve its proof
     // without ever promoting an incomplete bootstrap snapshot.
     std::vector<long> liveOrderIds;
@@ -492,9 +508,62 @@ bool HeptaIBGatewayAdapter::ObserveEconomicFill(const IBEvent& event) {
          !m_cfg.account.empty() && event.account != m_cfg.account))
         return false;
     const long orderId = static_cast<long>(event.id);
-    const std::map<long, double>::const_iterator prior =
-        m_observedEconomicFillQuantityByOrderId.find(orderId);
-    if (prior != m_observedEconomicFillQuantityByOrderId.end() &&
+
+    // Economic-fill identity is never the naked numeric IB order id. Prefer the
+    // durable service correlation when this is one of our sends. Native
+    // orderStatus does not echo orderRef, so the live send binding supplies the
+    // same correlation under the adapter lock. Historical execution callbacks
+    // carry the broker-echoed orderRef and execution id.
+    std::string correlationId;
+    // An execution query can return OLD orderRef data on the NEW connection.
+    // Its broker echo takes precedence over any current numeric-id live binding.
+    if (event.type == IBEventType::ExecutionDetails)
+    {
+        std::string decodeReason;
+        if (!DecodeVenueOrderRef(event.order.orderRef, correlationId, decodeReason) &&
+            event.order.orderRef.compare(0, 2, "H1") == 0)
+        {
+            InvalidateRecoveryAuditBarrier("IB_RECOVERY_AUDIT_EXECUTION_CORRELATION_INVALID");
+            InvalidateRiskSnapshot("IB_RISK_EXECUTION_CORRELATION_INVALID");
+            RecordCallbackConflict(); return false;
+        }
+    }
+    else
+    {
+        const auto live = m_liveTerminalBindings.find(orderId);
+        if (live != m_liveTerminalBindings.end() && IsConsistentBoundOrderStatus(event))
+            correlationId = live->second.correlationId;
+    }
+
+    std::string fillIdentity;
+    if (!correlationId.empty())
+        fillIdentity = "corr|" + std::to_string(event.brokerClientId) + "|" + event.account + "|" + correlationId;
+    else if (event.type == IBEventType::ExecutionDetails)
+    {
+        if (event.brokerClientId < 0 || event.key.empty())
+        {
+            InvalidateRecoveryAuditBarrier(
+                "IB_RECOVERY_AUDIT_EXECUTION_IDENTITY_INCOMPLETE");
+            InvalidateRiskSnapshot("IB_RISK_EXECUTION_IDENTITY_INCOMPLETE");
+            RecordCallbackConflict();
+            return false;
+        }
+        // Account-wide/manual execution evidence still invalidates risk and
+        // must be deduplicated, but cannot be promoted to a service order.
+        fillIdentity = "external-exec|" + std::to_string(event.brokerClientId) +
+            "|" + event.key + "|" + event.order.orderRef;
+    }
+    else
+    {
+        if (event.connectionEpoch == 0 || event.brokerClientId < 0)
+            return false;
+        fillIdentity = "legacy-status|" + std::to_string(event.connectionEpoch) +
+            "|" + std::to_string(event.brokerClientId) + "|" +
+            std::to_string(orderId);
+    }
+
+    const auto prior = m_observedEconomicFillQuantityByIdentity.find(fillIdentity);
+    if (prior != m_observedEconomicFillQuantityByIdentity.end() &&
         event.number2 <= prior->second)
         return false;
     if (m_exposureGeneration ==
@@ -509,7 +578,7 @@ bool HeptaIBGatewayAdapter::ObserveEconomicFill(const IBEvent& event) {
         return false;
     }
     ++m_exposureGeneration;
-    m_observedEconomicFillQuantityByOrderId[orderId] = event.number2;
+    m_observedEconomicFillQuantityByIdentity[fillIdentity] = event.number2;
     const bool historical =
         (event.type == IBEventType::ExecutionDetails &&
          event.requestId >= 0) ||
@@ -658,6 +727,17 @@ bool HeptaIBGatewayAdapter::TryDequeueEvent(IBEvent& outEvent) {
         RecordCallbackConflict();
         EmitObsEvent("callback.bound_order_identity_rejected",
             "\"order_id\":" + std::to_string(outEvent.id));
+    }
+    if (outEvent.type == IBEventType::OrderStatus && IsConsistentBoundOrderStatus(outEvent))
+    {
+        const auto& binding = m_liveTerminalBindings.at(static_cast<long>(outEvent.id));
+        std::string reason;
+        if (!IbVenueCorrelationCodec::EncodeOrderRef(binding.correlationId, outEvent.order.orderRef, reason))
+        {
+            InvalidateRiskSnapshot("IB_LIVE_STATUS_BINDING_INVALID");
+            return false;
+        }
+        outEvent.account = m_cfg.account;
     }
     const bool acceptedBrokerOpenOrder = CorrelateOpenOrderEvent(outEvent);
 
@@ -1194,9 +1274,6 @@ void HeptaIBGatewayAdapter::PublishLiveTerminalEvidence(long orderId) {
     if (terminal) {
         bool conflict = existing != m_terminalCorrelationSnapshot.
             terminalOrderIdsByCorrelation.end() && existing->second != orderId;
-        for (const auto& item : m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation)
-            if (item.second == orderId && item.first != binding.correlationId)
-                conflict = true;
         if (conflict) {
             InvalidateTerminalCorrelationSnapshot("IB_LIVE_TERMINAL_CORRELATION_CONFLICT");
             return;
@@ -1205,7 +1282,7 @@ void HeptaIBGatewayAdapter::PublishLiveTerminalEvidence(long orderId) {
     const auto priorStatus = m_terminalCorrelationSnapshot.
         terminalStatusesByCorrelation.find(binding.correlationId);
     const bool changed = (executed &&
-        (m_terminalCorrelationSnapshot.executionOrderIds.count(orderId) == 0 ||
+        (m_terminalCorrelationSnapshot.executionCorrelations.count(binding.correlationId) == 0 ||
          binding.executionQuantity > binding.publishedExecutionQuantity)) ||
         (terminal && (existing == m_terminalCorrelationSnapshot.terminalOrderIdsByCorrelation.end() ||
          priorStatus == m_terminalCorrelationSnapshot.terminalStatusesByCorrelation.end() ||
@@ -1220,6 +1297,7 @@ void HeptaIBGatewayAdapter::PublishLiveTerminalEvidence(long orderId) {
     m_terminalCorrelationSnapshot.generation = m_terminalCorrelationGeneration;
     m_terminalCorrelationSnapshot.exposureGeneration = m_exposureGeneration;
     if (executed) {
+        m_terminalCorrelationSnapshot.executionCorrelations.insert(binding.correlationId);
         m_terminalCorrelationSnapshot.executionOrderIds.insert(orderId);
         binding.publishedExecutionQuantity = binding.executionQuantity;
     }
@@ -1246,20 +1324,16 @@ void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEven
                     "IB_TERMINAL_ORDER_ID_INVALID" :
                     "IB_TERMINAL_ORDER_STATUS_NOT_FINAL";
             } else {
-                const auto byCorrelation = m_pendingTerminalOrderIds.insert({correlationId, orderId});
-                const std::pair<std::map<long, std::string>::iterator, bool>
-                    byOrderId = orderId == 0 ?
-                        std::make_pair(m_pendingTerminalCorrelationsByOrderId.end(), true) :
-                        m_pendingTerminalCorrelationsByOrderId.insert({
-                            orderId, correlationId});
-                if ((!byCorrelation.second &&
-                     byCorrelation.first->second != orderId) ||
-                    (!byOrderId.second &&
-                     byOrderId.first->second != correlationId)) {
+                const auto byCorrelation =
+                    m_pendingTerminalOrderIds.insert({correlationId, orderId});
+                if (!byCorrelation.second &&
+                    byCorrelation.first->second != orderId) {
                     MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
                     m_terminalCorrelationSnapshot.reasonCode =
                         "IB_TERMINAL_CORRELATION_DUPLICATE_CONFLICT";
                 } else {
+                    // Numeric IB order ids are connection/client scoped and may
+                    // repeat after restart. Correlation is the durable identity.
                     m_pendingTerminalStatuses[correlationId] = outEvent.key;
                 }
             }
@@ -1275,8 +1349,28 @@ void HeptaIBGatewayAdapter::ApplyTerminalCorrelationEvent(const IBEvent& outEven
                m_executionsRefreshPending) {
         if (outEvent.requestId == m_terminalExecutionRequestId &&
             !m_cfg.account.empty() && outEvent.account == m_cfg.account &&
-            outEvent.id > 0 && HasEconomicFillEvidence(outEvent))
-            m_pendingExecutionOrderIds.insert(static_cast<long>(outEvent.id));
+            outEvent.id > 0 && HasEconomicFillEvidence(outEvent)) {
+            std::string correlationId;
+            std::string decodeReason;
+            if (DecodeVenueOrderRef(outEvent.order.orderRef, correlationId, decodeReason)) {
+                if (outEvent.brokerClientId != m_cfg.clientId || outEvent.key.empty()) {
+                    MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
+                    m_terminalCorrelationSnapshot.reasonCode =
+                        outEvent.brokerClientId != m_cfg.clientId ?
+                        "IB_TERMINAL_EXECUTION_CLIENT_MISMATCH" :
+                        "IB_TERMINAL_EXECUTION_ID_REQUIRED";
+                } else {
+                    const auto id=m_pendingExecutionIdsByCorrelation.emplace(correlationId, static_cast<long>(outEvent.id));
+                    if (!id.second && id.first->second!=outEvent.id) {
+                        MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
+                        m_terminalCorrelationSnapshot.reasonCode="IB_TERMINAL_EXECUTION_ORDER_ID_CONFLICT";
+                    } else m_pendingExecutionCorrelations.insert(correlationId);
+                }
+            } else if (outEvent.order.orderRef.compare(0, 2, "H1") == 0) {
+                MarkCallbackConflict(m_terminalCorrelationRefreshConflict);
+                m_terminalCorrelationSnapshot.reasonCode = decodeReason;
+            }
+        }
     } else if (outEvent.type == IBEventType::ExecutionDetailsEnd &&
                m_executionsRefreshPending &&
                outEvent.requestId == m_terminalExecutionRequestId) {

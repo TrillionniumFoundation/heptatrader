@@ -187,3 +187,18 @@ expansion before downgrade. It preserves all event bytes and command identities;
 it is not online truncation or a general N-1 compatibility claim. Generation v2
 is a separate stopped-state history-sealing mechanism with an explicit downgrade
 export path; neither mechanism runs concurrently with a writer.
+
+## Broker identity evidence
+
+The additive v4 `broker_client_id` field records the callback's originating API
+client; absent legacy values remain unknown (`-1`), not a fabricated current
+client. `broker_service_epoch` and `broker_connection_epoch` describe observation
+provenance. `venue_correlation_id` binds the original service command across
+reconnections, and `broker_execution_id` distinguishes economic executions.
+Owned callback records also retain the original command ID. Neither a restarted
+service epoch nor a repeated numeric order ID creates a new economic execution.
+
+Recovery preserves all old JSON lines. Legacy intent/receipt correlations rebuild
+the original command binding in the read projection; no migration replaces old
+IDs or clears `POSSIBLY_SENT`. A cancellation lacking a safe target correlation
+remains unresolved rather than borrowing another lifetime's terminal evidence.

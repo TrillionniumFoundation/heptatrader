@@ -1,4 +1,5 @@
 #include "ib_paper_execution_profile.h"
+#include "../adapter_ib/ib_venue_correlation.h"
 
 #include <cerrno>
 #include <cctype>
@@ -1544,15 +1545,12 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
             return result;
         }
     }
-    std::map<long, std::string> terminalStatuses;
     for (std::map<std::string, long>::const_iterator item =
              terminal.terminalOrderIdsByCorrelation.begin();
          item != terminal.terminalOrderIdsByCorrelation.end(); ++item)
     {
-        const std::map<std::string, std::string>::const_iterator status =
+        const auto status =
             terminal.terminalStatusesByCorrelation.find(item->first);
-        const std::map<std::string, long>::const_iterator duplicate =
-            correlations.find(item->first);
         if (item->first.empty() || item->second < 0 ||
             status == terminal.terminalStatusesByCorrelation.end() ||
             (status->second != "Filled" &&
@@ -1560,31 +1558,21 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
              status->second != "ApiCancelled" &&
              status->second != "Inactive" &&
              status->second != "Rejected") ||
-            (duplicate != correlations.end() &&
-             duplicate->second != item->second) ||
+            correlations.find(item->first) != correlations.end() ||
             !correlations.insert(*item).second)
         {
             result.status = ExecutionCommandStatus::Rejected;
             result.reasonCode = "RECOVERY_OWNER_TERMINAL_CORRELATION_INVALID";
             return result;
         }
-        if (active.activeOrderIds.find(item->second) !=
-            active.activeOrderIds.end())
+        // Numeric IB ids may be reused across historical correlations. Only
+        // the same durable correlation can be both active and terminal.
+        if (active.activeOrderIdsByCorrelation.find(item->first) !=
+            active.activeOrderIdsByCorrelation.end())
         {
             result.status = ExecutionCommandStatus::Rejected;
             result.reasonCode =
-                "RECOVERY_OWNER_ACTIVE_TERMINAL_ORDER_CONFLICT";
-            return result;
-        }
-        // IB can report zero for more than one completed order. Preserve
-        // each H1 correlation as positive place evidence, but never expose
-        // the non-unique zero ID as evidence for resolving a cancel.
-        if (item->second == 0) continue;
-        if (!terminalStatuses.insert(
-                std::make_pair(item->second, status->second)).second)
-        {
-            result.status = ExecutionCommandStatus::Rejected;
-            result.reasonCode = "RECOVERY_OWNER_TERMINAL_CORRELATION_INVALID";
+                "RECOVERY_OWNER_ACTIVE_TERMINAL_CORRELATION_CONFLICT";
             return result;
         }
     }
@@ -1594,9 +1582,12 @@ ExecutionOwnerAuditResult IbPaperExecutionPolicyAuthority::AuditRecoveryOwner(
     std::string reason;
     if (!m_coordinator.ResolveUncertainPlaceCommands(
             correlations, true, resolvedPlaces, reason, false) ||
-        !m_coordinator.ResolveUncertainCancelCommands(
-            active.activeOrderIds, true, terminalStatuses,
-            terminal.executionOrderIds, true, resolvedCancels, reason) ||
+        !m_coordinator.ResolveUncertainCancelCommandsByCorrelation(
+            active.activeOrderIdsByCorrelation, true,
+            terminal.terminalOrderIdsByCorrelation,
+            terminal.terminalStatusesByCorrelation,
+            terminal.executionCorrelations, true,
+            resolvedCancels, reason) ||
         !m_coordinator.ReconcileOrderOwners(
             active.activeOrderIds, true, removedOwners, reason) ||
         !m_coordinator.AuditRecoveryOwner(
@@ -1803,12 +1794,11 @@ bool IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
         reason = "IB_PAPER_TERMINAL_CORRELATION_INVALID";
         return false;
     }
-    std::map<long, std::string> terminalStatusesByOrderId;
     for (std::map<std::string, long>::const_iterator item =
              terminal.terminalOrderIdsByCorrelation.begin();
          item != terminal.terminalOrderIdsByCorrelation.end(); ++item)
     {
-        const std::map<std::string, std::string>::const_iterator status =
+        const auto status =
             terminal.terminalStatusesByCorrelation.find(item->first);
         if (item->first.empty() || item->second < 0 ||
             status == terminal.terminalStatusesByCorrelation.end() ||
@@ -1823,22 +1813,10 @@ bool IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
             reason = "IB_PAPER_TERMINAL_CORRELATION_INVALID";
             return false;
         }
-        if (snapshot.activeOrderIds.find(item->second) !=
-            snapshot.activeOrderIds.end())
+        if (snapshot.activeOrderIdsByCorrelation.find(item->first) !=
+            snapshot.activeOrderIdsByCorrelation.end())
         {
-            reason = "IB_PAPER_ACTIVE_TERMINAL_ORDER_CONFLICT";
-            return false;
-        }
-        // IB can report zero for multiple completed orders. The H1
-        // correlation still proves an uncertain place reached the broker,
-        // but zero is not a unique cancel target.
-        if (item->second == 0) continue;
-        const std::pair<std::map<long, std::string>::iterator, bool> inserted =
-            terminalStatusesByOrderId.insert(
-                std::make_pair(item->second, status->second));
-        if (!inserted.second)
-        {
-            reason = "IB_PAPER_TERMINAL_ORDER_ID_CONFLICT";
+            reason = "IB_PAPER_ACTIVE_TERMINAL_CORRELATION_CONFLICT";
             return false;
         }
     }
@@ -1847,9 +1825,12 @@ bool IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
             correlations, true, resolved, reason, false))
         return false;
     std::size_t resolvedCancels = 0;
-    if (!m_coordinator.ResolveUncertainCancelCommands(
-            snapshot.activeOrderIds, true, terminalStatusesByOrderId,
-            terminal.executionOrderIds, true, resolvedCancels, reason))
+    if (!m_coordinator.ResolveUncertainCancelCommandsByCorrelation(
+            snapshot.activeOrderIdsByCorrelation, true,
+            terminal.terminalOrderIdsByCorrelation,
+            terminal.terminalStatusesByCorrelation,
+            terminal.executionCorrelations, true,
+            resolvedCancels, reason))
         return false;
     std::string recoveryBlock;
     if (m_coordinator.IsMutationBlocked(&recoveryBlock) &&
@@ -1867,5 +1848,45 @@ bool IbPaperExecutionPolicyAuthority::ReconcileAuthoritativeState(
     if (m_coordinator.IsMutationBlocked(&reason) &&
         reason != "IB_PAPER_BROKER_RECONNECT_PENDING") return false;
     reason.clear();
+    return true;
+}
+
+bool ValidateIbPaperBrokerCallbackIdentity(const IBEvent& event,
+    const ExecutionOrderOwner& owner, const std::string& account,
+    int clientId, std::uint64_t connectionEpoch,
+    const InstrumentRef* expectedContract, std::string& reason)
+{
+    reason.clear();
+    if (event.type != IBEventType::ExecutionDetails &&
+        event.type != IBEventType::CompletedOrder && event.type != IBEventType::OrderStatus)
+        return true;
+    if (connectionEpoch == 0 || event.connectionEpoch != connectionEpoch)
+    { reason = "IB_BROKER_CALLBACK_EPOCH_MISMATCH"; return false; }
+    if (event.type == IBEventType::OrderStatus && event.order.orderRef.empty())
+    { reason = "IB_BROKER_CALLBACK_STATUS_UNSCOPED"; return false; }
+    if (owner.venueCorrelationId.empty())
+    { reason = "IB_BROKER_CALLBACK_OWNER_CORRELATION_REQUIRED"; return false; }
+    std::string correlation;
+    if (!IbVenueCorrelationCodec::DecodeOrderRef(event.order.orderRef, correlation, reason))
+    { if (reason.empty()) reason = "IB_BROKER_CALLBACK_CORRELATION_REQUIRED"; return false; }
+    // Check lifetime identity before direction; different historical orders are
+    // not corruptions of the present owner just because their numeric IDs match.
+    if (correlation != owner.venueCorrelationId)
+    { reason = "IB_BROKER_CALLBACK_DIFFERENT_CORRELATION"; return false; }
+    if (event.account.empty() || event.account != owner.account || owner.account != account)
+    { reason = "IB_BROKER_CALLBACK_ACCOUNT_MISMATCH"; return false; }
+    if (event.brokerClientId < 0 || event.brokerClientId != clientId)
+    { reason = "IB_BROKER_CALLBACK_CLIENT_ID_MISMATCH"; return false; }
+    if (event.type == IBEventType::OrderStatus) return true;
+    const std::string side = event.type == IBEventType::ExecutionDetails ?
+        (event.value == "BOT" ? "BUY" : event.value == "SLD" ? "SELL" : event.value) : event.order.action;
+    if (side != owner.side)
+    { reason = "IB_EXECUTION_SIDE_MISMATCH"; return false; }
+    if (event.type == IBEventType::ExecutionDetails && event.key.empty())
+    { reason = "IB_EXECUTION_ID_REQUIRED"; return false; }
+    if (!expectedContract || event.contract.symbol != expectedContract->symbol ||
+        event.contract.secType != expectedContract->secType ||
+        event.contract.currency != expectedContract->currency)
+    { reason = "IB_EXECUTION_CONTRACT_MISMATCH"; return false; }
     return true;
 }

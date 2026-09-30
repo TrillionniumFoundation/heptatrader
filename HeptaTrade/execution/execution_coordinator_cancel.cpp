@@ -153,8 +153,11 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         (currentOwner != m_orderOwners.end() ? currentOwner->second.instrument : "");
     const std::string side = !command.side.empty() ? command.side :
         (currentOwner != m_orderOwners.end() ? currentOwner->second.side : "");
+    const std::string targetCorrelation =
+        currentOwner != m_orderOwners.end() ?
+            currentOwner->second.venueCorrelationId : std::string();
     const OmsJournalEvent intent = BuildEvent(context, "cancel", command.orderId, instrument,
-                                              side, 0.0, 0.0, "intent_recorded", "", "", requestHash);
+                                              side, 0.0, 0.0, "intent_recorded", "", "", requestHash, targetCorrelation);
     if (!AppendOrBlockLocked(intent, "OMS_CANCEL_INTENT_WRITE_FAILED"))
         return RejectLocked(context, "OMS_CANCEL_INTENT_WRITE_FAILED", "cancel was not sent",
                             command.orderId, requestHash);
@@ -164,6 +167,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
     pending.orderId = command.orderId;
     pending.reasonCode = "BROKER_RESULT_PENDING";
     pending.requestHash = requestHash;
+    pending.venueCorrelationId = targetCorrelation;
     pending.operation = "cancel";
     pending.context = context;
     pending.instrument = instrument;
@@ -175,7 +179,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
     // record must never cause an automatic second cancel request.
     const OmsJournalEvent sendAttempt = BuildEvent(
         context, "cancel_send_attempt", command.orderId, instrument, side,
-        0.0, 0.0, "attempt_recorded", "", "", requestHash);
+        0.0, 0.0, "attempt_recorded", "", "", requestHash, targetCorrelation);
     if (!AppendOrBlockLocked(sendAttempt, "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED"))
         return RejectLocked(context, "OMS_CANCEL_SEND_ATTEMPT_WRITE_FAILED",
                             "cancel was not sent", command.orderId, requestHash);
@@ -190,7 +194,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         !outcome.detail.empty())
     {
         const OmsJournalEvent reject = BuildEvent(context, "reject", command.orderId, instrument,
-            side, 0.0, 0.0, "rejected", outcome.detail, "IB_CANCEL_REJECT", requestHash);
+            side, 0.0, 0.0, "rejected", outcome.detail, "IB_CANCEL_REJECT", requestHash, targetCorrelation);
         AppendOrBlockLocked(reject, "OMS_CANCEL_REJECT_WRITE_FAILED");
         return RejectLocked(context, "IB_CANCEL_REJECT", outcome.detail,
                             command.orderId, requestHash);
@@ -200,7 +204,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
             requestHash, requestKey, outcome.detail);
 
     const OmsJournalEvent sent = BuildEvent(context, "cancel", command.orderId, instrument,
-                                            side, 0.0, 0.0, "cancel_sent", "", "", requestHash);
+                                            side, 0.0, 0.0, "cancel_sent", "", "", requestHash, targetCorrelation);
     if (!AppendOrBlockLocked(sent, "OMS_CANCEL_RECEIPT_WRITE_FAILED"))
     {
         RequestRecord record;
@@ -208,6 +212,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
         record.orderId = command.orderId;
         record.reasonCode = "OMS_CANCEL_RECEIPT_WRITE_FAILED";
         record.requestHash = requestHash;
+        record.venueCorrelationId = targetCorrelation;
         record.operation = "cancel";
         record.context = context;
         record.instrument = instrument;
@@ -253,6 +258,7 @@ ExecutionCommandResult ExecutionCoordinator::CancelOrderLocked(
     record.status = ExecutionCommandStatus::Accepted;
     record.orderId = command.orderId;
     record.requestHash = requestHash;
+    record.venueCorrelationId = targetCorrelation;
     record.operation = "cancel";
     record.context = context;
     record.instrument = instrument;
@@ -284,7 +290,7 @@ ExecutionCommandResult ExecutionCoordinator::UncertainCancelOutcomeLocked(
     // cancel_pending/RECOVERY_RECONCILE_REQUIRED as unresolved, never rejected.
     const OmsJournalEvent uncertain = BuildEvent(command.context, "cancel", command.orderId,
         instrument, side, 0.0, 0.0, "cancel_pending", record.detail,
-        "RECOVERY_RECONCILE_REQUIRED", requestHash);
+        "RECOVERY_RECONCILE_REQUIRED", requestHash, record.venueCorrelationId);
     if (!AppendOrBlockLocked(uncertain, "OMS_CANCEL_UNCERTAIN_WRITE_FAILED"))
         record.reasonCode = "OMS_CANCEL_UNCERTAIN_WRITE_FAILED";
     ExecutionCommandResult result;

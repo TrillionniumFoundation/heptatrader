@@ -131,6 +131,12 @@ struct IBAuthoritativeTerminalCorrelationSnapshot {
     std::string reasonCode;
     std::map<std::string, long> terminalOrderIdsByCorrelation;
     std::map<std::string, std::string> terminalStatusesByCorrelation;
+    // Positive execution proof is correlation-scoped. IB numeric order IDs can
+    // be reused after a client/connection restart, so they are not an execution
+    // identity by themselves. executionOrderIds remains a compatibility
+    // projection derived only from correlations that also have terminal order
+    // evidence in this same snapshot.
+    std::set<std::string> executionCorrelations;
     std::set<long> executionOrderIds;
 };
 
@@ -467,7 +473,7 @@ private:
     std::set<long> m_pendingActiveOrderIds;
     std::set<long> m_postFillReconciliationOrderIds;
     std::map<long, std::uint64_t> m_postFillExposureGenerationByOrderId;
-    std::map<long, double> m_observedEconomicFillQuantityByOrderId;
+    std::map<std::string, double> m_observedEconomicFillQuantityByIdentity;
     std::map<long, IBOrderRiskBaseline> m_orderRiskBaselines;
     std::uint64_t m_terminalCorrelationGeneration = 0;
     bool m_terminalCorrelationRequestIssuedForEpoch = false;
@@ -478,8 +484,8 @@ private:
     IBAuthoritativeTerminalCorrelationSnapshot m_terminalCorrelationSnapshot;
     std::map<std::string, long> m_pendingTerminalOrderIds;
     std::map<std::string, std::string> m_pendingTerminalStatuses;
-    std::map<long, std::string> m_pendingTerminalCorrelationsByOrderId;
-    std::set<long> m_pendingExecutionOrderIds;
+    std::set<std::string> m_pendingExecutionCorrelations;
+    std::map<std::string, long> m_pendingExecutionIdsByCorrelation;
     // Live execution/terminal proof for orders actually submitted by this
     // adapter incarnation. Never reconstruct these bindings from orderStatus.
     struct LiveTerminalBinding {

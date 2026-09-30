@@ -15,6 +15,14 @@
 #include <mutex>
 #include <vector>
 
+// Pure admission shared by the real callback router and native regression tests.
+// A historical request observes old executions in a new connection; only the
+// durable broker-echoed correlation identifies their original command.
+bool ValidateIbPaperBrokerCallbackIdentity(const IBEvent& event,
+    const ExecutionOrderOwner& owner, const std::string& account,
+    int clientId, std::uint64_t connectionEpoch,
+    const InstrumentRef* expectedContract, std::string& reason);
+
 enum class IbPaperOrderMode
 {
     LocalMarketDay = 0,

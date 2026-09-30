@@ -30,6 +30,8 @@ struct ExecutionOrderOwner
     std::string executionDomain;
     std::string instrument;
     std::string side;
+    std::string venueCorrelationId;
+    std::string commandId;
 };
 
 // Shared canonical hash used by the split cancel dispatcher.
@@ -202,6 +204,15 @@ public:
         bool authoritativeActiveSnapshotComplete,
         const std::map<long, std::string>& authoritativeTerminalStatuses,
         const std::set<long>& authoritativeExecutionOrderIds,
+        bool authoritativeTerminalSnapshotComplete,
+        std::size_t& resolvedCommands,
+        std::string& reason);
+    bool ResolveUncertainCancelCommandsByCorrelation(
+        const std::map<std::string, long>& authoritativeActiveOrderIdsByCorrelation,
+        bool authoritativeActiveSnapshotComplete,
+        const std::map<std::string, long>& authoritativeTerminalOrderIdsByCorrelation,
+        const std::map<std::string, std::string>& authoritativeTerminalStatusesByCorrelation,
+        const std::set<std::string>& authoritativeExecutionCorrelations,
         bool authoritativeTerminalSnapshotComplete,
         std::size_t& resolvedCommands,
         std::string& reason);

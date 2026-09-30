@@ -5,6 +5,13 @@ ROOT=Path(__file__).resolve().parents[2]
 spec=importlib.util.spec_from_file_location("paper_driver",ROOT/"scripts/heptatrader_paper_driver.py")
 d=importlib.util.module_from_spec(spec); spec.loader.exec_module(d)
 
+def matched_fill(order_id,command_id,side,quantity,price):
+    import hashlib
+    return {"order_id":order_id,"command_id":command_id,"side":side,
+        "venue_correlation_id":"hepta-v1-sha256:"+hashlib.sha256(command_id.encode()).hexdigest(),
+        "broker_execution_id":"exec-"+command_id,"broker_execution_ambiguous":False,
+        "economic_fill":True,"filled_quantity":quantity,"average_fill_price":price,"terminal":True}
+
 class DriverPolicyTests(unittest.TestCase):
     def state(self):
         return {"pending":None,"position":0.0,"entry_price":None,"entry_price_basis":None,
@@ -37,7 +44,7 @@ class DriverPolicyTests(unittest.TestCase):
         try:
             d.atomic_json=lambda *_: None
             d.paper_cmd=lambda *_args,**_kw: {"ok":True,"result":{"payload":{
-                "command_id":"execution-command-0001","command_status":"uncertain",
+                "authoritative":True,"command_id":"execution-command-0001","command_status":"uncertain",
                 "order_id":-1,"reason_code":"UNKNOWN"}}}
             snap={"position":0.0,"active":[],"orders":{"recent_orders":[]}}
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
@@ -49,20 +56,22 @@ class DriverPolicyTests(unittest.TestCase):
         old_cmd,old_atomic=d.paper_cmd,d.atomic_json
         try:
             d.atomic_json=lambda *_: None
-            d.paper_cmd=lambda *_args,**_kw: {"ok":True,"result":{"payload":{
-                "command_status":"accepted","order_id":42,"reason_code":""}}}
+            def inspect(*_args,**_kw):
+                current=state["pending"]
+                return {"ok":True,"result":{"payload":{"authoritative":True,
+                    "command_id":current["command_id"],"command_status":"accepted",
+                    "order_id":current["broker_order_id"],"reason_code":""}}}
+            d.paper_cmd=inspect
             state=self.state(); state["pending"]={"kind":"OPEN","command_id":"execution-command-0001",
                 "broker_order_id":42,"reference_price":1.1,"side":"BUY"}
-            orders={"recent_orders":[{"order_id":42,"economic_fill":True,
-                "filled_quantity":25000,"average_fill_price":1.101,"terminal":True}]}
+            orders={"recent_orders":[matched_fill(42,"execution-command-0001","BUY",25000,1.101)]}
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",
                 {"position":25000.0,"active":[],"orders":orders})
             self.assertIsNone(state["pending"]); self.assertEqual(state["entries"],1)
             self.assertEqual(state["entry_price_basis"],"broker_average_fill_price")
             state["pending"]={"kind":"CLOSE","command_id":"execution-command-0002",
                 "broker_order_id":43}
-            orders={"recent_orders":[{"order_id":43,"economic_fill":True,
-                "filled_quantity":25000,"average_fill_price":1.102,"terminal":True}]}
+            orders={"recent_orders":[matched_fill(43,"execution-command-0002","SELL",25000,1.102)]}
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",
                 {"position":0.0,"active":[],"orders":orders})
             self.assertIsNone(state["pending"]); self.assertEqual(state["exits"],1)
@@ -76,25 +85,60 @@ class DriverPolicyTests(unittest.TestCase):
             d.atomic_json=lambda *_: None
             def inspect(_b,_s,_t,_o,_op,extra):
                 oid=53 if "execution-command-0053" in extra else 52
-                return {"ok":True,"result":{"payload":{"command_status":"accepted","order_id":oid,"reason_code":""}}}
+                return {"ok":True,"result":{"payload":{"authoritative":True,
+                    "command_id":"execution-command-0053" if oid==53 else "execution-command-0052",
+                    "command_status":"accepted","order_id":oid,"reason_code":""}}}
             d.paper_cmd=inspect
             state=self.state(); state["pending"]={"kind":"OPEN","command_id":"execution-command-0052",
                 "broker_order_id":52,"reference_price":1.1,"side":"BUY"}
-            orders={"recent_orders":[{"order_id":52,"economic_fill":True,"filled_quantity":10000,
-                "average_fill_price":1.101,"terminal":True}]}
+            orders={"recent_orders":[matched_fill(52,"execution-command-0052","BUY",10000,1.101)]}
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",
                 {"position":10000.0,"active":[],"orders":orders})
             self.assertIsNone(state["pending"]); self.assertTrue(state["halt_new_entries"])
             self.assertEqual(state["position"],10000.0)
             state["pending"]={"kind":"CLOSE","command_id":"execution-command-0053","broker_order_id":53}
-            orders={"recent_orders":[{"order_id":53,"economic_fill":True,"filled_quantity":4000,
-                "average_fill_price":1.102,"terminal":True}]}
+            orders={"recent_orders":[matched_fill(53,"execution-command-0053","SELL",4000,1.102)]}
             d.inspect_pending(state,Path("/unused"),"b","s","t","o",
                 {"position":6000.0,"active":[],"orders":orders})
             self.assertIsNone(state["pending"]); self.assertEqual(state["position"],6000.0)
             self.assertIn("remaining exposure",state["last_error"])
         finally:
             d.paper_cmd,d.atomic_json=old_cmd,old_atomic
+
+    def test_two_orders_with_same_broker_number_keep_separate_economics(self):
+        from unittest.mock import patch
+        state=self.state();state["gross_pnl"]=61.5
+        current="current-sell-request";old="historical-buy-request"
+        state["pending"]={"kind":"OPEN","command_id":current,"broker_order_id":101,"side":"SELL"}
+        old_fill=matched_fill(101,old,"BUY",25000,1.1331)
+        new_fill=matched_fill(101,current,"SELL",25000,1.13489)
+        response={"ok":True,"result":{"payload":{"authoritative":True,"command_id":current,
+            "command_status":"accepted","order_id":101}}}
+        snap={"position":-25000.0,"active":[],"orders":{"recent_orders":[old_fill,new_fill]}}
+        with patch.object(d,"paper_cmd",return_value=response) as cmd,patch.object(d,"atomic_json"):
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
+            self.assertEqual(cmd.call_count,1)
+            self.assertEqual(cmd.call_args.args[4],"inspect")
+        self.assertEqual(state["entry_price"],1.13489)
+        self.assertEqual(state["entries"],1)
+        self.assertEqual(state["gross_pnl"],61.5)
+        self.assertIsNone(state["pending"])
+
+    def test_unrelated_terminal_callback_cannot_clear_pending(self):
+        from unittest.mock import patch
+        state=self.state();original={"kind":"OPEN","command_id":"pending-sell","broker_order_id":101,"side":"SELL"}
+        state["pending"]=copy.deepcopy(original)
+        other=matched_fill(101,"old-buy","BUY",25000,1.1331)
+        other.update(economic_fill=False,status="Cancelled")
+        response={"ok":True,"result":{"payload":{"authoritative":True,"command_id":"pending-sell",
+            "command_status":"uncertain","order_id":101}}}
+        with patch.object(d,"paper_cmd",return_value=response) as cmd,patch.object(d,"atomic_json"):
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",
+                {"position":0.0,"active":[],"orders":{"recent_orders":[other]}})
+            self.assertEqual(cmd.call_args.args[4],"inspect")
+        self.assertEqual(state["pending"]["command_id"],original["command_id"])
+        self.assertEqual(state["entries"],0)
+        self.assertEqual(state["gross_pnl"],0)
 
     def test_model_worker_is_asynchronous_and_preserves_snapshot_identity(self):
         old=d.model_decision

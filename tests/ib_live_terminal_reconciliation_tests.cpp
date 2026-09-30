@@ -425,6 +425,45 @@ void TestHostileEvidenceCannotPromoteFill() {
     f.Push(f.Execution());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
 }
+void TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId() {
+    Fixture f(false);
+    const std::string currentCorrelation =
+        "hepta-v1-sha256:" + std::string(64, 'a');
+    const std::string historicalCorrelation =
+        "hepta-v1-sha256:" + std::string(64, 'b');
+    const long reusedId = f.Place(currentCorrelation);
+
+    auto completed = f.Event(IBEventType::CompletedOrder);
+    completed.id = reusedId;
+    completed.key = "Filled";
+    completed.number = 1.0;
+    completed.number2 = 1.18;
+    completed.order.orderRef = f.broker->submitted.orderRef;
+    f.Push(completed);
+
+    auto historical = f.Execution();
+    historical.id = reusedId;
+    historical.requestId = f.broker->executionsRequest;
+    historical.key = "historical-execution-id";
+    historical.value = "SLD";
+    std::string reason;
+    assert(IbVenueCorrelationCodec::EncodeOrderRef(
+        historicalCorrelation, historical.order.orderRef, reason));
+    f.Push(historical);
+    f.FinishBootstrap();
+
+    const auto snapshot =
+        f.adapter.GetAuthoritativeTerminalCorrelationSnapshot();
+    assert(snapshot.complete);
+    assert(snapshot.executionCorrelations.count(historicalCorrelation) == 1);
+    assert(snapshot.executionCorrelations.count(currentCorrelation) == 0);
+    // The historical execution for numeric id N cannot prove the current
+    // correlation's Filled record. Compatibility numeric execution evidence
+    // therefore remains empty as well.
+    assert(snapshot.executionOrderIds.count(reusedId) == 0);
+    assert(snapshot.terminalOrderIdsByCorrelation.count(currentCorrelation) == 0);
+}
+
 void TestAdapterForwardsBoundedHandshakeBudget() {
     Broker* broker=new Broker();
     HeptaIBGatewayAdapter adapter{std::unique_ptr<IIBApiWrapper>(broker)};
@@ -467,6 +506,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestTerminalRefreshDoesNotCrossCorrelateReusedNumericOrderId();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }

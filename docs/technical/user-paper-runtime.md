@@ -172,3 +172,18 @@ I/O, it cannot duplicate an order. A persistently split pair still fails
 closed. Event cursors keep their existing authoritative-resync boundary: the
 new identity publishes system.execution_service_identity_changed and the
 owner must reconcile before upstream events continue.
+
+## Reused Broker integers and pending reconciliation
+
+Pending reconciliation inspects only the original HSR1 command. It accepts a
+recent fill only when the authoritative response names that command and the row
+agrees on the original command, Broker order number, durable venue correlation,
+direction and unambiguous execution evidence. In particular, an old BUY with the
+same numeric order ID cannot supply the entry price or terminal status of a new
+SELL. A terminal event for another command leaves the current pending record
+intact; no new preview or resubmission is created.
+
+Opening position adoption and realized-PnL settlement require that matched fill
+evidence. Missing or ambiguous evidence remains pending with a diagnostic rather
+than being labeled flat, filled, or profitable from the cached driver position.
+Physical Broker position/active-order snapshots remain authoritative for exposure.

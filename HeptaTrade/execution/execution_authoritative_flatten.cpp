@@ -235,12 +235,14 @@ ExecutionCoordinator::HandleCancelProjectionFailureLocked(
     const std::string& projectionReason)
 {
     const AgentExecutionContext& context = command.context;
+    const std::string targetCorrelation =
+        m_requests.AtResident(requestKey).venueCorrelationId;
     const std::string failureCode =
         "AUTHORITATIVE_CANCEL_PROJECTION_FAILED";
     const OmsJournalEvent projectionFailure = BuildEvent(
         context, "execution_projection_failed", command.orderId,
         instrument, side, 0.0, 0.0, "cancel_projection_failed",
-        projectionReason, failureCode, requestHash);
+        projectionReason, failureCode, requestHash, targetCorrelation);
     if (AppendOrBlockLocked(
             projectionFailure,
             "OMS_EXECUTION_PROJECTION_FAILURE_WRITE_FAILED"))
@@ -251,6 +253,7 @@ ExecutionCoordinator::HandleCancelProjectionFailureLocked(
     record.reasonCode = failureCode;
     record.detail = projectionReason;
     record.requestHash = requestHash;
+    record.venueCorrelationId = targetCorrelation;
     record.operation = "cancel";
     record.context = context;
     record.instrument = instrument;

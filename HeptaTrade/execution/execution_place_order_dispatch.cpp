@@ -47,6 +47,8 @@ ExecutionCoordinator::CompletePlaceOrderLocked(
     owner.executionDomain = context.executionDomain;
     owner.instrument = dispatch.instrument;
     owner.side = command.order.action;
+    owner.venueCorrelationId = dispatch.venueCorrelationId;
+    owner.commandId = command.context.toolCallId;
     m_orderOwners[orderId] = owner;
     bool projectionOk = true;
     std::string projectionReason;

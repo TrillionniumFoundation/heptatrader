@@ -44,6 +44,7 @@ struct OmsJournalEvent {
     std::string brokerCallbackType;
     std::string brokerServiceEpoch;
     std::uint64_t brokerConnectionEpoch = 0;
+    int brokerClientId = -1; // optional v4 evidence; -1 means legacy/unknown
     long long brokerRequestId = 0;
     int brokerErrorCode = 0;
     std::string brokerMessage;

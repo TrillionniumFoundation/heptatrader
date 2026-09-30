@@ -1685,6 +1685,7 @@ public:
             state.status,
             0.0);
         event.account = order.account;
+        event.brokerClientId = order.clientId;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
         event.number = event.order.totalQuantity;
@@ -1703,6 +1704,7 @@ public:
             "COMPLETED_ORDER",
             0.0);
         event.account = order.account;
+        event.brokerClientId = order.clientId;
         event.contract = BuildContractLite(contract);
         event.order = BuildOrderLite(order);
         event.number = event.order.totalQuantity;

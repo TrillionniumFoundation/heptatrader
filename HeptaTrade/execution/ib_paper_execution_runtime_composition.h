@@ -320,6 +320,8 @@ private:
         RecentBrokerOrder& order, const OmsJournalEvent& event,
         bool reconciledTerminal, bool positiveEconomicEvidence);
     void TrimRecentBrokerOrders();
+    std::string RecentBrokerOrderKey(
+        const OmsJournalEvent& event, const std::string& agentId) const;
     bool ProjectAcceptedBrokerOrder(
         const IbPlaceOrderCommand& command, long orderId,
         std::string& reason);
@@ -423,6 +425,9 @@ private:
         std::string account;
         std::string instrument;
         std::string side;
+        std::string venueCorrelationId;
+        std::string commandId;
+        int brokerClientId = -1;
         std::string brokerExecutionId;
         bool brokerExecutionAmbiguous = false;
         double brokerExecutionQuantity = 0.0;
@@ -455,7 +460,7 @@ private:
     PaperTerminalFenceBinding m_terminalFenceBinding;
     PaperTerminalMutationManifest m_terminalMutationManifest;
     ExecutionTerminalResult m_terminalResult;
-    std::map<long, RecentBrokerOrder> m_recentBrokerOrders;
+    std::map<std::string, RecentBrokerOrder> m_recentBrokerOrders;
     mutable std::mutex m_lifecycleStateMutex;
     mutable std::mutex m_fatalMutex;
     std::string m_fatalReason;

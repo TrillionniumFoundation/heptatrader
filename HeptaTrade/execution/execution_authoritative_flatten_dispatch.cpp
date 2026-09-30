@@ -96,6 +96,8 @@ ExecutionCoordinator::CompleteAuthoritativeFlattenLocked(
     owner.executionDomain = context.executionDomain;
     owner.instrument = command.instrument;
     owner.side = plan.order.action;
+    owner.venueCorrelationId = dispatch.venueCorrelationId;
+    owner.commandId = command.context.toolCallId;
     m_orderOwners[orderId] = owner;
 
     bool projectionOk = true;

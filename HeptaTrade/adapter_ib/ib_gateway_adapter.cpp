@@ -243,7 +243,7 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
     m_pendingActiveOrderIds.clear();
     m_postFillReconciliationOrderIds.clear();
     m_postFillExposureGenerationByOrderId.clear();
-    m_observedEconomicFillQuantityByOrderId.clear();
+    m_observedEconomicFillQuantityByIdentity.clear();
     m_orderRiskBaselines.clear();
     m_liveTerminalBindings.clear();
     m_terminalCorrelationGeneration = 0;
@@ -256,8 +256,8 @@ bool HeptaIBGatewayAdapter::Init(const HeptaIBConfig& cfg) {
         IBAuthoritativeTerminalCorrelationSnapshot();
     m_pendingTerminalOrderIds.clear();
     m_pendingTerminalStatuses.clear();
-    m_pendingTerminalCorrelationsByOrderId.clear();
-    m_pendingExecutionOrderIds.clear();
+    m_pendingExecutionCorrelations.clear();
+    m_pendingExecutionIdsByCorrelation.clear();
     m_exposureGeneration = 0;
     m_riskGeneration = 0;
     m_coherentRiskRefreshDispatching = false;
@@ -378,7 +378,7 @@ bool HeptaIBGatewayAdapter::Connect(int handshakeTimeoutMs) {
     // recovery after a fresh authoritative snapshot may create a new intent.
     m_pendingCancelOrderIds.clear();
     m_exposureGeneration = 0;
-    m_observedEconomicFillQuantityByOrderId.clear();
+    m_observedEconomicFillQuantityByIdentity.clear();
     m_postFillExposureGenerationByOrderId.clear();
     m_postFillReconciliationOrderIds.clear();
     m_coherentRiskRefreshPending = false;
@@ -919,8 +919,8 @@ bool HeptaIBGatewayAdapter::ReqTerminalCorrelations() {
     m_terminalCorrelationRefreshConflict = false;
     m_pendingTerminalOrderIds.clear();
     m_pendingTerminalStatuses.clear();
-    m_pendingTerminalCorrelationsByOrderId.clear();
-    m_pendingExecutionOrderIds.clear();
+    m_pendingExecutionCorrelations.clear();
+    m_pendingExecutionIdsByCorrelation.clear();
     m_terminalCorrelationSnapshot.connectionEpoch = m_connectionEpoch;
     m_terminalCorrelationSnapshot.generation =
         m_terminalCorrelationGeneration;

@@ -486,37 +486,14 @@ bool IbPaperExecutionRuntimeComposition::HandleNonPersistentAdapterEvent(
 }
 
 bool IbPaperExecutionRuntimeComposition::ValidateBrokerCallbackIdentity(
-    const IBEvent& event, const ExecutionOrderOwner& owner,
-    std::string& reason) const
+    const IBEvent& event, const ExecutionOrderOwner& owner, std::string& reason) const
 {
-    if (event.type != IBEventType::ExecutionDetails &&
-        event.type != IBEventType::CompletedOrder)
-        return true;
-    if (event.account.empty() || owner.account.empty() ||
-        event.account != owner.account ||
-        owner.account != m_config.profile.account)
-    {
-        reason = "IB_BROKER_CALLBACK_ACCOUNT_MISMATCH";
-        return false;
-    }
-    if (event.type != IBEventType::ExecutionDetails) return true;
-    if (NormalizeExecutionSide(event.value) != owner.side)
-    {
-        reason = "IB_EXECUTION_SIDE_MISMATCH";
-        return false;
-    }
-    const std::map<std::string, InstrumentRef>::const_iterator expected =
-        m_config.quoteContracts.find(owner.instrument);
-    if (expected == m_config.quoteContracts.end() ||
-        event.contract.symbol != expected->second.symbol ||
-        event.contract.secType != expected->second.secType ||
-        event.contract.currency != expected->second.currency)
-    {
-        reason = "IB_EXECUTION_CONTRACT_MISMATCH";
-        return false;
-    }
-    return true;
+    const auto expected = m_config.quoteContracts.find(owner.instrument);
+    return ValidateIbPaperBrokerCallbackIdentity(event, owner, m_config.profile.account,
+        m_config.profile.clientId, m_adapter ? m_adapter->GetConnectionEpoch() : 0,
+        expected == m_config.quoteContracts.end() ? nullptr : &expected->second, reason);
 }
+
 
 bool IbPaperExecutionRuntimeComposition::BeginEventPostFillRiskRefresh(
     const IBEvent& event, const ExecutionOrderOwner& owner, long orderId)
@@ -621,7 +598,13 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
         MarkFatalRuntimeError("OMS_BROKER_EVENT_WRITE_FAILED");
         return AdapterRouteAction::Fatal;
     }
-    if (!validIdentity)
+    const bool historicalIdentityMiss = !validIdentity &&
+        (((event.type == IBEventType::ExecutionDetails && event.requestId >= 0) ||
+          event.type == IBEventType::CompletedOrder) &&
+             identityFailure == "IB_BROKER_CALLBACK_DIFFERENT_CORRELATION" ||
+         (event.type == IBEventType::OrderStatus &&
+          identityFailure == "IB_BROKER_CALLBACK_STATUS_UNSCOPED"));
+    if (!validIdentity && !historicalIdentityMiss)
     {
         MarkFatalRuntimeError(identityFailure);
         return AdapterRouteAction::Fatal;
@@ -632,7 +615,11 @@ IbPaperExecutionRuntimeComposition::RoutePersistedAdapterEvent(
         if (!BeginEventPostFillRiskRefresh(event, owner, orderId))
             return AdapterRouteAction::Fatal;
     }
-    if (IsTerminalBrokerEvent(event)) RecordTerminalBrokerEvent(orderId);
+    // Terminal ownership is correlation/identity scoped. An unowned or
+    // quarantined historical callback may share the same numeric order id but
+    // can never retire the current owner.
+    if (routeOwner && IsTerminalBrokerEvent(event))
+        RecordTerminalBrokerEvent(orderId);
     return AdapterRouteAction::Processed;
 }
 
@@ -672,6 +659,8 @@ bool IbPaperExecutionRuntimeComposition::PersistBrokerCallback(
     record.brokerRequestId = event.requestId;
     record.brokerServiceEpoch = m_serviceIdentity.serviceEpoch;
     record.brokerConnectionEpoch = event.connectionEpoch;
+    record.brokerClientId = event.brokerClientId;
+    if (owner) record.reqId = owner->commandId;
     record.brokerWhyHeld = event.whyHeld;
     record.brokerMarketCapPrice = event.marketCapPrice;
     record.brokerAdvancedOrderRejectJson =
@@ -689,6 +678,8 @@ bool IbPaperExecutionRuntimeComposition::PersistBrokerCallback(
             return false;
         }
     }
+    if (record.venueCorrelationId.empty() && owner)
+        record.venueCorrelationId = owner->venueCorrelationId;
 
     if (event.type == IBEventType::OrderStatus)
     {
@@ -845,14 +836,19 @@ void IbPaperExecutionRuntimeComposition::ProjectRecentBrokerOrder(
     const OmsJournalEvent& event)
 {
     const bool acceptedSend = event.eventType == "broker_order_accepted";
+    const bool commandBinding = event.eventType == "order_intent" ||
+        event.eventType == "flatten_intent" || event.eventType == "place_sent" ||
+        event.eventType == "flatten_sent" || event.eventType == "command_resolved";
+
     const bool reconciledTerminal =
         event.eventType == "order_owner_reconciled_terminal";
-    const bool projectable = acceptedSend || reconciledTerminal ||
+    const bool projectable = acceptedSend || commandBinding || reconciledTerminal ||
         event.eventType == "broker_order_status" ||
         event.eventType == "broker_error" ||
         event.eventType == "broker_execution" ||
         event.eventType == "broker_completed_order";
-    if (event.orderId < 0 || !projectable) return;
+    if (!projectable || (event.orderId < 0 &&
+        (!commandBinding || event.venueCorrelationId.empty() || event.reqId.empty()))) return;
     const std::string brokerAgentPrefix("agent:");
     const std::string toolAgentPrefix("agent.tool:");
     std::string agentId;
@@ -872,9 +868,11 @@ void IbPaperExecutionRuntimeComposition::ProjectRecentBrokerOrder(
         ProjectAcceptedRecentBrokerOrder(event, agentId);
         return;
     }
-    RecentBrokerOrder& order = m_recentBrokerOrders[event.orderId];
+    RecentBrokerOrder& order =
+        m_recentBrokerOrders[RecentBrokerOrderKey(event, agentId)];
     ApplyRecentBrokerOrderIdentity(order, event, agentId);
     ApplyRecentBrokerExecutionIdentity(order, event);
+    if (commandBinding) { TrimRecentBrokerOrders(); return; }
     const bool economic = HasPositiveEconomicEvidence(event);
     ApplyRecentBrokerEconomicEvidence(order, event, economic);
     ApplyRecentBrokerTerminalEvidence(
@@ -892,6 +890,8 @@ bool IbPaperExecutionRuntimeComposition::ProjectAcceptedBrokerOrder(
     }
     OmsJournalEvent accepted;
     accepted.eventType = "broker_order_accepted";
+    accepted.reqId = command.context.toolCallId;
+    accepted.brokerClientId = m_config.profile.clientId;
     accepted.tsMs = OmsJournal::NowEpochMs();
     accepted.orderId = orderId;
     accepted.venue = "IB";

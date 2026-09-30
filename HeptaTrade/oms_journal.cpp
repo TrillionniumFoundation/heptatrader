@@ -1266,6 +1266,7 @@ std::string OmsJournal::BuildJsonLine(const OmsJournalEvent& evt)
         << ",\"broker_callback_type\":\"" << EscapeJson(evt.brokerCallbackType) << "\""
         << ",\"broker_service_epoch\":\"" << EscapeJson(evt.brokerServiceEpoch) << "\""
         << ",\"broker_connection_epoch\":" << evt.brokerConnectionEpoch
+        << ",\"broker_client_id\":" << evt.brokerClientId
         << ",\"broker_request_id\":" << evt.brokerRequestId
         << ",\"broker_error_code\":" << evt.brokerErrorCode
         << ",\"broker_message\":\"" << EscapeJson(evt.brokerMessage) << "\""
@@ -1323,6 +1324,7 @@ bool OmsJournal::ParseJsonLine(const std::string& line, OmsJournalEvent& out)
     if (!ReadInteger(fields, "ts_ms", out.tsMs)) return false;
     if (!ReadInteger(fields, "order_id", out.orderId)) return false;
     if (!ReadInteger(fields, "broker_connection_epoch", out.brokerConnectionEpoch)) return false;
+    if (!ReadInteger(fields, "broker_client_id", out.brokerClientId) || out.brokerClientId < -1) return false;
     if (!ReadInteger(fields, "broker_request_id", out.brokerRequestId)) return false;
     if (!ReadInteger(fields, "broker_error_code", out.brokerErrorCode)) return false;
     if (!ReadDouble(fields, "qty", out.qty)) return false;

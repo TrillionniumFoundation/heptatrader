@@ -244,7 +244,7 @@ ExecutionCommandResult ExecutionCoordinator::HandleDeferredCancelLocked(
     const OmsJournalEvent deferred = BuildEvent(
         context, "cancel", command.orderId, instrument, side, 0.0, 0.0,
         "cancel_pending", "waiting for broker order acknowledgement",
-        reason, requestHash);
+        reason, requestHash, pending.venueCorrelationId);
     const bool journaled = AppendOrBlockLocked(
         deferred, "OMS_CANCEL_PENDING_RECEIPT_WRITE_FAILED");
     pending.reasonCode = journaled ? reason :
@@ -612,6 +612,8 @@ bool ExecutionCoordinator::ApplyRecoveredPlaceReceiptLocked(
     owner.executionDomain = event.executionDomain;
     owner.instrument = event.instrument;
     owner.side = event.side;
+    owner.venueCorrelationId = event.venueCorrelationId;
+    owner.commandId = event.reqId;
     if (event.orderId >= 0) m_orderOwners[event.orderId] = owner;
     return true;
 }
@@ -783,6 +785,8 @@ bool ExecutionCoordinator::ApplyRecoveredCommandStateLocked(
             owner.executionDomain = event.executionDomain;
             owner.instrument = event.instrument;
             owner.side = event.side;
+            owner.venueCorrelationId = event.venueCorrelationId;
+    owner.commandId = event.reqId;
             m_orderOwners[event.orderId] = owner;
         }
         return true;
@@ -989,6 +993,8 @@ bool ExecutionCoordinator::ResolveUncertainPlaceCommands(
             owner.executionDomain = record.context.executionDomain;
             owner.instrument = record.instrument;
             owner.side = record.side;
+            owner.venueCorrelationId = record.venueCorrelationId;
+            owner.commandId = record.context.toolCallId;
             m_orderOwners[orderId] = owner;
         }
         ++resolvedCommands;
@@ -1117,6 +1123,177 @@ bool ExecutionCoordinator::ResolveUncertainCancelCommands(
     return true;
 }
 
+bool ExecutionCoordinator::ResolveUncertainCancelCommandsByCorrelation(
+    const std::map<std::string, long>& authoritativeActiveOrderIdsByCorrelation,
+    bool authoritativeActiveSnapshotComplete,
+    const std::map<std::string, long>& authoritativeTerminalOrderIdsByCorrelation,
+    const std::map<std::string, std::string>& authoritativeTerminalStatusesByCorrelation,
+    const std::set<std::string>& authoritativeExecutionCorrelations,
+    bool authoritativeTerminalSnapshotComplete,
+    std::size_t& resolvedCommands,
+    std::string& reason)
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    resolvedCommands = 0;
+    if (!authoritativeActiveSnapshotComplete)
+    {
+        reason = "AUTHORITATIVE_ACTIVE_ORDER_SNAPSHOT_INCOMPLETE";
+        return false;
+    }
+    if (!authoritativeTerminalSnapshotComplete)
+    {
+        reason = "AUTHORITATIVE_TERMINAL_ORDER_SNAPSHOT_INCOMPLETE";
+        return false;
+    }
+    if (authoritativeTerminalOrderIdsByCorrelation.size() !=
+        authoritativeTerminalStatusesByCorrelation.size())
+    {
+        reason = "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_INCOMPLETE";
+        return false;
+    }
+
+    for (const auto& active : authoritativeActiveOrderIdsByCorrelation)
+    {
+        if (active.first.empty() || active.second < 0)
+        {
+            reason = "AUTHORITATIVE_CANCEL_ACTIVE_CORRELATION_INVALID";
+            return false;
+        }
+    }
+    for (const auto& terminal : authoritativeTerminalOrderIdsByCorrelation)
+    {
+        const auto status =
+            authoritativeTerminalStatusesByCorrelation.find(terminal.first);
+        if (terminal.first.empty() || terminal.second < 0 ||
+            status == authoritativeTerminalStatusesByCorrelation.end() ||
+            !IsKnownIbTerminalStatus(status->second))
+        {
+            reason = "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_INVALID";
+            return false;
+        }
+        // Correlation identity, not numeric order id, defines a conflict.
+        // The same IB integer may legitimately appear under another historical
+        // correlation after client/connection restart.
+        if (authoritativeActiveOrderIdsByCorrelation.find(terminal.first) !=
+            authoritativeActiveOrderIdsByCorrelation.end())
+        {
+            reason = "AUTHORITATIVE_CANCEL_ACTIVE_TERMINAL_CONFLICT";
+            return false;
+        }
+    }
+    for (const auto& status : authoritativeTerminalStatusesByCorrelation)
+        if (authoritativeTerminalOrderIdsByCorrelation.find(status.first) ==
+            authoritativeTerminalOrderIdsByCorrelation.end())
+        {
+            reason = "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_INCOMPLETE";
+            return false;
+        }
+    for (const std::string& correlation : authoritativeExecutionCorrelations)
+        if (correlation.empty())
+        {
+            reason = "AUTHORITATIVE_CANCEL_EXECUTION_CORRELATION_INVALID";
+            return false;
+        }
+
+    for (auto it = m_requests.begin(); it != m_requests.end(); ++it)
+    {
+        RequestRecord& record = it->second;
+        if (record.status != ExecutionCommandStatus::Uncertain ||
+            record.operation != "cancel" ||
+            !IsRecoverableCancelReason(record.reasonCode) ||
+            record.orderId < 0)
+            continue;
+        if (record.venueCorrelationId.empty())
+        {
+            // A pre-correlation cancel cannot be safely resolved once a broker
+            // is allowed to reuse its numeric id. Leave the global recovery
+            // block intact rather than guessing from order_id.
+            reason = "AUTHORITATIVE_CANCEL_TARGET_CORRELATION_REQUIRED";
+            return false;
+        }
+
+        const auto active =
+            authoritativeActiveOrderIdsByCorrelation.find(record.venueCorrelationId);
+        if (active != authoritativeActiveOrderIdsByCorrelation.end())
+        {
+            if (active->second != record.orderId)
+            {
+                reason = "AUTHORITATIVE_CANCEL_ACTIVE_CORRELATION_ID_MISMATCH";
+                return false;
+            }
+            continue;
+        }
+        if (record.orderId == 0) continue;
+
+        const auto terminal =
+            authoritativeTerminalOrderIdsByCorrelation.find(record.venueCorrelationId);
+        if (terminal != authoritativeTerminalOrderIdsByCorrelation.end() &&
+            terminal->second != record.orderId)
+        {
+            reason = "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_ID_MISMATCH";
+            return false;
+        }
+        const auto status =
+            authoritativeTerminalStatusesByCorrelation.find(record.venueCorrelationId);
+        const bool executed = authoritativeExecutionCorrelations.find(
+            record.venueCorrelationId) != authoritativeExecutionCorrelations.end();
+        if (terminal == authoritativeTerminalOrderIdsByCorrelation.end() &&
+            !executed)
+            continue;
+        if (terminal != authoritativeTerminalOrderIdsByCorrelation.end() &&
+            status == authoritativeTerminalStatusesByCorrelation.end())
+        {
+            reason = "AUTHORITATIVE_CANCEL_TERMINAL_CORRELATION_INCOMPLETE";
+            return false;
+        }
+
+        const bool accepted =
+            terminal != authoritativeTerminalOrderIdsByCorrelation.end() &&
+            IsSuccessfulCancelTerminalStatus(status->second) && !executed;
+        const std::string resolutionCode = accepted ?
+            "AUTHORITATIVE_CANCEL_TERMINAL_CONFIRMED" :
+            (executed ||
+             (terminal != authoritativeTerminalOrderIdsByCorrelation.end() &&
+              status->second == "Filled") ?
+                "AUTHORITATIVE_CANCEL_TARGET_FILLED" :
+                "AUTHORITATIVE_CANCEL_TARGET_TERMINAL");
+        const OmsJournalEvent resolution = BuildEvent(
+            record.context, "cancel_command_resolved", record.orderId,
+            record.instrument, record.side, 0.0, 0.0,
+            accepted ? "accepted" : "rejected", resolutionCode,
+            resolutionCode, record.requestHash, record.venueCorrelationId);
+        if (!AppendOrBlockLocked(
+                resolution, "OMS_CANCEL_RESOLUTION_WRITE_FAILED"))
+        {
+            reason = "OMS_CANCEL_RESOLUTION_WRITE_FAILED";
+            return false;
+        }
+        record.status = accepted ? ExecutionCommandStatus::Accepted :
+            ExecutionCommandStatus::Rejected;
+        record.reasonCode = resolutionCode;
+        record.detail = resolutionCode;
+        const auto owner = m_orderOwners.find(record.orderId);
+        if (owner != m_orderOwners.end() &&
+            owner->second.venueCorrelationId == record.venueCorrelationId)
+            m_orderOwners.erase(owner);
+        ++resolvedCommands;
+    }
+
+    bool uncertainRemains = false;
+    for (auto it = m_requests.begin(); it != m_requests.end(); ++it)
+        if (it->second.status == ExecutionCommandStatus::Uncertain)
+            uncertainRemains = true;
+    if (!uncertainRemains &&
+        m_mutationBlockReason == "RECOVERY_RECONCILE_REQUIRED")
+    {
+        m_mutationBlocked = false;
+        m_mutationBlockReason.clear();
+    }
+    reason.clear();
+    return true;
+}
+
+
 bool ExecutionCoordinator::IsMutationBlocked(std::string* reason) const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
@@ -1195,7 +1372,7 @@ bool ExecutionCoordinator::RecordOrderTerminalDurably(long orderId, std::string*
     if (!AppendOrBlockLocked(BuildEvent(context, "order_owner_reconciled_terminal",
             orderId, owner->second.instrument, owner->second.side, 0.0, 0.0,
             "terminal", "authoritative venue terminal callback",
-            "ORDER_OWNER_RECONCILED_TERMINAL"), "OMS_OWNER_RECONCILE_JOURNAL_FAILED"))
+            "ORDER_OWNER_RECONCILED_TERMINAL", "", owner->second.venueCorrelationId), "OMS_OWNER_RECONCILE_JOURNAL_FAILED"))
     {
         if (reason) *reason = "OMS_OWNER_RECONCILE_JOURNAL_FAILED";
         return false;
@@ -1389,7 +1566,7 @@ bool ExecutionCoordinator::ReconcileOrderOwners(
         if (!AppendOrBlockLocked(BuildEvent(context, "order_owner_reconciled_terminal",
             orderId, owner->second.instrument, owner->second.side, 0.0, 0.0,
             "terminal", "absent from complete authoritative active-order snapshot",
-            "ORDER_OWNER_RECONCILED_TERMINAL"), "OMS_OWNER_RECONCILE_JOURNAL_FAILED"))
+            "ORDER_OWNER_RECONCILED_TERMINAL", "", owner->second.venueCorrelationId), "OMS_OWNER_RECONCILE_JOURNAL_FAILED"))
         {
             reason = "OMS_OWNER_RECONCILE_JOURNAL_FAILED";
             return false;

@@ -326,7 +326,8 @@ void TestDurableAuthoritativeCorrelationResolution()
 }
 
 void AppendUncertainCancel(OmsJournal& journal, const std::string& callId,
-                           long orderId)
+                           long orderId,
+                           const std::string& correlation = std::string())
 {
     OmsJournalEvent event;
     event.eventType = "cancel";
@@ -346,6 +347,7 @@ void AppendUncertainCancel(OmsJournal& journal, const std::string& callId,
     event.side = "BUY";
     event.status = "intent_recorded";
     event.requestHash = "sha256:cancel-" + callId;
+    event.venueCorrelationId = correlation;
     assert(journal.Append(event));
     event.eventType = "cancel_send_attempt";
     event.eventId = callId + ":cancel_send_attempt:attempt_recorded:" +
@@ -526,6 +528,64 @@ void TestDurableAuthoritativeCancelResolution()
     assert(status.status == ExecutionCommandStatus::Uncertain);
     assert(status.reasonCode == "RECOVERY_RECONCILE_REQUIRED");
     std::remove(zeroPath.c_str());
+}
+
+void TestCorrelationCancelRecoveryIgnoresReusedNumericOrderId()
+{
+    const std::string path = TempJournalPath();
+    OmsJournal journal;
+    assert(journal.Init(path));
+    const std::string currentCorrelation =
+        "hepta-v1-sha256:" + std::string(64, 'a');
+    const std::string oldCorrelation =
+        "hepta-v1-sha256:" + std::string(64, 'b');
+    AppendUncertainCancel(
+        journal, "cancel-reused-id", 101, currentCorrelation);
+
+    ExecutionCoordinator coordinator(
+        journal, ExecutionCoordinatorCallbacks());
+    std::string reason;
+    assert(!coordinator.RecoverFromJournal(reason));
+    assert(reason == "RECOVERY_RECONCILE_REQUIRED");
+
+    std::map<std::string, long> terminalIds;
+    std::map<std::string, std::string> terminalStatuses;
+    std::set<std::string> executions;
+    terminalIds[oldCorrelation] = 101;
+    terminalStatuses[oldCorrelation] = "Filled";
+    executions.insert(oldCorrelation);
+    std::size_t resolved = 0;
+    assert(coordinator.ResolveUncertainCancelCommandsByCorrelation(
+        {}, true, terminalIds, terminalStatuses, executions, true,
+        resolved, reason));
+    assert(resolved == 0);
+    assert(coordinator.IsMutationBlocked());
+
+    ExecutionCommandResult status;
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "cancel-reused-id", status));
+    assert(status.status == ExecutionCommandStatus::Uncertain);
+
+    terminalIds[currentCorrelation] = 101;
+    terminalStatuses[currentCorrelation] = "Cancelled";
+    assert(coordinator.ResolveUncertainCancelCommandsByCorrelation(
+        {}, true, terminalIds, terminalStatuses, executions, true,
+        resolved, reason));
+    assert(resolved == 1);
+    assert(!coordinator.IsMutationBlocked());
+    assert(coordinator.GetCommandStatus(
+        "agent-a", "session-1", "cancel-reused-id", status));
+    assert(status.status == ExecutionCommandStatus::Accepted);
+    assert(status.reasonCode ==
+        "AUTHORITATIVE_CANCEL_TERMINAL_CONFIRMED");
+
+    ExecutionCoordinator replay(
+        journal, ExecutionCoordinatorCallbacks());
+    assert(replay.RecoverFromJournal(reason));
+    assert(replay.GetCommandStatus(
+        "agent-a", "session-1", "cancel-reused-id", status));
+    assert(status.status == ExecutionCommandStatus::Accepted);
+    std::remove(path.c_str());
 }
 
 void TestJournalFailurePreventsBrokerSend()
@@ -2573,6 +2633,7 @@ int main(int argc, char** argv)
     TestDurableAuthoritativeCorrelationResolution();
     TestDeferredCancelRecoveryResolution();
     TestDurableAuthoritativeCancelResolution();
+    TestCorrelationCancelRecoveryIgnoresReusedNumericOrderId();
     std::cout << "execution_coordinator_tests: PASS" << std::endl;
     return 0;
 }

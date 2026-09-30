@@ -9,11 +9,24 @@
 
 using namespace ib_paper_execution_runtime_internal;
 
+std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrderKey(
+    const OmsJournalEvent& event, const std::string& agentId) const
+{
+    if (!event.venueCorrelationId.empty())
+        return std::string("corr|") + agentId + "|" + event.traceId + "|" +
+            event.executionDomain + "|" + event.venueCorrelationId;
+    return std::string("legacy|") + agentId + "|" + event.traceId + "|" +
+        event.executionDomain + "|" + event.brokerServiceEpoch + "|" +
+        std::to_string(event.brokerConnectionEpoch) + "|" +
+        std::to_string(event.orderId);
+}
+
 void IbPaperExecutionRuntimeComposition::ProjectAcceptedRecentBrokerOrder(
     const OmsJournalEvent& event, const std::string& agentId)
 {
-    const std::map<long, RecentBrokerOrder>::const_iterator existing =
-        m_recentBrokerOrders.find(event.orderId);
+    const std::string key = RecentBrokerOrderKey(event, agentId);
+    const std::map<std::string, RecentBrokerOrder>::const_iterator existing =
+        m_recentBrokerOrders.find(key);
     if (existing != m_recentBrokerOrders.end() &&
         existing->second.agentId == agentId &&
         existing->second.sessionId == event.traceId &&
@@ -32,11 +45,14 @@ void IbPaperExecutionRuntimeComposition::ProjectAcceptedRecentBrokerOrder(
     accepted.account = event.account;
     accepted.instrument = event.instrument;
     accepted.side = event.side;
+    accepted.venueCorrelationId = event.venueCorrelationId;
+    accepted.commandId = event.reqId;
+    accepted.brokerClientId = event.brokerClientId;
     accepted.status = "Accepted";
     accepted.remainingQuantity = event.qty;
     accepted.serviceEpoch = event.brokerServiceEpoch;
     accepted.connectionEpoch = event.brokerConnectionEpoch;
-    m_recentBrokerOrders[event.orderId] = accepted;
+    m_recentBrokerOrders[key] = accepted;
 }
 
 void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerOrderIdentity(
@@ -58,8 +74,20 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerOrderIdentity(
         order.serviceEpoch = event.brokerServiceEpoch;
     if (event.brokerConnectionEpoch > 0)
         order.connectionEpoch = event.brokerConnectionEpoch;
+    if (event.brokerClientId >= 0) order.brokerClientId = event.brokerClientId;
+    if (!event.reqId.empty() && event.eventType != "order_owner_reconciled_terminal")
+    {
+        if (!order.commandId.empty() && order.commandId != event.reqId)
+        {
+            order.brokerExecutionAmbiguous = true;
+            order.reasonCode = "IB_RECENT_COMMAND_IDENTITY_CONFLICT";
+        }
+        else order.commandId = event.reqId;
+    }
     if (!event.instrument.empty()) order.instrument = event.instrument;
-    if (!event.side.empty()) order.side = event.side;
+    if (!event.side.empty()) order.side = event.side == "BOT" ? "BUY" : event.side == "SLD" ? "SELL" : event.side;
+    if (!event.venueCorrelationId.empty())
+        order.venueCorrelationId = event.venueCorrelationId;
     if (!event.status.empty() && !order.terminal)
         order.status = event.status;
     if (!event.riskCode.empty()) order.reasonCode = event.riskCode;
@@ -107,7 +135,7 @@ void IbPaperExecutionRuntimeComposition::ApplyRecentBrokerEconomicEvidence(
 {
     const bool economicCallback = event.eventType == "broker_execution" ||
         event.eventType == "broker_order_status";
-    if (!economicCallback || !positiveEconomicEvidence) return;
+    if (!economicCallback || !positiveEconomicEvidence || order.brokerExecutionAmbiguous) return;
     order.economicFill = true;
     order.filledQuantity = std::max(order.filledQuantity, event.qty);
     order.averageFillPrice = event.price;
@@ -149,9 +177,9 @@ void IbPaperExecutionRuntimeComposition::TrimRecentBrokerOrders()
 {
     while (m_recentBrokerOrders.size() > 256)
     {
-        std::map<long, RecentBrokerOrder>::iterator oldest =
+        std::map<std::string, RecentBrokerOrder>::iterator oldest =
             m_recentBrokerOrders.begin();
-        for (std::map<long, RecentBrokerOrder>::iterator it =
+        for (std::map<std::string, RecentBrokerOrder>::iterator it =
                  m_recentBrokerOrders.begin();
              it != m_recentBrokerOrders.end(); ++it)
             if (it->second.observedAtMs < oldest->second.observedAtMs)
@@ -166,7 +194,7 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
     std::vector<RecentBrokerOrder> matching;
     {
         std::lock_guard<std::mutex> lock(m_recentBrokerOrdersMutex);
-        for (std::map<long, RecentBrokerOrder>::const_iterator it =
+        for (std::map<std::string, RecentBrokerOrder>::const_iterator it =
                  m_recentBrokerOrders.begin();
              it != m_recentBrokerOrders.end(); ++it)
             if (it->second.agentId == context.agentId &&
@@ -181,6 +209,7 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
             return left.orderId > right.orderId;
         });
     std::ostringstream output;
+    output.precision(17);
     output << '[';
     for (std::size_t i = 0; i < matching.size() && i < 64; ++i)
     {
@@ -201,6 +230,10 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                << EscapeJson(order.serviceEpoch) << "\""
                << ",\"evidence_connection_epoch\":"
                << order.connectionEpoch
+               << ",\"command_id\":\"" << EscapeJson(order.commandId) << "\""
+               << ",\"broker_client_id\":" << order.brokerClientId
+               << ",\"venue_correlation_id\":\""
+               << EscapeJson(order.venueCorrelationId) << "\""
                << ",\"broker_execution_id\":\""
                << EscapeJson(order.brokerExecutionId) << "\""
                << ",\"broker_execution_ambiguous\":"

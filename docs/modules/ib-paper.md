@@ -197,3 +197,27 @@ fence/recovery-only state and authoritative-state mutation readiness, nested und
 `execution_authoritative_health` at the Gateway. It is not an order permit: current
 quote freshness, risk bounds and a single-use preview remain mandatory. External
 qualification health retains its existing strict wire contract.
+
+## Broker order lifetime and callback identity
+
+A numeric Broker order ID is only a current lookup hint, not durable execution
+identity. Owned execution callbacks must match the active observation epoch,
+Broker client, account, durable service correlation, direction, contract and
+nonempty execution ID. Historical queries return old order lifetimes on a new
+connection: a different valid correlation is retained as unowned historical
+evidence, not routed into the latest owner of the same integer. A same-correlation
+identity contradiction remains a failure; the direction check is not bypassed.
+
+Native order statuses without an order reference require the adapter's admitted
+current send binding. Unscoped historical statuses cannot retire a newly reused
+number. Completed/execution evidence is paired by correlation; old and new
+correlations may share an integer without supplying each other's fill or cancel
+proof. The legacy numeric execution summary is not used by the PAPER cancellation
+recovery path. Cancel targets persist their original correlation through intent,
+send, uncertainty and durable resolution.
+
+Recent order rows are keyed by owner scope and correlation, and expose original
+`command_id`, `venue_correlation_id`, `broker_client_id`, execution evidence and
+observation epochs. Replay recovers command bindings from the original OMS
+intent/receipt, without rewriting historical records. Missing/ambiguous execution
+evidence is not permission to invent a fill price.
