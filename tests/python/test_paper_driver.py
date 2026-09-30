@@ -166,7 +166,7 @@ class DriverPolicyTests(unittest.TestCase):
         def save(_p,value):history.append(copy.deepcopy(value))
         def snap(*_):
             return {"position":0.0,"gross_position":0.0,"active":[],"quote":{"ask":1.1},
-                "owner_health":{"owner_fenced":False,"owner_recovery_only":False,"mutation_ready":True},
+                "owner_health":{"owner_fenced":len(calls)==0,"owner_recovery_only":len(calls)==0,"mutation_ready":len(calls)>0},
                 "service_epoch":"epoch-1","service_generation":1}
         def run(argv,*_):
             calls.append(argv)

@@ -121,8 +121,13 @@ serialization boundary, audits complete active/terminal/risk/position evidence,
 reconciles original command and order owners, and invokes the existing
 `ReleaseSessionOwnerFence` / `AuditAndReleaseSessionOwnerFence`. The OMS release
 record is durable before the fence is removed. Incomplete state, exposure, an
-unresolved command, journal failure or a recovery-only/terminal owner cannot be
-resumed. A positive generation mismatch only identifies the next existing
+unresolved command or journal failure cannot be resumed. A revoked, recovery-only
+bearer or externally finalized owner cannot be revived. A still-active user
+lease may carry a residual Execution recovery marker from a failed older renewal;
+that marker is resumable only under the full audit, bound to its exact ingress
+generation. One durable release record covers both owner gates, and replay
+retains the consumed ingress high-water mark so an old recovery request cannot
+reinstall it. Terminal fences remain irreversible. A positive generation mismatch only identifies the next existing
 session generation; it is not proof of recovery.
 
 The driver remains halted after a successful resume reply until a fresh owner

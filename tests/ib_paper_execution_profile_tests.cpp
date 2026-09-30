@@ -400,6 +400,78 @@ void TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress()
     ::unlink(path);
 }
 
+void TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes()
+{
+    if (::geteuid() == 0 || ::getegid() == 0) return;
+    auto values = QualificationValues();
+    values.erase("HEPTA_EXECUTION_EXTERNAL_QUALIFICATION_LMT_DAY");
+    values.erase("HEPTA_EXECUTION_QUALIFICATION_MAX_ORDER_NOTIONAL");
+    values["HEPTA_IB_PAPER_USER_SCOPE"] = "1";
+    values["HEPTA_IB_PAPER_MAX_ORDER_QTY"] = "25000";
+    values["HEPTA_IB_PAPER_MAX_ORDER_NOTIONAL"] = "35000";
+    values["HEPTA_IB_PAPER_MAX_GROSS_POSITION"] = "25000";
+    values["HEPTA_IB_PAPER_MAX_ORDERS_PER_MINUTE"] = "2";
+    values["HEPTA_IB_PAPER_CONTROL_DIRECTORY"] = IbPaperExecutionProfileConfig::UserControlDirectoryPath();
+    IbPaperExecutionProfileConfig config; std::string reason;
+    assert(IbPaperExecutionProfileConfig::FromValues(values, config, reason));
+    char path[] = "/tmp/hepta-user-recovery-resume-XXXXXX";
+    const int fd = ::mkstemp(path); assert(fd >= 0); ::close(fd);
+    OmsJournal journal; assert(journal.Init(path));
+    ExecutionCoordinatorCallbacks callbacks; ExecutionCoordinator coordinator(journal, callbacks);
+    IBAuthoritativeRecoveryAuditSnapshot snapshot;
+    snapshot.active.complete = true; snapshot.active.connectionEpoch = 1; snapshot.active.generation = 1;
+    snapshot.terminal.complete = true; snapshot.terminal.connectionEpoch = 1; snapshot.terminal.generation = 1;
+    snapshot.risk.complete = true; snapshot.risk.coherentRefreshComplete = true;
+    snapshot.risk.accountComplete = true; snapshot.risk.positionsComplete = true; snapshot.risk.fxCashComplete = true;
+    snapshot.risk.connectionEpoch = 1; snapshot.risk.generation = 1; snapshot.risk.accountGeneration = 1;
+    snapshot.risk.positionsGeneration = 1; snapshot.risk.fxCashGeneration = 1; snapshot.barrierComplete = true;
+    IbPaperExecutionPolicyCallbacks policyCallbacks;
+    policyCallbacks.nowMs = [] { return OmsJournal::NowEpochMs(); };
+    policyCallbacks.recoveryAuditSnapshot = [&] { return snapshot; };
+    std::shared_ptr<IbPaperKillSwitchReader> guard(new FixedKillSwitchReader(IbPaperKillSwitchState::Engaged));
+    IbPaperExecutionPolicyAuthority policy(coordinator, config, policyCallbacks, guard);
+    ExecutionControlCommand command; command.context = QualificationOrder(config, "BUY", 1.0).context;
+    command.context.agentId="active-user"; command.context.sessionId="active-session";
+    command.context.toolCallId="audited-resume";
+    assert(coordinator.EnterRecoveryOnlyOwner("active-user","active-session",1,reason));
+    coordinator.FenceSessionOwner("active-user","active-session");
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence("active-user","active-session",true,reason));
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence("active-user","active-session",true,reason,2));
+    snapshot.risk.grossAbsolutePosition=1.0; snapshot.positionQuantities["EUR.USD"]=1.0;
+    assert(policy.ReleaseSessionOwnerFence(command).status==ExecutionCommandStatus::Rejected);
+    assert(coordinator.IsSessionOwnerFenced("active-user","active-session"));
+    assert(coordinator.IsSessionOwnerRecoveryOnly("active-user","active-session"));
+    snapshot.risk.grossAbsolutePosition=0.0; snapshot.positionQuantities.clear();
+    const auto released=policy.ReleaseSessionOwnerFence(command);
+    assert(released.status==ExecutionCommandStatus::Accepted && released.reasonCode=="SESSION_OWNER_FENCE_RELEASED");
+    assert(!coordinator.IsSessionOwnerFenced("active-user","active-session"));
+    assert(!coordinator.IsSessionOwnerRecoveryOnly("active-user","active-session"));
+    assert(coordinator.RecoverFromJournal(reason));
+    assert(!coordinator.IsSessionOwnerFenced("active-user","active-session"));
+    assert(!coordinator.IsSessionOwnerRecoveryOnly("active-user","active-session"));
+    assert(!coordinator.EnterRecoveryOnlyOwner("active-user","active-session",1,reason));
+    assert(reason=="SESSION_RECOVERY_INGRESS_FENCE_STALE");
+    assert(coordinator.EnterRecoveryOnlyOwner("active-user","active-session",2,reason));
+    // A fresh legitimate recovery generation can be resumed; a stale one cannot.
+    assert(policy.ReleaseSessionOwnerFence(command).status==ExecutionCommandStatus::Accepted);
+    assert(coordinator.RecoverFromJournal(reason));
+    assert(!coordinator.EnterRecoveryOnlyOwner("active-user","active-session",2,reason));
+    PaperTerminalFenceBinding binding; binding.owner=command.context;
+    binding.finalizationId="terminal-user"; binding.preliminaryReceiptSha256="sha256:"+std::string(64,'a');
+    binding.recoveryIngressFence=3; binding.serviceEpoch="terminal-test";
+    binding.serviceFencingGeneration=1; binding.serviceProcessId=1; binding.serviceProcessStartTicks=1;
+    binding.brokerConnectionEpoch=1; binding.brokerSocketIdentitySha256="sha256:"+std::string(64,'b');
+    PaperTerminalMutationUniverse universe;
+    assert(coordinator.EnterPaperTerminalFenceAndProject(binding,universe,reason));
+    assert(coordinator.EnterRecoveryOnlyOwner("active-user","active-session",3,reason));
+    coordinator.FenceSessionOwner("active-user","active-session");
+    assert(!coordinator.AuditAndReleaseSessionOwnerFence("active-user","active-session",true,reason,3));
+    assert(policy.ReleaseSessionOwnerFence(command).status==ExecutionCommandStatus::Rejected);
+    assert(coordinator.IsMutationBlocked(nullptr));
+    assert(coordinator.IsSessionOwnerRecoveryOnly("active-user","active-session"));
+    ::unlink(path);
+}
+
 void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 {
     IbPaperExecutionProfileConfig config; std::string reason;
@@ -458,6 +530,7 @@ int main()
 {
     TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();
+    TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();
     TestAuditedOwnerReleaseIsDurableAndDoesNotInstallRecoveryIngress();
     TestPolicyControlsDoNotWaitBehindVenueDispatch();
     TestQualificationProfileIsDistinctAndBounded();

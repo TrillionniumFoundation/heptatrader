@@ -576,6 +576,7 @@ void ExecutionCoordinator::ResetRecoveryProjectionLocked()
     m_orderOwners.clear();
     m_fencedSessionOwners.clear();
     m_recoveryOnlySessionOwners.clear();
+    m_resumedRecoveryIngress.clear();
     m_placeSendAttempts.clear();
     m_placeSendAttemptKeys.clear();
     m_mutationBlocked = false;
@@ -1274,7 +1275,7 @@ bool ExecutionCoordinator::AuditAndReleaseSessionOwnerFence(
     const std::string& agentId,
     const std::string& sessionId,
     bool authoritativeOpenOrdersComplete,
-    std::string& reason)
+    std::string& reason, std::uint64_t expectedUserRecoveryIngressFence)
 {
     if (agentId.empty() || sessionId.empty())
     {
@@ -1283,17 +1284,25 @@ bool ExecutionCoordinator::AuditAndReleaseSessionOwnerFence(
     }
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::string ownerKey = OwnerKey(agentId, sessionId);
-    if (m_mutationBlocked)
+    if (m_mutationBlocked || m_paperTerminalFencePresent)
     {
         reason = "SESSION_OWNER_RELEASE_MUTATION_BLOCKED";
         return false;
     }
-    if (m_recoveryOnlySessionOwners.find(ownerKey) != m_recoveryOnlySessionOwners.end())
+    const auto recovery = m_recoveryOnlySessionOwners.find(ownerKey);
+    const bool resumeRecovery = recovery != m_recoveryOnlySessionOwners.end();
+    if (resumeRecovery && (expectedUserRecoveryIngressFence == 0 ||
+        recovery->second != expectedUserRecoveryIngressFence))
     {
         reason = "SESSION_OWNER_RECOVERY_ONLY_NOT_RESUMABLE";
         return false;
     }
-    if (m_fencedSessionOwners.find(ownerKey) == m_fencedSessionOwners.end())
+    if (!resumeRecovery && expectedUserRecoveryIngressFence != 0)
+    {
+        reason = "SESSION_OWNER_RECOVERY_INGRESS_CHANGED";
+        return false;
+    }
+    if (!resumeRecovery && m_fencedSessionOwners.find(ownerKey) == m_fencedSessionOwners.end())
     {
         reason = "SESSION_OWNER_NOT_FENCED";
         return false;
@@ -1324,12 +1333,20 @@ bool ExecutionCoordinator::AuditAndReleaseSessionOwnerFence(
     context.toolCallId = std::string("session-owner-fence-release-") +
         std::to_string(OmsJournal::NowEpochMs());
     if (!AppendOrBlockLocked(BuildEvent(context, "session_owner_fence_release", -1,
-        "", "", 0.0, 0.0, "released",
+        "", "", 0.0, 0.0, resumeRecovery ?
+            "released-user-recovery:" + std::to_string(expectedUserRecoveryIngressFence) : "released",
         "authoritative open orders complete and owner has no active orders",
         "SESSION_OWNER_FENCE_RELEASED"), "OMS_SESSION_FENCE_RELEASE_JOURNAL_FAILED"))
     {
         reason = "OMS_SESSION_FENCE_RELEASE_JOURNAL_FAILED";
         return false;
+    }
+    // One durable OMS record covers both projections. A crash before this
+    // point leaves both gates closed; replay applies the same atomic transition.
+    if (resumeRecovery)
+    {
+        m_resumedRecoveryIngress[ownerKey] = expectedUserRecoveryIngressFence;
+        m_recoveryOnlySessionOwners.erase(ownerKey);
     }
     m_fencedSessionOwners.erase(ownerKey);
     reason.clear();

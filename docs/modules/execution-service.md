@@ -205,3 +205,12 @@ separate ingress-fencing semantics. Ordinary lease renewal uses the non-fencing
 audit. Owner-fence release independently revalidates zero positions, no active
 orders or unresolved commands, then commits `SESSION_OWNER_FENCE_RELEASED` through
 the coordinator. An earlier client read is never passed in as authority.
+
+For an active user-PAPER lease only, a residual non-terminal recovery marker can
+be included in the audited owner release. The exact ingress generation is captured
+before audit and compared under the coordinator lock. The OMS record carries
+`released-user-recovery:<generation>`; both gates are removed only after it is
+durable, and replay also restores the consumed-generation high-water mark. Default
+and external profiles still cannot resume recovery-only owners; terminal/global
+mutation blocks are never removed. Legacy readers retain the recovery-only gate
+when they cannot interpret this extended release, rather than silently enabling it.

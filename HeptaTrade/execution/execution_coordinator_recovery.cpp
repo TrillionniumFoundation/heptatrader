@@ -19,11 +19,42 @@ bool ExecutionCoordinator::ApplyRecoveredOwnershipEventLocked(
             BlockMutationsLocked("OMS_RECOVERY_ONLY_FENCE_INVALID");
             return true;
         }
-        m_recoveryOnlySessionOwners[OwnerKey(agentId, event.traceId)] =
-            static_cast<std::uint64_t>(fence);
+        const std::string key = OwnerKey(agentId, event.traceId);
+        const auto resumed = m_resumedRecoveryIngress.find(key);
+        if (resumed != m_resumedRecoveryIngress.end() && resumed->second >= fence)
+        {
+            BlockMutationsLocked("OMS_RECOVERY_INGRESS_REPLAYED_AFTER_RESUME");
+            return true;
+        }
+        m_recoveryOnlySessionOwners[key] = static_cast<std::uint64_t>(fence);
     }
     else if (event.eventType == "session_owner_fence_release")
-        m_fencedSessionOwners.erase(OwnerKey(agentId, event.traceId));
+    {
+        const std::string key = OwnerKey(agentId, event.traceId);
+        const std::string prefix = "released-user-recovery:";
+        if (event.status.compare(0, prefix.size(), prefix) == 0)
+        {
+            const std::string value = event.status.substr(prefix.size());
+            char* end = nullptr; errno = 0;
+            const unsigned long long fence = std::strtoull(value.c_str(), &end, 10);
+            const auto recovery = m_recoveryOnlySessionOwners.find(key);
+            if (errno != 0 || value.empty() || *end != '\0' || fence == 0 ||
+                value != std::to_string(fence) || recovery == m_recoveryOnlySessionOwners.end() ||
+                recovery->second != fence || m_paperTerminalFencePresent)
+            {
+                BlockMutationsLocked("OMS_USER_RECOVERY_RELEASE_INVALID");
+                return true;
+            }
+            m_resumedRecoveryIngress[key] = fence;
+            m_recoveryOnlySessionOwners.erase(key);
+        }
+        else if (event.status != "released")
+        {
+            BlockMutationsLocked("OMS_SESSION_RELEASE_STATE_INVALID");
+            return true;
+        }
+        m_fencedSessionOwners.erase(key);
+    }
     else if (event.eventType == "order_owner_reconciled_terminal")
         m_orderOwners.erase(event.orderId);
     else if (event.eventType == "paper_terminal_fence")
@@ -46,6 +77,12 @@ bool ExecutionCoordinator::EnterRecoveryOnlyOwner(
     }
     std::lock_guard<std::mutex> lock(m_mutex);
     const std::string ownerKey = OwnerKey(agentId, sessionId);
+    const auto resumed = m_resumedRecoveryIngress.find(ownerKey);
+    if (resumed != m_resumedRecoveryIngress.end() && resumed->second >= ingressFence)
+    {
+        reason = "SESSION_RECOVERY_INGRESS_FENCE_STALE";
+        return false;
+    }
     const std::unordered_map<std::string, std::uint64_t>::const_iterator current =
         m_recoveryOnlySessionOwners.find(ownerKey);
     if (current != m_recoveryOnlySessionOwners.end() &&
@@ -75,6 +112,14 @@ bool ExecutionCoordinator::EnterRecoveryOnlyOwner(
     m_recoveryOnlySessionOwners[ownerKey] = ingressFence;
     reason.clear();
     return true;
+}
+
+std::uint64_t ExecutionCoordinator::SessionOwnerRecoveryIngressFence(
+    const std::string& agentId, const std::string& sessionId) const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    const auto found = m_recoveryOnlySessionOwners.find(OwnerKey(agentId, sessionId));
+    return found == m_recoveryOnlySessionOwners.end() ? 0 : found->second;
 }
 
 bool ExecutionCoordinator::IsSessionOwnerRecoveryOnly(

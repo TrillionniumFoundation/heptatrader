@@ -271,8 +271,8 @@ def recover_owner(state,path,cli,sessionctl,supervisor,token,uid):
     snap=snapshot(cli,state,path)
     if snap["active"] or snap["gross_position"]!=0.0:
         raise DriverError("recovery requires authoritative zero orders and zero total strategy position")
-    if snap["owner_health"]["owner_recovery_only"]:
-        raise DriverError("recovery-only/terminal owner is not resumable")
+    # The native custodian distinguishes an active user lease with a stale
+    # recovery marker from a revoked/finalized owner. A local flag cannot do so.
     # Never retry a strategy order here. This authenticated control operation
     # re-audits Broker-owned snapshots even after a lost prior control reply.
     if state.get("owner_recovery_phase")!="VERIFY_PREVIEW":

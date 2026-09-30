@@ -174,10 +174,13 @@ public:
     bool IsSessionOwnerFenced(const std::string& agentId, const std::string& sessionId) const;
     bool IsSessionOwnerRecoveryOnly(const std::string& agentId,
                                     const std::string& sessionId) const;
+    std::uint64_t SessionOwnerRecoveryIngressFence(const std::string& agentId,
+                                                  const std::string& sessionId) const;
     bool AuditAndReleaseSessionOwnerFence(const std::string& agentId,
                                           const std::string& sessionId,
                                           bool authoritativeOpenOrdersComplete,
-                                          std::string& reason);
+                                          std::string& reason,
+                                          std::uint64_t expectedUserRecoveryIngressFence = 0);
     bool ReconcileOrderOwners(const std::set<long>& authoritativeActiveOrderIds,
                               bool authoritativeOpenOrdersComplete,
                               std::size_t& removedOwners,
@@ -467,6 +470,7 @@ private:
     std::unordered_set<std::string> m_fencedSessionOwners;
     std::unordered_map<std::string, std::uint64_t>
         m_recoveryOnlySessionOwners;
+    std::unordered_map<std::string, std::uint64_t> m_resumedRecoveryIngress;
     SendAttemptTimeIndex<PlaceSendAttempt> m_placeSendAttempts;
     std::unordered_set<std::string> m_placeSendAttemptKeys;
     bool m_mutationBlocked = false;

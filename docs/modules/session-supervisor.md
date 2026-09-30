@@ -194,5 +194,7 @@ and exact lease generation, not provisioning. Admission audit capacity is requir
 before any state change. The existing lease write-ahead transaction, active owner
 locks and audit trail apply. A non-fencing owner audit precedes native fence release;
 failed audit preserves the prior lease while keeping entry blocked at Execution.
-Terminal/recovery-only owners are excluded. See the
+Terminal/recovery-only lease records are excluded. An active user lease with an
+old Execution-only recovery marker may be resumed after native audit; this does
+not re-provision or revive a revoked bearer. See the
 [user recovery contract](../technical/user-paper-runtime.md#audited-owner-fence-recovery).

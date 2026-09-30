@@ -1260,6 +1260,8 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
         result.reasonCode = "SESSION_OWNER_AUDIT_BINDING_INVALID";
         return result;
     }
+    const std::uint64_t userRecoveryFence = m_config.userScope ?
+        m_coordinator.SessionOwnerRecoveryIngressFence(command.context.agentId, command.context.sessionId) : 0;
     const ExecutionOwnerAuditResult audit =
         AuditRecoveryOwner(command, m_callbacks.recoveryAuditSnapshot());
     if (audit.status != ExecutionCommandStatus::Accepted ||
@@ -1271,15 +1273,16 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
         result.reasonCode = audit.reasonCode.empty() ? "SESSION_OWNER_AUDIT_INCOMPLETE" : audit.reasonCode;
         return result;
     }
-    // An externally finalized/recovery-only owner is not an ordinary active
-    // session. Re-provisioning or release must never revive that owner.
-    if (m_coordinator.IsSessionOwnerRecoveryOnly(command.context.agentId, command.context.sessionId))
+    // Default/external recovery-only owners remain non-resumable. The user
+    // custodian may resume an active non-terminal lease after the full audit;
+    // the coordinator binds the exact residual ingress and rejects terminal state.
+    if (!m_config.userScope && m_coordinator.IsSessionOwnerRecoveryOnly(command.context.agentId, command.context.sessionId))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = "SESSION_OWNER_RECOVERY_ONLY_NOT_RESUMABLE";
         return result;
     }
-    if (!m_coordinator.IsSessionOwnerFenced(command.context.agentId, command.context.sessionId))
+    if (!m_coordinator.IsSessionOwnerFenced(command.context.agentId, command.context.sessionId) && userRecoveryFence == 0)
     {
         result.reasonCode = "SESSION_OWNER_NOT_FENCED";
         return result;
@@ -1287,7 +1290,7 @@ ExecutionControlStatusResult IbPaperExecutionPolicyAuthority::ReleaseSessionOwne
     std::size_t removed = 0;
     std::string reason;
     if (!m_coordinator.AuditAndReleaseSessionOwnerFence(
-            command.context.agentId, command.context.sessionId, true, reason))
+            command.context.agentId, command.context.sessionId, true, reason, userRecoveryFence))
     {
         result.status = ExecutionCommandStatus::Rejected;
         result.reasonCode = reason;
