@@ -347,7 +347,7 @@ bool HeptaIBGatewayAdapter::PrepareReconnectCashAttestation(
     return true;
 }
 
-bool HeptaIBGatewayAdapter::Connect() {
+bool HeptaIBGatewayAdapter::Connect(int handshakeTimeoutMs) {
     auto t0 = std::chrono::steady_clock::now();
     EmitObsEvent("connect.start", "\"host\":\"" + EscapeJson(m_cfg.host) + "\",\"port\":" + std::to_string(m_cfg.port) + ",\"clientId\":" + std::to_string(m_cfg.clientId));
 
@@ -424,6 +424,7 @@ bool HeptaIBGatewayAdapter::Connect() {
     p.clientId = m_cfg.clientId;
     p.account = m_cfg.account;
     p.readOnly = m_cfg.readOnly;
+    p.handshakeTimeoutMs = std::max(100, std::min(handshakeTimeoutMs, 20000));
 
     m_api->SetConnectionEpoch(m_connectionEpoch);
     m_connected = m_api->Connect(p);

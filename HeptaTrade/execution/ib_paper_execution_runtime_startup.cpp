@@ -72,7 +72,10 @@ bool IbPaperExecutionRuntimeComposition::InitializeAdapterAndConnect(
            !m_adapter->IsConnected()) {
         if (AbortStartupIfCancelled(reason)) return false;
         ++attempt;
-        if (m_adapter->Connect()) break;
+        const auto remainingMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remainingMs <= 0) break;
+        if (m_adapter->Connect(static_cast<int>(std::min<long long>(remainingMs, 20000)))) break;
         if (AbortStartupIfCancelled(reason)) return false;
         const int backoffMs = 100 + 100 * std::min(attempt, 19);
         const std::chrono::steady_clock::duration remaining =

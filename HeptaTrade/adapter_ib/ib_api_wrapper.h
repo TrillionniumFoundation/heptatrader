@@ -23,6 +23,7 @@ struct IBConnectParams {
     // and CASH FX balances cannot be duplicated or aggregated across accounts.
     std::string account;
     bool readOnly = false;
+    int handshakeTimeoutMs = 20000;
 };
 
 // The SDK's numeric order id is client-scoped. Keep the quantity used for

@@ -978,7 +978,9 @@ public:
 
             auto t0 = std::chrono::steady_clock::now();
             auto lastReqIds = t0 - std::chrono::seconds(10);
-            while (std::chrono::steady_clock::now() - t0 < std::chrono::seconds(20)) {
+            const int handshakeTimeoutMs = std::max(100, std::min(p.handshakeTimeoutMs, 20000));
+            while (std::chrono::steady_clock::now() - t0 <
+                   std::chrono::milliseconds(handshakeTimeoutMs)) {
                 PollOnce(500);
                 auto now = std::chrono::steady_clock::now();
                 if (now - lastReqIds >= std::chrono::seconds(3)) {

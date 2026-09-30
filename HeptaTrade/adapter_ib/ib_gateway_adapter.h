@@ -187,7 +187,7 @@ public:
     bool PrepareReconnectCashAttestation(
         const std::map<std::string, double>& observedBalances,
         std::string& reason);
-    bool Connect();
+    bool Connect(int handshakeTimeoutMs = 20000);
     void Disconnect();
     bool PollOnce(int timeoutMs);
     bool TryDequeueEvent(IBEvent& outEvent);

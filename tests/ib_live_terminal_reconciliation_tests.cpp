@@ -78,12 +78,12 @@ void TestWrapperQuantityTrackerCannotMixBrokerClients() {
 }
 class Broker : public IIBApiWrapper {
 public:
-    bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;
+    bool connected=false;std::uint64_t epoch=0;int executionsRequest=0,cancels=0;int connectBudgetMs=0;
     int cancelFault = 0, placeFault = 0, places = 0;
     std::string submittedTif;
     IBOrderLite submitted;IBContractLite contract;long orderId=-1;
     std::deque<IBEvent> events;
-    bool Connect(const IBConnectParams&) override {connected=true;return true;}
+    bool Connect(const IBConnectParams& p) override {connectBudgetMs=p.handshakeTimeoutMs;connected=true;return true;}
     void SetConnectionEpoch(std::uint64_t value) override {epoch=value;}
     void Disconnect() override {connected=false;}
     bool IsConnected() const override {return connected;}
@@ -425,6 +425,15 @@ void TestHostileEvidenceCannotPromoteFill() {
     f.Push(f.Execution());
     assert(f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().terminalOrderIdsByCorrelation.empty());
 }
+void TestAdapterForwardsBoundedHandshakeBudget() {
+    Broker* broker=new Broker();
+    HeptaIBGatewayAdapter adapter{std::unique_ptr<IIBApiWrapper>(broker)};
+    HeptaIBConfig cfg;cfg.account="DU123";cfg.clientId=73;cfg.readOnly=false;
+    cfg.risk.enableOrderSubmission=true;cfg.risk.maxDailyOrders=100;
+    cfg.risk.duplicateOrderWindowSec=0;cfg.risk.maxPriceDeviationBps=0;
+    assert(adapter.Init(cfg));assert(adapter.Connect(2500));
+    assert(broker->connectBudgetMs==2500);adapter.Disconnect();
+}
 void TestReconnectAndIncompleteBootstrap() {
     Fixture f;f.Place();const auto oldExecution=f.Execution(),oldStatus=f.Status();
     f.adapter.Disconnect();assert(!f.adapter.GetAuthoritativeTerminalCorrelationSnapshot().complete);
@@ -458,6 +467,6 @@ int main() {
     TestBoundContractExtensionsAndBrokerEnrichment();TestForeignStatusCannotRetireOurPartialOrder();
     TestValidatedSyntheticFillWithoutNativeStatus();
     TestQuarantineInvalidatesRecoveryBarrier();
-    TestHostileEvidenceCannotPromoteFill();TestReconnectAndIncompleteBootstrap();
+    TestHostileEvidenceCannotPromoteFill();TestAdapterForwardsBoundedHandshakeBudget();TestReconnectAndIncompleteBootstrap();
     std::puts("ib_live_terminal_reconciliation_tests PASS");
 }

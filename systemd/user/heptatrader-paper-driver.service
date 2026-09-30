@@ -1,6 +1,6 @@
 [Unit]
 Description=HeptaTrader resident autonomous PAPER strategy driver
-Requires=heptatrader-execution.service heptatrader-gateway.service
+Wants=heptatrader-execution.service heptatrader-gateway.service
 After=heptatrader-execution.service heptatrader-gateway.service
 PartOf=heptatrader.target
 
