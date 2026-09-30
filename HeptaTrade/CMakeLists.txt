@@ -453,6 +453,7 @@ endif()
 
 add_library(hepta_ib_paper_policy STATIC
     execution/ib_paper_execution_profile.cpp
+    execution/ib_paper_fx_cash_restart_catchup.cpp
     execution/ib_paper_kill_switch.cpp
     execution/ib_paper_authoritative_flatten.cpp
     execution/ib_paper_execution_flatten_guard.cpp

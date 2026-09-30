@@ -1,4 +1,5 @@
 #include "ib_paper_execution_runtime_internal.h"
+#include "ib_paper_fx_cash_restart_catchup.h"
 
 #include <cerrno>
 #include <cmath>
@@ -369,6 +370,67 @@ bool IbPaperExecutionRuntimeComposition::LoadFxCashRestartCheckpoint(
     for (std::map<std::string, IbPaperFxCashBaseline>::const_iterator it =
              advanced.begin(); it != advanced.end(); ++it)
         m_config.fxCashBaselines[it->first] = it->second;
+    reason.clear();
+    return true;
+}
+
+bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJournal(
+    std::string& reason)
+{
+    reason.clear();
+    if (!m_config.profile.userScope) return true;
+    if (m_config.fxCashBaselines.empty() ||
+        !ValidateFxCashBaselineRecords(m_config.fxCashBaselines))
+    {
+        reason = "IB_FX_CASH_RESTART_CATCHUP_BASELINE_INVALID";
+        return false;
+    }
+
+    const std::string toolSource = std::string("agent.tool:") +
+        m_config.gatewayContextBinding.agentId;
+    const std::string brokerSource = std::string("agent:") +
+        m_config.gatewayContextBinding.agentId;
+    std::uint64_t checkpointAtMs = 0;
+    for (const auto& item : m_config.fxCashBaselines)
+        checkpointAtMs = std::max(checkpointAtMs, item.second.observedAtMs);
+    std::vector<OmsJournalEvent> events;
+    const int replayed = m_journal.Replay([&](const OmsJournalEvent& event) {
+        if (event.tsMs <= 0 ||
+            static_cast<std::uint64_t>(event.tsMs) <= checkpointAtMs)
+            return;
+        if (((event.eventType == "place_sent" ||
+              event.eventType == "flatten_sent") &&
+             event.source == toolSource) ||
+            ((event.eventType == "broker_order_accepted" ||
+              event.eventType == "broker_execution") &&
+             event.source == brokerSource))
+            events.push_back(event);
+    });
+    if (replayed < 0)
+    {
+        reason = "IB_FX_CASH_RESTART_CATCHUP_JOURNAL_INVALID";
+        return false;
+    }
+
+    IbPaperFxCashRestartCatchUpContext context;
+    context.toolSource = toolSource;
+    context.brokerSource = brokerSource;
+    context.account = m_config.gatewayContextBinding.account;
+    context.executionDomain =
+        m_config.gatewayContextBinding.executionDomain;
+    context.maxGrossPosition = m_config.profile.maxGrossPosition;
+
+    std::map<std::string, IbPaperFxCashBaseline> advanced =
+        m_config.fxCashBaselines;
+    if (!ApplyIbPaperFxCashRestartCatchUp(
+            events, context, advanced, reason))
+        return false;
+    if (!ValidateFxCashBaselineRecords(advanced))
+    {
+        reason = "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID";
+        return false;
+    }
+    m_config.fxCashBaselines.swap(advanced);
     reason.clear();
     return true;
 }

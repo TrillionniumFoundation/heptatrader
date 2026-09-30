@@ -1,5 +1,6 @@
 #include "execution/ib_paper_execution_profile.h"
 #include "execution/ib_paper_execution_runtime_config.h"
+#include "../HeptaTrade/execution/ib_paper_fx_cash_restart_catchup.h"
 
 #include <cassert>
 #include <chrono>
@@ -40,6 +41,166 @@ std::map<std::string, std::string> QualificationValues()
     values["CREDENTIALS_DIRECTORY"] =
         "/run/credentials/hepta-qualification";
     return values;
+}
+
+OmsJournalEvent CatchUpEvent(
+    const std::string& type, std::int64_t ts, long orderId,
+    const std::string& source)
+{
+    OmsJournalEvent event;
+    event.eventType = type;
+    event.tsMs = ts;
+    event.orderId = orderId;
+    event.source = source;
+    event.traceId = "session";
+    event.strategy = "agent-native";
+    event.account = "DU123";
+    event.executionDomain = "PAPER";
+    event.instrument = "EUR.USD";
+    event.side = "BUY";
+    event.qty = 25000.0;
+    event.price = 1.1;
+    return event;
+}
+
+void TestFxCashRestartCatchUpBindsReusedOrderIdToPostCheckpointSend()
+{
+    IbPaperFxCashRestartCatchUpContext context;
+    context.toolSource = "agent.tool:paper";
+    context.brokerSource = "agent:paper";
+    context.account = "DU123";
+    context.executionDomain = "PAPER";
+    context.maxGrossPosition = 25000.0;
+    std::map<std::string, IbPaperFxCashBaseline> baselines;
+    IbPaperFxCashBaseline baseline;
+    baseline.account = context.account;
+    baseline.instrument = "EUR.USD";
+    baseline.currency = "EUR";
+    baseline.baselineCashBalance = -100000.0;
+    baseline.observedCashBalance = -125000.0;
+    baseline.campaignExecutionDelta = -25000.0;
+    baseline.observedAtMs = 1000;
+    baseline.proof = "sha256:" + std::string(64, 'a');
+    baselines[baseline.instrument] = baseline;
+
+    std::vector<OmsJournalEvent> events;
+    // Same numeric IB order id from an older generation: the checkpoint
+    // watermark must make these irrelevant to the new command.
+    OmsJournalEvent oldAccepted =
+        CatchUpEvent("broker_order_accepted", 900, 101, context.brokerSource);
+    oldAccepted.brokerServiceEpoch = "old-service";
+    oldAccepted.brokerConnectionEpoch = 1;
+    events.push_back(oldAccepted);
+    OmsJournalEvent oldExecution =
+        CatchUpEvent("broker_execution", 950, 101, context.brokerSource);
+    oldExecution.side = "BOT";
+    oldExecution.brokerServiceEpoch = "old-service";
+    oldExecution.brokerConnectionEpoch = 1;
+    oldExecution.brokerExecutionId = "old-exec";
+    events.push_back(oldExecution);
+
+    OmsJournalEvent accepted =
+        CatchUpEvent("broker_order_accepted", 1999, 101, context.brokerSource);
+    accepted.brokerServiceEpoch = "new-service";
+    accepted.brokerConnectionEpoch = 3;
+    events.push_back(accepted);
+    OmsJournalEvent sent =
+        CatchUpEvent("flatten_sent", 2000, 101, context.toolSource);
+    sent.venueCorrelationId = "hepta-v1-sha256:new";
+    events.push_back(sent);
+    OmsJournalEvent partial =
+        CatchUpEvent("broker_execution", 2050, 101, context.brokerSource);
+    partial.side = "BOT";
+    partial.qty = 10000.0;
+    partial.brokerServiceEpoch = "new-service";
+    partial.brokerConnectionEpoch = 3;
+    partial.brokerExecutionId = "new-exec-partial";
+    events.push_back(partial);
+    OmsJournalEvent terminal = partial;
+    terminal.tsMs = 2100;
+    terminal.qty = 25000.0; // IB execDetails carries cumulative quantity.
+    terminal.brokerExecutionId = "new-exec-terminal";
+    events.push_back(terminal);
+    // A completed-order refresh from a later process may replay the old
+    // execution with the reused order id. Different service identity must
+    // make it non-authoritative for this send.
+    OmsJournalEvent replayedOld = terminal;
+    replayedOld.tsMs = 2200;
+    replayedOld.brokerServiceEpoch = "later-service";
+    replayedOld.brokerConnectionEpoch = 1;
+    replayedOld.brokerExecutionId = "old-exec";
+    events.push_back(replayedOld);
+
+    std::string reason;
+    assert(ApplyIbPaperFxCashRestartCatchUp(
+        events, context, baselines, reason));
+    assert(reason.empty());
+    assert(baselines["EUR.USD"].campaignExecutionDelta == 0.0);
+    assert(baselines["EUR.USD"].observedCashBalance == -100000.0);
+    assert(baselines["EUR.USD"].observedAtMs == 2100);
+}
+
+void TestFxCashRestartCatchUpFailsClosedOnAmbiguousOrIncompleteEvidence()
+{
+    IbPaperFxCashRestartCatchUpContext context;
+    context.toolSource = "agent.tool:paper";
+    context.brokerSource = "agent:paper";
+    context.account = "DU123";
+    context.executionDomain = "PAPER";
+    context.maxGrossPosition = 25000.0;
+    auto makeBaseline = [&]() {
+        std::map<std::string, IbPaperFxCashBaseline> result;
+        IbPaperFxCashBaseline baseline;
+        baseline.account = context.account;
+        baseline.instrument = "EUR.USD";
+        baseline.currency = "EUR";
+        baseline.baselineCashBalance = -100000.0;
+        baseline.observedCashBalance = -125000.0;
+        baseline.campaignExecutionDelta = -25000.0;
+        baseline.observedAtMs = 1000;
+        baseline.proof = "sha256:" + std::string(64, 'a');
+        result[baseline.instrument] = baseline;
+        return result;
+    };
+
+    OmsJournalEvent sent =
+        CatchUpEvent("flatten_sent", 7000, 101, context.toolSource);
+    sent.venueCorrelationId = "corr-new";
+    OmsJournalEvent oldAccepted =
+        CatchUpEvent("broker_order_accepted", 1500, 101, context.brokerSource);
+    oldAccepted.brokerServiceEpoch = "old-service";
+    oldAccepted.brokerConnectionEpoch = 1;
+    OmsJournalEvent accepted =
+        CatchUpEvent("broker_order_accepted", 6999, 101, context.brokerSource);
+    accepted.brokerServiceEpoch = "new-service";
+    accepted.brokerConnectionEpoch = 2;
+    OmsJournalEvent terminal =
+        CatchUpEvent("broker_execution", 7100, 101, context.brokerSource);
+    terminal.side = "BOT";
+    terminal.brokerServiceEpoch = "new-service";
+    terminal.brokerConnectionEpoch = 2;
+    terminal.brokerExecutionId = "exec-new";
+    terminal.venueCorrelationId = "corr-new";
+
+    std::string reason;
+    auto baselines = makeBaseline();
+    assert(!ApplyIbPaperFxCashRestartCatchUp(
+        {oldAccepted, accepted, sent, terminal}, context, baselines, reason));
+    assert(reason == "IB_FX_CASH_RESTART_CATCHUP_ACCEPTANCE_INVALID");
+
+    baselines = makeBaseline();
+    OmsJournalEvent wrongCorrelation = terminal;
+    wrongCorrelation.venueCorrelationId = "corr-other";
+    assert(!ApplyIbPaperFxCashRestartCatchUp(
+        {accepted, sent, wrongCorrelation}, context, baselines, reason));
+    assert(reason == "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID");
+
+    baselines = makeBaseline();
+    OmsJournalEvent partial = terminal;
+    partial.qty = 10000.0;
+    assert(!ApplyIbPaperFxCashRestartCatchUp(
+        {accepted, sent, partial}, context, baselines, reason));
+    assert(reason == "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID");
 }
 
 void TestRuntimeColdConnectBudgetDefaultsFailClosed()
@@ -545,6 +706,8 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 
 int main()
 {
+    TestFxCashRestartCatchUpBindsReusedOrderIdToPostCheckpointSend();
+    TestFxCashRestartCatchUpFailsClosedOnAmbiguousOrIncompleteEvidence();
     TestRuntimeColdConnectBudgetDefaultsFailClosed();
     TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();

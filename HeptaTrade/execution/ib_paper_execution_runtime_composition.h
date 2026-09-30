@@ -110,6 +110,7 @@ private:
     bool ValidateFxCashBaselineRecords(
         const std::map<std::string, IbPaperFxCashBaseline>& records) const;
     bool LoadFxCashRestartCheckpoint(std::string& reason);
+    bool CatchUpFxCashRestartCheckpointFromJournal(std::string& reason);
     bool PersistFxCashRestartCheckpoint(std::string& reason);
     bool LoadPaperTerminalLatch(std::string& reason);
     bool PersistPaperTerminalizingLatch(

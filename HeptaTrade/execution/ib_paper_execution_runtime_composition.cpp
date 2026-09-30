@@ -455,6 +455,12 @@ bool IbPaperExecutionRuntimeComposition::PrepareExecutionFoundation(
     ::setenv("HEPTA_OMS_FLUSH_INTERVAL_MS", "0", 1);
     if (!m_journal.Init(m_config.journalPath))
     { reason = "IB_PAPER_OMS_INIT_FAILED"; CloseUnconsumedListenFds(); return false; }
+    // A process can crash after a durable routed execDetails callback but before
+    // the post-fill risk refresh persists the next HFXR1 checkpoint. Catch up
+    // only the exact user-owned durable fills; the Broker startup attestation
+    // still has to match this derived expectation before any authority is ready.
+    if (!CatchUpFxCashRestartCheckpointFromJournal(reason))
+    { CloseUnconsumedListenFds(); return false; }
     if (!RebuildRecentBrokerOrders(reason))
     { CloseUnconsumedListenFds(); return false; }
     NotifyTestStage("execution_foundation_ready");

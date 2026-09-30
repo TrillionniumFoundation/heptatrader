@@ -1,5 +1,6 @@
 #include "ib_paper_execution_runtime_internal.h"
 #include "../adapter_ib/ib_market_data_farm.h"
+#include "../adapter_ib/ib_venue_correlation.h"
 
 #include <algorithm>
 #include <chrono>
@@ -675,6 +676,19 @@ bool IbPaperExecutionRuntimeComposition::PersistBrokerCallback(
     record.brokerMarketCapPrice = event.marketCapPrice;
     record.brokerAdvancedOrderRejectJson =
         event.advancedOrderRejectJson;
+    if (!event.order.orderRef.empty())
+    {
+        std::string correlationReason;
+        if (!IbVenueCorrelationCodec::DecodeOrderRef(
+                event.order.orderRef, record.venueCorrelationId,
+                correlationReason) &&
+            event.order.orderRef.compare(0, 2, "H1") == 0)
+        {
+            MarkFatalRuntimeError(correlationReason.empty() ?
+                "IB_VENUE_CORRELATION_DECODE_FAILED" : correlationReason);
+            return false;
+        }
+    }
 
     if (event.type == IBEventType::OrderStatus)
     {

@@ -53,6 +53,18 @@ account cash. Existing live state must not be overwritten to make startup pass.
 The user is responsible for keeping the selected account free of conflicting
 external operations; drift continues to fail the existing reconciliation checks.
 
+The execution-owned HFXR1 restart checkpoint is advanced only after a durable
+post-checkpoint fill chain proves that the Broker changed CASH exposure after the
+last persisted observation. Recovery binds the durable native send to the local
+Broker acceptance and terminal cumulative execDetails using owner scope,
+instrument, venue correlation when present, Execution service epoch and Broker
+connection epoch. Numeric IB order IDs are explicitly not identities: they may be
+reused after reconnect, so pre-checkpoint acceptances and later execution replays
+from another service epoch cannot advance the checkpoint. The derived expectation
+is still checked against the fresh Broker account attestation before Execution
+becomes ready. Ambiguous, partial-only, over-limit or mismatched evidence fails
+closed; startup never edits a balance merely to satisfy attestation.
+
 ## Normal commands and model selection
 
 The `heptatrader-user` command provides `start`, `restart`, `stop`, `status` and
