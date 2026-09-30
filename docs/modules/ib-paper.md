@@ -228,3 +228,21 @@ and `recent_orders_truncated` distinguish a bounded view from complete history.
 The authoritative active-order snapshot is separate; no ledger bytes or command
 records are removed when the display is truncated. Pending reconciliation never
 falls back to a same-number row if its exact command is absent from this view.
+
+## FX restart catch-up: accepted is not filled
+
+The checkpoint catch-up evaluator classifies the original order lifecycle; the
+runtime supplies all post-checkpoint owner/source-matched records instead of
+filtering out cancellation callbacks. A transport-accepted order with a durable
+zero-fill `Cancelled` or `ApiCancelled` orderStatus has zero currency delta. This
+requires the exact original command and correlation, session/account/domain,
+client, service/connection epoch, direction and instrument, and zero cumulative
+filled quantity/price. The remainder may be the original unfilled size or zero.
+The acceptance and cancellation must agree on the original command/client.
+
+An error code (including 10328), missing callbacks, PendingCancel, a same-number
+historical order, a partial fill, or contradictory execution/orderStatus evidence
+cannot substitute for that proof. Ambiguous input fails without modifying any
+baseline. A cancellation does not advance the observed-cash watermark, invent
+a fill, or add PnL. The existing current Broker account/position/cash attestation
+still gates startup and mutation readiness after journal catch-up.

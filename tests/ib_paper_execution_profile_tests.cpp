@@ -12,6 +12,7 @@
 #include <iostream>
 #include <map>
 #include <memory>
+#include <limits>
 #include <string>
 
 namespace
@@ -201,6 +202,112 @@ void TestFxCashRestartCatchUpFailsClosedOnAmbiguousOrIncompleteEvidence()
     assert(!ApplyIbPaperFxCashRestartCatchUp(
         {accepted, sent, partial}, context, baselines, reason));
     assert(reason == "IB_FX_CASH_RESTART_CATCHUP_EXECUTION_INVALID");
+}
+
+void TestFxCashRestartCatchUpZeroFillApiCancellation()
+{
+    IbPaperFxCashRestartCatchUpContext context;
+    context.toolSource="agent.tool:paper";context.brokerSource="agent:paper";
+    context.account="DU123";context.executionDomain="PAPER";context.maxGrossPosition=25000;
+    context.brokerClientId=701;
+    std::map<std::string,IbPaperFxCashBaseline> baselines;
+    IbPaperFxCashBaseline baseline;
+    baseline.account=context.account;baseline.instrument="EUR.USD";baseline.currency="EUR";
+    baseline.baselineCashBalance=100000;baseline.observedCashBalance=100000;
+    baseline.campaignExecutionDelta=0;baseline.observedAtMs=1000;
+    baseline.proof="sha256:"+std::string(64,'a');baselines[baseline.instrument]=baseline;
+    auto accepted=CatchUpEvent("broker_order_accepted",2000,103,context.brokerSource);
+    accepted.reqId="original-cancelled-request";accepted.side="SELL";
+    accepted.brokerServiceEpoch="service-A";accepted.brokerConnectionEpoch=3;accepted.brokerClientId=701;
+    auto sent=CatchUpEvent("place_sent",2000,103,context.toolSource);
+    sent.reqId=accepted.reqId;sent.side="SELL";
+    sent.venueCorrelationId="hepta-v1-sha256:"+std::string(64,'c');
+    auto cancelled=accepted;cancelled.eventType="broker_order_status";cancelled.tsMs=3000;
+    cancelled.brokerCallbackType="orderStatus";cancelled.status="ApiCancelled";
+    cancelled.qty=0;cancelled.price=0;cancelled.brokerRemainingQuantity=25000;
+    cancelled.venueCorrelationId=sent.venueCorrelationId;
+    std::string reason;
+    assert(ApplyIbPaperFxCashRestartCatchUp({accepted,sent,cancelled},context,baselines,reason));
+    assert(reason.empty());
+    assert(baselines.at("EUR.USD").campaignExecutionDelta==0);
+    assert(baselines.at("EUR.USD").observedCashBalance==100000);
+    // A cancellation is not a new cash observation or an economic fill.
+    assert(baselines.at("EUR.USD").observedAtMs==1000);
+    const auto original=baselines;
+    // Duplicate receipt and whole-journal replay are idempotent.
+    for (const std::string status : {"Cancelled","ApiCancelled"})
+    {
+        auto duplicate=cancelled;duplicate.status=status;duplicate.brokerRemainingQuantity=0;
+        assert(ApplyIbPaperFxCashRestartCatchUp({accepted,sent,duplicate,duplicate},context,baselines,reason));
+        assert(baselines.at("EUR.USD").observedCashBalance==100000);
+        assert(baselines.at("EUR.USD").observedAtMs==1000);
+    }
+    auto reject=[&](const std::vector<OmsJournalEvent>& input) {
+        auto state=original;
+        assert(!ApplyIbPaperFxCashRestartCatchUp(input,context,state,reason));
+        assert(!reason.empty());
+        assert(state.at("EUR.USD").observedCashBalance==100000);
+        assert(state.at("EUR.USD").campaignExecutionDelta==0);
+        assert(state.at("EUR.USD").observedAtMs==1000);
+    };
+    reject({accepted,sent}); // unknown is not cancellation
+    for (int variant=0;variant<24;++variant)
+    {
+        auto bad=cancelled;
+        switch (variant) {
+        case 0: bad.reqId="other-command";break;
+        case 1: bad.reqId.clear();break;
+        case 2: bad.venueCorrelationId="other-correlation";break;
+        case 3: bad.venueCorrelationId.clear();break;
+        case 4: bad.orderId=104;break;
+        case 5: bad.traceId="other-session";break;
+        case 6: bad.account="DU999";break;
+        case 7: bad.executionDomain="LIVE";break;
+        case 8: bad.instrument="GBP.USD";break;
+        case 9: bad.side="BUY";break;
+        case 10: bad.brokerServiceEpoch="other-service";break;
+        case 11: bad.brokerConnectionEpoch=4;break;
+        case 12: bad.brokerClientId=702;break;
+        case 13: bad.brokerClientId=-1;break;
+        case 14: bad.brokerCallbackType.clear();break;
+        case 15: bad.tsMs=1999;break;
+        case 16: bad.qty=1;break;
+        case 17: bad.price=1.1;break;
+        case 18: bad.brokerRemainingQuantity=10000;break;
+        case 19: bad.brokerExecutionId="unexpected-execution";break;
+        case 20: bad.status="PendingCancel";break;
+        case 21: bad.status="Inactive";break;
+        case 22: bad.eventType="broker_error";bad.brokerErrorCode=10328;break;
+        case 23: bad.qty=std::numeric_limits<double>::quiet_NaN();break;
+        }
+        reject({accepted,sent,bad});
+    }
+    // Partial fill + cancellation must not be turned into a zero movement.
+    auto partial=cancelled;partial.eventType="broker_execution";
+    partial.brokerExecutionId="partial-exec";partial.side="SLD";
+    partial.qty=10000;partial.price=1.1328;partial.tsMs=2500;
+    reject({accepted,sent,partial,cancelled});
+    auto full=partial;full.qty=25000;full.brokerExecutionId="full-exec";
+    reject({accepted,sent,full,cancelled});
+    partial.brokerServiceEpoch="reconnected-service";partial.brokerConnectionEpoch=9;
+    reject({accepted,sent,partial,cancelled});
+    auto partialStatus=cancelled;partialStatus.status="Submitted";
+    partialStatus.qty=10000;partialStatus.price=1.1328;partialStatus.tsMs=2500;
+    reject({accepted,sent,partialStatus,cancelled});
+    // Same number from BEFORE the checkpoint is not this cancelled lifetime.
+    auto historical=partial;historical.tsMs=900;historical.reqId="old-command";
+    historical.venueCorrelationId="old-correlation";
+    assert(ApplyIbPaperFxCashRestartCatchUp({historical,accepted,sent,cancelled},context,baselines,reason));
+    assert(baselines.at("EUR.USD").observedCashBalance==100000);
+    // Independent filled and non-filled commands compose without phantom cash.
+    auto fillAccepted=accepted;fillAccepted.orderId=104;fillAccepted.tsMs=4000;fillAccepted.reqId="filled-request";
+    auto fillSent=sent;fillSent.orderId=104;fillSent.tsMs=4000;fillSent.reqId="filled-request";
+    fillSent.venueCorrelationId="filled-correlation";
+    auto fill=full;fill.orderId=104;fill.tsMs=4100;fill.reqId=fillSent.reqId;fill.venueCorrelationId=fillSent.venueCorrelationId;
+    assert(ApplyIbPaperFxCashRestartCatchUp({accepted,sent,cancelled,fillAccepted,fillSent,fill},context,baselines,reason));
+    assert(baselines.at("EUR.USD").campaignExecutionDelta==-25000);
+    assert(baselines.at("EUR.USD").observedCashBalance==75000);
+    assert(baselines.at("EUR.USD").observedAtMs==4100);
 }
 
 void TestRuntimeColdConnectBudgetDefaultsFailClosed()
@@ -706,6 +813,7 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 
 int main()
 {
+    TestFxCashRestartCatchUpZeroFillApiCancellation();
     TestFxCashRestartCatchUpBindsReusedOrderIdToPostCheckpointSend();
     TestFxCashRestartCatchUpFailsClosedOnAmbiguousOrIncompleteEvidence();
     TestRuntimeColdConnectBudgetDefaultsFailClosed();

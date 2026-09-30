@@ -120,7 +120,12 @@ def recent_fill(orders,pending,expected_side):
 
 def terminal_nonfill(orders,pending,expected_side):
     rows=matching_command_rows(orders,pending,expected_side)
-    return len(rows)==1 and rows[0].get("terminal") is True and rows[0].get("economic_fill") is False
+    if len(rows)!=1: return False
+    row=rows[0]
+    return (row.get("terminal") is True and row.get("economic_fill") is False and
+        row.get("broker_execution_ambiguous") is False and not row.get("broker_execution_id") and
+        row.get("filled_quantity")==0 and row.get("average_fill_price")==0 and
+        row.get("status") in {"Cancelled","ApiCancelled","Rejected","Inactive"})
 
 def paper_cmd(binary,socket,token,outbox,op,extra):
     p=run([binary,op,"--socket",socket,"--token-file",token,"--directory",outbox,*extra],20)
@@ -206,7 +211,9 @@ def inspect_pending(state,path,binary,socket,token,outbox,snap):
         state["position"]=pos; state["pending"]=None; state["halt_new_entries"]=True
         state["risk_halt_reason"]="PARTIAL_FLATTEN"
         state["last_error"]="partial flatten terminal; remaining exposure requires next exact reduce-only flatten"
-    elif (payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],p,expected_side)) and not active:
+    elif ((payload.get("command_status")=="rejected" or terminal_nonfill(snap["orders"],p,expected_side)) and
+          not active and math.isfinite(pos) and
+          abs(pos-float(state.get("position",0.0)))<1e-9):
         state["pending"]=None; state["last_error"]="terminal non-fill: "+str(payload.get("reason_code",""))
     else:
         state["last_error"]="original command awaiting correlation-bound Broker reconciliation"

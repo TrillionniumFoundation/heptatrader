@@ -398,12 +398,10 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
         if (event.tsMs <= 0 ||
             static_cast<std::uint64_t>(event.tsMs) <= checkpointAtMs)
             return;
-        if (((event.eventType == "place_sent" ||
-              event.eventType == "flatten_sent") &&
-             event.source == toolSource) ||
-            ((event.eventType == "broker_order_accepted" ||
-              event.eventType == "broker_execution") &&
-             event.source == brokerSource))
+        // The catch-up evaluator is the single owner of lifecycle evidence
+        // classification. Do not hide cancellation records behind a second,
+        // fill-only filter before the evaluator can inspect them.
+        if (event.source == toolSource || event.source == brokerSource)
             events.push_back(event);
     });
     if (replayed < 0)
@@ -419,6 +417,7 @@ bool IbPaperExecutionRuntimeComposition::CatchUpFxCashRestartCheckpointFromJourn
     context.executionDomain =
         m_config.gatewayContextBinding.executionDomain;
     context.maxGrossPosition = m_config.profile.maxGrossPosition;
+    context.brokerClientId = m_config.profile.clientId;
 
     std::map<std::string, IbPaperFxCashBaseline> advanced =
         m_config.fxCashBaselines;

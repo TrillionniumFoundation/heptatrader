@@ -14,6 +14,7 @@ struct IbPaperFxCashRestartCatchUpContext
     std::string account;
     std::string executionDomain;
     double maxGrossPosition = 0.0;
+    int brokerClientId = -1; // required for zero-fill terminal evidence
 };
 
 bool ApplyIbPaperFxCashRestartCatchUp(

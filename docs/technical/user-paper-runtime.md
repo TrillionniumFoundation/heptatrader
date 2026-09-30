@@ -187,3 +187,13 @@ Opening position adoption and realized-PnL settlement require that matched fill
 evidence. Missing or ambiguous evidence remains pending with a diagnostic rather
 than being labeled flat, filled, or profitable from the cached driver position.
 Physical Broker position/active-order snapshots remain authoritative for exposure.
+
+### Cancelled pending request after reconnect
+
+The original HSR1 request is inspected, never re-submitted to resolve a cancelled
+order. A zero-fill terminal row must bind its original command/correlation and
+direction and contain no ambiguous or economic execution evidence. Pending may
+be cleared only after active orders are complete/empty and the authoritative
+position has not changed from the already-accounted position. Entry/exit counts
+and realized PnL are unchanged for that cancelled attempt. A nonzero unexpected
+position or partial fill must remain under reconciliation, not be called flat.

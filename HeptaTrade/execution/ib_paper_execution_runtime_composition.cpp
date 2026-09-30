@@ -457,8 +457,9 @@ bool IbPaperExecutionRuntimeComposition::PrepareExecutionFoundation(
     { reason = "IB_PAPER_OMS_INIT_FAILED"; CloseUnconsumedListenFds(); return false; }
     // A process can crash after a durable routed execDetails callback but before
     // the post-fill risk refresh persists the next HFXR1 checkpoint. Catch up
-    // only the exact user-owned durable fills; the Broker startup attestation
-    // still has to match this derived expectation before any authority is ready.
+    // exact user-owned durable outcomes: fills move cash, proven zero-fill
+    // cancellations do not. The Broker startup attestation must still match
+    // this derived expectation before any authority is ready.
     if (!CatchUpFxCashRestartCheckpointFromJournal(reason))
     { CloseUnconsumedListenFds(); return false; }
     if (!RebuildRecentBrokerOrders(reason))

@@ -140,6 +140,50 @@ class DriverPolicyTests(unittest.TestCase):
         self.assertEqual(state["entries"],0)
         self.assertEqual(state["gross_pnl"],0)
 
+    def test_exact_zero_fill_cancellation_only_clears_original_pending(self):
+        from unittest.mock import patch
+        state=self.state();state.update(entries=8,exits=8,closed_trades=8,gross_pnl=103.75)
+        command="cancelled-original-command"
+        state["pending"]={"kind":"OPEN","command_id":command,"broker_order_id":103,"side":"SELL"}
+        row=matched_fill(103,command,"SELL",0,0)
+        row.update(status="ApiCancelled",economic_fill=False,broker_execution_id="",broker_execution_ambiguous=False)
+        result={"ok":True,"result":{"payload":{"authoritative":True,"command_id":command,
+            "command_status":"accepted","order_id":103}}}
+        snap={"position":0.0,"active":[],"orders":{"recent_orders":[row]}}
+        with patch.object(d,"paper_cmd",return_value=result) as cmd,patch.object(d,"atomic_json"):
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",snap)
+            self.assertEqual(cmd.call_count,1)
+            self.assertEqual(cmd.call_args.args[4],"inspect")
+        self.assertIsNone(state["pending"])
+        self.assertEqual((state["entries"],state["exits"],state["closed_trades"]),(8,8,8))
+        self.assertEqual(state["gross_pnl"],103.75)
+        self.assertEqual(state["position"],0.0)
+
+    def test_zero_fill_cancellation_cannot_hide_an_unaccounted_position(self):
+        from unittest.mock import patch
+        state=self.state();command="cancelled-original-command"
+        state["pending"]={"kind":"OPEN","command_id":command,"broker_order_id":103,"side":"SELL"}
+        row=matched_fill(103,command,"SELL",0,0)
+        row.update(status="ApiCancelled",economic_fill=False,broker_execution_id="",broker_execution_ambiguous=False)
+        result={"ok":True,"result":{"payload":{"authoritative":True,"command_id":command,
+            "command_status":"accepted","order_id":103}}}
+        with patch.object(d,"paper_cmd",return_value=result),patch.object(d,"atomic_json"):
+            d.inspect_pending(state,Path("/unused"),"b","s","t","o",
+                {"position":-10000.0,"active":[],"orders":{"recent_orders":[row]}})
+        self.assertEqual(state["pending"]["command_id"],command)
+        self.assertEqual(state["entries"],0)
+        self.assertEqual(state["gross_pnl"],0)
+
+    def test_partial_or_ambiguous_terminal_row_is_not_zero_fill(self):
+        pending={"command_id":"x","broker_order_id":103}
+        row=matched_fill(103,"x","SELL",0,0)
+        row.update(status="ApiCancelled",economic_fill=False,broker_execution_id="",broker_execution_ambiguous=False)
+        self.assertTrue(d.terminal_nonfill({"recent_orders":[row]},pending,"SELL"))
+        for key,value in (("filled_quantity",1),("average_fill_price",1.1),("broker_execution_id","some-fill"),
+                          ("broker_execution_ambiguous",True),("status","PendingCancel")):
+            modified=dict(row);modified[key]=value
+            self.assertFalse(d.terminal_nonfill({"recent_orders":[modified]},pending,"SELL"))
+
     def test_model_worker_is_asynchronous_and_preserves_snapshot_identity(self):
         old=d.model_decision
         gate=__import__("threading").Event()
