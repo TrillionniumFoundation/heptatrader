@@ -326,7 +326,8 @@ private:
         const IbPlaceOrderCommand& command, long orderId,
         std::string& reason);
     std::string RecentBrokerOrdersJson(
-        const AgentExecutionContext& context) const;
+        const AgentExecutionContext& context, std::size_t* totalRows = nullptr,
+        std::size_t* returnedRows = nullptr) const;
     std::string OwnedOrdersJson(
         const AgentExecutionContext& context,
         const IBAuthoritativeCorrelationSnapshot& orders) const;

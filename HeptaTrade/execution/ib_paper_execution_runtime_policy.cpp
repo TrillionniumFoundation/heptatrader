@@ -208,7 +208,12 @@ std::string IbPaperExecutionRuntimeComposition::OwnedOrdersJson(const AgentExecu
         { if (count != 0) output << ','; output << *it; }
         output << ']';
     }
-    output << ",\"recent_orders\":" << RecentBrokerOrdersJson(context) << '}';
+    std::size_t totalRecent = 0, returnedRecent = 0;
+    const std::string recent = RecentBrokerOrdersJson(context, &totalRecent, &returnedRecent);
+    output << ",\"recent_orders\":" << recent
+           << ",\"recent_orders_total\":" << totalRecent
+           << ",\"recent_orders_returned\":" << returnedRecent
+           << ",\"recent_orders_truncated\":" << (returnedRecent < totalRecent ? "true" : "false") << '}';
     return output.str();
 }
 ExecutionCommandResult IbPaperExecutionRuntimeComposition::PolicyAuthoritativeRead(const ExecutionReadCommand& command) const

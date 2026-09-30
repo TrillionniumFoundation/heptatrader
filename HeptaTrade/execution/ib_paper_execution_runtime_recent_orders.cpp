@@ -189,7 +189,8 @@ void IbPaperExecutionRuntimeComposition::TrimRecentBrokerOrders()
 }
 
 std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
-    const AgentExecutionContext& context) const
+    const AgentExecutionContext& context, std::size_t* totalRows,
+    std::size_t* returnedRows) const
 {
     std::vector<RecentBrokerOrder> matching;
     {
@@ -197,7 +198,7 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
         for (std::map<std::string, RecentBrokerOrder>::const_iterator it =
                  m_recentBrokerOrders.begin();
              it != m_recentBrokerOrders.end(); ++it)
-            if (it->second.agentId == context.agentId &&
+            if (it->second.orderId >= 0 && it->second.agentId == context.agentId &&
                 it->second.sessionId == context.sessionId &&
                 it->second.executionDomain == context.executionDomain)
                 matching.push_back(it->second);
@@ -208,12 +209,16 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                 return left.observedAtMs > right.observedAtMs;
             return left.orderId > right.orderId;
         });
-    std::ostringstream output;
-    output.precision(17);
-    output << '[';
+    // HEX control/result framing is capped at 32768 bytes. Reserve space for
+    // active-order/owner metadata and framing instead of overflowing the client.
+    const std::size_t recentByteBudget = 24576;
+    std::string result("[");
+    std::size_t returned = 0;
+    if (totalRows) *totalRows = matching.size();
     for (std::size_t i = 0; i < matching.size() && i < 64; ++i)
     {
-        if (i != 0) output << ',';
+        std::ostringstream output;
+        output.precision(17);
         const RecentBrokerOrder& order = matching[i];
         output << "{\"order_id\":" << order.orderId
                << ",\"status\":\"" << EscapeJson(order.status) << "\""
@@ -247,7 +252,14 @@ std::string IbPaperExecutionRuntimeComposition::RecentBrokerOrdersJson(
                << EscapeJson(order.executionDomain) << "\""
                << ",\"instrument\":\"" << EscapeJson(order.instrument)
                << "\",\"side\":\"" << EscapeJson(order.side) << "\"}";
+        const std::string row = output.str();
+        if (result.size() + row.size() + (returned ? 1 : 0) + 1 > recentByteBudget)
+            break;
+        if (returned) result += ',';
+        result += row;
+        ++returned;
     }
-    output << ']';
-    return output.str();
+    result += ']';
+    if (returnedRows) *returnedRows = returned;
+    return result;
 }

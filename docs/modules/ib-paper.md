@@ -221,3 +221,10 @@ Recent order rows are keyed by owner scope and correlation, and expose original
 observation epochs. Replay recovers command bindings from the original OMS
 intent/receipt, without rewriting historical records. Missing/ambiguous execution
 evidence is not permission to invent a fill price.
+
+The recent-order display is additionally limited to 24 KiB inside the existing
+32 KiB Execution reply envelope. `recent_orders_total`, `recent_orders_returned`
+and `recent_orders_truncated` distinguish a bounded view from complete history.
+The authoritative active-order snapshot is separate; no ledger bytes or command
+records are removed when the display is truncated. Pending reconciliation never
+falls back to a same-number row if its exact command is absent from this view.
