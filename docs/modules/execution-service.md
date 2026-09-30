@@ -214,3 +214,14 @@ durable, and replay also restores the consumed-generation high-water mark. Defau
 and external profiles still cannot resume recovery-only owners; terminal/global
 mutation blocks are never removed. Legacy readers retain the recovery-only gate
 when they cannot interpret this extended release, rather than silently enabling it.
+
+
+## Gateway epoch refresh
+
+Gateway's dual-socket identity check performs one bounded in-call refresh when
+the mutation-side cached identity and the current event-service identity differ.
+The refresh happens strictly before any remote mutation dispatch. Persistent
+mutation/event identity disagreement remains
+EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH; no local authority fallback is
+permitted. Event cursors continue to require authoritative resync after an
+Execution service epoch change.

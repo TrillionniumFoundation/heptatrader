@@ -67,6 +67,17 @@ class CanonicalIbPaperProfileTests(unittest.TestCase):
             errors = profile.validate(policy_path, environment_path)
             self.assertTrue(any("gross position" in error for error in errors), errors)
 
+    def test_initial_connect_timeout_is_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            policy_path, environment_path = self.fixture(directory)
+            self.replace(
+                environment_path,
+                "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS=10000",
+                "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS=30001",
+            )
+            errors = profile.validate(policy_path, environment_path)
+            self.assertTrue(any("connect timeout" in error for error in errors), errors)
+
     def test_live_or_duplicate_profile_input_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             policy_path, environment_path = self.fixture(directory)

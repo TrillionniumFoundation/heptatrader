@@ -61,6 +61,10 @@ struct IbPaperExecutionRuntimeConfig
     std::size_t maxRequestBytes = 32768;
     int ioTimeoutMs = 3000;
     int readinessTimeoutMs = 10000;
+    // Cold start may begin before IB Gateway has opened its API listener. Keep
+    // that transport-only phase short; once connected, reconnectTimeoutMs still
+    // owns the longer upstream/farm and authoritative-snapshot recovery budget.
+    int initialConnectTimeoutMs = 10000;
     // Total wall-clock budget for a broker reconnect, including local API
     // transport retries, upstream 1101/1102 recovery, and one authoritative
     // snapshot rebuild.  This is deliberately independent of the normal

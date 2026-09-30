@@ -42,6 +42,23 @@ std::map<std::string, std::string> QualificationValues()
     return values;
 }
 
+void TestRuntimeColdConnectBudgetDefaultsFailClosed()
+{
+    IbPaperExecutionRuntimeConfig config;
+    std::string reason;
+    assert(config.initialConnectTimeoutMs == 10000);
+    config.initialConnectTimeoutMs = 9999;
+    assert(!config.Validate(reason));
+    assert(reason == "IB_PAPER_RUNTIME_DISABLED_CONFIGURATION_PRESENT");
+
+    std::map<std::string, std::string> residual;
+    residual["HEPTA_IB_EXECUTION_MODE"] = "DISABLED";
+    residual["HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS"] = "2500";
+    assert(!IbPaperExecutionRuntimeConfig::FromValues(
+        residual, static_cast<int>(::getpid()), config, reason));
+    assert(reason == "IB_PAPER_RUNTIME_DISABLED_CONFIGURATION_PRESENT");
+}
+
 void TestProductionIdentityUsesSelectedCustody()
 {
     IbPaperExecutionRuntimeConfig config;
@@ -528,6 +545,7 @@ void TestPolicyControlsDoNotWaitBehindVenueDispatch()
 
 int main()
 {
+    TestRuntimeColdConnectBudgetDefaultsFailClosed();
     TestProductionIdentityUsesSelectedCustody();
     TestUserPaperCustodyIsExplicitAndBounded();
     TestActiveUserRecoveryMarkerResumesButTerminalOwnerNeverDoes();

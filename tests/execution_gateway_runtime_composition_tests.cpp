@@ -781,11 +781,11 @@ void TestEventRestartRequiresIdentityRefreshAndReconcile()
     upstreamEvent.type = "order.after.restart";
     assert(upstream->Publish(upstreamEvent) != 0);
 
-    assert(!gateway.WaitNext(owner, oldRelayedLocalSequence, 0, received, reason));
-    assert(reason == "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH");
-    assert(source->reads.load() == 0);
-    assert(localHub.Pending(owner.executionDomain, owner.agentId, owner.sessionId,
-        oldRelayedLocalSequence) == 1);
+    ExecutionServiceIdentity refreshedIdentity;
+    assert(gateway.ProbeRemoteService(refreshedIdentity, reason));
+    assert(refreshedIdentity.serviceEpoch == secondIdentity.serviceEpoch);
+    assert(refreshedIdentity.serviceFencingGeneration ==
+        secondIdentity.serviceFencingGeneration);
 
     assert(gateway.WaitNext(owner, oldRelayedLocalSequence, 0, received, reason));
     assert(received.type == "system.execution_service_identity_changed");
@@ -897,7 +897,8 @@ void TestValidatedPairIsPinnedAcrossConcurrentRefresh()
     IbPlaceOrderCommand refreshCommand = Place(Owner("pair-race-refresh"));
     const ExecutionCommandResult splitPair = gateway.PlaceIbOrder(refreshCommand);
     assert(splitPair.status == ExecutionCommandStatus::Rejected);
-    assert(splitPair.reasonCode == "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH");
+    assert(splitPair.reasonCode == "EXECUTION_PREVIEW_PERMIT_UNKNOWN_OR_CONSUMED");
+    assert(remote.places == 0);
     refreshCommand.context.toolCallId = "pair-race-current-preview";
     refreshCommand = Previewed(gateway, refreshCommand);
     const ExecutionCommandResult current = gateway.PlaceIbOrder(refreshCommand);

@@ -234,10 +234,13 @@ bool IbPaperExecutionRuntimeComposition::StartAdapterAndBuildSnapshots(std::stri
     if (AbortStartupIfCancelled(reason)) return false;
     // One startup budget spans connect, upstream/farm warm-up, and the
     // authoritative snapshot barrier; splitting functions must not multiply it.
-    const std::chrono::steady_clock::time_point deadline =
-        std::chrono::steady_clock::now() +
+    const std::chrono::steady_clock::time_point started =
+        std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::time_point deadline = started +
         std::chrono::milliseconds(m_config.reconnectTimeoutMs);
-    if (!InitializeAdapterAndConnect(reason, deadline)) return false;
+    const std::chrono::steady_clock::time_point connectDeadline = std::min(
+        deadline, started + std::chrono::milliseconds(m_config.initialConnectTimeoutMs));
+    if (!InitializeAdapterAndConnect(reason, connectDeadline)) return false;
     if (!WaitForStartupUpstream(reason, deadline)) return false;
     if (!WaitForAuthoritativeSnapshots(reason, deadline)) {
         m_startupBrokerPhase.store(false);

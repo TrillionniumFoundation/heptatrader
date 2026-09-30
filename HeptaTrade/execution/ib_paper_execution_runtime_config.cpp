@@ -215,6 +215,7 @@ bool HasDisabledResidualConfiguration(
         "HEPTA_IB_EXECUTION_MAX_REQUEST_BYTES",
         "HEPTA_IB_EXECUTION_IO_TIMEOUT_MS",
         "HEPTA_IB_EXECUTION_READINESS_TIMEOUT_MS",
+        "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS",
         "HEPTA_IB_EXECUTION_RECONNECT_TIMEOUT_MS",
         "LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES",
         "STATE_DIRECTORY", "CREDENTIALS_DIRECTORY"
@@ -286,7 +287,7 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
             !primaryQuoteInstrument.empty() || quoteMaxAgeMs != 5000 ||
             maxRequestBytes != 32768 ||
             ioTimeoutMs != 3000 || readinessTimeoutMs != 10000 ||
-            reconnectTimeoutMs != 180000)
+            initialConnectTimeoutMs != 10000 || reconnectTimeoutMs != 180000)
         {
             reason = "IB_PAPER_RUNTIME_DISABLED_CONFIGURATION_PRESENT";
             return false;
@@ -456,6 +457,12 @@ bool IbPaperExecutionRuntimeConfig::Validate(std::string& reason) const
         reason = "IB_PAPER_READINESS_TIMEOUT_INVALID";
         return false;
     }
+    if (initialConnectTimeoutMs < 1000 || initialConnectTimeoutMs > 30000 ||
+        initialConnectTimeoutMs > reconnectTimeoutMs)
+    {
+        reason = "IB_PAPER_INITIAL_CONNECT_TIMEOUT_INVALID";
+        return false;
+    }
     if (reconnectTimeoutMs < 1000 || reconnectTimeoutMs > 300000 ||
         reconnectTimeoutMs < readinessTimeoutMs)
     {
@@ -517,6 +524,7 @@ bool IbPaperExecutionRuntimeConfig::FromEnvironment(
         "HEPTA_IB_EXECUTION_MAX_REQUEST_BYTES",
         "HEPTA_IB_EXECUTION_IO_TIMEOUT_MS",
         "HEPTA_IB_EXECUTION_READINESS_TIMEOUT_MS",
+        "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS",
         "HEPTA_IB_EXECUTION_RECONNECT_TIMEOUT_MS",
         "LISTEN_PID", "LISTEN_FDS", "LISTEN_FDNAMES",
         "STATE_DIRECTORY", "CREDENTIALS_DIRECTORY"
@@ -662,6 +670,18 @@ bool IbPaperExecutionRuntimeConfig::FromValues(
             return false;
         }
         config.readinessTimeoutMs = static_cast<int>(parsed);
+    }
+    const std::string initialConnectTimeout =
+        ReadString(values, "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS");
+    if (!initialConnectTimeout.empty())
+    {
+        std::uint64_t parsed = 0;
+        if (!ParseUnsigned(initialConnectTimeout, 30000, parsed) || parsed < 1000)
+        {
+            reason = "IB_PAPER_INITIAL_CONNECT_TIMEOUT_INVALID";
+            return false;
+        }
+        config.initialConnectTimeoutMs = static_cast<int>(parsed);
     }
     const std::string reconnectTimeout =
         ReadString(values, "HEPTA_IB_EXECUTION_RECONNECT_TIMEOUT_MS");

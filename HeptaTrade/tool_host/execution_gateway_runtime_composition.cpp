@@ -279,30 +279,42 @@ bool ExecutionGatewayRuntimeComposition::ResolveRemoteIdentity(
         reason = "EXECUTION_GATEWAY_DAEMON_IDENTITY_UNAVAILABLE";
         return false;
     }
-    ExecutionServiceIdentity mutationIdentity;
-    if (!m_executionClient->GetServiceIdentity(mutationIdentity, reason, deadline))
+    // Identity is checked before every remote operation. If Execution restarted
+    // between Gateway calls, the mutation client may still hold the old cached
+    // identity while the event socket already exposes the new one. Refresh that
+    // pair once inside this pre-dispatch boundary. No mutation has been sent yet,
+    // so this cannot duplicate an order. A persistent split pair still fails closed.
+    for (int attempt = 0; attempt < 2; ++attempt)
     {
-        return false;
-    }
-    const ExecutionEventReadResult eventIdentity = m_eventClient->GetServiceIdentity(deadline);
-    if (eventIdentity.status != ExecutionEventReadStatus::ServiceIdentity ||
-        !ValidIdentity(eventIdentity.serviceIdentity))
-    {
-        reason = eventIdentity.reasonCode.empty() ?
-            "EXECUTION_GATEWAY_EVENT_IDENTITY_INVALID" : eventIdentity.reasonCode;
-        return false;
-    }
-    if (!SameIdentity(mutationIdentity, eventIdentity.serviceIdentity))
-    {
-        // Compare-and-invalidate only the pair observed by this call. A
-        // concurrent thread may already have installed the next identity.
+        ExecutionServiceIdentity mutationIdentity;
+        if (!m_executionClient->GetServiceIdentity(mutationIdentity, reason, deadline))
+            return false;
+        const ExecutionEventReadResult eventIdentity =
+            m_eventClient->GetServiceIdentity(deadline);
+        if (eventIdentity.status != ExecutionEventReadStatus::ServiceIdentity ||
+            !ValidIdentity(eventIdentity.serviceIdentity))
+        {
+            reason = eventIdentity.reasonCode.empty() ?
+                "EXECUTION_GATEWAY_EVENT_IDENTITY_INVALID" : eventIdentity.reasonCode;
+            return false;
+        }
+        if (SameIdentity(mutationIdentity, eventIdentity.serviceIdentity))
+        {
+            identity = mutationIdentity;
+            reason.clear();
+            return true;
+        }
         m_executionClient->InvalidateServiceIdentity(mutationIdentity);
+        if (attempt == 0)
+        {
+            NotifyTestStage("remote_identity_pair_refresh");
+            continue;
+        }
         reason = "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH";
         return false;
     }
-    identity = mutationIdentity;
-    reason.clear();
-    return true;
+    reason = "EXECUTION_GATEWAY_DAEMON_IDENTITY_MISMATCH";
+    return false;
 }
 
 void ExecutionGatewayRuntimeComposition::InvalidateRemoteIdentity(

@@ -32,6 +32,7 @@ REQUIRED_KEYS = {
     "HEPTA_IB_EXECUTION_MAX_REQUEST_BYTES",
     "HEPTA_IB_EXECUTION_IO_TIMEOUT_MS",
     "HEPTA_IB_EXECUTION_READINESS_TIMEOUT_MS",
+    "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS",
     "HEPTA_IB_EXECUTION_RECONNECT_TIMEOUT_MS",
 }
 
@@ -195,7 +196,14 @@ def validate(
         positive_integer(values, "HEPTA_IB_EXECUTION_MAX_REQUEST_BYTES")
         positive_integer(values, "HEPTA_IB_EXECUTION_IO_TIMEOUT_MS")
         positive_integer(values, "HEPTA_IB_EXECUTION_READINESS_TIMEOUT_MS")
-        positive_integer(values, "HEPTA_IB_EXECUTION_RECONNECT_TIMEOUT_MS")
+        initial_connect = positive_integer(
+            values, "HEPTA_IB_EXECUTION_INITIAL_CONNECT_TIMEOUT_MS"
+        )
+        reconnect = positive_integer(values, "HEPTA_IB_EXECUTION_RECONNECT_TIMEOUT_MS")
+        if initial_connect > 30000:
+            raise ProfileError("initial IB connect timeout exceeds 30-second boundary")
+        if initial_connect > reconnect:
+            raise ProfileError("initial IB connect timeout exceeds reconnect timeout")
         contracts = split_contracts(values["HEPTA_IB_PAPER_QUOTE_CONTRACTS"])
         if len(contracts) > policy["maximum_quote_contracts"]:
             raise ProfileError("quote contract count exceeds policy")

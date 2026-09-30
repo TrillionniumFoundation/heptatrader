@@ -141,3 +141,22 @@ rejected; flags alone cannot establish an Execution release.
 
 The user Execution service backs off for 30 seconds after startup failure so an
 upstream market-data/session fault remains fail-closed without hammering IB Gateway.
+
+
+### Reboot and Execution epoch recovery
+
+A cold user-session boot uses a separate 10-second initial IB API-listener
+connect budget. Failure remains fail-closed and returns to the service manager;
+the 180-second reconnect budget is retained for a transport that connected and
+is waiting for IB upstream/farm recovery or authoritative snapshot rebuilding.
+This prevents an unavailable local IB listener from consuming the full long
+recovery budget on every service attempt.
+
+Gateway validates the Execution identity on both mutation and event sockets
+before every remote operation. When a daemon restart leaves only the mutation
+client's cached identity stale, Gateway invalidates that observation and
+re-reads the pair once before dispatch. Because this happens before mutation
+I/O, it cannot duplicate an order. A persistently split pair still fails
+closed. Event cursors keep their existing authoritative-resync boundary: the
+new identity publishes system.execution_service_identity_changed and the
+owner must reconcile before upstream events continue.
